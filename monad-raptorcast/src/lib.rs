@@ -12,7 +12,7 @@ use std::{
 use alloy_rlp::{Decodable, Encodable};
 use bytes::{Bytes, BytesMut};
 use futures::{channel::oneshot, FutureExt, Stream};
-use message::{DeserializeError, InboundRouterMessage};
+use message::InboundRouterMessage;
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
@@ -29,8 +29,11 @@ use monad_types::{
 };
 
 pub mod message;
+pub mod raptorcast_secondary;
+pub mod rlp;
 pub mod udp;
 pub mod util;
+use rlp::DeserializeError;
 use util::{BuildTarget, EpochValidators, FullNodes, ReBroadcastGroupMap, Validator};
 
 const SIGNATURE_SIZE: usize = 65;
@@ -379,9 +382,9 @@ fn try_deserialize_router_message<
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes> + Decodable,
 >(
     bytes: &Bytes,
-) -> Result<InboundRouterMessage<M>, DeserializeError> {
+) -> Result<InboundRouterMessage<M, ST>, DeserializeError> {
     // try to deserialize as a new message first
-    let Ok(inbound) = InboundRouterMessage::<M>::try_deserialize(bytes) else {
+    let Ok(inbound) = InboundRouterMessage::<M, ST>::try_deserialize(bytes) else {
         // if that fails, try to deserialize as an old message instead
         return match M::deserialize(bytes) {
             Ok(old_message) => Ok(InboundRouterMessage::AppMessage(old_message)),
@@ -469,6 +472,12 @@ where
                                 InboundRouterMessage::AppMessage(app_message) => {
                                     Some(app_message.event(from))
                                 }
+                                InboundRouterMessage::FullNodesGroup(full_nodes_group_message) => {
+                                    tracing::warn!(
+                                        "Handling of FullNodesGroup implemented in upcoming PR"
+                                    );
+                                    None
+                                }
                             },
                             Err(err) => {
                                 tracing::warn!(
@@ -521,6 +530,10 @@ where
                     return Poll::Ready(Some(
                         RaptorCastEvent::Message(message.event(NodeId::new(from))).into(),
                     ));
+                }
+                InboundRouterMessage::FullNodesGroup(_group_message) => {
+                    // pass TCP message to MultiRouter
+                    tracing::warn!("FullNodesGroup protocol via TCP not implemented");
                 }
             }
         }

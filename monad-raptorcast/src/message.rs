@@ -1,62 +1,35 @@
-use alloy_rlp::{encode_list, Decodable, Encodable, Header, RlpDecodable, RlpEncodable};
+use alloy_rlp::{encode_list, Decodable, Encodable, Header};
 use bytes::{Bytes, BytesMut};
-use monad_compress::{zstd::ZstdCompression, CompressionAlgo};
+use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
 
-const SERIALIZE_VERSION: u32 = 1;
-// compression versions
-const UNCOMPRESSED_VERSION: u32 = 1;
-const DEFAULT_ZSTD_VERSION: u32 = 2;
+use super::{
+    raptorcast_secondary::group_message::FullNodesGroupMessage,
+    rlp::{
+        try_deserialize_rlp_message, try_serialize_rlp_message, DeserializeError,
+        NetworkMessageVersion, SerializeError,
+    },
+};
 
-#[derive(RlpEncodable, RlpDecodable)]
-struct NetworkMessageVersion {
-    pub serialize_version: u32,
-    pub compression_version: u32,
+const MESSAGE_TYPE_APP: u8 = 1;
+const MESSAGE_TYPE_GROUP: u8 = 3;
+
+pub enum OutboundRouterMessage<OM, ST: CertificateSignatureRecoverable> {
+    AppMessage(OM),                            // MESSAGE_TYPE_APP
+    FullNodesGroup(FullNodesGroupMessage<ST>), // MESSAGE_TYPE_GROUP
 }
 
-impl NetworkMessageVersion {
-    pub fn version() -> Self {
-        Self {
-            serialize_version: SERIALIZE_VERSION,
-            compression_version: UNCOMPRESSED_VERSION,
-        }
-    }
-}
-
-pub enum OutboundRouterMessage<OM> {
-    AppMessage(OM),
-}
-
-#[derive(Debug)]
-pub struct SerializeError(pub String);
-
-impl<OM: Encodable> OutboundRouterMessage<OM> {
+impl<OM: Encodable, ST: CertificateSignatureRecoverable> OutboundRouterMessage<OM, ST> {
     pub fn try_serialize(self) -> Result<Bytes, SerializeError> {
         let mut buf = BytesMut::new();
 
         let version = NetworkMessageVersion::version();
         match self {
             Self::AppMessage(app_message) => {
-                if version.compression_version == UNCOMPRESSED_VERSION {
-                    // encode as uncompressed message
-                    let enc: [&dyn Encodable; 3] = [&version, &1u8, &app_message];
-                    encode_list::<_, dyn Encodable>(&enc, &mut buf);
-                } else if version.compression_version == DEFAULT_ZSTD_VERSION {
-                    // compress message
-                    let mut rlp_encoded_msg = BytesMut::new();
-                    app_message.encode(&mut rlp_encoded_msg);
-
-                    let mut compressed_app_message = Vec::new();
-                    ZstdCompression::default()
-                        .compress(&rlp_encoded_msg, &mut compressed_app_message)
-                        .map_err(|err| SerializeError(format!("compression error: {:?}", err)))?;
-                    let compressed_app_message = Bytes::from(compressed_app_message);
-
-                    // encode as compressed message
-                    let enc: [&dyn Encodable; 3] = [&version, &1u8, &compressed_app_message];
-                    encode_list::<_, dyn Encodable>(&enc, &mut buf);
-                } else {
-                    unreachable!()
-                };
+                try_serialize_rlp_message(MESSAGE_TYPE_APP, app_message, version, &mut buf)?;
+            }
+            Self::FullNodesGroup(generic_grp_message) => {
+                let enc: [&dyn Encodable; 3] = [&version, &MESSAGE_TYPE_GROUP, &generic_grp_message];
+                encode_list::<_, dyn Encodable>(&enc, &mut buf);
             }
         };
 
@@ -64,56 +37,124 @@ impl<OM: Encodable> OutboundRouterMessage<OM> {
     }
 }
 
-pub enum InboundRouterMessage<M> {
-    AppMessage(M),
+pub enum InboundRouterMessage<AM, ST: CertificateSignatureRecoverable> {
+    AppMessage(AM),                            // MESSAGE_TYPE_APP
+    FullNodesGroup(FullNodesGroupMessage<ST>), // MESSAGE_TYPE_GROUP
 }
 
-#[derive(Debug)]
-pub struct DeserializeError(pub String);
-
-impl From<alloy_rlp::Error> for DeserializeError {
-    fn from(err: alloy_rlp::Error) -> Self {
-        DeserializeError(format!("rlp decode error: {:?}", err))
-    }
-}
-
-impl<M: Decodable> InboundRouterMessage<M> {
+impl<AM: Decodable, ST: CertificateSignatureRecoverable> InboundRouterMessage<AM, ST> {
     pub fn try_deserialize(data: &Bytes) -> Result<Self, DeserializeError> {
         let mut payload =
             Header::decode_bytes(&mut data.as_ref(), true).map_err(DeserializeError::from)?;
-
         let version =
             NetworkMessageVersion::decode(&mut payload).map_err(DeserializeError::from)?;
         let message_type = u8::decode(&mut payload).map_err(DeserializeError::from)?;
         match message_type {
-            1 => {
-                match version.compression_version {
-                    UNCOMPRESSED_VERSION => {
-                        // decode as uncompressed message
-                        let app_message =
-                            M::decode(&mut payload).map_err(DeserializeError::from)?;
-                        Ok(Self::AppMessage(app_message))
-                    }
-                    DEFAULT_ZSTD_VERSION => {
-                        let compressed_app_message =
-                            Bytes::decode(&mut payload).map_err(DeserializeError::from)?;
-
-                        // decompress message
-                        let mut decompressed_app_message = Vec::new();
-                        ZstdCompression::default()
-                            .decompress(&compressed_app_message, &mut decompressed_app_message)
-                            .map_err(|err| {
-                                DeserializeError(format!("decompression error: {:?}", err))
-                            })?;
-
-                        let app_message = M::decode(&mut decompressed_app_message.as_ref())
-                            .map_err(DeserializeError::from)?;
-                        Ok(Self::AppMessage(app_message))
-                    }
-                    _ => Err(DeserializeError("unknown compression version".into())),
-                }
+            MESSAGE_TYPE_APP => {
+                let decoded_msg: AM = try_deserialize_rlp_message(version, &mut payload)?;
+                Ok(Self::AppMessage(decoded_msg))
+            }
+            MESSAGE_TYPE_GROUP => {
+                let decoded_msg = FullNodesGroupMessage::decode(&mut payload)?;
+                Ok(Self::FullNodesGroup(decoded_msg))
             }
             _ => Err(DeserializeError("unknown message type".into())),
         }
     }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::{
+        raptorcast_secondary::group_message::FullNodesGroupMessage,
+        raptorcast_secondary::group_message::PrepareGroup,
+    };
+    use monad_secp::SecpSignature;
+    use monad_types::{NodeId, Round};
+    use monad_testutil::signing::get_key;
+    use monad_crypto::certificate_signature::{
+        CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
+    };
+
+    type ST = SecpSignature;
+    type PubKeyType = CertificateSignaturePubKey<ST>;
+    type NodeIdST<ST> = NodeId<CertificateSignaturePubKey<ST>>;
+    type OM = String;
+
+    fn nid(seed: u64) -> NodeId<PubKeyType> {
+        let key_pair = get_key::<ST>(seed);
+        let pub_key = key_pair.pubkey();
+        NodeId::new(pub_key)
+    }
+
+    fn make_prep_group(seed: u32) -> PrepareGroup<ST>
+    {
+        PrepareGroup {
+            validator_id: nid(seed as u64),
+            max_group_size: 1 + seed as usize,
+            start_round: Round(11 + seed as u64),
+            end_round: Round(17 + seed as u64),
+        }
+    }
+
+    #[test]
+    fn serialize_roundtrip_app_msg() {
+        let org_msg = "MyProposal".to_string();
+        let serialized = OutboundRouterMessage::<OM, ST>::AppMessage(org_msg.clone())
+            .try_serialize()
+            .unwrap();
+        //pub struct NetworkMessageVersion {
+        //    pub serialize_version: u32,
+        //    pub compression_version: u32,
+        //}
+
+        // https://ethereum.org/en/developers/docs/data-structures-and-encoding/rlp
+        // 10 bytes for the string "MyProposal"
+        //                   M  y  P  r  o  p  o  s  a  l
+        // cf c2 01 01 01 8a 4d 79 50 72 6f 70 6f 73 61 6c
+        println!("Serialized {:?} bytes: {}", serialized.len(), hex::encode(&serialized));
+        let deserialized = InboundRouterMessage::<OM, ST>::try_deserialize(&serialized).unwrap();
+        match deserialized {
+            InboundRouterMessage::AppMessage(dser_msg) => {
+                assert_eq!(dser_msg, org_msg);
+            },
+            _ => panic!("Expected FullNodesGroup"),
+        };
+    }
+
+    #[test]
+    fn serialize_roundtrip_prep_group() {
+        let org_msg = make_prep_group(3);
+        let prep_group = FullNodesGroupMessage::PrepareGroup(org_msg.clone());
+        let serialized = OutboundRouterMessage::<OM, ST>::FullNodesGroup(prep_group.clone())
+            .try_serialize()
+            .unwrap();
+        println!("Serialized {:?} bytes", serialized.len());
+        let deserialized = InboundRouterMessage::<OM, ST>::try_deserialize(&serialized).unwrap();
+        match deserialized {
+            InboundRouterMessage::FullNodesGroup(dser_msg) => {
+                match dser_msg {
+                    FullNodesGroupMessage::PrepareGroup(dser_msg) => {
+                        assert_eq!(dser_msg.validator_id, org_msg.validator_id);
+                        assert_eq!(dser_msg.max_group_size, org_msg.max_group_size);
+                        assert_eq!(dser_msg.start_round, org_msg.start_round);
+                        assert_eq!(dser_msg.end_round, org_msg.end_round);
+                    },
+                    FullNodesGroupMessage::PrepareGroupResponse(_) => {
+                        panic!("Expected PrepareGroup, got PrepareGroupResponse");
+                    },
+                    FullNodesGroupMessage::ConfirmGroup(_) => {
+                        panic!("Expected PrepareGroup, got ConfirmGroup");
+                    }
+                }
+            },
+            InboundRouterMessage::AppMessage(msg) => {
+                panic!("Expected FullNodesGroup, got AppMessage: {:?}", msg);
+            },
+            _ => panic!("Expected FullNodesGroup"),
+        };
+    }
+
 }
