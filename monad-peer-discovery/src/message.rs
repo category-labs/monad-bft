@@ -63,7 +63,7 @@ impl<ST: CertificateSignatureRecoverable> Encodable for PeerDiscoveryMessage<ST>
 impl<ST: CertificateSignatureRecoverable> Decodable for PeerDiscoveryMessage<ST> {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let mut payload = Header::decode_bytes(buf, true)?;
-        let peer_discovery_version = u16::decode(&mut payload)?;
+        let _peer_discovery_version = u16::decode(&mut payload)?;
 
         match u8::decode(&mut payload)? {
             1 => Ok(Self::Ping(Ping::decode(&mut payload)?)),

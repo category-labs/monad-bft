@@ -4,6 +4,8 @@ use monad_compress::{zstd::ZstdCompression, CompressionAlgo};
 use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
 use monad_peer_discovery::PeerDiscoveryMessage;
 
+use super::raptorcast_secondary::group_message::FullNodesGroupMessage;
+
 const SERIALIZE_VERSION: u32 = 1;
 // compression versions
 const UNCOMPRESSED_VERSION: u32 = 1;
@@ -24,9 +26,14 @@ impl NetworkMessageVersion {
     }
 }
 
+const MESSAGE_TYPE_APP: u8 = 1;
+const MESSAGE_TYPE_PEER_DISC: u8 = 2;
+const MESSAGE_TYPE_GROUP: u8 = 3;
+
 pub enum OutboundRouterMessage<OM, ST: CertificateSignatureRecoverable> {
     AppMessage(OM),
     PeerDiscoveryMessage(PeerDiscoveryMessage<ST>),
+    FullNodesGroup(FullNodesGroupMessage<ST>),
 }
 
 #[derive(Debug)]
@@ -41,7 +48,7 @@ impl<OM: Encodable, ST: CertificateSignatureRecoverable> OutboundRouterMessage<O
             Self::AppMessage(app_message) => {
                 if version.compression_version == UNCOMPRESSED_VERSION {
                     // encode as uncompressed message
-                    let enc: [&dyn Encodable; 3] = [&version, &1u8, &app_message];
+                    let enc: [&dyn Encodable; 3] = [&version, &MESSAGE_TYPE_APP, &app_message];
                     encode_list::<_, dyn Encodable>(&enc, &mut buf);
                 } else if version.compression_version == DEFAULT_ZSTD_VERSION {
                     // compress message
@@ -55,7 +62,8 @@ impl<OM: Encodable, ST: CertificateSignatureRecoverable> OutboundRouterMessage<O
                     let compressed_app_message = Bytes::from(compressed_app_message);
 
                     // encode as compressed message
-                    let enc: [&dyn Encodable; 3] = [&version, &1u8, &compressed_app_message];
+                    let enc: [&dyn Encodable; 3] =
+                        [&version, &MESSAGE_TYPE_APP, &compressed_app_message];
                     encode_list::<_, dyn Encodable>(&enc, &mut buf);
                 } else {
                     unreachable!()
@@ -63,7 +71,13 @@ impl<OM: Encodable, ST: CertificateSignatureRecoverable> OutboundRouterMessage<O
             }
             Self::PeerDiscoveryMessage(peer_disc_message) => {
                 // encode as uncompressed message
-                let enc: [&dyn Encodable; 3] = [&version, &2u8, &peer_disc_message];
+                let enc: [&dyn Encodable; 3] =
+                    [&version, &MESSAGE_TYPE_PEER_DISC, &peer_disc_message];
+                encode_list::<_, dyn Encodable>(&enc, &mut buf);
+            }
+            Self::FullNodesGroup(group_message) => {
+                // encode as uncompressed message
+                let enc: [&dyn Encodable; 3] = [&version, &MESSAGE_TYPE_GROUP, &group_message];
                 encode_list::<_, dyn Encodable>(&enc, &mut buf);
             }
         };
@@ -75,6 +89,7 @@ impl<OM: Encodable, ST: CertificateSignatureRecoverable> OutboundRouterMessage<O
 pub enum InboundRouterMessage<M, ST: CertificateSignatureRecoverable> {
     AppMessage(M),
     PeerDiscoveryMessage(PeerDiscoveryMessage<ST>),
+    FullNodesGroup(FullNodesGroupMessage<ST>),
 }
 
 #[derive(Debug)]
@@ -95,7 +110,7 @@ impl<M: Decodable, ST: CertificateSignatureRecoverable> InboundRouterMessage<M, 
             NetworkMessageVersion::decode(&mut payload).map_err(DeserializeError::from)?;
         let message_type = u8::decode(&mut payload).map_err(DeserializeError::from)?;
         match message_type {
-            1 => {
+            MESSAGE_TYPE_APP => {
                 match version.compression_version {
                     UNCOMPRESSED_VERSION => {
                         // decode as uncompressed message
@@ -122,10 +137,15 @@ impl<M: Decodable, ST: CertificateSignatureRecoverable> InboundRouterMessage<M, 
                     _ => Err(DeserializeError("unknown compression version".into())),
                 }
             }
-            2 => {
+            MESSAGE_TYPE_PEER_DISC => {
                 let peer_disc_message =
                     PeerDiscoveryMessage::decode(&mut payload).map_err(DeserializeError::from)?;
                 Ok(Self::PeerDiscoveryMessage(peer_disc_message))
+            }
+            MESSAGE_TYPE_GROUP => {
+                let group_message =
+                    FullNodesGroupMessage::decode(&mut payload).map_err(DeserializeError::from)?;
+                Ok(Self::FullNodesGroup(group_message))
             }
             _ => Err(DeserializeError("unknown message type".into())),
         }

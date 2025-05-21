@@ -21,7 +21,7 @@ pub use message::PeerDiscoveryMessage;
 
 pub type PeerDiscMetrics = HashMap<&'static str, u64>;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NameRecord {
     pub address: SocketAddrV4,
     pub seq: u64,
@@ -51,7 +51,7 @@ impl Decodable for NameRecord {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, RlpEncodable, RlpDecodable)]
+#[derive(Debug, Clone, Copy, PartialEq, RlpEncodable, RlpDecodable, Eq)]
 pub struct MonadNameRecord<ST: CertificateSignatureRecoverable> {
     pub name_record: NameRecord,
     pub signature: ST,

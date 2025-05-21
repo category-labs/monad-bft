@@ -34,6 +34,7 @@ use monad_types::{
 use tracing::{debug, error, warn};
 
 pub mod message;
+pub mod raptorcast_secondary;
 pub mod udp;
 pub mod util;
 use util::{BuildTarget, EpochValidators, FullNodes, ReBroadcastGroupMap, Validator};
@@ -510,6 +511,10 @@ where
                                     }
                                     None
                                 }
+                                InboundRouterMessage::FullNodesGroup(_full_nodes_group_message) => {
+                                    warn!("Handling of FullNodesGroup implemented in upcoming PR");
+                                    None
+                                }
                             },
                             Err(err) => {
                                 warn!(
@@ -569,6 +574,11 @@ where
                         ?message,
                         "dropping peer discovery message, should come through udp channel"
                     );
+                    continue;
+                }
+                InboundRouterMessage::FullNodesGroup(_group_message) => {
+                    // pass TCP message to MultiRouter
+                    warn!("FullNodesGroup protocol via TCP not implemented");
                     continue;
                 }
             }
