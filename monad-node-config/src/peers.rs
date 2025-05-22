@@ -12,7 +12,20 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PeerConfig<ST: CertificateSignatureRecoverable> {
-    pub local_record_seq_num: u64,
+    pub self_address: SocketAddrV4,
+    pub self_record_seq_num: u64,
+
+    #[serde(serialize_with = "serialize_certificate_signature::<_, ST>")]
+    #[serde(deserialize_with = "deserialize_certificate_signature::<_, ST>")]
+    #[serde(bound = "ST: CertificateSignatureRecoverable")]
+    pub self_name_record_sig: ST,
+
+    pub ping_period: u64,
+    pub refresh_period: u64,
+    pub request_timeout: u64,
+    pub prune_threshold: u32,
+    pub min_active_connections: usize,
+
     #[serde(bound = "ST: CertificateSignatureRecoverable")]
     pub peers: Vec<PeerDiscoveryConfig<ST>>,
 }

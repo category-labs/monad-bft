@@ -514,15 +514,15 @@ where
     <M as Deserializable<Bytes>>::ReadError: 'static,
     OM: Serializable<Bytes> + Encodable + Clone + Send + Sync + 'static,
 {
-    // TODO: also include self record in node.toml
     let self_record = NameRecord {
-        address: SocketAddrV4::new(
-            network_config.bind_address_host,
-            network_config.bind_address_port,
-        ),
-        seq: peer_discovery_config.local_record_seq_num,
+        address: peer_discovery_config.self_address,
+        seq: peer_discovery_config.self_record_seq_num,
     };
     let self_record = MonadNameRecord::new(self_record, &identity);
+    assert!(
+        self_record.signature == peer_discovery_config.self_name_record_sig,
+        "self name record signature mismatch"
+    );
 
     // initial set of peers
     let peer_info = peer_discovery_config
@@ -561,16 +561,15 @@ where
         })
         .collect();
 
-    // TODO: make it configurable in node.toml
     let peer_discovery_builder = PeerDiscoveryBuilder {
         self_id: NodeId::new(identity.pubkey()),
         self_record,
         peer_info,
-        ping_period: Duration::from_secs(30),
-        refresh_period: Duration::from_secs(600),
-        request_timeout: Duration::from_secs(10),
-        prune_threshold: 3,
-        min_active_connections: 10,
+        ping_period: Duration::from_secs(peer_discovery_config.ping_period),
+        refresh_period: Duration::from_secs(peer_discovery_config.refresh_period),
+        request_timeout: Duration::from_secs(peer_discovery_config.request_timeout),
+        prune_threshold: peer_discovery_config.prune_threshold,
+        min_active_connections: peer_discovery_config.min_active_connections,
         rng_seed: 123456,
     };
     RaptorCast::new(RaptorCastConfig {

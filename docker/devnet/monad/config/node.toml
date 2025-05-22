@@ -34,7 +34,14 @@ peers = []
 # secp256k1_pubkey = "..."
 
 [peer_discovery]
-local_record_seq_num = 0
+self_address = "0.0.0.0:8000"
+self_record_seq_num = 0
+self_name_record_sig = "7911fbf0df1307723c51658349ed396dd6ee28fde925277bae53fcd77705c4313e003a12fb562e1c20cc616511f7a09f986a3f6af6849cdedff6f5684557b04f01"
+ping_period = 30
+refresh_period = 120
+request_timeout = 5
+prune_threshold = 5
+min_active_connections = 0
 peers = []
 # [[peer_discovery.peers]]
 # address = "x.x.x.x:xxxx"
