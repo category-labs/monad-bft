@@ -70,7 +70,7 @@ ARG TRIEDB_TARGET=triedb_driver
 # Builder
 COPY . .
 RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" \
-    CC=gcc-15 CXX=g++-15 cargo build --release --bin monad-node --bin monad-keystore --bin monad-debug-node --example ledger-tail --example wal2json --example wal-tool --example triedb-debug --example triedb-bench && \
+    CC=gcc-15 CXX=g++-15 cargo build --release --bin monad-node --bin monad-keystore --bin monad-debug-node --example ledger-tail --example wal2json --example wal-tool --example triedb-debug --example triedb-bench --example sign-name-record && \
     mv target/release/monad-node monad-node && \
     mv target/release/monad-keystore keystore && \
     mv target/release/monad-debug-node monad-debug-node && \
@@ -79,6 +79,7 @@ RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell -
     mv target/release/examples/wal-tool wal-tool && \
     mv target/release/examples/triedb-debug triedb-debug && \
     mv target/release/examples/triedb-bench triedb-bench && \
+    mv target/release/examples/sign-name-record sign-name-record && \
     cp `ls -Lt $(find target/release | grep -e "libtriedb_driver.so") | awk -F/ '!seen[$NF]++'` . && \
     cp `ls -Lt $(find target/release | grep -e "libmonad_statesync.so") | awk -F/ '!seen[$NF]++'` . && \
     cp `ls -Lt $(find target/release | grep -e "libquill.so") | awk -F/ '!seen[$NF]++'` . && \
@@ -100,6 +101,7 @@ COPY --from=builder /usr/src/monad-bft/wal2json /usr/local/bin/wal2json
 COPY --from=builder /usr/src/monad-bft/wal-tool /usr/local/bin/wal-tool
 COPY --from=builder /usr/src/monad-bft/triedb-debug /usr/local/bin/triedb-debug
 COPY --from=builder /usr/src/monad-bft/triedb-bench /usr/local/bin/triedb-bench
+COPY --from=builder /usr/src/monad-bft/sign-name-record /usr/local/bin/sign-name-record
 COPY --from=builder /usr/src/monad-bft/*.so /usr/local/lib
 COPY --from=builder /usr/src/monad-bft/*.so.* /usr/local/lib
 
@@ -115,5 +117,6 @@ RUN strip \
     /usr/local/bin/wal-tool \
     /usr/local/bin/triedb-debug \
     /usr/local/bin/triedb-bench \
+    /usr/local/bin/sign-name-record \
     /usr/local/lib/*.so \
     /usr/local/lib/*.so.*

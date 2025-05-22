@@ -5081,9 +5081,13 @@ name = "monad-peer-discovery"
 version = "0.1.0"
 dependencies = [
  "alloy-rlp",
+ "clap 4.4.10",
  "futures",
+ "hex",
  "monad-crypto",
  "monad-executor-glue",
+ "monad-keystore",
+ "monad-node-config",
  "monad-secp",
  "monad-testutil",
  "monad-types",
@@ -5091,6 +5095,7 @@ dependencies = [
  "rand_chacha 0.3.1",
  "test-case",
  "tokio-util",
+ "toml 0.7.8",
  "tracing",
 ]
 
