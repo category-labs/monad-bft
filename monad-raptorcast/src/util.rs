@@ -154,7 +154,7 @@ pub type AppMessageHash = HexBytes<20>;
 // 3) Validator->FullNode raptorcast send (when initiating proposals)
 // Validator->Validator send group is presented by EpochValidators instead, as
 // that contains stake info per validator.
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Group<ST>
 where
     ST: CertificateSignatureRecoverable,
@@ -175,6 +175,20 @@ where
             .field("end", &self.round_span.end.0)
             .field("other_peers", &self.sorted_other_peers.len())
             .finish()
+    }
+}
+
+// the trait `Default` is not implemented for `ST`
+impl<ST> Default for Group<ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    fn default() -> Self {
+        Self {
+            validator_id: None,
+            round_span: RoundSpan::default(),
+            sorted_other_peers: Vec::new(),
+        }
     }
 }
 

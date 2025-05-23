@@ -33,6 +33,7 @@ use monad_types::{
 };
 use tracing::{debug, error, warn};
 
+pub mod config;
 pub mod message;
 pub mod raptorcast_secondary;
 pub mod udp;
