@@ -115,13 +115,13 @@ pub async fn run_fixer(
         // Update metrics with fix attempt results (even for dry run)
         if !dry_run {
             metrics.counter_with_attrs(
-                "replica_faults__fixed",
+                MetricNames::REPLICA_FAULTS_FIXED,
                 replica_fixed as u64,
                 &[KeyValue::new("replica", replica.clone())],
             );
 
             metrics.counter_with_attrs(
-                "replica_faults__fix_failed",
+                MetricNames::REPLICA_FAULTS_FIX_FAILED,
                 replica_failed as u64,
                 &[KeyValue::new("replica", replica)],
             );
@@ -209,7 +209,7 @@ async fn fix_faults_in_range(
 
             // Report error metric
             metrics.counter_with_attrs(
-                "replica_faults__fix_error",
+                MetricNames::REPLICA_FAULTS_FIX_FAILED,
                 1,
                 &[
                     KeyValue::new("replica", replica.to_owned()),
@@ -228,7 +228,7 @@ async fn fix_faults_in_range(
 
             // Report success metric
             metrics.counter_with_attrs(
-                "replica_faults__fix_success",
+                MetricNames::REPLICA_FAULTS_FIX_SUCCESS,
                 1,
                 &[
                     KeyValue::new("replica", replica.to_owned()),

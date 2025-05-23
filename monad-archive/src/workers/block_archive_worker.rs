@@ -73,9 +73,9 @@ pub async fn archive_worker(
             continue;
         }
 
-        metrics.gauge("source_latest_block_num", latest_source);
-        metrics.gauge("end_block_number", end_block);
-        metrics.gauge("start_block_number", start_block);
+        metrics.gauge(MetricNames::SOURCE_LATEST_BLOCK_NUM, latest_source);
+        metrics.gauge(MetricNames::END_BLOCK_NUMBER, end_block);
+        metrics.gauge(MetricNames::START_BLOCK_NUMBER, start_block);
 
         info!(
             start = start_block,
@@ -89,6 +89,7 @@ pub async fn archive_worker(
             &fallback_source,
             start_block..=end_block,
             &archive_writer,
+            &metrics,
             max_concurrent_blocks,
             unsafe_skip_bad_blocks,
         )
@@ -107,6 +108,7 @@ async fn archive_blocks(
     fallback_reader: &Option<impl BlockDataReader + Sync>,
     range: RangeInclusive<u64>,
     archiver: &BlockDataArchive,
+    metrics: &Metrics,
     concurrency: usize,
     unsafe_skip_bad_blocks: bool,
 ) -> u64 {
@@ -114,7 +116,7 @@ async fn archive_blocks(
 
     let res: Result<(), u64> = futures::stream::iter(range.clone())
         .map(|block_num: u64| async move {
-            match archive_block(reader, fallback_reader, block_num, archiver).await {
+            match archive_block(reader, fallback_reader, block_num, archiver, metrics).await {
                 Ok(_) => Ok(()),
                 Err(e) => {
                     if unsafe_skip_bad_blocks {
@@ -155,6 +157,7 @@ async fn archive_block(
     fallback: &Option<impl BlockDataReader>,
     block_num: u64,
     archiver: &BlockDataArchive,
+    metrics: &Metrics,
 ) -> Result<()> {
     let mut num_txs = None;
 
@@ -170,6 +173,7 @@ async fn archive_block(
                         ?e,
                         block_num, "Failed to read block from primary source, trying fallback..."
                     );
+                    metrics.inc_counter(MetricNames::BLOCK_ARCHIVE_WORKER_BLOCK_FALLBACK);
                     fallback.get_block_by_number(block_num).await?
                 }
             };
@@ -188,6 +192,7 @@ async fn archive_block(
                         block_num,
                         "Failed to read block receipts from primary source, trying fallback..."
                     );
+                    metrics.inc_counter(MetricNames::BLOCK_ARCHIVE_WORKER_RECEIPTS_FALLBACK);
                     fallback.get_block_receipts(block_num).await?
                 }
             };
@@ -205,6 +210,7 @@ async fn archive_block(
                         block_num,
                         "Failed to read block traces from primary source, trying fallback..."
                     );
+                    metrics.inc_counter(MetricNames::BLOCK_ARCHIVE_WORKER_TRACES_FALLBACK);
                     fallback.get_block_traces(block_num).await?
                 }
             };
@@ -236,7 +242,7 @@ mod tests {
     use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 
     use super::*;
-    use crate::{kvstore::memory::MemoryStorage, test_utils::mock_block};
+    use crate::{kvstore::memory::MemoryStorage, metrics, test_utils::mock_block};
 
     fn mock_tx() -> TxEnvelopeWithSender {
         let tx = TxEip1559 {
@@ -325,7 +331,14 @@ mod tests {
         )
         .await;
 
-        let res = archive_block(&reader, &Some(fallback_reader), block_num, &archiver).await;
+        let res = archive_block(
+            &reader,
+            &Some(fallback_reader),
+            block_num,
+            &archiver,
+            &metrics::Metrics::none(),
+        )
+        .await;
         assert!(res.is_ok());
         assert_eq!(
             archiver.get_block_by_number(block_num).await.unwrap(),
@@ -354,6 +367,7 @@ mod tests {
             &None::<BlockDataReaderErased>,
             block_num,
             &archiver,
+            &metrics::Metrics::none(),
         )
         .await;
         assert!(res.is_ok());
@@ -391,6 +405,7 @@ mod tests {
             &None::<BlockDataReaderErased>,
             0..=10,
             &archiver,
+            &metrics::Metrics::none(),
             3,
             false,
         )
@@ -434,6 +449,7 @@ mod tests {
             &None::<BlockDataReaderErased>,
             0..=latest_source,
             &archiver,
+            &metrics::Metrics::none(),
             3,
             false,
         )

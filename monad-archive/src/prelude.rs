@@ -21,7 +21,7 @@ pub use crate::{
         dynamodb::DynamoDBArchive, s3::S3Bucket, triedb_reader::TriedbReader, KVReader,
         KVReaderErased, KVStore, KVStoreErased,
     },
-    metrics::Metrics,
+    metrics::{MetricNames, Metrics},
     model::{
         block_data_archive::*, tx_index_archive::*, BlockDataReader, BlockDataReaderErased,
         BlockDataWithOffsets, HeaderSubset, TxByteOffsets, TxIndexedData,

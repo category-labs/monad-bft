@@ -130,18 +130,24 @@ async fn handle_blocks(
 
     for block_check in &faults {
         if !block_check.faults.is_empty() {
-            metrics.counter("faults_blocks_with_faults", 1);
+            metrics.counter(MetricNames::FAULTS_BLOCKS_WITH_FAULTS, 1);
         }
         for fault in &block_check.faults {
             match fault {
-                Fault::ErrorChecking { .. } => metrics.counter("faults_error_checking", 1),
-                Fault::CorruptedBlock => metrics.counter("faults_corrupted_blocks", 1),
-                Fault::MissingAllTxHash { num_txs } => {
-                    metrics.counter("faults_blocks_missing_all_txhash", 1);
-                    metrics.counter("faults_missing_txhash", *num_txs as u64);
+                Fault::ErrorChecking { .. } => {
+                    metrics.counter(MetricNames::FAULTS_ERROR_CHECKING, 1)
                 }
-                Fault::MissingTxhash { .. } => metrics.counter("faults_missing_txhash", 1),
-                Fault::IncorrectTxData { .. } => metrics.counter("faults_incorrect_tx_data", 1),
+                Fault::CorruptedBlock => metrics.counter(MetricNames::FAULTS_CORRUPTED_BLOCKS, 1),
+                Fault::MissingAllTxHash { num_txs } => {
+                    metrics.counter(MetricNames::FAULTS_MISSING_ALL_TXHASH, 1);
+                    metrics.counter(MetricNames::FAULTS_MISSING_TXHASH, *num_txs as u64);
+                }
+                Fault::MissingTxhash { .. } => {
+                    metrics.counter(MetricNames::FAULTS_MISSING_TXHASH, 1)
+                }
+                Fault::IncorrectTxData { .. } => {
+                    metrics.counter(MetricNames::FAULTS_INCORRECT_TX_DATA, 1)
+                }
 
                 // Other faults are not DynamoDB faults
                 _ => (),

@@ -13,6 +13,53 @@ use crate::{kvstore::mongo::MongoDbStorage, prelude::*};
 const DEFAULT_BLOB_STORE_TIMEOUT: u64 = 30;
 const DEFAULT_INDEX_STORE_TIMEOUT: u64 = 20;
 
+pub fn set_source_and_sink_metrics(
+    sink: &ArchiveArgs,
+    source: &BlockDataReaderArgs,
+    metrics: &Metrics,
+) {
+    match sink {
+        ArchiveArgs::Aws(_) => {
+            metrics.periodic_gauge_with_attrs(
+                MetricNames::SINK_STORE_TYPE,
+                1,
+                vec![opentelemetry::KeyValue::new("sink_store_type", "aws")],
+            );
+        }
+        ArchiveArgs::MongoDb(_) => {
+            metrics.periodic_gauge_with_attrs(
+                MetricNames::SINK_STORE_TYPE,
+                2,
+                vec![opentelemetry::KeyValue::new("sink_store_type", "mongodb")],
+            );
+        }
+    }
+
+    match source {
+        BlockDataReaderArgs::Aws(_) => {
+            metrics.periodic_gauge_with_attrs(
+                MetricNames::SOURCE_STORE_TYPE,
+                1,
+                vec![opentelemetry::KeyValue::new("source_store_type", "aws")],
+            );
+        }
+        BlockDataReaderArgs::MongoDb(_) => {
+            metrics.periodic_gauge_with_attrs(
+                MetricNames::SOURCE_STORE_TYPE,
+                2,
+                vec![opentelemetry::KeyValue::new("source_store_type", "mongodb")],
+            );
+        }
+        BlockDataReaderArgs::Triedb(_) => {
+            metrics.periodic_gauge_with_attrs(
+                MetricNames::SOURCE_STORE_TYPE,
+                3,
+                vec![opentelemetry::KeyValue::new("source_store_type", "triedb")],
+            );
+        }
+    }
+}
+
 pub async fn get_aws_config(region: Option<String>, timeout_secs: u64) -> SdkConfig {
     let region_provider = RegionProviderChain::default_provider().or_else(
         region
@@ -110,7 +157,7 @@ impl BlockDataReaderArgs {
             Aws(args) => BlockDataArchive::new(args.build_blob_store(metrics).await).into(),
             Triedb(args) => TriedbReader::new(args).into(),
             MongoDb(args) => BlockDataArchive::new(
-                MongoDbStorage::new_block_store(&args.url, &args.db, None).await?,
+                MongoDbStorage::new_block_store(&args.url, &args.db, None, metrics.clone()).await?,
             )
             .into(),
         })
@@ -132,11 +179,14 @@ impl ArchiveArgs {
     pub async fn build_block_data_archive(&self, metrics: &Metrics) -> Result<BlockDataArchive> {
         let store = match self {
             ArchiveArgs::Aws(args) => args.build_blob_store(metrics).await,
-            ArchiveArgs::MongoDb(args) => {
-                MongoDbStorage::new_block_store(&args.url, &args.db, args.capped_size_gb)
-                    .await?
-                    .into()
-            }
+            ArchiveArgs::MongoDb(args) => MongoDbStorage::new_block_store(
+                &args.url,
+                &args.db,
+                args.capped_size_gb,
+                metrics.clone(),
+            )
+            .await?
+            .into(),
         };
         Ok(BlockDataArchive::new(store))
     }
@@ -154,12 +204,17 @@ impl ArchiveArgs {
                 )
             }
             ArchiveArgs::MongoDb(args) => (
-                MongoDbStorage::new_block_store(&args.url, &args.db, None)
+                MongoDbStorage::new_block_store(&args.url, &args.db, None, metrics.clone())
                     .await?
                     .into(),
-                MongoDbStorage::new_index_store(&args.url, &args.db, args.capped_size_gb)
-                    .await?
-                    .into(),
+                MongoDbStorage::new_index_store(
+                    &args.url,
+                    &args.db,
+                    args.capped_size_gb,
+                    metrics.clone(),
+                )
+                .await?
+                .into(),
             ),
         };
         Ok(TxIndexArchiver::new(
@@ -178,12 +233,17 @@ impl ArchiveArgs {
                 )
             }
             ArchiveArgs::MongoDb(args) => (
-                MongoDbStorage::new_block_store(&args.url, &args.db, None)
+                MongoDbStorage::new_block_store(&args.url, &args.db, None, metrics.clone())
                     .await?
                     .into(),
-                MongoDbStorage::new_index_store(&args.url, &args.db, args.capped_size_gb)
-                    .await?
-                    .into(),
+                MongoDbStorage::new_index_store(
+                    &args.url,
+                    &args.db,
+                    args.capped_size_gb,
+                    metrics.clone(),
+                )
+                .await?
+                .into(),
             ),
         };
         let bdr = BlockDataReaderErased::from(BlockDataArchive::new(blob));

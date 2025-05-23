@@ -6,12 +6,8 @@ use bytes::Bytes;
 use eyre::{Context, Result};
 use tracing::trace;
 
-use super::retry;
+use super::{kvstore_get_metrics, KVStoreType, MetricsResultExt};
 use crate::{metrics::Metrics, prelude::*};
-
-const AWS_S3_ERRORS: &str = "aws_s3_errors";
-const AWS_S3_READS: &str = "aws_s3_reads";
-const AWS_S3_WRITES: &str = "aws_s3_writes";
 
 #[derive(Clone)]
 pub struct S3Bucket {
@@ -37,37 +33,42 @@ impl S3Bucket {
 impl KVReader for S3Bucket {
     async fn get(&self, key: &str) -> Result<Option<Bytes>> {
         trace!(key, "S3 get");
-        let resp = self
+        let req = self
             .client
             .get_object()
             .bucket(&self.bucket)
             .key(key)
-            .request_payer(aws_sdk_s3::types::RequestPayer::Requester)
-            .send()
-            .await;
+            .request_payer(aws_sdk_s3::types::RequestPayer::Requester);
+
+        let start = Instant::now();
+        let resp = req.send().await;
+        let duration = start.elapsed();
         trace!(key, "S3 get, got response");
 
         let resp = match resp {
             Ok(resp) => resp,
             Err(SdkError::ServiceError(service_err)) => match service_err.err() {
-                aws_sdk_s3::operation::get_object::GetObjectError::NoSuchKey(_) => return Ok(None),
+                aws_sdk_s3::operation::get_object::GetObjectError::NoSuchKey(_) => {
+                    kvstore_get_metrics(duration, true, KVStoreType::AwsS3, &self.metrics);
+                    return Ok(None);
+                }
                 _ => Err(SdkError::ServiceError(service_err)).wrap_err_with(|| {
-                    self.metrics.inc_counter(AWS_S3_ERRORS);
+                    kvstore_get_metrics(duration, false, KVStoreType::AwsS3, &self.metrics);
                     format!("Failed to read key from s3 {key}")
                 })?,
             },
             _ => resp.wrap_err_with(|| {
-                self.metrics.inc_counter(AWS_S3_ERRORS);
+                kvstore_get_metrics(duration, false, KVStoreType::AwsS3, &self.metrics);
                 format!("Failed to read key from s3 {key}")
             })?,
         };
 
-        let data = resp.body.collect().await.wrap_err_with(|| {
-            self.metrics.inc_counter(AWS_S3_ERRORS);
-            "Unable to collect response data"
-        })?;
-
-        self.metrics.counter(AWS_S3_READS, 1);
+        let data = resp
+            .body
+            .collect()
+            .await
+            .write_get_metrics(duration, KVStoreType::AwsS3, &self.metrics)
+            .wrap_err_with(|| "Unable to collect response data")?;
 
         let bytes = data.into_bytes();
         if bytes.is_empty() {
@@ -83,20 +84,20 @@ impl KVStore for S3Bucket {
     async fn put(&self, key: impl AsRef<str>, data: Vec<u8>) -> Result<()> {
         let key = key.as_ref();
 
-        self.client
+        let req = self
+            .client
             .put_object()
             .bucket(&self.bucket)
             .key(key)
             .body(ByteStream::from(data.clone()))
-            .request_payer(aws_sdk_s3::types::RequestPayer::Requester)
-            .send()
-            .await
-            .wrap_err_with(|| {
-                self.metrics.inc_counter(AWS_S3_ERRORS);
-                format!("Failed to upload, retries exhausted. Key: {}", key)
-            })?;
+            .request_payer(aws_sdk_s3::types::RequestPayer::Requester);
 
-        self.metrics.counter(AWS_S3_WRITES, 1);
+        let start = Instant::now();
+        req.send()
+            .await
+            .write_put_metrics(start.elapsed(), KVStoreType::AwsS3, &self.metrics)
+            .wrap_err_with(|| format!("Failed to upload, retries exhausted. Key: {}", key))?;
+
         Ok(())
     }
 
@@ -110,20 +111,17 @@ impl KVStore for S3Bucket {
 
         loop {
             let token = continuation_token.as_ref();
-            let response = retry(|| {
-                let mut request = self
-                    .client
-                    .list_objects_v2()
-                    .bucket(&self.bucket)
-                    .prefix(prefix)
-                    .request_payer(aws_sdk_s3::types::RequestPayer::Requester);
+            let mut request = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(prefix)
+                .request_payer(aws_sdk_s3::types::RequestPayer::Requester);
 
-                if let Some(token) = token {
-                    request = request.continuation_token(token);
-                }
-                request.send()
-            })
-            .await?;
+            if let Some(token) = token {
+                request = request.continuation_token(token);
+            }
+            let response = request.send().await.wrap_err("Failed to list objects")?;
 
             // Process objects
             if let Some(contents) = response.contents {
@@ -151,10 +149,7 @@ impl KVStore for S3Bucket {
             .request_payer(aws_sdk_s3::types::RequestPayer::Requester)
             .send()
             .await
-            .wrap_err_with(|| {
-                self.metrics.inc_counter(AWS_S3_ERRORS);
-                format!("Failed to delete, retries exhausted. Key: {}", key)
-            })?;
+            .wrap_err_with(|| format!("Failed to delete, retries exhausted. Key: {}", key))?;
 
         Ok(())
     }

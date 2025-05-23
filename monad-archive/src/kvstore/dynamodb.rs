@@ -11,12 +11,8 @@ use futures::future::try_join_all;
 use tokio::sync::Semaphore;
 use tracing::error;
 
-use super::retry;
+use super::{KVStoreType, MetricsResultExt};
 use crate::prelude::*;
-
-const AWS_DYNAMODB_ERRORS: &str = "aws_dynamodb_errors";
-const AWS_DYNAMODB_WRITES: &str = "aws_dynamodb_writes";
-const AWS_DYNAMODB_READS: &str = "aws_dynamodb_reads";
 
 #[derive(Clone)]
 pub struct DynamoDBArchive {
@@ -29,7 +25,12 @@ pub struct DynamoDBArchive {
 
 impl KVReader for DynamoDBArchive {
     async fn bulk_get(&self, keys: &[String]) -> Result<HashMap<String, Bytes>> {
-        self.batch_get(keys).await
+        let start = Instant::now();
+        self.batch_get(keys).await.write_get_metrics(
+            start.elapsed(),
+            KVStoreType::AwsDynamoDB,
+            &self.metrics,
+        )
     }
 
     async fn get(&self, key: &str) -> Result<Option<Bytes>> {
@@ -73,10 +74,18 @@ impl KVStore for DynamoDBArchive {
             .map(|chunk| chunk.to_vec())
             .map(|batch_writes| {
                 let this = (*self).clone();
-                tokio::spawn(async move { this.upload_to_db(batch_writes).await })
+                tokio::spawn(async move {
+                    let start = Instant::now();
+                    this.upload_to_db(batch_writes).await.write_put_metrics(
+                        start.elapsed(),
+                        KVStoreType::AwsDynamoDB,
+                        &this.metrics,
+                    )
+                })
             });
 
-        try_join_all(batch_writes).await?.into_iter().collect()
+        try_join_all(batch_writes).await?;
+        Ok(())
     }
 
     async fn put(&self, key: impl AsRef<str>, data: Vec<u8>) -> Result<()> {
@@ -86,7 +95,12 @@ impl KVStore for DynamoDBArchive {
             .wrap_err_with(|| format!("Failed to build put request, key: {}", key.as_ref()))?;
         let request = WriteRequest::builder().put_request(put_request).build();
 
-        self.upload_to_db(vec![request]).await
+        let start = Instant::now();
+        self.upload_to_db(vec![request]).await.write_put_metrics(
+            start.elapsed(),
+            KVStoreType::AwsDynamoDB,
+            &self.metrics,
+        )
     }
 
     async fn delete(&self, _key: impl AsRef<str>) -> Result<()> {
@@ -144,10 +158,7 @@ impl DynamoDBArchive {
                 .set_request_items(Some(request_items.clone()))
                 .send()
                 .await
-                .wrap_err_with(|| {
-                    inc_err(&self.metrics);
-                    format!("Request keys (0x stripped in req): {:?}", &batch)
-                })?;
+                .wrap_err_with(|| format!("Request keys (0x stripped in req): {:?}", &batch))?;
 
             // Collect retrieved items
             if let Some(mut responses) = response.responses {
@@ -162,18 +173,13 @@ impl DynamoDBArchive {
                 if unprocessed.is_empty() {
                     break;
                 }
-                let response_retry = retry(|| async {
-                    self.client
-                        .batch_get_item()
-                        .set_request_items(Some(unprocessed.clone()))
-                        .send()
-                        .await
-                        .wrap_err_with(|| {
-                            inc_err(&self.metrics);
-                            "Failed to get unprocessed keys"
-                        })
-                })
-                .await?;
+                let response_retry = self
+                    .client
+                    .batch_get_item()
+                    .set_request_items(Some(unprocessed.clone()))
+                    .send()
+                    .await
+                    .wrap_err_with(|| "Failed to get unprocessed keys")?;
 
                 if let Some(mut responses_retry) = response_retry.responses {
                     if let Some(items) = responses_retry.remove(&self.table) {
@@ -184,15 +190,13 @@ impl DynamoDBArchive {
             }
         }
 
-        self.metrics.counter(AWS_DYNAMODB_READS, keys.len() as u64);
         Ok(results)
     }
 
     async fn upload_to_db(&self, values: Vec<WriteRequest>) -> Result<()> {
-        if values.len() > 25 {
-            panic!("Batch size larger than limit = 25")
+        if values.len() > Self::WRITE_BATCH_SIZE {
+            panic!("Batch size larger than limit = {}", Self::WRITE_BATCH_SIZE)
         }
-        let num_writes = values.len();
 
         let _permit = self.semaphore.acquire().await.expect("semaphore dropped");
         let mut batch_write: HashMap<String, Vec<WriteRequest>> = HashMap::new();
@@ -204,10 +208,7 @@ impl DynamoDBArchive {
             .set_request_items(Some(batch_write.clone()))
             .send()
             .await
-            .wrap_err_with(|| {
-                inc_err(&self.metrics);
-                format!("Failed to upload to table {}. Retrying...", self.table)
-            })?;
+            .wrap_err_with(|| format!("Failed to upload to table {}", self.table))?;
 
         // Check for unprocessed items
         if let Some(unprocessed) = response.unprocessed_items() {
@@ -220,7 +221,6 @@ impl DynamoDBArchive {
             }
         }
 
-        self.metrics.counter(AWS_DYNAMODB_WRITES, num_writes as u64);
         Ok(())
     }
 }
@@ -239,8 +239,4 @@ fn extract_kv_from_map(mut item: HashMap<String, AttributeValue>) -> Option<(Str
         }
         _ => None,
     }
-}
-
-fn inc_err(metrics: &Metrics) {
-    metrics.counter(AWS_DYNAMODB_ERRORS, 1);
 }

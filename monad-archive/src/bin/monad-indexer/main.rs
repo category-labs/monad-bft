@@ -1,6 +1,7 @@
 use clap::Parser;
 use monad_archive::{
-    model::logs_index::LogsIndexArchiver, prelude::*, workers::index_worker::index_worker,
+    cli::set_source_and_sink_metrics, model::logs_index::LogsIndexArchiver, prelude::*,
+    workers::index_worker::index_worker,
 };
 use tracing::{info, Level};
 
@@ -20,6 +21,7 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|| args.archive_sink.replica_name()),
         Duration::from_secs(15),
     )?;
+    set_source_and_sink_metrics(&args.archive_sink, &args.block_data_source, &metrics);
 
     let block_data_reader = args.block_data_source.build(&metrics).await?;
     let tx_index_archiver = args

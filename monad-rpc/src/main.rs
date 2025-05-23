@@ -169,7 +169,13 @@ async fn main() -> std::io::Result<()> {
     let archive_reader = match (&args.mongo_db_name, &args.mongo_url) {
         (Some(db_name), Some(url)) => {
             info!(url, db_name, "Initializing MongoDB archive reader");
-            match ArchiveReader::init_mongo_reader(url.clone(), db_name.clone()).await {
+            match ArchiveReader::init_mongo_reader(
+                url.clone(),
+                db_name.clone(),
+                monad_archive::prelude::Metrics::none(),
+            )
+            .await
+            {
                 Ok(mongo_reader) => {
                     let has_aws_fallback = aws_archive_reader.is_some();
                     info!(

@@ -49,7 +49,7 @@ pub async fn bft_block_archive_worker(
         } else {
             info!(num_to_upload)
         }
-        metrics.gauge("bft_blocks_uploaded", uploaded.len() as u64);
+        metrics.gauge(MetricNames::BFT_BLOCKS_UPLOADED, uploaded.len() as u64);
     }
 }
 

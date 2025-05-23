@@ -91,7 +91,7 @@ async fn recheck(model: &CheckerModel, metrics: &Metrics) -> Result<()> {
 
         // Update metrics with current fault counts
         metrics.periodic_gauge_with_attrs(
-            "replica_faults_total",
+            MetricNames::REPLICA_FAULTS_TOTAL,
             total_faults.len() as u64,
             vec![KeyValue::new("replica", replica.to_owned())],
         );
@@ -103,7 +103,7 @@ async fn recheck(model: &CheckerModel, metrics: &Metrics) -> Result<()> {
 
         for (fault, count) in &grouped_by_faults {
             metrics.periodic_gauge_with_attrs(
-                "replica_faults_by_kind",
+                MetricNames::REPLICA_FAULTS_BY_KIND,
                 *count,
                 vec![
                     KeyValue::new("replica", replica.to_owned()),

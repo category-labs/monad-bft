@@ -2,6 +2,7 @@
 
 use clap::Parser;
 use monad_archive::{
+    cli::set_source_and_sink_metrics,
     prelude::*,
     workers::{
         bft_block_archiver::bft_block_archive_worker, block_archive_worker::archive_worker,
@@ -20,12 +21,14 @@ async fn main() -> Result<()> {
     info!(?args, "Cli Arguments: ");
 
     let metrics = Metrics::new(
-        args.otel_endpoint,
+        args.otel_endpoint.clone(),
         "monad-archiver",
         args.otel_replica_name_override
+            .clone()
             .unwrap_or_else(|| args.archive_sink.replica_name()),
         Duration::from_secs(15),
     )?;
+    set_source_and_sink_metrics(&args.archive_sink, &args.block_data_source, &metrics);
 
     let archive_writer = args.archive_sink.build_block_data_archive(&metrics).await?;
     let block_data_source = args.block_data_source.build(&metrics).await?;

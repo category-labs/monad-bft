@@ -19,6 +19,29 @@ use tokio_retry::{
 use self::{cloud_proxy::CloudProxyReader, memory::MemoryStorage, mongo::MongoDbStorage};
 use crate::prelude::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KVStoreType {
+    AwsS3,
+    AwsDynamoDB,
+    Mongo,
+    Memory,
+    CloudProxy,
+    TrieDb,
+}
+
+impl KVStoreType {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            KVStoreType::AwsS3 => "aws_s3",
+            KVStoreType::AwsDynamoDB => "aws_dynamodb",
+            KVStoreType::Mongo => "mongo",
+            KVStoreType::Memory => "memory",
+            KVStoreType::CloudProxy => "cloud_proxy",
+            KVStoreType::TrieDb => "triedb",
+        }
+    }
+}
+
 #[enum_dispatch(KVStore, KVReader)]
 #[derive(Clone)]
 pub enum KVStoreErased {
@@ -125,5 +148,160 @@ impl RetryTimeout {
         Self {
             cutoff: Instant::now() + Duration::from_millis(ms),
         }
+    }
+}
+
+trait MetricsResultExt {
+    fn write_put_metrics(
+        self,
+        duration: Duration,
+        kvstore_type: KVStoreType,
+        metrics: &Metrics,
+    ) -> Self;
+    fn write_get_metrics(
+        self,
+        duration: Duration,
+        kvstore_type: KVStoreType,
+        metrics: &Metrics,
+    ) -> Self;
+    fn write_get_metrics_on_err(
+        self,
+        duration: Duration,
+        kvstore_type: KVStoreType,
+        metrics: &Metrics,
+    ) -> Self;
+    fn write_put_metrics_on_err(
+        self,
+        duration: Duration,
+        kvstore_type: KVStoreType,
+        metrics: &Metrics,
+    ) -> Self;
+}
+
+impl<T, E> MetricsResultExt for std::result::Result<T, E> {
+    fn write_put_metrics(
+        self,
+        duration: Duration,
+        kvstore_type: KVStoreType,
+        metrics: &Metrics,
+    ) -> Self {
+        kvstore_put_metrics(duration, self.is_ok(), kvstore_type, metrics);
+        self
+    }
+
+    fn write_get_metrics(
+        self,
+        duration: Duration,
+        kvstore_type: KVStoreType,
+        metrics: &Metrics,
+    ) -> Self {
+        kvstore_get_metrics(duration, self.is_ok(), kvstore_type, metrics);
+        self
+    }
+
+    fn write_get_metrics_on_err(
+        self,
+        duration: Duration,
+        kvstore_type: KVStoreType,
+        metrics: &Metrics,
+    ) -> Self {
+        if self.is_err() {
+            kvstore_get_metrics(duration, false, kvstore_type, metrics);
+        }
+        self
+    }
+
+    fn write_put_metrics_on_err(
+        self,
+        duration: Duration,
+        kvstore_type: KVStoreType,
+        metrics: &Metrics,
+    ) -> Self {
+        if self.is_err() {
+            kvstore_put_metrics(duration, false, kvstore_type, metrics);
+        }
+        self
+    }
+}
+
+fn kvstore_put_metrics(
+    duration: Duration,
+    is_success: bool,
+    kvstore_type: KVStoreType,
+    metrics: &Metrics,
+) {
+    let attrs = &[opentelemetry::KeyValue::new(
+        "kvstore_type",
+        kvstore_type.as_str(),
+    )];
+    metrics.histogram_with_attrs(
+        MetricNames::KV_STORE_PUT_DURATION_MS,
+        duration.as_millis() as f64,
+        attrs,
+    );
+    if is_success {
+        metrics.counter_with_attrs(MetricNames::KV_STORE_PUT_SUCCESS, 1, attrs);
+    } else {
+        metrics.counter_with_attrs(MetricNames::KV_STORE_PUT_FAILURE, 1, attrs);
+    }
+
+    // Legacy metrics for backwards compatibility
+    match kvstore_type {
+        KVStoreType::AwsS3 => {
+            if is_success {
+                metrics.inc_counter(MetricNames::AWS_S3_WRITES);
+            } else {
+                metrics.inc_counter(MetricNames::AWS_S3_ERRORS);
+            }
+        }
+        KVStoreType::AwsDynamoDB => {
+            if is_success {
+                metrics.inc_counter(MetricNames::AWS_DYNAMODB_WRITES);
+            } else {
+                metrics.inc_counter(MetricNames::AWS_DYNAMODB_ERRORS);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn kvstore_get_metrics(
+    duration: Duration,
+    is_success: bool,
+    kvstore_type: KVStoreType,
+    metrics: &Metrics,
+) {
+    let attrs = &[opentelemetry::KeyValue::new(
+        "kvstore_type",
+        kvstore_type.as_str(),
+    )];
+    metrics.histogram_with_attrs(
+        MetricNames::KV_STORE_GET_DURATION_MS,
+        duration.as_millis() as f64,
+        attrs,
+    );
+    if is_success {
+        metrics.counter_with_attrs(MetricNames::KV_STORE_GET_SUCCESS, 1, attrs);
+    } else {
+        metrics.counter_with_attrs(MetricNames::KV_STORE_GET_FAILURE, 1, attrs);
+    }
+
+    // Legacy metrics for backwards compatibility
+    match kvstore_type {
+        KVStoreType::AwsS3 => {
+            if is_success {
+                metrics.inc_counter(MetricNames::AWS_S3_READS);
+            } else {
+                metrics.inc_counter(MetricNames::AWS_S3_ERRORS);
+            }
+        }
+        KVStoreType::AwsDynamoDB => {
+            if is_success {
+                metrics.inc_counter(MetricNames::AWS_DYNAMODB_READS);
+            } else {
+                metrics.inc_counter(MetricNames::AWS_DYNAMODB_ERRORS);
+            }
+        }
+        _ => {}
     }
 }

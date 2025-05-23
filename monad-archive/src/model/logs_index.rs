@@ -264,6 +264,7 @@ mod tests {
             &format!("mongodb://localhost:{}", container.port),
             "archive-db",
             Some(100_000),
+            Metrics::none(),
         )
         .await?;
         let indexer = TxIndexArchiver::new(

@@ -8,7 +8,10 @@ use mongodb::{
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 
-use crate::prelude::*;
+use crate::{
+    kvstore::{KVStoreType, MetricsResultExt},
+    prelude::*,
+};
 
 const MAX_CONNECTION_POOL_SIZE: u32 = 50;
 const CHUNK_SIZE: usize = 1024 * 1024 * 15; // 15MB
@@ -19,6 +22,7 @@ pub struct MongoDbStorage {
     pub(crate) collection: Collection<KeyValueDocument>,
     pub db_name: String,
     name: String,
+    metrics: Metrics,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -77,6 +81,7 @@ impl MongoDbStorage {
         connection_string: &str,
         database: &str,
         create_with_capped_size: Option<u64>,
+        metrics: Metrics,
     ) -> Result<Self> {
         trace!(
             "Creating MongoDB index store with connection: {}, database: {}",
@@ -88,6 +93,7 @@ impl MongoDbStorage {
             database,
             "tx_index",
             create_with_capped_size,
+            metrics,
         )
         .await
     }
@@ -96,6 +102,7 @@ impl MongoDbStorage {
         connection_string: &str,
         database: &str,
         create_with_capped_size: Option<u64>,
+        metrics: Metrics,
     ) -> Result<Self> {
         trace!(
             "Creating MongoDB block store with connection: {}, database: {}",
@@ -107,6 +114,7 @@ impl MongoDbStorage {
             database,
             "block_level",
             create_with_capped_size,
+            metrics,
         )
         .await
     }
@@ -116,6 +124,7 @@ impl MongoDbStorage {
         database: &str,
         collection_name: &str,
         create_with_capped_size: Option<u64>,
+        metrics: Metrics,
     ) -> Result<Self> {
         info!(
             "Initializing MongoDB connection to {}/{}",
@@ -178,6 +187,7 @@ impl MongoDbStorage {
             collection,
             db_name: database.to_string(),
             name: format!("mongodb://{database}/{collection_name}"),
+            metrics,
         };
 
         info!("MongoDB storage initialized: {}", storage.name);
@@ -187,27 +197,40 @@ impl MongoDbStorage {
 
 impl KVReader for MongoDbStorage {
     async fn get(&self, key: &str) -> Result<Option<Bytes>> {
+        let start = Instant::now();
         match self
             .collection
             .find_one(doc! { "_id": key })
             .await
-            .wrap_err("MongoDB get operation failed")?
+            .wrap_err("MongoDB get operation failed")
+            .write_get_metrics_on_err(start.elapsed(), KVStoreType::Mongo, &self.metrics)?
         {
-            Some(doc) => doc.resolve(&self.collection).await.map(|x| Some(x.1)),
-            None => Ok(None),
+            Some(doc) => doc
+                .resolve(&self.collection)
+                .await
+                .map(|x| Some(x.1))
+                .write_get_metrics(start.elapsed(), KVStoreType::Mongo, &self.metrics),
+
+            None => Ok(None).write_get_metrics(start.elapsed(), KVStoreType::Mongo, &self.metrics),
         }
     }
 
     async fn bulk_get(&self, keys: &[String]) -> Result<HashMap<String, Bytes>> {
-        self.collection
+        let start = Instant::now();
+        let find_result = self
+            .collection
             .find(doc! { "_id": {"$in": keys} })
             .await
+            .write_get_metrics(start.elapsed(), KVStoreType::Mongo, &self.metrics)
             .wrap_err("MongoDB get operation failed")?
-            .map(|x| x.wrap_err("MongoDB get operation failed"))
+            .map(|x| x.wrap_err("MongoDB get operation failed"));
+
+        find_result
             .and_then(|x| async { x.resolve(&self.collection).await })
             .try_collect::<HashMap<String, Bytes>>()
             .await
             .wrap_err("MongoDB bulk_get operation failed")
+            .write_get_metrics(start.elapsed(), KVStoreType::Mongo, &self.metrics)
     }
 }
 
@@ -217,6 +240,7 @@ impl KVStore for MongoDbStorage {
     }
 
     async fn put(&self, key: impl AsRef<str>, data: Vec<u8>) -> Result<()> {
+        let start = Instant::now();
         let doc = if data.len() > CHUNK_SIZE {
             for (chunk_num, chunk) in data.chunks(CHUNK_SIZE).enumerate() {
                 let doc = KeyValueDocument {
@@ -234,7 +258,8 @@ impl KVStore for MongoDbStorage {
                     .await
                     .wrap_err_with(|| {
                         format!("MongoDB put operation failed for chunk {}", chunk_num)
-                    })?;
+                    })
+                    .write_put_metrics_on_err(start.elapsed(), KVStoreType::Mongo, &self.metrics)?;
             }
 
             KeyValueDocument {
@@ -257,7 +282,8 @@ impl KVStore for MongoDbStorage {
             .replace_one(doc! { "_id": key.as_ref() }, doc)
             .upsert(true)
             .await
-            .wrap_err("MongoDB put operation failed")?;
+            .wrap_err("MongoDB put operation failed")
+            .write_put_metrics(start.elapsed(), KVStoreType::Mongo, &self.metrics)?;
 
         Ok(())
     }
@@ -398,6 +424,7 @@ pub mod mongo_tests {
             "test_db",
             "test_collection",
             Some(5), // 5gb cap
+            Metrics::none(),
         )
         .await?;
 

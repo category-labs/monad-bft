@@ -70,9 +70,9 @@ pub async fn index_worker(
             start_block,
             end_block, latest_source, "Indexing group of blocks"
         );
-        metrics.gauge("source_latest_block_num", latest_source);
-        metrics.gauge("end_block_number", end_block);
-        metrics.gauge("start_block_number", start_block);
+        metrics.gauge(MetricNames::SOURCE_LATEST_BLOCK_NUM, latest_source);
+        metrics.gauge(MetricNames::END_BLOCK_NUMBER, end_block);
+        metrics.gauge(MetricNames::START_BLOCK_NUMBER, start_block);
 
         let latest_indexed = index_blocks(
             &block_data_reader,
@@ -130,7 +130,7 @@ async fn index_blocks(
         num_txs_indexed,
         "Finished indexing range",
     );
-    metrics.counter("txs_indexed", num_txs_indexed as u64);
+    metrics.counter(MetricNames::TXS_INDEXED, num_txs_indexed as u64);
 
     if new_latest_indexed != 0 {
         checkpoint_latest(indexer, new_latest_indexed).await;

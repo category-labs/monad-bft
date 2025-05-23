@@ -46,14 +46,18 @@ impl ArchiveReader {
         reader
     }
 
-    pub async fn init_mongo_reader(url: String, db: String) -> Result<ArchiveReader> {
+    pub async fn init_mongo_reader(
+        url: String,
+        db: String,
+        metrics: Metrics,
+    ) -> Result<ArchiveReader> {
         info!(url, db, "Initializing MongoDB ArchiveReader");
         trace!("Creating MongoDB block store");
-        let block_store = MongoDbStorage::new_block_store(&url, &db, None).await?;
+        let block_store = MongoDbStorage::new_block_store(&url, &db, None, metrics.clone()).await?;
         let block_data_reader = BlockDataArchive::new(block_store);
 
         trace!("Creating MongoDB index store");
-        let index_store = MongoDbStorage::new_index_store(&url, &db, None).await?;
+        let index_store = MongoDbStorage::new_index_store(&url, &db, None, metrics).await?;
         let index_reader = IndexReaderImpl::new(index_store, block_data_reader.clone());
 
         trace!("Creating MongoDB log index store");

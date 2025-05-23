@@ -35,8 +35,8 @@ pub async fn checker_worker(
         let latest_to_check = model.latest_to_check().await?;
         let required_blocks = next_to_check + min_lag_from_tip + CHUNK_SIZE;
 
-        metrics.gauge("latest_to_check", latest_to_check);
-        metrics.gauge("next_to_check", next_to_check);
+        metrics.gauge(MetricNames::LATEST_TO_CHECK, latest_to_check);
+        metrics.gauge(MetricNames::NEXT_TO_CHECK, next_to_check);
 
         if latest_to_check < required_blocks {
             info!(
