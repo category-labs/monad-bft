@@ -89,7 +89,7 @@ where
             peer_disc_full_nodes: FullNodes::new(Vec::new()),
             rng: ChaCha8Rng::seed_from_u64(42), // useful for tests
             curr_round: Round::MIN,
-            curr_group: Group::default(), // new_empty_group(GENESIS_ROUND)?
+            curr_group: Group::default(),
         }
     }
 
@@ -164,9 +164,9 @@ where
                         .to_finalized_group(self.validator_node_id);
                     return;
                 }
-                // The next group doesn't match the new round. Is this possible
-                // when there are gaps in the round sequence?
-                tracing::error!(
+                // The next group is not yet scheduled to start. This can happen
+                // when there gaps in the round sequence.
+                tracing::debug!(
                     "No group scheduled for RaptorcastSecondary \
                     round {:?}, next group is {:?}",
                     round,
@@ -178,6 +178,11 @@ where
                 // Might be due to gap, unexpectedly long delays or Round 0/
                 // We currently have an empty group for some rounds while we
                 // allow invites for a future group to complete.
+                tracing::debug!(
+                    "No group scheduled for RaptorcastSecondary \
+                    round {:?} nor any other future round yet.",
+                    round
+                );
             }
         }
         // Fallback group for error cases.
@@ -245,7 +250,7 @@ where
                 }
             }
             _ => {
-                tracing::error!(
+                tracing::debug!(
                     "RaptorCastSecondary publisher received \
                     unexpected message: {:?}",
                     msg
@@ -254,8 +259,12 @@ where
         }
     }
 
-    pub fn get_current_raptorcast_group(&self) -> &Group<ST> {
-        &self.curr_group
+    pub fn get_current_raptorcast_group(&self) -> Option<&Group<ST>> {
+        if self.curr_group.get_round_span().contains(self.curr_round) {
+            Some(&self.curr_group)
+        } else {
+            None
+        }
     }
 
     pub fn update_always_ask_full_nodes(
@@ -363,7 +372,6 @@ where
     }
 
     pub fn is_locked(&self) -> bool {
-        // self.full_nodes_candidates.list.is_empty()
         self.next_invite_tp == TimePoint::MAX
     }
 
@@ -862,9 +870,12 @@ mod tests {
         });
     }
 
-    fn get_curr_rc_group(publisher: &Publisher<ST>) -> &Vec<NodeIdST<ST>> {
-        let group = publisher.get_current_raptorcast_group();
-        group.get_other_peers()
+    fn get_curr_rc_group(publisher: &Publisher<ST>) -> Vec<NodeIdST<ST>> {
+        if let Some(group) = publisher.get_current_raptorcast_group() {
+            group.get_other_peers().clone()
+        } else {
+            Vec::new()
+        }
     }
 
     // This is a mock of how the primary raptorcast instance would represent
@@ -995,7 +1006,7 @@ mod tests {
         // We should be able to call this during the initial state.
         // Note that although we have some initial always_ask_full_nodes, we
         // haven't invited them yet to any group, so current group must be empty
-        assert_eq!(v0_fsm.get_current_raptorcast_group().size_excl_self(), 0);
+        assert_eq!(get_curr_rc_group(&v0_fsm).len(), 0);
 
         // Peer discovery gives us some new full-nodes to chose from.
         v0_fsm.upsert_peer_disc_full_nodes(FullNodes::new(vec![
@@ -1015,7 +1026,7 @@ mod tests {
             .expect("FSM should have returned invites to be sent");
 
         // We should still not have a raptor-cast group at this point.
-        assert_eq!(v0_fsm.get_current_raptorcast_group().size_excl_self(), 0);
+        assert_eq!(get_curr_rc_group(&v0_fsm).len(), 0);
 
         println!("V0 now: {}", dump_pub_sched(&v0_fsm));
 
@@ -1045,7 +1056,7 @@ mod tests {
 
         // Advance to next round, without receiving inviting responses yet
         // Should still not have any raptorcast group.
-        assert_eq!(v0_fsm.get_current_raptorcast_group().size_excl_self(), 0);
+        assert_eq!(get_curr_rc_group(&v0_fsm).len(), 0);
 
         // Executing for same round 1 should yield nothing more.
         let res = v0_fsm.enter_round_and_step_until(Round(1));
@@ -1076,7 +1087,7 @@ mod tests {
             .expect("FSM should have returned invites to be sent");
 
         // We should still not have a raptor-cast group at this point.
-        assert_eq!(v0_fsm.get_current_raptorcast_group().size_excl_self(), 0);
+        assert_eq!(get_curr_rc_group(&v0_fsm).len(), 0);
 
         // Verify that it is an invite message the FSM wants to send
         if let FullNodesGroupMessage::PrepareGroup(invite_msg) = group_msg {
@@ -1149,7 +1160,7 @@ mod tests {
         println!("V0 now: {}", dump_pub_sched(&v0_fsm));
 
         // We have a raptorcast group starting at Round(6) but we are still at 3
-        assert_eq!(v0_fsm.get_current_raptorcast_group().size_excl_self(), 0);
+        assert_eq!(get_curr_rc_group(&v0_fsm).len(), 0);
 
         // Should have nothing more to do for round 5
         let res = v0_fsm.enter_round_and_step_until(Round(5));
@@ -1164,7 +1175,7 @@ mod tests {
             .expect("FSM should have returned invites for 2nd group");
 
         // We should still not have a raptor-cast group at this point.
-        assert_eq!(v0_fsm.get_current_raptorcast_group().size_excl_self(), 0);
+        assert_eq!(get_curr_rc_group(&v0_fsm).len(), 0);
 
         // Verify that it is an invite message the FSM wants to send
         if let FullNodesGroupMessage::PrepareGroup(invite_msg) = group_msg {
@@ -1191,7 +1202,7 @@ mod tests {
         // We should also have nothing scheduled for this round
         let res = v0_fsm.enter_round_and_step_until(Round(7));
         assert!(res.is_none());
-        assert_eq!(v0_fsm.get_current_raptorcast_group().size_excl_self(), 0);
+        assert_eq!(get_curr_rc_group(&v0_fsm).len(), 0);
 
         // Replace always-ask full-nodes. Due to look-ahead of 8, this should
         // not affect groups 1, 2, since they were generated during rounds
@@ -1209,7 +1220,7 @@ mod tests {
 
         // Finally, the Raptorcast group for 1st group1 @ rounds [8, 13)
         assert!(equal_node_vec(
-            get_curr_rc_group(&v0_fsm),
+            &get_curr_rc_group(&v0_fsm),
             &node_ids_vec![11, 13]
         ));
 

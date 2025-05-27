@@ -284,6 +284,17 @@ where
                             );
                             return None;
                         }
+                        if confirm_msg.peers.len() > confirm_msg.prepare.max_group_size {
+                            tracing::warn!(
+                                "RaptorcastSecondary ignoring ConfirmGroup that \
+                                is larger ({}) than the promised max_group_size ({}). \
+                                Message details: {:?}",
+                                confirm_msg.peers.len(),
+                                confirm_msg.prepare.max_group_size,
+                                confirm_msg
+                            );
+                            return None;
+                        }
                         if confirm_msg.peers.contains(&self.client_node_id) {
                             let group = GroupAsClient::new_fullnode_group(
                                 confirm_msg.peers,
@@ -304,14 +315,14 @@ where
                     } else {
                         tracing::warn!(
                             "RaptorcastSecondary ignoring ConfirmGroup from \
-                            unregconized validator id: {:?}",
+                            unrecognized validator id: {:?}",
                             confirm_msg
                         );
                     }
                 } else {
                     tracing::warn!(
                         "RaptorcastSecondary Ignoring confirmation message \
-                        for unregconized start round: {:?}",
+                        for unrecognized start round: {:?}",
                         confirm_msg
                     );
                 }

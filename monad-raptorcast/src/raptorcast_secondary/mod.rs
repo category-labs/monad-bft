@@ -35,7 +35,7 @@ use super::{
     message::OutboundRouterMessage,
     udp,
     util::{BuildTarget, FullNodes, Group},
-    PeerManagerResponse, RaptorCastEvent,
+    RaptorCastEvent,
 };
 
 // We're planning to merge monad-node (validator binary) and monad-full-node
@@ -222,39 +222,7 @@ where
         group_msg: FullNodesGroupMessage<ST>,
     ) -> FullNodesGroupMessage<ST> {
         group_msg
-        //match group_msg {
-        //    FullNodesGroupMessage::ConfirmGroup(inner_msg) => {
-        //        let mut msg = inner_msg;
-        //        let mut records = Vec::new();
-        //        for peer in msg.peers.iter() {
-        //            if let Some(addr_any) = self.known_addresses.get(peer) {
-        //                let address: SocketAddrV4 = match addr_any {
-        //                    SocketAddr::V4(addr) => *addr,
-        //                    SocketAddr::V6(_) => {
-        //                        tracing::warn!(
-        //                            "RaptorCastSecondary only have an Ipv6 address for peer {:?}, skipping.",
-        //                            peer
-        //                        );
-        //                        continue;
-        //                    }
-        //                };
-        //                let record = MonadNameRecord::<ST> {
-        //                    name_record: NameRecord { address, seq: 0 },
-        //                    signature: *peer, // FIXME: how to fill in this field?
-        //                };
-        //                records.push(record);
-        //            } else {
-        //                tracing::error!(
-        //                    "RaptorCastSecondary can't find a name record for {:?}",
-        //                    peer
-        //                );
-        //            }
-        //        }
-        //        msg.name_records = Some(records);
-        //        FullNodesGroupMessage::ConfirmGroup(msg)
-        //    }
-        //    _ => group_msg,
-        //}
+        // TODO: ask peer recovery for ConfirmGroup::name_records
     }
 }
 
