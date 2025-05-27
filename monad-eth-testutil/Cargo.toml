@@ -34,6 +34,7 @@ alloy-rpc-types-eth = { workspace = true }
 alloy-rpc-types-trace = { workspace = true }
 alloy-sol-macro = { workspace = true }
 alloy-sol-types = { workspace = true }
+alloy-provider = { workspace = true, features = ["ws"] }
 alloy-transport = { workspace = true }
 alloy-transport-http = { workspace = true, features = ["reqwest-rustls-tls"] }
 clap = { workspace = true, features = ["derive"] }

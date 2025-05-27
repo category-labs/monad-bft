@@ -6,8 +6,9 @@ use std::{
 use alloy_json_rpc::RpcError;
 use alloy_network::TransactionResponse;
 use alloy_primitives::{Address, BlockNumber, Bytes, LogData, U256, U64};
+use alloy_provider::{Provider, ProviderBuilder, WsConnect};
 use alloy_rpc_client::{ClientBuilder, ReqwestClient};
-use alloy_rpc_types::{Filter, TransactionRequest};
+use alloy_rpc_types::{Block, Filter, TransactionRequest};
 use alloy_rpc_types_eth::BlockTransactionHashes;
 use alloy_rpc_types_trace::geth::{
     GethDebugBuiltInTracerType, GethDebugTracerType, GethDebugTracingOptions, GethTrace,
@@ -17,6 +18,7 @@ use futures::{stream::FuturesUnordered, StreamExt};
 use itertools::Itertools;
 use rand::seq::IteratorRandom;
 use tokio::{
+    sync::mpsc::Receiver,
     task::JoinHandle,
     time::{Duration, Instant},
 };
@@ -84,6 +86,12 @@ pub struct Config {
     pub historical_block_window: u64,
     #[arg(long, global = true, default_value_t = 15)]
     pub max_distance_from_tip: u64,
+    /// If a websocket url is provided, then rpc-request-generator will listen to new blocks from the websocket stream
+    #[arg(long, global = true)]
+    pub ws_url: Option<Url>,
+    /// Disables indexing historical blocks
+    #[arg(long, global = true)]
+    pub disable_historical_blocks: bool,
 }
 
 struct TipRefresher {
@@ -134,11 +142,94 @@ impl TipRefresher {
     }
 }
 
+struct WebSocketStream {
+    ws_url: Url,
+}
+
+impl WebSocketStream {
+    fn new(ws_url: Url) -> Self {
+        Self { ws_url }
+    }
+
+    // Listens to new blocks from the websocket stream.
+    // Accepts a receiver that gets blocks from rpc requests so we can compare
+    async fn run(&self, recv: &mut Receiver<Block>) {
+        // Create a websocket stream to listen to new blocks
+        let ws = WsConnect::new(self.ws_url.clone());
+        let provider = ProviderBuilder::new()
+            .on_ws(ws)
+            .await
+            .expect("failed to connect to websocket server");
+        let ws_sub = provider
+            .subscribe_blocks()
+            .await
+            .expect("failed to subscribe to blocks");
+        let mut stream = ws_sub.into_stream();
+
+        // The rpc is faster than the stream, so we need to buffer the blocks.
+        // The receiver will buffer, and we will compare the block from the stream with the first block from the receiver.
+        loop {
+            let Some(header): Option<alloy_rpc_types::Header> = stream.next().await else {
+                continue;
+            };
+
+            let rpc_block = recv.recv().await.take().expect("rpc block not found");
+
+            let (ws_header, mut rpc_header) = if header.number != rpc_block.header.number {
+                info!(
+                    rpc = rpc_block.header.number,
+                    ws = header.number,
+                    "block number mismatch"
+                );
+
+                // If stream is ahead, take items from rpc recv.
+                let rpc_block = if header.number > rpc_block.header.number {
+                    let block = loop {
+                        let block = recv.recv().await.take().expect("rpc block not found");
+                        if block.header.number == header.number {
+                            break block;
+                        }
+                    };
+                    block
+                } else {
+                    rpc_block
+                };
+
+                // If rpc is ahead, take items from stream.
+                let ws_block = if header.number < rpc_block.header.number {
+                    let header = loop {
+                        let header: alloy_rpc_types::Header =
+                            stream.next().await.take().expect("ws block not found");
+                        if header.number == rpc_block.header.number {
+                            break header;
+                        }
+                    };
+                    header
+                } else {
+                    header
+                };
+
+                (ws_block, rpc_block.header)
+            } else {
+                (header, rpc_block.header)
+            };
+
+            info!(
+                "comparing websocket header with rpc header at height {}",
+                &ws_header.number
+            );
+            rpc_header.size = Some(U256::ZERO);
+            rpc_header.parent_beacon_block_root = None;
+            assert_eq!(ws_header, rpc_header);
+        }
+    }
+}
+
 struct RpcRequestGenerator {
     rpc_url: Url,
+    ws_url: Option<Url>,
     requests_per_new_block: u64,
-    historical_blocks_per_round: u64,
-    historical_block_window: u64,
+    historical_block_indexing: Option<HistoricalBlockIndexing>,
     max_distance_from_tip: u64,
     pending_indexing: BTreeMap<BlockNumber, JoinHandle<()>>,
     uniq_addrs: BTreeSet<Address>,
@@ -152,20 +243,28 @@ struct BlockIndexError {
     error: RpcError<alloy_transport::TransportErrorKind>,
 }
 
+struct HistoricalBlockIndexing {
+    historical_blocks_per_round: u64,
+    historical_block_window: u64,
+}
+
 impl RpcRequestGenerator {
-    fn new(
-        rpc_url: Url,
-        requests_per_new_block: u64,
-        historical_blocks_per_round: u64,
-        historical_block_window: u64,
-        max_distance_from_tip: u64,
-    ) -> Self {
+    fn new(cfg: Config) -> Self {
+        let historical_block_indexing = if cfg.disable_historical_blocks {
+            None
+        } else {
+            Some(HistoricalBlockIndexing {
+                historical_blocks_per_round: cfg.historical_blocks_per_round,
+                historical_block_window: cfg.historical_block_window,
+            })
+        };
+
         Self {
-            rpc_url,
-            requests_per_new_block,
-            historical_blocks_per_round,
-            historical_block_window,
-            max_distance_from_tip,
+            rpc_url: cfg.rpc_url,
+            ws_url: cfg.ws_url,
+            requests_per_new_block: cfg.requests_per_new_block,
+            historical_block_indexing,
+            max_distance_from_tip: cfg.max_distance_from_tip,
             pending_indexing: Default::default(),
             uniq_addrs: Default::default(),
             total_indexed: 0,
@@ -177,7 +276,7 @@ impl RpcRequestGenerator {
         &mut self,
         block_number: BlockNumber,
         index_done_sender: tokio::sync::mpsc::Sender<
-            Result<(BlockNumber, Vec<Address>), BlockIndexError>,
+            Result<(Block, BlockNumber, Vec<Address>), BlockIndexError>,
         >,
     ) {
         let url = self.rpc_url.clone();
@@ -188,19 +287,26 @@ impl RpcRequestGenerator {
         });
         self.pending_indexing.insert(block_number, join_handle);
 
-        let mut rng = rand::thread_rng();
-        let start_block = (block_number.saturating_sub(self.historical_block_window)).max(1);
-        let historical_blocks = (start_block..block_number)
-            .choose_multiple(&mut rng, self.historical_blocks_per_round as usize);
+        if let Some(historical_block_index) = &self.historical_block_indexing {
+            let mut rng = rand::thread_rng();
+            let start_block = (block_number
+                .saturating_sub(historical_block_index.historical_block_window))
+            .max(1);
 
-        for block_number in historical_blocks {
-            let url = self.rpc_url.clone();
-            let sender = index_done_sender.clone();
-            let requests_per_block = self.requests_per_new_block;
-            let join_handle = tokio::spawn(async move {
-                Self::index_block(url, requests_per_block, block_number, sender).await
-            });
-            self.pending_indexing.insert(block_number, join_handle);
+            let historical_blocks = (start_block..block_number).choose_multiple(
+                &mut rng,
+                historical_block_index.historical_blocks_per_round as usize,
+            );
+
+            for block_number in historical_blocks {
+                let url = self.rpc_url.clone();
+                let sender = index_done_sender.clone();
+                let requests_per_block = self.requests_per_new_block;
+                let join_handle = tokio::spawn(async move {
+                    Self::index_block(url, requests_per_block, block_number, sender).await
+                });
+                self.pending_indexing.insert(block_number, join_handle);
+            }
         }
     }
 
@@ -216,6 +322,13 @@ impl RpcRequestGenerator {
         let mut status_interval = tokio::time::interval(Duration::from_secs(1));
         status_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+        // Configure the websocket stream if enabled
+        let (rpc_block_sender, mut rpc_block_receiver) = tokio::sync::mpsc::channel(32);
+        if let Some(ws_url) = &self.ws_url {
+            let ws_stream = WebSocketStream::new(ws_url.clone());
+            tokio::spawn(async move { ws_stream.run(&mut rpc_block_receiver).await });
+        }
+
         // select on tip refresher channel and completion channel
         loop {
             tokio::select! {
@@ -229,7 +342,10 @@ impl RpcRequestGenerator {
 
                 Some(index_result) = index_done_receiver.recv() => {
                     let block_number = match index_result {
-                        Ok((num, addrs)) => {
+                        Ok((block, num, addrs)) => {
+                            if self.ws_url.is_some() {
+                                rpc_block_sender.send(block).await.expect("rpc block sender failed");
+                            };
                             self.total_indexed += 1;
                             self.uniq_addrs.extend(addrs.into_iter());
                             num
@@ -594,7 +710,7 @@ impl RpcRequestGenerator {
         requests_per_block: u64,
         block_number: BlockNumber,
         result_sender: tokio::sync::mpsc::Sender<
-            Result<(BlockNumber, Vec<Address>), BlockIndexError>,
+            Result<(Block, BlockNumber, Vec<Address>), BlockIndexError>,
         >,
     ) {
         let _drop_timer = DropTimer::start(Duration::from_millis(300), |elapsed| {
@@ -741,7 +857,7 @@ impl RpcRequestGenerator {
         };
 
         assert!(result_sender
-            .send(Ok((block_number, uniq_addrs)))
+            .send(Ok((block, block_number, uniq_addrs)))
             .await
             .is_ok());
     }
@@ -764,12 +880,6 @@ async fn main() {
         .with(EnvFilter::from_default_env());
     tracing::subscriber::set_global_default(subscriber).expect("failed to set logger");
 
-    let mut indexer = RpcRequestGenerator::new(
-        config.rpc_url,
-        config.requests_per_new_block,
-        config.historical_blocks_per_round,
-        config.historical_block_window,
-        config.max_distance_from_tip,
-    );
+    let mut indexer = RpcRequestGenerator::new(config);
     indexer.run().await
 }
