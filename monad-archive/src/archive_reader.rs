@@ -57,7 +57,7 @@ impl ArchiveReader {
         let index_reader = IndexReaderImpl::new(index_store, block_data_reader.clone());
 
         trace!("Creating MongoDB log index store");
-        let log_index = LogsIndexArchiver::from_tx_index_archiver(&index_reader, 50)
+        let log_index = LogsIndexArchiver::from_tx_index_archiver(&index_reader, 50, true)
             .await
             .wrap_err("Failed to create log index reader")?;
 

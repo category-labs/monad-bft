@@ -31,7 +31,7 @@ async fn main() -> Result<()> {
         KVStoreErased::MongoDbStorage(_storage) => {
             info!("Building log index archiver...");
             Some(
-                LogsIndexArchiver::from_tx_index_archiver(&tx_index_archiver, 50)
+                LogsIndexArchiver::from_tx_index_archiver(&tx_index_archiver, 50, false)
                     .await
                     .wrap_err("Failed to create log index reader")?,
             )

@@ -5,6 +5,7 @@ use mongodb::{
     bson::{doc, spec::BinarySubtype, Binary, Bson, Document},
     Collection, IndexModel,
 };
+use tracing::info;
 
 use crate::{
     kvstore::{mongo::KeyValueDocument, retry},
@@ -26,6 +27,7 @@ impl LogsIndexArchiver {
     pub async fn from_tx_index_archiver(
         tx_index_reader: &IndexReaderImpl,
         concurrency: usize,
+        is_reader: bool,
     ) -> Option<Self> {
         let KVReaderErased::MongoDbStorage(mongo_db_storage) = &tx_index_reader.index_store else {
             return None;
@@ -40,13 +42,42 @@ impl LogsIndexArchiver {
             "logs.topic_2": 1,
             "logs.topic_3": 1,
         };
-        collection
-            .create_index(IndexModel::builder().keys(keys).build())
-            .await
-            .inspect_err(|e| {
-                error!("Failed to create index: {e:?}");
-            })
-            .ok()?;
+
+        if is_reader {
+            // For readers, spawn index creation in background to avoid blocking RPC startup
+            // If index creation fails, RPC will respond slowly to eth_getLogs requests when
+            // A) RPC does have eth_getLogs index enabled
+            // B) Indexer successfully creates index asynchronously after RPC startup
+            // Most of the time, if the index hasn't been created already AND it errors, then
+            // it wouldn't have been used anyway / wouldn't have been useful over non-indexed approaches.
+            // The main issue is not failing loudly enough
+            let collection_clone = collection.clone();
+            tokio::spawn(async move {
+                info!("Creating logs index in background for reader");
+                match collection_clone
+                    .create_index(IndexModel::builder().keys(keys).build())
+                    .await
+                {
+                    Err(e) => {
+                        error!("Failed to create index in background: {e:?}");
+                    }
+                    Ok(_) => {
+                        info!("Background logs index creation completed");
+                    }
+                }
+            });
+        } else {
+            // For writers/indexers, block until index is created
+            info!("Creating logs index for writer...");
+            collection
+                .create_index(IndexModel::builder().keys(keys).build())
+                .await
+                .inspect_err(|e| {
+                    error!("Failed to create index: {e:?}");
+                })
+                .ok()?;
+            info!("Logs index creation completed");
+        }
 
         Some(Self {
             collection,
@@ -241,7 +272,7 @@ mod tests {
             1_000_000,
         );
 
-        let logs_index_archiver = LogsIndexArchiver::from_tx_index_archiver(&indexer, 1)
+        let logs_index_archiver = LogsIndexArchiver::from_tx_index_archiver(&indexer, 1, false)
             .await
             .expect("Failed to create logs index archiver");
 
