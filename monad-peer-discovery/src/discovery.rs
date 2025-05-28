@@ -10,7 +10,7 @@ use monad_crypto::certificate_signature::{
 use monad_types::{Epoch, NodeId};
 use rand::{RngCore, SeedableRng, seq::IteratorRandom};
 use rand_chacha::ChaCha8Rng;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::{
     MonadNameRecord, PeerDiscMetrics, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder,
@@ -32,8 +32,11 @@ pub struct PeerInfo<ST: CertificateSignatureRecoverable> {
 
 #[derive(Debug, Clone, Copy)]
 pub struct LookupInfo<ST: CertificateSignatureRecoverable> {
+    // current number of retries, once above prune_threshold, drop this request
     pub num_retries: u32,
+    // receiver of the peer lookup request
     pub receiver: NodeId<CertificateSignaturePubKey<ST>>,
+    // if set to true, peers should return additional nodes other than the target specified
     pub open_discovery: bool,
 }
 
@@ -42,12 +45,17 @@ pub struct PeerDiscovery<ST: CertificateSignatureRecoverable> {
     pub self_record: MonadNameRecord<ST>,
     pub current_epoch: Epoch,
     pub epoch_validators: BTreeMap<Epoch, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
+    // dedicated full nodes passed in from config which will not be pruned
     pub dedicated_full_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
+    // mapping of node IDs to their corresponding name records
     pub peer_info: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, PeerInfo<ST>>,
     pub outstanding_lookup_requests: HashMap<u32, LookupInfo<ST>>,
     pub metrics: PeerDiscMetrics,
+    // duration before sending next ping
     pub ping_period: Duration,
+    // duration before checking min/max watermark and decide to look for more peers or prune peers
     pub refresh_period: Duration,
+    // duration before outstanding pings and lookup requests are dropped
     pub request_timeout: Duration,
     // number of unresponsive pings allowed before being pruned
     pub prune_threshold: u32,
@@ -85,6 +93,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
             PeerDiscoveryCommand<<Self::PeerDiscoveryAlgoType as PeerDiscoveryAlgo>::SignatureType>,
         >,
     ) {
+        debug!("initializing peer discovery");
         assert!(self.ping_period > self.request_timeout);
         assert!(self.max_active_connections > self.min_active_connections);
 
@@ -356,9 +365,7 @@ where
         to: NodeId<CertificateSignaturePubKey<ST>>,
         ping_id: u32,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
-        debug!(?to, ?ping_id, "handling ping timeout");
-        *self.metrics.entry("ping_timeout").or_default() += 1;
-
+        trace!(?to, "ping timeout");
         let cmds = Vec::new();
 
         let Some(peer_entry) = self.peer_info.get_mut(&to) else {
@@ -372,6 +379,8 @@ where
         // record timeout
         if let Some(last_ping) = peer_entry.last_ping {
             if last_ping.id == ping_id {
+                debug!(?to, ?ping_id, "handling ping timeout");
+                *self.metrics.entry("ping_timeout").or_default() += 1;
                 peer_entry.unresponsive_pings += 1;
                 peer_entry.last_ping = None;
             }
@@ -539,16 +548,16 @@ where
         target: NodeId<CertificateSignaturePubKey<ST>>,
         lookup_id: u32,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
-        debug!(?lookup_id, "peer lookup request timeout");
-        *self.metrics.entry("lookup_timeout").or_default() += 1;
+        trace!(?to, "peer lookup request timeout");
 
         let mut cmds = Vec::new();
-
-        // retry lookup request
         let Some(lookup_info) = self.outstanding_lookup_requests.get_mut(&lookup_id) else {
-            debug!("lookup id not found in outstanding lookup requests");
             return cmds;
         };
+
+        // retry lookup request
+        debug!(?to, ?target, "handling peer lookup request timeout");
+        *self.metrics.entry("lookup_timeout").or_default() += 1;
         if lookup_info.num_retries >= self.prune_threshold {
             debug!(
                 ?lookup_id,
@@ -644,6 +653,7 @@ where
                 }
             }
         }
+        trace!("Current peer info: {:?}", self.peer_info);
 
         // if fall below the min active peers, choose a few peers and lookup for new peers
         if self.peer_info.len() < self.min_active_connections {
@@ -652,6 +662,7 @@ where
                 .keys()
                 .cloned()
                 .choose_multiple(&mut self.rng, NUM_LOOKUP_PEERS);
+            debug!(?chosen_peers, "discover more peers");
 
             for peer in chosen_peers {
                 cmds.extend(self.send_peer_lookup_request(peer, self.self_id, true));
@@ -665,18 +676,14 @@ where
     }
 
     fn update_current_epoch(&mut self, epoch: Epoch) -> Vec<PeerDiscoveryCommand<ST>> {
-        debug!(?epoch, "updating current epoch in peer discovery");
-
         let cmds = Vec::new();
-        self.current_epoch = epoch;
 
-        while let Some(entry) = self.epoch_validators.first_entry() {
-            if *entry.key() + Epoch(1) < self.current_epoch {
-                entry.remove();
-            } else {
-                break;
-            }
+        if epoch > self.current_epoch {
+            debug!(?epoch, "updating current epoch in peer discovery");
+            self.current_epoch = epoch;
         }
+        self.epoch_validators
+            .retain(|epoch, _| *epoch + Epoch(1) >= self.current_epoch);
 
         cmds
     }
