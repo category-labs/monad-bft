@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    net::SocketAddr,
+    net::{SocketAddr, SocketAddrV4},
     num::ParseIntError,
     time::{Duration, Instant},
 };
@@ -10,7 +10,8 @@ use bytes::{Bytes, BytesMut};
 use clap::Parser;
 use futures_util::StreamExt;
 use monad_crypto::certificate_signature::{
-    CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey, PubKey,
+    CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
+    CertificateSignatureRecoverable, PubKey,
 };
 use monad_dataplane::udp::DEFAULT_MTU;
 use monad_executor::Executor;
@@ -73,7 +74,7 @@ fn service(
         .map(|keypair| NodeId::new(keypair.pubkey()))
         .collect();
 
-    let known_addresses: HashMap<NodeId<PubKeyType>, SocketAddr> = peers
+    let known_addresses: HashMap<NodeId<PubKeyType>, SocketAddrV4> = peers
         .iter()
         .copied()
         .zip(addresses)
@@ -85,7 +86,7 @@ fn service(
         .copied()
         .map(|peer| {
             let (sender, receiver) =
-                tokio::sync::mpsc::unbounded_channel::<RouterCommand<PubKeyType, MockMessage>>();
+                tokio::sync::mpsc::unbounded_channel::<RouterCommand<SignatureType, MockMessage>>();
             ((peer, sender), receiver)
         })
         .unzip();
@@ -109,15 +110,17 @@ fn service(
             let rx_writer = rx_writer.clone();
             let me = NodeId::new(key.pubkey());
             let all_peers = peers.clone();
-            let server_address = *known_addresses.get(&me).unwrap();
+            let server_address = SocketAddr::V4(*known_addresses.get(&me).unwrap());
             let known_addresses = known_addresses.clone();
 
             rt.spawn(async move {
                 let service_config = RaptorCastConfig {
                     key,
                     full_nodes: Default::default(),
-                    known_addresses,
-                    peer_discovery_builder: NopDiscoveryBuilder::default(),
+                    peer_discovery_builder: NopDiscoveryBuilder {
+                        known_addresses,
+                        ..Default::default()
+                    },
                     redundancy: 2,
                     local_addr: server_address,
                     up_bandwidth_mbps: 1_000,
@@ -240,11 +243,12 @@ impl Deserializable<Bytes> for MockMessage {
 #[derive(Clone, Copy)]
 struct MockEvent<P: PubKey>((NodeId<P>, u32));
 
-impl<P> From<RaptorCastEvent<MockEvent<P>, P>> for MockEvent<P>
+impl<ST> From<RaptorCastEvent<MockEvent<CertificateSignaturePubKey<ST>>, ST>>
+    for MockEvent<CertificateSignaturePubKey<ST>>
 where
-    P: PubKey,
+    ST: CertificateSignatureRecoverable,
 {
-    fn from(value: RaptorCastEvent<MockEvent<P>, P>) -> Self {
+    fn from(value: RaptorCastEvent<MockEvent<CertificateSignaturePubKey<ST>>, ST>) -> Self {
         match value {
             RaptorCastEvent::Message(event) => event,
             RaptorCastEvent::PeerManagerResponse(_peer_manager_response) => {

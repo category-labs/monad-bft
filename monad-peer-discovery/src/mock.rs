@@ -7,26 +7,32 @@ use std::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_executor_glue::PeerEntry;
 use monad_types::{Epoch, NodeId};
 use tracing::debug;
 
 use crate::{
-    PeerDiscMetrics, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryCommand,
-    PeerLookupRequest, PeerLookupResponse, Ping, Pong,
+    MonadNameRecord, PeerDiscMetrics, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder,
+    PeerDiscoveryCommand, PeerLookupRequest, PeerLookupResponse, Ping, Pong,
 };
 
 pub struct NopDiscovery<ST: CertificateSignatureRecoverable> {
+    known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4>,
     metrics: PeerDiscMetrics,
     pd: PhantomData<ST>,
 }
 
 pub struct NopDiscoveryBuilder<ST: CertificateSignatureRecoverable> {
-    pd: PhantomData<ST>,
+    pub known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4>,
+    pub pd: PhantomData<ST>,
 }
 
 impl<ST: CertificateSignatureRecoverable> Default for NopDiscoveryBuilder<ST> {
     fn default() -> Self {
-        Self { pd: PhantomData }
+        Self {
+            known_addresses: HashMap::new(),
+            pd: PhantomData,
+        }
     }
 }
 
@@ -42,6 +48,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for NopDiscov
         >,
     ) {
         let state = NopDiscovery {
+            known_addresses: self.known_addresses,
             metrics: HashMap::new(),
             pd: PhantomData,
         };
@@ -160,14 +167,32 @@ where
         Vec::new()
     }
 
+    fn update_peers(&mut self, peers: Vec<PeerEntry<ST>>) -> Vec<PeerDiscoveryCommand<ST>> {
+        debug!("updating peers");
+
+        for peer in peers {
+            let node_id = NodeId::new(peer.pubkey);
+            self.known_addresses.insert(node_id, peer.addr);
+        }
+
+        Vec::new()
+    }
+
     fn metrics(&self) -> &PeerDiscMetrics {
         &self.metrics
     }
 
-    fn get_sock_addr_by_id(
+    fn get_addr_by_id(&self, id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<SocketAddrV4> {
+        self.known_addresses.get(id).copied()
+    }
+
+    fn get_known_addrs(&self) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4> {
+        self.known_addresses.clone()
+    }
+
+    fn get_name_records(
         &self,
-        _id: &NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
-    ) -> Option<SocketAddrV4> {
-        None
+    ) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<ST>> {
+        HashMap::new()
     }
 }

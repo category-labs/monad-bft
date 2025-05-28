@@ -1,4 +1,4 @@
-use std::{fmt::Debug, net::SocketAddr};
+use std::{fmt::Debug, net::SocketAddrV4};
 
 use alloy_rlp::{encode_list, Decodable, Encodable, Header, RlpDecodable, RlpEncodable};
 use bytes::{BufMut, Bytes, BytesMut};
@@ -29,16 +29,19 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_state_backend::StateBackend;
-use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum, Stake};
+use monad_types::{
+    deserialize_certificate_signature, deserialize_pubkey, serialize_certificate_signature,
+    serialize_pubkey, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum, Stake,
+};
 use serde::{Deserialize, Serialize};
 
 const STATESYNC_NETWORK_MESSAGE_NAME: &str = "StateSyncNetworkMessage";
 
 #[derive(Debug)]
-pub enum RouterCommand<PT: PubKey, OM> {
+pub enum RouterCommand<ST: CertificateSignatureRecoverable, OM> {
     // Publish should not be replayed
     Publish {
-        target: RouterTarget<PT>,
+        target: RouterTarget<CertificateSignaturePubKey<ST>>,
         message: OM,
     },
     PublishToFullNodes {
@@ -47,13 +50,13 @@ pub enum RouterCommand<PT: PubKey, OM> {
     },
     AddEpochValidatorSet {
         epoch: Epoch,
-        validator_set: Vec<(NodeId<PT>, Stake)>,
+        validator_set: Vec<(NodeId<CertificateSignaturePubKey<ST>>, Stake)>,
     },
     UpdateCurrentRound(Epoch, Round),
     GetPeers,
-    UpdatePeers(Vec<KnownPeer<PT>>),
+    UpdatePeers(Vec<PeerEntry<ST>>),
     GetFullNodes,
-    UpdateFullNodes(Vec<NodeId<PT>>),
+    UpdateFullNodes(Vec<NodeId<CertificateSignaturePubKey<ST>>>),
 }
 
 pub trait Message: Clone + Send + Sync {
@@ -138,14 +141,62 @@ pub enum GetMetrics {
     Response(Metrics),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub enum GetPeers<PT: PubKey> {
-    Request,
-    #[serde(bound = "PT: PubKey")]
-    Response(Vec<(NodeId<PT>, SocketAddr)>),
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct PeerEntry<ST: CertificateSignatureRecoverable> {
+    #[serde(serialize_with = "serialize_pubkey::<_, CertificateSignaturePubKey<ST>>")]
+    #[serde(deserialize_with = "deserialize_pubkey::<_, CertificateSignaturePubKey<ST>>")]
+    #[serde(bound = "ST: CertificateSignatureRecoverable")]
+    pub pubkey: CertificateSignaturePubKey<ST>,
+    pub addr: SocketAddrV4,
+
+    #[serde(serialize_with = "serialize_certificate_signature::<_, ST>")]
+    #[serde(deserialize_with = "deserialize_certificate_signature::<_, ST>")]
+    #[serde(bound = "ST: CertificateSignatureRecoverable")]
+    pub signature: ST,
+    pub record_seq_num: u64,
 }
 
-impl<PT: PubKey> Encodable for GetPeers<PT> {
+impl<ST: CertificateSignatureRecoverable> Encodable for PeerEntry<ST> {
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        let enc: [&dyn Encodable; 4] = [
+            &self.pubkey,
+            &self.addr.to_string(),
+            &self.signature,
+            &self.record_seq_num,
+        ];
+        encode_list::<_, dyn Encodable>(&enc, out);
+    }
+}
+
+impl<ST: CertificateSignatureRecoverable> Decodable for PeerEntry<ST> {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+
+        let pubkey = CertificateSignaturePubKey::<ST>::decode(&mut payload)?;
+        let s = <String as Decodable>::decode(buf)?;
+        let addr = s
+            .parse::<SocketAddrV4>()
+            .map_err(|_| alloy_rlp::Error::Custom("invalid SocketAddrV4"))?;
+        let signature = ST::decode(buf)?;
+        let record_seq_num = u64::decode(buf)?;
+
+        Ok(Self {
+            pubkey,
+            addr,
+            signature,
+            record_seq_num,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum GetPeers<ST: CertificateSignatureRecoverable> {
+    Request,
+    #[serde(bound = "ST: CertificateSignatureRecoverable")]
+    Response(Vec<PeerEntry<ST>>),
+}
+
+impl<ST: CertificateSignatureRecoverable> Encodable for GetPeers<ST> {
     fn encode(&self, out: &mut dyn BufMut) {
         match self {
             Self::Request => {
@@ -161,7 +212,7 @@ impl<PT: PubKey> Encodable for GetPeers<PT> {
     }
 }
 
-impl<PT: PubKey> Decodable for GetPeers<PT> {
+impl<ST: CertificateSignatureRecoverable> Decodable for GetPeers<ST> {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
         match u8::decode(&mut payload)? {
@@ -211,12 +262,12 @@ impl<PT: PubKey> Decodable for GetFullNodes<PT> {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum ReadCommand<SCT: SignatureCollection + Clone> {
+pub enum ReadCommand<ST: CertificateSignatureRecoverable + Clone> {
     GetMetrics(GetMetrics),
-    #[serde(bound = "SCT: SignatureCollection")]
-    GetPeers(GetPeers<SCT::NodeIdPubKey>),
-    #[serde(bound = "SCT: SignatureCollection")]
-    GetFullNodes(GetFullNodes<SCT::NodeIdPubKey>),
+    #[serde(bound = "ST: CertificateSignatureRecoverable")]
+    GetPeers(GetPeers<ST>),
+    #[serde(bound = "ST: CertificateSignatureRecoverable")]
+    GetFullNodes(GetFullNodes<CertificateSignaturePubKey<ST>>),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -267,10 +318,10 @@ pub enum WriteCommand {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum ControlPanelCommand<SCT: SignatureCollection> {
-    #[serde(bound = "SCT: SignatureCollection")]
-    Read(ReadCommand<SCT>),
-    #[serde(bound = "SCT: SignatureCollection")]
+pub enum ControlPanelCommand<ST: CertificateSignatureRecoverable> {
+    #[serde(bound = "ST: CertificateSignatureRecoverable")]
+    Read(ReadCommand<ST>),
+    #[serde(bound = "ST: CertificateSignatureRecoverable")]
     Write(WriteCommand),
 }
 
@@ -361,7 +412,7 @@ where
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
 {
-    RouterCommand(RouterCommand<SCT::NodeIdPubKey, OM>),
+    RouterCommand(RouterCommand<ST, OM>),
     TimerCommand(TimerCommand<E>),
     LedgerCommand(LedgerCommand<ST, SCT, EPT>),
     CheckpointCommand(CheckpointCommand<SCT>),
@@ -369,7 +420,7 @@ where
     TimestampCommand(TimestampCommand),
 
     TxPoolCommand(TxPoolCommand<ST, SCT, EPT, BPT, SBT>),
-    ControlPanelCommand(ControlPanelCommand<SCT>),
+    ControlPanelCommand(ControlPanelCommand<ST>),
     LoopbackCommand(LoopbackCommand<E>),
     StateSyncCommand(StateSyncCommand<ST, EPT>),
     ConfigReloadCommand(ConfigReloadCommand),
@@ -386,14 +437,14 @@ where
     pub fn split_commands(
         commands: Vec<Self>,
     ) -> (
-        Vec<RouterCommand<SCT::NodeIdPubKey, OM>>,
+        Vec<RouterCommand<ST, OM>>,
         Vec<TimerCommand<E>>,
         Vec<LedgerCommand<ST, SCT, EPT>>,
         Vec<CheckpointCommand<SCT>>,
         Vec<StateRootHashCommand>,
         Vec<TimestampCommand>,
         Vec<TxPoolCommand<ST, SCT, EPT, BPT, SBT>>,
-        Vec<ControlPanelCommand<SCT>>,
+        Vec<ControlPanelCommand<ST>>,
         Vec<LoopbackCommand<E>>,
         Vec<StateSyncCommand<ST, EPT>>,
         Vec<ConfigReloadCommand>,
@@ -1413,21 +1464,21 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ControlPanelEvent<SCT>
+pub enum ControlPanelEvent<ST>
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
 {
     GetMetricsEvent,
     ClearMetricsEvent,
     UpdateLogFilter(String),
-    GetPeers(GetPeers<SCT::NodeIdPubKey>),
-    GetFullNodes(GetFullNodes<SCT::NodeIdPubKey>),
+    GetPeers(GetPeers<ST>),
+    GetFullNodes(GetFullNodes<CertificateSignaturePubKey<ST>>),
     ReloadConfig(ReloadConfig),
 }
 
-impl<SCT> Encodable for ControlPanelEvent<SCT>
+impl<ST> Encodable for ControlPanelEvent<ST>
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
 {
     fn encode(&self, out: &mut dyn BufMut) {
         match self {
@@ -1459,9 +1510,9 @@ where
     }
 }
 
-impl<SCT> Decodable for ControlPanelEvent<SCT>
+impl<ST> Decodable for ControlPanelEvent<ST>
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
 {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
@@ -1469,12 +1520,8 @@ where
             2 => Ok(Self::GetMetricsEvent),
             3 => Ok(Self::ClearMetricsEvent),
             5 => Ok(Self::UpdateLogFilter(String::decode(&mut payload)?)),
-            6 => Ok(Self::GetPeers(GetPeers::<SCT::NodeIdPubKey>::decode(
-                &mut payload,
-            )?)),
-            7 => Ok(Self::GetFullNodes(
-                GetFullNodes::<SCT::NodeIdPubKey>::decode(&mut payload)?,
-            )),
+            6 => Ok(Self::GetPeers(GetPeers::decode(&mut payload)?)),
+            7 => Ok(Self::GetFullNodes(GetFullNodes::decode(&mut payload)?)),
             8 => Ok(Self::ReloadConfig(ReloadConfig::decode(&mut payload)?)),
             _ => Err(alloy_rlp::Error::Custom(
                 "failed to decode unknown ControlPanelEvent",
@@ -1492,55 +1539,28 @@ where
     pub blocksync_override_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KnownPeer<PT>
-where
-    PT: PubKey,
-{
-    pub node_id: NodeId<PT>,
-    pub addr: SocketAddr,
-}
-
-impl<PT: PubKey> Encodable for KnownPeer<PT> {
-    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-        let enc: [&dyn Encodable; 2] = [&self.node_id, &self.addr.to_string()];
-        encode_list::<_, dyn Encodable>(&enc, out);
-    }
-}
-
-impl<PT: PubKey> Decodable for KnownPeer<PT> {
-    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
-
-        let node_id = NodeId::decode(&mut payload)?;
-        let s = <String as Decodable>::decode(buf)?;
-        let addr = s
-            .parse::<SocketAddr>()
-            .map_err(|_| alloy_rlp::Error::Custom("invalid SocketAddr"))?;
-
-        Ok(Self { node_id, addr })
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
-pub struct KnownPeersUpdate<SCT>
+pub struct KnownPeersUpdate<ST>
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
 {
-    pub known_peers: Vec<KnownPeer<SCT::NodeIdPubKey>>,
+    pub known_peers: Vec<PeerEntry<ST>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConfigEvent<SCT>
+pub enum ConfigEvent<ST, SCT>
 where
+    ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection,
 {
     ConfigUpdate(ConfigUpdate<SCT>),
-    KnownPeersUpdate(KnownPeersUpdate<SCT>),
+    KnownPeersUpdate(KnownPeersUpdate<ST>),
     LoadError(String),
 }
 
-impl<SCT: SignatureCollection> Encodable for ConfigEvent<SCT> {
+impl<ST: CertificateSignatureRecoverable, SCT: SignatureCollection> Encodable
+    for ConfigEvent<ST, SCT>
+{
     fn encode(&self, out: &mut dyn BufMut) {
         match self {
             Self::ConfigUpdate(m) => {
@@ -1559,14 +1579,16 @@ impl<SCT: SignatureCollection> Encodable for ConfigEvent<SCT> {
     }
 }
 
-impl<SCT: SignatureCollection> Decodable for ConfigEvent<SCT> {
+impl<ST: CertificateSignatureRecoverable, SCT: SignatureCollection> Decodable
+    for ConfigEvent<ST, SCT>
+{
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let mut payload = Header::decode_bytes(buf, true)?;
         match u8::decode(&mut payload)? {
             1 => Ok(Self::ConfigUpdate(ConfigUpdate::<SCT>::decode(
                 &mut payload,
             )?)),
-            2 => Ok(Self::KnownPeersUpdate(KnownPeersUpdate::<SCT>::decode(
+            2 => Ok(Self::KnownPeersUpdate(KnownPeersUpdate::decode(
                 &mut payload,
             )?)),
             3 => Ok(Self::LoadError(String::decode(&mut payload)?)),
@@ -1594,13 +1616,13 @@ where
     /// Events to mempool
     MempoolEvent(MempoolEvent<SCT, EPT>),
     /// Events for the debug control panel
-    ControlPanelEvent(ControlPanelEvent<SCT>),
+    ControlPanelEvent(ControlPanelEvent<ST>),
     /// Events to update the block timestamper
     TimestampUpdateEvent(u128),
     /// Events to statesync
     StateSyncEvent(StateSyncEvent<ST, SCT, EPT>),
     /// Config updates
-    ConfigEvent(ConfigEvent<SCT>),
+    ConfigEvent(ConfigEvent<ST, SCT>),
 }
 
 impl<ST, SCT, EPT> MonadEvent<ST, SCT, EPT>
@@ -1722,14 +1744,16 @@ where
             4 => Ok(Self::MempoolEvent(MempoolEvent::<SCT, EPT>::decode(
                 &mut payload,
             )?)),
-            5 => Ok(Self::ControlPanelEvent(ControlPanelEvent::<SCT>::decode(
+            5 => Ok(Self::ControlPanelEvent(ControlPanelEvent::<ST>::decode(
                 &mut payload,
             )?)),
             6 => Ok(Self::TimestampUpdateEvent(u128::decode(&mut payload)?)),
             7 => Ok(Self::StateSyncEvent(
                 StateSyncEvent::<ST, SCT, EPT>::decode(&mut payload)?,
             )),
-            8 => Ok(Self::ConfigEvent(ConfigEvent::<SCT>::decode(&mut payload)?)),
+            8 => Ok(Self::ConfigEvent(ConfigEvent::<ST, SCT>::decode(
+                &mut payload,
+            )?)),
             _ => Err(alloy_rlp::Error::Custom(
                 "failed to decode unknown MonadEvent",
             )),

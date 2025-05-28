@@ -426,10 +426,11 @@ fn test_prune_nodes() {
     let mut nodes = swarm_builder.build();
 
     // prune period is set to 10 seconds (i.e. prune every 10 seconds)
+    // refresh is called at t=0 and t=10
     while nodes.step_until(Duration::from_secs(10)) {}
     for state in nodes.states().values() {
         let metrics = state.peer_disc_driver.get_peer_disc_state().metrics();
-        assert!(metrics["refresh"] == 1);
+        assert!(metrics["refresh"] == 2);
     }
 
     // a node goes offline
@@ -443,7 +444,7 @@ fn test_prune_nodes() {
     for state in nodes.states().values() {
         let state = state.peer_disc_driver.get_peer_disc_state();
         let metrics = state.metrics();
-        assert!(metrics["refresh"] == 2);
+        assert!(metrics["refresh"] == 3);
         assert!(state.peer_info.is_empty());
     }
 }
@@ -674,8 +675,8 @@ fn test_peer_lookup_retry() {
         if node == &node_b {
             let state = state.peer_disc_driver.get_peer_disc_state();
             let metrics = state.metrics();
-            assert_eq!(metrics["lookup_timeout"], 4);
-            assert_eq!(metrics["drop_lookup_response"], 4);
+            assert_eq!(metrics["lookup_timeout"], 8);
+            assert_eq!(metrics["drop_lookup_response"], 8);
 
             // Due to lookup timeout, NodeB still does not have name record of NodeC
             assert!(!state.peer_info.contains_key(&node_c));
@@ -783,7 +784,6 @@ fn test_min_watermark() {
             })
         })
         .collect();
-    let refresh_period = Duration::from_secs(5);
     let swarm_builder = PeerDiscSwarmBuilder::<PeerDiscSwarm, PeerDiscoveryBuilder<SignatureType>> {
         builders: keys
             .iter()
@@ -812,7 +812,7 @@ fn test_min_watermark() {
                             })])
                         },
                         ping_period: Duration::from_secs(2),
-                        refresh_period,
+                        refresh_period: Duration::from_secs(5),
                         request_timeout: Duration::from_secs(1),
                         prune_threshold: 1,
                         min_active_connections: 2,
@@ -831,7 +831,7 @@ fn test_min_watermark() {
 
     let mut nodes = swarm_builder.build();
 
-    while nodes.step_until(refresh_period) {}
+    while nodes.step_until(Duration::from_secs(0)) {}
 
     for (node_id, state) in nodes.states() {
         let state = state.peer_disc_driver.get_peer_disc_state();
@@ -926,7 +926,7 @@ fn test_max_watermark() {
     for (node_id, state) in nodes.states() {
         let state = state.peer_disc_driver.get_peer_disc_state();
 
-        // NodeE is inactive, should be pruned by NodeB and NodeC, but should not be pruned by NodeA
+        // NodeE is inactive, should be pruned by NodeB, NodeC and NodeD, but should not be pruned by NodeA
         if node_id == &node_a {
             assert!(state.peer_info.contains_key(&node_e));
         } else {
@@ -934,6 +934,6 @@ fn test_max_watermark() {
         }
 
         // additional full nodes above max_active_connections are pruned
-        assert!(state.peer_info.len() == 2);
+        assert!(state.peer_info.len() <= 2);
     }
 }

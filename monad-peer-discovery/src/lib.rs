@@ -9,6 +9,7 @@ use message::{PeerLookupRequest, PeerLookupResponse, Ping, Pong};
 use monad_crypto::certificate_signature::{
     CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_executor_glue::PeerEntry;
 use monad_types::{Epoch, NodeId};
 use tracing::warn;
 
@@ -128,6 +129,9 @@ pub enum PeerDiscoveryEvent<ST: CertificateSignatureRecoverable> {
         epoch: Epoch,
         validators: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
     },
+    UpdatePeers {
+        peers: Vec<PeerEntry<ST>>,
+    },
     Refresh,
 }
 
@@ -227,12 +231,28 @@ pub trait PeerDiscoveryAlgo {
         validators: BTreeSet<NodeId<CertificateSignaturePubKey<Self::SignatureType>>>,
     ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
+    fn update_peers(
+        &mut self,
+        peers: Vec<PeerEntry<Self::SignatureType>>,
+    ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
+
     fn metrics(&self) -> &PeerDiscMetrics;
 
-    fn get_sock_addr_by_id(
+    fn get_addr_by_id(
         &self,
         id: &NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
     ) -> Option<SocketAddrV4>;
+
+    fn get_known_addrs(
+        &self,
+    ) -> HashMap<NodeId<CertificateSignaturePubKey<Self::SignatureType>>, SocketAddrV4>;
+
+    fn get_name_records(
+        &self,
+    ) -> HashMap<
+        NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+        MonadNameRecord<Self::SignatureType>,
+    >;
 }
 
 pub trait PeerDiscoveryAlgoBuilder {

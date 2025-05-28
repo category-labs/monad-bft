@@ -7,13 +7,14 @@ use std::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_executor_glue::PeerEntry;
 use monad_types::{Epoch, NodeId};
 use rand::{RngCore, SeedableRng, seq::IteratorRandom};
 use rand_chacha::ChaCha8Rng;
 use tracing::{debug, info, trace, warn};
 
 use crate::{
-    MonadNameRecord, PeerDiscMetrics, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder,
+    MonadNameRecord, NameRecord, PeerDiscMetrics, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder,
     PeerDiscoveryCommand, PeerDiscoveryEvent, PeerDiscoveryMessage, PeerDiscoveryTimerCommand,
     PeerLookupRequest, PeerLookupResponse, Ping, Pong, TimerKind,
 };
@@ -121,7 +122,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
             .flat_map(|(node_id, _)| state.send_ping(node_id))
             .collect::<Vec<_>>();
 
-        cmds.extend(state.reset_refresh_timer());
+        cmds.extend(state.refresh());
 
         (state, cmds)
     }
@@ -192,7 +193,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
         )]
     }
 
-    fn insert_new_peers(
+    fn insert_peer(
         &mut self,
         node_id: NodeId<CertificateSignaturePubKey<ST>>,
         name_record: MonadNameRecord<ST>,
@@ -286,7 +287,7 @@ where
                     .is_ok_and(|recovered_node_id| recovered_node_id == from);
 
                 if verified {
-                    cmds.extend(self.insert_new_peers(from, peer_name_record));
+                    cmds.extend(self.insert_peer(from, peer_name_record));
                 } else {
                     debug!("invalid signature in ping.local_name_record");
                     return cmds;
@@ -533,7 +534,7 @@ where
                 }
             };
 
-            cmds.extend(self.insert_new_peers(node_id, name_record));
+            cmds.extend(self.insert_peer(node_id, name_record));
         }
 
         // drop from outstanding requests
@@ -680,7 +681,7 @@ where
             }
         }
 
-        // reset timer to schedule for the next prune
+        // reset timer to schedule for the next refresh
         cmds.extend(self.reset_refresh_timer());
 
         cmds
@@ -716,17 +717,59 @@ where
         cmds
     }
 
+    fn update_peers(&mut self, peers: Vec<PeerEntry<ST>>) -> Vec<PeerDiscoveryCommand<ST>> {
+        debug!(?peers, "updating peers");
+
+        let mut cmds = Vec::new();
+
+        for peer in peers {
+            let node_id = NodeId::new(peer.pubkey);
+
+            // verify signature of name record
+            let name_record = MonadNameRecord {
+                name_record: NameRecord {
+                    address: peer.addr,
+                    seq: peer.record_seq_num,
+                },
+                signature: peer.signature,
+            };
+            let verified = name_record
+                .recover_pubkey()
+                .is_ok_and(|recovered_node_id| recovered_node_id == node_id);
+            if verified {
+                cmds.extend(self.insert_peer(node_id, name_record));
+            } else {
+                warn!(?node_id, "invalid name record signature in config file");
+            }
+        }
+
+        cmds
+    }
+
     fn metrics(&self) -> &PeerDiscMetrics {
         &self.metrics
     }
 
-    fn get_sock_addr_by_id(
-        &self,
-        id: &NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
-    ) -> Option<SocketAddrV4> {
+    fn get_addr_by_id(&self, id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<SocketAddrV4> {
         self.peer_info
             .get(id)
             .map(|info| info.name_record.name_record.address)
+    }
+
+    fn get_known_addrs(&self) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4> {
+        self.peer_info
+            .iter()
+            .map(|(id, info)| (*id, info.name_record.name_record.address))
+            .collect()
+    }
+
+    fn get_name_records(
+        &self,
+    ) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<ST>> {
+        self.peer_info
+            .iter()
+            .map(|(id, info)| (*id, info.name_record))
+            .collect()
     }
 }
 

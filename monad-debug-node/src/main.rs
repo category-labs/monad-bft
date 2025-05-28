@@ -3,9 +3,7 @@ use std::{io::Error, path::PathBuf};
 use clap::{ArgGroup, Args, Parser, Subcommand};
 use futures::{SinkExt, StreamExt};
 use itertools::Itertools;
-use monad_bls::BlsSignatureCollection;
-use monad_consensus_types::signature_collection::SignatureCollection;
-use monad_crypto::certificate_signature::CertificateSignaturePubKey;
+use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
 use monad_executor_glue::{
     ClearMetrics, ControlPanelCommand, GetFullNodes, GetMetrics, GetPeers, ReadCommand,
     WriteCommand,
@@ -21,8 +19,7 @@ use tokio::net::{
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 
 type SignatureType = SecpSignature;
-type SignatureCollectionType = BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>;
-type Command = ControlPanelCommand<SignatureCollectionType>;
+type Command = ControlPanelCommand<SignatureType>;
 
 /// CLI program to manage validators and metrics.
 #[derive(Parser, Debug)]
@@ -65,9 +62,9 @@ struct Read {
 }
 
 impl Read {
-    pub async fn next<SCT: SignatureCollection>(
+    pub async fn next<ST: CertificateSignatureRecoverable>(
         &mut self,
-    ) -> Result<ControlPanelCommand<SCT>, Error> {
+    ) -> Result<ControlPanelCommand<ST>, Error> {
         let bytes = self
             .read
             .next()
@@ -84,9 +81,9 @@ struct Write {
 }
 
 impl Write {
-    pub async fn send<SCT: SignatureCollection>(
+    pub async fn send<ST: CertificateSignatureRecoverable>(
         &mut self,
-        request: ControlPanelCommand<SCT>,
+        request: ControlPanelCommand<ST>,
     ) -> Result<(), Error> {
         let bytes = serde_json::to_string(&request).map_err(Error::other)?;
         self.write.send(bytes.into()).await
@@ -118,7 +115,7 @@ fn main() -> Result<(), Error> {
                 ClearMetrics::Request,
             ))))?;
 
-            let response = rt.block_on(read.next::<SignatureCollectionType>())?;
+            let response = rt.block_on(read.next::<SignatureType>())?;
             println!("{}", serde_json::to_string(&response).unwrap());
         }
 
@@ -126,7 +123,7 @@ fn main() -> Result<(), Error> {
             (Some(filter), None) => {
                 rt.block_on(write.send(Command::Write(WriteCommand::UpdateLogFilter(filter))))?;
 
-                let response = rt.block_on(read.next::<SignatureCollectionType>())?;
+                let response = rt.block_on(read.next::<SignatureType>())?;
                 println!("{}", serde_json::to_string(&response).unwrap());
             }
             (None, Some(file)) => {
@@ -139,20 +136,20 @@ fn main() -> Result<(), Error> {
                     ))),
                 )?;
 
-                let response = rt.block_on(read.next::<SignatureCollectionType>())?;
+                let response = rt.block_on(read.next::<SignatureType>())?;
                 println!("{}", serde_json::to_string(&response).unwrap());
             }
             _ => unreachable!(),
         },
         Commands::Metrics => {
             rt.block_on(write.send(Command::Read(ReadCommand::GetMetrics(GetMetrics::Request))))?;
-            let response = rt.block_on(read.next::<SignatureCollectionType>())?;
+            let response = rt.block_on(read.next::<SignatureType>())?;
             println!("{}", serde_json::to_string(&response).unwrap());
         }
 
         Commands::GetPeers => {
             rt.block_on(write.send(Command::Read(ReadCommand::GetPeers(GetPeers::Request))))?;
-            let response = rt.block_on(read.next::<SignatureCollectionType>())?;
+            let response = rt.block_on(read.next::<SignatureType>())?;
             if let ControlPanelCommand::Read(ReadCommand::GetPeers(GetPeers::Response(peers))) =
                 response
             {
@@ -160,8 +157,10 @@ fn main() -> Result<(), Error> {
                 let mut peer_configs = Vec::new();
                 for peer in peers {
                     let peer_config = NodeBootstrapPeerConfig {
-                        address: peer.1.to_string(),
-                        secp256k1_pubkey: peer.0.pubkey(),
+                        address: peer.addr.to_string(),
+                        secp256k1_pubkey: peer.pubkey,
+                        name_record_sig: peer.signature,
+                        record_seq_num: peer.record_seq_num,
                     };
                     peer_configs.push(peer_config);
                 }
@@ -180,7 +179,7 @@ fn main() -> Result<(), Error> {
             rt.block_on(write.send(Command::Read(ReadCommand::GetFullNodes(
                 GetFullNodes::Request,
             ))))?;
-            let response = rt.block_on(read.next::<SignatureCollectionType>())?;
+            let response = rt.block_on(read.next::<SignatureType>())?;
             if let ControlPanelCommand::Read(ReadCommand::GetFullNodes(GetFullNodes::Response(
                 full_nodes,
             ))) = response
@@ -210,7 +209,7 @@ fn main() -> Result<(), Error> {
                 monad_executor_glue::ReloadConfig::Request,
             ))))?;
 
-            let response = rt.block_on(read.next::<SignatureCollectionType>())?;
+            let response = rt.block_on(read.next::<SignatureType>())?;
             if let ControlPanelCommand::Write(WriteCommand::ReloadConfig(
                 monad_executor_glue::ReloadConfig::Response(msg),
             )) = response

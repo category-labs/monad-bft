@@ -7,7 +7,9 @@ use std::{
 };
 
 use futures::Stream;
-use monad_crypto::certificate_signature::PubKey;
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
+};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, RouterCommand};
 use monad_types::{NodeId, RouterTarget};
@@ -20,9 +22,10 @@ pub struct LocalRouterConfig<PT: PubKey> {
 }
 
 impl<PT: PubKey> LocalRouterConfig<PT> {
-    pub fn build<M, OM>(self) -> HashMap<NodeId<PT>, LocalPeerRouter<M, OM>>
+    pub fn build<ST, M, OM>(self) -> HashMap<NodeId<PT>, LocalPeerRouter<ST, M, OM>>
     where
         M: Message<NodeIdPubKey = PT> + Send + 'static,
+        ST: CertificateSignatureRecoverable,
     {
         let mut txs = HashMap::new();
         let mut rxs = HashMap::new();
@@ -73,7 +76,7 @@ impl<PT: PubKey> LocalRouterConfig<PT> {
     }
 }
 
-pub struct LocalPeerRouter<M: Message, OM> {
+pub struct LocalPeerRouter<ST, M: Message, OM> {
     me: NodeId<M::NodeIdPubKey>,
     txs: HashMap<
         NodeId<M::NodeIdPubKey>,
@@ -83,10 +86,10 @@ pub struct LocalPeerRouter<M: Message, OM> {
 
     metrics: ExecutorMetrics,
 
-    _pd: PhantomData<OM>,
+    _pd: PhantomData<(ST, OM)>,
 }
 
-impl<M: Message, OM> LocalPeerRouter<M, OM> {
+impl<M: Message, ST, OM> LocalPeerRouter<ST, M, OM> {
     fn new(
         me: NodeId<M::NodeIdPubKey>,
         txs: HashMap<
@@ -105,12 +108,13 @@ impl<M: Message, OM> LocalPeerRouter<M, OM> {
     }
 }
 
-impl<M, OM> Executor for LocalPeerRouter<M, OM>
+impl<ST, M, OM> Executor for LocalPeerRouter<ST, M, OM>
 where
-    M: Message,
+    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    ST: CertificateSignatureRecoverable,
     OM: Into<M>,
 {
-    type Command = RouterCommand<M::NodeIdPubKey, OM>;
+    type Command = RouterCommand<ST, OM>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
@@ -157,7 +161,7 @@ where
     }
 }
 
-impl<M, OM> Stream for LocalPeerRouter<M, OM>
+impl<ST, M, OM> Stream for LocalPeerRouter<ST, M, OM>
 where
     M: Message,
     Self: Unpin,

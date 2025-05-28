@@ -35,7 +35,7 @@ where
 {
     Local(
         /// Must be passed ahead-of-time because they can't be instantiated individually
-        LocalPeerRouter<MonadMessage<ST, SCT, EPT>, VerifiedMonadMessage<ST, SCT, EPT>>,
+        LocalPeerRouter<ST, MonadMessage<ST, SCT, EPT>, VerifiedMonadMessage<ST, SCT, EPT>>,
     ),
     RaptorCast(RaptorCastConfig<ST, B>),
 }
@@ -73,10 +73,7 @@ pub fn make_monad_executor<ST, SCT>(
 ) -> ParentExecutor<
     BoxUpdater<
         'static,
-        RouterCommand<
-            CertificateSignaturePubKey<ST>,
-            VerifiedMonadMessage<ST, SCT, MockExecutionProtocol>,
-        >,
+        RouterCommand<ST, VerifiedMonadMessage<ST, SCT, MockExecutionProtocol>>,
         MonadEvent<ST, SCT, MockExecutionProtocol>,
     >,
     TokioTimer<MonadEvent<ST, SCT, MockExecutionProtocol>>,

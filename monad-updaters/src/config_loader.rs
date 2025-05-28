@@ -1,24 +1,21 @@
-use std::{
-    collections::BTreeMap, marker::PhantomData, net::SocketAddr, ops::DerefMut, path::PathBuf,
-    task::Poll, time::Duration,
-};
+use std::{marker::PhantomData, net::SocketAddr, ops::DerefMut, path::PathBuf, task::Poll};
 
 use futures::Stream;
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
-    CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor::Executor;
 use monad_executor_glue::{
-    ConfigEvent, ConfigReloadCommand, ConfigUpdate, KnownPeer, KnownPeersUpdate, MonadEvent,
+    ConfigEvent, ConfigReloadCommand, ConfigUpdate, KnownPeersUpdate, MonadEvent, PeerEntry,
 };
 use monad_node_config::{NodeBootstrapPeerConfig, NodeConfig};
-use monad_types::{DropTimer, ExecutionProtocol, NodeId};
+use monad_types::{ExecutionProtocol, NodeId};
 use tokio::{
     net::lookup_host,
     sync::mpsc::{error::TrySendError, Receiver, Sender},
 };
-use tracing::{debug, info, warn};
+use tracing::{error, warn};
 pub struct MockConfigLoader<ST, SCT, EPT> {
     _phantom: PhantomData<(ST, SCT, EPT)>,
 }
@@ -63,15 +60,16 @@ where
 
 pub struct ConfigLoader<ST, SCT, EPT>
 where
+    ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection,
 {
     config_path: PathBuf,
 
-    request_tx: Sender<Vec<NodeBootstrapPeerConfig<SCT::NodeIdPubKey>>>,
-    response_tx: Sender<ConfigEvent<SCT>>,
-    response_rx: Receiver<ConfigEvent<SCT>>,
+    request_tx: Sender<Vec<NodeBootstrapPeerConfig<ST>>>,
+    response_tx: Sender<ConfigEvent<ST, SCT>>,
+    response_rx: Receiver<ConfigEvent<ST, SCT>>,
 
-    _phantom: PhantomData<(ST, EPT)>,
+    _phantom: PhantomData<EPT>,
 }
 
 impl<ST, SCT, EPT> ConfigLoader<ST, SCT, EPT>
@@ -79,24 +77,17 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    pub fn new(
-        config_path: PathBuf,
-        bootstrap_peers: Vec<NodeBootstrapPeerConfig<SCT::NodeIdPubKey>>,
-        last_resolved: Vec<(NodeId<SCT::NodeIdPubKey>, Option<SocketAddr>)>,
-    ) -> Self {
+    pub fn new(config_path: PathBuf) -> Self {
         let (request_tx, mut request_rx) = tokio::sync::mpsc::channel(10);
         let (response_tx, response_rx) = tokio::sync::mpsc::channel(10);
-        let mut peers_table = PeersTable::new(bootstrap_peers, last_resolved);
 
-        let dns_refresh_tx = response_tx.clone();
+        let bootstrap_peers_refresh_tx = response_tx.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(600));
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            // first tick completes immediately
-            interval.tick().await;
+            while let Some(req) = request_rx.recv().await {
+                let known_peers = Self::resolve_domains(req).await;
+                let config_event = ConfigEvent::KnownPeersUpdate(KnownPeersUpdate { known_peers });
 
-            let try_send_update =
-                |config_event: ConfigEvent<SCT>| match dns_refresh_tx.try_send(config_event) {
+                match bootstrap_peers_refresh_tx.try_send(config_event) {
                     Ok(_) => {}
                     Err(TrySendError::Closed(_)) => {
                         warn!("config update response channel closed");
@@ -105,28 +96,9 @@ where
                         warn!("config update response channel full");
                     }
                 };
-
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        if let Some(update) = peers_table.refresh_dns(false).await {
-                            try_send_update(update);
-                        }
-                    }
-                    maybe_req = request_rx.recv() => {
-                        interval.reset();
-                        let Some(req): Option<Vec<NodeBootstrapPeerConfig<SCT::NodeIdPubKey>>> = maybe_req else {
-                            panic!("config request sending side closed, exiting..");
-                        };
-                        let new_peers = req.into_iter().map(|peer| (NodeId::new(peer.secp256k1_pubkey), peer.address)).collect::<Vec<_>>();
-                        peers_table.set_peers(new_peers);
-                        // force updating peer list when config is reloaded
-                        if let Some(update) = peers_table.refresh_dns(true).await {
-                            try_send_update(update);
-                        }
-                    }
-                }
             }
+
+            error!("config request sending side closed");
         });
 
         Self {
@@ -140,7 +112,7 @@ where
         }
     }
 
-    fn extract_config_update(&mut self, node_config: NodeConfig<ST>) -> ConfigEvent<SCT> {
+    fn extract_config_update(&mut self, node_config: NodeConfig<ST>) -> ConfigEvent<ST, SCT> {
         let full_nodes = node_config
             .fullnode_dedicated
             .identities
@@ -189,6 +161,28 @@ where
             }
         }
     }
+
+    async fn resolve_domains(
+        bootstrap_peers: Vec<NodeBootstrapPeerConfig<ST>>,
+    ) -> Vec<PeerEntry<ST>> {
+        let mut peer_entries = Vec::new();
+        for peer in bootstrap_peers {
+            let addr = match resolve_domain_v4(&peer.address).await {
+                Ok(Some(SocketAddr::V4(addr))) => addr,
+                _ => {
+                    warn!("config loader: cannot resolve: {:?}", &peer.address);
+                    continue;
+                }
+            };
+            peer_entries.push(PeerEntry {
+                pubkey: peer.secp256k1_pubkey,
+                addr,
+                signature: peer.name_record_sig,
+                record_seq_num: peer.record_seq_num,
+            });
+        }
+        peer_entries
+    }
 }
 
 impl<ST, SCT, EPT> Stream for ConfigLoader<ST, SCT, EPT>
@@ -233,123 +227,15 @@ where
     }
 }
 
-struct PeersTable<SCT: SignatureCollection> {
-    peers: BTreeMap<NodeId<SCT::NodeIdPubKey>, (String, Option<SocketAddr>)>,
-}
+async fn resolve_domain_v4(domain: &String) -> Result<Option<SocketAddr>, std::io::Error> {
+    let dns_response = lookup_host(domain).await?;
 
-impl<SCT: SignatureCollection> PeersTable<SCT> {
-    fn new(
-        bootstrap_peers: Vec<NodeBootstrapPeerConfig<SCT::NodeIdPubKey>>,
-        last_resolved: Vec<(NodeId<SCT::NodeIdPubKey>, Option<SocketAddr>)>,
-    ) -> Self {
-        assert_eq!(
-            bootstrap_peers.len(),
-            last_resolved.len(),
-            "Peers are not resolved on startup"
-        );
-        let resolved_map: BTreeMap<_, _> = last_resolved.into_iter().collect();
-
-        let mut peers_table = BTreeMap::new();
-        for peer in bootstrap_peers {
-            let node_id = NodeId::new(peer.secp256k1_pubkey);
-            let maybe_addr = resolved_map
-                .get(&node_id)
-                .expect("all peers are resolved on startup");
-            peers_table.insert(node_id, (peer.address, *maybe_addr));
+    for entry in dns_response {
+        match entry {
+            SocketAddr::V4(_) => return Ok(Some(entry)),
+            SocketAddr::V6(_) => continue,
         }
-        Self { peers: peers_table }
     }
 
-    async fn resolve_domain_v4(domain: &String) -> Result<Option<SocketAddr>, std::io::Error> {
-        let dns_response = lookup_host(domain).await?;
-
-        for entry in dns_response {
-            match entry {
-                SocketAddr::V4(_) => return Ok(Some(entry)),
-                SocketAddr::V6(_) => continue,
-            }
-        }
-
-        Ok(None)
-    }
-
-    async fn resolve_domains_v4<P: PubKey>(
-        peers: Vec<(NodeId<P>, &String)>,
-    ) -> Vec<(NodeId<P>, Option<SocketAddr>)> {
-        let mut resolved_peers = Vec::with_capacity(peers.len());
-        for (node_id, address) in peers {
-            let maybe_addr = match Self::resolve_domain_v4(address).await {
-                Ok(Some(addr)) => Some(addr),
-                Ok(None) => {
-                    warn!(?node_id, domain=?address, "No IPv4 DNS record");
-                    None
-                }
-                Err(err) => {
-                    warn!(?node_id, domain=?address, ?err, "Unable to resolve");
-                    None
-                }
-            };
-            resolved_peers.push((node_id, maybe_addr));
-        }
-        resolved_peers
-    }
-
-    async fn refresh_dns(&mut self, force_update: bool) -> Option<ConfigEvent<SCT>> {
-        info!("refreshing dns record");
-        let _drop_timer = DropTimer::start(Duration::ZERO, |elapsed| {
-            debug!(?elapsed, "refreshing dns record done")
-        });
-        // refresh peer table dns entries
-        let peers = self
-            .peers
-            .iter()
-            .map(|(node_id, (hostname, _))| (*node_id, hostname))
-            .collect::<Vec<_>>();
-        let resolved = Self::resolve_domains_v4(peers).await;
-        let mut table_changed = false;
-        for (node_id, maybe_addr) in resolved {
-            // retain old record if hostname fails to resolve
-            if let Some(new_addr) = maybe_addr {
-                let (_, maybe_last_resolved) = self
-                    .peers
-                    .get_mut(&node_id)
-                    .expect("peers table is immutable during lookup");
-                if maybe_last_resolved.is_none_or(|last_resolved| last_resolved != new_addr) {
-                    info!(?node_id, old_addr=?maybe_last_resolved, ?new_addr, "update dns record");
-                    table_changed = true;
-                    *maybe_last_resolved = Some(new_addr);
-                }
-            }
-        }
-        if table_changed || force_update {
-            let response = self
-                .peers
-                .iter()
-                .filter_map(|(&node_id, (_, maybe_addr))| {
-                    maybe_addr.map(|addr| KnownPeer { node_id, addr })
-                })
-                .collect::<Vec<_>>();
-
-            return Some(ConfigEvent::KnownPeersUpdate(KnownPeersUpdate {
-                known_peers: response,
-            }));
-        }
-        None
-    }
-
-    fn set_peers(&mut self, new_peers: Vec<(NodeId<SCT::NodeIdPubKey>, String)>) {
-        let mut new_table = BTreeMap::new();
-        for (node_id, hostname) in new_peers {
-            let new_table_entry = new_table.entry(node_id).or_insert((hostname.clone(), None));
-            if let Some((old_hostname, maybe_resolved)) = self.peers.get(&node_id) {
-                // copy last resolved address if hostname is unchanged
-                if old_hostname == &hostname {
-                    new_table_entry.1 = *maybe_resolved;
-                } else {
-                    debug!(?node_id, ?old_hostname, new_hostname=?hostname, "hostname changed");
-                }
-            }
-        }
-        self.peers = new_table;
-    }
+    Ok(None)
 }

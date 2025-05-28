@@ -15,7 +15,7 @@ pub use self::{
     consensus::NodeConsensusConfig,
     fullnode::{FullNodeConfig, FullNodeIdentityConfig},
     network::NodeNetworkConfig,
-    peers::PeerConfig,
+    peers::PeerDiscoveryConfig,
     sync_peers::{BlockSyncPeersConfig, StateSyncPeersConfig, SyncPeerIdentityConfig},
 };
 
@@ -51,7 +51,7 @@ pub struct NodeConfig<ST: CertificateSignatureRecoverable> {
     pub statesync_max_concurrent_requests: u8,
 
     #[serde(bound = "ST: CertificateSignatureRecoverable")]
-    pub bootstrap: NodeBootstrapConfig<CertificateSignaturePubKey<ST>>,
+    pub bootstrap: NodeBootstrapConfig<ST>,
     #[serde(bound = "ST: CertificateSignatureRecoverable")]
     pub fullnode_dedicated: FullNodeConfig<CertificateSignaturePubKey<ST>>,
     #[serde(bound = "ST: CertificateSignatureRecoverable")]
@@ -60,9 +60,8 @@ pub struct NodeConfig<ST: CertificateSignatureRecoverable> {
     pub statesync: StateSyncPeersConfig<CertificateSignaturePubKey<ST>>,
     pub network: NodeNetworkConfig,
 
-    // FIXME: merge this with bootstrap field
     #[serde(bound = "ST: CertificateSignatureRecoverable")]
-    pub peer_discovery: PeerConfig<ST>,
+    pub peer_discovery: PeerDiscoveryConfig<ST>,
 
     pub raptor10_validator_redundancy_factor: u8, // validator -> validator
     #[serde(bound = "ST: CertificateSignatureRecoverable")]

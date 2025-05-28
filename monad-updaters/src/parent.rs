@@ -39,7 +39,7 @@ pub struct ParentExecutor<R, T, L, C, S, TS, TP, CP, LO, SS, CL> {
 impl<RE, TE, LE, CE, SE, TSE, TPE, CPE, LOE, SSE, CLE, E, OM, ST, SCT, EPT, BPT, SBT> Executor
     for ParentExecutor<RE, TE, LE, CE, SE, TSE, TPE, CPE, LOE, SSE, CLE>
 where
-    RE: Executor<Command = RouterCommand<SCT::NodeIdPubKey, OM>>,
+    RE: Executor<Command = RouterCommand<ST, OM>>,
     TE: Executor<Command = TimerCommand<E>>,
     LE: Executor<Command = LedgerCommand<ST, SCT, EPT>>,
     CE: Executor<Command = CheckpointCommand<SCT>>,
@@ -47,7 +47,7 @@ where
     TSE: Executor<Command = TimestampCommand>,
 
     TPE: Executor<Command = TxPoolCommand<ST, SCT, EPT, BPT, SBT>>,
-    CPE: Executor<Command = ControlPanelCommand<SCT>>,
+    CPE: Executor<Command = ControlPanelCommand<ST>>,
     LOE: Executor<Command = LoopbackCommand<E>>,
     SSE: Executor<Command = StateSyncCommand<ST, EPT>>,
     CLE: Executor<Command = ConfigReloadCommand>,
