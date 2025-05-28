@@ -74,7 +74,7 @@ where
 
     mtu: u16,
     dataplane: Arc<Mutex<Dataplane>>,
-    pending_events: VecDeque<RaptorCastEvent<M::Event, CertificateSignaturePubKey<ST>>>,
+    pending_events: VecDeque<RaptorCastEvent<M::Event, ST>>,
     channel_from_primary: Receiver<FullNodesGroupMessage<ST>>,
     waker: Option<Waker>,
     metrics: ExecutorMetrics,
@@ -232,7 +232,7 @@ where
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes> + Decodable,
     OM: Serializable<Bytes> + Into<M> + Clone + Encodable,
 {
-    type Command = RouterCommand<CertificateSignaturePubKey<ST>, OM>;
+    type Command = RouterCommand<ST, OM>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
@@ -335,7 +335,7 @@ where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes> + Decodable,
     OM: Serializable<Bytes> + Into<M> + Clone + Encodable,
-    E: From<RaptorCastEvent<M::Event, CertificateSignaturePubKey<ST>>>,
+    E: From<RaptorCastEvent<M::Event, ST>>,
     Self: Unpin,
 {
     type Item = E;

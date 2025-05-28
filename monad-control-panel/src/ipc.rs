@@ -32,7 +32,7 @@ where
     EPT: ExecutionProtocol,
 {
     receiver: mpsc::Receiver<MonadEvent<ST, SCT, EPT>>,
-    client_sender: broadcast::Sender<ControlPanelCommand<SCT>>,
+    client_sender: broadcast::Sender<ControlPanelCommand<ST>>,
 
     metrics: ExecutorMetrics,
 
@@ -65,7 +65,7 @@ where
     ) -> Result<Self, std::io::Error> {
         let (sender, receiver) = mpsc::channel(buf_size);
         let (client_sender, _client_receiver) =
-            broadcast::channel::<ControlPanelCommand<SCT>>(buf_size);
+            broadcast::channel::<ControlPanelCommand<ST>>(buf_size);
         let client_sender_clone = client_sender.clone();
 
         let r = Self {
@@ -132,7 +132,7 @@ where
                 );
                 break;
             };
-            let Ok(request) = serde_json::from_str::<ControlPanelCommand<SCT>>(string) else {
+            let Ok(request) = serde_json::from_str::<ControlPanelCommand<ST>>(string) else {
                 error!(
                     "failed to deserialize bytes from client {:?}, closing connection",
                     &bytes
@@ -236,7 +236,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    type Command = ControlPanelCommand<SCT>;
+    type Command = ControlPanelCommand<ST>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {

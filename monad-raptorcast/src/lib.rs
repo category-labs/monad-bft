@@ -15,14 +15,14 @@ use futures::{channel::oneshot, FutureExt, Stream, StreamExt};
 use message::{DeserializeError, InboundRouterMessage, OutboundRouterMessage};
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
-    CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
+    CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_dataplane::{
     udp::segment_size_for_mtu, BroadcastMsg, Dataplane, DataplaneBuilder, TcpMsg, UnicastMsg,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
-    ControlPanelEvent, GetFullNodes, GetPeers, Message, MonadEvent, RouterCommand,
+    ControlPanelEvent, GetFullNodes, GetPeers, Message, MonadEvent, PeerEntry, RouterCommand,
 };
 use monad_peer_discovery::{
     driver::{PeerDiscoveryDriver, PeerDiscoveryEmit},
@@ -41,14 +41,11 @@ pub mod util;
 use util::{BuildTarget, EpochValidators, FullNodes, ReBroadcastGroupMap, Validator};
 
 const SIGNATURE_SIZE: usize = 65;
-const PEER_DISCOVERY_ENABLED: bool = false;
 
 pub struct RaptorCastConfig<ST, B>
 where
     ST: CertificateSignatureRecoverable,
 {
-    // TODO support dynamic updating
-    pub known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
     pub full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
     pub peer_discovery_builder: B,
 
@@ -81,8 +78,6 @@ where
 
     // TODO support dynamic updating
     full_nodes: FullNodes<CertificateSignaturePubKey<ST>>,
-    // TODO: replace known_addresses with peer_discovery_driver
-    known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
     peer_discovery_driver: PeerDiscoveryDriver<PD>,
 
     current_epoch: Epoch,
@@ -91,21 +86,21 @@ where
     mtu: u16,
 
     dataplane: Dataplane,
-    pending_events: VecDeque<RaptorCastEvent<M::Event, CertificateSignaturePubKey<ST>>>,
+    pending_events: VecDeque<RaptorCastEvent<M::Event, ST>>,
 
     waker: Option<Waker>,
     metrics: ExecutorMetrics,
     _phantom: PhantomData<(OM, SE)>,
 }
 
-pub enum PeerManagerResponse<P: PubKey> {
-    PeerList(Vec<(NodeId<P>, SocketAddr)>),
-    FullNodes(Vec<NodeId<P>>),
+pub enum PeerManagerResponse<ST: CertificateSignatureRecoverable> {
+    PeerList(Vec<PeerEntry<ST>>),
+    FullNodes(Vec<NodeId<CertificateSignaturePubKey<ST>>>),
 }
 
-pub enum RaptorCastEvent<E, P: PubKey> {
+pub enum RaptorCastEvent<E, ST: CertificateSignatureRecoverable> {
     Message(E),
-    PeerManagerResponse(PeerManagerResponse<P>),
+    PeerManagerResponse(PeerManagerResponse<ST>),
 }
 
 impl<ST, M, OM, SE, PD> RaptorCast<ST, M, OM, SE, PD>
@@ -132,7 +127,6 @@ where
             epoch_validators: Default::default(),
             rebroadcast_map: ReBroadcastGroupMap::new(self_id, is_fullnode),
             full_nodes: FullNodes::new(config.full_nodes),
-            known_addresses: config.known_addresses,
             peer_discovery_driver: PeerDiscoveryDriver::new(config.peer_discovery_builder),
 
             key: config.key,
@@ -158,7 +152,7 @@ where
         make_app_message: impl FnOnce() -> Bytes,
         completion: Option<oneshot::Sender<()>>,
     ) {
-        match self.known_addresses.get(to) {
+        match self.peer_discovery_driver.get_addr(to) {
             None => {
                 warn!(?to, "not sending message, address unknown");
             }
@@ -172,7 +166,7 @@ where
                 signed_message[..SIGNATURE_SIZE].copy_from_slice(&signature);
                 signed_message[SIGNATURE_SIZE..].copy_from_slice(&app_message);
                 self.dataplane.tcp_write(
-                    *address,
+                    address,
                     TcpMsg {
                         msg: signed_message.freeze(),
                         completion,
@@ -190,7 +184,7 @@ where
     OM: Serializable<Bytes> + Encodable + Into<M> + Clone,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
 {
-    type Command = RouterCommand<CertificateSignaturePubKey<ST>, OM>;
+    type Command = RouterCommand<ST, OM>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let self_id = NodeId::new(self.key.pubkey());
@@ -257,6 +251,9 @@ where
                         warn!(?elapsed, "long time to publish message")
                     });
 
+                    // TODO: perhaps pass this directly to udp_build to avoid calling on every exec
+                    let known_addresses = self.peer_discovery_driver.get_known_addresses();
+
                     // send message to self if applicable
                     match target {
                         RouterTarget::Broadcast(epoch) | RouterTarget::Raptorcast(epoch) => {
@@ -310,7 +307,7 @@ where
                                 self.mtu,
                                 &self.key,
                                 self.redundancy,
-                                &self.known_addresses,
+                                &known_addresses,
                             );
                             self.dataplane.udp_write_unicast(unicast_msg);
                         }
@@ -331,7 +328,7 @@ where
                                     self.mtu,
                                     &self.key,
                                     self.redundancy,
-                                    &self.known_addresses,
+                                    &known_addresses,
                                 );
                                 self.dataplane.udp_write_unicast(unicast_msg);
                             }
@@ -352,21 +349,24 @@ where
                 }
                 RouterCommand::PublishToFullNodes { .. } => {}
                 RouterCommand::GetPeers => {
-                    let peer_list = self
-                        .known_addresses
+                    let name_records = self.peer_discovery_driver.get_name_records();
+                    let peer_list = name_records
                         .iter()
-                        .map(|(node_id, sock_addr)| (*node_id, *sock_addr))
+                        .map(|(node_id, name_record)| PeerEntry {
+                            pubkey: node_id.pubkey(),
+                            addr: name_record.address(),
+                            signature: name_record.signature,
+                            record_seq_num: name_record.seq(),
+                        })
                         .collect::<Vec<_>>();
                     self.pending_events
                         .push_back(RaptorCastEvent::PeerManagerResponse(
                             PeerManagerResponse::PeerList(peer_list),
                         ));
                 }
-                RouterCommand::UpdatePeers(new_peers) => {
-                    self.known_addresses = new_peers
-                        .into_iter()
-                        .map(|known_peer| (known_peer.node_id, known_peer.addr))
-                        .collect();
+                RouterCommand::UpdatePeers(peers) => {
+                    self.peer_discovery_driver
+                        .update(PeerDiscoveryEvent::UpdatePeers { peers });
                 }
                 RouterCommand::GetFullNodes => {
                     let full_nodes = self.full_nodes.list.clone();
@@ -444,7 +444,7 @@ where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes> + Decodable,
     OM: Serializable<Bytes> + Encodable + Into<M> + Clone,
-    E: From<RaptorCastEvent<M::Event, CertificateSignaturePubKey<ST>>>,
+    E: From<RaptorCastEvent<M::Event, ST>>,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     PeerDiscoveryDriver<PD>: Unpin,
     Self: Unpin,
@@ -466,7 +466,7 @@ where
             .full_nodes
             .list
             .iter()
-            .filter_map(|node_id| this.known_addresses.get(node_id).copied())
+            .filter_map(|node_id| this.peer_discovery_driver.get_addr(node_id))
             .collect::<Vec<_>>();
 
         loop {
@@ -490,7 +490,7 @@ where
                         // Callback for re-broadcasting raptorcast chunks to other RaptorCast participants (validator peers)
                         let target_addrs: Vec<SocketAddr> = targets
                             .into_iter()
-                            .filter_map(|target| this.known_addresses.get(&target).copied())
+                            .filter_map(|target| this.peer_discovery_driver.get_addr(&target))
                             .collect();
 
                         dataplane.borrow_mut().udp_write_broadcast(BroadcastMsg {
@@ -520,11 +520,9 @@ where
                                     Some(app_message.event(from))
                                 }
                                 InboundRouterMessage::PeerDiscoveryMessage(peer_disc_message) => {
-                                    if PEER_DISCOVERY_ENABLED {
-                                        // handle peer discovery message in driver
-                                        this.peer_discovery_driver
-                                            .update(peer_disc_message.event(from));
-                                    }
+                                    // handle peer discovery message in driver
+                                    this.peer_discovery_driver
+                                        .update(peer_disc_message.event(from));
                                     None
                                 }
                                 InboundRouterMessage::FullNodesGroup(_full_nodes_group_message) => {
@@ -600,33 +598,29 @@ where
             }
         }
 
-        // TODO: remove the following block when we want to enable peer discovery messages
-        if PEER_DISCOVERY_ENABLED {
-            while let Poll::Ready(Some(peer_disc_emit)) =
-                this.peer_discovery_driver.poll_next_unpin(cx)
-            {
-                match peer_disc_emit {
-                    PeerDiscoveryEmit::RouterCommand { target, message } => {
-                        match OutboundRouterMessage::try_serialize(
-                            OutboundRouterMessage::<OM, ST>::PeerDiscoveryMessage(message),
-                        ) {
-                            Ok(router_message) => {
-                                let current_epoch = this.current_epoch;
-                                let unicast_msg = udp_build(
-                                    &current_epoch,
-                                    BuildTarget::<ST>::PointToPoint(&target),
-                                    router_message,
-                                    this.mtu,
-                                    &this.key,
-                                    this.redundancy,
-                                    &this.known_addresses,
-                                );
-                                this.dataplane.udp_write_unicast(unicast_msg);
-                            }
-                            Err(e) => {
-                                warn!("unable to serialize peer discovery message {:?}", e);
-                                continue;
-                            }
+        while let Poll::Ready(Some(peer_disc_emit)) = this.peer_discovery_driver.poll_next_unpin(cx)
+        {
+            match peer_disc_emit {
+                PeerDiscoveryEmit::RouterCommand { target, message } => {
+                    match OutboundRouterMessage::try_serialize(
+                        OutboundRouterMessage::<OM, ST>::PeerDiscoveryMessage(message),
+                    ) {
+                        Ok(router_message) => {
+                            let current_epoch = this.current_epoch;
+                            let unicast_msg = udp_build(
+                                &current_epoch,
+                                BuildTarget::<ST>::PointToPoint(&target),
+                                router_message,
+                                this.mtu,
+                                &this.key,
+                                this.redundancy,
+                                &this.peer_discovery_driver.get_known_addresses(),
+                            );
+                            this.dataplane.udp_write_unicast(unicast_msg);
+                        }
+                        Err(e) => {
+                            warn!("unable to serialize peer discovery message {:?}", e);
+                            continue;
                         }
                     }
                 }
@@ -637,22 +631,19 @@ where
     }
 }
 
-impl<ST, SCT, EPT> From<RaptorCastEvent<MonadEvent<ST, SCT, EPT>, CertificateSignaturePubKey<ST>>>
-    for MonadEvent<ST, SCT, EPT>
+impl<ST, SCT, EPT> From<RaptorCastEvent<MonadEvent<ST, SCT, EPT>, ST>> for MonadEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    fn from(
-        value: RaptorCastEvent<MonadEvent<ST, SCT, EPT>, CertificateSignaturePubKey<ST>>,
-    ) -> Self {
+    fn from(value: RaptorCastEvent<MonadEvent<ST, SCT, EPT>, ST>) -> Self {
         match value {
             RaptorCastEvent::Message(event) => event,
             RaptorCastEvent::PeerManagerResponse(peer_manager_response) => {
                 match peer_manager_response {
-                    PeerManagerResponse::PeerList(peer_list) => MonadEvent::ControlPanelEvent(
-                        ControlPanelEvent::GetPeers(GetPeers::Response(peer_list)),
+                    PeerManagerResponse::PeerList(peer) => MonadEvent::ControlPanelEvent(
+                        ControlPanelEvent::GetPeers(GetPeers::Response(peer)),
                     ),
                     PeerManagerResponse::FullNodes(full_nodes) => MonadEvent::ControlPanelEvent(
                         ControlPanelEvent::GetFullNodes(GetFullNodes::Response(full_nodes)),

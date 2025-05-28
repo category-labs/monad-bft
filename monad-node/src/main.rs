@@ -28,8 +28,8 @@ use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
 use monad_ledger::MonadBlockFileLedger;
 use monad_node_config::{
-    ExecutionProtocolType, FullNodeIdentityConfig, NodeNetworkConfig, PeerConfig,
-    SignatureCollectionType, SignatureType,
+    ExecutionProtocolType, FullNodeIdentityConfig, NodeBootstrapConfig, NodeNetworkConfig,
+    PeerDiscoveryConfig, SignatureCollectionType, SignatureType,
 };
 use monad_peer_discovery::{
     discovery::{PeerDiscovery, PeerDiscoveryBuilder, PeerInfo},
@@ -165,30 +165,6 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         .validators
         .clone();
 
-    {
-        let mut bootstrap_peers_seen = BTreeSet::new();
-        for peer in node_state.node_config.bootstrap.peers.iter() {
-            if !bootstrap_peers_seen.insert(peer.secp256k1_pubkey) {
-                panic!(
-                    "Multiple bootstrap entries for pubkey={}",
-                    peer.secp256k1_pubkey
-                );
-            }
-        }
-    }
-
-    let known_addresses: Vec<_> = node_state
-        .node_config
-        .bootstrap
-        .peers
-        .iter()
-        .map(|peer| {
-            let node_id = NodeId::new(peer.secp256k1_pubkey);
-            let maybe_addr = resolve_domain_v4(&node_id, &peer.address);
-            (node_id, maybe_addr)
-        })
-        .collect();
-
     let current_epoch = node_state.forkpoint_config.high_qc.get_epoch();
     let router: BoxUpdater<_, _> = {
         let raptor_router = build_raptorcast_router::<
@@ -200,11 +176,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
             node_state.node_config.network.clone(),
             node_state.node_config.peer_discovery,
             node_state.router_identity,
-            known_addresses
-                .iter()
-                .cloned()
-                .filter_map(|(node_id, maybe_addr)| Some((node_id, maybe_addr?)))
-                .collect(),
+            node_state.node_config.bootstrap.clone(),
             &node_state.node_config.fullnode_dedicated.identities,
             locked_epoch_validators.clone(),
             current_epoch,
@@ -342,11 +314,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
                 .expect("invalid file name")
                 .to_owned(),
         ),
-        config_loader: ConfigLoader::new(
-            node_state.node_config_path,
-            node_state.node_config.bootstrap.peers,
-            known_addresses,
-        ),
+        config_loader: ConfigLoader::new(node_state.node_config_path),
     };
 
     let logger_config: WALoggerConfig<LogFriendlyMonadEvent<_, _, _>> = WALoggerConfig::new(
@@ -532,9 +500,9 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
 
 async fn build_raptorcast_router<ST, SCT, M, OM>(
     network_config: NodeNetworkConfig,
-    peer_discovery_config: PeerConfig<ST>,
+    peer_discovery_config: PeerDiscoveryConfig<ST>,
     identity: ST::KeyPairType,
-    known_addresses: Vec<(NodeId<SCT::NodeIdPubKey>, SocketAddr)>,
+    bootstrap_nodes: NodeBootstrapConfig<ST>,
     full_nodes: &[FullNodeIdentityConfig<CertificateSignaturePubKey<ST>>],
     locked_epoch_validators: Vec<ValidatorSetDataWithEpoch<SCT>>,
     current_epoch: Epoch,
@@ -573,7 +541,7 @@ where
     // );
 
     // initial set of peers
-    let peer_info = peer_discovery_config
+    let peer_info = bootstrap_nodes
         .peers
         .iter()
         .filter_map(|peer| {
@@ -616,7 +584,6 @@ where
         })
         .collect();
 
-    // TODO: make it configurable in node.toml
     let epoch_validators = locked_epoch_validators
         .iter()
         .map(|epoch_validators| {
@@ -652,7 +619,6 @@ where
     };
     RaptorCast::new(RaptorCastConfig {
         key: identity,
-        known_addresses: known_addresses.into_iter().collect(),
         full_nodes: full_nodes
             .iter()
             .map(|full_node| NodeId::new(full_node.secp256k1_pubkey))

@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     io::ErrorKind,
-    net::{SocketAddr, UdpSocket},
+    net::{SocketAddr, SocketAddrV4, UdpSocket},
     num::ParseIntError,
     sync::Once,
     time::Duration,
@@ -11,7 +11,8 @@ use alloy_rlp::{RlpDecodable, RlpEncodable};
 use bytes::{Bytes, BytesMut};
 use futures_util::StreamExt;
 use monad_crypto::certificate_signature::{
-    CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey, PubKey,
+    CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
+    CertificateSignatureRecoverable, PubKey,
 };
 use monad_dataplane::udp::{DEFAULT_MTU, DEFAULT_SEGMENT_SIZE};
 use monad_executor::Executor;
@@ -376,7 +377,17 @@ pub fn set_up_test(
     }
 
     {
-        let known_addresses = known_addresses.clone();
+        let peer_addresses: HashMap<NodeId<PubKeyType>, SocketAddrV4> = known_addresses
+            .clone()
+            .into_iter()
+            .map(|(id, addr)| {
+                let addr = match addr {
+                    SocketAddr::V4(addr) => addr,
+                    SocketAddr::V6(_) => panic!("IPv6 addresses not supported"),
+                };
+                (id, addr)
+            })
+            .collect();
         let rx_addr = rx_addr.to_owned();
 
         // We want the runtime not to be destroyed after we exit this function.
@@ -391,8 +402,10 @@ pub fn set_up_test(
             let service_config = RaptorCastConfig {
                 key: rx_keypair,
                 full_nodes: Default::default(),
-                known_addresses,
-                peer_discovery_builder: NopDiscoveryBuilder::default(),
+                peer_discovery_builder: NopDiscoveryBuilder {
+                    known_addresses: peer_addresses,
+                    ..Default::default()
+                },
                 redundancy: 2,
                 local_addr: rx_addr,
                 up_bandwidth_mbps: 1_000,
@@ -474,11 +487,12 @@ impl Deserializable<Bytes> for MockMessage {
 #[derive(Clone, Copy, Debug)]
 struct MockEvent<P: PubKey>((NodeId<P>, u32));
 
-impl<P> From<RaptorCastEvent<MockEvent<P>, P>> for MockEvent<P>
+impl<ST> From<RaptorCastEvent<MockEvent<CertificateSignaturePubKey<ST>>, ST>>
+    for MockEvent<CertificateSignaturePubKey<ST>>
 where
-    P: PubKey,
+    ST: CertificateSignatureRecoverable,
 {
-    fn from(value: RaptorCastEvent<MockEvent<P>, P>) -> Self {
+    fn from(value: RaptorCastEvent<MockEvent<CertificateSignaturePubKey<ST>>, ST>) -> Self {
         match value {
             RaptorCastEvent::Message(event) => event,
             RaptorCastEvent::PeerManagerResponse(_peer_manager_response) => {

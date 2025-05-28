@@ -280,7 +280,7 @@ impl GraphQLMempoolEvent<'_> {
     }
 }
 
-struct GraphQLControlPanelEvent<'s>(&'s ControlPanelEvent<SignatureCollectionType>);
+struct GraphQLControlPanelEvent<'s>(&'s ControlPanelEvent<SignatureType>);
 
 #[Object]
 impl GraphQLControlPanelEvent<'_> {
@@ -308,7 +308,7 @@ impl GraphQLStateSyncEvent<'_> {
     }
 }
 
-struct GraphQLConfigEvent<'s>(&'s ConfigEvent<SignatureCollectionType>);
+struct GraphQLConfigEvent<'s>(&'s ConfigEvent<SignatureType, SignatureCollectionType>);
 
 #[Object]
 impl GraphQLConfigEvent<'_> {

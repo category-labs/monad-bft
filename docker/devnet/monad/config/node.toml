@@ -33,7 +33,9 @@ raptor10_validator_redundancy_factor = 3
 peers = []
 # [[bootstrap.peers]]
 # address = "x.x.x.x:xxxx"
+# record_seq_num = 0
 # secp256k1_pubkey = "..."
+# name_record_sig = "..."
 
 [peer_discovery]
 self_address = "0.0.0.0:8000"
@@ -45,12 +47,6 @@ request_timeout = 5
 prune_threshold = 5
 min_active_connections = 0
 max_active_connections = 200
-peers = []
-# [[peer_discovery.peers]]
-# address = "x.x.x.x:xxxx"
-# record_seq_num = x
-# secp256k1_pubkey = "..."
-# name_record_sig = "..."
 
 [fullnode_dedicated]
 identities = []

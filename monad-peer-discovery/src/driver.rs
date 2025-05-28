@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
+    net::SocketAddr,
     ops::DerefMut,
     task::{Context, Poll},
     time::Duration,
@@ -14,8 +15,8 @@ use tokio_util::time::{DelayQueue, delay_queue::Key};
 use tracing::error;
 
 use crate::{
-    PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryCommand, PeerDiscoveryEvent,
-    PeerDiscoveryMessage, PeerDiscoveryTimerCommand, TimerKind,
+    MonadNameRecord, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryCommand,
+    PeerDiscoveryEvent, PeerDiscoveryMessage, PeerDiscoveryTimerCommand, TimerKind,
 };
 
 pub enum PeerDiscoveryEmit<ST: CertificateSignatureRecoverable> {
@@ -169,6 +170,7 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
             PeerDiscoveryEvent::UpdateValidatorSet { epoch, validators } => {
                 self.pd.update_validator_set(epoch, validators)
             }
+            PeerDiscoveryEvent::UpdatePeers { peers } => self.pd.update_peers(peers),
             PeerDiscoveryEvent::Refresh => self.pd.refresh(),
         };
 
@@ -195,6 +197,32 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
         self.timer.exec(timer_cmds);
 
         emits
+    }
+
+    pub fn get_addr(
+        &self,
+        node_id: &NodeId<CertificateSignaturePubKey<PD::SignatureType>>,
+    ) -> Option<SocketAddr> {
+        self.pd.get_addr_by_id(node_id).map(SocketAddr::V4)
+    }
+
+    pub fn get_known_addresses(
+        &self,
+    ) -> HashMap<NodeId<CertificateSignaturePubKey<PD::SignatureType>>, SocketAddr> {
+        self.pd
+            .get_known_addrs()
+            .into_iter()
+            .map(|(k, v)| (k, SocketAddr::V4(v)))
+            .collect()
+    }
+
+    pub fn get_name_records(
+        &self,
+    ) -> HashMap<
+        NodeId<CertificateSignaturePubKey<PD::SignatureType>>,
+        MonadNameRecord<PD::SignatureType>,
+    > {
+        self.pd.get_name_records()
     }
 }
 

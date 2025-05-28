@@ -21,12 +21,8 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    R: Executor<
-            Command = RouterCommand<
-                CertificateSignaturePubKey<ST>,
-                VerifiedMonadMessage<ST, SCT, EPT>,
-            >,
-        > + Stream<Item = MonadEvent<ST, SCT, EPT>>
+    R: Executor<Command = RouterCommand<ST, VerifiedMonadMessage<ST, SCT, EPT>>>
+        + Stream<Item = MonadEvent<ST, SCT, EPT>>
         + Unpin,
 {
     pub fn new(router: R) -> Self {
@@ -42,12 +38,9 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    R: Executor<
-        Command = RouterCommand<CertificateSignaturePubKey<ST>, VerifiedMonadMessage<ST, SCT, EPT>>,
-    >,
+    R: Executor<Command = RouterCommand<ST, VerifiedMonadMessage<ST, SCT, EPT>>>,
 {
-    type Command =
-        RouterCommand<CertificateSignaturePubKey<ST>, VerifiedMonadMessage<ST, SCT, EPT>>;
+    type Command = RouterCommand<ST, VerifiedMonadMessage<ST, SCT, EPT>>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let filtered = commands

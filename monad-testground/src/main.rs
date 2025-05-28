@@ -286,9 +286,11 @@ where
                         ),
                         RouterArgs::RaptorCast => RouterConfig::RaptorCast(RaptorCastConfig {
                             key: keypair,
-                            known_addresses: known_addresses.clone(),
                             full_nodes: Default::default(),
-                            peer_discovery_builder: NopDiscoveryBuilder::default(),
+                            peer_discovery_builder: NopDiscoveryBuilder {
+                                known_addresses: known_addresses.clone(),
+                                ..Default::default()
+                            },
                             redundancy: 3,
                             local_addr: address.parse().unwrap(),
                             up_bandwidth_mbps: 1_000,

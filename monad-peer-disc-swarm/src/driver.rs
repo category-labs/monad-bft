@@ -107,12 +107,7 @@ where
     PDT: PeerDiscoveryAlgo<SignatureType = ST>,
     ST: CertificateSignatureRecoverable,
 {
-    pub fn new<B>(
-        algo_builder: B,
-    ) -> (
-        Self,
-        Vec<RouterCommand<CertificateSignaturePubKey<ST>, PeerDiscoveryMessage<ST>>>,
-    )
+    pub fn new<B>(algo_builder: B) -> (Self, Vec<RouterCommand<ST, PeerDiscoveryMessage<ST>>>)
     where
         B: PeerDiscoveryAlgoBuilder<PeerDiscoveryAlgoType = PDT>,
     {
@@ -131,7 +126,7 @@ where
     pub fn update(
         &mut self,
         event: PeerDiscoveryEvent<ST>,
-    ) -> Vec<RouterCommand<CertificateSignaturePubKey<ST>, PeerDiscoveryMessage<ST>>> {
+    ) -> Vec<RouterCommand<ST, PeerDiscoveryMessage<ST>>> {
         let cmds = match event {
             PeerDiscoveryEvent::SendPing { to } => self.algo.send_ping(to),
             PeerDiscoveryEvent::PingRequest { from, ping } => self.algo.handle_ping(from, ping),
@@ -163,6 +158,7 @@ where
             PeerDiscoveryEvent::UpdateValidatorSet { epoch, validators } => {
                 self.algo.update_validator_set(epoch, validators)
             }
+            PeerDiscoveryEvent::UpdatePeers { peers } => self.algo.update_peers(peers),
             PeerDiscoveryEvent::Refresh => self.algo.refresh(),
         };
 
@@ -174,7 +170,7 @@ where
     fn filter_and_exec(
         &mut self,
         cmds: Vec<PeerDiscoveryCommand<ST>>,
-    ) -> Vec<RouterCommand<CertificateSignaturePubKey<ST>, PeerDiscoveryMessage<ST>>> {
+    ) -> Vec<RouterCommand<ST, PeerDiscoveryMessage<ST>>> {
         let mut router_cmds = Vec::new();
 
         for cmd in cmds {

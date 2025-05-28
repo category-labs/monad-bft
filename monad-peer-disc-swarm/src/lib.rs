@@ -122,7 +122,7 @@ enum MockPeerDiscExecutorEvent<E, PT: PubKey, TransportMessage> {
 
 impl<S: PeerDiscSwarmRelation> Executor for MockPeerDiscExecutor<S> {
     type Command = RouterCommand<
-        SwarmPubKeyType<S>,
+        SwarmSignatureType<S>,
         <S::RouterSchedulerType as RouterScheduler>::OutboundMessage,
     >;
 
@@ -481,7 +481,7 @@ where
                     .expect("logic error, should be nonempty")
                     .peer_disc_driver
                     .get_peer_disc_state()
-                    .get_sock_addr_by_id(message.to.get_peer_id())
+                    .get_addr_by_id(message.to.get_peer_id())
                 else {
                     debug!(to=?message.to.get_peer_id(), "dropping outbound message: peer addr not found");
                     continue;

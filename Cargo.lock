@@ -4565,8 +4565,6 @@ dependencies = [
  "clap 4.4.10",
  "futures",
  "itertools 0.10.5",
- "monad-bls",
- "monad-consensus-types",
  "monad-crypto",
  "monad-executor-glue",
  "monad-node-config",
