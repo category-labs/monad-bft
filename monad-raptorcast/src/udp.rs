@@ -908,7 +908,7 @@ where
     pub app_message_hash: AppMessageHash,
     pub app_message_len: u32,
     pub broadcast: bool,
-    pub recipient_hash: NodeIdHash, // if this matches our node_id, then we need to re-broadcast RC chunks
+    pub recipient_hash: NodeIdHash, // if this matches our node_id, then we need to re-broadcast RaptorCast chunks
     pub chunk_id: u16,
     pub chunk: Bytes, // raptor-coded portion
 }

@@ -204,7 +204,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
                 .cloned()
                 .filter_map(|(node_id, maybe_addr)| Some((node_id, maybe_addr?)))
                 .collect(),
-            &node_state.node_config.fullnode.identities,
+            &node_state.node_config.fullnode_dedicated.identities,
             locked_epoch_validators.clone(),
             current_epoch,
         )

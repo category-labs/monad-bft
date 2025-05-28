@@ -115,10 +115,13 @@ pub enum BuildTarget<'a, ST: CertificateSignatureRecoverable> {
         (
             // validator stakes for given epoch_no, not including self
             // this MUST NOT BE EMPTY
+            // Contains Stake information per validator node id
             ValidatorsView<'a, ST>,
+            // Dedicated full-nodes (rather than priority nodes)
             FullNodesView<'a, CertificateSignaturePubKey<ST>>,
         ),
-    ), // sharded raptor-aware broadcast
+    ),
+    // sharded raptor-aware broadcast
     PointToPoint(&'a NodeId<CertificateSignaturePubKey<ST>>),
     // Group should not be empty after excluding self node Id
     FullNodeRaptorCast(&'a Group<ST>),
@@ -154,7 +157,7 @@ pub type AppMessageHash = HexBytes<20>;
 // 3) Validator->FullNode raptorcast send (when initiating proposals)
 // Validator->Validator send group is presented by EpochValidators instead, as
 // that contains stake info per validator.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)] // For some reason Default doesn't work
 pub struct Group<ST>
 where
     ST: CertificateSignatureRecoverable,
@@ -438,7 +441,7 @@ where
     pub fn iterate_rebroadcast_peers(
         &self,
         msg_epoch: Epoch, // for validator-to-validator re-raptorcasting only
-        msg_author: &NodeId<CertificateSignaturePubKey<ST>>, // skipped when iterating RC group
+        msg_author: &NodeId<CertificateSignaturePubKey<ST>>, // skipped when iterating RaptorCast group
     ) -> Option<GroupIterator<ST>> {
         let maybe_group = if self.is_fullnode {
             self.fullnode_map.get(msg_author)
@@ -473,7 +476,7 @@ where
         }
     }
 
-    // As Full-node: When secondary RC instance (Client) sends us a Group<>
+    // As Full-node: When secondary RaptorCast instance (Client) sends us a Group<>
     pub fn push_group_fullnodes(&mut self, group: Group<ST>) {
         assert!(self.is_fullnode);
         let replaced = self.fullnode_map.insert(*group.get_validator_id(), group);

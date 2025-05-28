@@ -9,7 +9,7 @@ use monad_types::{
 };
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct PeerConfig<ST: CertificateSignatureRecoverable> {
     pub self_address: SocketAddrV4,
@@ -31,7 +31,7 @@ pub struct PeerConfig<ST: CertificateSignatureRecoverable> {
     pub peers: Vec<PeerDiscoveryConfig<ST>>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct PeerDiscoveryConfig<ST: CertificateSignatureRecoverable> {
     pub address: SocketAddrV4,

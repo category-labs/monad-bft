@@ -24,9 +24,13 @@ mod consensus;
 mod fullnode;
 mod network;
 mod peers;
+
+pub mod fullnode_raptorcast;
+pub use fullnode_raptorcast::FullNodeRaptorCastConfig;
+
 mod sync_peers;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct NodeConfig<ST: CertificateSignatureRecoverable> {
     /////////////////////////////////
@@ -49,7 +53,7 @@ pub struct NodeConfig<ST: CertificateSignatureRecoverable> {
     #[serde(bound = "ST: CertificateSignatureRecoverable")]
     pub bootstrap: NodeBootstrapConfig<CertificateSignaturePubKey<ST>>,
     #[serde(bound = "ST: CertificateSignatureRecoverable")]
-    pub fullnode: FullNodeConfig<CertificateSignaturePubKey<ST>>,
+    pub fullnode_dedicated: FullNodeConfig<CertificateSignaturePubKey<ST>>,
     #[serde(bound = "ST: CertificateSignatureRecoverable")]
     pub blocksync_override: BlockSyncPeersConfig<CertificateSignaturePubKey<ST>>,
     #[serde(bound = "ST: CertificateSignatureRecoverable")]
@@ -59,6 +63,10 @@ pub struct NodeConfig<ST: CertificateSignatureRecoverable> {
     // FIXME: merge this with bootstrap field
     #[serde(bound = "ST: CertificateSignatureRecoverable")]
     pub peer_discovery: PeerConfig<ST>,
+
+    pub raptor10_validator_redundancy_factor: u8, // validator -> validator
+    #[serde(bound = "ST: CertificateSignatureRecoverable")]
+    pub fullnode_raptorcast: Option<FullNodeRaptorCastConfig<CertificateSignaturePubKey<ST>>>,
 
     // TODO split network-wide configuration into separate file
     ////////////////////////////////

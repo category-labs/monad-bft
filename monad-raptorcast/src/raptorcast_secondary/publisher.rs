@@ -26,7 +26,7 @@ type TimePoint = Round;
 // That is, we are a validator sending group invites to random full-nodes for
 // raptor-casting messages to them
 
-// Main state machine for when the secondary RC router is acting as a publisher
+// Main state machine for when the secondary RaptorCast router is acting as a publisher
 pub struct Publisher<ST>
 where
     ST: CertificateSignatureRecoverable,
@@ -1389,14 +1389,14 @@ mod tests {
         //-------------------------------------------------------------------[6]
         clt.enter_round(Round(6));
 
-        // RC group from v0 should still be up
+        // RaptorCast group from v0 should still be up
         let rc_grp = &group_map.get_rc_group_peers(&clt, &nid(0));
         assert!(equal_node_set(rc_grp, &node_ids![15, 10]));
 
         //-------------------------------------------------------------------[6]
         clt.enter_round(Round(7));
 
-        // RC group from v0 should be down now, as it only covered rounds [5, 7)
+        // RaptorCast group from v0 should be down now, as it only covered rounds [5, 7)
         // Here we should see a group gap
         assert!(group_map.is_empty(&clt));
 
@@ -1515,14 +1515,14 @@ mod tests {
         //------------------------------------------------------------------[36]
         clt.enter_round(Round(36));
 
-        // RC group from v0 should still be up
+        // RaptorCast group from v0 should still be up
         let rc_grp = &group_map.get_rc_group_peers(&clt, &nid(0));
         assert!(equal_node_set(rc_grp, &node_ids![45, 10]));
 
         //------------------------------------------------------------------[37]
         clt.enter_round(Round(37));
 
-        // RC group from v0 should be down now, as it only covered rounds [35, 37)
+        // RaptorCast group from v0 should be down now, as it only covered rounds [35, 37)
         // Here we should see a group gap
         assert!(group_map.is_empty(&clt));
 

@@ -16,7 +16,7 @@ where
     // move the Config when wrapping shared_key into an Arc during the ctor.
     pub shared_key: Arc<ST::KeyPairType>,
 
-    // IP addresses ov the entries in full_nodes_dedicated and full_nodes_prioritized
+    // IP addresses ov the entries in fullnode_dedicated and full_nodes_prioritized
     pub known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
 
     // For splitting large app messages (e.g. block proposals) into chunks that
@@ -32,7 +32,7 @@ where
     // running as full-node.
     // Validators and full-nodes who do not want to participate in validator-
     // to-full-node raptor-casting may opt out of this.
-    pub secondary_instance: SecondaryRcModeConfig<ST>,
+    pub secondary_instance: SecondaryRaptorCastModeConfig<ST>,
 }
 
 /// Configuration for the primary instance of RaptorCast (group of validators)
@@ -43,13 +43,13 @@ where
 {
     // This refers to the full-nodes we as a validator will be broadcasting full
     // app-messages (e.g. block proposals) directly
-    pub full_nodes_dedicated: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+    pub fullnode_dedicated: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
 
     /// Amount of redundancy (in Raptor10 encoding) to send.
     /// A value of 2 == send 2x total payload size.
     /// Higher values make the broadcasting more tolerant to UDP packet drops.
     /// This applies to raptor-casting across validator
-    pub raptor10_redundancy: u8, // TODO: rename raptor10_redundancy_validators to match node-config
+    pub raptor10_redundancy: u8,
 }
 
 impl<ST> Default for RaptorCastConfigPrimary<ST>
@@ -58,7 +58,7 @@ where
 {
     fn default() -> RaptorCastConfigPrimary<ST> {
         RaptorCastConfigPrimary {
-            full_nodes_dedicated: Vec::new(),
+            fullnode_dedicated: Vec::new(),
             raptor10_redundancy: 3, // for validators
         }
     }
@@ -66,7 +66,7 @@ where
 
 /// Configuration for the secondary instance of RaptorCast (group of full-nodes)
 #[derive(Clone)]
-pub enum SecondaryRcModeConfig<ST>
+pub enum SecondaryRaptorCastModeConfig<ST>
 where
     ST: CertificateSignatureRecoverable,
 {
@@ -98,7 +98,7 @@ impl Default for RaptorCastConfigSecondaryClient {
     }
 }
 
-// Only relevant to the secondary RC instance, and only when running as full-node
+// Only relevant to the secondary RaptorCast instance, and only when running as full-node
 #[derive(Clone)]
 pub struct RaptorCastConfigSecondaryPublisher<ST>
 where
@@ -113,7 +113,7 @@ where
     pub group_scheduling: GroupSchedulingConfig,
 
     /// This applies to raptor-casting across full-nodes
-    pub raptor10_redundancy: u8, // TODO: rename raptor10_redundancy_fullnodes to match node-config
+    pub raptor10_redundancy: u8,
 }
 
 impl<ST> Default for RaptorCastConfigSecondaryPublisher<ST>

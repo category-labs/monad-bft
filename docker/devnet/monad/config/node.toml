@@ -27,6 +27,8 @@ chain_id = 20143
 #########################################################
 # Node-specific configuration
 #########################################################
+raptor10_validator_redundancy_factor = 3
+
 [bootstrap]
 peers = []
 # [[bootstrap.peers]]
@@ -50,9 +52,9 @@ peers = []
 # secp256k1_pubkey = "..."
 # name_record_sig = "..."
 
-[fullnode]
+[fullnode_dedicated]
 identities = []
-# [[fullnode.identities]]
+# [[fullnode_dedicated.identities]]
 # secp256k1_pubkey = "..."
 
 [blocksync_override]

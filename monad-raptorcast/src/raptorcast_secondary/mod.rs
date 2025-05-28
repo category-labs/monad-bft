@@ -99,16 +99,16 @@ where
 
         // Instantiate either publisher or client state machine
         let role = match sec_config {
-            super::config::SecondaryRcModeConfig::Publisher(publisher_cfg) => {
+            super::config::SecondaryRaptorCastModeConfig::Publisher(publisher_cfg) => {
                 raptor10_redundancy = publisher_cfg.raptor10_redundancy;
                 let publisher = Publisher::new(node_id, publisher_cfg);
                 Role::Publisher(publisher)
             }
-            super::config::SecondaryRcModeConfig::Client(client_cfg) => {
+            super::config::SecondaryRaptorCastModeConfig::Client(client_cfg) => {
                 let client = Client::new(node_id, channel_to_primary, client_cfg);
                 Role::Client(client)
             }
-            super::config::SecondaryRcModeConfig::None => panic!(
+            super::config::SecondaryRaptorCastModeConfig::None => panic!(
                 "secondary_instance is not set in config during \
                     instantiation of RaptorCastSecondary"
             ),

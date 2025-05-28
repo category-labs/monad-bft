@@ -479,7 +479,7 @@ where
                 this.udp_state.handle_message(
                     &this.rebroadcast_map,
                     |targets, payload, bcast_stride| {
-                        // Callback for re-broadcasting raptorcast chunks to other RC participants (validator peers)
+                        // Callback for re-broadcasting raptorcast chunks to other RaptorCast participants (validator peers)
                         let target_addrs: Vec<SocketAddr> = targets
                             .into_iter()
                             .filter_map(|target| this.known_addresses.get(&target).copied())

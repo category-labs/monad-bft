@@ -142,7 +142,7 @@ where
 
     fn extract_config_update(&mut self, node_config: NodeConfig<ST>) -> ConfigEvent<SCT> {
         let full_nodes = node_config
-            .fullnode
+            .fullnode_dedicated
             .identities
             .iter()
             .map(|full_node| NodeId::new(full_node.secp256k1_pubkey))
