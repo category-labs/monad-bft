@@ -1,27 +1,52 @@
 use alloy_rlp::{encode_list, Decodable, Encodable, Header, RlpDecodable, RlpEncodable};
 use bytes::{Bytes, BytesMut};
-use monad_compress::{zstd::ZstdCompression, CompressionAlgo};
+use monad_compress::{util::BoundedWriter, zstd::ZstdCompression, CompressionAlgo};
 use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
 use monad_peer_discovery::PeerDiscoveryMessage;
 
 use super::raptorcast_secondary::group_message::FullNodesGroupMessage;
 
 const SERIALIZE_VERSION: u32 = 1;
-// compression versions
-const UNCOMPRESSED_VERSION: u32 = 1;
-const DEFAULT_ZSTD_VERSION: u32 = 2;
+
+enum CompressionVersion {
+    UncompressedVersion,
+    DefaultZSTDVersion,
+}
+
+impl Encodable for CompressionVersion {
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        match self {
+            CompressionVersion::UncompressedVersion => {
+                out.put_u8(1);
+            }
+            CompressionVersion::DefaultZSTDVersion => {
+                out.put_u8(2);
+            }
+        }
+    }
+}
+
+impl Decodable for CompressionVersion {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        match u8::decode(buf)? {
+            1 => Ok(Self::UncompressedVersion),
+            2 => Ok(Self::DefaultZSTDVersion),
+            _ => Err(alloy_rlp::Error::Custom("unexpected compression version")),
+        }
+    }
+}
 
 #[derive(RlpEncodable, RlpDecodable)]
 struct NetworkMessageVersion {
     pub serialize_version: u32,
-    pub compression_version: u32,
+    pub compression_version: CompressionVersion,
 }
 
 impl NetworkMessageVersion {
     pub fn version() -> Self {
         Self {
             serialize_version: SERIALIZE_VERSION,
-            compression_version: UNCOMPRESSED_VERSION,
+            compression_version: CompressionVersion::UncompressedVersion,
         }
     }
 }
@@ -46,28 +71,37 @@ impl<OM: Encodable, ST: CertificateSignatureRecoverable> OutboundRouterMessage<O
         let version = NetworkMessageVersion::version();
         match self {
             Self::AppMessage(app_message) => {
-                if version.compression_version == UNCOMPRESSED_VERSION {
-                    // encode as uncompressed message
-                    let enc: [&dyn Encodable; 3] = [&version, &MESSAGE_TYPE_APP, &app_message];
-                    encode_list::<_, dyn Encodable>(&enc, &mut buf);
-                } else if version.compression_version == DEFAULT_ZSTD_VERSION {
-                    // compress message
-                    let mut rlp_encoded_msg = BytesMut::new();
-                    app_message.encode(&mut rlp_encoded_msg);
+                match version.compression_version {
+                    CompressionVersion::UncompressedVersion => {
+                        // encode as uncompressed message
+                        let enc: [&dyn Encodable; 3] = [&version, &MESSAGE_TYPE_APP, &app_message];
+                        encode_list::<_, dyn Encodable>(&enc, &mut buf);
+                    }
+                    CompressionVersion::DefaultZSTDVersion => {
+                        // compress message
+                        let mut rlp_encoded_msg = BytesMut::new();
+                        app_message.encode(&mut rlp_encoded_msg);
+                        // u32::MAX is 4GB
+                        let message_len = rlp_encoded_msg.len() as u32;
 
-                    let mut compressed_app_message = Vec::new();
-                    ZstdCompression::default()
-                        .compress(&rlp_encoded_msg, &mut compressed_app_message)
-                        .map_err(|err| SerializeError(format!("compression error: {:?}", err)))?;
-                    let compressed_app_message = Bytes::from(compressed_app_message);
+                        let mut compressed_writer = BoundedWriter::new(message_len);
+                        ZstdCompression::default()
+                            .compress(&rlp_encoded_msg, &mut compressed_writer)
+                            .map_err(|err| {
+                                SerializeError(format!("compression error: {:?}", err))
+                            })?;
+                        let compressed_app_message: Bytes = compressed_writer.into();
 
-                    // encode as compressed message
-                    let enc: [&dyn Encodable; 3] =
-                        [&version, &MESSAGE_TYPE_APP, &compressed_app_message];
-                    encode_list::<_, dyn Encodable>(&enc, &mut buf);
-                } else {
-                    unreachable!()
-                };
+                        // encode as compressed message
+                        let enc: [&dyn Encodable; 4] = [
+                            &version,
+                            &MESSAGE_TYPE_APP,
+                            &message_len,
+                            &compressed_app_message,
+                        ];
+                        encode_list::<_, dyn Encodable>(&enc, &mut buf);
+                    }
+                }
             }
             Self::PeerDiscoveryMessage(peer_disc_message) => {
                 // encode as uncompressed message
@@ -112,29 +146,39 @@ impl<M: Decodable, ST: CertificateSignatureRecoverable> InboundRouterMessage<M, 
         match message_type {
             MESSAGE_TYPE_APP => {
                 match version.compression_version {
-                    UNCOMPRESSED_VERSION => {
+                    CompressionVersion::UncompressedVersion => {
                         // decode as uncompressed message
                         let app_message =
                             M::decode(&mut payload).map_err(DeserializeError::from)?;
                         Ok(Self::AppMessage(app_message))
                     }
-                    DEFAULT_ZSTD_VERSION => {
+                    CompressionVersion::DefaultZSTDVersion => {
+                        let decompressed_message_len =
+                            u32::decode(&mut payload).map_err(DeserializeError::from)?;
                         let compressed_app_message =
                             Bytes::decode(&mut payload).map_err(DeserializeError::from)?;
 
                         // decompress message
-                        let mut decompressed_app_message = Vec::new();
+                        let mut decompressed_writer = BoundedWriter::new(decompressed_message_len);
                         ZstdCompression::default()
-                            .decompress(&compressed_app_message, &mut decompressed_app_message)
+                            .decompress(&compressed_app_message, &mut decompressed_writer)
                             .map_err(|err| {
                                 DeserializeError(format!("decompression error: {:?}", err))
                             })?;
+                        let decompressed_app_message: Bytes = decompressed_writer.into();
+
+                        if decompressed_app_message.len() < decompressed_message_len as usize {
+                            return Err(DeserializeError(format!(
+                                "unexpected decompressed message length. expected: {}, actual: {}",
+                                decompressed_message_len,
+                                decompressed_app_message.len()
+                            )));
+                        }
 
                         let app_message = M::decode(&mut decompressed_app_message.as_ref())
                             .map_err(DeserializeError::from)?;
                         Ok(Self::AppMessage(app_message))
                     }
-                    _ => Err(DeserializeError("unknown compression version".into())),
                 }
             }
             MESSAGE_TYPE_PEER_DISC => {

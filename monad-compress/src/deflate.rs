@@ -1,8 +1,8 @@
-use std::io::{Cursor, Read, Write};
+use std::io::{self, Cursor, Write};
 
 use flate2::{read::DeflateDecoder, write::DeflateEncoder, Compression};
 
-use crate::CompressionAlgo;
+use crate::{util::BoundedWriter, CompressionAlgo};
 
 pub const MAX_COMPRESSION_LEVEL: u32 = 9;
 
@@ -21,24 +21,34 @@ impl CompressionAlgo for DeflateCompression {
         }
     }
 
-    fn compress(&self, input: &[u8], output: &mut Vec<u8>) -> Result<(), Self::CompressError> {
+    fn compress(
+        &self,
+        input: &[u8],
+        output: &mut BoundedWriter,
+    ) -> Result<(), Self::CompressError> {
         let mut writer = DeflateEncoder::new(output, self.level);
 
         writer.write_all(input)?;
         writer.finish().map(|_| ())
     }
 
-    fn decompress(&self, input: &[u8], output: &mut Vec<u8>) -> Result<(), Self::DecompressError> {
+    fn decompress(
+        &self,
+        input: &[u8],
+        output: &mut BoundedWriter,
+    ) -> Result<(), Self::DecompressError> {
         let temp_buffer = vec![0x00_u8; 4096];
         let mut reader = DeflateDecoder::new_with_buf(Cursor::new(input), temp_buffer);
-        reader.read_to_end(output)?;
+        io::copy(&mut reader, output)?;
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod test {
-    use std::fs::File;
+    use std::{fs::File, io::Read};
+
+    use bytes::Bytes;
 
     use super::*;
     #[test]
@@ -51,12 +61,16 @@ mod test {
 
         let algo = DeflateCompression::new(6, 0, Vec::new());
 
-        let mut compressed = Vec::new();
-        assert!(algo.compress(&data, &mut compressed).is_ok());
+        let mut compressed_writer = BoundedWriter::new(data.len() as u32);
+        assert!(algo.compress(&data, &mut compressed_writer).is_ok());
+        let compressed: Bytes = compressed_writer.into();
         assert!(compressed.len() < data.len());
 
-        let mut decompressed = Vec::new();
-        assert!(algo.decompress(&compressed, &mut decompressed).is_ok());
-        assert_eq!(data, decompressed.as_slice());
+        let mut decompressed_writer = BoundedWriter::new(data.len() as u32);
+        assert!(algo
+            .decompress(&compressed, &mut decompressed_writer)
+            .is_ok());
+        let decompressed: Bytes = decompressed_writer.into();
+        assert_eq!(data, decompressed);
     }
 }

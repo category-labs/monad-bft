@@ -1,8 +1,10 @@
 use std::{fs::File, io::Read, time::Duration};
 
+use bytes::Bytes;
 use criterion::{criterion_group, criterion_main, Criterion};
 use monad_compress::{
-    brotli::BrotliCompression, deflate::DeflateCompression, lz4::Lz4Compression, CompressionAlgo,
+    brotli::BrotliCompression, deflate::DeflateCompression, lz4::Lz4Compression,
+    util::BoundedWriter, CompressionAlgo,
 };
 
 fn bench_txns(c: &mut Criterion) {
@@ -22,25 +24,26 @@ fn bench_txns(c: &mut Criterion) {
             |b| {
                 b.iter(|| {
                     let algo = BrotliCompression::new(compression_level, 22, Vec::new());
-                    let mut compressed = Vec::new();
-                    algo.compress(&txns, &mut compressed)
+                    let mut compressed_writer = BoundedWriter::new(txns.len() as u32);
+                    algo.compress(&txns, &mut compressed_writer)
                         .expect("compression success");
                 })
             },
         );
 
         let algo = BrotliCompression::new(compression_level, 22, Vec::new());
-        let mut compressed = Vec::new();
-        algo.compress(&txns, &mut compressed)
+        let mut compressed_writer = BoundedWriter::new(txns.len() as u32);
+        algo.compress(&txns, &mut compressed_writer)
             .expect("compression success");
+        let compressed: Bytes = compressed_writer.into();
 
         c.bench_function(
             &format!("bench_brotli_decompress_txns_level_{compression_level}"),
             |b| {
                 b.iter(|| {
                     let algo = BrotliCompression::new(compression_level, 22, Vec::new());
-                    let mut decompressed = Vec::new();
-                    algo.decompress(&compressed, &mut decompressed)
+                    let mut decompressed_writer = BoundedWriter::new(txns.len() as u32);
+                    algo.decompress(&compressed, &mut decompressed_writer)
                         .expect("decompression success");
                 })
             },
@@ -53,25 +56,26 @@ fn bench_txns(c: &mut Criterion) {
             |b| {
                 b.iter(|| {
                     let algo = BrotliCompression::new(compression_level, 22, dictionary.clone());
-                    let mut compressed = Vec::new();
-                    algo.compress(&txns, &mut compressed)
+                    let mut compressed_writer = BoundedWriter::new(txns.len() as u32);
+                    algo.compress(&txns, &mut compressed_writer)
                         .expect("compression success");
                 })
             },
         );
 
         let algo = BrotliCompression::new(compression_level, 22, dictionary.clone());
-        let mut compressed = Vec::new();
-        algo.compress(&txns, &mut compressed)
+        let mut compressed_writer = BoundedWriter::new(txns.len() as u32);
+        algo.compress(&txns, &mut compressed_writer)
             .expect("compression success");
+        let compressed: Bytes = compressed_writer.into();
 
         c.bench_function(
             &format!("bench_brotli_decompress_with_dict_txns_level_{compression_level}"),
             |b| {
                 b.iter(|| {
                     let algo = BrotliCompression::new(compression_level, 22, dictionary.clone());
-                    let mut decompressed = Vec::new();
-                    algo.decompress(&compressed, &mut decompressed)
+                    let mut decompressed_writer = BoundedWriter::new(txns.len() as u32);
+                    algo.decompress(&compressed, &mut decompressed_writer)
                         .expect("decompression success");
                 })
             },
@@ -84,26 +88,27 @@ fn bench_txns(c: &mut Criterion) {
             |b| {
                 b.iter(|| {
                     let algo = DeflateCompression::new(compression_level, 0, Vec::new());
-                    let mut compressed = Vec::new();
-                    algo.compress(&txns, &mut compressed)
+                    let mut compressed_writer = BoundedWriter::new(txns.len() as u32);
+                    algo.compress(&txns, &mut compressed_writer)
                         .expect("compression success");
                 })
             },
         );
 
         let algo = DeflateCompression::new(compression_level, 0, Vec::new());
-        let mut compressed = Vec::new();
-        algo.compress(&txns, &mut compressed)
+        let mut compressed_writer = BoundedWriter::new(txns.len() as u32);
+        algo.compress(&txns, &mut compressed_writer)
             .expect("compression success");
+        let compressed: Bytes = compressed_writer.into();
 
         c.bench_function(
             &format!("bench_deflate_decompress_txns_level_{compression_level}"),
             |b| {
                 b.iter(|| {
                     let algo = DeflateCompression::new(compression_level, 0, Vec::new());
-                    let mut decompressed = Vec::new();
-                    algo.decompress(&compressed, &mut decompressed)
-                        .expect("compression success");
+                    let mut decompressed_writer = BoundedWriter::new(txns.len() as u32);
+                    algo.decompress(&compressed, &mut decompressed_writer)
+                        .expect("decompression success");
                 })
             },
         );
@@ -115,26 +120,27 @@ fn bench_txns(c: &mut Criterion) {
             |b| {
                 b.iter(|| {
                     let algo = Lz4Compression::new(compression_level, 0, Vec::new());
-                    let mut compressed = Vec::new();
-                    algo.compress(&txns, &mut compressed)
+                    let mut compressed_writer = BoundedWriter::new(txns.len() as u32);
+                    algo.compress(&txns, &mut compressed_writer)
                         .expect("compression success");
                 })
             },
         );
 
         let algo = Lz4Compression::new(compression_level, 0, Vec::new());
-        let mut compressed = Vec::new();
-        algo.compress(&txns, &mut compressed)
+        let mut compressed_writer = BoundedWriter::new(txns.len() as u32);
+        algo.compress(&txns, &mut compressed_writer)
             .expect("compression success");
+        let compressed: Bytes = compressed_writer.into();
 
         c.bench_function(
             &format!("bench_lz4_decompress_txns_level_{compression_level}"),
             |b| {
                 b.iter(|| {
                     let algo = Lz4Compression::new(compression_level, 0, Vec::new());
-                    let mut decompressed = Vec::new();
-                    algo.decompress(&compressed, &mut decompressed)
-                        .expect("compression success");
+                    let mut decompressed_writer = BoundedWriter::new(txns.len() as u32);
+                    algo.decompress(&compressed, &mut decompressed_writer)
+                        .expect("decompression success");
                 })
             },
         );

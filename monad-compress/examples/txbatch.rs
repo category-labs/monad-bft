@@ -1,7 +1,9 @@
 use std::{env, fs::File, io::Read};
 
+use bytes::Bytes;
 use monad_compress::{
-    brotli::BrotliCompression, deflate::DeflateCompression, lz4::Lz4Compression, CompressionAlgo,
+    brotli::BrotliCompression, deflate::DeflateCompression, lz4::Lz4Compression,
+    util::BoundedWriter, CompressionAlgo,
 };
 use peak_alloc::PeakAlloc;
 
@@ -37,9 +39,10 @@ fn main() {
         // compress txns
         PEAK_ALLOC.reset_peak_usage();
         let algo = BrotliCompression::new(compression_level, 22, Vec::new());
-        let mut compressed = Vec::new();
-        algo.compress(&txns, &mut compressed)
+        let mut compressed_writer = BoundedWriter::new(txns.len() as u32);
+        algo.compress(&txns, &mut compressed_writer)
             .expect("compression success");
+        let compressed: Bytes = compressed_writer.into();
 
         println!(
             "{:<10} | {:<10.3} | {:<10.3} | {:<10}",
@@ -60,9 +63,10 @@ fn main() {
         // compress txns
         PEAK_ALLOC.reset_peak_usage();
         let algo = BrotliCompression::new(compression_level, 22, dictionary.clone());
-        let mut compressed = Vec::new();
-        algo.compress(&txns, &mut compressed)
+        let mut compressed_writer = BoundedWriter::new(txns.len() as u32);
+        algo.compress(&txns, &mut compressed_writer)
             .expect("compression success");
+        let compressed: Bytes = compressed_writer.into();
         println!(
             "{:<10} | {:<10.3} | {:<10.3} | {:<10}",
             compression_level,
@@ -81,9 +85,10 @@ fn main() {
         // compress txns
         PEAK_ALLOC.reset_peak_usage();
         let algo = DeflateCompression::new(compression_level, 0, Vec::new());
-        let mut compressed = Vec::new();
-        algo.compress(&txns, &mut compressed)
+        let mut compressed_writer = BoundedWriter::new(txns.len() as u32);
+        algo.compress(&txns, &mut compressed_writer)
             .expect("compression success");
+        let compressed: Bytes = compressed_writer.into();
 
         println!(
             "{:<10} | {:<10.3} | {:<10.3} | {:<10}",
@@ -103,9 +108,10 @@ fn main() {
         // compress txns
         PEAK_ALLOC.reset_peak_usage();
         let algo = Lz4Compression::new(compression_level, 0, Vec::new());
-        let mut compressed = Vec::new();
-        algo.compress(&txns, &mut compressed)
+        let mut compressed_writer = BoundedWriter::new(txns.len() as u32);
+        algo.compress(&txns, &mut compressed_writer)
             .expect("compression success");
+        let compressed: Bytes = compressed_writer.into();
 
         println!(
             "{:<10} | {:<10.3} | {:<10.3} | {:<10}",

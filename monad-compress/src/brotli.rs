@@ -6,7 +6,7 @@ use brotli::{
     IoWriterWrapper, SliceWrapperMut,
 };
 
-use crate::CompressionAlgo;
+use crate::{util::BoundedWriter, CompressionAlgo};
 
 pub const MAX_COMPRESSION_LEVEL: u32 = 11;
 
@@ -43,7 +43,11 @@ impl CompressionAlgo for BrotliCompression {
         }
     }
 
-    fn compress(&self, input: &[u8], output: &mut Vec<u8>) -> Result<(), Self::CompressError> {
+    fn compress(
+        &self,
+        input: &[u8],
+        output: &mut BoundedWriter,
+    ) -> Result<(), Self::CompressError> {
         let mut input_buffer = StandardAlloc {}.alloc_cell(4096);
         let mut output_buffer = StandardAlloc {}.alloc_cell(4096);
         let mut params = BrotliEncoderInitParams();
@@ -64,7 +68,11 @@ impl CompressionAlgo for BrotliCompression {
         .map(|_size| ())
     }
 
-    fn decompress(&self, input: &[u8], output: &mut Vec<u8>) -> Result<(), Self::DecompressError> {
+    fn decompress(
+        &self,
+        input: &[u8],
+        output: &mut BoundedWriter,
+    ) -> Result<(), Self::DecompressError> {
         let mut input_buffer = StandardAlloc {}.alloc_cell(4096);
         let mut output_buffer = StandardAlloc {}.alloc_cell(4096);
 
@@ -86,6 +94,8 @@ impl CompressionAlgo for BrotliCompression {
 mod test {
     use std::{fs::File, io::Read};
 
+    use bytes::Bytes;
+
     use super::*;
     #[test]
     fn test_lossless_compression() {
@@ -97,13 +107,17 @@ mod test {
 
         let algo = BrotliCompression::new(4, 22, Vec::new());
 
-        let mut compressed = Vec::new();
-        assert!(algo.compress(&data, &mut compressed).is_ok());
+        let mut compressed_writer = BoundedWriter::new(data.len() as u32);
+        assert!(algo.compress(&data, &mut compressed_writer).is_ok());
+        let compressed: Bytes = compressed_writer.into();
         assert!(compressed.len() < data.len());
 
-        let mut decompressed = Vec::new();
-        assert!(algo.decompress(&compressed, &mut decompressed).is_ok());
-        assert_eq!(data, decompressed.as_slice());
+        let mut decompressed_writer = BoundedWriter::new(data.len() as u32);
+        assert!(algo
+            .decompress(&compressed, &mut decompressed_writer)
+            .is_ok());
+        let decompressed: Bytes = decompressed_writer.into();
+        assert_eq!(data, decompressed);
     }
 
     #[test]
@@ -121,12 +135,16 @@ mod test {
             .unwrap();
         let algo = BrotliCompression::new(4, 22, dictionary);
 
-        let mut compressed = Vec::new();
-        assert!(algo.compress(&data, &mut compressed).is_ok());
+        let mut compressed_writer = BoundedWriter::new(data.len() as u32);
+        assert!(algo.compress(&data, &mut compressed_writer).is_ok());
+        let compressed: Bytes = compressed_writer.into();
         assert!(compressed.len() < data.len());
 
-        let mut decompressed = Vec::new();
-        assert!(algo.decompress(&compressed, &mut decompressed).is_ok());
-        assert_eq!(data, decompressed.as_slice());
+        let mut decompressed_writer = BoundedWriter::new(data.len() as u32);
+        assert!(algo
+            .decompress(&compressed, &mut decompressed_writer)
+            .is_ok());
+        let decompressed: Bytes = decompressed_writer.into();
+        assert_eq!(data, decompressed);
     }
 }

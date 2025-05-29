@@ -1,8 +1,8 @@
-use std::io::{Cursor, Read, Write};
+use std::io::{self, Cursor, Write};
 
 use lz4::{Decoder, EncoderBuilder};
 
-use crate::CompressionAlgo;
+use crate::{util::BoundedWriter, CompressionAlgo};
 
 pub const MAX_COMPRESSION_LEVEL: u32 = 16;
 
@@ -23,22 +23,32 @@ impl CompressionAlgo for Lz4Compression {
         }
     }
 
-    fn compress(&self, input: &[u8], output: &mut Vec<u8>) -> Result<(), Self::CompressError> {
+    fn compress(
+        &self,
+        input: &[u8],
+        output: &mut BoundedWriter,
+    ) -> Result<(), Self::CompressError> {
         let mut encoder = self.builder.build(output)?;
         encoder.write_all(input)?;
         encoder.finish().1
     }
 
-    fn decompress(&self, input: &[u8], output: &mut Vec<u8>) -> Result<(), Self::DecompressError> {
+    fn decompress(
+        &self,
+        input: &[u8],
+        output: &mut BoundedWriter,
+    ) -> Result<(), Self::DecompressError> {
         let mut decoder = Decoder::new(Cursor::new(input))?;
-        decoder.read_to_end(output)?;
-        decoder.finish().1
+        io::copy(&mut decoder, output)?;
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod test {
-    use std::fs::File;
+    use std::{fs::File, io::Read};
+
+    use bytes::Bytes;
 
     use super::*;
     #[test]
@@ -51,12 +61,16 @@ mod test {
 
         let algo = Lz4Compression::new(8, 0, Vec::new());
 
-        let mut compressed = Vec::new();
-        assert!(algo.compress(&data, &mut compressed).is_ok());
+        let mut compressed_writer = BoundedWriter::new(data.len() as u32);
+        assert!(algo.compress(&data, &mut compressed_writer).is_ok());
+        let compressed: Bytes = compressed_writer.into();
         assert!(compressed.len() < data.len());
 
-        let mut decompressed = Vec::new();
-        assert!(algo.decompress(&compressed, &mut decompressed).is_ok());
-        assert_eq!(data, decompressed.as_slice());
+        let mut decompressed_writer = BoundedWriter::new(data.len() as u32);
+        assert!(algo
+            .decompress(&compressed, &mut decompressed_writer)
+            .is_ok());
+        let decompressed: Bytes = decompressed_writer.into();
+        assert_eq!(data, decompressed);
     }
 }

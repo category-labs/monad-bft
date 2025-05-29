@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use monad_bls::BlsSignatureCollection;
-use monad_compress::{brotli::BrotliCompression, CompressionAlgo};
+use monad_compress::{brotli::BrotliCompression, util::BoundedWriter, CompressionAlgo};
 use monad_consensus::messages::consensus_message::{ConsensusMessage, ProtocolMessage};
 use monad_consensus_types::voting::ValidatorMapping;
 use monad_eth_types::EthExecutionProtocol;
@@ -82,9 +82,10 @@ fn main() {
     );
     // compress proposal
     let algo = BrotliCompression::new(11, 22, Vec::new());
-    let mut compressed = Vec::new();
-    algo.compress(&proposal_bytes, &mut compressed)
+    let mut compressed_writer = BoundedWriter::new(proposal_bytes.len() as u32);
+    algo.compress(&proposal_bytes, &mut compressed_writer)
         .expect("compression success");
+    let compressed: Bytes = compressed_writer.into();
 
     // report the peak memory usage
     println!(
