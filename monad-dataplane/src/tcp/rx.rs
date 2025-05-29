@@ -18,7 +18,6 @@ use std::{
     collections::BTreeMap,
     io::ErrorKind,
     net::{IpAddr, SocketAddr},
-    num::NonZeroU32,
     rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
@@ -41,7 +40,7 @@ use super::{
 };
 use crate::{
     addrlist::{Addrlist, Status},
-    tcp::{RateLimiter, TcpRateLimit},
+    tcp::RateLimiter,
 };
 
 const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
@@ -136,22 +135,18 @@ struct RxStateInner {
     num_connections_per_ip: BTreeMap<IpAddr, usize>,
 }
 
-pub async fn task(tcp_listener: TcpListener, tcp_ingress_tx: mpsc::Sender<RecvTcpMsg>) {
-    let addrlist = Arc::new(Addrlist::new());
-    let tcp_config = TcpConfig {
-        rate_limit: TcpRateLimit {
-            rps: NonZeroU32::new(10000).unwrap(),
-            rps_burst: NonZeroU32::new(2000).unwrap(),
-        },
-        connections_limit: 1000,
-        per_ip_connections_limit: 100,
-    };
+pub(crate) async fn task(
+    tcp_config: TcpConfig,
+    tcp_control_map: TcpControl,
+    addrlist: Arc<Addrlist>,
+    tcp_listener: TcpListener,
+    tcp_ingress_tx: mpsc::Sender<RecvTcpMsg>,
+) {
     let TcpConfig {
         rate_limit,
         connections_limit,
         per_ip_connections_limit,
     } = tcp_config;
-    let tcp_control_map = TcpControl::new();
     let rx_state = RxState::new(addrlist, connections_limit, per_ip_connections_limit);
 
     let mut conn_id: u64 = 0;
