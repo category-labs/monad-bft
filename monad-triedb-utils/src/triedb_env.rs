@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     fmt::Debug,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         atomic::{AtomicUsize, Ordering::SeqCst},
         mpsc, Arc, Mutex,
@@ -14,7 +14,7 @@ use alloy_consensus::{Header, ReceiptEnvelope, TxEnvelope};
 use alloy_primitives::{keccak256, Address, FixedBytes, U256};
 use alloy_rlp::{encode_list, BytesMut, Decodable, Encodable};
 use futures::{channel::oneshot, FutureExt};
-use monad_triedb::{TraverseEntry, TriedbHandle};
+use monad_triedb::{MonadCResult, TraverseEntry, TriedbHandle};
 use monad_types::{Round, SeqNum};
 use serde::{Deserialize, Serialize};
 use tracing::{error, warn};
@@ -41,7 +41,7 @@ enum TriedbRequest {
 
 struct RangeGetRequest {
     // a sender for the polling thread to send the result back to the request handler
-    request_sender: oneshot::Sender<Option<Vec<TraverseEntry>>>,
+    request_sender: oneshot::Sender<MonadCResult<Vec<TraverseEntry>>>,
     // prefix key is used to get the root of the subtrie
     prefix_key: Vec<u8>,
     prefix_key_len_nibbles: u8,
@@ -56,7 +56,7 @@ struct RangeGetRequest {
 
 struct TraverseRequest {
     // a sender for the polling thread to send the result back to the request handler
-    request_sender: oneshot::Sender<Option<Vec<TraverseEntry>>>,
+    request_sender: oneshot::Sender<MonadCResult<Vec<TraverseEntry>>>,
     // triedb_key and key_len_nibbles are used to read items from triedb
     triedb_key: Vec<u8>,
     key_len_nibbles: u8,
@@ -67,7 +67,7 @@ struct TraverseRequest {
 struct AsyncRequest {
     // a sender for the polling thread to send the result back to the request handler
     // after polling is completed
-    request_sender: oneshot::Sender<Option<Vec<u8>>>,
+    request_sender: oneshot::Sender<MonadCResult<Vec<u8>>>,
     // counter which is updated when TrieDB processes a single async read to completion
     completed_counter: Arc<AtomicUsize>,
     // triedb_key and key_len_nibbles are used to read items from triedb
@@ -181,9 +181,9 @@ const MAX_POLL_COMPLETIONS: usize = usize::MAX;
 const META_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 fn get_latest_voted_block_key(triedb_handle: &TriedbHandle) -> Option<ProposedBlockKey> {
-    let latest_voted_round_before = Round(triedb_handle.latest_voted_round()?);
-    let latest_voted_seq_num = SeqNum(triedb_handle.latest_voted_block()?);
-    let latest_voted_round_after = Round(triedb_handle.latest_voted_round()?);
+    let latest_voted_round_before = Round(triedb_handle.latest_voted_round().ok()?);
+    let latest_voted_seq_num = SeqNum(triedb_handle.latest_voted_block().ok()?);
+    let latest_voted_round_after = Round(triedb_handle.latest_voted_round().ok()?);
     if latest_voted_round_before != latest_voted_round_after {
         return None;
     }
@@ -195,7 +195,7 @@ fn get_latest_voted_block_key(triedb_handle: &TriedbHandle) -> Option<ProposedBl
 
 fn polling_thread(
     tokio_handle: tokio::runtime::Handle,
-    triedb_path: PathBuf,
+    triedb_path: Vec<PathBuf>,
     meta: Arc<Mutex<TriedbEnvMeta>>,
     receiver_read: mpsc::Receiver<TriedbRequest>,
     max_async_read_concurrency: usize,
@@ -203,8 +203,7 @@ fn polling_thread(
     max_async_traverse_concurrency: usize,
 ) {
     // create a new triedb handle for the polling thread
-    let triedb_handle: TriedbHandle =
-        TriedbHandle::try_new(&triedb_path).expect("triedb should exist in path");
+    let triedb_handle: TriedbHandle = TriedbHandle::new(&triedb_path).unwrap();
 
     let triedb_async_read_concurrency_tracker: Arc<()> = Arc::new(());
     let triedb_async_traverse_concurrency_tracker: Arc<()> = Arc::new(());
@@ -273,7 +272,7 @@ fn polling_thread(
             }
         }
 
-        triedb_handle.triedb_poll(false, MAX_POLL_COMPLETIONS);
+        let _ = triedb_handle.triedb_poll(false, MAX_POLL_COMPLETIONS);
 
         // get next request, or sleep for 1ms
         // prioritise async reads over async traversals
@@ -366,9 +365,9 @@ fn populate_cache(
         );
 
         tx_receiver.map(|maybe_tx| match maybe_tx {
-            Ok(Some(rlp_transactions)) => parse_rlp_entries(rlp_transactions),
-            Ok(None) => {
-                error!("Error traversing db");
+            Ok(Ok(rlp_transactions)) => parse_rlp_entries(rlp_transactions),
+            Ok(Err(e)) => {
+                error!("Error traversing db: {e}");
                 Err(String::from("error traversing db"))
             }
             Err(e) => {
@@ -395,9 +394,9 @@ fn populate_cache(
         );
 
         receipt_receiver.map(|maybe_receipts| match maybe_receipts {
-            Ok(Some(rlp_receipts)) => parse_rlp_entries(rlp_receipts),
-            Ok(None) => {
-                error!("Error traversing db");
+            Ok(Ok(rlp_receipts)) => parse_rlp_entries(rlp_receipts),
+            Ok(Err(e)) => {
+                error!("Error traversing db: {e}");
                 Err(String::from("error traversing db"))
             }
             Err(e) => {
@@ -523,12 +522,12 @@ pub trait Triedb: Debug {
 }
 
 pub trait TriedbPath {
-    fn path(&self) -> PathBuf;
+    fn path(&self) -> Vec<PathBuf>;
 }
 
 #[derive(Clone)]
 pub struct TriedbEnv {
-    triedb_path: PathBuf,
+    triedb_path: Vec<PathBuf>,
     mpsc_sender: mpsc::SyncSender<TriedbRequest>, // sender for tasks
     mpsc_sender_traverse: mpsc::SyncSender<TriedbRequest>,
 
@@ -624,7 +623,7 @@ impl std::fmt::Debug for TriedbEnv {
 
 impl TriedbEnv {
     pub fn new(
-        triedb_path: &Path,
+        triedb_path: Vec<PathBuf>,
         max_buffered_read_requests: usize,
         max_async_read_concurrency: usize,
         max_buffered_traverse_requests: usize,
@@ -633,8 +632,7 @@ impl TriedbEnv {
         max_voted_block_cache_len: usize,
     ) -> Self {
         let latest_finalized = {
-            let triedb_handle: TriedbHandle =
-                TriedbHandle::try_new(triedb_path).expect("triedb should exist in path");
+            let triedb_handle: TriedbHandle = TriedbHandle::new(&triedb_path).unwrap();
             SeqNum(triedb_handle.latest_finalized_block().unwrap_or_default())
         };
         let meta = Arc::new(Mutex::new(TriedbEnvMeta {
@@ -655,7 +653,7 @@ impl TriedbEnv {
 
         // spawn the polling thread in a dedicated thread
         let meta_cloned = meta.clone();
-        let triedb_path_cloned = triedb_path.to_path_buf();
+        let triedb_path_cloned = triedb_path.clone();
         let tokio_handle = tokio::runtime::Handle::current();
 
         thread::Builder::new()
@@ -674,7 +672,7 @@ impl TriedbEnv {
             .expect("failed to spawn rpc poll");
 
         Self {
-            triedb_path: triedb_path.to_path_buf(),
+            triedb_path,
             mpsc_sender: sender_read,
             mpsc_sender_traverse: sender_traverse,
             meta,
@@ -693,7 +691,7 @@ impl TriedbEnv {
         &self,
         block_key: BlockKey,
         key_input: KeyInput,
-    ) -> Result<(oneshot::Receiver<Option<Vec<u8>>>, Arc<AtomicUsize>), String> {
+    ) -> Result<(oneshot::Receiver<MonadCResult<Vec<u8>>>, Arc<AtomicUsize>), String> {
         let (request_sender, request_receiver) = oneshot::channel();
         let (triedb_key, key_len_nibbles) = create_triedb_key(block_key.into(), key_input);
         let completed_counter = Arc::new(AtomicUsize::new(0));
@@ -716,7 +714,7 @@ impl TriedbEnv {
     }
 
     async fn handle_async_result<T, F>(
-        receiver: oneshot::Receiver<Option<Vec<u8>>>,
+        receiver: oneshot::Receiver<MonadCResult<Vec<u8>>>,
         counter: Arc<AtomicUsize>,
         decoder: F,
     ) -> Result<Option<T>, String>
@@ -731,8 +729,8 @@ impl TriedbEnv {
                 }
 
                 match result {
-                    Some(data) => decoder(data).map(Some),
-                    None => Ok(None),
+                    Ok(data) => decoder(data).map(Some),
+                    Err(_) => Ok(None),
                 }
             }
             Err(e) => {
@@ -759,7 +757,7 @@ impl TriedbEnv {
         &self,
         block_key: BlockKey,
         key_input: KeyInput,
-    ) -> Result<oneshot::Receiver<Option<Vec<TraverseEntry>>>, String> {
+    ) -> Result<oneshot::Receiver<MonadCResult<Vec<TraverseEntry>>>, String> {
         let (request_sender, request_receiver) = oneshot::channel();
         let (triedb_key, key_len_nibbles) = create_triedb_key(block_key.into(), key_input);
 
@@ -780,13 +778,13 @@ impl TriedbEnv {
     }
 
     async fn handle_traverse_result<T>(
-        receiver: oneshot::Receiver<Option<Vec<TraverseEntry>>>,
+        receiver: oneshot::Receiver<MonadCResult<Vec<TraverseEntry>>>,
         parser: impl FnOnce(Vec<TraverseEntry>) -> Result<Vec<T>, String>,
     ) -> Result<Vec<T>, String> {
         match receiver.await {
-            Ok(Some(entries)) => parser(entries),
-            Ok(None) => {
-                error!("Error traversing db");
+            Ok(Ok(entries)) => parser(entries),
+            Ok(Err(e)) => {
+                error!("Error traversing db: {e}");
                 Err(String::from("error traversing db"))
             }
             Err(e) => {
@@ -802,7 +800,7 @@ impl TriedbEnv {
         key_input: KeyInput,
         txn_index: u64,
         txn_count: u64,
-    ) -> Result<oneshot::Receiver<Option<Vec<TraverseEntry>>>, String> {
+    ) -> Result<oneshot::Receiver<MonadCResult<Vec<TraverseEntry>>>, String> {
         let (request_sender, request_receiver) = oneshot::channel();
         let (prefix_key, prefix_key_len_nibbles) = create_triedb_key(block_key.into(), key_input);
         let (min_triedb_key, min_key_len_nibbles) = create_range_key(txn_index);
@@ -830,7 +828,7 @@ impl TriedbEnv {
     }
 
     async fn handle_async_range_result<T, F>(
-        receiver: oneshot::Receiver<Option<Vec<TraverseEntry>>>,
+        receiver: oneshot::Receiver<MonadCResult<Vec<TraverseEntry>>>,
         decoder: F,
     ) -> Result<Option<T>, String>
     where
@@ -838,8 +836,8 @@ impl TriedbEnv {
     {
         match receiver.await {
             Ok(result) => match result {
-                Some(data) => decoder(data).map(Some),
-                None => Ok(None),
+                Ok(data) => decoder(data).map(Some),
+                Err(_) => Ok(None),
             },
             Err(e) => {
                 error!("Error awaiting result: {e}");
@@ -875,7 +873,7 @@ impl TriedbEnv {
 }
 
 impl TriedbPath for TriedbEnv {
-    fn path(&self) -> PathBuf {
+    fn path(&self) -> Vec<PathBuf> {
         self.triedb_path.clone()
     }
 }

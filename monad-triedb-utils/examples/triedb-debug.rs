@@ -12,7 +12,7 @@ use monad_types::{Round, SeqNum};
 #[derive(Debug, Parser)]
 struct Args {
     #[arg(long)]
-    pub triedb_path: PathBuf,
+    pub triedb_path: Vec<PathBuf>,
 
     #[command(subcommand)]
     command: Commands,
@@ -40,8 +40,12 @@ enum Commands {
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
 
-    let reader = TriedbReader::try_new(&args.triedb_path)
-        .unwrap_or_else(|| panic!("failed to open triedb path: {:?}", &args.triedb_path));
+    let reader = TriedbReader::new(&args.triedb_path).unwrap_or_else(|e| {
+        panic!(
+            "failed to open triedb path: {:?} due to {}",
+            &args.triedb_path, e
+        )
+    });
 
     let start = std::time::Instant::now();
 

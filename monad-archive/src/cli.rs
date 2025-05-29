@@ -120,7 +120,11 @@ impl BlockDataReaderArgs {
         use BlockDataReaderArgs::*;
         match self {
             Aws(aws_cli_args) => aws_cli_args.bucket.clone(),
-            Triedb(trie_db_cli_args) => trie_db_cli_args.triedb_path.clone(),
+            Triedb(trie_db_cli_args) => trie_db_cli_args.triedb_path[0]
+                .clone()
+                .into_os_string()
+                .into_string()
+                .unwrap(),
             MongoDb(mongo_db_cli_args) => {
                 format!("{}:{}", mongo_db_cli_args.url, mongo_db_cli_args.db)
             }
@@ -244,7 +248,7 @@ impl AwsCliArgs {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
 pub struct TrieDbCliArgs {
-    pub triedb_path: String,
+    pub triedb_path: Vec<PathBuf>,
     pub max_buffered_read_requests: usize,
     pub max_triedb_async_read_concurrency: usize,
     pub max_buffered_traverse_requests: usize,
@@ -256,7 +260,9 @@ pub struct TrieDbCliArgs {
 impl TrieDbCliArgs {
     pub fn parse(mut next: impl FnMut(&'static str) -> Result<String>) -> Result<TrieDbCliArgs> {
         Ok(TrieDbCliArgs {
-            triedb_path: next("storage args missing db path")?,
+            triedb_path: vec![PathBuf::from(OsString::from(next(
+                "storage args missing db path",
+            )?))],
             max_buffered_read_requests: usize::from_str(&next(
                 "args missing max_buffered_read_requests",
             )?)?,

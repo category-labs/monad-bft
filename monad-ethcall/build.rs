@@ -1,17 +1,20 @@
-use std::{env, path::PathBuf};
+use std::{
+    env,
+    path::{self, PathBuf},
+};
 
 fn main() {
     println!("cargo:rerun-if-changed=../monad-cxx/monad-execution");
     println!("cargo:rerun-if-env-changed=TRIEDB_TARGET");
 
-    let build_execution_lib =
-        env::var("TRIEDB_TARGET").is_ok_and(|target| target == "triedb_driver");
+    let build_execution_lib = env::var("TRIEDB_TARGET")
+        .is_ok_and(|target| target == "monad-triedb-driver" || target == "triedb_driver");
     if build_execution_lib {
         let target = "monad_rpc";
+        let toolchain_file = path::absolute("../monad-cxx/toolchain-avx2.cmake").unwrap();
         let dst = cmake::Config::new("../monad-cxx/monad-execution")
             .define("CMAKE_BUILD_TARGET", target)
-            .define("CMAKE_POSITION_INDEPENDENT_CODE", "ON")
-            .define("BUILD_SHARED_LIBS", "ON")
+            .define("CMAKE_TOOLCHAIN_FILE", toolchain_file)
             .build_target(target)
             .build();
 

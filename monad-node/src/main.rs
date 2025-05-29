@@ -226,14 +226,15 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
 
     // FIXME this is super jank... we should always just pass the 1 file in monad-node
     let mut statesync_triedb_path = node_state.triedb_path.clone();
-    if let Ok(files) = std::fs::read_dir(&statesync_triedb_path) {
+    if let Ok(files) = std::fs::read_dir(&statesync_triedb_path[0]) {
         let mut files: Vec<_> = files.collect();
         assert_eq!(files.len(), 1, "nothing in triedb path");
-        statesync_triedb_path = files
+        statesync_triedb_path = [files
             .pop()
             .unwrap()
             .expect("failed to read triedb path")
-            .path();
+            .path(); 1]
+            .to_vec();
     }
 
     let mut bootstrap_validators = Vec::new();
@@ -271,8 +272,8 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         )
     };
 
-    let triedb_handle = TriedbReader::try_new(node_state.triedb_path.as_path())
-        .expect("triedb should exist in path");
+    let triedb_handle =
+        TriedbReader::new(&node_state.triedb_path).expect("triedb should exist in path");
 
     let mut executor = ParentExecutor {
         router,
@@ -280,7 +281,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         ledger: MonadBlockFileLedger::new(node_state.ledger_path),
         checkpoint: FileCheckpoint::new(node_state.forkpoint_path),
         state_root_hash: StateRootHashTriedbPoll::new(
-            &node_state.triedb_path,
+            node_state.triedb_path.clone(),
             &node_state.validators_path,
             val_set_update_interval,
         ),
@@ -318,7 +319,10 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         .expect("uds bind failed"),
         loopback: LoopbackExecutor::default(),
         state_sync: StateSync::<SignatureType, SignatureCollectionType>::new(
-            vec![statesync_triedb_path.to_string_lossy().to_string()],
+            statesync_triedb_path
+                .into_iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect(),
             node_state.statesync_sq_thread_cpu,
             state_sync_peers,
             node_state

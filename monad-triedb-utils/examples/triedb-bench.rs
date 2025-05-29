@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Parser)]
 struct Args {
     #[arg(long)]
-    pub triedb_path: PathBuf,
+    pub triedb_path: Vec<PathBuf>,
 
     #[arg(long, default_value_t = 0)]
     pub seed: u64,
@@ -77,8 +77,12 @@ async fn main() {
     let mut rng = StdRng::seed_from_u64(args.seed);
 
     let block_range = {
-        let reader = TriedbHandle::try_new(&args.triedb_path)
-            .unwrap_or_else(|| panic!("failed to open triedb path: {:?}", &args.triedb_path));
+        let reader = TriedbHandle::new(&args.triedb_path).unwrap_or_else(|e| {
+            panic!(
+                "failed to open triedb path: {:?} due to {}",
+                &args.triedb_path, e
+            )
+        });
         let latest_block = reader
             .latest_finalized_block()
             .expect("no latest_finalized_block in db");
@@ -90,7 +94,7 @@ async fn main() {
     };
 
     let triedb_handle = TriedbEnv::new(
-        &args.triedb_path,
+        args.triedb_path,
         args.max_buffered_read_requests,
         args.max_async_read_concurrency,
         args.max_buffered_traverse_requests,

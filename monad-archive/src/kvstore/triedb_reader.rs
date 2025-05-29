@@ -16,7 +16,7 @@ impl TriedbReader {
     pub fn new(args: &TrieDbCliArgs) -> TriedbReader {
         Self {
             db: TriedbEnv::new(
-                args.triedb_path.as_ref(),
+                args.triedb_path.clone(),
                 args.max_buffered_read_requests,
                 args.max_triedb_async_read_concurrency,
                 args.max_buffered_traverse_requests,

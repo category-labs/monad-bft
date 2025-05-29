@@ -37,6 +37,7 @@ RUN apt update && apt install -y \
   libbrotli-dev \
   libcap-dev \
   libcgroup-dev \
+  libclang-dev \
   libcli11-dev \
   libgmock-dev \
   libgmp-dev \
@@ -65,11 +66,12 @@ ARG CARGO_ROOT="/root/.cargo"
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
 ENV PATH="${CARGO_ROOT}/bin:$PATH"
 RUN rustup toolchain install 1.85.0-x86_64-unknown-linux-gnu
-ARG TRIEDB_TARGET=triedb_driver
+RUN cargo install bindgen-cli
+ARG TRIEDB_TARGET=monad-triedb-driver
 
 # Builder
 COPY . .
-RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" \
+RUN \
     CC=gcc-15 CXX=g++-15 cargo build --release \
     --bin monad-archiver \
     --bin monad-archive-checker \
@@ -79,7 +81,7 @@ RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell -
     mv target/release/monad-archive-checker archive-checker && \
     mv target/release/monad-indexer indexer && \
     mv target/release/monad-index-checker index-checker && \
-    cp `ls -Lt $(find target/release | grep -e "libtriedb_driver.so") | awk -F/ '!seen[$NF]++'` . 
+    cp `ls -Lt $(find target/release | grep -e "libmonad-triedb-driver.so") | awk -F/ '!seen[$NF]++'` . 
 
 # Debug runner
 FROM base AS runner-debug

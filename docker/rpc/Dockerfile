@@ -35,6 +35,7 @@ RUN apt update && apt install -y \
   libbrotli-dev \
   libcap-dev \
   libcgroup-dev \
+  libclang-dev \
   libcli11-dev \
   libgmock-dev \
   libgmp-dev \
@@ -63,12 +64,12 @@ ARG CARGO_ROOT="/root/.cargo"
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
 ENV PATH="${CARGO_ROOT}/bin:$PATH"
 RUN rustup toolchain install 1.85.0-x86_64-unknown-linux-gnu
-
-ENV TRIEDB_TARGET=triedb_driver
+RUN cargo install bindgen-cli
+ENV TRIEDB_TARGET=monad-triedb-driver
 
 # Builder
 COPY . .
-RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" \
+RUN \
     CC=gcc-15 CXX=g++-15 cargo build --release --bin monad-rpc && \
     mv target/release/monad-rpc rpc && \
     cp `ls -Lt $(find target/release | grep -e "libquill.so") | awk -F/ '!seen[$NF]++'` . && \
@@ -76,7 +77,7 @@ RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell -
     cp `ls -Lt $(find target/release | grep -e "libsecp256k1.so") | awk -F/ '!seen[$NF]++'` . && \
     cp `ls -Lt $(find target/release | grep -e "libsilkpre.so") | awk -F/ '!seen[$NF]++'` . && \
     cp `ls -Lt $(find target/release | grep -e "libmonad_rpc.so") | awk -F/ '!seen[$NF]++'` . && \
-    cp `ls -Lt $(find target/release | grep -e "libtriedb_driver.so") | awk -F/ '!seen[$NF]++'` .
+    cp `ls -Lt $(find target/release | grep -e "libmonad-triedb-driver.so") | awk -F/ '!seen[$NF]++'` .
 
 # Debug runner
 FROM base AS runner-debug

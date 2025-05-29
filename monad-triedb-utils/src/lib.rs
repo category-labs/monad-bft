@@ -1,5 +1,5 @@
 use std::{
-    path::Path,
+    path::PathBuf,
     sync::{
         atomic::{AtomicU64, AtomicUsize, Ordering::SeqCst},
         Arc,
@@ -20,7 +20,7 @@ use monad_crypto::{
 use monad_eth_types::{EthAccount, EthExecutionProtocol, EthHeader};
 use monad_secp::SecpSignature;
 use monad_state_backend::{StateBackend, StateBackendError};
-use monad_triedb::TriedbHandle;
+use monad_triedb::{MonadCResult, TriedbHandle};
 use monad_types::{BlockId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM};
 use tracing::{debug, trace, warn};
 
@@ -49,30 +49,30 @@ impl TriedbReader {
         &self.handle
     }
 
-    pub fn try_new(triedb_path: &Path) -> Option<Self> {
-        TriedbHandle::try_new(triedb_path).map(|handle| Self {
+    pub fn new(triedb_path: &[PathBuf]) -> MonadCResult<Self> {
+        TriedbHandle::new(triedb_path).map(|handle| Self {
             handle,
             state_backend_total_lookups: Default::default(),
         })
     }
 
     pub fn get_latest_voted_block(&self) -> Option<SeqNum> {
-        let latest_voted = self.handle.latest_voted_block()?;
+        let latest_voted = self.handle.latest_voted_block().ok()?;
         Some(SeqNum(latest_voted))
     }
 
     pub fn get_latest_voted_round(&self) -> Option<Round> {
-        let latest_voted = self.handle.latest_voted_round()?;
+        let latest_voted = self.handle.latest_voted_round().ok()?;
         Some(Round(latest_voted))
     }
 
     pub fn get_latest_finalized_block(&self) -> Option<SeqNum> {
-        let latest_finalized = self.handle.latest_finalized_block()?;
+        let latest_finalized = self.handle.latest_finalized_block().ok()?;
         Some(SeqNum(latest_finalized))
     }
 
     pub fn get_earliest_finalized_block(&self) -> Option<SeqNum> {
-        let earliest_finalized = self.handle.earliest_finalized_block()?;
+        let earliest_finalized = self.handle.earliest_finalized_block().ok()?;
         Some(SeqNum(earliest_finalized))
     }
 
@@ -91,7 +91,10 @@ impl TriedbReader {
         {
             let (triedb_key, key_len_nibbles) =
                 create_triedb_key(Version::Finalized, KeyInput::BlockHeader);
-            let eth_header_bytes = self.handle.read(&triedb_key, key_len_nibbles, seq_num.0)?;
+            let eth_header_bytes = self
+                .handle
+                .read(&triedb_key, key_len_nibbles, seq_num.0)
+                .ok()?;
             let mut rlp_buf = eth_header_bytes.as_slice();
             let block_header = Header::decode(&mut rlp_buf).expect("invalid rlp eth header");
 
@@ -114,7 +117,10 @@ impl TriedbReader {
 
         let (triedb_key, key_len_nibbles) =
             create_triedb_key(Version::Proposal(*round), KeyInput::BlockHeader);
-        let eth_header_bytes = self.handle.read(&triedb_key, key_len_nibbles, seq_num.0)?;
+        let eth_header_bytes = self
+            .handle
+            .read(&triedb_key, key_len_nibbles, seq_num.0)
+            .ok()?;
 
         // We need to re-check the block id to make sure that this block was not overwritten.
         // This can only happen in the case of equivocation, where there can be 2 proposals for the
@@ -149,7 +155,10 @@ impl TriedbReader {
 
         let (triedb_key, key_len_nibbles) =
             create_triedb_key(Version::Proposal(*round), KeyInput::BftBlock);
-        let bft_block = self.handle.read(&triedb_key, key_len_nibbles, seq_num.0)?;
+        let bft_block = self
+            .handle
+            .read(&triedb_key, key_len_nibbles, seq_num.0)
+            .ok()?;
 
         let block: ConsensusBlockHeader<_, _, _> = alloy_rlp::decode_exact(&bft_block)
             .unwrap_or_else(|err| {
@@ -192,7 +201,7 @@ impl TriedbReader {
 
         let result = self.handle.read(&triedb_key, key_len_nibbles, seq_num.0);
 
-        let Some(account_rlp) = result else {
+        let Ok(account_rlp) = result else {
             debug!(?seq_num, ?eth_address, "account not found");
             return None;
         };
@@ -224,9 +233,9 @@ impl TriedbReader {
             );
             receiver.map(|receiver_result| {
                 // Receiver should not fail
-                let maybe_rlp_account = receiver_result.expect("receiver can't be canceled");
+                let maybe_rlp_account = receiver_result.expect("receiver can't be canceled").ok();
                 // RLP decode the received account value
-                maybe_rlp_account.and_then(rlp_decode_account)
+                rlp_decode_account(maybe_rlp_account?)
             })
         });
         // Join all futures of receivers
@@ -238,7 +247,7 @@ impl TriedbReader {
         while completed_counter.load(SeqCst) < num_accounts && poll_count < MAX_TRIEDB_ASYNC_POLLS {
             // blocking = true => wait to do more work
             // max_completions = usize::MAX => process as many completions before returning
-            poll_count += self.handle.triedb_poll(true, usize::MAX);
+            poll_count += self.handle.triedb_poll(true, usize::MAX).unwrap();
         }
         // TrieDB should have completed processing all the async callbacks at this point
         if completed_counter.load(SeqCst) != num_accounts {

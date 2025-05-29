@@ -72,7 +72,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     pub fn new(
-        triedb_path: &Path,
+        triedb_path: Vec<PathBuf>,
         validators_path: &Path,
         val_set_update_interval: SeqNum,
     ) -> Self {
@@ -87,10 +87,9 @@ where
         let cancel_below = Arc::new(Mutex::new(SeqNum(0)));
         let cancel_below_clone = cancel_below.clone();
 
-        let path = triedb_path.to_path_buf();
         rayon::spawn(move || {
             // FIXME: handle error, maybe retry
-            let handle = TriedbReader::try_new(path.as_path()).unwrap();
+            let handle = TriedbReader::new(&triedb_path).unwrap();
 
             let mut outstanding_requests: HashMap<_, usize> = HashMap::new();
 

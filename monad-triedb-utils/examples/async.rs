@@ -16,7 +16,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let triedb_path = args.triedb_path.unwrap_or(PathBuf::new());
 
-    let reader = TriedbReader::try_new(triedb_path.as_path()).unwrap();
+    let reader = TriedbReader::new(&[triedb_path; 1]).unwrap();
 
     let block_id = reader
         .get_latest_finalized_block()

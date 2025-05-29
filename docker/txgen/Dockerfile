@@ -24,6 +24,7 @@ RUN apt install -y \
   libbrotli-dev \
   libcap-dev \
   libcgroup-dev \
+  libclang-dev \
   libcli11-dev \
   libgmock-dev \
   libgmp-dev \
@@ -66,6 +67,7 @@ ARG CARGO_ROOT="/root/.cargo"
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
 ENV PATH="${CARGO_ROOT}/bin:$PATH"
 RUN rustup toolchain install 1.85.0-x86_64-unknown-linux-gnu
+RUN cargo install bindgen-cli
 
 WORKDIR /usr/src/monad-bft
 

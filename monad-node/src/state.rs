@@ -31,7 +31,7 @@ pub struct NodeState {
     pub control_panel_ipc_path: PathBuf,
     pub statesync_ipc_path: PathBuf,
     pub statesync_sq_thread_cpu: Option<u32>,
-    pub triedb_path: PathBuf,
+    pub triedb_path: Vec<PathBuf>,
 
     pub otel_endpoint_interval: Option<(String, Duration)>,
     pub pprof: String,

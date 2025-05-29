@@ -37,6 +37,7 @@ RUN apt update && apt install -y \
   libbrotli-dev \
   libcap-dev \
   libcgroup-dev \
+  libclang-dev \
   libcli11-dev \
   libgmock-dev \
   libgmp-dev \
@@ -65,11 +66,12 @@ ARG CARGO_ROOT="/root/.cargo"
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
 ENV PATH="${CARGO_ROOT}/bin:$PATH"
 RUN rustup toolchain install 1.85.0-x86_64-unknown-linux-gnu
-ARG TRIEDB_TARGET=triedb_driver
+RUN cargo install bindgen-cli
+ARG TRIEDB_TARGET=monad-triedb-driver
 
 # Builder
 COPY . .
-RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" \
+RUN \
     CC=gcc-15 CXX=g++-15 cargo build --release --bin monad-node --features full-node --bin monad-keystore --bin monad-debug-node --example ledger-tail --example wal2json --example wal-tool --example triedb-debug --example triedb-bench && \
     mv target/release/monad-node monad-node && \
     mv target/release/monad-keystore keystore && \
@@ -79,7 +81,7 @@ RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell -
     mv target/release/examples/wal-tool wal-tool && \
     mv target/release/examples/triedb-debug triedb-debug && \
     mv target/release/examples/triedb-bench triedb-bench && \
-    cp `ls -Lt $(find target/release | grep -e "libtriedb_driver.so") | awk -F/ '!seen[$NF]++'` . && \
+    cp `ls -Lt $(find target/release | grep -e "libmonad-triedb-driver.so") | awk -F/ '!seen[$NF]++'` . && \
     cp `ls -Lt $(find target/release | grep -e "libmonad_statesync.so") | awk -F/ '!seen[$NF]++'` . && \
     cp `ls -Lt $(find target/release | grep -e "libquill.so") | awk -F/ '!seen[$NF]++'` . && \
     cp `ls -Lt $(find target/release | grep -e "libkeccak.so") | awk -F/ '!seen[$NF]++'` .

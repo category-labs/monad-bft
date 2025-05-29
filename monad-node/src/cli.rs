@@ -43,7 +43,7 @@ pub struct Cli {
 
     /// Set the monad triedb path
     #[arg(long)]
-    pub triedb_path: PathBuf,
+    pub triedb_path: Vec<PathBuf>,
 
     /// Set a custom monad control panel ipc path
     #[arg(long)]

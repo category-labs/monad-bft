@@ -5442,10 +5442,8 @@ dependencies = [
 name = "monad-triedb"
 version = "0.1.0"
 dependencies = [
- "bindgen",
  "cmake",
  "futures",
- "tracing",
 ]
 
 [[package]]

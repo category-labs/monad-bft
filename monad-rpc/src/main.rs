@@ -110,7 +110,7 @@ async fn main() -> std::io::Result<()> {
 
     let triedb_env = args.triedb_path.clone().as_deref().map(|path| {
         TriedbEnv::new(
-            path,
+            vec![path.to_path_buf()],
             args.triedb_max_buffered_read_requests as usize,
             args.triedb_max_async_read_concurrency as usize,
             args.triedb_max_buffered_traverse_requests as usize,
