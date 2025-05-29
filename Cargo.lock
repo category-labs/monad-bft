@@ -1306,7 +1306,7 @@ version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61b1d86e7705efe1be1b569bab41d4fa1e14e220b60a160f78de2db687add079"
 dependencies = [
- "bindgen",
+ "bindgen 0.69.5",
  "cc",
  "cmake",
  "dunce",
@@ -1790,6 +1790,26 @@ dependencies = [
  "shlex",
  "syn 2.0.104",
  "which",
+]
+
+[[package]]
+name = "bindgen"
+version = "0.71.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f58bf3d7db68cfbac37cfc485a8d711e87e064c3d0fe0435b92f7a407f9d6b3"
+dependencies = [
+ "bitflags 2.9.1",
+ "cexpr",
+ "clang-sys",
+ "itertools 0.13.0",
+ "log",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash 2.1.1",
+ "shlex",
+ "syn 2.0.104",
 ]
 
 [[package]]
@@ -4960,7 +4980,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "alloy-sol-types",
- "bindgen",
+ "bindgen 0.71.1",
  "cmake",
  "futures",
  "hex",
@@ -4968,6 +4988,20 @@ dependencies = [
  "serde",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "monad-event-ring"
+version = "0.1.0"
+dependencies = [
+ "bindgen 0.71.1",
+ "cc",
+ "clap 4.5.40",
+ "cmake",
+ "criterion",
+ "itertools 0.10.5",
+ "libc",
+ "zstd",
 ]
 
 [[package]]
@@ -5456,7 +5490,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-consensus",
  "alloy-rlp",
- "bindgen",
+ "bindgen 0.71.1",
  "cmake",
  "criterion",
  "futures",
@@ -5553,7 +5587,7 @@ dependencies = [
 name = "monad-triedb"
 version = "0.1.0"
 dependencies = [
- "bindgen",
+ "bindgen 0.71.1",
  "cmake",
  "futures",
  "tracing",
