@@ -14,7 +14,8 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
+    num::NonZeroU32,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
@@ -23,15 +24,15 @@ use std::{
     time::Duration,
 };
 
+use addrlist::Addrlist;
 use bytes::Bytes;
 use futures::channel::oneshot;
-use monoio::{IoUringDriver, RuntimeBuilder};
-use tokio::sync::{mpsc, mpsc::error::TrySendError};
+use monoio::{spawn, time::Instant, IoUringDriver, RuntimeBuilder};
+use tcp::{TcpConfig, TcpControl, TcpRateLimit};
+use tokio::sync::mpsc::{self, error::TrySendError};
 use tracing::warn;
 
-#[allow(unused)]
 pub(crate) mod addrlist;
-#[allow(unused)]
 pub(crate) mod ban_expiry;
 pub(crate) mod buffer_ext;
 pub mod tcp;
@@ -39,17 +40,30 @@ pub mod udp;
 
 pub struct DataplaneBuilder {
     local_addr: SocketAddr,
+    trusted_addresses: Vec<IpAddr>,
     /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
-    up_bandwidth_mbps: u64,
+    udp_up_bandwidth_mbps: u64,
     udp_buffer_size: Option<usize>,
+    tcp_config: TcpConfig,
+    ban_duration: Duration,
 }
 
 impl DataplaneBuilder {
     pub fn new(local_addr: &SocketAddr, up_bandwidth_mbps: u64) -> Self {
         Self {
             local_addr: *local_addr,
-            up_bandwidth_mbps,
+            udp_up_bandwidth_mbps: up_bandwidth_mbps,
             udp_buffer_size: None,
+            trusted_addresses: vec![],
+            tcp_config: TcpConfig {
+                rate_limit: TcpRateLimit {
+                    rps: NonZeroU32::new(10000).unwrap(),
+                    rps_burst: NonZeroU32::new(2000).unwrap(),
+                },
+                connections_limit: 10000,
+                per_ip_connections_limit: 100,
+            },
+            ban_duration: Duration::from_secs(5 * 60), // 5 minutes
         }
     }
 
@@ -60,11 +74,36 @@ impl DataplaneBuilder {
         self
     }
 
+    /// with_tcp_connections_limit sets total and per_ip connection limit. if per_ip is zero it will be
+    /// equal to total.
+    pub fn with_tcp_connections_limit(mut self, total: usize, per_ip: usize) -> Self {
+        self.tcp_config.connections_limit = total;
+        self.tcp_config.per_ip_connections_limit = if per_ip == 0 { total } else { per_ip };
+        self
+    }
+
+    /// with_tcp_rps_burst sets the rate limit and burst for tcp connections.
+    pub fn with_tcp_rps_burst(mut self, rps: u32, burst: u32) -> Self {
+        self.tcp_config.rate_limit.rps = NonZeroU32::new(rps).expect("rps must be non-zero");
+        self.tcp_config.rate_limit.rps_burst =
+            NonZeroU32::new(burst).expect("burst must be non-zero");
+        self
+    }
+
+    /// with trusted_ips sets the list of trusted ip addresses.
+    pub fn with_trusted_ips(mut self, ips: Vec<IpAddr>) -> Self {
+        self.trusted_addresses = ips;
+        self
+    }
+
     pub fn build(self) -> Dataplane {
         let DataplaneBuilder {
             local_addr,
-            up_bandwidth_mbps,
-            udp_buffer_size: buffer_size,
+            udp_up_bandwidth_mbps: up_bandwidth_mbps,
+            udp_buffer_size,
+            trusted_addresses: trusted,
+            tcp_config,
+            ban_duration,
         } = self;
 
         let (tcp_ingress_tx, tcp_ingress_rx) = mpsc::channel(TCP_INGRESS_CHANNEL_SIZE);
@@ -75,32 +114,58 @@ impl DataplaneBuilder {
         let ready = Arc::new(AtomicBool::new(false));
         let ready_clone = ready.clone();
 
+        let (banned_ips_tx, banned_ips_rx) = mpsc::unbounded_channel();
+        let addrlist = Arc::new(Addrlist::new_with_trusted(trusted.into_iter()));
+        let tcp_control_map = TcpControl::new();
         thread::Builder::new()
             .name("monad-dataplane".into())
-            .spawn(move || {
-                RuntimeBuilder::<IoUringDriver>::new()
-                    .enable_timer()
-                    .build()
-                    .expect("Failed building the Runtime")
-                    .block_on(async move {
-                        tcp::spawn_tasks(local_addr, tcp_ingress_tx, tcp_egress_rx);
+            .spawn({
+                let tcp_control_map = tcp_control_map.clone();
+                let addrlist = addrlist.clone();
+                move || {
+                    RuntimeBuilder::<IoUringDriver>::new()
+                        .enable_timer()
+                        .build()
+                        .expect("Failed building the Runtime")
+                        .block_on(async move {
+                            spawn(ban_expiry::task(
+                                addrlist.clone(),
+                                banned_ips_rx,
+                                ban_duration,
+                            ));
 
-                        udp::spawn_tasks(
-                            local_addr,
-                            udp_ingress_tx,
-                            udp_egress_rx,
-                            up_bandwidth_mbps,
-                            buffer_size,
-                        );
+                            tcp::spawn_tasks(
+                                tcp_config,
+                                tcp_control_map,
+                                addrlist.clone(),
+                                local_addr,
+                                tcp_ingress_tx,
+                                tcp_egress_rx,
+                            );
 
-                        ready_clone.store(true, Ordering::Release);
+                            udp::spawn_tasks(
+                                local_addr,
+                                udp_ingress_tx,
+                                udp_egress_rx,
+                                up_bandwidth_mbps,
+                                udp_buffer_size,
+                            );
 
-                        futures::future::pending::<()>().await;
-                    });
+                            ready_clone.store(true, Ordering::Release);
+
+                            futures::future::pending::<()>().await;
+                        });
+                }
             })
             .expect("failed to spawn dataplane thread");
 
-        let writer = DataplaneWriter::new(tcp_egress_tx, udp_egress_tx);
+        let writer = DataplaneWriter::new(
+            tcp_egress_tx,
+            udp_egress_tx,
+            tcp_control_map,
+            banned_ips_tx,
+            addrlist,
+        );
         let reader = DataplaneReader::new(tcp_ingress_rx, udp_ingress_rx);
 
         Dataplane {
@@ -130,6 +195,10 @@ pub struct DataplaneWriter {
 struct DataplaneWriterInner {
     tcp_egress_tx: mpsc::Sender<(SocketAddr, TcpMsg)>,
     udp_egress_tx: mpsc::Sender<(SocketAddr, UdpMsg)>,
+
+    tcp_control_map: TcpControl,
+    notify_ban_expiry: mpsc::UnboundedSender<(IpAddr, Instant)>,
+    addrlist: Arc<Addrlist>,
 
     tcp_msgs_dropped: AtomicUsize,
     udp_msgs_dropped: AtomicUsize,
@@ -214,6 +283,32 @@ const UDP_EGRESS_CHANNEL_SIZE: usize = 12_800;
 impl Dataplane {
     pub fn split(self) -> (DataplaneReader, DataplaneWriter) {
         (self.reader, self.writer)
+    }
+
+    /// add_trusted marks ip address as trusted.
+    /// connections limits are not applied to trusted ips.
+    pub fn add_trusted(&self, addr: IpAddr) {
+        self.writer.add_trusted(addr);
+    }
+
+    /// remove_trusted removes ip address from trusted list.
+    pub fn remove_trusted(&self, addr: IpAddr) {
+        self.writer.remove_trusted(addr);
+    }
+
+    /// ban ip address. ban duration is specified in dataplane config.
+    pub fn ban(&self, ip: IpAddr) {
+        self.writer.ban(ip);
+    }
+
+    /// disconnect all connections from specified ip address.
+    pub fn disconnect_ip(&self, ip: IpAddr) {
+        self.writer.disconnect_ip(ip);
+    }
+
+    /// disconnect single connection.
+    pub fn disconnect(&self, addr: SocketAddr) {
+        self.writer.disconnect(addr);
     }
 
     pub async fn tcp_read(&mut self) -> RecvTcpMsg {
@@ -310,10 +405,16 @@ impl DataplaneWriter {
     fn new(
         tcp_egress_tx: mpsc::Sender<(SocketAddr, TcpMsg)>,
         udp_egress_tx: mpsc::Sender<(SocketAddr, UdpMsg)>,
+        tcp_control_map: TcpControl,
+        notify_ban_expiry: mpsc::UnboundedSender<(IpAddr, Instant)>,
+        addrlist: Arc<Addrlist>,
     ) -> Self {
         let inner = DataplaneWriterInner {
             tcp_egress_tx,
             udp_egress_tx,
+            tcp_control_map,
+            notify_ban_expiry,
+            addrlist,
             tcp_msgs_dropped: AtomicUsize::new(0),
             udp_msgs_dropped: AtomicUsize::new(0),
         };
@@ -414,5 +515,36 @@ impl DataplaneWriter {
             total_udp_msgs_dropped = udp_msgs_dropped,
             "udp_egress_tx channel full, dropping message"
         );
+    }
+
+    /// add_trusted marks ip address as trusted.
+    /// connections limits are not applied to trusted ips.
+    pub fn add_trusted(&self, addr: IpAddr) {
+        self.inner.addrlist.add_trusted(addr);
+    }
+
+    /// remove_trusted removes ip address from trusted list.
+    pub fn remove_trusted(&self, addr: IpAddr) {
+        self.inner.addrlist.remove_trusted(addr);
+    }
+
+    /// ban ip address. ban duration is specified in dataplane config.
+    pub fn ban(&self, ip: IpAddr) {
+        let now = Instant::now();
+        self.inner.addrlist.ban(ip, now);
+        self.inner.notify_ban_expiry.send((ip, now)).unwrap();
+        self.disconnect_ip(ip);
+    }
+
+    /// disconnect all connections from specified ip address.
+    pub fn disconnect_ip(&self, ip: IpAddr) {
+        self.inner.tcp_control_map.disconnect_ip(ip);
+    }
+
+    /// disconnect single connection.
+    pub fn disconnect(&self, addr: SocketAddr) {
+        self.inner
+            .tcp_control_map
+            .disconnect_socket(addr.ip(), addr.port());
     }
 }

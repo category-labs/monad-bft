@@ -32,6 +32,7 @@ use zerocopy::{
 };
 
 use super::{RecvTcpMsg, TcpMsg};
+use crate::Addrlist;
 
 pub mod rx;
 pub mod tx;
@@ -59,7 +60,10 @@ impl TcpMsgHdr {
     }
 }
 
-pub fn spawn_tasks(
+pub(crate) fn spawn_tasks(
+    cfg: TcpConfig,
+    tcp_control_map: TcpControl,
+    addrlist: Arc<Addrlist>,
     local_addr: SocketAddr,
     tcp_ingress_tx: mpsc::Sender<RecvTcpMsg>,
     tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>,
@@ -67,7 +71,13 @@ pub fn spawn_tasks(
     let opts = ListenerOpts::new().reuse_addr(true);
     let tcp_listener = TcpListener::bind_with_config(local_addr, &opts).unwrap();
 
-    spawn(rx::task(tcp_listener, tcp_ingress_tx));
+    spawn(rx::task(
+        cfg,
+        tcp_control_map,
+        addrlist,
+        tcp_listener,
+        tcp_ingress_tx,
+    ));
     spawn(tx::task(tcp_egress_rx));
 }
 

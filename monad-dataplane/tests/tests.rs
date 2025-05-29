@@ -25,6 +25,7 @@ use monad_dataplane::{
 };
 use ntest::timeout;
 use rand::Rng;
+use rstest::*;
 use tracing_subscriber::fmt::format::FmtSpan;
 
 /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
@@ -411,8 +412,7 @@ fn tcp_rx_reject_oversized_header() {
     let rx_addr = "127.0.0.1:9022".parse().unwrap();
 
     let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS).build();
-
-    sleep(Duration::from_millis(100));
+    assert!(rx.block_until_ready(Duration::from_secs(1)));
 
     let mut tcp_stream = TcpStream::connect(rx_addr).unwrap();
 
@@ -525,4 +525,203 @@ fn unicast_all_strides() {
             );
         }
     }
+}
+
+fn find_unused_address() -> std::net::SocketAddr {
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    socket.local_addr().unwrap()
+}
+
+#[rstest]
+#[case::total_limit_applied(1, 100)]
+#[case::per_ip_limit(10000, 1)]
+#[monoio::test(timer_enabled = true)]
+async fn test_tcp_limits_are_applied(
+    #[case] tcp_connection_limit: usize,
+    #[case] tcp_per_ip_connection_limit: usize,
+) {
+    once_setup();
+
+    let rx_addr = find_unused_address();
+    let tx1_addr = "127.0.0.1:0".parse().unwrap();
+    let tx2_addr = "127.0.0.1:0".parse().unwrap();
+
+    let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS)
+        .with_tcp_connections_limit(tcp_connection_limit, tcp_per_ip_connection_limit)
+        .build();
+
+    let tx1 = DataplaneBuilder::new(&tx1_addr, UP_BANDWIDTH_MBPS).build();
+    let tx2 = DataplaneBuilder::new(&tx2_addr, UP_BANDWIDTH_MBPS).build();
+
+    assert!(rx.block_until_ready(Duration::from_secs(1)));
+
+    let payload1: Vec<u8> = "first message".try_into().unwrap();
+
+    tx1.tcp_write(
+        rx_addr,
+        TcpMsg {
+            msg: payload1.clone().into(),
+            completion: None,
+        },
+    );
+
+    let recv_msg = rx.tcp_read().await;
+    assert_eq!(recv_msg.payload, payload1);
+
+    let payload2: Vec<u8> = "second message".try_into().unwrap();
+    tx2.tcp_write(
+        rx_addr,
+        TcpMsg {
+            msg: payload2.clone().into(),
+            completion: None,
+        },
+    );
+
+    let result = async {
+        match monoio::time::timeout(Duration::from_millis(50), rx.tcp_read()).await {
+            Ok(msg) => Some(msg),
+            Err(_) => None,
+        }
+    }
+    .await;
+
+    assert!(result.is_none());
+}
+
+#[rstest]
+#[monoio::test(timer_enabled = true)]
+async fn test_tcp_rps_limits() {
+    once_setup();
+
+    let rx_addr = find_unused_address();
+    let tx1_addr = "127.0.0.1:0".parse().unwrap();
+
+    let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS)
+        .with_tcp_rps_burst(10, 2)
+        .build();
+
+    let tx1 = DataplaneBuilder::new(&tx1_addr, UP_BANDWIDTH_MBPS).build();
+
+    assert!(rx.block_until_ready(Duration::from_secs(1)));
+
+    let num_messages = 2;
+    for i in 0..num_messages {
+        let payload = format!("message {}", i).into_bytes();
+        tx1.tcp_write(
+            rx_addr,
+            TcpMsg {
+                msg: payload.into(),
+                completion: None,
+            },
+        );
+    }
+
+    for i in 0..2 {
+        let recv_msg = rx.tcp_read().await;
+        let expected = format!("message {}", i).into_bytes();
+        assert_eq!(recv_msg.payload, expected);
+    }
+
+    let result = async {
+        match monoio::time::timeout(Duration::from_millis(50), rx.tcp_read()).await {
+            Ok(msg) => Some(msg),
+            Err(_) => None,
+        }
+    }
+    .await;
+    assert!(result.is_none());
+}
+
+#[rstest]
+#[case::total_limit_applied(1, 100)]
+#[case::per_ip_limit(10000, 1)]
+#[monoio::test(timer_enabled = true)]
+async fn test_tcp_limits_ignored_for_trusted(
+    #[case] tcp_connection_limit: usize,
+    #[case] tcp_per_ip_connection_limit: usize,
+) {
+    once_setup();
+
+    let rx_addr = find_unused_address();
+    let tx1_addr = "127.0.0.1:0".parse().unwrap();
+    let tx2_addr = "127.0.0.1:0".parse().unwrap();
+
+    let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS)
+        .with_tcp_connections_limit(tcp_connection_limit, tcp_per_ip_connection_limit)
+        .build();
+    rx.add_trusted("127.0.0.1".parse().unwrap());
+
+    let tx1 = DataplaneBuilder::new(&tx1_addr, UP_BANDWIDTH_MBPS).build();
+    let tx2 = DataplaneBuilder::new(&tx2_addr, UP_BANDWIDTH_MBPS).build();
+
+    assert!(rx.block_until_ready(Duration::from_secs(1)));
+
+    let payload1: Vec<u8> = "first message".try_into().unwrap();
+
+    tx1.tcp_write(
+        rx_addr,
+        TcpMsg {
+            msg: payload1.clone().into(),
+            completion: None,
+        },
+    );
+
+    let recv_msg = rx.tcp_read().await;
+    assert_eq!(recv_msg.payload, payload1);
+
+    let payload2: Vec<u8> = "second message".try_into().unwrap();
+    tx2.tcp_write(
+        rx_addr,
+        TcpMsg {
+            msg: payload2.clone().into(),
+            completion: None,
+        },
+    );
+
+    let recv_msg = rx.tcp_read().await;
+    assert_eq!(recv_msg.payload, payload2);
+}
+
+#[monoio::test(timer_enabled = true)]
+async fn test_tcp_banned() {
+    once_setup();
+
+    let rx_addr = find_unused_address();
+    let tx1_addr = "127.0.0.1:0".parse().unwrap();
+
+    let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS).build();
+    let tx1 = DataplaneBuilder::new(&tx1_addr, UP_BANDWIDTH_MBPS).build();
+
+    assert!(rx.block_until_ready(Duration::from_secs(1)));
+
+    let payload1: Vec<u8> = "first message".try_into().unwrap();
+    tx1.tcp_write(
+        rx_addr,
+        TcpMsg {
+            msg: payload1.clone().into(),
+            completion: None,
+        },
+    );
+    let recv_msg = rx.tcp_read().await;
+    assert_eq!(recv_msg.payload, payload1);
+
+    // once banned all further message will be dropped for next 5 minutes
+    rx.ban("127.0.0.1".parse().unwrap());
+
+    let payload2: Vec<u8> = "second message".try_into().unwrap();
+    tx1.tcp_write(
+        rx_addr,
+        TcpMsg {
+            msg: payload2.clone().into(),
+            completion: None,
+        },
+    );
+    let result = async {
+        match monoio::time::timeout(Duration::from_millis(50), rx.tcp_read()).await {
+            Ok(msg) => Some(msg),
+            Err(_) => None,
+        }
+    }
+    .await;
+    assert!(result.is_none());
 }

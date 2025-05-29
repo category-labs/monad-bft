@@ -93,6 +93,14 @@ impl Addrlist {
         }
     }
 
+    pub(crate) fn new_with_trusted(trusted: impl Iterator<Item = IpAddr>) -> Self {
+        let addrlist = Self::new();
+        for ip in trusted {
+            addrlist.add_trusted(ip);
+        }
+        addrlist
+    }
+
     pub(crate) fn add_trusted(&self, addr: IpAddr) {
         let mut entries = self.entries.lock().unwrap();
         entries
