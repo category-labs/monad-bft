@@ -19,7 +19,6 @@ use tracing::{debug, enabled, trace, warn, Level};
 use zerocopy::FromBytes;
 
 use super::{message_timeout, TcpMsgHdr, HEADER_MAGIC, HEADER_VERSION, TCP_MESSAGE_LENGTH_LIMIT};
-use crate::buffer_ext::SocketBufferExt;
 
 const PER_PEER_CONNECTION_LIMIT: usize = 100;
 
@@ -70,11 +69,7 @@ struct RxStateInner {
     num_connections: BTreeMap<IpAddr, usize>,
 }
 
-pub async fn task(
-    local_addr: SocketAddr,
-    tcp_ingress_tx: mpsc::Sender<(SocketAddr, Bytes)>,
-    buffer_size: Option<usize>,
-) {
+pub async fn task(local_addr: SocketAddr, tcp_ingress_tx: mpsc::Sender<(SocketAddr, Bytes)>) {
     let opts = ListenerOpts::new().reuse_addr(true);
     let tcp_listener = TcpListener::bind_with_config(local_addr, &opts).unwrap();
     let rx_state = RxState::new();
@@ -93,7 +88,6 @@ pub async fn task(
                         addr,
                         tcp_stream,
                         tcp_ingress_tx.clone(),
-                        buffer_size,
                     ));
                 }
                 Err(()) => {
@@ -119,27 +113,7 @@ async fn task_connection(
     addr: SocketAddr,
     mut tcp_stream: TcpStream,
     tcp_ingress_tx: mpsc::Sender<(SocketAddr, Bytes)>,
-    buffer_size: Option<usize>,
 ) {
-    if let Some(requested_buffer_size) = buffer_size {
-        tcp_stream
-            .set_recv_buffer_size(requested_buffer_size)
-            .expect("unable to set receive buffer size");
-        let actual_buffer_size = tcp_stream
-            .recv_buffer_size()
-            .expect("unable to get receive buffer size");
-        if actual_buffer_size < requested_buffer_size {
-            panic!(
-                "unable to set tcp receive buffer size for connection {:?} to address {:?}. requested {}, actual {}. maximal net.ipv4.tcp_wmem should be set to at least {}",
-                conn_id,
-                addr,
-                requested_buffer_size,
-                actual_buffer_size,
-                requested_buffer_size
-            );
-        }
-    }
-
     let mut message_id: u64 = 0;
 
     while let Some(message) = read_message(conn_id, addr, message_id, &mut tcp_stream).await {

@@ -323,7 +323,7 @@ fn broadcast_all_strides() {
     let tx_addr = "127.0.0.1:9015".parse().unwrap();
 
     let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS)
-        .with_buffer_size(400 << 10)
+        .with_udp_buffer_size(400 << 10)
         .build();
     let mut tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 
@@ -368,7 +368,7 @@ fn unicast_all_strides() {
     let tx_addr = "127.0.0.1:9017".parse().unwrap();
 
     let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS)
-        .with_buffer_size(400 << 10)
+        .with_udp_buffer_size(400 << 10)
         .build();
     let mut tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 

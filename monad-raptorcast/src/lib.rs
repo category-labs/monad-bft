@@ -123,7 +123,7 @@ where
         let self_id = NodeId::new(config.key.pubkey());
         let mut builder = DataplaneBuilder::new(&config.local_addr, config.up_bandwidth_mbps);
         if let Some(buffer_size) = config.buffer_size {
-            builder = builder.with_buffer_size(buffer_size);
+            builder = builder.with_udp_buffer_size(buffer_size);
         }
         let dataplane = builder.build();
         let is_fullnode = false; // This will come from the config in upcoming PR

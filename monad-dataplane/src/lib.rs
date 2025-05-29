@@ -14,7 +14,7 @@ pub struct DataplaneBuilder {
     local_addr: SocketAddr,
     /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
     up_bandwidth_mbps: u64,
-    buffer_size: Option<usize>,
+    udp_buffer_size: Option<usize>,
 }
 
 impl DataplaneBuilder {
@@ -22,14 +22,14 @@ impl DataplaneBuilder {
         Self {
             local_addr: *local_addr,
             up_bandwidth_mbps,
-            buffer_size: None,
+            udp_buffer_size: None,
         }
     }
 
-    /// with_buffer_size sets the buffer size for udp and tcp sockets that are managed by dataplane
+    /// with_udp_buffer_size sets the buffer size for udp socket that is managed by dataplane
     /// to a requested value.
-    pub fn with_buffer_size(mut self, buffer_size: usize) -> Self {
-        self.buffer_size = Some(buffer_size);
+    pub fn with_udp_buffer_size(mut self, buffer_size: usize) -> Self {
+        self.udp_buffer_size = Some(buffer_size);
         self
     }
 
@@ -37,7 +37,7 @@ impl DataplaneBuilder {
         let DataplaneBuilder {
             local_addr,
             up_bandwidth_mbps,
-            buffer_size,
+            udp_buffer_size: buffer_size,
         } = self;
 
         let (tcp_ingress_tx, tcp_ingress_rx) = mpsc::channel(TCP_INGRESS_CHANNEL_SIZE);
@@ -53,7 +53,7 @@ impl DataplaneBuilder {
                     .build()
                     .expect("Failed building the Runtime")
                     .block_on(async move {
-                        tcp::spawn_tasks(local_addr, tcp_ingress_tx, tcp_egress_rx, buffer_size);
+                        tcp::spawn_tasks(local_addr, tcp_ingress_tx, tcp_egress_rx);
 
                         udp::spawn_tasks(
                             local_addr,
