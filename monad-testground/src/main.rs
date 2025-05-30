@@ -34,7 +34,7 @@ use tracing::{event, instrument::WithSubscriber, Instrument, Level};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
-    EnvFilter, Registry,
+    EnvFilter, FmtSubscriber, Registry,
 };
 
 use crate::executor::{
@@ -59,6 +59,12 @@ struct Args {
     /// otel endpoint
     #[arg(short, long)]
     otel_endpoint: Option<String>,
+    /// simulation length (seconds)
+    #[arg(short, long, default_value_t = 60)]
+    simulation_length: u64,
+    /// proposal size (bytes)
+    #[arg(short, long, default_value_t = 2000000)]
+    proposal_size: usize,
     /// addresses
     #[arg(short, long, required=true, num_args=1..)]
     addresses: Vec<String>,
@@ -67,7 +73,6 @@ struct Args {
 struct TestgroundArgs {
     simulation_length_s: u64,
     delta_ms: u64,
-    proposal_size: usize,
     val_set_update_interval: u64,
     epoch_start_delay: u64,
 
@@ -80,22 +85,12 @@ enum RouterArgs {
     RaptorCast,
 }
 
-enum GossipArgs {
-    Simple,
-    Gossipsub {
-        fanout: usize,
-    },
-    Raptor {
-        timeout: Duration,
-        up_bandwidth_Mbps: u16,
-    },
-}
-
 pub enum LedgerArgs {
     Mock,
 }
 
-static CHAIN_PARAMS: ChainParams = ChainParams {
+// FIXME: remove mut
+static mut CHAIN_PARAMS: ChainParams = ChainParams {
     tx_limit: 10_000,
     proposal_gas_limit: 300_000_000,
     proposal_byte_limit: 4_000_000,
@@ -111,7 +106,6 @@ fn make_provider(
         .with_endpoint(otel_endpoint)
         .build()
         .unwrap();
-    let rt = opentelemetry_sdk::runtime::Tokio;
     let provider_builder = SdkTracerProvider::builder()
         .with_resource(
             opentelemetry_sdk::Resource::builder_empty()
@@ -145,17 +139,31 @@ async fn main() {
     type SignatureTypeConfig = SecpSignature;
     type SignatureCollectionTypeConfig =
         BlsSignatureCollection<CertificateSignaturePubKey<SignatureTypeConfig>>;
-    // TODO parse this from CLI args
     let testground_args = TestgroundArgs {
-        simulation_length_s: 3600,
+        simulation_length_s: args.simulation_length,
         delta_ms: 4000,
-        proposal_size: 5_000,
         val_set_update_interval: 2_000,
         epoch_start_delay: 50,
 
         router: RouterArgs::RaptorCast,
         ledger: LedgerArgs::Mock,
     };
+    unsafe {
+        CHAIN_PARAMS.proposal_byte_limit = args.proposal_size as u64;
+    }
+
+    if args.otel_endpoint.is_none() {
+        let subscriber = FmtSubscriber::builder()
+            .json()
+            .with_env_filter(EnvFilter::from_default_env())
+            .with_ansi(false)
+            .with_writer(std::io::stdout)
+            .with_span_list(false)
+            .with_current_span(true)
+            .finish();
+
+        tracing::subscriber::set_global_default(subscriber).expect("failed to set logger");
+    }
 
     let (wg_tx, _) = tokio::sync::broadcast::channel::<()>(args.addresses.len());
     futures_util::future::join_all(
@@ -203,6 +211,7 @@ async fn main() {
 
                 // sleep to flush remaining traces
                 tokio::time::sleep(Duration::from_secs(2)).await;
+
                 // destructor is blocking forever for some reason...
                 std::mem::forget(maybe_provider);
             };
@@ -317,7 +326,7 @@ where
                         statesync_to_live_threshold: SeqNum(600),
                         live_to_statesync_threshold: SeqNum(900),
                         start_execution_threshold: SeqNum(300),
-                        chain_config: MockChainConfig::new(&CHAIN_PARAMS),
+                        chain_config: MockChainConfig::new(unsafe { &CHAIN_PARAMS }),
                         timestamp_latency_estimate_ns: 10_000_000,
                         _phantom: Default::default(),
                     },
@@ -352,7 +361,7 @@ async fn run<ST, SCT>(
     const BLOCK_INTERVAL: usize = 100;
 
     let mut last_ledger_len = executor.ledger().get_finalized_blocks().len();
-    let mut ledger_span = tracing::info_span!("ledger_span", last_ledger_len, ?nodeid);
+    let mut ledger_span = tracing::info_span!("ledger_span", last_ledger_len, ?nodeid, index);
     if let Some(cx) = &cx {
         ledger_span.set_parent(cx.clone());
     }
@@ -366,7 +375,7 @@ async fn run<ST, SCT>(
         let ledger_len = executor.ledger().get_finalized_blocks().len();
         if ledger_len > last_ledger_len {
             last_ledger_len = ledger_len;
-            ledger_span = tracing::info_span!("ledger_span", last_ledger_len, ?nodeid);
+            ledger_span = tracing::info_span!("ledger_span", last_ledger_len, ?nodeid, index);
             if let Some(cx) = &cx {
                 ledger_span.set_parent(cx.clone());
             }
@@ -374,7 +383,8 @@ async fn run<ST, SCT>(
         if ledger_len >= last_printed_len + BLOCK_INTERVAL {
             event!(
                 Level::INFO,
-                instance = index,
+                node_index = index,
+                ?nodeid,
                 ledger_len = ledger_len,
                 elapsed_ms = start.elapsed().as_millis(),
                 "{}",

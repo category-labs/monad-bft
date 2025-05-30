@@ -5,7 +5,7 @@ use std::{
 
 use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use alloy_rlp::Decodable;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use futures::Stream;
 use monad_consensus_types::{
     block::{
@@ -24,6 +24,7 @@ use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_state_backend::StateBackend;
 use monad_types::ExecutionProtocol;
+use rand::{thread_rng, RngCore};
 
 pub trait MockableTxPool:
     Executor<
@@ -151,7 +152,7 @@ where
                     last_round_tc,
                     tx_limit: _,
                     proposal_gas_limit: _,
-                    proposal_byte_limit: _,
+                    proposal_byte_limit,
                     beneficiary: _,
                     timestamp_ns,
                     extending_blocks: _,
@@ -167,7 +168,14 @@ where
                         delayed_execution_results,
                         proposed_execution_inputs: ProposedExecutionInputs {
                             header: MockExecutionProposedHeader::default(),
-                            body: MockExecutionBody::default(),
+                            body: MockExecutionBody {
+                                data: {
+                                    // Random non-empty value with size = proposal_byte_limit
+                                    let mut buf = BytesMut::zeroed(proposal_byte_limit as usize);
+                                    thread_rng().fill_bytes(&mut buf);
+                                    buf.freeze()
+                                },
+                            },
                         },
                         last_round_tc,
                     });

@@ -2,14 +2,15 @@ FROM rust:1-buster AS builder
 
 WORKDIR /usr/src/monad-bft
 RUN apt update
-RUN apt install -y python3 clang
+RUN apt install -y clang
 
 # Builder
 COPY . .
 RUN cargo build --release --bin monad-testground && \
     mv target/release/monad-testground testground
-RUN python3 docker/testground/topology-gen.py topo.json
-RUN python3 monad-scripts/tc/tc-gen.py topo.json tc.sh addresses
+RUN cp monad-scripts/testground/topology-gen.py .
+RUN cp monad-scripts/testground/tc-gen.py .
+RUN cp monad-scripts/testground/run_testground.sh .
 
 # Runner
 FROM debian:buster-slim
@@ -17,11 +18,12 @@ SHELL ["/bin/bash", "-c"]
 WORKDIR /usr/src/monad-bft
 
 RUN apt update
-RUN apt install -y iproute2
+RUN apt install -y ethtool iproute2 net-tools python3 tcpdump
 RUN apt clean
 COPY --from=builder /usr/src/monad-bft/testground /usr/local/bin/monad-testground
-COPY --from=builder /usr/src/monad-bft/tc.sh .
-COPY --from=builder /usr/src/monad-bft/addresses .
+COPY --from=builder /usr/src/monad-bft/topology-gen.py .
+COPY --from=builder /usr/src/monad-bft/tc-gen.py .
+COPY --from=builder /usr/src/monad-bft/run_testground.sh .
+RUN chmod u+x run_testground.sh
 
-ENV RUST_LOG=monad_testground=DEBUG
-CMD source tc.sh && MONAD_MEMPOOL_RNDUDS=true monad-testground -o http://jaeger:4317 --addresses $(<addresses)
+CMD ./run_testground.sh -l
