@@ -549,8 +549,17 @@ where
     <M as Deserializable<Bytes>>::ReadError: 'static,
     OM: Serializable<Bytes> + Encodable + Clone + Send + Sync + 'static,
 {
+    let Some(SocketAddr::V4(self_address)) = resolve_domain_v4(
+        &NodeId::new(identity.pubkey()),
+        &peer_discovery_config.self_address,
+    ) else {
+        panic!(
+            "Unable to resolve self address: {:?}",
+            peer_discovery_config.self_address
+        );
+    };
     let self_record = NameRecord {
-        address: peer_discovery_config.self_address,
+        address: self_address,
         seq: peer_discovery_config.self_record_seq_num,
     };
     let self_record = MonadNameRecord::new(self_record, &identity);
@@ -565,8 +574,15 @@ where
         .iter()
         .filter_map(|peer| {
             let node_id = NodeId::new(peer.secp256k1_pubkey);
+            let address = match resolve_domain_v4(&node_id, &peer.address) {
+                Some(SocketAddr::V4(addr)) => addr,
+                _ => {
+                    warn!(?node_id, ?peer.address, "Unable to resolve");
+                    return None;
+                }
+            };
             let name_record = NameRecord {
-                address: peer.address,
+                address,
                 seq: peer.record_seq_num,
             };
 

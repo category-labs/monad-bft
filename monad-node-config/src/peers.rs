@@ -1,5 +1,3 @@
-use std::net::SocketAddrV4;
-
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -12,7 +10,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct PeerConfig<ST: CertificateSignatureRecoverable> {
-    pub self_address: SocketAddrV4,
+    pub self_address: String,
     pub self_record_seq_num: u64,
 
     #[serde(serialize_with = "serialize_certificate_signature::<_, ST>")]
@@ -34,7 +32,7 @@ pub struct PeerConfig<ST: CertificateSignatureRecoverable> {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct PeerDiscoveryConfig<ST: CertificateSignatureRecoverable> {
-    pub address: SocketAddrV4,
+    pub address: String,
 
     pub record_seq_num: u64,
 
