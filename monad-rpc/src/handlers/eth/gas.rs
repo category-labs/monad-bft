@@ -23,6 +23,9 @@ use crate::{
     jsonrpc::{JsonRpcError, JsonRpcResult},
 };
 
+/// Additional gas added during a CALL.
+const CALL_STIPEND: u64 = 2_300;
+
 trait EthCallProvider {
     async fn eth_call(
         &self,
@@ -132,7 +135,8 @@ async fn estimate_gas<T: EthCallProvider>(
     };
 
     let upper_bound_gas_limit = txn.gas_limit();
-    call_request.gas = Some(U256::from((gas_used + gas_refund) * 64 / 63));
+    // Set gas to used + refund + call stipend and apply the 63/64 rule
+    call_request.gas = Some(U256::from((gas_used + gas_refund + CALL_STIPEND) * 64 / 63));
     txn = call_request.clone().try_into()?;
 
     let (mut lower_bound_gas_limit, mut upper_bound_gas_limit) =
@@ -155,7 +159,7 @@ async fn estimate_gas<T: EthCallProvider>(
                 }
             }
         } else {
-            (gas_used.sub(1), txn.gas_limit())
+            (gas_used.sub(1), upper_bound_gas_limit)
         };
 
     // Binary search for the lowest gas limit.
@@ -528,7 +532,7 @@ mod tests {
         )
         .await;
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Quantity(60267));
+        assert_eq!(result.unwrap(), Quantity(60795));
     }
 
     #[tokio::test]
@@ -554,7 +558,7 @@ mod tests {
         )
         .await;
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Quantity(60267));
+        assert_eq!(result.unwrap(), Quantity(60795));
     }
 
     #[tokio::test]
@@ -580,6 +584,6 @@ mod tests {
         )
         .await;
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Quantity(60267));
+        assert_eq!(result.unwrap(), Quantity(60_000));
     }
 }
