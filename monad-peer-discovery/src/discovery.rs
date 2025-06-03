@@ -395,8 +395,6 @@ where
         target: NodeId<CertificateSignaturePubKey<ST>>,
         open_discovery: bool,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
-        debug!(?to, ?target, "sending peer lookup request");
-
         let mut cmds = Vec::new();
 
         // new lookup request
@@ -405,6 +403,8 @@ where
         while self.outstanding_lookup_requests.contains_key(&lookup_id) {
             lookup_id = self.rng.next_u32();
         }
+        debug!(?to, ?target, ?lookup_id, "sending peer lookup request");
+
         self.outstanding_lookup_requests
             .insert(lookup_id, LookupInfo {
                 num_retries: 0,
@@ -556,7 +556,12 @@ where
         };
 
         // retry lookup request
-        debug!(?to, ?target, "handling peer lookup request timeout");
+        debug!(
+            ?to,
+            ?target,
+            ?lookup_id,
+            "handling peer lookup request timeout"
+        );
         *self.metrics.entry("lookup_timeout").or_default() += 1;
         if lookup_info.num_retries >= self.prune_threshold {
             debug!(
@@ -583,7 +588,7 @@ where
         self.outstanding_lookup_requests
             .insert(new_lookup_id, LookupInfo {
                 num_retries,
-                receiver: target,
+                receiver: to,
                 open_discovery,
             });
 
@@ -601,6 +606,12 @@ where
             message: PeerDiscoveryMessage::PeerLookupRequest(peer_lookup_request),
         });
 
+        debug!(
+            ?to,
+            ?target,
+            ?new_lookup_id,
+            "rescheduling peer lookup request"
+        );
         *self.metrics.entry("retry_lookup_request").or_default() += 1;
 
         cmds
@@ -943,6 +954,33 @@ mod tests {
         assert_eq!(state.outstanding_lookup_requests.keys().len(), 1);
         assert!(!state.peer_info.contains_key(&peer2_pubkey));
         let requests = extract_lookup_requests(cmds);
+        let original_lookup_id = requests[0].lookup_id;
+        assert_eq!(
+            state
+                .outstanding_lookup_requests
+                .get(&original_lookup_id)
+                .unwrap()
+                .receiver,
+            peer1_pubkey
+        );
+
+        // retry peer lookup request
+        let cmds =
+            state.handle_peer_lookup_timeout(peer1_pubkey, peer2_pubkey, requests[0].lookup_id);
+        assert_eq!(cmds.len(), 2);
+        assert_eq!(state.outstanding_lookup_requests.keys().len(), 1);
+        assert!(!state.peer_info.contains_key(&peer2_pubkey));
+        let requests = extract_lookup_requests(cmds);
+        assert_eq!(requests.len(), 1);
+        assert_ne!(original_lookup_id, requests[0].lookup_id); // new lookup id generated
+        assert_eq!(
+            state
+                .outstanding_lookup_requests
+                .get(&requests[0].lookup_id)
+                .unwrap()
+                .receiver,
+            peer1_pubkey
+        );
 
         let record = generate_name_record(peer2, 0);
         state.handle_peer_lookup_response(peer1_pubkey, PeerLookupResponse {
