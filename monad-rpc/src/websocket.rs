@@ -137,6 +137,7 @@ mod tests {
             max_finalized_block_cache_len: 200,
             enable_eth_call_statistics: true,
             metrics: None,
+            rpc_comparator: None,
         };
 
         actix_test::start(move || {

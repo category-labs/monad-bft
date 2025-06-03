@@ -1,5 +1,6 @@
 use actix_web::{web, HttpResponse};
 use monad_tracing_timing::TimingSpanExtension;
+use monad_triedb_utils::triedb_env::Triedb;
 use serde_json::Value;
 use tracing::{debug, info, trace_span, Instrument, Span};
 use tracing_actix_web::RootSpan;
@@ -66,20 +67,38 @@ pub async fn rpc_handler(
 
     let response = match request {
         RequestWrapper::Single(json_request) => {
-            let Ok(request) = serde_json::from_value::<Request>(json_request) else {
+            let Ok(request) = serde_json::from_value::<Request>(json_request.clone()) else {
                 return HttpResponse::Ok().json(Response::from_error(JsonRpcError::parse_error()));
             };
             root_span.record("json_method", &request.method);
-            ResponseWrapper::Single(Response::from_result(
-                request.id,
-                rpc_select(
-                    &app_state,
-                    &request.method,
-                    request.params,
-                    request_id.clone(),
-                )
-                .await,
-            ))
+            let result = rpc_select(
+                &app_state,
+                &request.method,
+                request.params.clone(),
+                request_id.clone(),
+            )
+            .await;
+            let response = Response::from_result(request.id, result);
+
+            if let Some(comparator) = &app_state.rpc_comparator {
+                let block_number = if let Some(triedb_env) = &app_state.triedb_reader {
+                    triedb_env.get_latest_voted_block_key().seq_num().0
+                } else {
+                    0
+                };
+
+                let comparator = comparator.clone();
+                let json_request = json_request.clone();
+                let response_value = serde_json::to_value(&response).unwrap_or_default();
+
+                tokio::spawn(async move {
+                    comparator
+                        .submit_comparison(block_number, json_request, response_value)
+                        .await;
+                });
+            }
+
+            ResponseWrapper::Single(response)
         }
         RequestWrapper::Batch(json_batch_request) => {
             root_span.record("json_method", "batch");

@@ -9,6 +9,7 @@ use monad_node_config::MonadNodeConfig;
 use monad_pprof::start_pprof_server;
 use monad_rpc::{
     chainstate::ChainState,
+    comparator::RpcComparator,
     handlers::{
         resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
         rpc_handler,
@@ -217,7 +218,7 @@ async fn main() -> std::io::Result<()> {
         args.otel_endpoint.as_ref().map(|endpoint| {
             let provider = metrics::build_otel_meter_provider(
                 endpoint,
-                node_config.node_name,
+                node_config.node_name.clone(),
                 std::time::Duration::from_secs(5),
             )
             .expect("failed to build otel meter");
@@ -232,6 +233,10 @@ async fn main() -> std::io::Result<()> {
     let chain_state = triedb_env
         .clone()
         .map(|t| ChainState::new(t, archive_reader.clone()));
+    let rpc_comparator: Option<RpcComparator> = args
+        .rpc_comparison_endpoint
+        .as_ref()
+        .map(|endpoint| RpcComparator::new(endpoint.to_string(), node_config.node_name));
 
     let app_state = MonadRpcResources::new(
         txpool_bridge_client,
@@ -255,6 +260,7 @@ async fn main() -> std::io::Result<()> {
         args.max_finalized_block_cache_len,
         args.enable_admin_eth_call_statistics,
         with_metrics.clone(),
+        rpc_comparator.clone(),
     );
 
     // main server app
@@ -346,6 +352,7 @@ mod tests {
             max_finalized_block_cache_len: 200,
             enable_eth_call_statistics: true,
             metrics: None,
+            rpc_comparator: None,
         };
 
         test::init_service(

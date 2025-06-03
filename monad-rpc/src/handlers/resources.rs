@@ -14,8 +14,8 @@ use tracing_actix_web::RootSpanBuilder;
 
 use super::eth::call::EthCallStatsTracker;
 use crate::{
-    chainstate::ChainState, fee::FixedFee, metrics::Metrics, txpool::EthTxPoolBridgeClient,
-    websocket::Disconnect,
+    chainstate::ChainState, comparator::RpcComparator, fee::FixedFee, metrics::Metrics,
+    txpool::EthTxPoolBridgeClient, websocket::Disconnect,
 };
 
 #[derive(Clone)]
@@ -42,6 +42,7 @@ pub struct MonadRpcResources {
     pub max_finalized_block_cache_len: u64,
     pub enable_eth_call_statistics: bool,
     pub metrics: Option<Metrics>,
+    pub rpc_comparator: Option<RpcComparator>,
 }
 
 impl Handler<Disconnect> for MonadRpcResources {
@@ -75,6 +76,7 @@ impl MonadRpcResources {
         max_finalized_block_cache_len: u64,
         enable_eth_call_statistics: bool,
         metrics: Option<Metrics>,
+        rpc_comparator: Option<RpcComparator>,
     ) -> Self {
         Self {
             txpool_bridge_client,
@@ -103,6 +105,7 @@ impl MonadRpcResources {
             max_finalized_block_cache_len,
             enable_eth_call_statistics,
             metrics,
+            rpc_comparator,
         }
     }
 }
