@@ -19,7 +19,7 @@ use tracing::{debug, enabled, trace, warn, Level};
 use zerocopy::FromBytes;
 
 use super::{message_timeout, TcpMsgHdr, HEADER_MAGIC, HEADER_VERSION, TCP_MESSAGE_LENGTH_LIMIT};
-use crate::buffer_ext::SocketBufferExt;
+use crate::{buffer_ext::SocketBufferExt, metrics::RxTcpDataplaneMetrics};
 
 const PER_PEER_CONNECTION_LIMIT: usize = 100;
 
@@ -74,6 +74,7 @@ pub async fn task(
     local_addr: SocketAddr,
     tcp_ingress_tx: mpsc::Sender<(SocketAddr, Bytes)>,
     buffer_size: Option<usize>,
+    metrics: RxTcpDataplaneMetrics,
 ) {
     let opts = ListenerOpts::new().reuse_addr(true);
     let tcp_listener = TcpListener::bind_with_config(local_addr, &opts).unwrap();
@@ -94,6 +95,7 @@ pub async fn task(
                         tcp_stream,
                         tcp_ingress_tx.clone(),
                         buffer_size,
+                        metrics.clone(),
                     ));
                 }
                 Err(()) => {
@@ -120,7 +122,11 @@ async fn task_connection(
     mut tcp_stream: TcpStream,
     tcp_ingress_tx: mpsc::Sender<(SocketAddr, Bytes)>,
     buffer_size: Option<usize>,
+    metrics: RxTcpDataplaneMetrics,
 ) {
+    metrics.new_connection.inc();
+    metrics.connections.inc();
+
     if let Some(requested_buffer_size) = buffer_size {
         tcp_stream
             .set_recv_buffer_size(requested_buffer_size)
@@ -143,6 +149,8 @@ async fn task_connection(
     let mut message_id: u64 = 0;
 
     while let Some(message) = read_message(conn_id, addr, message_id, &mut tcp_stream).await {
+        metrics.bytes.add(message.len() as u64);
+
         if let Err(err) = tcp_ingress_tx.send((addr, message)).await {
             warn!(
                 conn_id,
@@ -158,6 +166,7 @@ async fn task_connection(
     }
 
     rx_state.drop_connection(&addr.ip());
+    metrics.connections.dec_saturating();
 }
 
 async fn read_message(

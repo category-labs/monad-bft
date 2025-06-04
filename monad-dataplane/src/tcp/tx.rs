@@ -22,7 +22,7 @@ use tracing::{debug, enabled, trace, warn, Level};
 use zerocopy::AsBytes;
 
 use super::{message_timeout, TcpMsg, TcpMsgHdr};
-use crate::buffer_ext::SocketBufferExt;
+use crate::{buffer_ext::SocketBufferExt, metrics::TxTcpDataplaneMetrics};
 
 // These are per-peer limits.
 pub const QUEUED_MESSAGE_WARN_LIMIT: usize = 100;
@@ -124,6 +124,7 @@ struct TxStateInner {
 pub async fn task(
     mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>,
     buffer_size: Option<usize>,
+    metrics: TxTcpDataplaneMetrics,
 ) {
     let tx_state = TxState::new();
 
@@ -145,6 +146,7 @@ pub async fn task(
                 msg_receiver,
                 tx_state_peer_handle,
                 buffer_size,
+                metrics.clone(),
             ));
 
             conn_id += 1;
@@ -158,7 +160,11 @@ async fn task_connection(
     mut msg_receiver: mpsc::Receiver<TcpMsg>,
     _tx_state_peer_handle: TxStatePeerHandle,
     buffer_size: Option<usize>,
+    metrics: TxTcpDataplaneMetrics,
 ) {
+    metrics.new_connection.inc();
+    metrics.connections.inc();
+
     trace!(
         conn_id,
         ?addr,
@@ -166,7 +172,7 @@ async fn task_connection(
     );
 
     if let Err(err) =
-        connect_and_send_messages(conn_id, &addr, &mut msg_receiver, buffer_size).await
+        connect_and_send_messages(conn_id, &addr, &mut msg_receiver, buffer_size, &metrics).await
     {
         let mut additional_messages_dropped = 0;
 
@@ -192,6 +198,7 @@ async fn task_connection(
         ?addr,
         "exiting TCP transmit connection task for peer"
     );
+    metrics.connections.dec_saturating();
 }
 
 async fn connect_and_send_messages(
@@ -199,6 +206,7 @@ async fn connect_and_send_messages(
     addr: &SocketAddr,
     msg_receiver: &mut mpsc::Receiver<TcpMsg>,
     buffer_size: Option<usize>,
+    metrics: &TxTcpDataplaneMetrics,
 ) -> Result<(), Error> {
     let mut stream = timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect(addr))
         .await
@@ -260,6 +268,8 @@ async fn connect_and_send_messages(
 
         let len = msg.msg.len();
 
+        metrics.bytes.add(len as u64);
+
         timeout(
             message_timeout(len),
             send_message(conn_id, addr, &mut stream, message_id, msg),
@@ -275,6 +285,8 @@ async fn connect_and_send_messages(
                 ),
             )
         })?;
+
+        metrics.bytes_success.add(len as u64);
 
         message_id += 1;
     }

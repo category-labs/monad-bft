@@ -35,7 +35,7 @@ use monad_peer_discovery::{
     MonadNameRecord, NameRecord,
 };
 use monad_pprof::start_pprof_server;
-use monad_raptorcast::{RaptorCast, RaptorCastConfig};
+use monad_raptorcast::{metrics::RaptorCastDataplaneMetrics, RaptorCast, RaptorCastConfig};
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
 use monad_statesync::StateSync;
 use monad_triedb_cache::StateBackendCache;
@@ -423,7 +423,11 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
                 let meter = provider.meter("opentelemetry");
 
                 let ParentExecutorMetrics {
-                    router,
+                    router:
+                        RaptorCastDataplaneMetrics {
+                            raptorcast,
+                            dataplane,
+                        },
                     timer: &(),
                     ledger,
                     checkpoint: &(),
@@ -502,7 +506,13 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
                             .build();
                     };
 
-                router.for_each(
+                raptorcast.for_each(
+                    &mut on_counter,
+                    &mut on_counter_labeled,
+                    &mut on_gauge,
+                    &mut on_gauge_labeled,
+                );
+                dataplane.for_each(
                     &mut on_counter,
                     &mut on_counter_labeled,
                     &mut on_gauge,

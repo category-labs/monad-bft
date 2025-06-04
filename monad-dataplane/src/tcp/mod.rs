@@ -9,6 +9,7 @@ use zerocopy::{
 };
 
 use super::TcpMsg;
+use crate::metrics::TcpDataplaneMetrics;
 
 pub mod rx;
 pub mod tx;
@@ -41,9 +42,20 @@ pub fn spawn_tasks(
     tcp_ingress_tx: mpsc::Sender<(SocketAddr, Bytes)>,
     tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>,
     buffer_size: Option<usize>,
+    metrics: TcpDataplaneMetrics,
 ) {
-    spawn(rx::task(local_addr, tcp_ingress_tx, buffer_size));
-    spawn(tx::task(tcp_egress_rx, buffer_size));
+    let TcpDataplaneMetrics {
+        rx: metrics_rx,
+        tx: metrics_tx,
+    } = metrics;
+
+    spawn(rx::task(
+        local_addr,
+        tcp_ingress_tx,
+        buffer_size,
+        metrics_rx,
+    ));
+    spawn(tx::task(tcp_egress_rx, buffer_size, metrics_tx));
 }
 
 // Minimum message receive/transmit speed in bytes per second.  Messages that are

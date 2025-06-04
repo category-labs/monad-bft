@@ -22,6 +22,7 @@ use monad_types::{Epoch, NodeId};
 use rand::seq::SliceRandom;
 
 use crate::{
+    metrics::RaptorCastMetrics,
     util::{compute_hash, AppMessageHash, BuildTarget, HexBytes, NodeIdHash, ReBroadcastGroupMap},
     SIGNATURE_SIZE,
 };
@@ -120,6 +121,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
         rebroadcast: impl FnMut(Vec<NodeId<CertificateSignaturePubKey<ST>>>, Bytes, u16),
         forward: impl FnMut(Bytes, u16),
         message: RecvMsg,
+        metrics: &RaptorCastMetrics,
     ) -> Vec<(NodeId<CertificateSignaturePubKey<ST>>, Bytes)> {
         let self_id = self.self_id;
         let self_hash = compute_hash(&self_id);
@@ -245,7 +247,9 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                     recently_decoded_state
                         .seen_esis
                         .set(encoding_symbol_id, true);
+
                     recently_decoded_state.excess_chunk_count += 1;
+                    metrics.excess_chunks.inc();
 
                     try_rebroadcast_symbol();
                 }
@@ -287,8 +291,10 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 &decoder_state.seen_esis,
             ) {
                 // invalid symbol
+                metrics.invalid_symbols.inc();
                 continue;
             }
+
             decoder_state.seen_esis.set(encoding_symbol_id, true);
 
             try_rebroadcast_symbol();
@@ -303,6 +309,8 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 .recipient_chunks
                 .entry(parsed_message.recipient_hash)
                 .or_insert(0) += 1;
+
+            let now = std::time::Instant::now();
 
             if decoder_state.decoder.try_decode() {
                 let Some(mut decoded) = decoder_state.decoder.reconstruct_source_data() else {
@@ -337,6 +345,13 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                         excess_chunk_count: 0,
                     },
                 );
+
+                metrics.rx.message.inc();
+                metrics.rx.message_bytes.add(decoded.len() as u64);
+                metrics
+                    .rx
+                    .message_reassembly_elapsed
+                    .add(now.elapsed().as_nanos() as u64);
 
                 messages.push((parsed_message.author, Bytes::from(decoded)));
             }
@@ -1336,6 +1351,7 @@ mod tests {
 
     use super::UdpState;
     use crate::{
+        metrics::RaptorCastMetrics,
         udp::{build_messages, parse_message, SIGNATURE_CACHE_SIZE},
         util::{BuildTarget, EpochValidators, FullNodes, ReBroadcastGroupMap, Validator},
     };
@@ -1580,6 +1596,7 @@ mod tests {
             |_targets, _payload, _stride| {},
             |_payload, _stride| {},
             recv_msg,
+            &RaptorCastMetrics::default(),
         );
     }
 }

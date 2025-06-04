@@ -12,7 +12,6 @@ use std::{
 use alloy_rlp::{Decodable, Encodable};
 use bytes::{Bytes, BytesMut};
 use futures::{channel::oneshot, FutureExt, Stream, StreamExt};
-use message::{DeserializeError, InboundRouterMessage, OutboundRouterMessage};
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
@@ -34,7 +33,8 @@ use monad_types::{
 use tracing::{debug, error, warn};
 
 use self::{
-    metrics::RaptorCastMetrics,
+    message::{DeserializeError, InboundRouterMessage, OutboundRouterMessage},
+    metrics::{RaptorCastDataplaneMetrics, RaptorCastMetrics},
     util::{BuildTarget, EpochValidators, FullNodes, ReBroadcastGroupMap, Validator},
 };
 
@@ -99,7 +99,7 @@ where
     pending_events: VecDeque<RaptorCastEvent<M::Event, CertificateSignaturePubKey<ST>>>,
 
     waker: Option<Waker>,
-    metrics: RaptorCastMetrics,
+    metrics: RaptorCastDataplaneMetrics,
     _phantom: PhantomData<(OM, SE)>,
 }
 
@@ -133,6 +133,8 @@ where
         let dataplane = builder.build();
         let is_fullnode = false; // This will come from the config in upcoming PR
 
+        let dataplane_metrics = dataplane.metrics.clone();
+
         Self {
             epoch_validators: Default::default(),
             rebroadcast_map: ReBroadcastGroupMap::new(self_id, is_fullnode),
@@ -152,12 +154,15 @@ where
             pending_events: Default::default(),
 
             waker: None,
-            metrics: RaptorCastMetrics::default(),
+            metrics: RaptorCastDataplaneMetrics {
+                raptorcast: RaptorCastMetrics::default(),
+                dataplane: dataplane_metrics,
+            },
             _phantom: PhantomData,
         }
     }
 
-    fn tcp_build_and_send(
+    fn point_to_point_send(
         &mut self,
         to: &NodeId<CertificateSignaturePubKey<ST>>,
         make_app_message: impl FnOnce() -> Bytes,
@@ -169,6 +174,14 @@ where
             }
             Some(address) => {
                 let app_message = make_app_message();
+
+                self.metrics.raptorcast.p2p.app_message.inc();
+                self.metrics
+                    .raptorcast
+                    .p2p
+                    .app_message_bytes
+                    .add(app_message.len() as u64);
+
                 // TODO make this more sophisticated
                 // include timestamp, etc
                 let mut signed_message = BytesMut::zeroed(SIGNATURE_SIZE + app_message.len());
@@ -176,6 +189,7 @@ where
                 assert_eq!(signature.len(), SIGNATURE_SIZE);
                 signed_message[..SIGNATURE_SIZE].copy_from_slice(&signature);
                 signed_message[SIGNATURE_SIZE..].copy_from_slice(&app_message);
+
                 self.dataplane.tcp_write(
                     *address,
                     TcpMsg {
@@ -196,7 +210,7 @@ where
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
 {
     type Command = RouterCommand<CertificateSignaturePubKey<ST>, OM>;
-    type Metrics = RaptorCastMetrics;
+    type Metrics = RaptorCastDataplaneMetrics;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let self_id = NodeId::new(self.key.pubkey());
@@ -296,14 +310,32 @@ where
 
                             let build_target = match &target {
                                 RouterTarget::Broadcast(_) => {
+                                    self.metrics.raptorcast.broadcast.app_message.inc();
+                                    self.metrics
+                                        .raptorcast
+                                        .broadcast
+                                        .app_message_bytes
+                                        .add(app_message.len() as u64);
+
                                     BuildTarget::Broadcast(epoch_validators_without_self)
                                 }
-                                RouterTarget::Raptorcast(_) => BuildTarget::Raptorcast((
-                                    epoch_validators_without_self,
-                                    full_nodes_view,
-                                )),
+                                RouterTarget::Raptorcast(_) => {
+                                    self.metrics.raptorcast.raptorcast.app_message.inc();
+                                    self.metrics
+                                        .raptorcast
+                                        .raptorcast
+                                        .app_message_bytes
+                                        .add(app_message.len() as u64);
+
+                                    BuildTarget::Raptorcast((
+                                        epoch_validators_without_self,
+                                        full_nodes_view,
+                                    ))
+                                }
                                 _ => unreachable!(),
                             };
+
+                            let now = std::time::Instant::now();
 
                             let unicast_msg = udp_build(
                                 &epoch,
@@ -314,6 +346,27 @@ where
                                 self.redundancy,
                                 &self.known_addresses,
                             );
+
+                            let elapsed = now.elapsed().as_nanos() as u64;
+
+                            match target {
+                                RouterTarget::Broadcast(_) => {
+                                    self.metrics
+                                        .raptorcast
+                                        .broadcast
+                                        .app_message_build_elapsed
+                                        .add(elapsed);
+                                }
+                                RouterTarget::Raptorcast(_) => {
+                                    self.metrics
+                                        .raptorcast
+                                        .raptorcast
+                                        .app_message_build_elapsed
+                                        .add(elapsed);
+                                }
+                                _ => unreachable!(),
+                            }
+
                             self.dataplane.udp_write_unicast(unicast_msg);
                         }
                         RouterTarget::PointToPoint(to) => {
@@ -347,7 +400,7 @@ where
                                     waker.wake()
                                 }
                             } else {
-                                self.tcp_build_and_send(&to, || message.serialize(), completion)
+                                self.point_to_point_send(&to, || message.serialize(), completion)
                             }
                         }
                     };
@@ -377,6 +430,11 @@ where
                     self.full_nodes.list = new_full_nodes;
                 }
             }
+
+            self.metrics
+                .raptorcast
+                .peers
+                .set(self.known_addresses.len() as u64);
         }
     }
 
@@ -507,6 +565,7 @@ where
                         });
                     },
                     message,
+                    &this.metrics.raptorcast,
                 )
             };
             let deserialized_app_messages =

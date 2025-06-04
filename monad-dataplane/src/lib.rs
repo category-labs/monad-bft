@@ -6,7 +6,10 @@ use monoio::{IoUringDriver, RuntimeBuilder};
 use tokio::sync::{mpsc, mpsc::error::TrySendError};
 use tracing::warn;
 
+use self::metrics::DataplaneMetrics;
+
 pub(crate) mod buffer_ext;
+pub mod metrics;
 pub mod tcp;
 pub mod udp;
 
@@ -45,26 +48,40 @@ impl DataplaneBuilder {
         let (udp_ingress_tx, udp_ingress_rx) = mpsc::channel(UDP_INGRESS_CHANNEL_SIZE);
         let (udp_egress_tx, udp_egress_rx) = mpsc::channel(UDP_EGRESS_CHANNEL_SIZE);
 
+        let metrics = DataplaneMetrics::default();
+
         thread::Builder::new()
             .name("monad-dataplane".into())
-            .spawn(move || {
-                RuntimeBuilder::<IoUringDriver>::new()
-                    .enable_timer()
-                    .build()
-                    .expect("Failed building the Runtime")
-                    .block_on(async move {
-                        tcp::spawn_tasks(local_addr, tcp_ingress_tx, tcp_egress_rx, buffer_size);
+            .spawn({
+                let metrics_tcp = metrics.tcp.clone();
+                let metrics_udp = metrics.udp.clone();
 
-                        udp::spawn_tasks(
-                            local_addr,
-                            udp_ingress_tx,
-                            udp_egress_rx,
-                            up_bandwidth_mbps,
-                            buffer_size,
-                        );
+                move || {
+                    RuntimeBuilder::<IoUringDriver>::new()
+                        .enable_timer()
+                        .build()
+                        .expect("Failed building the Runtime")
+                        .block_on(async move {
+                            tcp::spawn_tasks(
+                                local_addr,
+                                tcp_ingress_tx,
+                                tcp_egress_rx,
+                                buffer_size,
+                                metrics_tcp,
+                            );
 
-                        futures::future::pending::<()>().await;
-                    });
+                            udp::spawn_tasks(
+                                local_addr,
+                                udp_ingress_tx,
+                                udp_egress_rx,
+                                up_bandwidth_mbps,
+                                buffer_size,
+                                metrics_udp,
+                            );
+
+                            futures::future::pending::<()>().await;
+                        });
+                }
             })
             .expect("failed to spawn dataplane thread");
 
@@ -74,8 +91,7 @@ impl DataplaneBuilder {
             udp_ingress_rx,
             udp_egress_tx,
 
-            tcp_msgs_dropped: 0,
-            udp_msgs_dropped: 0,
+            metrics,
         }
     }
 }
@@ -86,8 +102,7 @@ pub struct Dataplane {
     udp_ingress_rx: mpsc::Receiver<RecvMsg>,
     udp_egress_tx: mpsc::Sender<(SocketAddr, Bytes, u16)>,
 
-    tcp_msgs_dropped: usize,
-    udp_msgs_dropped: usize,
+    pub metrics: DataplaneMetrics,
 }
 
 #[derive(Clone)]
@@ -134,11 +149,11 @@ impl Dataplane {
         match self.tcp_egress_tx.try_send((addr, msg)) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
-                self.tcp_msgs_dropped += 1;
+                self.metrics.dropped_msgs_full_tcp.inc();
 
                 warn!(
                     num_msgs_dropped = 1,
-                    total_tcp_msgs_dropped = self.tcp_msgs_dropped,
+                    total_tcp_msgs_dropped = self.metrics.dropped_msgs_full_tcp.read(),
                     ?addr,
                     msg_length,
                     "tcp_egress_tx channel full, dropping message"
@@ -167,11 +182,13 @@ impl Dataplane {
                 Err(TrySendError::Full(_)) => {
                     let num_msgs_dropped = num_targets - i;
 
-                    self.udp_msgs_dropped += num_msgs_dropped;
+                    self.metrics
+                        .dropped_msgs_full_tcp
+                        .add(num_msgs_dropped as u64);
 
                     warn!(
                         num_msgs_dropped,
-                        total_udp_msgs_dropped = self.udp_msgs_dropped,
+                        total_udp_msgs_dropped = self.metrics.dropped_msgs_full_tcp.read(),
                         msg_length = msg.payload.len(),
                         "udp_egress_tx channel full, dropping message"
                     );
@@ -192,11 +209,13 @@ impl Dataplane {
                 Err(TrySendError::Full(_)) => {
                     let num_msgs_dropped = num_msgs - i;
 
-                    self.udp_msgs_dropped += num_msgs_dropped;
+                    self.metrics
+                        .dropped_msgs_full_udp
+                        .add(num_msgs_dropped as u64);
 
                     warn!(
                         num_msgs_dropped,
-                        total_udp_msgs_dropped = self.udp_msgs_dropped,
+                        total_udp_msgs_dropped = self.metrics.dropped_msgs_full_udp.read(),
                         "udp_egress_tx channel full, dropping message"
                     );
 

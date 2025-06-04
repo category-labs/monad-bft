@@ -12,7 +12,10 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
 
 use super::RecvMsg;
-use crate::buffer_ext::SocketBufferExt;
+use crate::{
+    buffer_ext::SocketBufferExt,
+    metrics::{RxUdpDataplaneMetrics, TxUdpDataplaneMetrics, UdpDataplaneMetrics},
+};
 
 // When running in docker with vpnkit, the maximum safe MTU is 1480, as per:
 // https://github.com/moby/vpnkit/tree/v0.5.0/src/hostnet/slirp.ml#L17-L18
@@ -35,6 +38,7 @@ pub fn spawn_tasks(
     udp_egress_rx: mpsc::Receiver<(SocketAddr, Bytes, u16)>,
     up_bandwidth_mbps: u64,
     buffer_size: Option<usize>,
+    metrics: UdpDataplaneMetrics,
 ) {
     // Bind the UDP socket and clone it for use in different tasks.
     let udp_socket_rx = UdpSocket::bind(local_addr).unwrap();
@@ -86,16 +90,32 @@ pub fn spawn_tasks(
         }
     }
 
-    spawn(rx(udp_socket_rx, udp_ingress_tx));
-    spawn(tx(udp_socket_tx, udp_egress_rx, up_bandwidth_mbps));
+    let UdpDataplaneMetrics {
+        rx: metrics_rx,
+        tx: metrics_tx,
+    } = metrics;
+
+    spawn(rx(udp_socket_rx, udp_ingress_tx, metrics_rx));
+    spawn(tx(
+        udp_socket_tx,
+        udp_egress_rx,
+        up_bandwidth_mbps,
+        metrics_tx,
+    ));
 }
 
-async fn rx(udp_socket_rx: UdpSocket, udp_ingress_tx: mpsc::Sender<RecvMsg>) {
+async fn rx(
+    udp_socket_rx: UdpSocket,
+    udp_ingress_tx: mpsc::Sender<RecvMsg>,
+    metrics: RxUdpDataplaneMetrics,
+) {
     loop {
         let buf = BytesMut::with_capacity(ETHERNET_SEGMENT_SIZE.into());
 
         match udp_socket_rx.recv_from(buf).await {
             (Ok((len, src_addr)), buf) => {
+                metrics.bytes.add(len as u64);
+
                 let payload = buf.freeze();
 
                 let msg = RecvMsg {
@@ -122,6 +142,7 @@ async fn tx(
     socket_tx: UdpSocket,
     mut udp_egress_rx: mpsc::Receiver<(SocketAddr, Bytes, u16)>,
     up_bandwidth_mbps: u64,
+    metrics: TxUdpDataplaneMetrics,
 ) {
     let mut udp_segment_size: u16 = DEFAULT_SEGMENT_SIZE;
     set_udp_segment_size(&socket_tx, udp_segment_size);
@@ -152,6 +173,8 @@ async fn tx(
         let chunk = payload.split_to(payload.len().min(max_chunk.into()));
         let chunk_len = chunk.len();
 
+        metrics.bytes.add(chunk_len as u64);
+
         let now = Instant::now();
 
         if next_transmit > now {
@@ -166,8 +189,20 @@ async fn tx(
 
         let (ret, chunk) = socket_tx.send_to(chunk, addr).await;
 
-        if let Err(err) = &ret {
-            match err.kind() {
+        match ret {
+            Ok(bytes_len) => {
+                metrics.bytes_success.add(bytes_len as u64);
+
+                // the remainder of the message is re-queued only if the send is succesful
+                next_transmit +=
+                    Duration::from_nanos((chunk_len as u64) * 8 * 1000 / up_bandwidth_mbps);
+
+                // Re-queue (addr, payload) at the end of the list if there are bytes left to transmit.
+                if !payload.is_empty() {
+                    messages_to_send.push_back((addr, payload, stride));
+                }
+            }
+            Err(err) => match err.kind() {
                 // ENETUNREACH is returned when trying to send to an IPv4 address from a
                 // socket bound to a local IPv6 address.
                 ErrorKind::NetworkUnreachable => debug!(
@@ -194,7 +229,7 @@ async fn tx(
                 // EAFNOSUPPORT is returned as ErrorKind::Uncategorized, which can't be
                 // matched against, so it has to be tested for under the wildcard match.
                 _ => {
-                    if is_eafnosupport(err) {
+                    if is_eafnosupport(&err) {
                         debug!(
                             local_addr =? socket_tx.local_addr().unwrap(),
                             ?addr,
@@ -212,18 +247,7 @@ async fn tx(
                         );
                     }
                 }
-            }
-        }
-
-        // the remainder of the message is re-queued only if the send is succesful
-        if ret.is_ok() {
-            next_transmit +=
-                Duration::from_nanos((chunk_len as u64) * 8 * 1000 / up_bandwidth_mbps);
-
-            // Re-queue (addr, payload) at the end of the list if there are bytes left to transmit.
-            if !payload.is_empty() {
-                messages_to_send.push_back((addr, payload, stride));
-            }
+            },
         }
     }
 }
