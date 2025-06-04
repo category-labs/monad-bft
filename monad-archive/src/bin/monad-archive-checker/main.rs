@@ -115,18 +115,42 @@ async fn main() -> Result<()> {
         }
         cli::Mode::Rechecker(rechecker_args) => {
             info!(
-                "Starting in rechecker mode with recheck_freq_min: {}",
-                rechecker_args.recheck_freq_min
+                "Starting in rechecker mode with recheck_freq_min: {}, v2: {}, dry_run: {}",
+                rechecker_args.recheck_freq_min,
+                rechecker_args.use_rechecker_v2,
+                rechecker_args.dry_run
             );
 
             let model = CheckerModel::new(s3, &metrics, None).await?;
             let recheck_freq = Duration::from_secs_f64(rechecker_args.recheck_freq_min * 60.);
             info!("Recheck frequency set to {:?}", recheck_freq);
 
-            // Note: When run as standalone rechecker, we always use v1 for backward compatibility
-            // Use --use-rechecker-v2 flag with checker mode to use v2
-            info!("Starting rechecker v1 worker");
-            tokio::spawn(rechecker::recheck_worker(recheck_freq, model, metrics)).await??;
+            if rechecker_args.use_rechecker_v2 {
+                info!(
+                    "Starting rechecker v2 worker (dry_run: {}, start: {:?}, end: {:?})",
+                    rechecker_args.dry_run, rechecker_args.start_block, rechecker_args.end_block
+                );
+                tokio::spawn(rechecker_v2::rechecker_v2_standalone(
+                    recheck_freq,
+                    model,
+                    metrics,
+                    rechecker_args.dry_run,
+                    rechecker_args.start_block,
+                    rechecker_args.end_block,
+                ))
+                .await??;
+            } else {
+                if rechecker_args.dry_run
+                    || rechecker_args.start_block.is_some()
+                    || rechecker_args.end_block.is_some()
+                {
+                    return Err(eyre::eyre!(
+                        "Dry run and block range options are only supported with --use-rechecker-v2"
+                    ));
+                }
+                info!("Starting rechecker v1 worker");
+                tokio::spawn(rechecker::recheck_worker(recheck_freq, model, metrics)).await??;
+            }
         }
         cli::Mode::FaultFixer(fixer_args) => {
             info!(
