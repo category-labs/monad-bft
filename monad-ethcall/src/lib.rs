@@ -14,7 +14,7 @@ use bindings::monad_eth_call_result;
 use futures::channel::oneshot::{channel, Sender};
 use monad_chain_config::{
     ETHEREUM_MAINNET_CHAIN_ID, MONAD_DEVNET_CHAIN_ID, MONAD_MAINNET_CHAIN_ID,
-    MONAD_TESTNET_CHAIN_ID,
+    MONAD_TESTNET2_CHAIN_ID, MONAD_TESTNET_CHAIN_ID,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -245,6 +245,7 @@ pub async fn eth_call(
         MONAD_DEVNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_DEVNET,
         MONAD_TESTNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_TESTNET,
         MONAD_MAINNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_MAINNET,
+        MONAD_TESTNET2_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_TESTNET2,
         _ => {
             unsafe { bindings::monad_state_override_destroy(override_ctx) };
 
