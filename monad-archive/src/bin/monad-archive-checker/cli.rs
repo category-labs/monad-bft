@@ -50,6 +50,10 @@ pub struct CheckerArgs {
     /// How frequently to recheck faults in minutes
     #[arg(long, default_value_t = 15.)]
     pub recheck_freq_min: f64,
+
+    /// Use rechecker v2 (full chunk recheck from scratch)
+    #[arg(long)]
+    pub use_rechecker_v2: bool,
 }
 
 #[derive(Parser, Debug)]

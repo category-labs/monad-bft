@@ -15,6 +15,7 @@ mod cli;
 mod fault_fixer;
 mod model;
 mod rechecker;
+mod rechecker_v2;
 
 /// Number of blocks to check per iteration
 /// Also the number of blocks per stored object
@@ -88,11 +89,21 @@ async fn main() -> Result<()> {
 
             // Start the rechecker worker if enabled
             let rechecker_handle = if !checker_args.disable_rechecker {
-                tokio::spawn(rechecker::recheck_worker(
-                    recheck_freq,
-                    model.clone(),
-                    metrics.clone(),
-                ))
+                if checker_args.use_rechecker_v2 {
+                    info!("Using rechecker v2 (full chunk recheck)");
+                    tokio::spawn(rechecker_v2::rechecker_v2_worker(
+                        recheck_freq,
+                        model.clone(),
+                        metrics.clone(),
+                    ))
+                } else {
+                    info!("Using rechecker v1 (individual fault recheck)");
+                    tokio::spawn(rechecker::recheck_worker(
+                        recheck_freq,
+                        model.clone(),
+                        metrics.clone(),
+                    ))
+                }
             } else {
                 // Dummy task for type compatibility
                 tokio::spawn(async { Ok(()) })
@@ -111,7 +122,9 @@ async fn main() -> Result<()> {
             let recheck_freq = Duration::from_secs_f64(rechecker_args.recheck_freq_min * 60.);
             info!("Recheck frequency set to {:?}", recheck_freq);
 
-            info!("Starting rechecker worker");
+            // Note: When run as standalone rechecker, we always use v1 for backward compatibility
+            // Use --use-rechecker-v2 flag with checker mode to use v2
+            info!("Starting rechecker v1 worker");
             tokio::spawn(rechecker::recheck_worker(recheck_freq, model, metrics)).await??;
         }
         cli::Mode::FaultFixer(fixer_args) => {

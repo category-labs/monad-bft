@@ -118,7 +118,7 @@ async fn process_block_batch(
 }
 
 /// Fetches block data from all replicas for a range of blocks
-async fn fetch_block_data(
+pub async fn fetch_block_data(
     model: &CheckerModel,
     block_nums: impl IntoIterator<Item = u64>,
     replicas: &[&str],
@@ -153,7 +153,7 @@ async fn fetch_block_data(
 }
 
 /// Processes blocks to find faults and good blocks
-fn process_blocks(
+pub fn process_blocks(
     data_by_block_num: &HashMap<u64, HashMap<String, Option<(Block, BlockReceipts, BlockTraces)>>>,
     start_block: u64,
     end_block: u64,
@@ -354,7 +354,7 @@ fn find_consensus(
 }
 
 /// Stores checking results in S3
-async fn store_checking_results(
+pub async fn store_checking_results(
     model: &CheckerModel,
     starting_block_num: u64,
     faults_by_replica: HashMap<String, Vec<Fault>>,
