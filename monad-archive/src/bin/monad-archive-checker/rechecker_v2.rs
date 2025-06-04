@@ -41,10 +41,11 @@ pub async fn rechecker_v2_standalone(
     dry_run: bool,
     start_block: Option<u64>,
     end_block: Option<u64>,
+    force_recheck: bool,
 ) -> Result<()> {
     info!(
-        "Starting standalone rechecker v2 worker with frequency {:?}, dry_run: {}, start: {:?}, end: {:?}",
-        recheck_freq, dry_run, start_block, end_block
+        "Starting standalone rechecker v2 worker with frequency {:?}, dry_run: {}, start: {:?}, end: {:?}, force_recheck: {}",
+        recheck_freq, dry_run, start_block, end_block, force_recheck
     );
     let mut interval = interval(recheck_freq);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -53,7 +54,11 @@ pub async fn rechecker_v2_standalone(
         interval.tick().await;
 
         info!("Starting recheck cycle");
-        recheck_all_faults(&model, &metrics, dry_run, start_block, end_block).await?;
+        if force_recheck {
+            recheck_all_chunks(&model, &metrics, dry_run, start_block, end_block).await?;
+        } else {
+            recheck_all_faults(&model, &metrics, dry_run, start_block, end_block).await?;
+        }
         info!("Recheck cycle completed, waiting for next interval");
     }
 }
@@ -88,6 +93,76 @@ async fn recheck_all_faults(
     }
 
     Ok(())
+}
+
+/// Rechecks all chunks in the specified range, regardless of whether they have faults
+async fn recheck_all_chunks(
+    model: &CheckerModel,
+    metrics: &Metrics,
+    dry_run: bool,
+    start_block: Option<u64>,
+    end_block: Option<u64>,
+) -> Result<()> {
+    // Collect all chunks in the specified range
+    let all_chunks = collect_all_chunks(model, start_block, end_block).await?;
+
+    if all_chunks.is_empty() {
+        info!("No chunks found to recheck in the specified range");
+        return Ok(());
+    }
+
+    info!("Found {} chunks to recheck (force mode)", all_chunks.len());
+
+    // Process each chunk
+    for chunk_start in all_chunks {
+        info!(chunk_start, dry_run, "Force rechecking chunk");
+        recheck_chunk_from_scratch(model, chunk_start, metrics, dry_run).await?;
+    }
+
+    // Update metrics after all chunks are rechecked (skip in dry run)
+    if !dry_run {
+        update_fault_metrics(model, metrics).await?;
+    }
+
+    Ok(())
+}
+
+/// Collects all chunks in the specified range, regardless of fault status
+async fn collect_all_chunks(
+    model: &CheckerModel,
+    start_block: Option<u64>,
+    end_block: Option<u64>,
+) -> Result<Vec<u64>> {
+    // Get the minimum latest checked across all replicas to determine the upper bound
+    let min_latest_checked = model.min_latest_checked().await?;
+
+    // Filter chunks based on block range if provided
+    let start_chunk = start_block
+        .map(|b| (b / CHUNK_SIZE) * CHUNK_SIZE)
+        .unwrap_or(0);
+    let end_chunk = end_block
+        .map(|b| (b / CHUNK_SIZE) * CHUNK_SIZE)
+        .unwrap_or((min_latest_checked / CHUNK_SIZE) * CHUNK_SIZE);
+
+    // Ensure we don't go beyond what has been checked
+    let effective_end_chunk = end_chunk.min((min_latest_checked / CHUNK_SIZE) * CHUNK_SIZE);
+
+    // Collect all chunks in the range
+    let mut chunks = Vec::new();
+    let mut current_chunk = start_chunk;
+    while current_chunk <= effective_end_chunk {
+        chunks.push(current_chunk);
+        current_chunk += CHUNK_SIZE;
+    }
+
+    info!(
+        "Collected {} chunks to force recheck (from block {} to {})",
+        chunks.len(),
+        start_chunk,
+        effective_end_chunk + CHUNK_SIZE - 1
+    );
+
+    Ok(chunks)
 }
 
 /// Collects all unique chunk starts that have faults across all replicas
@@ -1006,6 +1081,122 @@ mod tests {
             .await
             .unwrap();
         assert!(replica2_faults.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_collect_all_chunks() {
+        let model = setup_test_model();
+
+        // Set latest checked for all replicas
+        model
+            .set_latest_checked_for_replica("replica1", 5999)
+            .await
+            .unwrap();
+        model
+            .set_latest_checked_for_replica("replica2", 4999)
+            .await
+            .unwrap();
+        model
+            .set_latest_checked_for_replica("replica3", 3999)
+            .await
+            .unwrap();
+
+        // Test 1: No range specified - should collect all chunks up to min latest checked (3999)
+        let chunks = collect_all_chunks(&model, None, None).await.unwrap();
+        assert_eq!(chunks.len(), 4); // 0, 1000, 2000, 3000
+        assert_eq!(chunks, vec![0, 1000, 2000, 3000]);
+
+        // Test 2: With start and end range
+        let chunks = collect_all_chunks(&model, Some(1500), Some(3500))
+            .await
+            .unwrap();
+        assert_eq!(chunks.len(), 3); // 1000, 2000, 3000
+        assert_eq!(chunks, vec![1000, 2000, 3000]);
+
+        // Test 3: End block beyond latest checked - should cap at min latest checked
+        let chunks = collect_all_chunks(&model, Some(2000), Some(10000))
+            .await
+            .unwrap();
+        assert_eq!(chunks.len(), 2); // 2000, 3000
+        assert_eq!(chunks, vec![2000, 3000]);
+
+        // Test 4: Exact chunk boundaries
+        let chunks = collect_all_chunks(&model, Some(1000), Some(1999))
+            .await
+            .unwrap();
+        assert_eq!(chunks.len(), 1); // Only chunk 1000
+        assert_eq!(chunks, vec![1000]);
+    }
+
+    #[tokio::test]
+    async fn test_force_recheck_all_chunks() {
+        // Setup test model
+        let model = setup_test_model();
+        let metrics = Metrics::new(None::<String>, "test", "", Duration::from_secs(60)).unwrap();
+
+        // Set latest checked for all replicas
+        for replica in ["replica1", "replica2", "replica3"] {
+            model
+                .set_latest_checked_for_replica(replica, 2999)
+                .await
+                .unwrap();
+        }
+
+        // Add complete data for all replicas for chunks 0, 1000, 2000
+        for replica in ["replica1", "replica2", "replica3"] {
+            if let Some(archiver) = model.block_data_readers.get(replica) {
+                for chunk_start in [0, 1000, 2000] {
+                    for i in 0..CHUNK_SIZE {
+                        let block_num = chunk_start + i;
+                        let (block, receipts, traces) = create_test_block_data(block_num, 1);
+                        archiver.archive_block(block).await.unwrap();
+                        archiver
+                            .archive_receipts(receipts, block_num)
+                            .await
+                            .unwrap();
+                        archiver.archive_traces(traces, block_num).await.unwrap();
+                    }
+                }
+                archiver
+                    .update_latest(2999, LatestKind::Uploaded)
+                    .await
+                    .unwrap();
+            }
+        }
+
+        // Initially no faults should exist
+        for chunk_start in [0, 1000, 2000] {
+            for replica in ["replica1", "replica2", "replica3"] {
+                let faults = model.get_faults_chunk(replica, chunk_start).await.unwrap();
+                assert!(faults.is_empty());
+            }
+        }
+
+        // Force recheck all chunks in range 1000-2999
+        recheck_all_chunks(&model, &metrics, false, Some(1000), Some(2999))
+            .await
+            .unwrap();
+
+        // After force recheck, there should still be no faults (all data is consistent)
+        for chunk_start in [1000, 2000] {
+            for replica in ["replica1", "replica2", "replica3"] {
+                let faults = model.get_faults_chunk(replica, chunk_start).await.unwrap();
+                assert!(
+                    faults.is_empty(),
+                    "No faults should exist for replica {} chunk {}",
+                    replica,
+                    chunk_start
+                );
+            }
+
+            // Good blocks should be set
+            let good_blocks = model.get_good_blocks(chunk_start).await.unwrap();
+            assert_eq!(good_blocks.block_num_to_replica.len(), CHUNK_SIZE as usize);
+        }
+
+        // Chunk 0 should not have been rechecked (outside range)
+        let good_blocks_0 = model.get_good_blocks(0).await.unwrap();
+        assert!(good_blocks_0.block_num_to_replica.is_empty());
     }
 
     #[tokio::test]

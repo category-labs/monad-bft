@@ -119,8 +119,8 @@ async fn main() -> Result<()> {
 
             if !rechecker_args.use_rechecker_v1 {
                 info!(
-                    "Starting rechecker v2 worker (dry_run: {}, start: {:?}, end: {:?})",
-                    rechecker_args.dry_run, rechecker_args.start_block, rechecker_args.end_block
+                    "Starting rechecker v2 worker (dry_run: {}, start: {:?}, end: {:?}, force_recheck: {})",
+                    rechecker_args.dry_run, rechecker_args.start_block, rechecker_args.end_block, rechecker_args.force_recheck
                 );
                 tokio::spawn(rechecker_v2::rechecker_v2_standalone(
                     recheck_freq,
@@ -129,15 +129,17 @@ async fn main() -> Result<()> {
                     rechecker_args.dry_run,
                     rechecker_args.start_block,
                     rechecker_args.end_block,
+                    rechecker_args.force_recheck,
                 ))
                 .await??;
             } else {
                 if rechecker_args.dry_run
                     || rechecker_args.start_block.is_some()
                     || rechecker_args.end_block.is_some()
+                    || rechecker_args.force_recheck
                 {
                     return Err(eyre::eyre!(
-                        "Rechecker v1 does not support --dry-run, --start-block, or --end-block options.\n\
+                        "Rechecker v1 does not support --dry-run, --start-block, --end-block, or --force-recheck options.\n\
                          These features require rechecker v2 which rechecks entire chunks from scratch.\n\
                          Remove these flags or omit --use-rechecker-v1 to use rechecker v2."
                     ));

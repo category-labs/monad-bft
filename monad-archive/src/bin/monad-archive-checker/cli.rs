@@ -21,6 +21,9 @@ EXAMPLES:\n\n\
   # Advanced: Recheck specific block range with dry run\n\
   monad-archive-checker --bucket checker-state rechecker \\\n\
     --start-block 1000 --end-block 5000 --dry-run\n\n\
+  # Force recheck all chunks even without faults\n\
+  monad-archive-checker --bucket checker-state rechecker \\\n\
+    --start-block 0 --end-block 10000 --force-recheck --dry-run\n\n\
 "
 )]
 pub struct Cli {
@@ -99,6 +102,10 @@ pub struct Rechecker {
     /// Optional end block to recheck (inclusive)
     #[arg(long)]
     pub end_block: Option<u64>,
+
+    /// Force rechecking all chunks in range even if no faults are present
+    #[arg(long)]
+    pub force_recheck: bool,
 }
 
 #[derive(Parser, Debug)]
