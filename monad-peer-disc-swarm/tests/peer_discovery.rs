@@ -758,4 +758,182 @@ fn test_ping_timeout() {
     }
 }
 
-// TODO: swarm tests peer discovery watermark
+#[traced_test]
+#[test]
+fn test_min_watermark() {
+    // 4 nodes: NodeA, NodeB, NodeC, NodeD
+    // NodeA does not have any peer in the beginning
+    // NodeB, NodeC, and NodeD has NodeA as their peer in the beginning
+    let keys = create_keys::<SignatureType>(4);
+    let node_a_key = &keys[0];
+    let node_a = NodeId::new(node_a_key.pubkey());
+    let node_b_key = &keys[1];
+    let node_b = NodeId::new(node_b_key.pubkey());
+    let node_c_key = &keys[2];
+    let node_c = NodeId::new(node_c_key.pubkey());
+    let node_d_key = &keys[3];
+    let node_d = NodeId::new(node_d_key.pubkey());
+    let all_peers: BTreeMap<NodeId<PubKeyType>, PeerInfo<SignatureType>> = keys
+        .iter()
+        .map(|k| {
+            (NodeId::new(k.pubkey()), PeerInfo {
+                last_ping: None,
+                unresponsive_pings: 0,
+                name_record: generate_name_record(k),
+            })
+        })
+        .collect();
+    let refresh_period = Duration::from_secs(5);
+    let swarm_builder = PeerDiscSwarmBuilder::<PeerDiscSwarm, PeerDiscoveryBuilder<SignatureType>> {
+        builders: keys
+            .iter()
+            .enumerate()
+            .map(|(i, key)| {
+                let self_id = NodeId::new(key.pubkey());
+                NodeBuilder {
+                    id: NodeId::new(key.pubkey()),
+                    addr: generate_name_record(key).address(),
+                    algo_builder: PeerDiscoveryBuilder {
+                        self_id,
+                        self_record: generate_name_record(key),
+                        current_epoch: Epoch(1),
+                        epoch_validators: BTreeMap::from([(
+                            Epoch(1),
+                            BTreeSet::from([node_a, node_b, node_c, node_d]),
+                        )]),
+                        dedicated_full_nodes: BTreeSet::new(),
+                        peer_info: if self_id == node_a {
+                            BTreeMap::new()
+                        } else {
+                            BTreeMap::from([(node_a, PeerInfo {
+                                last_ping: None,
+                                unresponsive_pings: 0,
+                                name_record: generate_name_record(node_a_key),
+                            })])
+                        },
+                        ping_period: Duration::from_secs(2),
+                        refresh_period,
+                        request_timeout: Duration::from_secs(1),
+                        prune_threshold: 1,
+                        min_active_connections: 2,
+                        max_active_connections: 10,
+                        rng_seed: 123456,
+                    },
+                    router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
+                        .build(),
+                    seed: i.try_into().unwrap(),
+                    outbound_pipeline: vec![],
+                }
+            })
+            .collect(),
+        seed: 7,
+    };
+
+    let mut nodes = swarm_builder.build();
+
+    while nodes.step_until(refresh_period) {}
+
+    for (node_id, state) in nodes.states() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
+        let metrics = state.metrics();
+
+        // NodeB, NodeC, and NodeD should send lookup request to NodeA and discover each other
+        for peer_id in all_peers.keys() {
+            if peer_id == &state.self_id {
+                continue;
+            }
+            assert!(state.peer_info.contains_key(peer_id));
+        }
+
+        if node_id == &node_a {
+            assert_eq!(metrics["recv_lookup_request"], 3);
+        } else {
+            assert_eq!(metrics["send_lookup_request"], 1);
+        }
+    }
+}
+
+#[traced_test]
+#[test]
+fn test_max_watermark() {
+    // 5 nodes: NodeA, NodeB, NodeC, NodeD, NodeE
+    // NodeA is a validator, NodeB, NodeC, NodeD, NodeE are full nodes
+    // NodeE is a dedicated full node for NodeA
+    let keys = create_keys::<SignatureType>(5);
+    let node_a_key = &keys[0];
+    let node_a = NodeId::new(node_a_key.pubkey());
+    let node_e_key = &keys[4];
+    let node_e = NodeId::new(node_e_key.pubkey());
+    let (subset_keys, _) = (&keys[0..4], &keys[4]);
+    let all_peers: BTreeMap<NodeId<PubKeyType>, PeerInfo<SignatureType>> = keys
+        .iter()
+        .map(|k| {
+            (NodeId::new(k.pubkey()), PeerInfo {
+                last_ping: None,
+                unresponsive_pings: 0,
+                name_record: generate_name_record(k),
+            })
+        })
+        .collect();
+    let refresh_period = Duration::from_secs(5);
+    let swarm_builder = PeerDiscSwarmBuilder::<PeerDiscSwarm, PeerDiscoveryBuilder<SignatureType>> {
+        builders: subset_keys
+            .iter()
+            .enumerate()
+            .map(|(i, key)| {
+                let self_id = NodeId::new(key.pubkey());
+                let peer_info = all_peers
+                    .clone()
+                    .into_iter()
+                    .filter(|(id, _)| id != &self_id)
+                    .collect::<BTreeMap<_, _>>();
+                NodeBuilder {
+                    id: NodeId::new(key.pubkey()),
+                    addr: generate_name_record(key).address(),
+                    algo_builder: PeerDiscoveryBuilder {
+                        self_id,
+                        self_record: generate_name_record(key),
+                        current_epoch: Epoch(1),
+                        epoch_validators: BTreeMap::from([(Epoch(1), BTreeSet::from([node_a]))]),
+                        dedicated_full_nodes: if self_id == node_a {
+                            BTreeSet::from([node_e])
+                        } else {
+                            BTreeSet::new()
+                        },
+                        peer_info,
+                        ping_period: Duration::from_secs(2),
+                        refresh_period,
+                        request_timeout: Duration::from_secs(1),
+                        prune_threshold: 1,
+                        min_active_connections: 1,
+                        max_active_connections: 2,
+                        rng_seed: 123456,
+                    },
+                    router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
+                        .build(),
+                    seed: i.try_into().unwrap(),
+                    outbound_pipeline: vec![],
+                }
+            })
+            .collect(),
+        seed: 7,
+    };
+
+    let mut nodes = swarm_builder.build();
+
+    while nodes.step_until(refresh_period) {}
+
+    for (node_id, state) in nodes.states() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
+
+        // NodeE is inactive, should be pruned by NodeB and NodeC, but should not be pruned by NodeA
+        if node_id == &node_a {
+            assert!(state.peer_info.contains_key(&node_e));
+        } else {
+            assert!(!state.peer_info.contains_key(&node_e));
+        }
+
+        // additional full nodes above max_active_connections are pruned
+        assert!(state.peer_info.len() == 2);
+    }
+}
