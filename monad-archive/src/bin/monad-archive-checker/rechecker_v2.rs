@@ -1,4 +1,5 @@
 use eyre::{Context, Result};
+use futures::{stream, StreamExt};
 use monad_archive::prelude::*;
 use opentelemetry::KeyValue;
 use tokio::time::interval;
@@ -95,30 +96,58 @@ async fn collect_fault_chunks(
     start_block: Option<u64>,
     end_block: Option<u64>,
 ) -> Result<Vec<u64>> {
-    let mut fault_chunks = std::collections::HashSet::new();
-
     // Filter chunks based on block range if provided
     let start_chunk = start_block.map(|b| b / CHUNK_SIZE).unwrap_or(0);
     let end_chunk = end_block.map(|b| b / CHUNK_SIZE).unwrap_or(u64::MAX);
 
+    // Collect all (replica, chunk_start) pairs to check
+    let mut chunks_to_check = Vec::new();
     for replica in model.block_data_readers.keys() {
         let latest_checked = model.get_latest_checked_for_replica(replica).await?;
         let latest_checked_chunk = latest_checked / CHUNK_SIZE;
         let effective_end = end_chunk.min(latest_checked_chunk);
 
-        // Check each chunk up to latest checked
         for idx in start_chunk..=effective_end {
             if idx > latest_checked_chunk {
                 break;
             }
             let chunk_start = idx * CHUNK_SIZE;
-            let faults = model.get_faults_chunk(replica, chunk_start).await?;
-
-            if !faults.is_empty() {
-                fault_chunks.insert(chunk_start);
-            }
+            chunks_to_check.push((replica.clone(), chunk_start));
         }
     }
+
+    debug!(
+        "Checking {} chunks across {} replicas for faults",
+        chunks_to_check.len(),
+        model.block_data_readers.len()
+    );
+
+    // Process chunks in parallel with concurrency limit of 20
+    const CONCURRENT_REQUESTS: usize = 20;
+    
+    let fault_chunks: std::collections::HashSet<u64> = stream::iter(chunks_to_check)
+        .map(|(replica, chunk_start)| {
+            let model = model;
+            async move {
+                let faults = model.get_faults_chunk(&replica, chunk_start).await?;
+                Ok::<_, eyre::Error>(if !faults.is_empty() {
+                    Some(chunk_start)
+                } else {
+                    None
+                })
+            }
+        })
+        .buffered(CONCURRENT_REQUESTS)
+        .try_fold(
+            std::collections::HashSet::new(),
+            |mut acc, chunk_opt| async move {
+                if let Some(chunk) = chunk_opt {
+                    acc.insert(chunk);
+                }
+                Ok(acc)
+            },
+        )
+        .await?;
 
     let mut chunks: Vec<u64> = fault_chunks.into_iter().collect();
     chunks.sort();
