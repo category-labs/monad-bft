@@ -7,7 +7,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     model::{CheckerModel, Fault, FaultKind},
-    rechecker::recheck_fault_chunk,
+    rechecker_legacy::recheck_fault_chunk,
     CHUNK_SIZE,
 };
 
@@ -341,7 +341,7 @@ mod tests {
     use crate::{
         checker::tests::{create_test_block_data, setup_test_model},
         model::{GoodBlocks, InconsistentBlockReason},
-        rechecker::recheck_fault_chunk,
+        rechecker_legacy::recheck_fault_chunk,
     };
 
     #[tokio::test]

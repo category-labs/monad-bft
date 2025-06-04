@@ -5,8 +5,8 @@ use futures::stream;
 use monad_archive::prelude::*;
 
 use crate::{
-    model::{CheckerModel, Fault, FaultKind, GoodBlocks},
-    rechecker::find_inconsistent_reason,
+    model::{CheckerModel, Fault, FaultKind, GoodBlocks, InconsistentBlockReason},
+    rechecker_legacy::find_inconsistent_reason,
     CHUNK_SIZE,
 };
 
@@ -117,7 +117,7 @@ async fn process_block_batch(
     Ok(end_block + 1)
 }
 
-/// Fetches block data from all replicas for a range of blocks
+/// Fetches block data from all replicas for a range of blocks.
 pub async fn fetch_block_data(
     model: &CheckerModel,
     block_nums: impl IntoIterator<Item = u64>,
@@ -152,7 +152,7 @@ pub async fn fetch_block_data(
         .collect()
 }
 
-/// Processes blocks to find faults and good blocks
+/// Processes blocks to find faults and good blocks by comparing data across replicas.
 pub fn process_blocks(
     data_by_block_num: &HashMap<u64, HashMap<String, Option<(Block, BlockReceipts, BlockTraces)>>>,
     start_block: u64,
@@ -349,11 +349,39 @@ fn find_consensus(
             }
         }
     } else {
-        panic!("No equivalence group found. This means we do not know which block has the correct data. Manual intervention required!");
+        // This should not happen with proper consensus, but log critical error if it does
+        error!(
+            block_num,
+            "No equivalence group found - unable to determine correct block data. Manual intervention required!"
+        );
+
+        // Mark all replicas as having unresolvable inconsistencies
+        for replica_name in valid_replicas.keys() {
+            faults_by_replica
+                .entry(replica_name.clone())
+                .or_default()
+                .push(Fault {
+                    block_num,
+                    replica: replica_name.clone(),
+                    fault: FaultKind::InconsistentBlock(InconsistentBlockReason::NoConsensus),
+                });
+        }
     }
 }
 
-/// Stores checking results in S3
+/// Stores checking results in S3, including faults and good block references.
+///
+/// This function handles both storing new faults and clearing old faults that no longer exist.
+/// For each replica, it either:
+/// - Stores new faults if any were found
+/// - Deletes the fault chunk if no faults exist but old faults were previously stored
+/// - Does nothing if no faults exist and none were previously stored
+///
+/// # Arguments
+/// * `model` - The checker model for accessing storage
+/// * `starting_block_num` - The starting block number of the chunk
+/// * `faults_by_replica` - Map of replica names to their faults
+/// * `good_blocks` - Reference to replicas with correct data for each block
 pub async fn store_checking_results(
     model: &CheckerModel,
     starting_block_num: u64,

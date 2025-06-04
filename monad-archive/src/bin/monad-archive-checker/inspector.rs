@@ -87,14 +87,8 @@ fn format_ranges(ranges: &[(u64, u64)]) -> String {
         .join(", ")
 }
 
-/// Output format options for block inspection
-#[derive(Debug, Clone, Copy)]
-pub enum OutputFormat {
-    All,
-    FaultsOnly,
-    GoodOnly,
-    Summary,
-}
+// Re-export the OutputFormat from cli module to avoid duplication
+pub use crate::cli::InspectorOutputFormat as OutputFormat;
 
 /// Inspects a single block across all replicas
 pub async fn inspect_block(

@@ -15,11 +15,12 @@ mod cli;
 mod fault_fixer;
 mod inspector;
 mod model;
-mod rechecker;
+mod rechecker_legacy;
 mod rechecker_v2;
 
-/// Number of blocks to check per iteration
-/// Also the number of blocks per stored object
+/// Number of blocks to check per iteration and the number of blocks per stored object.
+/// This value determines the granularity of fault detection and storage.
+/// A chunk is the smallest unit of blocks that can be rechecked or have faults cleared.
 pub const CHUNK_SIZE: u64 = 1000;
 
 #[tokio::main]
@@ -90,21 +91,12 @@ async fn main() -> Result<()> {
 
             // Start the rechecker worker if enabled
             let rechecker_handle = if !checker_args.disable_rechecker {
-                if checker_args.use_rechecker_v2 {
-                    info!("Using rechecker v2 (full chunk recheck)");
-                    tokio::spawn(rechecker_v2::rechecker_v2_worker(
-                        recheck_freq,
-                        model.clone(),
-                        metrics.clone(),
-                    ))
-                } else {
-                    info!("Using rechecker v1 (individual fault recheck)");
-                    tokio::spawn(rechecker::recheck_worker(
-                        recheck_freq,
-                        model.clone(),
-                        metrics.clone(),
-                    ))
-                }
+                info!("Starting rechecker v2 worker (runs alongside checker)");
+                tokio::spawn(rechecker_v2::rechecker_v2_worker(
+                    recheck_freq,
+                    model.clone(),
+                    metrics.clone(),
+                ))
             } else {
                 // Dummy task for type compatibility
                 tokio::spawn(async { Ok(()) })
@@ -115,9 +107,9 @@ async fn main() -> Result<()> {
         }
         cli::Mode::Rechecker(rechecker_args) => {
             info!(
-                "Starting in rechecker mode with recheck_freq_min: {}, v2: {}, dry_run: {}",
+                "Starting in rechecker mode with recheck_freq_min: {}, v1: {}, dry_run: {}",
                 rechecker_args.recheck_freq_min,
-                rechecker_args.use_rechecker_v2,
+                rechecker_args.use_rechecker_v1,
                 rechecker_args.dry_run
             );
 
@@ -125,7 +117,7 @@ async fn main() -> Result<()> {
             let recheck_freq = Duration::from_secs_f64(rechecker_args.recheck_freq_min * 60.);
             info!("Recheck frequency set to {:?}", recheck_freq);
 
-            if rechecker_args.use_rechecker_v2 {
+            if !rechecker_args.use_rechecker_v1 {
                 info!(
                     "Starting rechecker v2 worker (dry_run: {}, start: {:?}, end: {:?})",
                     rechecker_args.dry_run, rechecker_args.start_block, rechecker_args.end_block
@@ -145,11 +137,18 @@ async fn main() -> Result<()> {
                     || rechecker_args.end_block.is_some()
                 {
                     return Err(eyre::eyre!(
-                        "Dry run and block range options are only supported with --use-rechecker-v2"
+                        "Rechecker v1 does not support --dry-run, --start-block, or --end-block options.\n\
+                         These features require rechecker v2 which rechecks entire chunks from scratch.\n\
+                         Remove these flags or omit --use-rechecker-v1 to use rechecker v2."
                     ));
                 }
                 info!("Starting rechecker v1 worker");
-                tokio::spawn(rechecker::recheck_worker(recheck_freq, model, metrics)).await??;
+                tokio::spawn(rechecker_legacy::recheck_worker(
+                    recheck_freq,
+                    model,
+                    metrics,
+                ))
+                .await??;
             }
         }
         cli::Mode::FaultFixer(fixer_args) => {
@@ -203,15 +202,7 @@ async fn main() -> Result<()> {
                     print_data,
                 } => {
                     info!("Inspecting block {} with format {:?}", block_num, format);
-                    let output_format = match format {
-                        cli::InspectorOutputFormat::All => inspector::OutputFormat::All,
-                        cli::InspectorOutputFormat::FaultsOnly => {
-                            inspector::OutputFormat::FaultsOnly
-                        }
-                        cli::InspectorOutputFormat::GoodOnly => inspector::OutputFormat::GoodOnly,
-                        cli::InspectorOutputFormat::Summary => inspector::OutputFormat::Summary,
-                    };
-                    inspector::inspect_block(&model, block_num, output_format, print_data).await?;
+                    inspector::inspect_block(&model, block_num, format, print_data).await?;
                 }
             }
         }

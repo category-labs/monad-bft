@@ -298,6 +298,8 @@ pub enum InconsistentBlockReason {
     ReceiptsLen,
     TracesContents,
     TracesLen,
+    /// No consensus could be reached among replicas
+    NoConsensus,
 }
 
 impl InconsistentBlockReason {
@@ -310,6 +312,7 @@ impl InconsistentBlockReason {
             InconsistentBlockReason::ReceiptsLen => "inconsistent_receipts_len",
             InconsistentBlockReason::TracesContents => "inconsistent_traces_contents",
             InconsistentBlockReason::TracesLen => "inconsistent_traces_len",
+            InconsistentBlockReason::NoConsensus => "no_consensus",
         }
     }
 }
@@ -327,6 +330,7 @@ impl std::fmt::Display for InconsistentBlockReason {
                 InconsistentBlockReason::ReceiptsLen => "Receipts Length",
                 InconsistentBlockReason::TracesContents => "Traces Contents",
                 InconsistentBlockReason::TracesLen => "Traces Length",
+                InconsistentBlockReason::NoConsensus => "No Consensus",
             }
         )
     }

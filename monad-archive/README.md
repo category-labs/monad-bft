@@ -62,12 +62,11 @@ independently scalable and fault-tolerant.
 
 
 ## File Structure of Library and Binaries 
-The archive system is broken apart into a core library, `monad-archive`, and 4 
+The archive system is broken apart into a core library, `monad-archive`, and 3 
 scoped binaries:
 - `monad-archiver` - Reads from TrieDB or another archive, writes to durable storage
 - `monad-archive-checker` - Validates data consistency across archive replicas
 - `monad-indexer` - Builds transaction and log indexes from archived blocks
-- `monad-index-checker` - Validates transaction index consistency
 
 Within the library there are 3 primary abstraction tiers, in order from lowest to highest:
 - kvstore
