@@ -50,11 +50,11 @@ pub async fn rechecker_v2_standalone(
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
+        interval.tick().await;
+
         info!("Starting recheck cycle");
         recheck_all_faults(&model, &metrics, dry_run, start_block, end_block).await?;
         info!("Recheck cycle completed, waiting for next interval");
-
-        interval.tick().await;
     }
 }
 
@@ -124,18 +124,15 @@ async fn collect_fault_chunks(
 
     // Process chunks in parallel with concurrency limit of 20
     const CONCURRENT_REQUESTS: usize = 20;
-    
+
     let fault_chunks: std::collections::HashSet<u64> = stream::iter(chunks_to_check)
-        .map(|(replica, chunk_start)| {
-            let model = model;
-            async move {
-                let faults = model.get_faults_chunk(&replica, chunk_start).await?;
-                Ok::<_, eyre::Error>(if !faults.is_empty() {
-                    Some(chunk_start)
-                } else {
-                    None
-                })
-            }
+        .map(|(replica, chunk_start)| async move {
+            let faults = model.get_faults_chunk(&replica, chunk_start).await?;
+            Ok::<_, eyre::Error>(if !faults.is_empty() {
+                Some(chunk_start)
+            } else {
+                None
+            })
         })
         .buffered(CONCURRENT_REQUESTS)
         .try_fold(
@@ -815,7 +812,7 @@ mod tests {
         assert_eq!(filtered_chunks2, vec![2000, 3000]);
 
         // Test 3: End block only (should process chunks <= 1000)
-        let mut filtered_chunks3 = fault_chunks.clone();
+        let mut filtered_chunks3 = fault_chunks;
         let end_chunk3 = (1500 / CHUNK_SIZE) * CHUNK_SIZE;
         filtered_chunks3.retain(|&chunk| chunk <= end_chunk3);
 
@@ -903,5 +900,184 @@ mod tests {
             &new_good_blocks,
         );
         assert!(has_changes);
+    }
+
+    #[tokio::test]
+    async fn test_rechecker_v2_clears_fixed_faults() {
+        // This test demonstrates the bug where fixed faults are not cleared from S3
+        let model = setup_test_model();
+        let chunk_start = 300;
+        let metrics = Metrics::new(None::<String>, "test", "", Duration::from_secs(60)).unwrap();
+
+        // Setup initial state: replica1 and replica2 have faults
+        let initial_faults_replica1 = vec![
+            Fault {
+                block_num: chunk_start + 1,
+                replica: "replica1".to_owned(),
+                fault: FaultKind::MissingBlock,
+            },
+            Fault {
+                block_num: chunk_start + 2,
+                replica: "replica1".to_owned(),
+                fault: FaultKind::MissingBlock,
+            },
+        ];
+
+        let initial_faults_replica2 = vec![Fault {
+            block_num: chunk_start + 1,
+            replica: "replica2".to_owned(),
+            fault: FaultKind::MissingBlock,
+        }];
+
+        // Store initial faults
+        model
+            .set_faults_chunk("replica1", chunk_start, initial_faults_replica1.clone())
+            .await
+            .unwrap();
+        model
+            .set_faults_chunk("replica2", chunk_start, initial_faults_replica2.clone())
+            .await
+            .unwrap();
+
+        // Set latest checked for all replicas
+        for replica in ["replica1", "replica2", "replica3"] {
+            model
+                .set_latest_checked_for_replica(replica, chunk_start + CHUNK_SIZE - 1)
+                .await
+                .unwrap();
+        }
+
+        // Now fix the issues in replica1 by adding ALL blocks in the chunk
+        if let Some(archiver) = model.block_data_readers.get("replica1") {
+            for block_num in chunk_start..(chunk_start + CHUNK_SIZE) {
+                let (block, receipts, traces) = create_test_block_data(block_num, 1);
+                archiver.archive_block(block).await.unwrap();
+                archiver
+                    .archive_receipts(receipts, block_num)
+                    .await
+                    .unwrap();
+                archiver.archive_traces(traces, block_num).await.unwrap();
+            }
+            archiver
+                .update_latest(chunk_start + CHUNK_SIZE - 1, LatestKind::Uploaded)
+                .await
+                .unwrap();
+        }
+
+        // Add blocks to replica2 and replica3 as well so there's consensus
+        for replica in ["replica2", "replica3"] {
+            if let Some(archiver) = model.block_data_readers.get(replica) {
+                for block_num in chunk_start..(chunk_start + CHUNK_SIZE) {
+                    let (block, receipts, traces) = create_test_block_data(block_num, 1);
+                    archiver.archive_block(block).await.unwrap();
+                    archiver
+                        .archive_receipts(receipts, block_num)
+                        .await
+                        .unwrap();
+                    archiver.archive_traces(traces, block_num).await.unwrap();
+                }
+                archiver
+                    .update_latest(chunk_start + CHUNK_SIZE - 1, LatestKind::Uploaded)
+                    .await
+                    .unwrap();
+            }
+        }
+
+        // Run rechecker v2
+        recheck_chunk_from_scratch(&model, chunk_start, &metrics, false)
+            .await
+            .unwrap();
+
+        // Check that replica1's faults have been cleared
+        let replica1_faults = model
+            .get_faults_chunk("replica1", chunk_start)
+            .await
+            .unwrap();
+
+        assert!(
+            replica1_faults.is_empty(),
+            "Replica1 should have no faults after fixing the missing blocks, but found: {:?}",
+            replica1_faults
+        );
+
+        // Replica2 should also have no faults now
+        let replica2_faults = model
+            .get_faults_chunk("replica2", chunk_start)
+            .await
+            .unwrap();
+        assert!(replica2_faults.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_store_checking_results_clears_empty_fault_chunks() {
+        // Direct test of store_checking_results to verify it handles empty fault lists
+        let model = setup_test_model();
+        let chunk_start = 400;
+
+        // First, store some faults for all replicas
+        for replica in ["replica1", "replica2", "replica3"] {
+            let faults = vec![Fault {
+                block_num: chunk_start + 1,
+                replica: replica.to_owned(),
+                fault: FaultKind::MissingBlock,
+            }];
+            model
+                .set_faults_chunk(replica, chunk_start, faults)
+                .await
+                .unwrap();
+        }
+
+        // Verify faults are stored
+        for replica in ["replica1", "replica2", "replica3"] {
+            let faults = model.get_faults_chunk(replica, chunk_start).await.unwrap();
+            assert_eq!(faults.len(), 1);
+        }
+
+        // Now call store_checking_results with empty faults for replica1 and replica2
+        // but with faults for replica3
+        let mut new_faults_by_replica = HashMap::new();
+        new_faults_by_replica.insert(
+            "replica3".to_string(),
+            vec![Fault {
+                block_num: chunk_start + 2,
+                replica: "replica3".to_owned(),
+                fault: FaultKind::MissingBlock,
+            }],
+        );
+
+        let good_blocks = GoodBlocks::default();
+        store_checking_results(&model, chunk_start, new_faults_by_replica, good_blocks)
+            .await
+            .unwrap();
+
+        // Check that replica1 and replica2 no longer have faults stored
+        let replica1_faults = model
+            .get_faults_chunk("replica1", chunk_start)
+            .await
+            .unwrap();
+        let replica2_faults = model
+            .get_faults_chunk("replica2", chunk_start)
+            .await
+            .unwrap();
+
+        // BUG: These assertions should pass but will fail
+        assert!(
+            replica1_faults.is_empty(),
+            "Replica1 should have no faults after store_checking_results, but found: {:?}",
+            replica1_faults
+        );
+        assert!(
+            replica2_faults.is_empty(),
+            "Replica2 should have no faults after store_checking_results, but found: {:?}",
+            replica2_faults
+        );
+
+        // Replica3 should have its new fault
+        let replica3_faults = model
+            .get_faults_chunk("replica3", chunk_start)
+            .await
+            .unwrap();
+        assert_eq!(replica3_faults.len(), 1);
+        assert_eq!(replica3_faults[0].block_num, chunk_start + 2);
     }
 }

@@ -360,25 +360,45 @@ pub async fn store_checking_results(
     faults_by_replica: HashMap<String, Vec<Fault>>,
     good_blocks: GoodBlocks,
 ) -> Result<()> {
-    // Store faults by replica in S3
-    for (replica, faults) in &faults_by_replica {
-        if !faults.is_empty() {
-            info!(
-                %replica,
-                fault_count = faults.len(),
-                starting_block = starting_block_num,
-                "Storing faults for replica"
-            );
+    // First, handle all replicas to ensure we clear faults for replicas that no longer have any
+    for replica in model.block_data_readers.keys() {
+        match faults_by_replica.get(replica) {
+            Some(faults) if !faults.is_empty() => {
+                // Replica has faults - store them
+                info!(
+                    %replica,
+                    fault_count = faults.len(),
+                    starting_block = starting_block_num,
+                    "Storing faults for replica"
+                );
 
-            model
-                .set_faults_chunk(replica, starting_block_num, faults.clone())
-                .await?;
-        } else {
-            debug!(
-                %replica,
-                starting_block = starting_block_num,
-                "No faults to store for replica"
-            );
+                model
+                    .set_faults_chunk(replica, starting_block_num, faults.clone())
+                    .await?;
+            }
+            _ => {
+                // Replica has no faults - check if we need to clear old faults
+                let old_faults = model.get_faults_chunk(replica, starting_block_num).await?;
+                if !old_faults.is_empty() {
+                    info!(
+                        %replica,
+                        old_fault_count = old_faults.len(),
+                        starting_block = starting_block_num,
+                        "Clearing previously stored faults for replica"
+                    );
+
+                    // Delete the fault chunk since there are no faults anymore
+                    model
+                        .delete_faults_chunk(replica, starting_block_num)
+                        .await?;
+                } else {
+                    debug!(
+                        %replica,
+                        starting_block = starting_block_num,
+                        "No faults to store or clear for replica"
+                    );
+                }
+            }
         }
     }
 
