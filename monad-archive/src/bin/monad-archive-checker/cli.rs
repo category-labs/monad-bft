@@ -27,6 +27,7 @@ pub enum Mode {
     Checker(CheckerArgs),
     Rechecker(Rechecker),
     FaultFixer(FaultFixerArgs),
+    Inspector(InspectorArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -77,4 +78,53 @@ pub struct FaultFixerArgs {
     /// Comma-separated list of specific replicas to fix (defaults to all)
     #[clap(long, value_delimiter = ',')]
     pub replicas: Option<Vec<String>>,
+}
+
+#[derive(Parser, Debug)]
+pub struct InspectorArgs {
+    #[command(subcommand)]
+    pub command: InspectorCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum InspectorCommand {
+    /// List all fault ranges collapsed to start-end format
+    ListFaults,
+
+    /// List all blocks with faults in a given range
+    ListFaultyBlocks {
+        /// Start block (inclusive)
+        #[arg(long)]
+        start: Option<u64>,
+
+        /// End block (inclusive)
+        #[arg(long)]
+        end: Option<u64>,
+    },
+
+    /// Inspect a specific block across all replicas
+    InspectBlock {
+        /// Block number to inspect
+        block_num: u64,
+
+        /// Output format
+        #[arg(long, default_value = "summary")]
+        format: InspectorOutputFormat,
+
+        /// Print full parsed data
+        #[arg(long)]
+        print_data: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum InspectorOutputFormat {
+    /// Show all replicas
+    All,
+    /// Show only replicas with faults
+    FaultsOnly,
+    /// Show only the good replica
+    GoodOnly,
+    /// Show summary statistics only
+    Summary,
 }

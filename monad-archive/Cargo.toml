@@ -21,10 +21,6 @@ bench = false
 name = "monad-indexer"
 bench = false
 
-[[bin]]
-name = "monad-index-checker"
-bench = false
-
 [features]
 default = []
 mongodb-integration-tests = []

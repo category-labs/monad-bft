@@ -13,6 +13,7 @@ use tracing_subscriber::EnvFilter;
 mod checker;
 mod cli;
 mod fault_fixer;
+mod inspector;
 mod model;
 mod rechecker;
 mod rechecker_v2;
@@ -156,6 +157,38 @@ async fn main() -> Result<()> {
                     "SUMMARY: Fixed {} faults ({} failed)",
                     total_fixed, total_failed
                 );
+            }
+        }
+        cli::Mode::Inspector(inspector_args) => {
+            info!("Starting in inspector mode");
+
+            let model = CheckerModel::new(s3, &metrics, None).await?;
+
+            match inspector_args.command {
+                cli::InspectorCommand::ListFaults => {
+                    info!("Listing all fault ranges");
+                    inspector::list_fault_ranges(&model).await?;
+                }
+                cli::InspectorCommand::ListFaultyBlocks { start, end } => {
+                    info!("Listing faulty blocks in range {:?} to {:?}", start, end);
+                    inspector::list_faulty_blocks(&model, start, end).await?;
+                }
+                cli::InspectorCommand::InspectBlock {
+                    block_num,
+                    format,
+                    print_data,
+                } => {
+                    info!("Inspecting block {} with format {:?}", block_num, format);
+                    let output_format = match format {
+                        cli::InspectorOutputFormat::All => inspector::OutputFormat::All,
+                        cli::InspectorOutputFormat::FaultsOnly => {
+                            inspector::OutputFormat::FaultsOnly
+                        }
+                        cli::InspectorOutputFormat::GoodOnly => inspector::OutputFormat::GoodOnly,
+                        cli::InspectorOutputFormat::Summary => inspector::OutputFormat::Summary,
+                    };
+                    inspector::inspect_block(&model, block_num, output_format, print_data).await?;
+                }
             }
         }
     }
