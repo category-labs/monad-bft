@@ -67,7 +67,7 @@ impl<'a> BenchController<'a> {
         let state_backend = Self::generate_state_backend_for_txs(&txs);
 
         let mut metrics = EthTxPoolMetrics::default();
-        let pool = Self::create_pool(block_policy, txs, &mut metrics);
+        let pool = Self::create_pool(block_policy, txs, &metrics);
 
         Self {
             block_policy,
@@ -90,7 +90,7 @@ impl<'a> BenchController<'a> {
     pub fn create_pool(
         block_policy: &BlockPolicyType,
         txs: Vec<Recovered<TxEnvelope>>,
-        metrics: &mut EthTxPoolMetrics,
+        metrics: &EthTxPoolMetrics,
     ) -> Pool {
         let mut pool = Pool::default_testing();
 

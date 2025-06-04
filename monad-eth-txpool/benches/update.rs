@@ -27,7 +27,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 
             let mut metrics = EthTxPoolMetrics::default();
 
-            let pool = BenchController::create_pool(&block_policy, Vec::default(), &mut metrics);
+            let pool = BenchController::create_pool(&block_policy, Vec::default(), &metrics);
 
             (
                 pool,

@@ -40,7 +40,7 @@ fn with_txpool(
 
     let mut metrics = EthTxPoolMetrics::default();
     let mut ipc_events = Vec::default();
-    let mut event_tracker = EthTxPoolEventTracker::new(&mut metrics, &mut ipc_events);
+    let mut event_tracker = EthTxPoolEventTracker::new(&metrics, &mut ipc_events);
 
     assert!(pool
         .get_forwardable_txs::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
@@ -60,7 +60,7 @@ fn with_txpool(
 
     let mut metrics = EthTxPoolMetrics::default();
     let mut ipc_events = Vec::default();
-    let mut event_tracker = EthTxPoolEventTracker::new(&mut metrics, &mut ipc_events);
+    let mut event_tracker = EthTxPoolEventTracker::new(&metrics, &mut ipc_events);
 
     pool.insert_txs(
         &mut event_tracker,

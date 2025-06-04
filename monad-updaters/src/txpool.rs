@@ -205,7 +205,7 @@ where
         let (pool, block_policy, state_backend) = self.eth.as_mut().unwrap();
 
         let mut events = Vec::default();
-        let mut event_tracker = EthTxPoolEventTracker::new(&mut self.metrics, &mut events);
+        let mut event_tracker = EthTxPoolEventTracker::new(&self.metrics, &mut events);
 
         for command in commands {
             match command {
@@ -395,7 +395,7 @@ where
         let tx = Recovered::new_unchecked(tx, signer);
 
         pool.insert_txs(
-            &mut EthTxPoolEventTracker::new(&mut self.metrics, &mut Vec::default()),
+            &mut EthTxPoolEventTracker::new(&self.metrics, &mut Vec::default()),
             block_policy,
             state_backend,
             vec![tx],

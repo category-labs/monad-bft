@@ -1,4 +1,11 @@
-use std::{io, marker::PhantomData, pin::Pin, sync::atomic::AtomicU64, task::Poll, time::Duration};
+use std::{
+    io,
+    marker::PhantomData,
+    pin::Pin,
+    sync::atomic::{AtomicU64, Ordering},
+    task::Poll,
+    time::Duration,
+};
 
 use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use alloy_rlp::Decodable;
@@ -120,7 +127,7 @@ where
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut ipc_events = Vec::default();
 
-        let mut event_tracker = EthTxPoolEventTracker::new(&mut self.metrics.pool, &mut ipc_events);
+        let mut event_tracker = EthTxPoolEventTracker::new(&self.metrics.pool, &mut ipc_events);
 
         for command in commands {
             match command {
@@ -180,8 +187,10 @@ where
                         Ok(proposed_execution_inputs) => {
                             let elapsed = create_proposal_start.elapsed();
 
-                            self.metrics.create_proposal += 1;
-                            self.metrics.create_proposal_elapsed_ns += elapsed.as_nanos() as u64;
+                            self.metrics.create_proposal.fetch_add(1, Ordering::SeqCst);
+                            self.metrics
+                                .create_proposal_elapsed_ns
+                                .fetch_add(elapsed.as_nanos() as u64, Ordering::SeqCst);
 
                             self.events_tx
                                 .send(MempoolEvent::Proposal {
@@ -235,8 +244,12 @@ where
                     let num_invalid_signer =
                         num_invalid_signer.load(std::sync::atomic::Ordering::SeqCst);
 
-                    self.metrics.reject_forwarded_invalid_bytes += num_invalid_bytes;
-                    self.metrics.reject_forwarded_invalid_signer += num_invalid_signer;
+                    self.metrics
+                        .reject_forwarded_invalid_bytes
+                        .fetch_add(num_invalid_bytes, Ordering::SeqCst);
+                    self.metrics
+                        .reject_forwarded_invalid_signer
+                        .fetch_add(num_invalid_signer, Ordering::SeqCst);
 
                     if num_invalid_bytes != 0 || num_invalid_signer != 0 {
                         tracing::warn!(
@@ -355,7 +368,7 @@ where
             let mut ipc_events = Vec::default();
 
             pool.insert_txs(
-                &mut EthTxPoolEventTracker::new(&mut metrics.pool, &mut ipc_events),
+                &mut EthTxPoolEventTracker::new(&metrics.pool, &mut ipc_events),
                 block_policy,
                 state_backend,
                 forwarded_txs,
@@ -392,7 +405,7 @@ where
             };
 
             pool.insert_txs(
-                &mut EthTxPoolEventTracker::new(&mut metrics.pool, &mut ipc_events),
+                &mut EthTxPoolEventTracker::new(&metrics.pool, &mut ipc_events),
                 block_policy,
                 state_backend,
                 recovered_txs,
