@@ -195,6 +195,7 @@ where
             cert_keypair: self.cert_keypair,
         };
 
+        // Return commands before being wrapped into a Vec of WrappedConsensusCommand
         let consensus_cmds = match event {
             ConsensusEvent::Message {
                 sender,
@@ -209,7 +210,21 @@ where
                     unverified_message,
                 ) {
                     Ok((author, ProtocolMessage::Proposal(msg))) => {
-                        consensus.handle_proposal_message(author, msg)
+                        let mut proposal_cmds =
+                            consensus.handle_proposal_message(author, msg.clone());
+                        // Maybe we could skip the below command if we could somehow determine that
+                        // the peer isn't publishing to full nodes at the moment?
+                        let epoch = msg.block_header.epoch;
+                        let cons_msg = ConsensusMessage {
+                            version: consensus.version.to_owned(),
+                            message: ProtocolMessage::Proposal(msg),
+                        }
+                        .sign(self.keypair);
+                        proposal_cmds.push(ConsensusCommand::PublishToFullNodes {
+                            epoch,
+                            message: cons_msg,
+                        });
+                        proposal_cmds
                     }
                     Ok((author, ProtocolMessage::Vote(msg))) => {
                         consensus.handle_vote_message(author, msg)
@@ -543,6 +558,12 @@ where
             ConsensusCommand::Publish { target, message } => {
                 parent_cmds.push(Command::RouterCommand(RouterCommand::Publish {
                     target,
+                    message: VerifiedMonadMessage::Consensus(message),
+                }))
+            }
+            ConsensusCommand::PublishToFullNodes { epoch, message } => {
+                parent_cmds.push(Command::RouterCommand(RouterCommand::PublishToFullNodes {
+                    epoch,
                     message: VerifiedMonadMessage::Consensus(message),
                 }))
             }

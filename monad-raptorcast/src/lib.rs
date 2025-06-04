@@ -346,6 +346,7 @@ where
                         }
                     };
                 }
+                RouterCommand::PublishToFullNodes { .. } => {}
                 RouterCommand::GetPeers => {
                     let peer_list = self
                         .known_addresses

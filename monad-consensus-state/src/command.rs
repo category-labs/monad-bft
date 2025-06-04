@@ -41,6 +41,10 @@ where
         target: RouterTarget<SCT::NodeIdPubKey>,
         message: Verified<ST, Validated<ConsensusMessage<ST, SCT, EPT>>>,
     },
+    PublishToFullNodes {
+        epoch: Epoch,
+        message: Verified<ST, Validated<ConsensusMessage<ST, SCT, EPT>>>,
+    },
     /// Schedule a timeout event to be emitted in `duration`
     Schedule {
         duration: Duration,

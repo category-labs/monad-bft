@@ -269,7 +269,7 @@ where
                         }
                     }
                 },
-                /*
+
                 Self::Command::PublishToFullNodes { epoch, message } => {
                     let app_message = message.serialize();
                     let app_message_len = app_message.len();
@@ -282,7 +282,12 @@ where
                         Role::Client(_) => {
                             continue;
                         }
-                        Role::Publisher(publisher) => publisher.get_current_raptorcast_group(),
+                        Role::Publisher(publisher) => {
+                            match publisher.get_current_raptorcast_group() {
+                                Some(group) => group,
+                                None => continue,
+                            }
+                        }
                     };
 
                     let build_target = BuildTarget::FullNodeRaptorCast(curr_group);
@@ -317,7 +322,6 @@ where
                     // Send the raptorcast chunks via UDP to all peers in group
                     self.dataplane.lock().unwrap().udp_write_unicast(rc_chunks);
                 }
-                */
             }
         }
     }

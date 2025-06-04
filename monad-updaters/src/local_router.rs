@@ -118,6 +118,7 @@ where
             match command {
                 RouterCommand::AddEpochValidatorSet { .. } => {}
                 RouterCommand::UpdateCurrentRound(_, _) => {}
+                RouterCommand::PublishToFullNodes { .. } => {}
                 RouterCommand::Publish { target, message } => match target {
                     RouterTarget::Broadcast(_) | RouterTarget::Raptorcast(_) => {
                         let message = message.into();
@@ -146,7 +147,7 @@ where
                 RouterCommand::GetPeers => {}
                 RouterCommand::UpdatePeers(_) => {}
                 RouterCommand::GetFullNodes => {}
-                RouterCommand::UpdateFullNodes(_) => {}
+                RouterCommand::UpdateFullNodes(_vec) => {}
             }
         }
     }

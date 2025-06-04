@@ -43,6 +43,10 @@ pub enum RouterCommand<PT: PubKey, OM> {
         target: RouterTarget<PT>,
         message: OM,
     },
+    PublishToFullNodes {
+        epoch: Epoch, // Epoch gets embedded into the raptorcast message
+        message: OM,
+    },
     AddEpochValidatorSet {
         epoch: Epoch,
         validator_set: Vec<(NodeId<PT>, Stake)>,
