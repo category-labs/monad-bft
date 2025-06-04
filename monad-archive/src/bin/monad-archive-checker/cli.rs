@@ -2,7 +2,31 @@ use clap::{Parser, Subcommand};
 use monad_archive::cli::ArchiveArgs;
 
 #[derive(Debug, Parser)]
-#[command(name = "monad-archive-checker", about, long_about = None)]
+#[command(
+    name = "monad-archive-checker",
+    about = "Archive consistency checker for validating blockchain data across multiple replicas",
+    long_about = "Archive consistency checker for validating blockchain data across multiple replicas.\n\n\
+EXAMPLES:\n\n\
+  # Start main checker with 3 replicas (runs continuously)\n\
+  monad-archive-checker --bucket checker-state --region us-east-1 checker \\\n\
+    --init-replicas 'aws archive-1 20,aws archive-2 20,aws archive-3 20'\n\n\
+  # Run standalone rechecker to fix false positives (runs periodically)\n\
+  monad-archive-checker --bucket checker-state rechecker --recheck-freq-min 5\n\n\
+  # Inspect specific faults\n\
+  monad-archive-checker --bucket checker-state inspector list-faults\n\
+  monad-archive-checker --bucket checker-state inspector inspect-block 12345 --format all\n\n\
+  # Fix faults by copying from good replicas (dry run first)\n\
+  monad-archive-checker --bucket checker-state fault-fixer\n\
+  monad-archive-checker --bucket checker-state fault-fixer --commit-changes --verify\n\n\
+  # Advanced: Recheck specific block range with dry run\n\
+  monad-archive-checker --bucket checker-state rechecker \\\n\
+    --start-block 1000 --end-block 5000 --dry-run\n\n\
+TYPICAL WORKFLOW:\n\
+  1. Run 'checker' mode continuously to find inconsistencies\n\
+  2. Use 'inspector' to analyze specific faults\n\
+  3. Run 'rechecker' to eliminate false positives\n\
+  4. Use 'fault-fixer' to repair confirmed issues"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub mode: Mode,
@@ -24,9 +48,13 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Mode {
+    /// Main checker mode - continuously validates blocks across replicas
     Checker(CheckerArgs),
+    /// Standalone rechecker - rechecks fault chunks from scratch
     Rechecker(Rechecker),
+    /// Repairs faults by copying data from good replicas
     FaultFixer(FaultFixerArgs),
+    /// Inspects and analyzes fault data
     Inspector(InspectorArgs),
 }
 
