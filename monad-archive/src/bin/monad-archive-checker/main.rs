@@ -107,10 +107,11 @@ async fn main() -> Result<()> {
         }
         cli::Mode::Rechecker(rechecker_args) => {
             info!(
-                "Starting in rechecker mode with recheck_freq_min: {}, v1: {}, dry_run: {}",
+                "Starting in rechecker mode with recheck_freq_min: {}, v1: {}, dry_run: {}, worker: {}",
                 rechecker_args.recheck_freq_min,
                 rechecker_args.use_rechecker_v1,
-                rechecker_args.dry_run
+                rechecker_args.dry_run,
+                rechecker_args.worker
             );
 
             let model = CheckerModel::new(s3, &metrics, None).await?;
@@ -119,8 +120,8 @@ async fn main() -> Result<()> {
 
             if !rechecker_args.use_rechecker_v1 {
                 info!(
-                    "Starting rechecker v2 worker (dry_run: {}, start: {:?}, end: {:?}, force_recheck: {})",
-                    rechecker_args.dry_run, rechecker_args.start_block, rechecker_args.end_block, rechecker_args.force_recheck
+                    "Starting rechecker v2 (worker: {}, dry_run: {}, start: {:?}, end: {:?}, force_recheck: {})",
+                    rechecker_args.worker, rechecker_args.dry_run, rechecker_args.start_block, rechecker_args.end_block, rechecker_args.force_recheck
                 );
                 tokio::spawn(rechecker_v2::rechecker_v2_standalone(
                     recheck_freq,
@@ -130,6 +131,7 @@ async fn main() -> Result<()> {
                     rechecker_args.start_block,
                     rechecker_args.end_block,
                     rechecker_args.force_recheck,
+                    rechecker_args.worker,
                 ))
                 .await??;
             } else {
@@ -137,9 +139,10 @@ async fn main() -> Result<()> {
                     || rechecker_args.start_block.is_some()
                     || rechecker_args.end_block.is_some()
                     || rechecker_args.force_recheck
+                    || !rechecker_args.worker
                 {
                     return Err(eyre::eyre!(
-                        "Rechecker v1 does not support --dry-run, --start-block, --end-block, or --force-recheck options.\n\
+                        "Rechecker v1 does not support --dry-run, --start-block, --end-block, --force-recheck options, and requires --worker flag.\n\
                          These features require rechecker v2 which rechecks entire chunks from scratch.\n\
                          Remove these flags or omit --use-rechecker-v1 to use rechecker v2."
                     ));

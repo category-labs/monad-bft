@@ -42,24 +42,39 @@ pub async fn rechecker_v2_standalone(
     start_block: Option<u64>,
     end_block: Option<u64>,
     force_recheck: bool,
+    worker_mode: bool,
 ) -> Result<()> {
     info!(
-        "Starting standalone rechecker v2 worker with frequency {:?}, dry_run: {}, start: {:?}, end: {:?}, force_recheck: {}",
-        recheck_freq, dry_run, start_block, end_block, force_recheck
+        "Starting standalone rechecker v2 with frequency {:?}, dry_run: {}, start: {:?}, end: {:?}, force_recheck: {}, worker_mode: {}",
+        recheck_freq, dry_run, start_block, end_block, force_recheck, worker_mode
     );
-    let mut interval = interval(recheck_freq);
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    loop {
-        interval.tick().await;
+    if worker_mode {
+        // Run continuously as a worker
+        let mut interval = interval(recheck_freq);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-        info!("Starting recheck cycle");
+        loop {
+            interval.tick().await;
+
+            info!("Starting recheck cycle");
+            if force_recheck {
+                recheck_all_chunks(&model, &metrics, dry_run, start_block, end_block).await?;
+            } else {
+                recheck_all_faults(&model, &metrics, dry_run, start_block, end_block).await?;
+            }
+            info!("Recheck cycle completed, waiting for next interval");
+        }
+    } else {
+        // Run once and exit
+        info!("Running single recheck cycle");
         if force_recheck {
             recheck_all_chunks(&model, &metrics, dry_run, start_block, end_block).await?;
         } else {
             recheck_all_faults(&model, &metrics, dry_run, start_block, end_block).await?;
         }
-        info!("Recheck cycle completed, waiting for next interval");
+        info!("Recheck completed, exiting");
+        Ok(())
     }
 }
 

@@ -10,8 +10,10 @@ EXAMPLES:\n\n\
   # Start main checker with 3 replicas (runs continuously)\n\
   monad-archive-checker --bucket checker-state --region us-east-1 checker \\\n\
     --init-replicas 'aws archive-1 20,aws archive-2 20,aws archive-3 20'\n\n\
-  # Run standalone rechecker to fix false positives (runs periodically)\n\
-  monad-archive-checker --bucket checker-state rechecker --recheck-freq-min 5\n\n\
+  # Run standalone rechecker to fix false positives (runs once and exits)\n\
+  monad-archive-checker --bucket checker-state rechecker\n\n\
+  # Run rechecker in worker mode (runs periodically)\n\
+  monad-archive-checker --bucket checker-state rechecker --worker --recheck-freq-min 5\n\n\
   # Inspect specific faults\n\
   monad-archive-checker --bucket checker-state inspector list-faults\n\
   monad-archive-checker --bucket checker-state inspector inspect-block 12345 --format all\n\n\
@@ -49,7 +51,7 @@ pub struct Cli {
 pub enum Mode {
     /// Main checker mode - continuously validates blocks across replicas
     Checker(CheckerArgs),
-    /// Standalone rechecker - rechecks fault chunks from scratch
+    /// Standalone rechecker - rechecks fault chunks from scratch (runs once by default)
     Rechecker(Rechecker),
     /// Repairs faults by copying data from good replicas
     FaultFixer(FaultFixerArgs),
@@ -82,7 +84,7 @@ pub struct CheckerArgs {
 
 #[derive(Parser, Debug)]
 pub struct Rechecker {
-    /// How frequently to recheck faults in minutes
+    /// How frequently to recheck faults in minutes (only used with --worker)
     #[arg(long, default_value_t = 5.)]
     pub recheck_freq_min: f64,
 
@@ -106,6 +108,10 @@ pub struct Rechecker {
     /// Force rechecking all chunks in range even if no faults are present
     #[arg(long)]
     pub force_recheck: bool,
+
+    /// Run continuously as a worker (default is to run once and exit)
+    #[arg(long)]
+    pub worker: bool,
 }
 
 #[derive(Parser, Debug)]
