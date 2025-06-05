@@ -563,10 +563,11 @@ where
         seq: peer_discovery_config.self_record_seq_num,
     };
     let self_record = MonadNameRecord::new(self_record, &identity);
-    assert!(
-        self_record.signature == peer_discovery_config.self_name_record_sig,
-        "self name record signature mismatch"
-    );
+    // TODO: re-enable this check when peer discovery is activated
+    // assert!(
+    //     self_record.signature == peer_discovery_config.self_name_record_sig,
+    //     "self name record signature mismatch"
+    // );
 
     // initial set of peers
     let peer_info = peer_discovery_config
