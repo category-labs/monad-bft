@@ -21,8 +21,11 @@ pub async fn bft_block_archive_worker(
         .await
         .wrap_err("Failed to fetch set of already uploaded bft blocks")?;
 
+    let mut interval = tokio::time::interval(poll_frequency);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
     loop {
-        sleep(poll_frequency).await;
+        interval.tick().await;
         info!("Checking for bft blocks to upload...");
 
         let to_upload = match find_unuploaded_blocks(&uploaded, &block_path).await {
@@ -174,7 +177,7 @@ mod tests {
             let _ = bft_block_archive_worker(
                 store_clone,
                 block_dir.path().to_owned(),
-                Duration::from_millis(100),
+                Duration::from_millis(40),
                 metrics,
             )
             .await;
