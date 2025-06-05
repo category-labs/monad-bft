@@ -393,7 +393,9 @@ impl<S: SwarmRelation> MockExecutor<S> {
                 }
                 ExecutorEventType::Timestamp => {
                     let event = self.timestamper.next_tick();
-                    MockExecutorEvent::Event(MonadEvent::TimestampUpdateEvent(event.as_nanos()))
+                    MockExecutorEvent::Event(MonadEvent::TimestampUpdateEvent(
+                        event.as_nanos() as u64
+                    ))
                 }
                 ExecutorEventType::StateSync => {
                     return self.statesync.pop().map(MockExecutorEvent::Event)

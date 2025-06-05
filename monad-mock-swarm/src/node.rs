@@ -130,7 +130,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 block_sync_override_peers: self.state_builder.block_sync_override_peers,
                 consensus_config: self.state_builder.consensus_config,
                 adjuster_config: TimestampAdjusterConfig::Enabled {
-                    max_delta: 10000,
+                    max_delta_ns: 10000,
                     adjustment_period: 9,
                 },
                 _phantom: PhantomData,

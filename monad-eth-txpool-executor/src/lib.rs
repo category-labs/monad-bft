@@ -179,9 +179,10 @@ where
                     ) {
                         Ok(proposed_execution_inputs) => {
                             let elapsed = create_proposal_start.elapsed();
+                            let elapsed_ns = elapsed.as_nanos();
 
                             self.metrics.create_proposal += 1;
-                            self.metrics.create_proposal_elapsed_ns += elapsed.as_nanos() as u64;
+                            self.metrics.create_proposal_elapsed_ns += elapsed_ns as u64;
 
                             self.events_tx
                                 .send(MempoolEvent::Proposal {
@@ -194,6 +195,7 @@ where
                                     delayed_execution_results,
                                     proposed_execution_inputs,
                                     last_round_tc,
+                                    elapsed_ns,
                                 })
                                 .expect("events never dropped");
                         }

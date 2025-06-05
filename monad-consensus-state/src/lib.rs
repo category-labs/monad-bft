@@ -1,5 +1,6 @@
 use std::{cmp::max, collections::BTreeMap, fmt::Debug, marker::PhantomData, time::Duration};
 
+use monad_blocktimestamp::timestamp::BlockTimestamp;
 use monad_blocktree::blocktree::BlockTree;
 use monad_chain_config::{
     execution_revision::ExecutionChainParams,
@@ -45,11 +46,9 @@ use monad_validator::{
 };
 use tracing::{debug, info, trace, warn};
 
-use crate::{command::ConsensusCommand, timestamp::BlockTimestamp};
+use crate::command::ConsensusCommand;
 
 pub mod command;
-pub mod timestamp;
-mod timestamp_adjuster;
 
 /// core consensus algorithm
 pub struct ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>
@@ -580,15 +579,20 @@ where
                         .vote_pace
                         .as_nanos(),
                 )
-                .is_ok()
-                && block.get_round() > original_round
+                .is_err()
             {
-                self.block_timestamp.proposal_received(
-                    block.get_round(),
-                    block.get_timestamp(),
-                    &author,
-                );
+                warn!("Error");
             }
+        }
+        let block_round = block.get_round();
+        if block.get_round() > original_round
+            && block.get_round() == block.get_qc().get_round() + Round(1)
+        {
+            self.block_timestamp.proposal_received(
+                block.get_round(),
+                block.get_timestamp(),
+                &author,
+            );
         }
 
         // at this point, block is valid and can be added to the blocktree
@@ -638,6 +642,8 @@ where
             .val_epoch_map
             .get_cert_pubkeys(&epoch)
             .expect("vote message was verified");
+        self.block_timestamp
+            .vote_received(&author, vote_msg.vote.round);
         let (maybe_qc, vote_state_cmds) = self.consensus.vote_state.process_vote(
             &author,
             &vote_msg,
@@ -650,7 +656,10 @@ where
             debug!(?qc, "Created QC");
             self.metrics.consensus_events.created_qc += 1;
 
+            // TODO handle validatoin via round
             cmds.extend(self.process_certificate_qc(&qc));
+
+            self.block_timestamp.qc_ready(vote_msg.vote.round);
             cmds.extend(self.try_propose());
         };
 
@@ -878,7 +887,7 @@ where
         }
         .sign(self.keypair);
         if next_leader != *self.nodeid {
-            self.block_timestamp.vote_sent(round);
+            self.block_timestamp.vote_sent(&next_leader, round);
         }
         let send_cmd = ConsensusCommand::Publish {
             target: RouterTarget::PointToPoint(next_leader),
@@ -1390,7 +1399,7 @@ where
                     extending_block.get_seq_num() + SeqNum(1),
                     max(
                         extending_block.get_timestamp() + 1,
-                        self.block_timestamp.get_adjusted_time(),
+                        self.block_timestamp.get_adjusted_time().as_nanos(),
                     ),
                 )
             } else {
@@ -1398,7 +1407,7 @@ where
                     self.consensus.pending_block_tree.root().seq_num + SeqNum(1),
                     max(
                         self.consensus.pending_block_tree.root().timestamp_ns + 1,
-                        self.block_timestamp.get_adjusted_time(),
+                        self.block_timestamp.get_adjusted_time().as_nanos(),
                     ),
                 )
             };
@@ -1425,6 +1434,7 @@ where
             ?high_qc,
             ?try_propose_seq_num,
             ?last_round_tc,
+            ?timestamp_ns,
             "emitting create proposal command to txpool"
         );
 
@@ -1615,6 +1625,7 @@ mod test {
 
     use alloy_consensus::TxEnvelope;
     use itertools::Itertools;
+    use monad_blocktimestamp::timestamp::BlockTimestamp;
     use monad_chain_config::{
         revision::{ChainParams, MockChainRevision},
         MockChainConfig,
@@ -1676,8 +1687,8 @@ mod test {
     use tracing_test::traced_test;
 
     use crate::{
-        timestamp::BlockTimestamp, ConsensusCommand, ConsensusConfig, ConsensusState,
-        ConsensusStateWrapper, OutgoingVoteStatus,
+        ConsensusCommand, ConsensusConfig, ConsensusState, ConsensusStateWrapper,
+        OutgoingVoteStatus,
     };
 
     const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;

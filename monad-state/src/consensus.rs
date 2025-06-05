@@ -296,6 +296,7 @@ where
                 delayed_execution_results,
                 proposed_execution_inputs,
                 last_round_tc,
+                elapsed_ns,
             } => {
                 consensus.metrics.consensus_events.creating_proposal += 1;
                 let block_body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
@@ -314,6 +315,9 @@ where
                     round_signature,
                 );
 
+                consensus
+                    .block_timestamp
+                    .update_create_proposal_ns(round, elapsed_ns);
                 let p = ProposalMessage {
                     block_header,
                     block_body,

@@ -10,6 +10,7 @@ use monad_blocksync::{
     blocksync::BlockSyncSelfRequester,
     messages::message::{BlockSyncRequestMessage, BlockSyncResponseMessage},
 };
+use monad_blocktimestamp::messages::message::{PingRequestMessage, PingResponseMessage};
 use monad_consensus::{
     messages::consensus_message::ConsensusMessage,
     validation::signing::{Unvalidated, Unverified},
@@ -31,9 +32,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_state_backend::StateBackend;
-use monad_types::{
-    BlockId, Epoch, ExecutionProtocol, NodeId, PingSequence, Round, RouterTarget, SeqNum, Stake,
-};
+use monad_types::{BlockId, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum, Stake};
 use serde::{Deserialize, Serialize};
 
 const STATESYNC_NETWORK_MESSAGE_NAME: &str = "StateSyncNetworkMessage";
@@ -497,6 +496,7 @@ pub enum MempoolEvent<SCT: SignatureCollection, EPT: ExecutionProtocol> {
         delayed_execution_results: Vec<EPT::FinalizedHeader>,
         proposed_execution_inputs: ProposedExecutionInputs<EPT>,
         last_round_tc: Option<TimeoutCertificate<SCT>>,
+        elapsed_ns: u128,
     },
 
     /// Txs that are incoming via other nodes
@@ -522,6 +522,7 @@ impl<SCT: SignatureCollection, EPT: ExecutionProtocol> Debug for MempoolEvent<SC
                 delayed_execution_results,
                 proposed_execution_inputs,
                 last_round_tc,
+                elapsed_ns,
             } => f
                 .debug_struct("Proposal")
                 .field("epoch", epoch)
@@ -533,6 +534,7 @@ impl<SCT: SignatureCollection, EPT: ExecutionProtocol> Debug for MempoolEvent<SC
                 .field("delayed_execution_results", delayed_execution_results)
                 .field("proposed_execution_inputs", proposed_execution_inputs)
                 .field("last_round_tc", last_round_tc)
+                .field("elapsed_ns", elapsed_ns)
                 .finish(),
             Self::ForwardedTxs { sender, txs } => f
                 .debug_struct("ForwardedTxs")
@@ -998,11 +1000,11 @@ where
 {
     PingRequest {
         sender: NodeId<SCT::NodeIdPubKey>,
-        sequence: PingSequence,
+        message: PingRequestMessage,
     },
     PingResponse {
         sender: NodeId<SCT::NodeIdPubKey>,
-        sequence: PingSequence,
+        message: PingResponseMessage,
     },
     PingTick,
     /// Event to update the timestamp round and epoch
@@ -1032,7 +1034,7 @@ where
     /// Events for the debug control panel
     ControlPanelEvent(ControlPanelEvent<SCT>),
     /// Events to update the block timestamper
-    TimestampUpdateEvent(u128),
+    TimestampUpdateEvent(u64),
     /// Events to statesync
     StateSyncEvent(StateSyncEvent<ST, SCT, EPT>),
     /// Config updates

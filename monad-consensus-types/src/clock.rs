@@ -1,10 +1,10 @@
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 #[derive(Debug)]
 pub enum TimestampAdjusterConfig {
     Disabled,
     Enabled {
-        max_delta: u128,
+        max_delta_ns: u128,
         adjustment_period: usize,
     },
 }
@@ -12,9 +12,9 @@ pub enum TimestampAdjusterConfig {
 pub trait Clock {
     fn new() -> Self;
 
-    fn get(&self) -> u128;
+    fn get(&self) -> Duration;
 
-    fn update(&mut self, time: u128);
+    fn update(&mut self, time: Duration);
 }
 
 #[derive(Debug)]
@@ -25,30 +25,31 @@ impl Clock for SystemClock {
         Self {}
     }
 
-    fn get(&self) -> u128 {
+    fn get(&self) -> Duration {
         SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
     }
 
-    fn update(&mut self, _time: u128) {}
+    fn update(&mut self, _time: Duration) {}
 }
 
 #[derive(Debug)]
 pub struct TestClock {
-    time: u128,
+    time: Duration,
 }
 
 impl Clock for TestClock {
     fn new() -> Self {
-        Self { time: 0 }
+        Self {
+            time: Duration::from_nanos(0),
+        }
     }
-    fn get(&self) -> u128 {
+    fn get(&self) -> Duration {
         self.time
     }
 
-    fn update(&mut self, time: u128) {
+    fn update(&mut self, time: Duration) {
         self.time = time;
     }
 }

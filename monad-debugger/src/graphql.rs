@@ -240,8 +240,8 @@ impl<'s> From<&'s MonadEventType> for GraphQLMonadEvent<'s> {
                 Self::ControlPanelEvent(GraphQLControlPanelEvent(event))
             }
             MonadEvent::TimestampUpdateEvent(event) => {
-                Self::TimestampEvent(GraphQLTimestampEvent(*event as u64)) // TODO: this is wrong but protobuf is not used in
-                                                                           // protocol and will be deleted
+                Self::TimestampEvent(GraphQLTimestampEvent(*event)) // TODO: this is wrong but protobuf is not used in
+                                                                    // protocol and will be deleted
             }
             MonadEvent::StateSyncEvent(event) => Self::StateSyncEvent(GraphQLStateSyncEvent(event)),
             MonadEvent::ConfigEvent(event) => Self::ConfigEvent(GraphQLConfigEvent(event)),

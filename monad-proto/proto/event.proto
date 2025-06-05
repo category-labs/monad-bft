@@ -105,6 +105,7 @@ message ProtoProposal {
   repeated bytes delayed_execution_results = 7;
   monad_proto.block.ProtoProposedExecutionInputs proposed_execution_inputs = 8;
   optional monad_proto.timeout.ProtoTimeoutCertificate last_round_tc = 9;
+  uint64 elapsed_ns = 10;
 }
 
 message ProtoForwardedTxs {
@@ -257,10 +258,20 @@ message ProtoConfigEvent {
   }
 }
 
+message ProtoPingRequestWithSender {
+  monad_proto.basic.ProtoNodeId sender = 1;
+  monad_proto.blocktimestamp.ProtoPingRequest request = 2;
+}
+
+message ProtoPingResponseWithSender {
+  monad_proto.basic.ProtoNodeId sender = 1;
+  monad_proto.blocktimestamp.ProtoPingResponse response = 2;
+}
+
 message ProtoBlockTimestampEvent {
   oneof event {
-    monad_proto.blocktimestamp.ProtoPingRequest ping_request = 1;
-    monad_proto.blocktimestamp.ProtoPingResponse ping_response = 2;
+    ProtoPingRequestWithSender ping_request = 1;
+    ProtoPingResponseWithSender ping_response = 2;
     monad_proto.blocktimestamp.ProtoPingTick ping_tick = 3;
     monad_proto.blocktimestamp.ProtoTimestampEnterEpoch timestamp_enter_epoch = 4;
   }

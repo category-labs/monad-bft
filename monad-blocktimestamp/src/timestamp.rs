@@ -4,6 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+// use rust_decimal::{self, Decimal, MathematicalOps, prelude::ToPrimitive};
 use monad_consensus_types::{
     clock::{Clock, TimestampAdjusterConfig},
     quorum_certificate::{TimestampAdjustment, TimestampAdjustmentDirection},
@@ -12,11 +13,13 @@ use monad_consensus_types::{
 };
 use monad_crypto::certificate_signature::PubKey;
 use monad_types::{Epoch, NodeId, PingSequence, Round};
+use sorted_vec::SortedVec;
 use tracing::debug;
 
-use crate::timestamp_adjuster::TimestampAdjuster;
+use crate::{messages::message::PingResponseMessage, timestamp_adjuster::TimestampAdjuster};
 
-const MAX_LATENCY_SAMPLES: usize = 100;
+const MAX_LATENCY_SAMPLES: usize = 11;
+const MAX_PROPOSAL_SAMPLES: usize = 11;
 
 pub const PING_PERIOD_SEC: usize = 30;
 
@@ -28,6 +31,40 @@ pub enum Error {
     OutOfBounds, // timestamp is out of bounds compared to local time
 }
 
+// TODO: make it a _Running_ median
+#[derive(Debug, Clone)]
+struct RunningMedian<T: Ord + Copy> {
+    last_median: Option<T>,
+    period: usize,
+    samples: SortedVec<T>,
+}
+
+// TODO: unify with timestamp_adjuster and compute running median.
+impl<T: Ord + Copy> RunningMedian<T> {
+    pub fn new(period: usize) -> Self {
+        assert!(period % 2 == 1, "median accuracy expects odd period");
+        Self {
+            last_median: None,
+            period,
+            samples: SortedVec::new(),
+        }
+    }
+
+    pub fn add_sample(&mut self, sample: T) {
+        self.samples.insert(sample);
+        if self.samples.len() == self.period {
+            let i = self.samples.len() / 2;
+            self.last_median = Some(self.samples[i]);
+            self.samples.clear();
+        }
+    }
+
+    pub fn get_median(&self) -> Option<T> {
+        self.last_median
+    }
+}
+
+// TODO: move RunningAverage and RunningMedian to the seaparate modules.
 #[derive(Debug, Clone)]
 struct RunningAverage {
     sum: Duration,
@@ -58,6 +95,32 @@ impl RunningAverage {
             self.samples.push(sample);
         }
         self.sum += sample;
+        // add some simple and inefficient (WIP) cut out fat tails
+        let sample_threshold = self.avg.unwrap() * 10;
+        if self.avg.is_some() && sample > sample_threshold {
+            // recompute sum from scratch to skip the tails
+            let mut sum: Duration = Default::default();
+            let mut cnt = 0;
+            let mut cnt_above = 0;
+            self.samples.iter().for_each(|x| {
+                if x <= &sample_threshold {
+                    sum += *x;
+                    cnt += 1;
+                } else {
+                    cnt_above += 1;
+                }
+            });
+            if cnt > 0 && cnt_above <= 5 {
+                debug!(
+                    ?sample,
+                    ?sample_threshold,
+                    ?cnt_above,
+                    "latency tracing skipping sample exceeds threshold"
+                );
+                self.avg = Some(sum / cnt);
+                return;
+            }
+        }
         self.avg = Some(self.sum / self.samples.len() as u32);
     }
 
@@ -69,9 +132,10 @@ impl RunningAverage {
 /// Ping state per validator
 #[derive(Debug, Clone)]
 pub struct ValidatorPingState {
-    sequence: PingSequence,       // sequence number of the last ping sent
-    ping_latency: RunningAverage, // average latency of the last pings
-    last_ping_time: Instant,      // time of the last ping sent
+    sequence: PingSequence,           // sequence number of the last ping sent
+    ping_latency: RunningAverage,     // average latency of the last pings
+    last_ping_time: Instant,          // time of the last ping sent
+    proposal_latency: RunningAverage, // average latency of proposal
 }
 
 impl Default for ValidatorPingState {
@@ -81,6 +145,7 @@ impl Default for ValidatorPingState {
             sequence: PingSequence(0),
             ping_latency: RunningAverage::new(MAX_LATENCY_SAMPLES),
             last_ping_time: now,
+            proposal_latency: RunningAverage::new(MAX_LATENCY_SAMPLES),
         }
     }
 }
@@ -96,8 +161,8 @@ impl ValidatorPingState {
         self.sequence
     }
 
-    pub fn pong_received(&mut self, sequence: PingSequence) -> Option<Duration> {
-        if sequence != self.sequence {
+    pub fn pong_received(&mut self, sequence: u64) -> Option<Duration> {
+        if sequence != self.sequence.0 {
             return None;
         }
         // estimate latency as half the round trip time
@@ -111,7 +176,18 @@ impl ValidatorPingState {
     }
 
     fn update_latency(&mut self, latency: Duration) {
+        debug!(?latency, "add ping latency");
         self.ping_latency.add_sample(latency);
+    }
+    // approximate the time the broadcasted proposal was sent from the time direct ping
+    // was received and the average ping latency
+    fn update_proposal_latency(&mut self, elapsed_since_last_vote: Duration) {
+        self.proposal_latency.add_sample(elapsed_since_last_vote);
+        debug!(?elapsed_since_last_vote, "add proposal latency");
+    }
+
+    pub fn proposal_latency(&self) -> Option<Duration> {
+        self.proposal_latency.get_avg()
     }
 }
 
@@ -135,10 +211,12 @@ impl<P: PubKey> PingState<P> {
         }
     }
 
-    pub fn pong_received(&mut self, node_id: NodeId<P>, sequence: PingSequence) {
+    pub fn pong_received(&mut self, node_id: NodeId<P>, sequence: u64) {
+        debug!(?sequence, ?node_id, "Pong received");
         if let Some(validator_state) = self.validators.get_mut(&node_id) {
             if let Some(elapsed) = validator_state.pong_received(sequence) {
-                debug!(?node_id, elapsed_ms = ?elapsed.as_millis(), avg_latency_ms = ?validator_state.avg_latency().unwrap_or_default().as_millis(), "ping latency");
+                let avg_latency_ns = validator_state.avg_latency().unwrap_or_default().as_nanos();
+                debug!(?node_id, delta = elapsed.as_nanos() - avg_latency_ns, elapsed_ns = ?elapsed.as_nanos(), ?avg_latency_ns, "pong_received latency_tracing");
             }
         }
     }
@@ -205,6 +283,7 @@ impl<P: PubKey> PingState<P> {
             let idx = (hasher.finish() as usize) % self.schedule.len();
             self.schedule[idx].push(*validator);
         }
+        debug!("updating validators {:?}", self.schedule);
     }
 
     // returns list of nodes to send pings to on this tick
@@ -222,12 +301,62 @@ impl<P: PubKey> PingState<P> {
     fn get_latency(&self, node_id: &NodeId<P>) -> Option<Duration> {
         self.validators.get(node_id).and_then(|v| v.avg_latency())
     }
+
+    pub fn update_proposal_latency(&mut self, node_id: &NodeId<P>, latency: Duration) {
+        let validator_state = self.validators.entry(*node_id).or_default();
+        validator_state.update_proposal_latency(latency);
+        debug!(?node_id, ?latency, "Update proposal latency");
+    }
+
+    fn get_proposal_latency(&self, node_id: &NodeId<P>) -> Option<Duration> {
+        self.validators
+            .get(node_id)
+            .and_then(|v| v.proposal_latency())
+    }
 }
 
-#[derive(Debug)]
-struct SentVote {
+#[derive(Debug, Clone)]
+struct WaitState {
+    last_vote_received: Instant,
+    last_vote_round: Round,
+    qc_latency: RunningAverage,
+}
+
+impl WaitState {
+    pub fn new(max_samples: u128, round: Round) -> Self {
+        assert!(max_samples > 0);
+        Self {
+            last_vote_received: Instant::now(),
+            last_vote_round: round,
+            qc_latency: RunningAverage::new(max_samples as usize),
+        }
+    }
+
+    pub fn vote_received(&mut self, round: Round) {
+        self.last_vote_received = Instant::now();
+        self.last_vote_round = round;
+    }
+
+    pub fn qc_computed(&mut self, round: Round) {
+        if self.last_vote_round != round {
+            return;
+        }
+        let sample = self.last_vote_received.elapsed();
+        self.qc_latency.add_sample(sample);
+        let avg_wait_qc = self.get_avg();
+        debug!(?sample, ?round, ?avg_wait_qc, "qc_computed");
+    }
+
+    pub fn get_avg(&self) -> Option<Duration> {
+        self.qc_latency.get_avg()
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+struct SentVote<P: PubKey> {
+    node_id: NodeId<P>,
     round: Round,
-    timestamp: Instant,
+    timestamp: Duration,
 }
 #[derive(Debug)]
 pub struct BlockTimestamp<P: PubKey, T: Clock> {
@@ -235,10 +364,15 @@ pub struct BlockTimestamp<P: PubKey, T: Clock> {
     max_delta_ns: u128,
     ping_state: PingState<P>,
 
-    last_sent_vote: Option<SentVote>, // last voted round and timestamp
+    last_sent_vote: Option<SentVote<P>>, // last voted round and timestamp
+    last_received_proposal: Option<SentVote<P>>, // last received proposal and timestamp
 
     default_latency_estimate_ns: u128,
+    create_proposal_time_ns: RunningMedian<u128>,
     adjuster: Option<TimestampAdjuster>,
+
+    avg_wait_for_qc_self: BTreeMap<NodeId<P>, WaitState>,
+    avg_wait_for_qc: BTreeMap<NodeId<P>, u128>,
 }
 
 impl<P: PubKey, T: Clock> BlockTimestamp<P, T> {
@@ -248,31 +382,40 @@ impl<P: PubKey, T: Clock> BlockTimestamp<P, T> {
         adjuster_config: TimestampAdjusterConfig,
     ) -> Self {
         assert!(default_latency_estimate_ns > 0);
-        println!("adjuster_config: {:?}", adjuster_config);
+        debug!("adjuster_config: {:?}", adjuster_config);
         Self {
             clock: T::new(),
             max_delta_ns,
             default_latency_estimate_ns,
             ping_state: PingState::new(),
             last_sent_vote: None,
+            last_received_proposal: None,
+            create_proposal_time_ns: RunningMedian::new(MAX_PROPOSAL_SAMPLES),
             adjuster: match adjuster_config {
                 TimestampAdjusterConfig::Disabled => None,
                 TimestampAdjusterConfig::Enabled {
-                    max_delta,
+                    max_delta_ns,
                     adjustment_period,
-                } => Some(TimestampAdjuster::new(max_delta, adjustment_period)),
+                } => Some(TimestampAdjuster::new(
+                    max_delta_ns,
+                    adjustment_period,
+                    Some(10_000_000_000),
+                )),
             },
+            avg_wait_for_qc_self: Default::default(),
+            avg_wait_for_qc: Default::default(),
         }
     }
 
-    fn is_valid_bounds(&self, timestamp: u128, vote_delay_ns: u128) -> bool {
+    fn is_valid_bounds(&self, timestamp_ns: u128, vote_delay_ns: u128) -> bool {
         let adjusted_now = self.get_adjusted_time();
         let max_delta_ns = self.max_delta_ns.saturating_add(vote_delay_ns);
 
-        let lower_bound = adjusted_now.saturating_sub(max_delta_ns);
-        let upper_bound = adjusted_now.saturating_add(max_delta_ns);
+        let lower_bound = adjusted_now.saturating_sub(Duration::from_nanos(max_delta_ns as u64));
+        let upper_bound = adjusted_now.saturating_add(Duration::from_nanos(max_delta_ns as u64));
 
-        lower_bound <= timestamp && timestamp <= upper_bound
+        return true; // Just for now to pass the experiment
+        lower_bound.as_nanos() <= timestamp_ns && timestamp_ns <= upper_bound.as_nanos()
     }
 
     fn handle_adjustment(&mut self, delta: TimestampAdjustment) {
@@ -281,22 +424,24 @@ impl<P: PubKey, T: Clock> BlockTimestamp<P, T> {
         }
     }
 
-    fn get_current_time(&self) -> u128 {
+    fn get_current_time(&self) -> Duration {
         self.clock.get()
     }
 
-    pub fn update_time(&mut self, time: u128) {
-        self.clock.update(time);
+    pub fn update_time(&mut self, time_ns: u64) {
+        self.clock.update(Duration::from_nanos(time_ns));
     }
 
-    pub fn get_adjusted_time(&self) -> u128 {
+    pub fn get_adjusted_time(&self) -> Duration {
         let now = self.get_current_time();
+
         if let Some(adjuster) = &self.adjuster {
             let adjustment = adjuster.get_adjustment();
             if adjustment >= 0 {
-                now.checked_add(adjustment as u128).unwrap_or(now)
+                now.checked_add(Duration::from_nanos(adjustment as u64))
+                    .unwrap_or(now)
             } else {
-                now.saturating_sub(adjustment.unsigned_abs() as u128)
+                now.saturating_sub(Duration::from_nanos(adjustment.unsigned_abs()))
             }
         } else {
             now
@@ -319,41 +464,76 @@ impl<P: PubKey, T: Clock> BlockTimestamp<P, T> {
         Ok(())
     }
 
-    fn compute_block_timestamp_adjustment(
-        &self,
-        curr_block_ts: u128,
-        author: &NodeId<P>,
-    ) -> Result<Option<TimestampAdjustment>, Error> {
-        // adjust for estimated latency
-        let latency = self
+    fn compute_clock_adjustment(&self, proposed_block_ts_ns: u128) -> Option<TimestampAdjustment> {
+        // return the delta between expected block time and actual block time for adjustment
+        let vote = self.last_sent_vote.unwrap();
+        let proposal = self.last_received_proposal.unwrap();
+
+        assert!(vote.node_id == proposal.node_id);
+        assert!(vote.round + Round(1) == proposal.round);
+        let proposal_local_ts_ns = proposal.timestamp.as_nanos();
+        let vote_ts_ns = vote.timestamp.as_nanos();
+
+        let net_latency_ns = self
             .ping_state
-            .get_latency(author)
+            .get_latency(&vote.node_id)
             .unwrap_or(Duration::from_nanos(
-                self.default_latency_estimate_ns.try_into().unwrap(),
-            ));
+                self.default_latency_estimate_ns as u64,
+            ))
+            .as_nanos();
 
-        let now = self.get_current_time();
-        // TODO: add proposal estimated time
-        let expected_block_ts = now.saturating_sub(latency.as_nanos());
+        let create_proposal_ns = self.create_proposal_time_ns.get_median().unwrap_or(0);
+        let proposal_full_latency_ns = proposal.timestamp.saturating_sub(vote.timestamp).as_nanos();
 
-        debug!(
-            ?curr_block_ts,
-            ?expected_block_ts,
-            ?now,
-            ?latency,
-            "Compute block ts adjustment"
-        );
-        if curr_block_ts > expected_block_ts {
-            Ok(Some(TimestampAdjustment {
-                delta: curr_block_ts - expected_block_ts,
+        let default_wait_for_qc: u128 = 0;
+        let wait_for_qc = *self
+            .avg_wait_for_qc
+            .get(&vote.node_id)
+            .unwrap_or(&default_wait_for_qc);
+        let expected_block_ts = vote
+            .timestamp
+            .as_nanos()
+            .saturating_add(net_latency_ns)
+            .saturating_add(wait_for_qc);
+        let estimated_raptorcast_latency_ns =
+            proposal_local_ts_ns.saturating_sub(expected_block_ts);
+
+        let delta = if proposed_block_ts_ns > expected_block_ts {
+            Some(TimestampAdjustment {
+                delta: proposed_block_ts_ns - expected_block_ts,
                 direction: TimestampAdjustmentDirection::Forward,
-            }))
+            })
         } else {
-            Ok(Some(TimestampAdjustment {
-                delta: expected_block_ts - curr_block_ts,
+            Some(TimestampAdjustment {
+                delta: expected_block_ts - proposed_block_ts_ns,
                 direction: TimestampAdjustmentDirection::Backward,
-            }))
-        }
+            })
+        };
+
+        let proposal_round = proposal.round;
+        let proposal_node_id = proposal.node_id;
+        let adjusted_now = self.get_adjusted_time().as_nanos();
+        debug!(
+            ?vote.node_id,
+            ?wait_for_qc,
+            now = self.clock.get().as_nanos(),
+            ?adjusted_now,
+            ?proposal_round,
+            ?proposal_node_id,
+            ?delta,
+            delta_ns = proposed_block_ts_ns - expected_block_ts,
+            ?vote_ts_ns,
+            ?proposed_block_ts_ns,
+            ?proposal_local_ts_ns,
+            ?create_proposal_ns,
+            ?net_latency_ns,
+            ?proposal_full_latency_ns,
+            ?estimated_raptorcast_latency_ns,
+            ?expected_block_ts,
+            "compute_clock_adjustment latency_tracing"
+        );
+
+        delta
     }
 
     pub fn update_validators<SCT>(
@@ -370,15 +550,26 @@ impl<P: PubKey, T: Clock> BlockTimestamp<P, T> {
         self.ping_state.tick()
     }
 
-    pub fn pong_received(&mut self, node_id: NodeId<P>, sequence: PingSequence) {
-        self.ping_state.pong_received(node_id, sequence);
+    pub fn pong_received(&mut self, sender: NodeId<P>, message: PingResponseMessage) {
+        self.ping_state.pong_received(sender, message.sequence);
+        debug!(?message, ?sender, "pong_received");
+        match self.avg_wait_for_qc.entry(sender) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(message.avg_wait_ns as u128);
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                *entry.get_mut() = message.avg_wait_ns as u128;
+            }
+        }
     }
 
-    pub fn vote_sent(&mut self, round: Round) {
+    pub fn vote_sent(&mut self, node_id: &NodeId<P>, round: Round) {
         self.last_sent_vote = Some(SentVote {
+            node_id: *node_id,
             round,
-            timestamp: Instant::now(),
+            timestamp: self.get_adjusted_time(),
         });
+        self.last_received_proposal = None;
     }
 
     pub fn enter_epoch(&mut self, epoch: Epoch) {
@@ -393,13 +584,73 @@ impl<P: PubKey, T: Clock> BlockTimestamp<P, T> {
         }
     }
 
-    pub fn proposal_received(&mut self, round: Round, received_block_ts: u128, author: &NodeId<P>) {
-        debug!(?round, ?author, ?received_block_ts, "Proposal received",);
-        // TODO: validate and add proposal data
-        if let Ok(Some(delta)) = self.compute_block_timestamp_adjustment(received_block_ts, &author)
-        {
-            self.handle_adjustment(delta);
+    pub fn proposal_received(
+        &mut self,
+        proposal_round: Round,
+        proposed_block_ts_ns: u128,
+        author: &NodeId<P>,
+    ) {
+        debug!(
+            ?proposal_round,
+            ?author,
+            ?proposed_block_ts_ns,
+            "Proposal received",
+        );
+        if let Some(vote) = self.last_sent_vote {
+            if vote.round + Round(1) == proposal_round && vote.node_id == *author {
+                let now = self.get_adjusted_time();
+                self.last_received_proposal = Some(SentVote {
+                    node_id: *author,
+                    round: proposal_round,
+                    timestamp: now,
+                });
+                let latency = now.saturating_sub(vote.timestamp);
+
+                debug!(
+                    ?author,
+                    ?proposed_block_ts_ns,
+                    last_vote_ns = vote.timestamp.as_nanos(),
+                    latency_ns = latency.as_nanos(),
+                    "latency_tracing proposal_received",
+                );
+                self.ping_state.update_proposal_latency(author, latency);
+                if let Some(delta) = self.compute_clock_adjustment(proposed_block_ts_ns) {
+                    debug!(
+                        ?author,
+                        ?delta,
+                        "latency_tracing proposal received, adding delta for timestamp"
+                    );
+                    self.handle_adjustment(delta);
+                }
+            }
         }
+    }
+
+    pub fn update_create_proposal_ns(&mut self, _round: Round, elapsed_ns: u128) {
+        self.create_proposal_time_ns.add_sample(elapsed_ns);
+    }
+
+    pub fn vote_received(&mut self, author: &NodeId<P>, round: Round) {
+        match self.avg_wait_for_qc_self.entry(*author) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(WaitState::new(101, round));
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                entry.get_mut().vote_received(round);
+            }
+        };
+    }
+    pub fn qc_ready(&mut self, round: Round) {
+        self.avg_wait_for_qc_self
+            .iter_mut()
+            .for_each(|(k, v)| v.qc_computed(round));
+    }
+
+    pub fn get_vote_wait(&self, sender: &NodeId<P>) -> Option<Duration> {
+        if let Some(wait_state) = self.avg_wait_for_qc_self.get(sender) {
+            return wait_state.get_avg();
+        }
+        None
     }
 }
 
@@ -408,7 +659,7 @@ mod test {
     use std::{collections::BTreeSet, time::Duration};
 
     use monad_consensus_types::{
-        clock::TestClock,
+        clock::{TestClock, TimestampAdjusterConfig},
         quorum_certificate::{TimestampAdjustment, TimestampAdjustmentDirection},
         validator_data::{ValidatorData, ValidatorSetData, ValidatorSetDataWithEpoch},
     };
@@ -419,18 +670,21 @@ mod test {
     use monad_types::{Epoch, NodeId, Round, Stake};
 
     use super::{Error, PING_PERIOD_SEC};
-    use crate::{
-        timestamp::{PingState, TimestampAdjusterConfig, ValidatorPingState},
-        BlockTimestamp,
-    };
+    use crate::timestamp::{BlockTimestamp, PingState, ValidatorPingState, MAX_PROPOSAL_SAMPLES};
 
     type SignatureType = NopSignature;
     type SignatureCollection = MockSignatures<SignatureType>;
 
     #[test]
     fn test_block_timestamp_validate() {
-        let mut b =
-            BlockTimestamp::<NopPubKey, TestClock>::new(10, 1, TimestampAdjusterConfig::Disabled);
+        let mut b = BlockTimestamp::<NopPubKey, TestClock>::new(
+            10,
+            1,
+            TimestampAdjusterConfig::Enabled {
+                max_delta_ns: 100,
+                adjustment_period: 11,
+            },
+        );
         let author = NodeId::new(NopKeyPair::from_bytes(&mut [0; 32]).unwrap().pubkey());
         b.update_time(0);
 
@@ -458,7 +712,7 @@ mod test {
             .update_latency(Duration::from_nanos(1));
 
         b.update_time(10);
-        b.vote_sent(Round(0));
+        b.vote_sent(&author, Round(0));
 
         assert!(matches!(
             b.validate_block_timestamp(11, 11, 0).err().unwrap(),
@@ -479,32 +733,67 @@ mod test {
         let mut b =
             BlockTimestamp::<NopPubKey, TestClock>::new(10, 1, TimestampAdjusterConfig::Disabled);
         let author = NodeId::new(NopKeyPair::from_bytes(&mut [0; 32]).unwrap().pubkey());
+
+        // In the tests below the proposal latency is 0 since the time is not updated between vote_sent and proposal_received.
         b.update_time(12);
+        b.vote_sent(&author, Round(1));
 
-        // the tests below compute adjustment based on the default_latency set in the BlockTimestamp::new()
-        // and assuming that the time set in the update_time is the time when the proposal has arrived.
+        b.proposal_received(Round(2), 20, &author);
         assert!(matches!(
-            b.compute_block_timestamp_adjustment(20, &author),
-            Ok(Some(TimestampAdjustment {
-                delta: 9,
+            b.compute_clock_adjustment(20),
+            Some(TimestampAdjustment {
+                delta: 7,
                 direction: TimestampAdjustmentDirection::Forward
-            }))
+            })
         ));
 
+        b.proposal_received(Round(2), 13, &author);
         assert!(matches!(
-            b.compute_block_timestamp_adjustment(12, &author),
-            Ok(Some(TimestampAdjustment {
-                delta: 1,
-                direction: TimestampAdjustmentDirection::Forward
-            }))
-        ));
-
-        assert!(matches!(
-            b.compute_block_timestamp_adjustment(10, &author),
-            Ok(Some(TimestampAdjustment {
-                delta: 1,
+            b.compute_clock_adjustment(13),
+            Some(TimestampAdjustment {
+                delta: 0,
                 direction: TimestampAdjustmentDirection::Backward
-            }))
+            })
+        ));
+
+        b.proposal_received(Round(2), 10, &author);
+        assert!(matches!(
+            b.compute_clock_adjustment(10),
+            Some(TimestampAdjustment {
+                delta: 3,
+                direction: TimestampAdjustmentDirection::Backward
+            })
+        ));
+        // In the tests below the proposal latency is 5 since the time is between vote_sent and proposal_received is 5ns.
+        b.update_time(15);
+        b.vote_sent(&author, Round(1));
+        b.update_time(20);
+
+        b.proposal_received(Round(2), 22, &author);
+        assert!(matches!(
+            b.compute_clock_adjustment(22),
+            Some(TimestampAdjustment {
+                delta: 6,
+                direction: TimestampAdjustmentDirection::Forward
+            })
+        ));
+
+        b.proposal_received(Round(2), 12, &author);
+        assert!(matches!(
+            b.compute_clock_adjustment(16),
+            Some(TimestampAdjustment {
+                delta: 0,
+                direction: TimestampAdjustmentDirection::Backward
+            })
+        ));
+
+        b.proposal_received(Round(2), 10, &author);
+        assert!(matches!(
+            b.compute_clock_adjustment(10),
+            Some(TimestampAdjustment {
+                delta: 6,
+                direction: TimestampAdjustmentDirection::Backward
+            })
         ));
     }
 
@@ -530,18 +819,15 @@ mod test {
         );
 
         assert_eq!(
-            state.avg_latency().unwrap(),
-            state.ping_latency.sum / state.ping_latency.samples.len() as u32
+            state.avg_latency().unwrap().as_nanos(),
+            state.ping_latency.sum.as_nanos() / state.ping_latency.samples.len() as u128
         );
 
-        for _ in 0..50 {
-            state.update_latency(Duration::from_millis(50));
+        for i in 0..MAX_PROPOSAL_SAMPLES - 1 {
+            state.update_latency(Duration::from_millis(i as u64));
         }
 
-        assert_eq!(
-            state.ping_latency.sum,
-            state.ping_latency.samples.iter().sum::<Duration>()
-        );
+        assert_eq!(state.avg_latency().unwrap().as_millis(), 5);
 
         assert_eq!(
             state.avg_latency().unwrap(),

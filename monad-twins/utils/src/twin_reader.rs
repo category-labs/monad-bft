@@ -138,7 +138,7 @@ where
 
                 consensus_config: self.state_config.consensus_config,
                 adjuster_config: TimestampAdjusterConfig::Enabled {
-                    max_delta: 100,
+                    max_delta_ns: 100,
                     adjustment_period: 10001,
                 },
                 _phantom: PhantomData,
@@ -390,7 +390,7 @@ where
             },
 
             adjuster_config: TimestampAdjusterConfig::Enabled {
-                max_delta: 100,
+                max_delta_ns: 100,
                 adjustment_period: 10001,
             },
             _phantom: PhantomData,

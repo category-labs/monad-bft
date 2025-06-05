@@ -9,6 +9,7 @@ edition = "2021"
 bench = false
 
 [dependencies]
+monad-blocktimestamp = { workspace = true }
 monad-blocktree = { workspace = true }
 monad-chain-config = { workspace = true }
 monad-consensus = { workspace = true }
@@ -19,7 +20,6 @@ monad-state-backend = { workspace = true }
 monad-types = { workspace = true }
 monad-validator = { workspace = true }
 
-sorted-vec = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

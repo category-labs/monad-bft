@@ -1,8 +1,11 @@
+use std::ops::Neg;
+
 use monad_consensus_types::quorum_certificate::{
     TimestampAdjustment, TimestampAdjustmentDirection,
 };
+use rand::Rng;
 use sorted_vec::SortedVec;
-use tracing::{info, trace};
+use tracing::{debug, info};
 
 #[derive(Debug)]
 pub struct TimestampAdjuster {
@@ -17,14 +20,20 @@ pub struct TimestampAdjuster {
 }
 
 impl TimestampAdjuster {
-    pub fn new(max_delta_ns: u128, adjustment_period: usize) -> Self {
+    pub fn new(max_delta_ns: u128, adjustment_period: usize, max_drift: Option<i64>) -> Self {
         assert!(max_delta_ns < i128::MAX as u128);
         assert!(
             adjustment_period % 2 == 1,
             "median accuracy expects odd period"
         );
+        let mut init_adjustment = 0;
+        let mut rng = rand::thread_rng();
+        if let Some(max_drift) = max_drift {
+            init_adjustment = rng.gen_range(max_drift.neg()..max_drift);
+            debug!(?init_adjustment, "Set initial clock adjustment");
+        }
         Self {
-            adjustment: 0,
+            adjustment: init_adjustment,
             adjustment_period,
             deltas: SortedVec::new(),
             max_delta_ns,
@@ -32,18 +41,21 @@ impl TimestampAdjuster {
     }
 
     pub fn add_delta(&mut self, delta: i64) {
-        trace!(delta, "add delta");
+        debug!(delta, "add delta");
         self.deltas.insert(delta);
         if self.deltas.len() == self.adjustment_period {
             let i = self.deltas.len() / 2;
-            self.adjustment += self.deltas[i];
+            let adjustment = self.deltas[i];
 
             info!(
+                median_idx = i,
                 median_delta = self.deltas[i],
-                adjustment = self.adjustment,
-                "local timestamper adjustment"
+                old_adjustment = self.adjustment,
+                new_adjustment = adjustment,
+                "Set block timestamper adjustment"
             );
 
+            self.adjustment = adjustment;
             self.deltas.clear();
         }
     }

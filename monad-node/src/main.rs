@@ -358,7 +358,10 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
             timestamp_latency_estimate_ns: 20_000_000,
             _phantom: Default::default(),
         },
-        adjuster_config: TimestampAdjusterConfig::Disabled,
+        adjuster_config: TimestampAdjusterConfig::Enabled {
+            max_delta_ns: 10_000_000_000,
+            adjustment_period: 201,
+        },
         _phantom: PhantomData,
     };
 

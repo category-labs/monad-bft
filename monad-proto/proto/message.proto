@@ -5,6 +5,7 @@ package monad_proto.message;
 import "basic.proto";
 import "block.proto";
 import "blocksync.proto";
+import "blocktimestamp.proto";
 import "discovery.proto";
 import "signing.proto";
 import "timeout.proto";
@@ -115,8 +116,8 @@ message ProtoMonadMessage {
     ProtoBlockSyncResponseMessage block_sync_response = 3;
     ProtoForwardedTx forwarded_tx = 5;
     ProtoStateSyncNetworkMessage state_sync_message = 6;
-    ProtoPingRequest ping_request = 7;
-    ProtoPingResponse ping_response = 8;
+    monad_proto.blocktimestamp.ProtoPingRequest ping_request = 7;
+    monad_proto.blocktimestamp.ProtoPingResponse ping_response = 8;
   }
 }
 message ProtoDiscoveryRequest {
@@ -140,12 +141,4 @@ message ProtoRouterMessage {
     bytes app_message = 7;
     ProtoDiscoveryMessage discovery_message = 8;
   }
-}
-
-message ProtoPingRequest {
-  uint64 sequence = 1;
-}
-
-message ProtoPingResponse {
-  uint64 sequence = 1;
 }

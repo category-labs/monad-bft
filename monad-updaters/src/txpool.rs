@@ -140,6 +140,7 @@ where
     type Command = TxPoolCommand<ST, SCT, MockExecutionProtocol, BPT, SBT>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
+        let elapsed_ns: u128 = 0;
         for command in commands {
             match command {
                 TxPoolCommand::CreateProposal {
@@ -170,6 +171,7 @@ where
                             body: MockExecutionBody::default(),
                         },
                         last_round_tc,
+                        elapsed_ns,
                     });
 
                     if let Some(waker) = self.waker.take() {
@@ -208,6 +210,7 @@ where
         let mut event_tracker = EthTxPoolEventTracker::new(&mut self.metrics, &mut events);
 
         for command in commands {
+            let elapsed_ns: u128 = 0;
             match command {
                 TxPoolCommand::CreateProposal {
                     epoch,
@@ -250,6 +253,7 @@ where
                         delayed_execution_results,
                         proposed_execution_inputs,
                         last_round_tc,
+                        elapsed_ns,
                     });
 
                     if let Some(waker) = self.waker.take() {

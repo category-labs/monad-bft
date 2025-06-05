@@ -15,13 +15,11 @@ use monad_proto::{
     error::ProtoError,
     proto::{
         blocksync::ProtoBlockSyncSelfRequest,
-        blocktimestamp::{
-            ProtoPingRequest, ProtoPingResponse, ProtoPingTick, ProtoTimestampEnterEpoch,
-        },
+        blocktimestamp::{ProtoPingTick, ProtoTimestampEnterEpoch},
         event::*,
     },
 };
-use monad_types::{ExecutionProtocol, PingSequence};
+use monad_types::ExecutionProtocol;
 
 use crate::{
     BlockSyncEvent, BlockTimestampEvent, ConfigEvent, ConfigUpdate, ControlPanelEvent,
@@ -56,8 +54,8 @@ where
             }
             MonadEvent::TimestampUpdateEvent(event) => {
                 proto_monad_event::Event::TimestampUpdateEvent(ProtoTimestampUpdate {
-                    update: (*event) as u64, // TODO: this is wrong but protobuf is not used in
-                                             // protocol and will be deleted
+                    update: { *event }, // TODO: this is wrong but protobuf is not used in
+                                        // protocol and will be deleted
                 })
             }
             MonadEvent::StateSyncEvent(event) => {
@@ -100,7 +98,7 @@ where
                 MonadEvent::ControlPanelEvent(e.try_into()?)
             }
             Some(proto_monad_event::Event::TimestampUpdateEvent(event)) => {
-                MonadEvent::TimestampUpdateEvent(event.update as u128)
+                MonadEvent::TimestampUpdateEvent(event.update)
             }
             Some(proto_monad_event::Event::StateSyncEvent(event)) => {
                 MonadEvent::StateSyncEvent(event.try_into()?)
@@ -303,6 +301,7 @@ impl<SCT: SignatureCollection, EPT: ExecutionProtocol> From<&MempoolEvent<SCT, E
                 delayed_execution_results,
                 proposed_execution_inputs,
                 last_round_tc,
+                elapsed_ns,
             } => proto_mempool_event::Event::Proposal(ProtoProposal {
                 epoch: Some(epoch.into()),
                 round: Some(round.into()),
@@ -320,6 +319,7 @@ impl<SCT: SignatureCollection, EPT: ExecutionProtocol> From<&MempoolEvent<SCT, E
                     .collect(),
                 proposed_execution_inputs: Some(proposed_execution_inputs.into()),
                 last_round_tc: last_round_tc.as_ref().map(Into::into),
+                elapsed_ns: *elapsed_ns as u64,
             }),
             MempoolEvent::ForwardedTxs { sender, txs } => {
                 proto_mempool_event::Event::ForwardedTxs(ProtoForwardedTxs {
@@ -356,6 +356,7 @@ impl<SCT: SignatureCollection, EPT: ExecutionProtocol> TryFrom<ProtoMempoolEvent
                 delayed_execution_results,
                 proposed_execution_inputs,
                 last_round_tc,
+                elapsed_ns,
             })) => MempoolEvent::Proposal {
                 epoch: epoch
                     .ok_or(ProtoError::MissingRequiredField(
@@ -400,6 +401,7 @@ impl<SCT: SignatureCollection, EPT: ExecutionProtocol> TryFrom<ProtoMempoolEvent
                     ))?
                     .try_into()?,
                 last_round_tc: last_round_tc.map(TryInto::try_into).transpose()?,
+                elapsed_ns: elapsed_ns as u128,
             },
             Some(proto_mempool_event::Event::ForwardedTxs(forwarded)) => {
                 MempoolEvent::ForwardedTxs {
@@ -1100,16 +1102,16 @@ where
 {
     fn from(value: &BlockTimestampEvent<SCT>) -> Self {
         let event = match value {
-            BlockTimestampEvent::PingRequest { sender, sequence } => {
-                proto_block_timestamp_event::Event::PingRequest(ProtoPingRequest {
+            BlockTimestampEvent::PingRequest { sender, message } => {
+                proto_block_timestamp_event::Event::PingRequest(ProtoPingRequestWithSender {
                     sender: Some(sender.into()),
-                    sequence: sequence.0,
+                    request: Some(message.into()),
                 })
             }
-            BlockTimestampEvent::PingResponse { sender, sequence } => {
-                proto_block_timestamp_event::Event::PingResponse(ProtoPingResponse {
+            BlockTimestampEvent::PingResponse { sender, message } => {
+                proto_block_timestamp_event::Event::PingResponse(ProtoPingResponseWithSender {
                     sender: Some(sender.into()),
-                    sequence: sequence.0,
+                    response: Some(message.into()),
                 })
             }
             BlockTimestampEvent::PingTick => {
@@ -1135,21 +1137,31 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlockTimestampEvent> for BlockTimest
                     let sender = event
                         .sender
                         .ok_or(ProtoError::MissingRequiredField(
-                            "BlockTimestampEvent.PingRequest.sender".to_owned(),
+                            "PingRequest.sender".to_owned(),
                         ))?
                         .try_into()?;
-                    let sequence = PingSequence(event.sequence);
-                    BlockTimestampEvent::PingRequest { sender, sequence }
+                    let message = event
+                        .request
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "PingRequest.request".to_owned(),
+                        ))?
+                        .try_into()?;
+                    BlockTimestampEvent::PingRequest { sender, message }
                 }
                 proto_block_timestamp_event::Event::PingResponse(event) => {
                     let sender = event
                         .sender
                         .ok_or(ProtoError::MissingRequiredField(
-                            "BlockTimestampEvent.PingResponse.sender".to_owned(),
+                            "PingResponse.sender".to_owned(),
                         ))?
                         .try_into()?;
-                    let sequence = PingSequence(event.sequence);
-                    BlockTimestampEvent::PingResponse { sender, sequence }
+                    let message = event
+                        .response
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "PingResponse.message".to_owned(),
+                        ))?
+                        .try_into()?;
+                    BlockTimestampEvent::PingResponse { sender, message }
                 }
                 proto_block_timestamp_event::Event::PingTick(_event) => {
                     BlockTimestampEvent::PingTick {}

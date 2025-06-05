@@ -10,6 +10,7 @@ bench = false
 
 [dependencies]
 monad-blocksync = { workspace = true }
+monad-blocktimestamp = { workspace = true }
 monad-blocktree = { workspace = true }
 monad-chain-config = { workspace = true }
 monad-consensus = { workspace = true }

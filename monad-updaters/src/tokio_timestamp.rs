@@ -47,7 +47,7 @@ where
                 let epoch_time = start
                     .duration_since(UNIX_EPOCH)
                     .expect("Clock may have gone backwards");
-                let t = epoch_time.as_nanos();
+                let t = epoch_time.as_nanos() as u64;
                 Poll::Ready(Some(MonadEvent::TimestampUpdateEvent(t)))
             }
             Poll::Pending => Poll::Pending,

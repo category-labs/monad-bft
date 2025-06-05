@@ -6,13 +6,12 @@ package monad_proto.blocktimestamp;
 import "basic.proto";
 
 message ProtoPingRequest {
-  monad_proto.basic.ProtoNodeId sender = 1;
-  uint64 sequence = 2;
+  uint64 sequence = 1;
 }
 
 message ProtoPingResponse {
-  monad_proto.basic.ProtoNodeId sender = 1;
-  uint64 sequence = 2;
+  uint64 sequence = 1;
+  uint64 avg_wait_ns = 2;
 }
 
 message ProtoPingTick { }

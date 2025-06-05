@@ -112,7 +112,7 @@ pub fn make_state_configs<S: SwarmRelation>(
             },
 
             adjuster_config: TimestampAdjusterConfig::Enabled {
-                max_delta: 10000,
+                max_delta_ns: 10000,
                 adjustment_period: 9,
             },
             _phantom: PhantomData,
