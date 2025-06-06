@@ -11,6 +11,11 @@ pub fn well_formed<SCT>(
     qc_round: Round,
     tc: &Option<TimeoutCertificate<SCT>>,
 ) -> Result<(), Error> {
+    // do not allow Round(0) to prevent underflow
+    if round == Round(0) {
+        return Err(Error::NotWellFormed);
+    }
+
     let prev_round = round - Round(1);
     let valid_qc_round = qc_round == prev_round;
 
