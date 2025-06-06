@@ -39,18 +39,18 @@ monad-pprof = { workspace = true }
 
 actix = { workspace = true }
 actix-http = { workspace = true }
+actix-rt = { workspace = true }
 actix-test = { workspace = true }
 actix-web = { workspace = true }
-actix-web-actors = { workspace = true }
+actix-ws = { workspace = true }
 alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
-alloy-rpc-types = { workspace = true }
+alloy-rpc-types = { workspace = true, features = ["eth"] }
 bytes = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 dashmap = { workspace = true }
-env_logger = { workspace = true }
 flume = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }

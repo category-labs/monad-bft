@@ -5,11 +5,13 @@ use clap::Parser;
 use monad_archive::archive_reader::ArchiveReader;
 use monad_eth_types::BASE_FEE_PER_GAS;
 use monad_ethcall::EthCallExecutor;
+use monad_event_ring::EventRing;
 use monad_node_config::MonadNodeConfig;
 use monad_pprof::start_pprof_server;
 use monad_rpc::{
     chainstate::ChainState,
     comparator::RpcComparator,
+    event::EventServer,
     handlers::{
         resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
         rpc_handler,
@@ -22,7 +24,7 @@ use monad_rpc::{
 use monad_tracing_timing::TimingsLayer;
 use monad_triedb_utils::triedb_env::TriedbEnv;
 use opentelemetry::metrics::MeterProvider;
-use tokio::{spawn, sync::Semaphore};
+use tokio::sync::Semaphore;
 use tracing::{debug, error, info, warn};
 use tracing_actix_web::TracingLogger;
 use tracing_subscriber::{
@@ -66,7 +68,7 @@ async fn main() -> std::io::Result<()> {
     tracing::subscriber::set_global_default(s).expect("failed to set logger");
 
     if !args.pprof.is_empty() {
-        spawn(async {
+        tokio::spawn(async {
             let server = match start_pprof_server(args.pprof) {
                 Ok(server) => server,
                 Err(err) => {
@@ -264,7 +266,33 @@ async fn main() -> std::io::Result<()> {
         rpc_comparator.clone(),
     );
 
-    // main server app
+    let ws_server_handle = if let Some(exec_event_path) = args.exec_event_path {
+        let event_ring =
+            EventRing::new_from_path(exec_event_path).expect("Execution event ring is ready");
+
+        args.ws_enabled.then(|| {
+            let events_for_ws = EventServer::start(event_ring);
+            HttpServer::new(move || {
+                App::new()
+                    .app_data(web::Data::new(events_for_ws.clone()))
+                    .service(
+                        web::resource("/").route(web::get().to(websocket::handler::ws_handler)),
+                    )
+            })
+            .bind((args.rpc_addr.clone(), args.ws_port))
+            .expect("Failed to bind WebSocket server")
+            .shutdown_timeout(1)
+            .workers(args.ws_worker_threads)
+        })
+    } else {
+        if args.ws_enabled {
+            panic!("exec-event-path is not set but is required for websockets");
+        }
+
+        None
+    };
+
+    // Configure the rpc server with or without metrics
     let app = match with_metrics {
         Some(metrics) => HttpServer::new(move || {
             App::new()
@@ -274,7 +302,6 @@ async fn main() -> std::io::Result<()> {
                 .app_data(web::PayloadConfig::default().limit(args.max_request_size))
                 .app_data(web::Data::new(app_state.clone()))
                 .service(web::resource("/").route(web::post().to(rpc_handler)))
-                .service(web::resource("/ws/").route(web::get().to(websocket::handler)))
         })
         .bind((args.rpc_addr, args.rpc_port))?
         .shutdown_timeout(1)
@@ -287,7 +314,6 @@ async fn main() -> std::io::Result<()> {
                 .app_data(web::PayloadConfig::default().limit(args.max_request_size))
                 .app_data(web::Data::new(app_state.clone()))
                 .service(web::resource("/").route(web::post().to(rpc_handler)))
-                .service(web::resource("/ws/").route(web::get().to(websocket::handler)))
         })
         .bind((args.rpc_addr, args.rpc_port))?
         .shutdown_timeout(1)
@@ -295,13 +321,21 @@ async fn main() -> std::io::Result<()> {
         .run(),
     };
 
+    let ws_fut = ws_server_handle.map(|ws| ws.run());
+
     tokio::select! {
         result = app => {
             let () = result?;
         }
 
-        () = txpool_bridge_handle => {
-            error!("txpool bridge crashed");
+        result = async {
+            if let Some(fut) = ws_fut {
+                fut.await
+            } else {
+                futures::future::pending().await
+            }
+        } => {
+            let () = result?;
         }
     }
 
@@ -362,7 +396,9 @@ mod tests {
                 .app_data(web::PayloadConfig::default().limit(2_000_000))
                 .app_data(web::Data::new(app_state.clone()))
                 .service(web::resource("/").route(web::post().to(rpc_handler)))
-                .service(web::resource("/ws/").route(web::get().to(websocket::handler))),
+                .service(
+                    web::resource("/ws/").route(web::get().to(websocket::handler::ws_handler)),
+                ),
         )
         .await
     }

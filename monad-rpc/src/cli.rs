@@ -25,6 +25,18 @@ pub struct Cli {
     #[arg(long)]
     pub node_config: PathBuf,
 
+    /// Enable the WebSocket server
+    #[arg(long, default_value_t = false)]
+    pub ws_enabled: bool,
+
+    /// Set the port number for the WebSocket server
+    #[arg(long, default_value_t = 8081)]
+    pub ws_port: u16,
+
+    /// Set the number of worker threads for the WebSocket server
+    #[arg(long, default_value_t = 2)]
+    pub ws_worker_threads: usize,
+
     /// Set the max number of requests in a batch request
     #[arg(long, default_value_t = 5000)]
     pub batch_request_limit: u16,
@@ -154,4 +166,8 @@ pub struct Cli {
         default_value = ""
     )]
     pub pprof: String,
+
+    /// Sets the socket path for the monad execution event server
+    #[arg(long)]
+    pub exec_event_path: Option<PathBuf>,
 }

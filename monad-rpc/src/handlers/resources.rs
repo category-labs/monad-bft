@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use actix::{Actor, Context, Handler};
+use actix::{Actor, Context};
 use actix_web::{
     dev::{ServiceRequest, ServiceResponse},
     Error,
@@ -9,13 +9,12 @@ use monad_archive::prelude::ArchiveReader;
 use monad_ethcall::EthCallExecutor;
 use monad_triedb_utils::triedb_env::TriedbEnv;
 use tokio::sync::{Mutex, Semaphore};
-use tracing::debug;
 use tracing_actix_web::RootSpanBuilder;
 
 use super::eth::call::EthCallStatsTracker;
 use crate::{
     chainstate::ChainState, comparator::RpcComparator, fee::FixedFee, metrics::Metrics,
-    txpool::EthTxPoolBridgeClient, websocket::Disconnect,
+    txpool::EthTxPoolBridgeClient,
 };
 
 #[derive(Clone)]
@@ -43,14 +42,6 @@ pub struct MonadRpcResources {
     pub enable_eth_call_statistics: bool,
     pub metrics: Option<Metrics>,
     pub rpc_comparator: Option<RpcComparator>,
-}
-
-impl Handler<Disconnect> for MonadRpcResources {
-    type Result = ();
-
-    fn handle(&mut self, _msg: Disconnect, ctx: &mut Self::Context) -> Self::Result {
-        debug!("received disconnect {:?}", ctx);
-    }
 }
 
 impl MonadRpcResources {

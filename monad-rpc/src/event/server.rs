@@ -279,11 +279,7 @@ mod test {
             EventServerEvent::Gap => {
                 panic!("EventServer using snapshot should never produce a gap!")
             }
-            EventServerEvent::Block {
-                header,
-                block,
-                logs,
-            } => {}
+            EventServerEvent::Block { .. } => {}
         }
     }
 }
