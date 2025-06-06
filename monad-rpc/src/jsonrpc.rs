@@ -14,6 +14,23 @@ pub struct Request {
     pub id: Value,
 }
 
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Notification<T> {
+    pub jsonrpc: String,
+    pub method: String,
+    pub params: T,
+}
+
+impl<T> Notification<T> {
+    pub fn new(method: String, params: T) -> Self {
+        Self {
+            jsonrpc: JSONRPC_VERSION.into(),
+            method,
+            params,
+        }
+    }
+}
+
 #[derive(Deserialize, Serialize, Debug, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum RequestWrapper<T> {

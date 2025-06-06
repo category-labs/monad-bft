@@ -2,7 +2,11 @@ use std::str::FromStr;
 
 use alloy_consensus::TxEnvelope;
 use alloy_primitives::{Address, FixedBytes, LogData, U256};
-use alloy_rpc_types::{Block, FeeHistory, Header, Log, Transaction, TransactionReceipt};
+use alloy_rpc_types::{
+    pubsub::Params, Block, FeeHistory, Header, Log, Transaction, TransactionReceipt,
+};
+use monad_exec_events::BlockCommitState;
+use monad_types::BlockId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::value::RawValue;
@@ -178,7 +182,7 @@ impl<'de> Deserialize<'de> for Quantity {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, JsonSchema)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, JsonSchema)]
 pub struct FixedData<const N: usize>(#[schemars(with = "String")] pub [u8; N]);
 
 impl<const N: usize> std::fmt::Display for FixedData<N> {
@@ -357,6 +361,70 @@ impl Default for BlockTagOrHash {
     fn default() -> Self {
         BlockTagOrHash::BlockTags(BlockTags::Latest)
     }
+}
+
+#[derive(Deserialize)]
+pub struct EthSubscribeRequest {
+    pub kind: SubscriptionKind,
+    #[serde(default)]
+    pub params: Params,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub enum SubscriptionKind {
+    // Equivalent to Geth's "newHeads" subscription.
+    // https://geth.ethereum.org/docs/interacting-with-geth/rpc/pubsub#newheads
+    NewHeads,
+    // Equivalent to Geth's "logs" subscription.
+    // https://geth.ethereum.org/docs/interacting-with-geth/rpc/pubsub#logs
+    Logs,
+    // Subscribes to all heads with their corresponding commit state.
+    MonadNewHeads,
+    // Subscribes to all logs with their corresponding commit state.
+    MonadLogs,
+}
+
+#[derive(Deserialize)]
+pub struct EthUnsubscribeRequest {
+    pub id: FixedData<16>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct EthSubscribeResult<'a> {
+    pub subscription: FixedData<16>,
+    #[serde(borrow)]
+    pub result: &'a RawValue,
+}
+
+impl<'a> EthSubscribeResult<'a> {
+    pub fn new(id: FixedData<16>, result: &'a RawValue) -> Self {
+        Self {
+            subscription: id,
+            result,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SubscriptionResult {
+    // NewHeads and Logs are Geth results that return finalized block details.
+    NewHeads(alloy_rpc_types::eth::Header),
+    Logs(alloy_rpc_types::eth::Log),
+
+    // Returns all headers with their corresponding commit state.
+    MonadNewHeads(MonadNotification<alloy_rpc_types::eth::Header>),
+    // Returns all logs with their corresponding commit state.
+    MonadLogs(MonadNotification<alloy_rpc_types::eth::Log>),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MonadNotification<T> {
+    pub block_id: BlockId,
+    pub commit_state: BlockCommitState,
+    #[serde(flatten)]
+    pub data: T,
 }
 
 pub fn serialize_result<T: Serialize>(value: T) -> Result<Box<RawValue>, JsonRpcError> {

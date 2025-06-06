@@ -2,6 +2,7 @@ pub mod chainstate;
 pub mod comparator;
 pub mod docs;
 pub mod eth_json_types;
+pub mod event;
 pub mod fee;
 pub mod gas_oracle;
 pub mod handlers;
