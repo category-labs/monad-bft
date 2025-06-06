@@ -323,11 +323,30 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 }
 
                 decoded.truncate(app_message_len);
+                let decoded = Bytes::from(decoded);
+
                 // successfully decoded, so pop out from pending_messages
                 let decoded_state = self
                     .pending_message_cache
                     .pop(&key)
                     .expect("decoder exists");
+
+                let decoded_message_hash: AppMessageHash = HexBytes({
+                    let mut hasher = HasherType::new();
+                    hasher.update(&decoded);
+                    hasher.hash().0[..20].try_into().unwrap()
+                });
+                if decoded_message_hash != key.app_message_hash {
+                    tracing::error!(
+                        ?self_id,
+                        author =? key.author,
+                        expected_hash =? key.app_message_hash,
+                        actual_hash =? decoded_message_hash,
+                        "unexpected app message hash. dropping message"
+                    );
+                    continue;
+                }
+
                 self.recently_decoded_cache.push(
                     key,
                     RecentlyDecodedState {
@@ -338,7 +357,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                     },
                 );
 
-                messages.push((parsed_message.author, Bytes::from(decoded)));
+                messages.push((parsed_message.author, decoded));
             }
         }
 
