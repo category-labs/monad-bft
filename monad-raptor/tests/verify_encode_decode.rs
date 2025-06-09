@@ -21,9 +21,8 @@ struct BufferSet {
 
 impl BufferSet {
     fn new(num_temp_buffers: usize, symbol_len: usize) -> BufferSet {
-        let temp_buffers: Vec<Box<[u8]>> = iter::repeat(vec![0; symbol_len].into_boxed_slice())
-            .take(num_temp_buffers)
-            .collect();
+        let temp_buffers: Vec<Box<[u8]>> =
+            iter::repeat_n(vec![0; symbol_len].into_boxed_slice(), num_temp_buffers).collect();
 
         let rx_buffers: Vec<Box<[u8]>> = Vec::new();
 

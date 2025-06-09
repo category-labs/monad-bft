@@ -30,7 +30,7 @@ impl SocketWatcher {
             },
             notify::Config::default(),
         )
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        .map_err(io::Error::other)?;
 
         let dir_path = if let Some(parent_path) = socket_path.parent() {
             parent_path
@@ -43,7 +43,7 @@ impl SocketWatcher {
 
         watcher
             .watch(dir_path.as_ref(), RecursiveMode::NonRecursive)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
 
         Ok(Self {
             socket_path,

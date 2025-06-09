@@ -32,8 +32,7 @@ pub fn mock_rx(receipt_len: usize, cumulative_gas: u128) -> ReceiptWithLogIndex 
                 address: Default::default(),
                 data: LogData::new(
                     vec![],
-                    std::iter::repeat(42)
-                        .take(receipt_len)
+                    std::iter::repeat_n(42, receipt_len)
                         .collect::<Vec<u8>>()
                         .into(),
                 )

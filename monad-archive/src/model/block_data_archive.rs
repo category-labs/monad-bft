@@ -511,7 +511,7 @@ where
 }
 #[cfg(test)]
 mod tests {
-    use std::iter::repeat;
+    use std::iter::repeat_n;
 
     use alloy_consensus::{BlockBody, Receipt, ReceiptWithBloom, SignableTransaction, TxEip1559};
     use alloy_primitives::{Bloom, Log, LogData, B256, U256};
@@ -685,7 +685,7 @@ mod tests {
                             address: Default::default(),
                             data: LogData::new(
                                 vec![],
-                                repeat(42).take(10).collect::<Vec<u8>>().into(),
+                                repeat_n(42, 10).collect::<Vec<u8>>().into(),
                             )
                             .unwrap(),
                         }],
@@ -700,7 +700,7 @@ mod tests {
                             address: Default::default(),
                             data: LogData::new(
                                 vec![],
-                                repeat(42).take(20).collect::<Vec<u8>>().into(),
+                                repeat_n(42, 20).collect::<Vec<u8>>().into(),
                             )
                             .unwrap(),
                         }],

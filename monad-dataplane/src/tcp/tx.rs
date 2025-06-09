@@ -203,12 +203,7 @@ async fn connect_and_send_messages(
     let mut stream = timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect(addr))
         .await
         .unwrap_or_else(|_| Err(Error::from(ErrorKind::TimedOut)))
-        .map_err(|err| {
-            Error::new(
-                ErrorKind::Other,
-                format!("error connecting to remote host: {}", err),
-            )
-        })?;
+        .map_err(|err| Error::other(format!("error connecting to remote host: {}", err)))?;
 
     if let Some(requested_buffer_size) = buffer_size {
         stream.set_send_buffer_size(requested_buffer_size)?;
@@ -267,13 +262,10 @@ async fn connect_and_send_messages(
         .await
         .unwrap_or_else(|_| Err(Error::from(ErrorKind::TimedOut)))
         .map_err(|err| {
-            Error::new(
-                ErrorKind::Other,
-                format!(
-                    "error writing message {} on TCP connection: {}",
-                    message_id, err
-                ),
-            )
+            Error::other(format!(
+                "error writing message {} on TCP connection: {}",
+                message_id, err
+            ))
         })?;
 
         message_id += 1;

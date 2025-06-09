@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, iter::repeat};
+use std::{collections::BTreeMap, iter::repeat_n};
 
 use alloy_consensus::{
     transaction::Recovered, Eip658Value, Receipt, ReceiptWithBloom, SignableTransaction,
@@ -80,11 +80,8 @@ pub fn make_receipt(logs_len: usize) -> ReceiptWithBloom {
         Receipt::<Log> {
             logs: vec![Log {
                 address: Default::default(),
-                data: LogData::new(
-                    vec![],
-                    repeat(42).take(logs_len).collect::<Vec<u8>>().into(),
-                )
-                .unwrap(),
+                data: LogData::new(vec![], repeat_n(42, logs_len).collect::<Vec<u8>>().into())
+                    .unwrap(),
             }],
             status: Eip658Value::Eip658(true),
             cumulative_gas_used: 21000,

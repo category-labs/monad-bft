@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, iter, mem::replace, num::NonZeroU16};
+use std::{cmp::Ordering, iter, num::NonZeroU16};
 
 #[derive(Debug)]
 pub struct BufferWeightMap {
@@ -46,9 +46,8 @@ impl BufferWeightMap {
     }
 
     pub fn check_force(&self) {
-        let mut buffer_index_to_weight: Vec<_> = iter::repeat(None)
-            .take(self.buffer_index_to_weight.len())
-            .collect();
+        let mut buffer_index_to_weight: Vec<_> =
+            iter::repeat_n(None, self.buffer_index_to_weight.len()).collect();
 
         for buffer_index in &self.heap_index_to_buffer_index {
             let buffer_index = usize::from(*buffer_index);
@@ -151,7 +150,7 @@ impl BufferWeightMap {
         }
 
         assert_eq!(
-            replace(&mut self.buffer_index_to_weight[buffer_index], Some(weight)),
+            self.buffer_index_to_weight[buffer_index].replace(weight),
             None
         );
         self.buffer_index_to_heap_index[buffer_index] = heap_index.try_into().unwrap();

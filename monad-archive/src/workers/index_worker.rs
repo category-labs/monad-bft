@@ -237,8 +237,7 @@ mod tests {
             gas_limit: 456 + salt,
             max_fee_per_gas: 789,
             max_priority_fee_per_gas: 135,
-            input: std::iter::repeat(42)
-                .take(input_len)
+            input: std::iter::repeat_n(42, input_len)
                 .collect::<Vec<u8>>()
                 .into(),
             ..Default::default()
