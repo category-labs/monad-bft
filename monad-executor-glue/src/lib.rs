@@ -1,6 +1,6 @@
 pub mod convert;
 
-use std::{fmt::Debug, net::SocketAddr};
+use std::{collections::HashMap, fmt::Debug, net::SocketAddr};
 
 use alloy_rlp::{encode_list, Decodable, Encodable, RlpDecodable, RlpEncodable};
 use bytes::{BufMut, Bytes, BytesMut};
@@ -20,7 +20,6 @@ use monad_consensus_types::{
         OptimisticCommit, ProposedExecutionInputs,
     },
     checkpoint::Checkpoint,
-    metrics::Metrics,
     payload::{ConsensusBlockBodyId, RoundSignature},
     quorum_certificate::{QuorumCertificate, TimestampAdjustment},
     signature_collection::SignatureCollection,
@@ -139,7 +138,7 @@ pub enum StateRootHashCommand {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum GetMetrics {
     Request,
-    Response(Metrics),
+    Response(HashMap<String, u64>),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -165,12 +164,6 @@ pub enum ReadCommand<SCT: SignatureCollection + Clone> {
     GetFullNodes(GetFullNodes<SCT::NodeIdPubKey>),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum ClearMetrics {
-    Request,
-    Response(Metrics),
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ReloadConfig {
     Request,
@@ -179,7 +172,6 @@ pub enum ReloadConfig {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum WriteCommand {
-    ClearMetrics(ClearMetrics),
     UpdateLogFilter(String),
     ReloadConfig(ReloadConfig),
 }
@@ -969,7 +961,6 @@ where
     SCT: SignatureCollection,
 {
     GetMetricsEvent,
-    ClearMetricsEvent,
     UpdateLogFilter(String),
     GetPeers(GetPeers<SCT::NodeIdPubKey>),
     GetFullNodes(GetFullNodes<SCT::NodeIdPubKey>),

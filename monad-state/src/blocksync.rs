@@ -5,7 +5,7 @@ use monad_blocksync::blocksync::{
 };
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::{
-    block::BlockPolicy, block_validator::BlockValidator, metrics::Metrics,
+    block::BlockPolicy, block_validator::BlockValidator, metrics::StateMetrics,
     signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
@@ -43,7 +43,7 @@ where
     delta: &'a Duration,
     nodeid: &'a NodeId<CertificateSignaturePubKey<ST>>,
 
-    metrics: &'a mut Metrics,
+    metrics: &'a mut StateMetrics,
 
     _phantom: PhantomData<(ST, SCT, EPT, BPT, SBT, VTF, LT, BVT)>,
 }
@@ -90,7 +90,7 @@ where
         let mut block_sync_wrapper = BlockSyncWrapper {
             block_sync: self.block_sync,
             block_cache,
-            metrics: self.metrics,
+            metrics: &mut self.metrics.blocksync_events,
             nodeid: self.nodeid,
             current_epoch: self.consensus.current_epoch(),
             epoch_manager: self.epoch_manager,

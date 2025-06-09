@@ -7,8 +7,7 @@ use monad_bls::BlsSignatureCollection;
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_executor_glue::{
-    ClearMetrics, ControlPanelCommand, GetFullNodes, GetMetrics, GetPeers, ReadCommand,
-    WriteCommand,
+    ControlPanelCommand, GetFullNodes, GetMetrics, GetPeers, ReadCommand, WriteCommand,
 };
 use monad_node_config::{
     FullNodeConfig, FullNodeIdentityConfig, NodeBootstrapConfig, NodeBootstrapPeerConfig,
@@ -48,8 +47,6 @@ struct UpdateLogFilter {
 enum Commands {
     /// Gets snapshot of current metrics
     Metrics,
-    /// Clears the metrics
-    ClearMetrics,
     /// Update the logging filter
     UpdateLogFilter(UpdateLogFilter),
     /// Display peer list
@@ -113,15 +110,6 @@ fn main() -> Result<(), Error> {
     let mut write = Write { write };
 
     match cli.command {
-        Commands::ClearMetrics => {
-            rt.block_on(write.send(Command::Write(WriteCommand::ClearMetrics(
-                ClearMetrics::Request,
-            ))))?;
-
-            let response = rt.block_on(read.next::<SignatureCollectionType>())?;
-            println!("{}", serde_json::to_string(&response).unwrap());
-        }
-
         Commands::UpdateLogFilter(filter) => match (filter.filter, filter.file) {
             (Some(filter), None) => {
                 rt.block_on(write.send(Command::Write(WriteCommand::UpdateLogFilter(filter))))?;

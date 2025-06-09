@@ -12,15 +12,16 @@ mod test {
     use monad_consensus_types::{
         block::{MockExecutionProtocol, PassthruBlockPolicy},
         block_validator::MockValidator,
-        metrics::Metrics,
+        metrics::StateMetrics,
     };
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
         NopPubKey, NopSignature,
     };
     use monad_eth_types::Balance;
+    use monad_metrics::Counter;
     use monad_mock_swarm::{
-        fetch_metric,
+        fetch_metric_counter,
         mock::TimestamperConfig,
         mock_swarm::SwarmBuilder,
         node::{Node, NodeBuilder},
@@ -207,6 +208,7 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(Balance::MAX, SeqNum::MAX),
+            StateMetrics::default,
             SeqNum::MAX,                         // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -309,6 +311,7 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(Balance::MAX, SeqNum::MAX),
+            StateMetrics::default,
             SeqNum::MAX,                         // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -435,35 +438,35 @@ mod test {
         verifier_after_blackout
             .metric_exact(
                 &running_nodes_ids,
-                fetch_metric!(blocksync_events.self_headers_request),
+                fetch_metric_counter!(blocksync_events.self_headers_request),
                 0,
             )
             .metric_exact(
                 &running_nodes_ids,
-                fetch_metric!(blocksync_events.self_payload_request),
+                fetch_metric_counter!(blocksync_events.self_payload_request),
                 0,
             )
             // handle proposal for all blocks in ledger
             .metric_minimum(
                 &running_nodes_ids,
-                fetch_metric!(consensus_events.handle_proposal),
+                fetch_metric_counter!(consensus_events.handle_proposal),
                 update_block_num.0 + 10,
             )
             // vote for all blocks in ledger
             .metric_minimum(
                 &running_nodes_ids,
-                fetch_metric!(consensus_events.created_vote),
+                fetch_metric_counter!(consensus_events.created_vote),
                 update_block_num.0 + 10,
             )
             .metric_maximum(
                 &vec![blackout_node_id],
-                fetch_metric!(blocksync_events.self_payload_request),
+                fetch_metric_counter!(blocksync_events.self_payload_request),
                 4,
             )
             // initial TC + max timeouts during blackout
             .metric_maximum(
                 &node_ids,
-                fetch_metric!(consensus_events.local_timeout),
+                fetch_metric_counter!(consensus_events.local_timeout),
                 1 + 10,
             );
 
@@ -484,6 +487,7 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(Balance::MAX, SeqNum::MAX),
+            StateMetrics::default,
             SeqNum::MAX,                         // execution_delay
             Duration::from_millis(delta),        // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -648,29 +652,33 @@ mod test {
         verifier
             .metric_exact(
                 &node_ids,
-                fetch_metric!(blocksync_events.self_headers_request),
+                fetch_metric_counter!(blocksync_events.self_headers_request),
                 0,
             )
             .metric_exact(
                 &node_ids,
-                fetch_metric!(blocksync_events.self_payload_request),
+                fetch_metric_counter!(blocksync_events.self_payload_request),
                 0,
             )
             // handle proposal for all blocks in ledger
             .metric_minimum(
                 &node_ids,
-                fetch_metric!(consensus_events.handle_proposal),
+                fetch_metric_counter!(consensus_events.handle_proposal),
                 max_ledger_blocks as u64,
             )
             // vote for all blocks in ledger
             .metric_minimum(
                 &node_ids,
-                fetch_metric!(consensus_events.created_vote),
+                fetch_metric_counter!(consensus_events.created_vote),
                 max_ledger_blocks as u64,
             )
             // initial TC + account for TC whenever emmitted messages
             // are dropped during `step_until`
-            .metric_maximum(&node_ids, fetch_metric!(consensus_events.local_timeout), 4);
+            .metric_maximum(
+                &node_ids,
+                fetch_metric_counter!(consensus_events.local_timeout),
+                4,
+            );
 
         assert!(verifier.verify(&nodes));
     }
@@ -691,6 +699,7 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(Balance::MAX, SeqNum(4)),
+            StateMetrics::default,
             SeqNum(4),                           // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -753,10 +762,14 @@ mod test {
         // there are extra messages sent from unstaked validators which are
         // ignored. should change it back to happy path once they are seperated
         verifier
-            .metric_exact(&node_ids, fetch_metric!(consensus_events.local_timeout), 1)
             .metric_exact(
                 &node_ids,
-                fetch_metric!(consensus_events.remote_timeout_msg),
+                fetch_metric_counter!(consensus_events.local_timeout),
+                1,
+            )
+            .metric_exact(
+                &node_ids,
+                fetch_metric_counter!(consensus_events.remote_timeout_msg),
                 3,
             );
 

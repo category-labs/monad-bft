@@ -1,25 +1,28 @@
 use std::{marker::PhantomData, path::PathBuf};
 
 use monad_consensus_types::signature_collection::SignatureCollection;
-use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
+use monad_executor::Executor;
 use monad_executor_glue::CheckpointCommand;
 
 pub struct MockCheckpoint<SCT: SignatureCollection> {
     pub checkpoint: Option<CheckpointCommand<SCT>>,
-    metrics: ExecutorMetrics,
 }
 
-impl<SCT: SignatureCollection> Default for MockCheckpoint<SCT> {
+impl<SCT> Default for MockCheckpoint<SCT>
+where
+    SCT: SignatureCollection,
+{
     fn default() -> Self {
-        Self {
-            checkpoint: None,
-            metrics: Default::default(),
-        }
+        Self { checkpoint: None }
     }
 }
 
-impl<SCT: SignatureCollection> Executor for MockCheckpoint<SCT> {
+impl<SCT> Executor for MockCheckpoint<SCT>
+where
+    SCT: SignatureCollection,
+{
     type Command = CheckpointCommand<SCT>;
+    type Metrics = ();
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
@@ -27,14 +30,13 @@ impl<SCT: SignatureCollection> Executor for MockCheckpoint<SCT> {
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
-        self.metrics.as_ref().into()
+    fn metrics(&self) -> &Self::Metrics {
+        &()
     }
 }
 
 pub struct FileCheckpoint<SCT> {
     out_path: PathBuf,
-    metrics: ExecutorMetrics,
     phantom: PhantomData<SCT>,
 }
 
@@ -45,7 +47,6 @@ where
     pub fn new(out_path: PathBuf) -> Self {
         Self {
             out_path,
-            metrics: Default::default(),
             phantom: PhantomData,
         }
     }
@@ -56,6 +57,7 @@ where
     SCT: SignatureCollection + Clone,
 {
     type Command = CheckpointCommand<SCT>;
+    type Metrics = ();
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
@@ -93,7 +95,7 @@ where
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
-        self.metrics.as_ref().into()
+    fn metrics(&self) -> &Self::Metrics {
+        &()
     }
 }

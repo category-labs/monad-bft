@@ -10,7 +10,6 @@ use monad_executor::Executor;
 use monad_executor_glue::{ConsensusEvent, MonadEvent, RouterCommand};
 use monad_state::VerifiedMonadMessage;
 use monad_types::ExecutionProtocol;
-
 pub struct FullNodeRouterFilter<ST, SCT, EPT, R> {
     router: R,
     _phantom: PhantomData<(ST, SCT, EPT)>,
@@ -48,6 +47,7 @@ where
 {
     type Command =
         RouterCommand<CertificateSignaturePubKey<ST>, VerifiedMonadMessage<ST, SCT, EPT>>;
+    type Metrics = R::Metrics;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let filtered = commands
@@ -73,7 +73,7 @@ where
         self.router.exec(filtered);
     }
 
-    fn metrics(&self) -> monad_executor::ExecutorMetricsChain {
+    fn metrics(&self) -> &Self::Metrics {
         self.router.metrics()
     }
 }

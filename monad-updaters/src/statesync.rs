@@ -9,7 +9,7 @@ use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_executor::{Executor, ExecutorMetricsChain};
+use monad_executor::Executor;
 use monad_executor_glue::{
     MonadEvent, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest,
     StateSyncResponse, StateSyncUpsertType, StateSyncUpsertV1, SELF_STATESYNC_VERSION,
@@ -32,7 +32,10 @@ pub trait MockableStateSync:
     ) -> Option<MonadEvent<Self::Signature, Self::SignatureCollection, Self::ExecutionProtocol>>;
 }
 
-impl<T: MockableStateSync + ?Sized> MockableStateSync for Box<T> {
+impl<T> MockableStateSync for Box<T>
+where
+    T: MockableStateSync + ?Sized,
+{
     type Signature = T::Signature;
     type SignatureCollection = T::SignatureCollection;
     type ExecutionProtocol = T::ExecutionProtocol;
@@ -73,6 +76,7 @@ where
     EPT: ExecutionProtocol,
 {
     type Command = StateSyncCommand<ST, EPT>;
+    type Metrics = ();
 
     fn exec(&mut self, cmds: Vec<Self::Command>) {
         for cmd in cmds {
@@ -173,8 +177,8 @@ where
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
-        Default::default()
+    fn metrics(&self) -> &Self::Metrics {
+        &()
     }
 }
 

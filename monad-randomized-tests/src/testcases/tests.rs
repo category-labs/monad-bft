@@ -4,7 +4,9 @@ use std::{
 };
 
 use monad_chain_config::{revision::ChainParams, MockChainConfig};
-use monad_consensus_types::{block::PassthruBlockPolicy, block_validator::MockValidator};
+use monad_consensus_types::{
+    block::PassthruBlockPolicy, block_validator::MockValidator, metrics::StateMetrics,
+};
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_eth_types::Balance;
 use monad_mock_swarm::{
@@ -42,6 +44,7 @@ fn random_latency_test(latency_seed: u64) {
         || MockValidator,
         || PassthruBlockPolicy,
         || InMemoryStateInner::genesis(Balance::MAX, SeqNum(4)),
+        StateMetrics::default,
         SeqNum(4),                           // execution_delay
         Duration::from_millis(250),          // delta
         MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -110,6 +113,7 @@ fn delayed_message_test(latency_seed: u64) {
         || MockValidator,
         || PassthruBlockPolicy,
         || InMemoryStateInner::genesis(Balance::MAX, SeqNum(4)),
+        StateMetrics::default,
         SeqNum(4),                                        // execution_delay
         Duration::from_millis(2),                         // delta
         MockChainConfig::new(&CHAIN_PARAMS_NO_VOTE_PACE), // chain config

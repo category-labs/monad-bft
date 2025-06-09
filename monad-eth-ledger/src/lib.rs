@@ -20,7 +20,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_types::EthExecutionProtocol;
-use monad_executor::{Executor, ExecutorMetricsChain};
+use monad_executor::Executor;
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
 use monad_state_backend::{InMemoryState, StateBackendTest};
 use monad_types::{BlockId, Round, SeqNum};
@@ -114,6 +114,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     type Command = LedgerCommand<ST, SCT, EthExecutionProtocol>;
+    type Metrics = ();
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
@@ -181,8 +182,8 @@ where
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
-        Default::default()
+    fn metrics(&self) -> &Self::Metrics {
+        &()
     }
 }
 

@@ -438,11 +438,6 @@ where
                     ProtoGetMetricsEvent {},
                 )),
             },
-            ControlPanelEvent::ClearMetricsEvent => ProtoControlPanelEvent {
-                event: Some(proto_control_panel_event::Event::ClearMetricsEvent(
-                    ProtoClearMetricsEvent {},
-                )),
-            },
             ControlPanelEvent::UpdateLogFilter(filter) => ProtoControlPanelEvent {
                 event: Some(proto_control_panel_event::Event::UpdateLogFilter(
                     ProtoUpdateLogFilter {
@@ -540,9 +535,6 @@ where
             ))? {
                 proto_control_panel_event::Event::GetMetricsEvent(_) => {
                     ControlPanelEvent::GetMetricsEvent
-                }
-                proto_control_panel_event::Event::ClearMetricsEvent(_) => {
-                    ControlPanelEvent::ClearMetricsEvent
                 }
                 proto_control_panel_event::Event::UpdateLogFilter(update_log_filter) => {
                     ControlPanelEvent::UpdateLogFilter(update_log_filter.filter)

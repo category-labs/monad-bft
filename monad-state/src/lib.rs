@@ -1,4 +1,4 @@
-use std::{fmt::Debug, marker::PhantomData, ops::Deref};
+use std::{collections::HashMap, fmt::Debug, marker::PhantomData, ops::Deref};
 
 use alloy_rlp::{encode_list, Decodable, Encodable, Header};
 use bytes::{Bytes, BytesMut};
@@ -22,7 +22,7 @@ use monad_consensus_types::{
     block::{BlockPolicy, OptimisticCommit},
     block_validator::BlockValidator,
     checkpoint::{Checkpoint, LockedEpoch},
-    metrics::Metrics,
+    metrics::{StateMetrics, ValidationErrorsStateMetrics},
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     validation,
@@ -33,11 +33,10 @@ use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor_glue::{
-    BlockSyncEvent, ClearMetrics, Command, ConfigEvent, ConfigReloadCommand, ConsensusEvent,
-    ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers, LedgerCommand,
-    MempoolEvent, Message, MonadEvent, ReadCommand, ReloadConfig, RouterCommand,
-    StateRootHashCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, TxPoolCommand,
-    ValidatorEvent, WriteCommand,
+    BlockSyncEvent, Command, ConfigEvent, ConfigReloadCommand, ConsensusEvent, ControlPanelCommand,
+    ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers, LedgerCommand, MempoolEvent, Message,
+    MonadEvent, ReadCommand, ReloadConfig, RouterCommand, StateRootHashCommand, StateSyncCommand,
+    StateSyncEvent, StateSyncNetworkMessage, TxPoolCommand, ValidatorEvent, WriteCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{
@@ -60,45 +59,48 @@ pub mod convert;
 mod epoch;
 mod statesync;
 
-pub(crate) fn handle_validation_error(e: validation::Error, metrics: &mut Metrics) {
+pub(crate) fn handle_validation_error(
+    e: validation::Error,
+    metrics: &mut ValidationErrorsStateMetrics,
+) {
     match e {
         validation::Error::InvalidAuthor => {
-            metrics.validation_errors.invalid_author += 1;
+            metrics.invalid_author.inc();
         }
         validation::Error::NotWellFormed => {
-            metrics.validation_errors.not_well_formed_sig += 1;
+            metrics.not_well_formed_sig.inc();
         }
         validation::Error::InvalidSignature => {
-            metrics.validation_errors.invalid_signature += 1;
+            metrics.invalid_signature.inc();
         }
         validation::Error::AuthorNotSender => {
-            metrics.validation_errors.author_not_sender += 1;
+            metrics.author_not_sender.inc();
         }
         validation::Error::InvalidTcRound => {
-            metrics.validation_errors.invalid_tc_round += 1;
+            metrics.invalid_tc_round.inc();
         }
         validation::Error::InsufficientStake => {
-            metrics.validation_errors.insufficient_stake += 1;
+            metrics.insufficient_stake.inc();
         }
         validation::Error::ValidatorSetDataUnavailable => {
             // This error occurs when the node knows when the next epoch starts,
             // but didn't get enough execution deltas to build the next
             // validator set.
             // TODO: This should trigger statesync
-            metrics.validation_errors.val_data_unavailable += 1;
+            metrics.val_data_unavailable.inc();
         }
         validation::Error::InvalidVote => {
-            metrics.validation_errors.invalid_vote_message += 1;
+            metrics.invalid_vote_message.inc();
         }
         validation::Error::InvalidVersion => {
-            metrics.validation_errors.invalid_version += 1;
+            metrics.invalid_version.inc();
         }
         validation::Error::InvalidEpoch => {
             // TODO: If the node is not actively participating, getting this
             // error can indicate that the node is behind by more than an epoch
             // and needs state sync. Else if actively participating, this is
             // spam
-            metrics.validation_errors.invalid_epoch += 1;
+            metrics.invalid_epoch.inc();
         }
     };
 }
@@ -348,7 +350,7 @@ where
     beneficiary: [u8; 20],
 
     /// Metrics counters for events and errors
-    metrics: Metrics,
+    metrics: StateMetrics,
 
     /// Versions for client and protocol validation
     version: MonadVersion,
@@ -393,7 +395,7 @@ where
         }
     }
 
-    pub fn metrics(&self) -> &Metrics {
+    pub fn metrics(&self) -> &StateMetrics {
         &self.metrics
     }
 }
@@ -686,6 +688,7 @@ where
     pub epoch_start_delay: Round,
     pub beneficiary: [u8; 20],
     pub block_sync_override_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
+    pub metrics: StateMetrics,
 
     pub consensus_config: ConsensusConfig<CCT, CRT>,
 
@@ -768,7 +771,7 @@ where
             state_backend: self.state_backend,
             beneficiary: self.beneficiary,
 
-            metrics: Metrics::default(),
+            metrics: self.metrics,
             version: MonadVersion::version(),
         };
 
@@ -856,7 +859,7 @@ where
                 ConsensusChildState::new(self).handle_mempool_event(event)
             }
             MonadEvent::ExecutionResultEvent(event) => {
-                self.metrics.consensus_events.state_root_update += 1;
+                self.metrics.consensus_events.state_root_update.inc();
                 let consensus_cmds = ConsensusChildState::new(self).handle_execution_result(event);
                 consensus_cmds
                     .into_iter()
@@ -960,14 +963,42 @@ where
             },
             MonadEvent::ControlPanelEvent(control_panel_event) => match control_panel_event {
                 ControlPanelEvent::GetMetricsEvent => {
+                    let mut counters = HashMap::<String, u64>::default();
+                    let mut labeled_counters = HashMap::<String, u64>::default();
+                    let mut gauges = HashMap::<String, u64>::default();
+                    let mut labeled_gauges = HashMap::<String, u64>::default();
+
+                    self.metrics.for_each(
+                        &mut |name, counter| {
+                            counters.insert(name.to_string(), counter.read());
+                        },
+                        &mut |name, label, variants| {
+                            for (variant, counter) in variants {
+                                labeled_counters.insert(
+                                    format!("{name}[{label} = \"{variant}\"]"),
+                                    counter.read(),
+                                );
+                            }
+                        },
+                        &mut |name, gauge| {
+                            gauges.insert(name.to_string(), gauge.read());
+                        },
+                        &mut |name, label, variants| {
+                            for (variant, gauge) in variants {
+                                labeled_gauges.insert(
+                                    format!("{name}[{label} = \"{variant}\"]"),
+                                    gauge.read(),
+                                );
+                            }
+                        },
+                    );
+
+                    counters.extend(labeled_counters);
+                    counters.extend(gauges);
+                    counters.extend(labeled_gauges);
+
                     vec![Command::ControlPanelCommand(ControlPanelCommand::Read(
-                        ReadCommand::GetMetrics(GetMetrics::Response(self.metrics)),
-                    ))]
-                }
-                ControlPanelEvent::ClearMetricsEvent => {
-                    self.metrics = Default::default();
-                    vec![Command::ControlPanelCommand(ControlPanelCommand::Write(
-                        WriteCommand::ClearMetrics(ClearMetrics::Response(self.metrics)),
+                        ReadCommand::GetMetrics(GetMetrics::Response(counters)),
                     ))]
                 }
                 ControlPanelEvent::UpdateLogFilter(filter) => {

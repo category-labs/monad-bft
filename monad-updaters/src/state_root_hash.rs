@@ -15,7 +15,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
+use monad_executor::Executor;
 use monad_executor_glue::{MonadEvent, StateRootHashCommand};
 use monad_types::{Epoch, ExecutionProtocol, MockableFinalizedHeader, SeqNum, Stake};
 use tracing::error;
@@ -30,7 +30,10 @@ pub trait MockableStateRootHash:
     fn get_validator_set_data(&self, epoch: Epoch) -> ValidatorSetData<Self::SignatureCollection>;
 }
 
-impl<T: MockableStateRootHash + ?Sized> MockableStateRootHash for Box<T> {
+impl<T> MockableStateRootHash for Box<T>
+where
+    T: MockableStateRootHash + ?Sized,
+{
     type Event = T::Event;
     type SignatureCollection = T::SignatureCollection;
 
@@ -66,7 +69,6 @@ where
     enable_updates: bool,
 
     waker: Option<Waker>,
-    metrics: ExecutorMetrics,
     phantom: PhantomData<ST>,
 }
 
@@ -90,7 +92,6 @@ where
             enable_updates: true,
 
             waker: None,
-            metrics: Default::default(),
             phantom: PhantomData,
         }
     }
@@ -148,6 +149,7 @@ where
     EPT::FinalizedHeader: MockableFinalizedHeader,
 {
     type Command = StateRootHashCommand;
+    type Metrics = ();
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut wake = false;
@@ -191,14 +193,13 @@ where
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
-        self.metrics.as_ref().into()
+    fn metrics(&self) -> &Self::Metrics {
+        &()
     }
 }
 
 impl<ST, SCT, EPT> Stream for MockStateRootHashNop<ST, SCT, EPT>
 where
-    Self: Unpin,
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
@@ -256,7 +257,6 @@ where
     val_set_update_interval: SeqNum,
 
     waker: Option<Waker>,
-    metrics: ExecutorMetrics,
     phantom: PhantomData<ST>,
 }
 
@@ -296,7 +296,6 @@ where
             val_set_update_interval,
 
             waker: None,
-            metrics: Default::default(),
             phantom: PhantomData,
         }
     }
@@ -370,6 +369,7 @@ where
     EPT::FinalizedHeader: MockableFinalizedHeader,
 {
     type Command = StateRootHashCommand;
+    type Metrics = ();
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut wake = false;
@@ -413,14 +413,13 @@ where
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
-        self.metrics.as_ref().into()
+    fn metrics(&self) -> &Self::Metrics {
+        &()
     }
 }
 
 impl<ST, SCT, EPT> Stream for MockStateRootHashSwap<ST, SCT, EPT>
 where
-    Self: Unpin,
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,

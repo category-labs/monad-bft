@@ -194,9 +194,8 @@ message ProtoReloadConfigEvent {
 }
 
 message ProtoControlPanelEvent {
-  reserved 7,9;
+  reserved 2,7,9;
   oneof event {
-    ProtoClearMetricsEvent clear_metrics_event = 2;
     ProtoUpdateLogFilter update_log_filter = 4;
     ProtoGetMetricsEvent get_metrics_event = 5;
     ProtoGetPeersEvent get_peers_event = 6;

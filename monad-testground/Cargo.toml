@@ -18,7 +18,6 @@ monad-control-panel = { workspace = true }
 monad-crypto = { workspace = true }
 monad-dataplane = { workspace = true }
 monad-eth-types = { path = "../monad-eth-types" }
-monad-executor = { workspace = true }
 monad-executor-glue = { workspace = true }
 monad-peer-discovery = { workspace = true }
 monad-raptorcast = { workspace = true }

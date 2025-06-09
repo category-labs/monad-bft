@@ -18,19 +18,19 @@ monad-crypto = { workspace = true }
 monad-eth-block-policy = { workspace = true }
 monad-eth-block-validator = { workspace = true }
 monad-eth-txpool-executor = { workspace = true }
-monad-executor = { workspace = true }
 monad-executor-glue = { workspace = true }
 monad-keystore = { workspace = true }
 monad-ledger = { workspace = true }
+monad-metrics = { workspace = true }
 monad-node-config = { workspace = true, features = ["crypto"] }
 monad-peer-discovery = { workspace = true }
+monad-pprof = { workspace = true }
 monad-raptorcast = { workspace = true }
 monad-router-filter = { workspace = true, optional = true }
 monad-secp = { workspace = true }
 monad-state = { workspace = true }
 monad-state-backend = { workspace = true }
 monad-statesync = { workspace = true }
-monad-pprof = { workspace = true }
 monad-triedb-cache = { workspace = true }
 monad-triedb-utils = { workspace = true }
 monad-types = { workspace = true }
@@ -47,7 +47,7 @@ hex = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 opentelemetry-otlp = { workspace = true, features = ["metrics", "grpc-tonic"] }
-opentelemetry-semantic-conventions = { workspace = true }
+opentelemetry-semantic-conventions = { workspace = true, features = ["semconv_experimental"] }
 rayon = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }

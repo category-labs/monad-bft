@@ -16,7 +16,8 @@ use monad_consensus_types::{
 use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_eip1559_tx, make_legacy_tx, recover_tx};
-use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
+use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker};
+use monad_eth_txpool_metrics::PoolTxPoolMetrics;
 use monad_eth_txpool_types::EthTxPoolSnapshot;
 use monad_eth_types::{Balance, BASE_FEE_PER_GAS};
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
@@ -124,7 +125,7 @@ fn run_custom_iter<const N: usize>(
     };
 
     let mut pool = EthTxPool::default_testing();
-    let mut metrics = EthTxPoolMetrics::default();
+    let mut metrics = PoolTxPoolMetrics::default();
     let mut ipc_events = Vec::default();
     let mut event_tracker = EthTxPoolEventTracker::new(&mut metrics, &mut ipc_events);
 

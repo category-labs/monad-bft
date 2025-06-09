@@ -23,10 +23,14 @@ use monad_crypto::{
     hasher::Hash,
 };
 use monad_eth_types::EthExecutionProtocol;
-use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
+use monad_executor::Executor;
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
 use monad_types::{BlockId, Round, SeqNum, GENESIS_ROUND};
 use tracing::{info, trace, warn};
+
+pub use self::metrics::LedgerMetrics;
+
+mod metrics;
 
 /// A ledger for committed Ethereum blocks
 /// Blocks are RLP encoded and written to their own individual file, named by the block
@@ -38,7 +42,7 @@ where
 {
     bft_block_persist: FileBlockPersist<ST, SCT, EthExecutionProtocol>,
 
-    metrics: ExecutorMetrics,
+    metrics: LedgerMetrics,
     last_commit: Option<(SeqNum, Round)>,
 
     block_cache_size: usize,
@@ -57,10 +61,6 @@ where
 
     phantom: PhantomData<ST>,
 }
-
-const GAUGE_EXECUTION_LEDGER_NUM_COMMITS: &str = "monad.execution_ledger.num_commits";
-const GAUGE_EXECUTION_LEDGER_NUM_TX_COMMITS: &str = "monad.execution_ledger.num_tx_commits";
-const GAUGE_EXECUTION_LEDGER_BLOCK_NUM: &str = "monad.execution_ledger.block_num";
 
 impl<ST, SCT> MonadBlockFileLedger<ST, SCT>
 where
@@ -121,7 +121,7 @@ where
         Self {
             bft_block_persist,
 
-            metrics: Default::default(),
+            metrics: LedgerMetrics::default(),
             last_commit,
 
             block_cache_size: 1_000, // TODO configurable
@@ -265,6 +265,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     type Command = LedgerCommand<ST, SCT, EthExecutionProtocol>;
+    type Metrics = LedgerMetrics;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
@@ -315,15 +316,15 @@ where
                     self.mark_proposed(&block_id.0 .0).unwrap();
                 }
                 LedgerCommand::LedgerCommit(OptimisticCommit::Finalized(block)) => {
-                    self.metrics[GAUGE_EXECUTION_LEDGER_NUM_COMMITS] += 1;
+                    self.metrics.num_commits.inc();
 
                     let block_id = block.get_id();
                     let block_round = block.get_round();
                     let num_tx = block.body().execution_body.transactions.len() as u64;
                     let block_num = block.get_seq_num().0;
                     info!(num_tx, block_num, "committed block");
-                    self.metrics[GAUGE_EXECUTION_LEDGER_NUM_TX_COMMITS] += num_tx;
-                    self.metrics[GAUGE_EXECUTION_LEDGER_BLOCK_NUM] = block_num;
+                    self.metrics.num_tx_commits.add(num_tx);
+                    self.metrics.block_num.set(block_num);
 
                     if self
                         .last_commit
@@ -362,8 +363,8 @@ where
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
-        self.metrics.as_ref().into()
+    fn metrics(&self) -> &Self::Metrics {
+        &self.metrics
     }
 }
 
@@ -371,6 +372,8 @@ impl<ST, SCT> Stream for MonadBlockFileLedger<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+
+    Self: Unpin,
 {
     type Item = MonadEvent<ST, SCT, EthExecutionProtocol>;
 

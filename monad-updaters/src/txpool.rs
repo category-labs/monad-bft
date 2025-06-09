@@ -18,9 +18,10 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::EthBlockPolicy;
-use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
+use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker};
+use monad_eth_txpool_metrics::TxPoolMetrics;
 use monad_eth_types::EthExecutionProtocol;
-use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
+use monad_executor::Executor;
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_state_backend::StateBackend;
 use monad_types::ExecutionProtocol;
@@ -57,7 +58,10 @@ pub trait MockableTxPool:
     fn send_transaction(&mut self, tx: Bytes);
 }
 
-impl<T: MockableTxPool + ?Sized> MockableTxPool for Box<T> {
+impl<T> MockableTxPool for Box<T>
+where
+    T: MockableTxPool + ?Sized,
+{
     type Signature = T::Signature;
     type SignatureCollection = T::SignatureCollection;
     type ExecutionProtocol = T::ExecutionProtocol;
@@ -88,8 +92,7 @@ where
     events: VecDeque<MempoolEvent<SCT, EPT>>,
     waker: Option<Waker>,
 
-    metrics: EthTxPoolMetrics,
-    executor_metrics: ExecutorMetrics,
+    metrics: TxPoolMetrics,
 }
 
 impl<ST, SCT, BPT, SBT> Default for MockTxPoolExecutor<ST, SCT, MockExecutionProtocol, BPT, SBT>
@@ -105,8 +108,7 @@ where
             events: VecDeque::default(),
             waker: None,
 
-            metrics: EthTxPoolMetrics::default(),
-            executor_metrics: ExecutorMetrics::default(),
+            metrics: TxPoolMetrics::default(),
         }
     }
 }
@@ -117,15 +119,18 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend,
 {
-    pub fn new(block_policy: EthBlockPolicy<ST, SCT>, state_backend: SBT) -> Self {
+    pub fn new(
+        block_policy: EthBlockPolicy<ST, SCT>,
+        state_backend: SBT,
+        metrics: TxPoolMetrics,
+    ) -> Self {
         Self {
             eth: Some((EthTxPool::default_testing(), block_policy, state_backend)),
 
             events: VecDeque::default(),
             waker: None,
 
-            metrics: EthTxPoolMetrics::default(),
-            executor_metrics: ExecutorMetrics::default(),
+            metrics,
         }
     }
 }
@@ -138,6 +143,7 @@ where
     SBT: StateBackend,
 {
     type Command = TxPoolCommand<ST, SCT, MockExecutionProtocol, BPT, SBT>;
+    type Metrics = TxPoolMetrics;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
@@ -187,8 +193,8 @@ where
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
-        ExecutorMetricsChain::default()
+    fn metrics(&self) -> &Self::Metrics {
+        &self.metrics
     }
 }
 
@@ -200,12 +206,13 @@ where
     SBT: StateBackend,
 {
     type Command = TxPoolCommand<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT>;
+    type Metrics = TxPoolMetrics;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let (pool, block_policy, state_backend) = self.eth.as_mut().unwrap();
 
         let mut events = Vec::default();
-        let mut event_tracker = EthTxPoolEventTracker::new(&mut self.metrics, &mut events);
+        let mut event_tracker = EthTxPoolEventTracker::new(&mut self.metrics.pool, &mut events);
 
         for command in commands {
             match command {
@@ -295,12 +302,10 @@ where
                 TxPoolCommand::EnterRound { .. } => {}
             }
         }
-
-        self.metrics.update(&mut self.executor_metrics);
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
-        ExecutorMetricsChain::default().push(&self.executor_metrics)
+    fn metrics(&self) -> &Self::Metrics {
+        &self.metrics
     }
 }
 
@@ -395,7 +400,7 @@ where
         let tx = Recovered::new_unchecked(tx, signer);
 
         pool.insert_txs(
-            &mut EthTxPoolEventTracker::new(&mut self.metrics, &mut Vec::default()),
+            &mut EthTxPoolEventTracker::new(&mut self.metrics.pool, &mut Vec::default()),
             block_policy,
             state_backend,
             vec![tx],

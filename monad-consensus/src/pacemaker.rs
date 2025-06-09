@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
 
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::{
-    metrics::Metrics,
+    metrics::ConsensusEventsStateMetrics,
     quorum_certificate::QuorumCertificate,
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
@@ -320,12 +320,12 @@ where
         &mut self,
         tc: &TimeoutCertificate<SCT>,
         epoch_manager: &EpochManager,
-        metrics: &mut Metrics,
+        metrics: &mut ConsensusEventsStateMetrics,
     ) -> Vec<PacemakerCommand<SCT>> {
         if tc.round < self.current_round {
             return Default::default();
         }
-        metrics.consensus_events.enter_new_round_tc += 1;
+        metrics.enter_new_round_tc.inc();
         let new_round = tc.round + Round(1);
         let new_epoch = epoch_manager
             .get_epoch(new_round)
@@ -342,12 +342,12 @@ where
         &mut self,
         qc: &QuorumCertificate<SCT>,
         epoch_manager: &EpochManager,
-        metrics: &mut Metrics,
+        metrics: &mut ConsensusEventsStateMetrics,
     ) -> Vec<PacemakerCommand<SCT>> {
         if qc.get_round() < self.current_round {
             return Default::default();
         }
-        metrics.consensus_events.enter_new_round_qc += 1;
+        metrics.enter_new_round_qc.inc();
         self.last_round_tc = None;
         let new_round = qc.get_round() + Round(1);
         let new_epoch = epoch_manager

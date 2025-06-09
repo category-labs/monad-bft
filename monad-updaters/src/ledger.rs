@@ -18,7 +18,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_executor::{Executor, ExecutorMetricsChain};
+use monad_executor::Executor;
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
 use monad_state_backend::{InMemoryState, StateBackendTest};
 use monad_types::{BlockId, ExecutionProtocol, Round, SeqNum};
@@ -50,7 +50,10 @@ pub trait MockableLedger:
     >;
 }
 
-impl<T: MockableLedger + ?Sized> MockableLedger for Box<T> {
+impl<T> MockableLedger for Box<T>
+where
+    T: MockableLedger + ?Sized,
+{
     type Signature = T::Signature;
     type SignatureCollection = T::SignatureCollection;
     type ExecutionProtocol = T::ExecutionProtocol;
@@ -152,6 +155,7 @@ where
     EPT: ExecutionProtocol,
 {
     type Command = LedgerCommand<ST, SCT, EPT>;
+    type Metrics = ();
 
     fn exec(&mut self, cmds: Vec<Self::Command>) {
         for cmd in cmds {
@@ -209,8 +213,8 @@ where
             }
         }
     }
-    fn metrics(&self) -> ExecutorMetricsChain {
-        Default::default()
+    fn metrics(&self) -> &Self::Metrics {
+        &()
     }
 }
 

@@ -20,7 +20,6 @@ use monad_crypto::certificate_signature::{
 };
 use monad_dataplane::udp::DEFAULT_MTU;
 use monad_eth_types::Balance;
-use monad_executor::Executor;
 use monad_peer_discovery::mock::NopDiscoveryBuilder;
 use monad_raptorcast::RaptorCastConfig;
 use monad_secp::SecpSignature;
@@ -37,7 +36,7 @@ use tracing_subscriber::{
     EnvFilter, Registry,
 };
 
-use crate::executor::{
+use self::executor::{
     make_monad_executor, make_monad_state, ExecutorConfig, RouterConfig, StateConfig,
 };
 

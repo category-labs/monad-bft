@@ -1,7 +1,8 @@
 use common::SignatureType;
 use criterion::{criterion_group, criterion_main, Criterion};
 use monad_eth_block_policy::EthBlockPolicy;
-use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
+use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker};
+use monad_eth_txpool_metrics::PoolTxPoolMetrics;
 use monad_types::GENESIS_SEQ_NUM;
 
 use self::common::{run_txpool_benches, BenchController, SignatureCollectionType, EXECUTION_DELAY};
@@ -36,7 +37,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         |(pool, txs, state_backend)| {
             pool.insert_txs(
                 &mut EthTxPoolEventTracker::new(
-                    &mut EthTxPoolMetrics::default(),
+                    &mut PoolTxPoolMetrics::default(),
                     &mut Vec::default(),
                 ),
                 &block_policy,

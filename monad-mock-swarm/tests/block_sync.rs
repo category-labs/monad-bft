@@ -7,12 +7,13 @@ mod test {
     use itertools::Itertools;
     use monad_chain_config::{revision::ChainParams, MockChainConfig};
     use monad_consensus_types::{
-        block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
+        block::PassthruBlockPolicy, block_validator::MockValidator, metrics::StateMetrics,
     };
     use monad_crypto::certificate_signature::CertificateKeyPair;
     use monad_eth_types::Balance;
+    use monad_metrics::Counter;
     use monad_mock_swarm::{
-        fetch_metric,
+        fetch_metric_counter,
         mock::TimestamperConfig,
         mock_swarm::{Nodes, SwarmBuilder},
         node::NodeBuilder,
@@ -59,6 +60,7 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(Balance::MAX, SeqNum::MAX),
+            StateMetrics::default,
             SeqNum::MAX,                         // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -182,6 +184,7 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(Balance::MAX, SeqNum::MAX),
+            StateMetrics::default,
             SeqNum::MAX,                         // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -267,6 +270,7 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(Balance::MAX, SeqNum::MAX),
+            StateMetrics::default,
             SeqNum::MAX,                         // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -353,24 +357,24 @@ mod test {
         verifier
             .metric_exact(
                 &running_nodes_ids,
-                fetch_metric!(blocksync_events.self_headers_request),
+                fetch_metric_counter!(blocksync_events.self_headers_request),
                 0,
             )
             .metric_exact(
                 &running_nodes_ids,
-                fetch_metric!(blocksync_events.self_payload_request),
+                fetch_metric_counter!(blocksync_events.self_payload_request),
                 0,
             )
             // handle proposal for all blocks in ledger
             .metric_minimum(
                 &running_nodes_ids,
-                fetch_metric!(consensus_events.handle_proposal),
+                fetch_metric_counter!(consensus_events.handle_proposal),
                 ledger_len as u64,
             )
             // vote for all blocks in ledger
             .metric_minimum(
                 &running_nodes_ids,
-                fetch_metric!(consensus_events.created_vote),
+                fetch_metric_counter!(consensus_events.created_vote),
                 ledger_len as u64,
             );
 
@@ -407,6 +411,7 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(Balance::MAX, SeqNum::MAX),
+            StateMetrics::default,
             SeqNum::MAX,                         // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -490,24 +495,24 @@ mod test {
         verifier
             .metric_exact(
                 &running_nodes_ids,
-                fetch_metric!(blocksync_events.self_headers_request),
+                fetch_metric_counter!(blocksync_events.self_headers_request),
                 0,
             )
             .metric_exact(
                 &running_nodes_ids,
-                fetch_metric!(blocksync_events.self_payload_request),
+                fetch_metric_counter!(blocksync_events.self_payload_request),
                 0,
             )
             // handle proposal for all blocks in ledger
             .metric_minimum(
                 &running_nodes_ids,
-                fetch_metric!(consensus_events.handle_proposal),
+                fetch_metric_counter!(consensus_events.handle_proposal),
                 ledger_len as u64,
             )
             // vote for all blocks in ledger
             .metric_minimum(
                 &running_nodes_ids,
-                fetch_metric!(consensus_events.created_vote),
+                fetch_metric_counter!(consensus_events.created_vote),
                 ledger_len as u64,
             );
 

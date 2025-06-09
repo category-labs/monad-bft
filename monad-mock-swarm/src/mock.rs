@@ -13,7 +13,7 @@ use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use monad_consensus_types::checkpoint::Checkpoint;
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
-use monad_executor::{Executor, ExecutorMetricsChain};
+use monad_executor::Executor;
 use monad_executor_glue::{
     Command, Message, MonadEvent, RouterCommand, TimeoutVariant, TimerCommand, TimestampCommand,
 };
@@ -264,22 +264,25 @@ impl<S: SwarmRelation> MockExecutor<S> {
     }
 }
 
-impl<S: SwarmRelation> Executor for MockExecutor<S> {
-    type Command = Command<
-        MonadEvent<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>,
-        VerifiedMonadMessage<
-            S::SignatureType,
-            S::SignatureCollectionType,
-            S::ExecutionProtocolType,
+impl<S: SwarmRelation> MockExecutor<S> {
+    pub fn exec(
+        &mut self,
+        commands: Vec<
+            Command<
+                MonadEvent<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>,
+                VerifiedMonadMessage<
+                    S::SignatureType,
+                    S::SignatureCollectionType,
+                    S::ExecutionProtocolType,
+                >,
+                S::SignatureType,
+                S::SignatureCollectionType,
+                S::ExecutionProtocolType,
+                S::BlockPolicyType,
+                S::StateBackendType,
+            >,
         >,
-        S::SignatureType,
-        S::SignatureCollectionType,
-        S::ExecutionProtocolType,
-        S::BlockPolicyType,
-        S::StateBackendType,
-    >;
-
-    fn exec(&mut self, commands: Vec<Self::Command>) {
+    ) {
         let (
             router_cmds,
             timer_cmds,
@@ -292,7 +295,7 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
             loopback_cmds,
             statesync_cmds,
             _config_reload_cmds,
-        ) = Self::Command::split_commands(commands);
+        ) = Command::split_commands(commands);
 
         for command in timer_cmds {
             match command {
@@ -353,11 +356,6 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
                 }
             }
         }
-    }
-
-    fn metrics(&self) -> ExecutorMetricsChain {
-        // TODO do we want to see executor metrics in mock?
-        Default::default()
     }
 }
 
@@ -459,6 +457,7 @@ where
     E: PartialEq + Eq,
 {
     type Command = TimerCommand<E>;
+    type Metrics = ();
 
     fn exec(&mut self, commands: Vec<TimerCommand<E>>) {
         let mut wake = false;
@@ -487,8 +486,8 @@ where
             }
         }
     }
-    fn metrics(&self) -> ExecutorMetricsChain {
-        Default::default()
+    fn metrics(&self) -> &Self::Metrics {
+        &()
     }
 }
 impl<E> Stream for MockTimer<E>

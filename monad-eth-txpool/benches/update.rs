@@ -1,7 +1,8 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::generate_block_with_txs;
-use monad_eth_txpool::{EthTxPoolEventTracker, EthTxPoolMetrics};
+use monad_eth_txpool::EthTxPoolEventTracker;
+use monad_eth_txpool_metrics::PoolTxPoolMetrics;
 use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
 
 use self::common::{run_txpool_benches, BenchController, EXECUTION_DELAY};
@@ -25,7 +26,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             );
             assert!(pending_txs.is_empty());
 
-            let mut metrics = EthTxPoolMetrics::default();
+            let mut metrics = PoolTxPoolMetrics::default();
 
             let pool = BenchController::create_pool(&block_policy, Vec::default(), &mut metrics);
 

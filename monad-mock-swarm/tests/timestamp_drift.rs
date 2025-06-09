@@ -2,7 +2,9 @@ use std::{collections::BTreeSet, time::Duration};
 
 use itertools::Itertools;
 use monad_chain_config::{revision::ChainParams, MockChainConfig};
-use monad_consensus_types::{block::PassthruBlockPolicy, block_validator::MockValidator};
+use monad_consensus_types::{
+    block::PassthruBlockPolicy, block_validator::MockValidator, metrics::StateMetrics,
+};
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_eth_types::Balance;
 use monad_mock_swarm::{
@@ -46,6 +48,7 @@ fn drift_one_node() {
         || MockValidator,
         || PassthruBlockPolicy,
         || InMemoryStateInner::genesis(Balance::MAX, SeqNum(4)),
+        StateMetrics::default,
         SeqNum(4),                           // execution_delay
         delta,                               // delta
         MockChainConfig::new(&CHAIN_PARAMS), // chain config

@@ -9,6 +9,7 @@ use monad_chain_config::{
 use monad_consensus_types::{
     block::{MockExecutionProtocol, PassthruBlockPolicy},
     block_validator::MockValidator,
+    metrics::StateMetrics,
 };
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_eth_types::Balance;
@@ -114,6 +115,7 @@ fn two_nodes_bls() {
         || MockValidator,
         || PassthruBlockPolicy,
         || InMemoryStateInner::genesis(Balance::MAX, SeqNum(4)),
+        StateMetrics::default,
         SeqNum(4),                           // execution_delay
         delta,                               // delta
         MockChainConfig::new(&CHAIN_PARAMS), // chain config

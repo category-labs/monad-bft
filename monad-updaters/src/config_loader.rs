@@ -53,11 +53,12 @@ where
     SCT: SignatureCollection,
 {
     type Command = ConfigReloadCommand;
+    type Metrics = ();
 
     fn exec(&mut self, _commands: Vec<Self::Command>) {}
 
-    fn metrics(&self) -> monad_executor::ExecutorMetricsChain {
-        Default::default()
+    fn metrics(&self) -> &Self::Metrics {
+        &()
     }
 }
 
@@ -217,6 +218,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     type Command = ConfigReloadCommand;
+    type Metrics = ();
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
@@ -228,8 +230,8 @@ where
         }
     }
 
-    fn metrics(&self) -> monad_executor::ExecutorMetricsChain {
-        Default::default()
+    fn metrics(&self) -> &Self::Metrics {
+        &()
     }
 }
 

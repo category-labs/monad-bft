@@ -7,12 +7,13 @@ use std::{
 use itertools::Itertools;
 use monad_chain_config::{revision::ChainParams, MockChainConfig};
 use monad_consensus_types::{
-    block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
+    block::PassthruBlockPolicy, block_validator::MockValidator, metrics::StateMetrics,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_eth_types::Balance;
+use monad_metrics::Counter;
 use monad_mock_swarm::{
-    fetch_metric, mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
+    fetch_metric_counter, mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
     swarm_relation::NoSerSwarm, terminator::UntilTerminator, verifier::MockSwarmVerifier,
 };
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
@@ -91,6 +92,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) -> Result<(), String>
         || MockValidator,
         || PassthruBlockPolicy,
         || InMemoryStateInner::genesis(Balance::MAX, SeqNum(1)),
+        StateMetrics::default,
         // due to the burst behavior of replay-transformer, its okay to
         // have delay as 1
         //
@@ -176,30 +178,30 @@ fn all_messages_delayed(direction: TransformerReplayOrder) -> Result<(), String>
     verifier_before_delayed_messages
         .metric_exact(
             &nodes_except_first,
-            fetch_metric!(blocksync_events.self_headers_request),
+            fetch_metric_counter!(blocksync_events.self_headers_request),
             0,
         )
         .metric_exact(
             &nodes_except_first,
-            fetch_metric!(blocksync_events.self_payload_request),
+            fetch_metric_counter!(blocksync_events.self_payload_request),
             0,
         )
         // handle proposal for all blocks in ledger
         .metric_minimum(
             &nodes_except_first,
-            fetch_metric!(consensus_events.handle_proposal),
+            fetch_metric_counter!(consensus_events.handle_proposal),
             longest_ledger_before as u64,
         )
         // vote for all blocks in ledger
         .metric_minimum(
             &nodes_except_first,
-            fetch_metric!(consensus_events.created_vote),
+            fetch_metric_counter!(consensus_events.created_vote),
             longest_ledger_before as u64,
         )
         // enter rounds using QC except round 2
         .metric_minimum(
             &nodes_except_first,
-            fetch_metric!(consensus_events.enter_new_round_qc),
+            fetch_metric_counter!(consensus_events.enter_new_round_qc),
             longest_ledger_before as u64 - 1,
         );
 
@@ -245,35 +247,35 @@ fn all_messages_delayed(direction: TransformerReplayOrder) -> Result<(), String>
     verifier_after_delayed_messages
         .metric_exact(
             &nodes_except_first,
-            fetch_metric!(blocksync_events.self_headers_request),
+            fetch_metric_counter!(blocksync_events.self_headers_request),
             0,
         )
         .metric_exact(
             &nodes_except_first,
-            fetch_metric!(blocksync_events.self_payload_request),
+            fetch_metric_counter!(blocksync_events.self_payload_request),
             0,
         )
         // handle proposal for all blocks in ledger
         .metric_minimum(
             &nodes_except_first,
-            fetch_metric!(consensus_events.handle_proposal),
+            fetch_metric_counter!(consensus_events.handle_proposal),
             longest_ledger_after as u64,
         )
         // vote for all blocks in ledger
         .metric_minimum(
             &nodes_except_first,
-            fetch_metric!(consensus_events.created_vote),
+            fetch_metric_counter!(consensus_events.created_vote),
             longest_ledger_after as u64,
         )
         // enter rounds using QC except round 2
         .metric_minimum(
             &nodes_except_first,
-            fetch_metric!(consensus_events.enter_new_round_qc),
+            fetch_metric_counter!(consensus_events.enter_new_round_qc),
             longest_ledger_after as u64 - 1,
         )
         .metric_range(
             &vec![first_node],
-            fetch_metric!(blocksync_events.self_headers_request),
+            fetch_metric_counter!(blocksync_events.self_headers_request),
             blocksync_requests_range.0 as u64,
             blocksync_requests_range.1 as u64,
         );

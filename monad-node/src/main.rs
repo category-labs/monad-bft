@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::BTreeSet,
     marker::PhantomData,
     net::{SocketAddr, SocketAddrV4, ToSocketAddrs},
     time::Duration,
@@ -9,11 +9,11 @@ use alloy_rlp::{Decodable, Encodable};
 use bytes::Bytes;
 use chrono::Utc;
 use clap::CommandFactory;
-use futures_util::{FutureExt, StreamExt};
+use futures_util::StreamExt;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
-    metrics::Metrics,
+    metrics::StateMetrics,
     signature_collection::SignatureCollection,
     validator_data::{ValidatorSetDataWithEpoch, ValidatorsConfig},
 };
@@ -24,7 +24,6 @@ use monad_crypto::certificate_signature::{
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
 use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig};
-use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
 use monad_ledger::MonadBlockFileLedger;
 use monad_node_config::{
@@ -46,9 +45,14 @@ use monad_types::{
     Deserializable, DropTimer, Epoch, NodeId, Round, SeqNum, Serializable, GENESIS_SEQ_NUM,
 };
 use monad_updaters::{
-    checkpoint::FileCheckpoint, config_loader::ConfigLoader, loopback::LoopbackExecutor,
-    parent::ParentExecutor, timer::TokioTimer, tokio_timestamp::TokioTimestamp,
-    triedb_state_root_hash::StateRootHashTriedbPoll, BoxUpdater, Updater,
+    checkpoint::FileCheckpoint,
+    config_loader::ConfigLoader,
+    loopback::LoopbackExecutor,
+    parent::{ParentExecutor, ParentExecutorMetrics},
+    timer::TokioTimer,
+    tokio_timestamp::TokioTimestamp,
+    triedb_state_root_hash::StateRootHashTriedbPoll,
+    BoxUpdater, Updater,
 };
 use monad_validator::{
     validator_set::ValidatorSetFactory, weighted_round_robin::WeightedRoundRobin,
@@ -190,7 +194,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         .collect();
 
     let current_epoch = node_state.forkpoint_config.high_qc.get_epoch();
-    let router: BoxUpdater<_, _> = {
+    let router: BoxUpdater<_, _, _> = {
         let raptor_router = build_raptorcast_router::<
             SignatureType,
             SignatureCollectionType,
@@ -386,6 +390,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         locked_epoch_validators,
         forkpoint: node_state.forkpoint_config.into(),
         block_sync_override_peers,
+        metrics: StateMetrics::default(),
         consensus_config: ConsensusConfig {
             execution_delay: SeqNum(node_state.node_config.consensus.execution_delay),
             delta: Duration::from_millis(node_state.node_config.network.max_rtt_ms / 2),
@@ -407,33 +412,134 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
 
     let mut ledger_span = tracing::info_span!("ledger_span", last_ledger_tip =? last_ledger_tip);
 
-    let (maybe_otel_meter_provider, mut maybe_metrics_ticker) = node_state
-        .otel_endpoint_interval
-        .map(|(otel_endpoint, record_metrics_interval)| {
-            let provider = build_otel_meter_provider(
-                &otel_endpoint,
-                format!(
-                    "{network_name}_{node_name}",
-                    network_name = node_state.node_config.network_name,
-                    node_name = node_state.node_config.node_name
-                ),
-                record_metrics_interval,
-            )
-            .expect("failed to build otel monad-node");
+    let _provider_meter =
+        node_state
+            .otel_endpoint_interval
+            .map(|(otel_endpoint, record_metrics_interval)| {
+                let provider = build_otel_meter_provider(
+                    &otel_endpoint,
+                    node_state.node_config.network_name,
+                    node_state.node_config.node_name,
+                    record_metrics_interval,
+                )
+                .expect("failed to build otel monad-node");
 
-            let mut timer = tokio::time::interval(record_metrics_interval);
+                let meter = provider.meter("opentelemetry");
 
-            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                let ParentExecutorMetrics {
+                    router,
+                    timer: &(),
+                    ledger,
+                    checkpoint: &(),
+                    state_root_hash: &(),
+                    timestamp: &(),
+                    txpool,
+                    control_panel: &(),
+                    loopback: &(),
+                    state_sync,
+                    config_loader: &(),
+                } = executor.metrics();
 
-            (provider, timer)
-        })
-        .unzip();
+                let mut on_counter = |name: &'static str, counter: &monad_metrics::Counter| {
+                    let counter = counter.clone();
 
-    let maybe_otel_meter = maybe_otel_meter_provider
-        .as_ref()
-        .map(|provider| provider.meter("opentelemetry"));
+                    meter
+                        .u64_observable_counter(name)
+                        .with_callback(move |metric| {
+                            metric.observe(counter.read(), &[]);
+                        })
+                        .build();
+                };
 
-    let mut gauge_cache = HashMap::new();
+                let mut on_counter_labeled =
+                    |name: &'static str,
+                     label: &'static str,
+                     variants: &[(&'static str, &monad_metrics::Counter)]| {
+                        let variants = variants
+                            .iter()
+                            .map(|(name, counter)| (*name, (*counter).clone()))
+                            .collect::<Vec<_>>();
+
+                        meter
+                            .u64_observable_counter(name)
+                            .with_callback(move |metric| {
+                                for (variant, counter) in &variants {
+                                    metric.observe(
+                                        counter.read(),
+                                        &[opentelemetry::KeyValue::new(label, *variant)],
+                                    );
+                                }
+                            })
+                            .build();
+                    };
+
+                let mut on_gauge = |name: &'static str, gauge: &monad_metrics::Gauge| {
+                    let gauge = gauge.clone();
+
+                    meter
+                        .u64_observable_gauge(name)
+                        .with_callback(move |metric| {
+                            metric.observe(gauge.read(), &[]);
+                        })
+                        .build();
+                };
+
+                let mut on_gauge_labeled =
+                    |name: &'static str,
+                     label: &'static str,
+                     variants: &[(&'static str, &monad_metrics::Gauge)]| {
+                        let variants = variants
+                            .iter()
+                            .map(|(name, gauge)| (*name, (*gauge).clone()))
+                            .collect::<Vec<_>>();
+
+                        meter
+                            .u64_observable_gauge(name)
+                            .with_callback(move |metric| {
+                                for (variant, gauge) in &variants {
+                                    metric.observe(
+                                        gauge.read(),
+                                        &[opentelemetry::KeyValue::new(label, *variant)],
+                                    );
+                                }
+                            })
+                            .build();
+                    };
+
+                router.for_each(
+                    &mut on_counter,
+                    &mut on_counter_labeled,
+                    &mut on_gauge,
+                    &mut on_gauge_labeled,
+                );
+                ledger.for_each(
+                    &mut on_counter,
+                    &mut on_counter_labeled,
+                    &mut on_gauge,
+                    &mut on_gauge_labeled,
+                );
+                txpool.for_each(
+                    &mut on_counter,
+                    &mut on_counter_labeled,
+                    &mut on_gauge,
+                    &mut on_gauge_labeled,
+                );
+                state_sync.for_each(
+                    &mut on_counter,
+                    &mut on_counter_labeled,
+                    &mut on_gauge,
+                    &mut on_gauge_labeled,
+                );
+
+                state.metrics().for_each(
+                    &mut on_counter,
+                    &mut on_counter_labeled,
+                    &mut on_gauge,
+                    &mut on_gauge_labeled,
+                );
+
+                (provider, meter)
+            });
 
     let mut sigterm = signal(SignalKind::terminate()).expect("in tokio rt");
     let mut sigint = signal(SignalKind::interrupt()).expect("in tokio rt");
@@ -449,15 +555,6 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
             result = sigint.recv() => {
                 info!(?result, "received SIGINT, exiting...");
                 break;
-            }
-            _ = match &mut maybe_metrics_ticker {
-                Some(ticker) => ticker.tick().boxed(),
-                None => futures_util::future::pending().boxed(),
-            } => {
-                let otel_meter = maybe_otel_meter.as_ref().expect("otel_endpoint must have been set");
-                let state_metrics = state.metrics();
-                let executor_metrics = executor.metrics();
-                send_metrics(otel_meter, &mut gauge_cache, state_metrics, executor_metrics);
             }
             event = executor.next().instrument(ledger_span.clone()) => {
                 let Some(event) = event else {
@@ -689,27 +786,10 @@ fn resolve_domain_v4<P: PubKey>(node_id: &NodeId<P>, domain: &String) -> Option<
     None
 }
 
-fn send_metrics(
-    meter: &opentelemetry::metrics::Meter,
-    gauge_cache: &mut HashMap<&'static str, opentelemetry::metrics::Gauge<u64>>,
-    state_metrics: &Metrics,
-    executor_metrics: ExecutorMetricsChain,
-) {
-    for (k, v) in state_metrics
-        .metrics()
-        .into_iter()
-        .chain(executor_metrics.into_inner())
-    {
-        let gauge = gauge_cache
-            .entry(k)
-            .or_insert_with(|| meter.u64_gauge(k).build());
-        gauge.record(v, &[]);
-    }
-}
-
 fn build_otel_meter_provider(
     otel_endpoint: &str,
-    service_name: String,
+    network_name: String,
+    node_name: String,
     interval: Duration,
 ) -> Result<opentelemetry_sdk::metrics::SdkMeterProvider, NodeSetupError> {
     let exporter = MetricExporter::builder()
@@ -728,8 +808,16 @@ fn build_otel_meter_provider(
             opentelemetry_sdk::Resource::builder_empty()
                 .with_attributes(vec![
                     opentelemetry::KeyValue::new(
+                        opentelemetry_semantic_conventions::resource::SERVICE_NAMESPACE,
+                        network_name,
+                    ),
+                    opentelemetry::KeyValue::new(
                         opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-                        service_name,
+                        "monad_bft",
+                    ),
+                    opentelemetry::KeyValue::new(
+                        opentelemetry_semantic_conventions::resource::SERVICE_INSTANCE_ID,
+                        node_name,
                     ),
                     opentelemetry::KeyValue::new(
                         opentelemetry_semantic_conventions::resource::SERVICE_VERSION,

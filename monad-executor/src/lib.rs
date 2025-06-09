@@ -1,19 +1,17 @@
-mod metrics;
-pub mod timed_event;
-
 use std::{ops::DerefMut, pin::Pin};
 
-pub use metrics::{ExecutorMetrics, ExecutorMetricsChain};
+pub mod timed_event;
 
 /// An Executor executes Commands
 /// Commands generally are output by State
 pub trait Executor {
     type Command;
+    type Metrics;
 
     fn exec(&mut self, commands: Vec<Self::Command>);
-    fn metrics(&self) -> ExecutorMetricsChain;
+    fn metrics(&self) -> &Self::Metrics;
 
-    fn boxed<'a>(self) -> BoxExecutor<'a, Self::Command>
+    fn boxed<'a>(self) -> BoxExecutor<'a, Self::Command, Self::Metrics>
     where
         Self: Sized + Send + Unpin + 'a,
     {
@@ -21,14 +19,18 @@ pub trait Executor {
     }
 }
 
-impl<E: Executor + ?Sized> Executor for Box<E> {
+impl<E> Executor for Box<E>
+where
+    E: Executor + ?Sized,
+{
     type Command = E::Command;
+    type Metrics = E::Metrics;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         (**self).exec(commands)
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
+    fn metrics(&self) -> &Self::Metrics {
         (**self).metrics()
     }
 }
@@ -39,17 +41,19 @@ where
     P::Target: Executor + Unpin,
 {
     type Command = <P::Target as Executor>::Command;
+    type Metrics = <P::Target as Executor>::Metrics;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         Pin::get_mut(Pin::as_mut(self)).exec(commands)
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
+    fn metrics(&self) -> &Self::Metrics {
         Pin::get_ref(Pin::as_ref(self)).metrics()
     }
 }
 
-pub type BoxExecutor<'a, C> = Pin<Box<dyn Executor<Command = C> + Send + Unpin + 'a>>;
+pub type BoxExecutor<'a, C, M> =
+    Pin<Box<dyn Executor<Command = C, Metrics = M> + Send + Unpin + 'a>>;
 
 // State is updated by an event and can output a list of commands in order to apply
 // side-effects of the update.

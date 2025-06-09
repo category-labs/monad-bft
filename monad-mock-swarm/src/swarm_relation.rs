@@ -12,6 +12,7 @@ use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
     NopSignature,
 };
+use monad_eth_txpool_metrics::TxPoolMetrics;
 use monad_executor_glue::{
     LedgerCommand, MonadEvent, StateRootHashCommand, StateSyncCommand, TxPoolCommand,
 };
@@ -97,6 +98,7 @@ where
                 Self::SignatureCollectionType,
                 Self::ExecutionProtocolType,
             >,
+            Metrics = (),
         > + Send
         + Unpin;
 
@@ -129,6 +131,7 @@ where
                 Self::ExecutionProtocolType,
             >,
             SignatureCollection = Self::SignatureCollectionType,
+            Metrics = (),
         > + Send
         + Sync
         + Unpin;
@@ -143,6 +146,7 @@ where
                 Self::SignatureCollectionType,
                 Self::ExecutionProtocolType,
             >,
+            Metrics = TxPoolMetrics,
         > + Send
         + Sync
         + Unpin;
@@ -150,6 +154,7 @@ where
             Signature = Self::SignatureType,
             SignatureCollection = Self::SignatureCollectionType,
             ExecutionProtocol = Self::ExecutionProtocolType,
+            Metrics = (),
         > + Send
         + Sync
         + Unpin;
@@ -203,6 +208,7 @@ impl SwarmRelation for DebugSwarmRelation {
                     Self::SignatureCollectionType,
                     Self::ExecutionProtocolType,
                 >,
+                Metrics = (),
             > + Send
             + Sync,
     >;
@@ -245,6 +251,7 @@ impl SwarmRelation for DebugSwarmRelation {
                     Self::SignatureCollectionType,
                     Self::ExecutionProtocolType,
                 >,
+                Metrics = (),
             > + Send
             + Sync,
     >;
@@ -272,6 +279,7 @@ impl SwarmRelation for DebugSwarmRelation {
                     Self::SignatureCollectionType,
                     Self::ExecutionProtocolType,
                 >,
+                Metrics = TxPoolMetrics,
             > + Send
             + Sync,
     >;
@@ -281,6 +289,7 @@ impl SwarmRelation for DebugSwarmRelation {
                 SignatureCollection = Self::SignatureCollectionType,
                 ExecutionProtocol = Self::ExecutionProtocolType,
                 Command = StateSyncCommand<Self::SignatureType, Self::ExecutionProtocolType>,
+                Metrics = (),
             > + Send
             + Sync,
     >;

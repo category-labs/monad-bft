@@ -13,7 +13,6 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
 };
-use monad_executor::Executor;
 use monad_executor_glue::MonadEvent;
 use monad_state::{Forkpoint, MonadStateBuilder};
 use monad_transformer::{LinkMessage, Pipeline, ID};
@@ -127,6 +126,8 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 forkpoint: self.state_builder.forkpoint,
                 locked_epoch_validators: self.state_builder.locked_epoch_validators,
                 block_sync_override_peers: self.state_builder.block_sync_override_peers,
+                metrics: self.state_builder.metrics,
+
                 consensus_config: self.state_builder.consensus_config,
 
                 _phantom: PhantomData,

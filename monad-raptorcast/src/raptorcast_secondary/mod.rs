@@ -11,10 +11,6 @@ use std::{
     time::Duration,
 };
 
-mod client;
-pub mod group_message;
-mod publisher;
-
 use alloy_rlp::{Decodable, Encodable};
 use bytes::Bytes;
 use client::Client;
@@ -25,7 +21,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_dataplane::{udp::segment_size_for_mtu, Dataplane, UnicastMsg};
 // use monad_peer_discovery::{MonadNameRecord, NameRecord};
-use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
+use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
 use monad_types::{Deserializable, DropTimer, Epoch, NodeId, Serializable};
 use publisher::Publisher;
@@ -37,6 +33,11 @@ use super::{
     util::{BuildTarget, FullNodes, Group},
     RaptorCastEvent,
 };
+use crate::metrics::RaptorCastMetrics;
+
+mod client;
+pub mod group_message;
+mod publisher;
 
 // We're planning to merge monad-node (validator binary) and monad-full-node
 // (full node binary), so it's possible for a node to switch between roles at
@@ -77,7 +78,7 @@ where
     pending_events: VecDeque<RaptorCastEvent<M::Event, CertificateSignaturePubKey<ST>>>,
     channel_from_primary: Receiver<FullNodesGroupMessage<ST>>,
     waker: Option<Waker>,
-    metrics: ExecutorMetrics,
+    metrics: RaptorCastMetrics,
     _phantom: PhantomData<(OM, SE)>,
 }
 
@@ -233,6 +234,7 @@ where
     OM: Serializable<Bytes> + Into<M> + Clone + Encodable,
 {
     type Command = RouterCommand<CertificateSignaturePubKey<ST>, OM>;
+    type Metrics = RaptorCastMetrics;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
@@ -326,8 +328,8 @@ where
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
-        self.metrics.as_ref().into()
+    fn metrics(&self) -> &Self::Metrics {
+        &self.metrics
     }
 }
 impl<ST, M, OM, E> Stream for RaptorCastSecondary<ST, M, OM, E>

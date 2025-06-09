@@ -23,6 +23,7 @@ use monad_updaters::{
     local_router::LocalPeerRouter, loopback::LoopbackExecutor, parent::ParentExecutor,
     state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor, timer::TokioTimer,
     tokio_timestamp::TokioTimestamp, txpool::MockTxPoolExecutor, BoxUpdater, Updater,
+    VoidMetricUpdater,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use tracing_subscriber::EnvFilter;
@@ -73,16 +74,17 @@ pub fn make_monad_executor<ST, SCT>(
 ) -> ParentExecutor<
     BoxUpdater<
         'static,
+        MonadEvent<ST, SCT, MockExecutionProtocol>,
         RouterCommand<
             CertificateSignaturePubKey<ST>,
             VerifiedMonadMessage<ST, SCT, MockExecutionProtocol>,
         >,
-        MonadEvent<ST, SCT, MockExecutionProtocol>,
+        (),
     >,
     TokioTimer<MonadEvent<ST, SCT, MockExecutionProtocol>>,
     MockLedger<ST, SCT, MockExecutionProtocol>,
     MockCheckpoint<SCT>,
-    BoxUpdater<'static, StateRootHashCommand, MonadEvent<ST, SCT, MockExecutionProtocol>>,
+    BoxUpdater<'static, MonadEvent<ST, SCT, MockExecutionProtocol>, StateRootHashCommand, ()>,
     TokioTimestamp<ST, SCT, MockExecutionProtocol>,
     MockTxPoolExecutor<ST, SCT, MockExecutionProtocol, PassthruBlockPolicy, InMemoryState>,
     ControlPanelIpcReceiver<ST, SCT, MockExecutionProtocol>,
@@ -97,16 +99,18 @@ where
     <SCT as SignatureCollection>::SignatureType: Unpin,
 {
     let (_, reload_handle) = tracing_subscriber::reload::Layer::new(EnvFilter::from_default_env());
+
     ParentExecutor {
         router: match config.router_config {
             RouterConfig::Local(router) => Updater::boxed(router),
-            RouterConfig::RaptorCast(config) => Updater::boxed(RaptorCast::<
+            RouterConfig::RaptorCast(config) => VoidMetricUpdater::new(RaptorCast::<
                 ST,
                 MonadMessage<ST, SCT, MockExecutionProtocol>,
                 VerifiedMonadMessage<ST, SCT, MockExecutionProtocol>,
                 MonadEvent<ST, SCT, MockExecutionProtocol>,
                 NopDiscovery<ST>,
-            >::new(config)),
+            >::new(config))
+            .boxed(),
         },
         timer: TokioTimer::default(),
         ledger: match config.ledger_config {
@@ -213,6 +217,7 @@ where
         forkpoint,
         locked_epoch_validators,
         block_sync_override_peers: Default::default(),
+        metrics: Default::default(),
         consensus_config: config.consensus_config,
 
         _phantom: PhantomData,

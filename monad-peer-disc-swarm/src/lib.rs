@@ -125,6 +125,7 @@ impl<S: PeerDiscSwarmRelation> Executor for MockPeerDiscExecutor<S> {
         SwarmPubKeyType<S>,
         <S::RouterSchedulerType as RouterScheduler>::OutboundMessage,
     >;
+    type Metrics = ();
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for cmd in commands {
@@ -143,8 +144,8 @@ impl<S: PeerDiscSwarmRelation> Executor for MockPeerDiscExecutor<S> {
         }
     }
 
-    fn metrics(&self) -> monad_executor::ExecutorMetricsChain {
-        Default::default()
+    fn metrics(&self) -> &Self::Metrics {
+        &()
     }
 }
 

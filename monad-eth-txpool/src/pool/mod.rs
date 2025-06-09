@@ -66,6 +66,7 @@ where
             pending: PendingTxMap::default(),
             tracked: TrackedTxMap::new(soft_tx_expiry, hard_tx_expiry),
             proposal_gas_limit,
+
             max_code_size,
         }
     }

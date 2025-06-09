@@ -20,7 +20,7 @@ use monad_crypto::certificate_signature::{
 use monad_dataplane::{
     udp::segment_size_for_mtu, BroadcastMsg, Dataplane, DataplaneBuilder, TcpMsg, UnicastMsg,
 };
-use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
+use monad_executor::Executor;
 use monad_executor_glue::{
     ControlPanelEvent, GetFullNodes, GetPeers, Message, MonadEvent, RouterCommand,
 };
@@ -33,12 +33,17 @@ use monad_types::{
 };
 use tracing::{debug, error, warn};
 
+use self::{
+    metrics::RaptorCastMetrics,
+    util::{BuildTarget, EpochValidators, FullNodes, ReBroadcastGroupMap, Validator},
+};
+
 pub mod config;
 pub mod message;
+pub mod metrics;
 pub mod raptorcast_secondary;
 pub mod udp;
 pub mod util;
-use util::{BuildTarget, EpochValidators, FullNodes, ReBroadcastGroupMap, Validator};
 
 const SIGNATURE_SIZE: usize = 65;
 const PEER_DISCOVERY_ENABLED: bool = false;
@@ -94,7 +99,7 @@ where
     pending_events: VecDeque<RaptorCastEvent<M::Event, CertificateSignaturePubKey<ST>>>,
 
     waker: Option<Waker>,
-    metrics: ExecutorMetrics,
+    metrics: RaptorCastMetrics,
     _phantom: PhantomData<(OM, SE)>,
 }
 
@@ -147,7 +152,7 @@ where
             pending_events: Default::default(),
 
             waker: None,
-            metrics: Default::default(),
+            metrics: RaptorCastMetrics::default(),
             _phantom: PhantomData,
         }
     }
@@ -191,6 +196,7 @@ where
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
 {
     type Command = RouterCommand<CertificateSignaturePubKey<ST>, OM>;
+    type Metrics = RaptorCastMetrics;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let self_id = NodeId::new(self.key.pubkey());
@@ -375,8 +381,8 @@ where
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
-        self.metrics.as_ref().into()
+    fn metrics(&self) -> &Self::Metrics {
+        &self.metrics
     }
 }
 
@@ -440,6 +446,7 @@ where
     E: From<RaptorCastEvent<M::Event, CertificateSignaturePubKey<ST>>>,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     PeerDiscoveryDriver<PD>: Unpin,
+
     Self: Unpin,
 {
     type Item = E;

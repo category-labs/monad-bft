@@ -2204,6 +2204,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6245d59a3e82a7fc217c5828a6692dbc6dfb63a0c8c90495621f7b9d79704a0e"
 
 [[package]]
+name = "convert_case"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec182b0ca2f35d8fc196cf3404988fd8b8c739a4d270ff118a398feb0cbec1ca"
+dependencies = [
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "cookie"
 version = "0.16.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2564,7 +2573,7 @@ version = "0.99.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4fb810d30a7c1953f91334de7244731fc3f3c10d7fe163338a35b9f640960321"
 dependencies = [
- "convert_case",
+ "convert_case 0.4.0",
  "proc-macro2",
  "quote",
  "rustc_version 0.4.0",
@@ -4532,6 +4541,7 @@ dependencies = [
  "bytes",
  "hex",
  "monad-crypto",
+ "monad-metrics",
  "monad-proto",
  "monad-state-backend",
  "monad-types",
@@ -4752,9 +4762,9 @@ dependencies = [
  "monad-crypto",
  "monad-eth-block-policy",
  "monad-eth-testutil",
+ "monad-eth-txpool-metrics",
  "monad-eth-txpool-types",
  "monad-eth-types",
- "monad-executor",
  "monad-perf-util",
  "monad-state-backend",
  "monad-testutil",
@@ -4762,7 +4772,6 @@ dependencies = [
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "rayon",
- "serde",
  "tracing",
  "tracing-test",
 ]
@@ -4784,6 +4793,7 @@ dependencies = [
  "monad-eth-testutil",
  "monad-eth-txpool",
  "monad-eth-txpool-ipc",
+ "monad-eth-txpool-metrics",
  "monad-eth-txpool-types",
  "monad-eth-types",
  "monad-executor",
@@ -4792,7 +4802,6 @@ dependencies = [
  "monad-types",
  "pin-project",
  "rayon",
- "serde",
  "tokio",
  "tracing",
 ]
@@ -4810,6 +4819,13 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "monad-eth-txpool-metrics"
+version = "0.1.0"
+dependencies = [
+ "monad-metrics",
 ]
 
 [[package]]
@@ -4913,6 +4929,7 @@ dependencies = [
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
+ "monad-metrics",
  "monad-types",
  "tokio",
  "tracing",
@@ -4924,6 +4941,25 @@ version = "0.1.0"
 dependencies = [
  "monad-crypto",
  "serde",
+]
+
+[[package]]
+name = "monad-metrics"
+version = "0.1.0"
+dependencies = [
+ "monad-metrics-macro",
+]
+
+[[package]]
+name = "monad-metrics-macro"
+version = "0.1.0"
+dependencies = [
+ "convert_case 0.6.0",
+ "itertools 0.10.5",
+ "proc-macro2",
+ "quote",
+ "strum 0.26.1",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -4947,9 +4983,11 @@ dependencies = [
  "monad-eth-block-validator",
  "monad-eth-ledger",
  "monad-eth-testutil",
+ "monad-eth-txpool-metrics",
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
+ "monad-metrics",
  "monad-multi-sig",
  "monad-router-scheduler",
  "monad-secp",
@@ -5009,10 +5047,10 @@ dependencies = [
  "monad-eth-block-policy",
  "monad-eth-block-validator",
  "monad-eth-txpool-executor",
- "monad-executor",
  "monad-executor-glue",
  "monad-keystore",
  "monad-ledger",
+ "monad-metrics",
  "monad-node-config",
  "monad-peer-discovery",
  "monad-pprof",
@@ -5176,6 +5214,7 @@ dependencies = [
  "monad-executor",
  "monad-executor-glue",
  "monad-merkle",
+ "monad-metrics",
  "monad-peer-discovery",
  "monad-raptor",
  "monad-secp",
@@ -5360,6 +5399,7 @@ dependencies = [
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
+ "monad-metrics",
  "monad-types",
  "rand 0.8.5",
  "tempfile",
@@ -5381,7 +5421,6 @@ dependencies = [
  "monad-crypto",
  "monad-dataplane",
  "monad-eth-types",
- "monad-executor",
  "monad-executor-glue",
  "monad-peer-discovery",
  "monad-raptorcast",
@@ -5554,6 +5593,7 @@ dependencies = [
  "monad-crypto",
  "monad-eth-block-policy",
  "monad-eth-txpool",
+ "monad-eth-txpool-metrics",
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
@@ -5562,6 +5602,7 @@ dependencies = [
  "monad-triedb-utils",
  "monad-types",
  "ntest",
+ "pin-project",
  "rayon",
  "serde_json",
  "sorted-vec",

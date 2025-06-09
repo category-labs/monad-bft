@@ -5,7 +5,8 @@ use itertools::Itertools;
 use monad_crypto::NopSignature;
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, recover_tx};
-use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
+use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker};
+use monad_eth_txpool_metrics::PoolTxPoolMetrics;
 use monad_eth_types::{Balance, BASE_FEE_PER_GAS};
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
@@ -35,7 +36,7 @@ pub struct BenchController<'a> {
     pub state_backend: StateBackendType,
     pub pool: Pool,
     pub pending_blocks: Vec<EthValidatedBlock<SignatureType, SignatureCollectionType>>,
-    pub metrics: EthTxPoolMetrics,
+    pub metrics: PoolTxPoolMetrics,
     pub proposal_tx_limit: usize,
     pub proposal_gas_limit: u64,
     pub proposal_byte_limit: u64,
@@ -66,7 +67,7 @@ impl<'a> BenchController<'a> {
 
         let state_backend = Self::generate_state_backend_for_txs(&txs);
 
-        let mut metrics = EthTxPoolMetrics::default();
+        let mut metrics = PoolTxPoolMetrics::default();
         let pool = Self::create_pool(block_policy, txs, &mut metrics);
 
         Self {
@@ -90,7 +91,7 @@ impl<'a> BenchController<'a> {
     pub fn create_pool(
         block_policy: &BlockPolicyType,
         txs: Vec<Recovered<TxEnvelope>>,
-        metrics: &mut EthTxPoolMetrics,
+        metrics: &mut PoolTxPoolMetrics,
     ) -> Pool {
         let mut pool = Pool::default_testing();
 

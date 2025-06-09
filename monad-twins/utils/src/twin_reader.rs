@@ -17,6 +17,7 @@ use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::BlockPolicy,
     block_validator::BlockValidator,
+    metrics::StateMetrics,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     validator_data::{ValidatorSetData, ValidatorSetDataWithEpoch},
 };
@@ -134,7 +135,7 @@ where
                 epoch_start_delay: self.state_config.epoch_start_delay,
                 beneficiary: self.state_config.beneficiary,
                 block_sync_override_peers: self.state_config.block_sync_override_peers.clone(),
-
+                metrics: self.state_config.metrics.clone(),
                 consensus_config: self.state_config.consensus_config,
 
                 _phantom: PhantomData,
@@ -373,7 +374,7 @@ where
             epoch_start_delay: Round(50),
             beneficiary: Default::default(),
             block_sync_override_peers: Default::default(),
-
+            metrics: StateMetrics::default(),
             consensus_config: ConsensusConfig {
                 execution_delay: SeqNum(TWINS_STATE_ROOT_DELAY),
                 delta: Duration::from_millis(delta_ms),
