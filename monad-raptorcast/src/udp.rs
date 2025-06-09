@@ -670,37 +670,56 @@ where
                 "raptorcasting v2v message"
             );
 
-            // FIXME should self be included in total_stake?
-            let total_stake: i64 = epoch_validators
-                .view()
-                .values()
-                .map(|validator| validator.stake.0)
-                .sum();
-            let mut running_stake = 0;
-            let mut chunk_idx = 0_u16;
-            let mut nodes: Vec<_> = epoch_validators.view().iter().collect();
-            nodes.shuffle(&mut rand::thread_rng());
-            for (node_id, validator) in &nodes {
-                let start_idx: usize = (num_packets as i64 * running_stake / total_stake) as usize;
-                running_stake += validator.stake.0;
-                let end_idx: usize = (num_packets as i64 * running_stake / total_stake) as usize;
+            assert!(!epoch_validators.view().is_empty() || !full_nodes_view.view().is_empty());
 
-                if start_idx == end_idx {
-                    continue;
-                }
-                if let Some(addr) = known_addresses.get(node_id) {
-                    outbound_gso_idx.push((
-                        *addr,
-                        start_idx * segment_size as usize..end_idx * segment_size as usize,
-                    ));
-                } else {
-                    tracing::warn!(?node_id, "not sending message, address unknown")
-                }
-                for (chunk_symbol_id, chunk_data) in chunk_datas[start_idx..end_idx].iter_mut() {
-                    // populate chunk_recipient
-                    chunk_data[0..20].copy_from_slice(&compute_hash(node_id).0);
+            if epoch_validators.view().is_empty() {
+                // generate chunks and self-assign if we're the only validator
+                // and have downstream full nodes
+                let self_node_id_hash = compute_hash(&NodeId::new(key.pubkey()));
+                let mut chunk_idx = 0_u16;
+                for (chunk_symbol_id, chunk_data) in chunk_datas.iter_mut() {
+                    // use self (only validator) as chunk recipient
+                    chunk_data[0..20].copy_from_slice(&self_node_id_hash.0);
                     *chunk_symbol_id = Some(chunk_idx);
                     chunk_idx += 1;
+                }
+            } else {
+                // generate chunks if epoch validators is not empty
+                // FIXME should self be included in total_stake?
+                let total_stake: i64 = epoch_validators
+                    .view()
+                    .values()
+                    .map(|validator| validator.stake.0)
+                    .sum();
+                let mut running_stake = 0;
+                let mut chunk_idx = 0_u16;
+                let mut nodes: Vec<_> = epoch_validators.view().iter().collect();
+                nodes.shuffle(&mut rand::thread_rng());
+                for (node_id, validator) in &nodes {
+                    let start_idx: usize =
+                        (num_packets as i64 * running_stake / total_stake) as usize;
+                    running_stake += validator.stake.0;
+                    let end_idx: usize =
+                        (num_packets as i64 * running_stake / total_stake) as usize;
+
+                    if start_idx == end_idx {
+                        continue;
+                    }
+                    if let Some(addr) = known_addresses.get(node_id) {
+                        outbound_gso_idx.push((
+                            *addr,
+                            start_idx * segment_size as usize..end_idx * segment_size as usize,
+                        ));
+                    } else {
+                        tracing::warn!(?node_id, "not sending message, address unknown")
+                    }
+                    for (chunk_symbol_id, chunk_data) in chunk_datas[start_idx..end_idx].iter_mut()
+                    {
+                        // populate chunk_recipient
+                        chunk_data[0..20].copy_from_slice(&compute_hash(node_id).0);
+                        *chunk_symbol_id = Some(chunk_idx);
+                        chunk_idx += 1;
+                    }
                 }
             }
 

@@ -281,12 +281,16 @@ where
                             }
                             let epoch_validators_without_self =
                                 epoch_validators.view_without(vec![&self_id]);
-                            if epoch_validators_without_self.view().is_empty() {
-                                // this is degenerate case where the only validator is self
+                            let full_nodes_view = self.full_nodes.view();
+
+                            if epoch_validators_without_self.view().is_empty()
+                                && full_nodes_view.view().is_empty()
+                            {
+                                // this is degenerate case where the only
+                                // validator is self and we have no full nodes
+                                // to forward
                                 continue;
                             }
-
-                            let full_nodes_view = self.full_nodes.view();
 
                             let build_target = match &target {
                                 RouterTarget::Broadcast(_) => {
