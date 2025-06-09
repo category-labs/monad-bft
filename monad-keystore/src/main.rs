@@ -4,9 +4,9 @@
 /// `cargo run -- --mode create --key-type [bls|secp] --keystore-path <path_for_file_to_be_created>`
 use std::path::PathBuf;
 
+use bip32::XPrv;
 use bip39::{Language, Mnemonic, MnemonicType, Seed};
 use clap::{Parser, Subcommand, ValueEnum};
-use hdwallet::ExtendedPrivKey;
 use monad_bls::BlsKeyPair;
 use monad_secp::KeyPair;
 
@@ -99,9 +99,8 @@ fn main() {
 
             // get the HD wallet seed and the corresponding private key
             let seed = Seed::new(&mnemonic, "");
-            let master_private_key = ExtendedPrivKey::with_seed(seed.as_bytes())
-                .expect("Failed to create master private key");
-            let private_key = master_private_key.private_key.as_ref();
+            let root_xprv = XPrv::new(seed.as_bytes()).expect("Failed to derive root key");
+            let private_key = root_xprv.private_key().to_bytes();
             println!(
                 "Keep your private key securely: {:?}",
                 hex::encode(private_key)
@@ -109,11 +108,11 @@ fn main() {
 
             if let Some(key_type) = key_type {
                 // print public key
-                print_public_key(private_key, key_type);
+                print_public_key(&private_key, key_type);
             }
 
             // generate keystore json file
-            let result = Keystore::create_keystore_json(private_key, &password, &keystore_path);
+            let result = Keystore::create_keystore_json(&private_key, &password, &keystore_path);
             if result.is_ok() {
                 println!("Successfully generated keystore file.");
             } else {

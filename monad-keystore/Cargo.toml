@@ -18,9 +18,9 @@ monad-crypto = { workspace = true }
 monad-secp = { workspace = true }
 
 aes = { workspace = true }
+bip32 = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 ctr = { workspace = true }
-hdwallet = { workspace = true }
 hex = { workspace = true }
 pbkdf2 = { workspace = true, features = ["simple"] }
 rand = { workspace = true }
