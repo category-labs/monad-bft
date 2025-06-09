@@ -545,6 +545,14 @@ where
 
         while let Poll::Ready((from_addr, message)) = pin!(this.dataplane.tcp_read()).poll_unpin(cx)
         {
+            // check message length to prevent panic during message slicing
+            if message.len() < SIGNATURE_SIZE {
+                warn!(
+                    ?from_addr,
+                    "invalid message, message length less than signature size"
+                );
+                continue;
+            }
             let signature_bytes = &message[..SIGNATURE_SIZE];
             let signature = match ST::deserialize(signature_bytes) {
                 Ok(signature) => signature,
