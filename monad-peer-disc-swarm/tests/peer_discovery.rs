@@ -23,8 +23,9 @@ use monad_peer_discovery::{
         GAUGE_PEER_DISC_DROP_LOOKUP_RESPONSE, GAUGE_PEER_DISC_DROP_PONG,
         GAUGE_PEER_DISC_LOOKUP_TIMEOUT, GAUGE_PEER_DISC_PING_TIMEOUT,
         GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST, GAUGE_PEER_DISC_RECV_PING, GAUGE_PEER_DISC_RECV_PONG,
-        GAUGE_PEER_DISC_REFRESH, GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST, GAUGE_PEER_DISC_SEND_PING,
-        GAUGE_PEER_DISC_SEND_PONG, PeerDiscovery, PeerDiscoveryBuilder, PeerInfo,
+        GAUGE_PEER_DISC_RECV_TARGETED_LOOKUP_REQUEST, GAUGE_PEER_DISC_REFRESH,
+        GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST, GAUGE_PEER_DISC_SEND_PING, GAUGE_PEER_DISC_SEND_PONG,
+        PeerDiscovery, PeerDiscoveryBuilder, PeerInfo,
     },
 };
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
@@ -585,16 +586,30 @@ fn test_peer_lookup_random_nodes() {
 
 #[traced_test]
 #[test]
-fn test_peer_lookup_retry() {
+fn test_peer_lookup_targeted_nodes() {
     let keys = create_keys::<SignatureType>(3);
-    let node_a_key = &keys[0];
-    let node_a = NodeId::new(node_a_key.pubkey());
-    let node_b_key = &keys[1];
-    let node_b = NodeId::new(node_b_key.pubkey());
-    let node_c_key = &keys[2];
-    let node_c = NodeId::new(node_c_key.pubkey());
-    let (subset_keys, _) = (&keys[0..2], &keys[2]);
-    let all_peers: BTreeMap<NodeId<PubKeyType>, PeerInfo<SignatureType>> = subset_keys
+
+    let subset_keys = &keys[0..2];
+
+    let node_a = NodeId::new(keys[0].pubkey());
+    let node_b = NodeId::new(keys[1].pubkey());
+    let node_c = NodeId::new(keys[2].pubkey());
+
+    // initialize peer info
+    // NodeA name record: NodeB, NodeC
+    // NodeB name record: NodeA
+    // All three nodes are validators, NodeB is missing NodeC name record
+    let all_peers: BTreeMap<NodeId<PubKeyType>, PeerInfo<SignatureType>> = keys
+        .iter()
+        .map(|k| {
+            (NodeId::new(k.pubkey()), PeerInfo {
+                last_ping: None,
+                unresponsive_pings: 0,
+                name_record: generate_name_record(k),
+            })
+        })
+        .collect();
+    let node_b_peers: BTreeMap<NodeId<PubKeyType>, PeerInfo<SignatureType>> = keys[0..2]
         .iter()
         .map(|k| {
             (NodeId::new(k.pubkey()), PeerInfo {
@@ -617,7 +632,100 @@ fn test_peer_lookup_retry() {
                         self_id,
                         self_record: generate_name_record(key),
                         current_epoch: Epoch(1),
-                        epoch_validators: BTreeMap::new(),
+                        epoch_validators: BTreeMap::from([(
+                            Epoch(1),
+                            BTreeSet::from([node_a, node_b, node_c]),
+                        )]),
+                        dedicated_full_nodes: BTreeSet::new(),
+                        peer_info: if self_id == node_a {
+                            all_peers
+                                .clone()
+                                .into_iter()
+                                .filter(|(id, _)| id != &self_id)
+                                .collect::<BTreeMap<_, _>>()
+                        } else {
+                            node_b_peers
+                                .clone()
+                                .into_iter()
+                                .filter(|(id, _)| id != &self_id)
+                                .collect::<BTreeMap<_, _>>()
+                        },
+                        ping_period: Duration::from_secs(2),
+                        refresh_period: Duration::from_secs(10),
+                        request_timeout: Duration::from_secs(1),
+                        prune_threshold: 3,
+                        min_active_connections: 1,
+                        max_active_connections: 50,
+                        rng_seed: 123456,
+                    },
+                    router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
+                        .build(),
+                    seed: i.try_into().unwrap(),
+                    outbound_pipeline: vec![],
+                }
+            })
+            .collect(),
+        seed: 7,
+    };
+    let mut nodes = swarm_builder.build();
+    while nodes.step_until(Duration::from_secs(10)) {}
+
+    // NodeB has number of peers larger than min active connections but still missing validator NodeC
+    // NodeB should send targeted lookup request to NodeA asking for NodeC
+    for state in nodes.states().values() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
+        let metrics = state.metrics();
+        for node_id in all_peers.keys() {
+            if node_id == &state.self_id {
+                continue;
+            }
+            assert!(state.peer_info.contains_key(node_id));
+        }
+
+        if state.self_id == node_a {
+            assert_eq!(metrics[GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST], 1);
+            assert_eq!(metrics[GAUGE_PEER_DISC_RECV_TARGETED_LOOKUP_REQUEST], 1);
+        }
+    }
+}
+
+#[traced_test]
+#[test]
+fn test_peer_lookup_retry() {
+    let keys = create_keys::<SignatureType>(3);
+    let node_a_key = &keys[0];
+    let node_a = NodeId::new(node_a_key.pubkey());
+    let node_b_key = &keys[1];
+    let node_b = NodeId::new(node_b_key.pubkey());
+    let node_c_key = &keys[2];
+    let node_c = NodeId::new(node_c_key.pubkey());
+    let (subset_keys, _) = (&keys[0..2], &keys[2]);
+    let all_peers: BTreeMap<NodeId<PubKeyType>, PeerInfo<SignatureType>> = subset_keys
+        .iter()
+        .map(|k| {
+            (NodeId::new(k.pubkey()), PeerInfo {
+                last_ping: None,
+                unresponsive_pings: 0,
+                name_record: generate_name_record(k),
+            })
+        })
+        .collect();
+    let mut epoch_validators = BTreeMap::new();
+    epoch_validators.insert(Epoch(1), BTreeSet::from([node_a, node_b, node_c]));
+    let swarm_builder = PeerDiscSwarmBuilder::<PeerDiscSwarm, PeerDiscoveryBuilder<SignatureType>> {
+        builders: subset_keys
+            .iter()
+            .enumerate()
+            .map(|(i, key)| {
+                let self_id = NodeId::new(key.pubkey());
+                NodeBuilder {
+                    id: NodeId::new(key.pubkey()),
+                    addr: generate_name_record(key).address(),
+                    algo_builder: PeerDiscoveryBuilder {
+                        self_id,
+                        self_record: generate_name_record(key),
+                        current_epoch: Epoch(1),
+                        epoch_validators: epoch_validators.clone(),
                         dedicated_full_nodes: BTreeSet::new(),
                         peer_info: if self_id == node_a {
                             let mut info = BTreeMap::new();

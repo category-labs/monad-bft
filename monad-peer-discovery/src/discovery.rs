@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     net::SocketAddrV4,
     time::Duration,
 };
@@ -22,7 +22,7 @@ use crate::{
 
 /// Maximum number of peers to be included in a PeerLookupResponse
 const MAX_PEER_IN_RESPONSE: usize = 16;
-/// Number of peers to send lookup request to if fall below min active connections
+/// Number of peers to send lookup request to
 const NUM_LOOKUP_PEERS: usize = 3;
 
 /// Metrics constant
@@ -34,6 +34,10 @@ pub const GAUGE_PEER_DISC_RECV_PONG: &str = "monad.peer_disc.recv_pong";
 pub const GAUGE_PEER_DISC_DROP_PONG: &str = "monad.peer_disc.drop_pong";
 pub const GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST: &str = "monad.peer_disc.send_lookup_request";
 pub const GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST: &str = "monad.peer_disc.recv_lookup_request";
+pub const GAUGE_PEER_DISC_RECV_OPEN_LOOKUP_REQUEST: &str =
+    "monad.peer_disc.recv_open_lookup_request";
+pub const GAUGE_PEER_DISC_RECV_TARGETED_LOOKUP_REQUEST: &str =
+    "monad.peer_disc.recv_targeted_lookup_request";
 pub const GAUGE_PEER_DISC_RETRY_LOOKUP_REQUEST: &str = "monad.peer_disc.retry_lookup_request";
 pub const GAUGE_PEER_DISC_SEND_LOOKUP_RESPONSE: &str = "monad.peer_disc.send_lookup_response";
 pub const GAUGE_PEER_DISC_RECV_LOOKUP_RESPONSE: &str = "monad.peer_disc.recv_lookup_response";
@@ -472,6 +476,7 @@ where
 
         // if open discovery, return more nodes other than requested nodes
         if request.open_discovery {
+            self.metrics[GAUGE_PEER_DISC_RECV_OPEN_LOOKUP_REQUEST] += 1;
             // return random subset of validators (current and next epoch) up to MAX_PEER_IN_RESPONSE
             let current_epoch_validators = self.epoch_validators.get(&self.current_epoch);
             let next_epoch_validators = self.epoch_validators.get(&(self.current_epoch + Epoch(1)));
@@ -491,6 +496,8 @@ where
                     .into_iter()
                     .map(|(_, peer)| peer.name_record),
             );
+        } else {
+            self.metrics[GAUGE_PEER_DISC_RECV_TARGETED_LOOKUP_REQUEST] += 1;
         }
 
         let peer_lookup_response = PeerLookupResponse {
@@ -690,17 +697,39 @@ where
         }
         trace!("Current peer info: {:?}", self.peer_info);
 
-        // if fall below the min active peers, choose a few peers and lookup for new peers
+        let missing_validators = current_epoch_validators
+            .into_iter()
+            .flatten()
+            .chain(next_epoch_validators.into_iter().flatten())
+            .filter(|validator| {
+                !self.peer_info.contains_key(validator) && *validator != &self.self_id
+            })
+            .cloned()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .choose_multiple(&mut self.rng, NUM_LOOKUP_PEERS);
+
+        let chosen_peers = self
+            .peer_info
+            .keys()
+            .cloned()
+            .choose_multiple(&mut self.rng, NUM_LOOKUP_PEERS);
+
         if self.peer_info.len() < self.min_active_connections {
-            let chosen_peers = self
-                .peer_info
-                .keys()
-                .cloned()
-                .choose_multiple(&mut self.rng, NUM_LOOKUP_PEERS);
+            // if below the min active peers, choose a few peers and do open discovery
             debug!(?chosen_peers, "discover more peers");
 
-            for peer in chosen_peers {
-                cmds.extend(self.send_peer_lookup_request(peer, self.self_id, true));
+            for (validator_id, peer) in missing_validators.iter().zip(chosen_peers.iter()) {
+                cmds.extend(self.send_peer_lookup_request(*peer, *validator_id, true));
+            }
+        } else if !missing_validators.is_empty() {
+            // if already above the min active peers, send targeted peer lookup request for missing validators
+            for (validator_id, peer) in missing_validators.iter().zip(chosen_peers.iter()) {
+                debug!(
+                    ?validator_id,
+                    "sending targeted peer lookup for missing validator"
+                );
+                cmds.extend(self.send_peer_lookup_request(*peer, *validator_id, false));
             }
         }
 
@@ -1329,22 +1358,30 @@ mod tests {
 
     #[test]
     fn test_below_min_active_connections() {
-        let keys = create_keys::<SignatureType>(2);
+        let keys = create_keys::<SignatureType>(3);
         let peer0 = &keys[0];
         let peer0_pubkey = NodeId::new(peer0.pubkey());
         let peer1 = &keys[1];
         let peer1_pubkey = NodeId::new(peer1.pubkey());
+        let peer2 = &keys[2];
+        let peer2_pubkey = NodeId::new(peer2.pubkey());
 
         let peer_info = BTreeMap::from([(peer1_pubkey, PeerInfo {
             last_ping: None,
             unresponsive_pings: 0,
             name_record: generate_name_record(peer1, 0),
         })]);
+
+        let mut epoch_validators = BTreeMap::new();
+        epoch_validators.insert(
+            Epoch(1),
+            BTreeSet::from([peer0_pubkey, peer1_pubkey, peer2_pubkey]),
+        );
         let mut state: PeerDiscovery<SignatureType> = PeerDiscovery {
             self_id: peer0_pubkey,
             self_record: generate_name_record(peer0, 0),
             current_epoch: Epoch(1),
-            epoch_validators: BTreeMap::new(),
+            epoch_validators,
             dedicated_full_nodes: BTreeSet::new(),
             peer_info,
             outstanding_lookup_requests: HashMap::new(),
