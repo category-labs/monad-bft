@@ -19,6 +19,9 @@ where
     // fit into UDP datagrams for the raptorcast protocol.
     pub mtu: u16,
 
+    // Maximum age of UDP messages in milliseconds. Messages older than this will be rejected.
+    pub udp_message_max_age_ms: u64,
+
     // The primary instance owns the receive side of the UDP traffic used for
     // raptorcast and hence is mandatory in all configuration cases.
     pub primary_instance: RaptorCastConfigPrimary<ST>,
@@ -39,6 +42,7 @@ where
         RaptorCastConfig {
             shared_key: self.shared_key.clone(),
             mtu: self.mtu,
+            udp_message_max_age_ms: self.udp_message_max_age_ms,
             primary_instance: self.primary_instance.clone(),
             secondary_instance: self.secondary_instance.clone(),
         }

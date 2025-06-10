@@ -135,7 +135,7 @@ where
 
             current_epoch: Epoch(0),
 
-            udp_state: udp::UdpState::new(self_id),
+            udp_state: udp::UdpState::new(self_id, config.udp_message_max_age_ms),
             mtu: config.mtu,
 
             dataplane,
@@ -269,6 +269,7 @@ where
     let config = config::RaptorCastConfig {
         shared_key,
         mtu: DEFAULT_MTU,
+        udp_message_max_age_ms: u64::MAX, // No timestamp validation for tests
         primary_instance: Default::default(),
         secondary_instance: config::RaptorCastConfigSecondary {
             raptor10_redundancy: 2,

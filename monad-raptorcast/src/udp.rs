@@ -20,6 +20,7 @@ use monad_merkle::{MerkleHash, MerkleProof, MerkleTree};
 use monad_raptor::{ManagedDecoder, SOURCE_SYMBOLS_MIN};
 use monad_types::{Epoch, NodeId};
 use rand::seq::SliceRandom;
+use tracing::warn;
 
 use crate::{
     util::{
@@ -79,6 +80,7 @@ struct RecentlyDecodedState {
 
 pub(crate) struct UdpState<ST: CertificateSignatureRecoverable> {
     self_id: NodeId<CertificateSignaturePubKey<ST>>,
+    max_age_ms: u64,
 
     // TODO add a cap on max number of chunks that will be forwarded per message? so that a DOS
     // can't be induced by spamming broadcast chunks to any given node
@@ -106,9 +108,10 @@ where
 }
 
 impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
-    pub fn new(self_id: NodeId<CertificateSignaturePubKey<ST>>) -> Self {
+    pub fn new(self_id: NodeId<CertificateSignaturePubKey<ST>>, max_age_ms: u64) -> Self {
         Self {
             self_id,
+            max_age_ms,
 
             pending_message_cache: LruCache::unbounded(),
             signature_cache: LruCache::new(SIGNATURE_CACHE_SIZE),
@@ -148,7 +151,11 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 (payload_start_idx + usize::from(message.stride)).min(message.payload.len());
             let payload = message.payload.slice(payload_start_idx..payload_end_idx);
             // "message" here means a raptor-casted chunk (AKA r10 symbol), not the whole final message (proposal)
-            let parsed_message = match parse_message::<ST>(&mut self.signature_cache, payload) {
+            let parsed_message = match parse_message::<ST>(
+                &mut self.signature_cache,
+                payload,
+                self.max_age_ms,
+            ) {
                 Ok(message) => message,
                 Err(err) => {
                     tracing::debug!(src_addr = ?message.src_addr, ?err, "unable to parse message");
@@ -992,6 +999,11 @@ pub enum MessageValidationError {
     InvalidSignature,
     InvalidTreeDepth,
     InvalidMerkleProof,
+    InvalidTimestamp {
+        timestamp: u64,
+        max: u64,
+        delta: i64,
+    },
 }
 
 /// - 65 bytes => Signature of sender over hash(rest of message up to merkle proof, concatenated with merkle root)
@@ -1020,6 +1032,7 @@ pub fn parse_message<ST>(
         NodeId<CertificateSignaturePubKey<ST>>,
     >,
     message: Bytes,
+    max_age_ms: u64,
 ) -> Result<ValidatedMessage<CertificateSignaturePubKey<ST>>, MessageValidationError>
 where
     ST: CertificateSignatureRecoverable,
@@ -1060,6 +1073,8 @@ where
             .try_into()
             .expect("u64 is 8 bytes"),
     );
+
+    ensure_valid_timestamp(unix_ts_ms, max_age_ms)?;
 
     let cursor_app_message_hash = split_off(20)?;
     let app_message_hash: AppMessageHash = HexBytes(
@@ -1150,6 +1165,25 @@ where
         chunk_id,
         chunk: cursor_payload,
     })
+}
+
+fn ensure_valid_timestamp(unix_ts_ms: u64, max_age_ms: u64) -> Result<(), MessageValidationError> {
+    let current_time_ms = if let Ok(current_time_elapsed) = std::time::UNIX_EPOCH.elapsed() {
+        current_time_elapsed.as_millis() as u64
+    } else {
+        warn!("system time is before unix epoch, ignoring timestamp");
+        return Ok(());
+    };
+    let delta = (current_time_ms as i64).saturating_sub(unix_ts_ms as i64);
+    if delta.unsigned_abs() > max_age_ms {
+        Err(MessageValidationError::InvalidTimestamp {
+            timestamp: unix_ts_ms,
+            max: max_age_ms,
+            delta,
+        })
+    } else {
+        Ok(())
+    }
 }
 
 struct BroadcastBatch<PT: PubKey> {
@@ -1404,8 +1438,9 @@ mod tests {
     use monad_dataplane::{udp::DEFAULT_SEGMENT_SIZE, RecvUdpMsg};
     use monad_secp::{KeyPair, SecpSignature};
     use monad_types::{Epoch, NodeId, Stake};
+    use rstest::*;
 
-    use super::UdpState;
+    use super::{MessageValidationError, UdpState};
     use crate::{
         udp::{build_messages, parse_message, SIGNATURE_CACHE_SIZE},
         util::{
@@ -1486,7 +1521,7 @@ mod tests {
             while !aggregate_message.is_empty() {
                 let message = aggregate_message.split_to(DEFAULT_SEGMENT_SIZE.into());
                 let parsed_message =
-                    parse_message::<SignatureType>(&mut signature_cache, message.clone())
+                    parse_message::<SignatureType>(&mut signature_cache, message.clone(), u64::MAX)
                         .expect("valid message");
                 assert_eq!(parsed_message.message, message);
                 assert_eq!(parsed_message.app_message_hash.0, app_message_hash.0[..20]);
@@ -1533,6 +1568,7 @@ mod tests {
                     let maybe_parsed = parse_message::<SignatureType>(
                         &mut signature_cache,
                         message.clone().into(),
+                        u64::MAX,
                     );
 
                     // check that decoding fails
@@ -1575,7 +1611,7 @@ mod tests {
             while !aggregate_message.is_empty() {
                 let message = aggregate_message.split_to(DEFAULT_SEGMENT_SIZE.into());
                 let parsed_message =
-                    parse_message::<SignatureType>(&mut signature_cache, message.clone())
+                    parse_message::<SignatureType>(&mut signature_cache, message.clone(), u64::MAX)
                         .expect("valid message");
                 let newly_inserted = used_ids.insert(parsed_message.chunk_id);
                 assert!(newly_inserted);
@@ -1610,7 +1646,7 @@ mod tests {
             while !aggregate_message.is_empty() {
                 let message = aggregate_message.split_to(DEFAULT_SEGMENT_SIZE.into());
                 let parsed_message =
-                    parse_message::<SignatureType>(&mut signature_cache, message.clone())
+                    parse_message::<SignatureType>(&mut signature_cache, message.clone(), u64::MAX)
                         .expect("valid message");
                 let newly_inserted = used_ids
                     .entry(to)
@@ -1638,7 +1674,7 @@ mod tests {
             .collect();
         group_map.push_group_validator_set(node_stake_pairs, Epoch(1));
 
-        let mut udp_state = UdpState::<SignatureType>::new(self_id);
+        let mut udp_state = UdpState::<SignatureType>::new(self_id, u64::MAX);
 
         // payload will fail to parse but shouldn't panic on index error
         let payload: Bytes = vec![1_u8; 1024 * 8 + 1].into();
@@ -1654,5 +1690,53 @@ mod tests {
             |_payload, _stride| {},
             recv_msg,
         );
+    }
+
+    #[rstest]
+    #[case(-2 * 60 * 60 * 1000, u64::MAX, true)]
+    #[case(2 * 60 * 60 * 1000, u64::MAX, true)]
+    #[case(-2 * 60 * 60 * 1000, 0, false)]
+    #[case(2 * 60 * 60 * 1000, 0, false)]
+    #[case(-30_000, 60_000, true)]
+    #[case(-120_000, 60_000, false)]
+    #[case(120_000, 60_000, false)]
+    #[case(30_000, 60_000, true)]
+    #[case(-90_000, 60_000, false)]
+    #[case(90_000, 60_000, false)]
+    fn test_timestamp_validation(
+        #[case] timestamp_offset_ms: i64,
+        #[case] max_age_ms: u64,
+        #[case] should_succeed: bool,
+    ) {
+        let (key, mut validators, known_addresses) = validator_set();
+        let epoch_validators = validators.view_without(vec![&NodeId::new(key.pubkey())]);
+        let mut signature_cache = LruCache::new(SIGNATURE_CACHE_SIZE);
+
+        let current_time = std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as u64;
+        let test_timestamp = (current_time as i64 + timestamp_offset_ms) as u64;
+
+        let app_message = Bytes::from_static(b"test message");
+        let messages = build_messages::<SignatureType>(
+            &key,
+            DEFAULT_SEGMENT_SIZE,
+            app_message,
+            Redundancy::from_u8(1),
+            0,
+            test_timestamp,
+            BuildTarget::Broadcast(epoch_validators),
+            &known_addresses,
+        );
+        let message = messages.into_iter().next().unwrap().1;
+        let result = parse_message::<SignatureType>(&mut signature_cache, message, max_age_ms);
+
+        if should_succeed {
+            assert!(result.is_ok(), "unexpected success: {:?}", result.err());
+        } else {
+            assert!(result.is_err());
+            match result.err().unwrap() {
+                MessageValidationError::InvalidTimestamp { .. } => {}
+                other => panic!("unexpected error {:?}", other),
+            }
+        }
     }
 }

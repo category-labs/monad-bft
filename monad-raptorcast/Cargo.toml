@@ -39,10 +39,10 @@ tracing = { workspace = true }
 monad-testutil = { workspace = true }
 
 clap = { workspace = true, features = ["derive"] }
+rstest = { workspace = true }
 criterion = { workspace = true }
 futures-util = { workspace = true }
 insta = { workspace = true }
-rstest = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 

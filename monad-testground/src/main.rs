@@ -318,6 +318,7 @@ where
                         RouterArgs::RaptorCast => RouterConfig::RaptorCast(RaptorCastConfig {
                             shared_key,
                             mtu: DEFAULT_MTU,
+                            udp_message_max_age_ms: u64::MAX,
                             primary_instance: Default::default(),
                             secondary_instance: RaptorCastConfigSecondary::default(),
                         }),

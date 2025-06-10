@@ -16,6 +16,9 @@ pub struct NodeNetworkConfig {
 
     #[serde(default = "default_mtu")]
     pub mtu: u16,
+
+    #[serde(default = "default_udp_message_max_age_ms")]
+    pub udp_message_max_age_ms: u64,
 }
 
 // When running in docker with vpnkit, the maximum safe MTU is 1480, as per:
@@ -27,4 +30,8 @@ fn default_mtu() -> u16 {
 fn default_buffer_size() -> Option<usize> {
     // recommended value at the time of the commit
     Some(62_500_000)
+}
+
+fn default_udp_message_max_age_ms() -> u64 {
+    10_000 // 10 seconds in milliseconds
 }
