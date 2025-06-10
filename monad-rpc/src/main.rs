@@ -26,7 +26,7 @@ use tracing_actix_web::TracingLogger;
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
     layer::SubscriberExt,
-    EnvFilter, Registry,
+    EnvFilter, Layer, Registry,
 };
 
 use self::cli::Cli;
@@ -50,8 +50,6 @@ async fn main() -> std::io::Result<()> {
         .expect("node toml parse error");
 
     let s = Registry::default()
-        .with(TimingsLayer::new())
-        .with(EnvFilter::from_default_env())
         .with(
             FmtLayer::default()
                 .json()
@@ -59,8 +57,10 @@ async fn main() -> std::io::Result<()> {
                 .with_current_span(false)
                 .with_span_list(false)
                 .with_writer(std::io::stdout)
-                .with_ansi(false),
-        );
+                .with_ansi(false)
+                .with_filter(EnvFilter::from_default_env()),
+        )
+        .with(TimingsLayer::new());
     tracing::subscriber::set_global_default(s).expect("failed to set logger");
 
     if !args.pprof.is_empty() {
