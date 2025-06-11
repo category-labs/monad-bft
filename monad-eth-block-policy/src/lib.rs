@@ -15,7 +15,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_txpool_types::TransactionError;
-use monad_eth_types::{Balance, EthAccount, EthExecutionProtocol, Nonce};
+use monad_eth_types::{Balance, EthAccount, EthExecutionProtocol, EthHeader, Nonce};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{BlockId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM};
 use sorted_vector_map::SortedVectorMap;
@@ -122,6 +122,13 @@ pub fn static_validate_transaction(
     }
 
     Ok(())
+}
+
+struct BlockLookupIndex {
+    block_id: BlockId,
+    seq_num: SeqNum,
+    round: Round,
+    is_finalized: bool,
 }
 
 /// A consensus block that has gone through the EthereumValidator and makes the decoded and
@@ -449,30 +456,36 @@ where
         self.last_commit
     }
 
-    fn get_account_statuses<'a>(
+    fn get_block_index(
         &self,
-        state_backend: &impl StateBackend,
         extending_blocks: &Option<&Vec<&EthValidatedBlock<ST, SCT>>>,
-        addresses: impl Iterator<Item = &'a Address>,
         base_seq_num: &SeqNum,
-    ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
-        let (base_block_id, base_block_round, base_block_is_finalized) = if base_seq_num
-            <= &self.last_commit
-        {
+    ) -> Result<BlockLookupIndex, StateBackendError> {
+        if base_seq_num <= &self.last_commit {
             debug!(
                 ?base_seq_num,
                 last_commit = self.last_commit.0,
                 "base seq num committed"
             );
             if base_seq_num == &GENESIS_SEQ_NUM {
-                (GENESIS_BLOCK_ID, GENESIS_ROUND, true)
+                Ok(BlockLookupIndex {
+                    block_id: GENESIS_BLOCK_ID,
+                    seq_num: GENESIS_SEQ_NUM,
+                    round: GENESIS_ROUND,
+                    is_finalized: true,
+                })
             } else {
                 let committed_block = &self
                     .committed_cache
                     .blocks
                     .get(base_seq_num)
                     .unwrap_or_else(|| panic!("queried recently committed block that doesn't exist, base_seq_num={:?}, last_commit={:?}", base_seq_num, self.last_commit));
-                (committed_block.block_id, committed_block.round, true)
+                Ok(BlockLookupIndex {
+                    block_id: committed_block.block_id,
+                    seq_num: *base_seq_num,
+                    round: committed_block.round,
+                    is_finalized: true,
+                })
             }
         } else if let Some(extending_blocks) = extending_blocks {
             debug!(?base_seq_num, "base seq num proposed");
@@ -480,15 +493,30 @@ where
                 .iter()
                 .find(|block| &block.get_seq_num() == base_seq_num)
                 .expect("extending block doesn't exist");
-            (proposed_block.get_id(), proposed_block.get_round(), false)
+            Ok(BlockLookupIndex {
+                block_id: proposed_block.get_id(),
+                seq_num: *base_seq_num,
+                round: proposed_block.get_round(),
+                is_finalized: false,
+            })
         } else {
-            return Err(StateBackendError::NotAvailableYet);
-        };
+            Err(StateBackendError::NotAvailableYet)
+        }
+    }
+
+    fn get_account_statuses<'a>(
+        &self,
+        state_backend: &impl StateBackend,
+        extending_blocks: &Option<&Vec<&EthValidatedBlock<ST, SCT>>>,
+        addresses: impl Iterator<Item = &'a Address>,
+        base_seq_num: &SeqNum,
+    ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
+        let block_index = self.get_block_index(extending_blocks, base_seq_num)?;
         state_backend.get_account_statuses(
-            &base_block_id,
+            &block_index.block_id,
             base_seq_num,
-            &base_block_round,
-            base_block_is_finalized,
+            &block_index.round,
+            block_index.is_finalized,
             addresses,
         )
     }
@@ -659,6 +687,22 @@ where
             return Err(BlockPolicyError::TimestampError);
         }
 
+        let expected_execution_results = self.get_expected_execution_results(
+            block.get_seq_num(),
+            extending_blocks.clone(),
+            state_backend,
+        )?;
+        if block.get_execution_results() != &expected_execution_results {
+            warn!(
+                seq_num =? block.header().seq_num,
+                round =? block.header().round,
+                ?expected_execution_results,
+                block_execution_results =? block.get_execution_results(),
+                "block not coherent, execution result mismatch"
+            );
+            return Err(BlockPolicyError::ExecutionResultMismatch);
+        }
+
         // TODO fix this unnecessary copy into a new vec to generate an owned Address
         let tx_signers = block
             .validated_txns
@@ -738,6 +782,28 @@ where
             }
         }
         Ok(())
+    }
+
+    fn get_expected_execution_results(
+        &self,
+        block_seq_num: SeqNum,
+        extending_blocks: Vec<&Self::ValidatedBlock>,
+        state_backend: &SBT,
+    ) -> Result<Vec<EthHeader>, StateBackendError> {
+        if block_seq_num < self.execution_delay {
+            return Ok(Vec::new());
+        }
+        let base_seq_num = block_seq_num - self.execution_delay;
+        let block_index = self.get_block_index(&Some(&extending_blocks), &base_seq_num)?;
+
+        let expected_execution_result = state_backend.get_execution_result(
+            &block_index.block_id,
+            &block_index.seq_num,
+            &block_index.round,
+            block_index.is_finalized,
+        )?;
+
+        Ok(vec![expected_execution_result])
     }
 
     fn update_committed_block(&mut self, block: &Self::ValidatedBlock) {

@@ -16,8 +16,8 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::{
-        BlockPolicy, BlockRange, ConsensusBlockHeader, ConsensusFullBlock, ExecutionResult,
-        OptimisticCommit, ProposedExecutionInputs,
+        BlockPolicy, BlockRange, ConsensusBlockHeader, ConsensusFullBlock, OptimisticCommit,
+        ProposedExecutionInputs,
     },
     checkpoint::Checkpoint,
     metrics::Metrics,
@@ -31,7 +31,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_state_backend::StateBackend;
-use monad_types::{BlockId, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum, Stake};
+use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum, Stake};
 use serde::{Deserialize, Serialize};
 
 const STATESYNC_NETWORK_MESSAGE_NAME: &str = "StateSyncNetworkMessage";
@@ -131,9 +131,7 @@ pub struct CheckpointCommand<SCT: SignatureCollection> {
 }
 
 pub enum StateRootHashCommand {
-    RequestProposed(BlockId, SeqNum, Round),
-    RequestFinalized(SeqNum),
-    CancelBelow(SeqNum),
+    NotifyFinalized(SeqNum),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1020,8 +1018,6 @@ where
     ValidatorEvent(ValidatorEvent<SCT>),
     /// Events to mempool
     MempoolEvent(MempoolEvent<SCT, EPT>),
-    /// Execution updates
-    ExecutionResultEvent(ExecutionResult<EPT>),
     /// Events for the debug control panel
     ControlPanelEvent(ControlPanelEvent<SCT>),
     /// Events to update the block timestamper
@@ -1049,9 +1045,6 @@ where
             MonadEvent::BlockSyncEvent(event) => MonadEvent::BlockSyncEvent(event.clone()),
             MonadEvent::ValidatorEvent(event) => MonadEvent::ValidatorEvent(event.clone()),
             MonadEvent::MempoolEvent(event) => MonadEvent::MempoolEvent(event.clone()),
-            MonadEvent::ExecutionResultEvent(event) => {
-                MonadEvent::ExecutionResultEvent(event.clone())
-            }
             MonadEvent::ControlPanelEvent(event) => MonadEvent::ControlPanelEvent(event.clone()),
             MonadEvent::TimestampUpdateEvent(timestamp) => {
                 MonadEvent::TimestampUpdateEvent(*timestamp)
@@ -1146,7 +1139,6 @@ where
             MonadEvent::MempoolEvent(MempoolEvent::ForwardTxs(txs)) => {
                 format!("MempoolEvent::ForwardTxs -- number of txns: {}", txs.len())
             }
-            MonadEvent::ExecutionResultEvent(_) => "EXECUTION_RESULT".to_string(),
             MonadEvent::ControlPanelEvent(_) => "CONTROLPANELEVENT".to_string(),
             MonadEvent::TimestampUpdateEvent(t) => format!("MempoolEvent::TimestampUpdate: {t}"),
             MonadEvent::StateSyncEvent(_) => "STATESYNC".to_string(),

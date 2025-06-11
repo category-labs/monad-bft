@@ -4467,15 +4467,6 @@ dependencies = [
  "criterion",
  "flate2",
  "lz4",
- "monad-bls",
- "monad-consensus",
- "monad-consensus-types",
- "monad-eth-types",
- "monad-secp",
- "monad-state",
- "monad-testutil",
- "monad-types",
- "monad-validator",
  "peak_alloc",
  "zstd",
 ]
@@ -5340,6 +5331,7 @@ dependencies = [
 name = "monad-state-backend"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus",
  "alloy-primitives",
  "monad-eth-types",
  "monad-types",
@@ -5561,10 +5553,8 @@ dependencies = [
  "monad-executor-glue",
  "monad-node-config",
  "monad-state-backend",
- "monad-triedb-utils",
  "monad-types",
  "ntest",
- "rayon",
  "serde_json",
  "sorted-vec",
  "tokio",

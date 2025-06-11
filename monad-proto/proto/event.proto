@@ -37,18 +37,6 @@ message ProtoScheduleTimeout {
   }
 }
 
-message ProtoProposedExecutionResult {
-  monad_proto.basic.ProtoBlockId block_id = 2;
-  monad_proto.basic.ProtoSeqNum seq_num = 3;
-  monad_proto.basic.ProtoRound round = 4;
-  bytes result = 5;
-}
-
-message ProtoFinalizedExecutionResult {
-  monad_proto.basic.ProtoSeqNum seq_num = 1;
-  bytes result = 2;
-}
-
 message ProtoTimestampUpdate {
    uint64 update = 1;
 }
@@ -126,13 +114,6 @@ message ProtoMempoolEvent {
 message ProtoUpdateValidatorsEvent {
   monad_proto.validator_data.ProtoValidatorSetData validator_set_data = 1;
   monad_proto.basic.ProtoEpoch epoch = 2;
-}
-
-message ProtoExecutionResult {
-  oneof event {
-    ProtoProposedExecutionResult proposed = 1;
-    ProtoFinalizedExecutionResult finalized = 2;
-  }
 }
 
 message ProtoMetricsTimeout {}
@@ -262,7 +243,6 @@ message ProtoMonadEvent{
     ProtoBlockSyncEvent block_sync_event = 2;
     ProtoValidatorEvent validator_event = 3;
     ProtoMempoolEvent mempool_event = 4;
-    ProtoExecutionResult execution_result_event = 5;
     ProtoControlPanelEvent control_panel_event = 7;
     ProtoTimestampUpdate timestamp_update_event = 8;
     ProtoStateSyncEvent state_sync_event = 9;

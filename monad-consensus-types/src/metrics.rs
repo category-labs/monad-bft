@@ -100,12 +100,9 @@ metrics!(
             creating_proposal,
             rx_execution_lagging,
             rx_bad_state_root,
-            rx_no_path_to_root,
-            rx_proposal,
             proposal_with_tc,
             failed_verify_randao_reveal_sig,
             commit_block,
-            state_root_update,
             enter_new_round_qc,
             enter_new_round_tc,
             trigger_state_sync

@@ -1,7 +1,7 @@
 use std::{ops::Deref, time::Duration};
 
 use async_graphql::{Context, NewType, Object, Union};
-use monad_consensus_types::{block::ExecutionResult, metrics::Metrics};
+use monad_consensus_types::metrics::Metrics;
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_executor_glue::{
     BlockSyncEvent, ConfigEvent, ConsensusEvent, ControlPanelEvent, MempoolEvent, MonadEvent,
@@ -218,7 +218,6 @@ enum GraphQLMonadEvent<'s> {
     BlockSyncEvent(GraphQLBlockSyncEvent<'s>),
     ValidatorEvent(GraphQLValidatorEvent<'s>),
     MempoolEvent(GraphQLMempoolEvent<'s>),
-    ExecutionResultEvent(GraphQLExecutionResultEvent<'s>),
     ControlPanelEvent(GraphQLControlPanelEvent<'s>),
     TimestampEvent(GraphQLTimestampEvent),
     StateSyncEvent(GraphQLStateSyncEvent<'s>),
@@ -232,9 +231,6 @@ impl<'s> From<&'s MonadEventType> for GraphQLMonadEvent<'s> {
             MonadEvent::BlockSyncEvent(event) => Self::BlockSyncEvent(GraphQLBlockSyncEvent(event)),
             MonadEvent::ValidatorEvent(event) => Self::ValidatorEvent(GraphQLValidatorEvent(event)),
             MonadEvent::MempoolEvent(event) => Self::MempoolEvent(GraphQLMempoolEvent(event)),
-            MonadEvent::ExecutionResultEvent(event) => {
-                Self::ExecutionResultEvent(GraphQLExecutionResultEvent(event))
-            }
             MonadEvent::ControlPanelEvent(event) => {
                 Self::ControlPanelEvent(GraphQLControlPanelEvent(event))
             }
@@ -279,14 +275,6 @@ impl GraphQLValidatorEvent<'_> {
 struct GraphQLMempoolEvent<'s>(&'s MempoolEvent<SignatureCollectionType, ExecutionProtocolType>);
 #[Object]
 impl GraphQLMempoolEvent<'_> {
-    async fn debug(&self) -> String {
-        format!("{:?}", self.0)
-    }
-}
-
-struct GraphQLExecutionResultEvent<'s>(&'s ExecutionResult<ExecutionProtocolType>);
-#[Object]
-impl GraphQLExecutionResultEvent<'_> {
     async fn debug(&self) -> String {
         format!("{:?}", self.0)
     }

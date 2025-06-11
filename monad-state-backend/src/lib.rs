@@ -4,7 +4,7 @@ use std::{
 };
 
 use alloy_primitives::Address;
-use monad_eth_types::{EthAccount, Nonce};
+use monad_eth_types::{EthAccount, EthHeader, Nonce};
 use monad_types::{BlockId, Round, SeqNum};
 
 pub use self::{
@@ -33,6 +33,14 @@ pub trait StateBackend {
         is_finalized: bool,
         addresses: impl Iterator<Item = &'a Address>,
     ) -> Result<Vec<Option<EthAccount>>, StateBackendError>;
+
+    fn get_execution_result(
+        &self,
+        block_id: &BlockId,
+        seq_num: &SeqNum,
+        round: &Round,
+        is_finalized: bool,
+    ) -> Result<EthHeader, StateBackendError>;
 
     /// Fetches earliest block from storage backend
     fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum>;
@@ -66,6 +74,17 @@ impl<T: StateBackend> StateBackend for Arc<Mutex<T>> {
     ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
         let state = self.lock().unwrap();
         state.get_account_statuses(block_id, seq_num, round, is_finalized, addresses)
+    }
+
+    fn get_execution_result(
+        &self,
+        block_id: &BlockId,
+        seq_num: &SeqNum,
+        round: &Round,
+        is_finalized: bool,
+    ) -> Result<EthHeader, StateBackendError> {
+        let state = self.lock().unwrap();
+        state.get_execution_result(block_id, seq_num, round, is_finalized)
     }
 
     fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum> {

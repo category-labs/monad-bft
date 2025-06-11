@@ -42,9 +42,6 @@ where
                 proto_monad_event::Event::ValidatorEvent(event.into())
             }
             MonadEvent::MempoolEvent(event) => proto_monad_event::Event::MempoolEvent(event.into()),
-            MonadEvent::ExecutionResultEvent(event) => {
-                proto_monad_event::Event::ExecutionResultEvent(event.into())
-            }
             MonadEvent::ControlPanelEvent(event) => {
                 proto_monad_event::Event::ControlPanelEvent(event.into())
             }
@@ -83,9 +80,6 @@ where
             }
             Some(proto_monad_event::Event::MempoolEvent(event)) => {
                 MonadEvent::MempoolEvent(event.try_into()?)
-            }
-            Some(proto_monad_event::Event::ExecutionResultEvent(event)) => {
-                MonadEvent::ExecutionResultEvent(event.try_into()?)
             }
             Some(proto_monad_event::Event::ControlPanelEvent(e)) => {
                 MonadEvent::ControlPanelEvent(e.try_into()?)

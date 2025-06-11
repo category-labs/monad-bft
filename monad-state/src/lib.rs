@@ -855,14 +855,6 @@ where
                 // TODO(andr-dev): Don't allow ConsensusChildState to produce Command<...> directly (requires IPC->TxPool refactor)
                 ConsensusChildState::new(self).handle_mempool_event(event)
             }
-            MonadEvent::ExecutionResultEvent(event) => {
-                self.metrics.consensus_events.state_root_update += 1;
-                let consensus_cmds = ConsensusChildState::new(self).handle_execution_result(event);
-                consensus_cmds
-                    .into_iter()
-                    .flat_map(Into::<Vec<Command<_, _, _, _, _, _, _>>>::into)
-                    .collect::<Vec<_>>()
-            }
             MonadEvent::StateSyncEvent(state_sync_event) => match state_sync_event {
                 StateSyncEvent::Inbound(sender, message) => {
                     // TODO we need to add some sort of throttling to who we service... right now
@@ -1205,24 +1197,9 @@ where
                 OptimisticCommit::Finalized(block.deref().to_owned()),
             )));
             commands.push(Command::StateRootHashCommand(
-                StateRootHashCommand::RequestFinalized(block.get_seq_num()),
+                StateRootHashCommand::NotifyFinalized(block.get_seq_num()),
             ));
         }
-
-        // this is necessary for genesis, because we'll never request root otherwise
-        commands.push(Command::StateRootHashCommand(
-            StateRootHashCommand::RequestFinalized(root_info.seq_num),
-        ));
-
-        let first_root_to_request = (root_info.seq_num + SeqNum(1)).max(delay) - delay;
-        commands.push(Command::StateRootHashCommand(
-            // upon committing block N, we no longer need state_root_N-delay
-            // therefore, we cancel below state_root_N-delay+1
-            //
-            // we'll be left with (state_root_N-delay, state_root_N] queued up, which is
-            // exactly `delay` number of roots
-            StateRootHashCommand::CancelBelow(first_root_to_request),
-        ));
 
         let cached_proposals = block_buffer.proposals().cloned().collect_vec();
 

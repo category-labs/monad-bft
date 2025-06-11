@@ -1,5 +1,4 @@
 use std::{
-    collections::VecDeque,
     marker::PhantomData,
     ops::DerefMut,
     pin::Pin,
@@ -8,7 +7,6 @@ use std::{
 
 use futures::Stream;
 use monad_consensus_types::{
-    block::{ExecutionResult, ProposedExecutionResult},
     signature_collection::SignatureCollection,
     validator_data::{ValidatorSetData, ValidatorSetDataWithEpoch},
 };
@@ -17,7 +15,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MonadEvent, StateRootHashCommand};
-use monad_types::{Epoch, ExecutionProtocol, MockableFinalizedHeader, SeqNum, Stake};
+use monad_types::{Epoch, ExecutionProtocol, SeqNum, Stake};
 use tracing::error;
 
 pub trait MockableStateRootHash:
@@ -54,10 +52,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    EPT::FinalizedHeader: MockableFinalizedHeader,
 {
-    state_root_update: VecDeque<ExecutionResult<EPT>>,
-
     // validator set updates
     genesis_validator_data: ValidatorSetData<SCT>,
     next_val_data: Option<ValidatorSetDataWithEpoch<SCT>>,
@@ -67,7 +62,7 @@ where
 
     waker: Option<Waker>,
     metrics: ExecutorMetrics,
-    phantom: PhantomData<ST>,
+    phantom: PhantomData<(ST, SCT, EPT)>,
 }
 
 impl<ST, SCT, EPT> MockStateRootHashNop<ST, SCT, EPT>
@@ -75,14 +70,12 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    EPT::FinalizedHeader: MockableFinalizedHeader,
 {
     pub fn new(
         genesis_validator_data: ValidatorSetData<SCT>,
         val_set_update_interval: SeqNum,
     ) -> Self {
         Self {
-            state_root_update: Default::default(),
             genesis_validator_data,
             next_val_data: None,
             val_set_update_interval,
@@ -123,7 +116,6 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    EPT::FinalizedHeader: MockableFinalizedHeader,
 {
     type Event = MonadEvent<ST, SCT, EPT>;
     type SignatureCollection = SCT;
@@ -132,7 +124,7 @@ where
         if !self.enable_updates {
             return false;
         }
-        !self.state_root_update.is_empty() || self.next_val_data.is_some()
+        self.next_val_data.is_some()
     }
 
     fn get_validator_set_data(&self, _epoch: Epoch) -> ValidatorSetData<Self::SignatureCollection> {
@@ -145,7 +137,6 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    EPT::FinalizedHeader: MockableFinalizedHeader,
 {
     type Command = StateRootHashCommand;
 
@@ -154,31 +145,7 @@ where
 
         for command in commands {
             match command {
-                StateRootHashCommand::CancelBelow(cancel_below) => {
-                    while self
-                        .state_root_update
-                        .front()
-                        .is_some_and(|state_root| state_root.seq_num() < cancel_below)
-                    {
-                        self.state_root_update.pop_front().unwrap();
-                    }
-                }
-                StateRootHashCommand::RequestProposed(block_id, seq_num, round) => {
-                    self.state_root_update.push_back(ExecutionResult::Proposed(
-                        ProposedExecutionResult {
-                            block_id,
-                            seq_num,
-                            round,
-                            result: EPT::FinalizedHeader::from_seq_num(seq_num),
-                        },
-                    ));
-                    wake = true;
-                }
-                StateRootHashCommand::RequestFinalized(seq_num) => {
-                    self.state_root_update.push_back(ExecutionResult::Finalized(
-                        seq_num,
-                        EPT::FinalizedHeader::from_seq_num(seq_num),
-                    ));
+                StateRootHashCommand::NotifyFinalized(seq_num) => {
                     self.jank_update_valset(seq_num);
                     wake = true;
                 }
@@ -202,7 +169,6 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    EPT::FinalizedHeader: MockableFinalizedHeader,
 {
     type Item = MonadEvent<ST, SCT, EPT>;
 
@@ -213,9 +179,7 @@ where
             return Poll::Pending;
         }
 
-        let event = if let Some(event) = this.state_root_update.pop_front() {
-            Poll::Ready(Some(MonadEvent::ExecutionResultEvent(event)))
-        } else if let Some(next_val_data) = this.next_val_data.take() {
+        let event = if let Some(next_val_data) = this.next_val_data.take() {
             Poll::Ready(Some(MonadEvent::ValidatorEvent(
                 monad_executor_glue::ValidatorEvent::<SCT>::UpdateValidators(next_val_data),
             )))
@@ -243,10 +207,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    EPT::FinalizedHeader: MockableFinalizedHeader,
 {
-    state_root_update: VecDeque<ExecutionResult<EPT>>,
-
     // validator set updates
     epoch: Epoch,
     genesis_val_data: ValidatorSetData<SCT>,
@@ -257,7 +218,7 @@ where
 
     waker: Option<Waker>,
     metrics: ExecutorMetrics,
-    phantom: PhantomData<ST>,
+    phantom: PhantomData<(ST, SCT, EPT)>,
 }
 
 impl<ST, SCT, EPT> MockStateRootHashSwap<ST, SCT, EPT>
@@ -265,7 +226,6 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    EPT::FinalizedHeader: MockableFinalizedHeader,
 {
     pub fn new(
         genesis_validator_data: ValidatorSetData<SCT>,
@@ -287,7 +247,6 @@ where
         }
 
         Self {
-            state_root_update: Default::default(),
             epoch: Epoch(1),
             genesis_val_data: genesis_validator_data,
             val_data_1: ValidatorSetData(val_data_1),
@@ -331,13 +290,12 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    EPT::FinalizedHeader: MockableFinalizedHeader,
 {
     type Event = MonadEvent<ST, SCT, EPT>;
     type SignatureCollection = SCT;
 
     fn ready(&self) -> bool {
-        !self.state_root_update.is_empty() || self.next_val_data.is_some()
+        self.next_val_data.is_some()
     }
 
     fn get_validator_set_data(&self, epoch: Epoch) -> ValidatorSetData<Self::SignatureCollection> {
@@ -367,7 +325,6 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    EPT::FinalizedHeader: MockableFinalizedHeader,
 {
     type Command = StateRootHashCommand;
 
@@ -376,31 +333,7 @@ where
 
         for command in commands {
             match command {
-                StateRootHashCommand::CancelBelow(cancel_below) => {
-                    while self
-                        .state_root_update
-                        .front()
-                        .is_some_and(|state_root| state_root.seq_num() < cancel_below)
-                    {
-                        self.state_root_update.pop_front().unwrap();
-                    }
-                }
-                StateRootHashCommand::RequestProposed(block_id, seq_num, round) => {
-                    self.state_root_update.push_back(ExecutionResult::Proposed(
-                        ProposedExecutionResult {
-                            block_id,
-                            seq_num,
-                            round,
-                            result: EPT::FinalizedHeader::from_seq_num(seq_num),
-                        },
-                    ));
-                    wake = true;
-                }
-                StateRootHashCommand::RequestFinalized(seq_num) => {
-                    self.state_root_update.push_back(ExecutionResult::Finalized(
-                        seq_num,
-                        EPT::FinalizedHeader::from_seq_num(seq_num),
-                    ));
+                StateRootHashCommand::NotifyFinalized(seq_num) => {
                     self.jank_update_valset(seq_num);
                     wake = true;
                 }
@@ -424,16 +357,13 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    EPT::FinalizedHeader: MockableFinalizedHeader,
 {
     type Item = MonadEvent<ST, SCT, EPT>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
-        let event = if let Some(event) = this.state_root_update.pop_front() {
-            Poll::Ready(Some(MonadEvent::ExecutionResultEvent(event)))
-        } else if let Some(next_val_data) = this.next_val_data.take() {
+        let event = if let Some(next_val_data) = this.next_val_data.take() {
             Poll::Ready(Some(MonadEvent::ValidatorEvent(
                 monad_executor_glue::ValidatorEvent::<SCT>::UpdateValidators(next_val_data),
             )))

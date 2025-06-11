@@ -273,7 +273,7 @@ impl StateBackend for TriedbReader {
             let Some(statuses) =
                 self.get_accounts_async(seq_num, Version::Finalized, eth_addresses)
             else {
-                // TODO: Use a more descriptive error
+                tracing::error!(?seq_num, "finalized block expired out");
                 return Err(StateBackendError::NotAvailableYet);
             };
 
@@ -300,7 +300,7 @@ impl StateBackend for TriedbReader {
             let Some(statuses) =
                 self.get_accounts_async(seq_num, Version::Proposal(*round), eth_addresses)
             else {
-                // TODO: Use a more descriptive error
+                tracing::error!(?seq_num, "proposed block expired out");
                 return Err(StateBackendError::NotAvailableYet);
             };
 
@@ -319,6 +319,56 @@ impl StateBackend for TriedbReader {
             .fetch_add(statuses.len() as u64, std::sync::atomic::Ordering::SeqCst);
 
         Ok(statuses)
+    }
+
+    fn get_execution_result(
+        &self,
+        block_id: &BlockId,
+        seq_num: &SeqNum,
+        round: &Round,
+        is_finalized: bool,
+    ) -> Result<EthHeader, StateBackendError> {
+        if is_finalized
+            && self
+                .raw_read_latest_finalized_block()
+                .is_some_and(|latest_finalized| seq_num <= &latest_finalized)
+        {
+            trace!(?seq_num, "triedb read eth header finalized");
+            // check finalized
+
+            // block <= latest
+            let Some(header) = self.get_finalized_eth_header(seq_num) else {
+                tracing::error!(?seq_num, "finalized block eth header expired out");
+                return Err(StateBackendError::NotAvailableYet);
+            };
+
+            Ok(header)
+        } else {
+            // check proposed, validate block_id
+            trace!(?seq_num, ?round, "triedb read eth header proposed");
+
+            let Some(bft_block_id) = self.get_bft_block_id(seq_num, round) else {
+                return Err(StateBackendError::NotAvailableYet);
+            };
+            if &bft_block_id != block_id {
+                return Err(StateBackendError::NotAvailableYet);
+            }
+
+            let Some(header) = self.get_proposed_eth_header(block_id, seq_num, round) else {
+                tracing::error!(?seq_num, "proposed block eth header expired out");
+                return Err(StateBackendError::NotAvailableYet);
+            };
+
+            // check that block wasn't overrwritten
+            let Some(bft_block_id) = self.get_bft_block_id(seq_num, round) else {
+                return Err(StateBackendError::NotAvailableYet);
+            };
+            if &bft_block_id != block_id {
+                return Err(StateBackendError::NotAvailableYet);
+            }
+
+            Ok(header)
+        }
     }
 
     fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum> {

@@ -615,19 +615,6 @@ pub trait FinalizedHeader:
     fn seq_num(&self) -> SeqNum;
 }
 
-pub trait MockableFinalizedHeader: Sized {
-    fn from_seq_num(seq_num: SeqNum) -> Self;
-}
-
-pub trait MockableProposedHeader: Sized {
-    fn create(
-        seq_num: SeqNum,
-        timestamp_ns: u128,
-        mix_hash: [u8; 32],
-        proposal_gas_limit: u64,
-    ) -> Self;
-}
-
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Deserialize, Serialize, RlpEncodable, RlpDecodable)]
 pub struct MonadVersion {
     pub protocol_version: u32,

@@ -17,7 +17,7 @@ use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSche
 use monad_state::{MonadMessage, VerifiedMonadMessage};
 use monad_state_backend::InMemoryState;
 use monad_transformer::RandLatencyTransformer;
-use monad_types::{ExecutionProtocol, MockableFinalizedHeader, NodeId, SeqNum};
+use monad_types::{ExecutionProtocol, NodeId, SeqNum};
 use monad_updaters::{
     ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
 };
@@ -32,7 +32,6 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    EPT::FinalizedHeader: MockableFinalizedHeader,
     S: SwarmRelation<
         SignatureType = ST,
         SignatureCollectionType = SCT,

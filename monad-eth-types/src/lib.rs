@@ -1,14 +1,9 @@
 use std::fmt::Debug;
 
-use alloy_consensus::{
-    constants::{EMPTY_TRANSACTIONS, EMPTY_WITHDRAWALS},
-    Header, TxEnvelope, EMPTY_OMMER_ROOT_HASH,
-};
+use alloy_consensus::{Header, TxEnvelope};
 use alloy_primitives::{Address, B256, U256};
 use alloy_rlp::{RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
-use monad_types::{
-    ExecutionProtocol, FinalizedHeader, MockableFinalizedHeader, MockableProposedHeader, SeqNum,
-};
+use monad_types::{ExecutionProtocol, FinalizedHeader, SeqNum};
 
 pub mod serde;
 
@@ -45,48 +40,12 @@ pub struct ProposedEthHeader {
     pub parent_beacon_block_root: [u8; 32],
 }
 
-impl MockableProposedHeader for ProposedEthHeader {
-    fn create(
-        seq_num: SeqNum,
-        timestamp_ns: u128,
-        mix_hash: [u8; 32],
-        proposal_gas_limit: u64,
-    ) -> Self {
-        Self {
-            transactions_root: *EMPTY_TRANSACTIONS,
-            ommers_hash: *EMPTY_OMMER_ROOT_HASH,
-            withdrawals_root: *EMPTY_WITHDRAWALS,
-            beneficiary: Default::default(),
-            difficulty: 0,
-            number: seq_num.0,
-            gas_limit: proposal_gas_limit,
-            timestamp: (timestamp_ns / 1_000_000_000) as u64,
-            mix_hash,
-            nonce: [0_u8; 8],
-            extra_data: [0_u8; 32],
-            base_fee_per_gas: BASE_FEE_PER_GAS,
-            blob_gas_used: 0,
-            excess_blob_gas: 0,
-            parent_beacon_block_root: [0_u8; 32],
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodableWrapper, RlpDecodableWrapper)]
 pub struct EthHeader(pub Header);
 
 impl FinalizedHeader for EthHeader {
     fn seq_num(&self) -> SeqNum {
         SeqNum(self.0.number)
-    }
-}
-
-impl MockableFinalizedHeader for EthHeader {
-    fn from_seq_num(seq_num: SeqNum) -> Self {
-        Self(Header {
-            number: seq_num.0,
-            ..Header::default()
-        })
     }
 }
 

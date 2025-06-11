@@ -10,10 +10,7 @@ use monad_consensus::{
 };
 use monad_consensus_state::{command::ConsensusCommand, ConsensusConfig, ConsensusStateWrapper};
 use monad_consensus_types::{
-    block::{
-        BlockPolicy, ConsensusBlockHeader, ExecutionResult, OptimisticCommit,
-        OptimisticPolicyCommit,
-    },
+    block::{BlockPolicy, ConsensusBlockHeader, OptimisticCommit, OptimisticPolicyCommit},
     block_validator::BlockValidator,
     metrics::Metrics,
     payload::{ConsensusBlockBody, ConsensusBlockBodyInner},
@@ -372,47 +369,6 @@ where
         }
     }
 
-    pub(super) fn handle_execution_result(
-        &mut self,
-        execution_result: ExecutionResult<EPT>,
-    ) -> Vec<WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
-        let ConsensusMode::Live(mode) = self.consensus else {
-            unreachable!("handle_execution_result when not live")
-        };
-        let mut consensus = ConsensusStateWrapper {
-            consensus: mode,
-
-            metrics: self.metrics,
-            epoch_manager: self.epoch_manager,
-            block_policy: self.block_policy,
-            state_backend: self.state_backend,
-
-            val_epoch_map: self.val_epoch_map,
-            election: self.leader_election,
-            version: self.version.protocol_version,
-
-            block_timestamp: self.block_timestamp,
-            block_validator: self.block_validator,
-            beneficiary: self.beneficiary,
-            nodeid: self.nodeid,
-            config: self.consensus_config,
-
-            keypair: self.keypair,
-            cert_keypair: self.cert_keypair,
-        };
-
-        let consensus_cmds = consensus.add_execution_result(execution_result);
-
-        consensus_cmds
-            .into_iter()
-            .map(|cmd| WrappedConsensusCommand {
-                state_root_delay: self.consensus_config.execution_delay,
-                upcoming_leader_rounds: self.get_upcoming_leader_rounds(),
-                command: cmd,
-            })
-            .collect::<Vec<_>>()
-    }
-
     pub(super) fn handle_validated_proposal(
         &mut self,
         author: NodeId<CertificateSignaturePubKey<ST>>,
@@ -655,9 +611,6 @@ where
                         let block_id = block.get_id();
                         let round = block.get_round();
                         let seq_num = block.get_seq_num();
-                        parent_cmds.push(Command::StateRootHashCommand(
-                            StateRootHashCommand::RequestProposed(block_id, seq_num, round),
-                        ));
                     }
                     OptimisticPolicyCommit::Finalized(block) => {
                         let finalized_seq_num = block.get_seq_num();
@@ -665,18 +618,7 @@ where
                             block,
                         ])));
                         parent_cmds.push(Command::StateRootHashCommand(
-                            StateRootHashCommand::RequestFinalized(finalized_seq_num),
-                        ));
-                        parent_cmds.push(Command::StateRootHashCommand(
-                            // upon committing block N, we no longer need state_root_N-delay
-                            // therefore, we cancel below state_root_N-delay+1
-                            //
-                            // we'll be left with (state_root_N-delay, state_root_N] queued up, which is
-                            // exactly `delay` number of roots
-                            StateRootHashCommand::CancelBelow(
-                                (finalized_seq_num + SeqNum(1)).max(state_root_delay)
-                                    - state_root_delay,
-                            ),
+                            StateRootHashCommand::NotifyFinalized(finalized_seq_num),
                         ));
                     }
                 }

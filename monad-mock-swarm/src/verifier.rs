@@ -187,11 +187,6 @@ impl<S: SwarmRelation> MockSwarmVerifier<S> {
                 fetch_metric!(consensus_events.rx_execution_lagging),
                 0,
             )
-            .metric_exact(
-                node_ids,
-                fetch_metric!(consensus_events.rx_no_path_to_root),
-                0,
-            )
             // first proposal in Round 2 with TC
             .metric_maximum(
                 node_ids,
@@ -312,15 +307,6 @@ impl<S: SwarmRelation> MockSwarmVerifier<S> {
                 &vec![*node_id],
                 fetch_metric!(consensus_events.creating_proposal),
                 num_blocks_authored,
-            );
-            // should update state root for all blocks in ledger
-            // (exception for the last block since tests may end
-            // as soon as it is committed)
-            // NOTE: doesn't take into account the execution delay
-            self.metric_minimum(
-                &vec![*node_id],
-                fetch_metric!(consensus_events.state_root_update),
-                ledger_len.saturating_sub(1),
             );
         }
     }

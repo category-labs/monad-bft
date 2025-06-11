@@ -8,10 +8,7 @@ use monad_crypto::{
     hasher::{Hasher, HasherType},
 };
 use monad_state_backend::{InMemoryState, StateBackend, StateBackendError};
-use monad_types::{
-    BlockId, Epoch, ExecutionProtocol, FinalizedHeader, MockableFinalizedHeader, NodeId, Round,
-    SeqNum,
-};
+use monad_types::{BlockId, Epoch, ExecutionProtocol, FinalizedHeader, NodeId, Round, SeqNum};
 
 use crate::{
     block_validator::BlockValidationError,
@@ -155,6 +152,7 @@ pub enum BlockPolicyError {
     BlockNotCoherent,
     StateBackendError(StateBackendError),
     TimestampError,
+    ExecutionResultMismatch,
 }
 
 impl From<StateBackendError> for BlockPolicyError {
@@ -187,6 +185,13 @@ where
         blocktree_root: RootInfo,
         state_backend: &SBT,
     ) -> Result<(), BlockPolicyError>;
+
+    fn get_expected_execution_results(
+        &self,
+        block_seq_num: SeqNum,
+        extending_blocks: Vec<&Self::ValidatedBlock>,
+        state_backend: &SBT,
+    ) -> Result<Vec<EPT::FinalizedHeader>, StateBackendError>;
 
     // TODO delete this function, pass recently committed blocks to check_coherency instead
     // This way, BlockPolicy doesn't need to be mutated
@@ -244,7 +249,7 @@ where
         block: &Self::ValidatedBlock,
         extending_blocks: Vec<&Self::ValidatedBlock>,
         blocktree_root: RootInfo,
-        _: &InMemoryState,
+        state_backend: &InMemoryState,
     ) -> Result<(), BlockPolicyError> {
         // check coherency against the block being extended or against the root of the blocktree if
         // there is no extending branch
@@ -263,7 +268,26 @@ where
             // timestamps must be monotonically increasing
             return Err(BlockPolicyError::TimestampError);
         }
+
+        let expected_execution_results = self.get_expected_execution_results(
+            block.get_seq_num(),
+            extending_blocks,
+            state_backend,
+        )?;
+        if block.get_execution_results() != &expected_execution_results {
+            return Err(BlockPolicyError::ExecutionResultMismatch);
+        }
+
         Ok(())
+    }
+
+    fn get_expected_execution_results(
+        &self,
+        _block_seq_num: SeqNum,
+        _extending_blocks: Vec<&Self::ValidatedBlock>,
+        _state_backend: &InMemoryState,
+    ) -> Result<Vec<EPT::FinalizedHeader>, StateBackendError> {
+        Ok(Vec::new())
     }
 
     fn update_committed_block(&mut self, _: &Self::ValidatedBlock) {}
@@ -363,38 +387,6 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProposedExecutionResult<EPT>
-where
-    EPT: ExecutionProtocol,
-{
-    pub block_id: BlockId,
-    pub seq_num: SeqNum,
-    pub round: Round,
-    pub result: EPT::FinalizedHeader,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ExecutionResult<EPT>
-where
-    EPT: ExecutionProtocol,
-{
-    Proposed(ProposedExecutionResult<EPT>),
-    Finalized(SeqNum, EPT::FinalizedHeader),
-}
-
-impl<EPT> ExecutionResult<EPT>
-where
-    EPT: ExecutionProtocol,
-{
-    pub fn seq_num(&self) -> SeqNum {
-        match self {
-            Self::Proposed(proposed) => proposed.seq_num,
-            Self::Finalized(seq_num, _) => *seq_num,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProposedExecutionInputs<EPT>
 where
     EPT: ExecutionProtocol,
@@ -426,12 +418,6 @@ pub struct MockExecutionFinalizedHeader {
 impl FinalizedHeader for MockExecutionFinalizedHeader {
     fn seq_num(&self) -> SeqNum {
         self.number
-    }
-}
-
-impl MockableFinalizedHeader for MockExecutionFinalizedHeader {
-    fn from_seq_num(seq_num: SeqNum) -> Self {
-        Self { number: seq_num }
     }
 }
 

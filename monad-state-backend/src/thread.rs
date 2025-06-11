@@ -1,7 +1,7 @@
 use std::sync::{mpsc, Arc};
 
 use alloy_primitives::Address;
-use monad_eth_types::EthAccount;
+use monad_eth_types::{EthAccount, EthHeader};
 use monad_types::{BlockId, Round, SeqNum};
 use tracing::warn;
 
@@ -19,6 +19,13 @@ enum StateBackendThreadRequest {
         is_finalized: bool,
         addresses: Vec<Address>,
         tx: mpsc::SyncSender<Result<Vec<Option<EthAccount>>, StateBackendError>>,
+    },
+    GetExecutionResult {
+        block_id: BlockId,
+        seq_num: SeqNum,
+        round: Round,
+        is_finalized: bool,
+        tx: mpsc::SyncSender<Result<EthHeader, StateBackendError>>,
     },
     RawReadEarliestFinalizedBlock {
         tx: mpsc::SyncSender<Option<SeqNum>>,
@@ -88,6 +95,22 @@ impl StateBackend for StateBackendThreadClient {
         })
     }
 
+    fn get_execution_result(
+        &self,
+        block_id: &BlockId,
+        seq_num: &SeqNum,
+        round: &Round,
+        is_finalized: bool,
+    ) -> Result<EthHeader, StateBackendError> {
+        self.send_and_recv_request(|tx| StateBackendThreadRequest::GetExecutionResult {
+            block_id: block_id.to_owned(),
+            seq_num: seq_num.to_owned(),
+            round: round.to_owned(),
+            is_finalized,
+            tx,
+        })
+    }
+
     fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum> {
         self.send_and_recv_request(
             |tx| StateBackendThreadRequest::RawReadEarliestFinalizedBlock { tx },
@@ -151,6 +174,21 @@ where
                         &round,
                         is_finalized,
                         addresses.iter(),
+                    ))
+                    .expect("StateBackendThreadClient is alive");
+                }
+                StateBackendThreadRequest::GetExecutionResult {
+                    block_id,
+                    seq_num,
+                    round,
+                    is_finalized,
+                    tx,
+                } => {
+                    tx.send(state_backend.get_execution_result(
+                        &block_id,
+                        &seq_num,
+                        &round,
+                        is_finalized,
                     ))
                     .expect("StateBackendThreadClient is alive");
                 }

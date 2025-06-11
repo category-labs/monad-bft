@@ -16,10 +16,7 @@ use monad_consensus::{
     vote_state::VoteState,
 };
 use monad_consensus_types::{
-    block::{
-        BlockPolicy, BlockRange, ConsensusFullBlock, ExecutionResult, OptimisticPolicyCommit,
-        ProposedExecutionResult,
-    },
+    block::{BlockPolicy, BlockRange, ConsensusFullBlock, OptimisticPolicyCommit},
     block_validator::{BlockValidationError, BlockValidator},
     checkpoint::{Checkpoint, LockedEpoch, RootInfo},
     metrics::Metrics,
@@ -73,9 +70,6 @@ where
     safety: Safety,
     block_sync_requests: BTreeMap<BlockId, BlockSyncRequestStatus>,
     last_proposed_round: Round,
-
-    finalized_execution_results: BTreeMap<SeqNum, EPT::FinalizedHeader>,
-    proposed_execution_results: BTreeMap<Round, ProposedExecutionResult<EPT>>,
 }
 
 impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> PartialEq
@@ -287,9 +281,6 @@ where
             //
             // on our first proposal, we will set this to the appropriate value
             last_proposed_round: GENESIS_ROUND,
-
-            finalized_execution_results: Default::default(),
-            proposed_execution_results: Default::default(),
         }
     }
 
@@ -350,40 +341,6 @@ where
         cmds
     }
 
-    #[must_use]
-    pub fn add_execution_result(
-        &mut self,
-        execution_result: ExecutionResult<EPT>,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
-        match execution_result {
-            ExecutionResult::Finalized(seq_num, execution_result) => {
-                match self.consensus.finalized_execution_results.entry(seq_num) {
-                    std::collections::btree_map::Entry::Vacant(entry) => {
-                        entry.insert(execution_result);
-                    }
-                    std::collections::btree_map::Entry::Occupied(entry) => {
-                        assert_eq!(entry.get(), &execution_result);
-                    }
-                };
-                Vec::new()
-            }
-            ExecutionResult::Proposed(execution_result) => {
-                if execution_result.round <= self.consensus.pending_block_tree.root().round {
-                    // not necessary, but here for clarity
-                    // try_update_coherency would drop it anyways
-                    //
-                    // the execution result will be re-queried under the Finalized nibble
-                    return Vec::new();
-                }
-                let block_id = execution_result.block_id;
-                self.consensus
-                    .proposed_execution_results
-                    .insert(execution_result.round, execution_result);
-                self.try_update_coherency(block_id)
-            }
-        }
-    }
-
     /// handles proposal messages from other nodes
     /// validators and election are required as part of verifying the proposal certificates
     /// as well as determining the next leader
@@ -413,12 +370,6 @@ where
             .val_epoch_map
             .get_val_set(&epoch)
             .expect("proposal message was verified");
-
-        let state_root_action = self.state_root_hash_validation(&p);
-
-        if matches!(state_root_action, StateRootAction::Reject) {
-            return cmds;
-        }
 
         // a valid proposal will advance the pacemaker round so capture the original round before
         // handling the proposal certificate
@@ -578,7 +529,7 @@ where
         */
 
         // at this point, block is valid and can be added to the blocktree
-        let res_cmds = self.try_add_and_commit_blocktree(block, Some(state_root_action));
+        let res_cmds = self.try_add_and_commit_blocktree(block);
         cmds.extend(res_cmds);
 
         // out-of-order proposals are possible if some round R+1 proposal arrives
@@ -811,7 +762,7 @@ where
                         *max_code_size,
                     )
                     .expect("majority extended invalid block");
-                let res_cmds = self.try_add_and_commit_blocktree(block, None);
+                let res_cmds = self.try_add_and_commit_blocktree(block);
                 cmds.extend(res_cmds);
             }
         }
@@ -995,17 +946,12 @@ where
             .pending_block_tree
             .prune(&committable_block_id);
 
-        let Some(last_committed_block) = blocks_to_commit.last() else {
-            // nothing new to commit
-            return cmds;
-        };
-
-        debug!(
-            num_commits = ?blocks_to_commit.len(),
-            "qc triggered commit"
-        );
-
         for block in blocks_to_commit.iter() {
+            debug!(
+                seq_num =? block.header().seq_num,
+                round =? block.header().round,
+                "committing block"
+            );
             // when epoch boundary block is committed, this updates
             // epoch manager records
             self.metrics.consensus_events.commit_block += 1;
@@ -1016,40 +962,6 @@ where
             cmds.push(ConsensusCommand::CommitBlocks(
                 OptimisticPolicyCommit::Finalized(block.to_owned()),
             ));
-
-            if let Some(execution_result) = self
-                .consensus
-                .proposed_execution_results
-                .remove(&block.get_round())
-            {
-                if execution_result.block_id == block.get_id() {
-                    assert_eq!(execution_result.seq_num, block.get_seq_num());
-                    self.consensus
-                        .finalized_execution_results
-                        .insert(block.get_seq_num(), execution_result.result);
-                }
-            }
-        }
-
-        while self
-            .consensus
-            .proposed_execution_results
-            .first_key_value()
-            .is_some_and(|(proposed_round, _)| proposed_round <= &last_committed_block.get_round())
-        {
-            self.consensus.proposed_execution_results.pop_first();
-        }
-
-        while self
-            .consensus
-            .finalized_execution_results
-            .first_key_value()
-            .is_some_and(|(&finalized_seq_num, _)| {
-                finalized_seq_num.saturating_add(self.config.execution_delay)
-                    <= last_committed_block.get_seq_num()
-            })
-        {
-            self.consensus.finalized_execution_results.pop_first();
         }
 
         // enter new pacemaker epoch if committing the boundary block
@@ -1110,7 +1022,6 @@ where
     fn try_add_and_commit_blocktree(
         &mut self,
         block: BPT::ValidatedBlock,
-        state_root_action: Option<StateRootAction>,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
         trace!(?block, "adding block to blocktree");
         let mut cmds = Vec::new();
@@ -1122,9 +1033,7 @@ where
         if block.get_round() == self.consensus.pacemaker.get_current_round() {
             // TODO: This block could be received via blocksync. Retrieve the block received
             // this round and try to vote for that
-            let state_root_action =
-                state_root_action.expect("should exist if proposal was handled this round");
-            cmds.extend(self.try_vote(&block, state_root_action));
+            cmds.extend(self.try_vote(&block));
         } else {
             cmds.extend(self.try_propose());
         }
@@ -1144,6 +1053,7 @@ where
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
         let mut cmds = Vec::new();
         for newly_coherent_block in self.consensus.pending_block_tree.try_update_coherency(
+            self.metrics,
             updated_block_id,
             self.block_policy,
             self.state_backend,
@@ -1186,7 +1096,6 @@ where
     fn try_vote(
         &mut self,
         validated_block: &BPT::ValidatedBlock,
-        state_root_action: StateRootAction,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
         let mut cmds = Vec::new();
         let round = self.consensus.pacemaker.get_current_round();
@@ -1235,16 +1144,7 @@ where
             return cmds;
         }
 
-        debug!(?round, block_id = ?validated_block.get_id(), ?state_root_action, "try vote");
-
-        // StateRootAction::Defer means we don't have enough information to
-        // decide if the state root hash is valid. It's ok to insert into the
-        // block tree, but we can't vote on the block
-        if matches!(state_root_action, StateRootAction::Defer) {
-            return cmds;
-        }
-
-        assert!(matches!(state_root_action, StateRootAction::Proceed));
+        debug!(?round, block_id = ?validated_block.get_id(), "try vote");
 
         // decide if its safe to cast vote on this proposal
         let last_tc = self.consensus.pacemaker.get_last_round_tc();
@@ -1383,9 +1283,11 @@ where
                 )
             };
 
-        let Some(delayed_execution_results) =
-            self.get_expected_execution_results(try_propose_seq_num, &pending_blocktree_blocks)
-        else {
+        let Ok(delayed_execution_results) = self.block_policy.get_expected_execution_results(
+            try_propose_seq_num,
+            pending_blocktree_blocks.clone(),
+            self.state_backend,
+        ) else {
             warn!(
                 ?node_id,
                 ?round,
@@ -1490,41 +1392,6 @@ where
     }
 
     #[must_use]
-    fn state_root_hash_validation(&mut self, p: &ProposalMessage<ST, SCT, EPT>) -> StateRootAction {
-        // Propose when there's a path to root
-        let Some(pending_blocktree_blocks) = self
-            .consensus
-            .pending_block_tree
-            .get_blocks_on_path_from_root(&p.block_header.get_parent_id())
-        else {
-            debug!("no path to root, unable to verify");
-            self.metrics.consensus_events.rx_no_path_to_root += 1;
-            return StateRootAction::Defer;
-        };
-
-        let Some(expected_execution_results) =
-            self.get_expected_execution_results(p.block_header.seq_num, &pending_blocktree_blocks)
-        else {
-            warn!(
-                block_seq_num =? p.block_header.seq_num,
-                "execution result not ready, unable to verify"
-            );
-            self.metrics.consensus_events.rx_execution_lagging += 1;
-            return StateRootAction::Defer;
-        };
-
-        if expected_execution_results != p.block_header.delayed_execution_results {
-            debug!("State root hash in proposal conflicts with local value");
-            self.metrics.consensus_events.rx_bad_state_root += 1;
-            return StateRootAction::Reject;
-        }
-
-        debug!("Received Proposal Message with valid state root hash");
-        self.metrics.consensus_events.rx_proposal += 1;
-        StateRootAction::Proceed
-    }
-
-    #[must_use]
     fn proposal_certificate_handling(
         &mut self,
         p: &ProposalMessage<ST, SCT, EPT>,
@@ -1555,45 +1422,16 @@ where
 
         cmds
     }
-
-    fn get_expected_execution_results(
-        &self,
-        consensus_block_seq_num: SeqNum,
-        pending_blocktree_blocks: &Vec<&BPT::ValidatedBlock>,
-    ) -> Option<Vec<EPT::FinalizedHeader>> {
-        let expected_execution_results = if consensus_block_seq_num < self.config.execution_delay {
-            Vec::new()
-        } else {
-            let execution_result_seq_num = consensus_block_seq_num - self.config.execution_delay;
-            let maybe_execution_result = if let Some(block) = pending_blocktree_blocks
-                .iter()
-                .find(|block| block.get_seq_num() == execution_result_seq_num)
-            {
-                self.consensus
-                    .proposed_execution_results
-                    .get(&block.get_round())
-                    .filter(|result| result.block_id == block.get_id())
-                    .map(|result| &result.result)
-            } else {
-                assert!(
-                    execution_result_seq_num <= self.consensus.pending_block_tree.root().seq_num
-                );
-                self.consensus
-                    .finalized_execution_results
-                    .get(&execution_result_seq_num)
-            };
-
-            vec![maybe_execution_result?.clone()]
-        };
-        Some(expected_execution_results)
-    }
 }
 
 #[cfg(test)]
 mod test {
     use std::{collections::BTreeMap, ops::Deref, time::Duration};
 
-    use alloy_consensus::TxEnvelope;
+    use alloy_consensus::{
+        constants::{EMPTY_TRANSACTIONS, EMPTY_WITHDRAWALS},
+        Header, TxEnvelope, EMPTY_OMMER_ROOT_HASH,
+    };
     use itertools::Itertools;
     use monad_chain_config::{
         revision::{ChainParams, MockChainRevision},
@@ -1609,13 +1447,13 @@ mod test {
     };
     use monad_consensus_types::{
         block::{
-            BlockPolicy, BlockRange, ConsensusBlockHeader, ConsensusFullBlock, ExecutionResult,
+            BlockPolicy, BlockRange, ConsensusBlockHeader, ConsensusFullBlock,
             OptimisticPolicyCommit, GENESIS_TIMESTAMP,
         },
         block_validator::BlockValidator,
         checkpoint::RootInfo,
         metrics::Metrics,
-        payload::{ConsensusBlockBody, ConsensusBlockBodyInner},
+        payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
         quorum_certificate::QuorumCertificate,
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         timeout::Timeout,
@@ -1631,7 +1469,7 @@ mod test {
     use monad_eth_block_policy::EthBlockPolicy;
     use monad_eth_block_validator::EthValidator;
     use monad_eth_types::{
-        Balance, EthBlockBody, EthExecutionProtocol, EthHeader, BASE_FEE_PER_GAS,
+        Balance, EthBlockBody, EthExecutionProtocol, EthHeader, ProposedEthHeader, BASE_FEE_PER_GAS,
     };
     use monad_multi_sig::MultiSig;
     use monad_state_backend::{InMemoryState, InMemoryStateInner, StateBackend, StateBackendTest};
@@ -1641,8 +1479,8 @@ mod test {
         validators::create_keys_w_validators,
     };
     use monad_types::{
-        BlockId, Epoch, ExecutionProtocol, MockableFinalizedHeader, MockableProposedHeader, NodeId,
-        Round, RouterTarget, SeqNum, Stake, GENESIS_SEQ_NUM,
+        BlockId, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum, Stake,
+        GENESIS_SEQ_NUM,
     };
     use monad_validator::{
         epoch_manager::EpochManager,
@@ -1676,20 +1514,25 @@ mod test {
     type BlockValidatorType =
         EthValidator<SignatureType, SignatureCollectionType, StateBackendType>;
 
-    struct NodeContext<ST, SCT, EPT, BPT, SBT, BVT, VTF, LT>
+    struct NodeContext<ST, SCT, BPT, SBT, BVT, VTF, LT>
     where
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        EPT: ExecutionProtocol,
-        EPT::FinalizedHeader: MockableFinalizedHeader,
-        EPT::ProposedHeader: MockableProposedHeader,
-        BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
         SBT: StateBackend + StateBackendTest,
-        BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+        BVT: BlockValidator<ST, SCT, EthExecutionProtocol, BPT, SBT>,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
-        consensus_state: ConsensusState<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>,
+        consensus_state: ConsensusState<
+            ST,
+            SCT,
+            EthExecutionProtocol,
+            BPT,
+            SBT,
+            MockChainConfig,
+            MockChainRevision,
+        >,
 
         metrics: Metrics,
         epoch_manager: EpochManager,
@@ -1710,17 +1553,14 @@ mod test {
         cert_keypair: SignatureCollectionKeyPairType<SCT>,
     }
 
-    impl<ST, SCT, EPT, BPT, SBT, BVT, VTF, LT> NodeContext<ST, SCT, EPT, BPT, SBT, BVT, VTF, LT>
+    impl<ST, SCT, BPT, SBT, BVT, VTF, LT> NodeContext<ST, SCT, BPT, SBT, BVT, VTF, LT>
     where
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        EPT: ExecutionProtocol,
-        EPT::FinalizedHeader: MockableFinalizedHeader,
-        EPT::ProposedHeader: MockableProposedHeader,
-        BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
         SBT: StateBackend + StateBackendTest,
-        BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+        BVT: BlockValidator<ST, SCT, EthExecutionProtocol, BPT, SBT>,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
         fn wrapped_state(
@@ -1728,7 +1568,7 @@ mod test {
         ) -> ConsensusStateWrapper<
             ST,
             SCT,
-            EPT,
+            EthExecutionProtocol,
             BPT,
             SBT,
             VTF,
@@ -1763,8 +1603,8 @@ mod test {
         fn handle_proposal_message(
             &mut self,
             author: NodeId<SCT::NodeIdPubKey>,
-            p: ProposalMessage<ST, SCT, EPT>,
-        ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+            p: ProposalMessage<ST, SCT, EthExecutionProtocol>,
+        ) -> Vec<ConsensusCommand<ST, SCT, EthExecutionProtocol, BPT, SBT>> {
             self.wrapped_state().handle_proposal_message(author, p)
         }
 
@@ -1772,7 +1612,7 @@ mod test {
             &mut self,
             author: NodeId<SCT::NodeIdPubKey>,
             p: TimeoutMessage<SCT>,
-        ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+        ) -> Vec<ConsensusCommand<ST, SCT, EthExecutionProtocol, BPT, SBT>> {
             self.wrapped_state().handle_timeout_message(author, p)
         }
 
@@ -1780,24 +1620,24 @@ mod test {
             &mut self,
             author: NodeId<SCT::NodeIdPubKey>,
             p: VoteMessage<SCT>,
-        ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+        ) -> Vec<ConsensusCommand<ST, SCT, EthExecutionProtocol, BPT, SBT>> {
             self.wrapped_state().handle_vote_message(author, p)
         }
 
         fn handle_block_sync(
             &mut self,
             block_range: BlockRange,
-            full_blocks: Vec<ConsensusFullBlock<ST, SCT, EPT>>,
-        ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+            full_blocks: Vec<ConsensusFullBlock<ST, SCT, EthExecutionProtocol>>,
+        ) -> Vec<ConsensusCommand<ST, SCT, EthExecutionProtocol, BPT, SBT>> {
             self.wrapped_state()
                 .handle_block_sync(block_range, full_blocks)
         }
 
-        fn ledger_commit(&mut self, block: &ConsensusBlockHeader<ST, SCT, EPT>) {
+        fn ledger_commit(&mut self, block: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>) {
             self.state_backend.ledger_commit(&block.get_id());
         }
 
-        fn ledger_propose(&mut self, block: &ConsensusBlockHeader<ST, SCT, EPT>) {
+        fn ledger_propose(&mut self, block: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>) {
             self.state_backend.ledger_propose(
                 block.get_id(),
                 block.seq_num,
@@ -1808,19 +1648,16 @@ mod test {
         }
     }
 
-    struct EnvContext<ST, SCT, EPT, VTF, LT>
+    struct EnvContext<ST, SCT, VTF, LT>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        EPT: ExecutionProtocol,
-        EPT::FinalizedHeader: MockableFinalizedHeader,
-        EPT::ProposedHeader: MockableProposedHeader,
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
-        proposal_gen: ProposalGen<ST, SCT, EPT>,
+        proposal_gen: ProposalGen<ST, SCT, EthExecutionProtocol>,
         /// malicious_proposal_gen starts with a different timestamp
-        malicious_proposal_gen: ProposalGen<ST, SCT, EPT>,
+        malicious_proposal_gen: ProposalGen<ST, SCT, EthExecutionProtocol>,
         keys: Vec<ST::KeyPairType>,
         cert_keys: Vec<SignatureCollectionKeyPairType<SCT>>,
         epoch_manager: EpochManager,
@@ -1828,58 +1665,105 @@ mod test {
         election: LT,
     }
 
-    impl<ST, SCT, EPT, VTF, LT> EnvContext<ST, SCT, EPT, VTF, LT>
+    impl<ST, SCT, VTF, LT> EnvContext<ST, SCT, VTF, LT>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        EPT: ExecutionProtocol,
-        EPT::FinalizedHeader: MockableFinalizedHeader,
-        EPT::ProposedHeader: MockableProposedHeader,
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
         /// a proposal with no execution results
         /// if execution_delay == MAX, this can always be used instead of next_proposal
-        fn next_proposal_empty(&mut self) -> Verified<ST, ProposalMessage<ST, SCT, EPT>> {
+        fn next_proposal_empty(
+            &mut self,
+        ) -> Verified<ST, ProposalMessage<ST, SCT, EthExecutionProtocol>> {
             self.proposal_gen.next_proposal(
                 &self.keys,
                 &self.cert_keys,
                 &self.epoch_manager,
                 &self.val_epoch_map,
                 &self.election,
+                |seq_num, timestamp_ns, round_signature: RoundSignature<_>| ProposedEthHeader {
+                    transactions_root: *EMPTY_TRANSACTIONS,
+                    ommers_hash: *EMPTY_OMMER_ROOT_HASH,
+                    withdrawals_root: *EMPTY_WITHDRAWALS,
+                    beneficiary: Default::default(),
+                    difficulty: 0,
+                    number: seq_num.0,
+                    gas_limit: CHAIN_PARAMS.proposal_gas_limit,
+                    timestamp: (timestamp_ns / 1_000_000_000) as u64,
+                    mix_hash: round_signature.get_hash().0,
+                    nonce: [0_u8; 8],
+                    extra_data: [0_u8; 32],
+                    base_fee_per_gas: BASE_FEE_PER_GAS,
+                    blob_gas_used: 0,
+                    excess_blob_gas: 0,
+                    parent_beacon_block_root: [0_u8; 32],
+                },
                 Vec::new(),
-                CHAIN_PARAMS.proposal_gas_limit,
             )
         }
 
         fn next_proposal(
             &mut self,
-            delayed_execution_results: Vec<EPT::FinalizedHeader>,
-        ) -> Verified<ST, ProposalMessage<ST, SCT, EPT>> {
+            delayed_execution_results: Vec<EthHeader>,
+        ) -> Verified<ST, ProposalMessage<ST, SCT, EthExecutionProtocol>> {
             self.proposal_gen.next_proposal(
                 &self.keys,
                 &self.cert_keys,
                 &self.epoch_manager,
                 &self.val_epoch_map,
                 &self.election,
+                |seq_num, timestamp_ns, round_signature| ProposedEthHeader {
+                    transactions_root: *EMPTY_TRANSACTIONS,
+                    ommers_hash: *EMPTY_OMMER_ROOT_HASH,
+                    withdrawals_root: *EMPTY_WITHDRAWALS,
+                    beneficiary: Default::default(),
+                    difficulty: 0,
+                    number: seq_num.0,
+                    gas_limit: CHAIN_PARAMS.proposal_gas_limit,
+                    timestamp: (timestamp_ns / 1_000_000_000) as u64,
+                    mix_hash: round_signature.get_hash().0,
+                    nonce: [0_u8; 8],
+                    extra_data: [0_u8; 32],
+                    base_fee_per_gas: BASE_FEE_PER_GAS,
+                    blob_gas_used: 0,
+                    excess_blob_gas: 0,
+                    parent_beacon_block_root: [0_u8; 32],
+                },
                 delayed_execution_results,
-                CHAIN_PARAMS.proposal_gas_limit,
             )
         }
 
         // TODO come up with better API for making mal proposals relative to state of proposal_gen
         fn branch_proposal(
             &mut self,
-            delayed_execution_results: Vec<EPT::FinalizedHeader>,
-        ) -> Verified<ST, ProposalMessage<ST, SCT, EPT>> {
+            delayed_execution_results: Vec<EthHeader>,
+        ) -> Verified<ST, ProposalMessage<ST, SCT, EthExecutionProtocol>> {
             self.malicious_proposal_gen.next_proposal(
                 &self.keys,
                 &self.cert_keys,
                 &self.epoch_manager,
                 &self.val_epoch_map,
                 &self.election,
+                |seq_num, timestamp_ns, round_signature| ProposedEthHeader {
+                    transactions_root: *EMPTY_TRANSACTIONS,
+                    ommers_hash: *EMPTY_OMMER_ROOT_HASH,
+                    withdrawals_root: *EMPTY_WITHDRAWALS,
+                    beneficiary: Default::default(),
+                    difficulty: 0,
+                    number: seq_num.0,
+                    gas_limit: CHAIN_PARAMS.proposal_gas_limit,
+                    timestamp: (timestamp_ns / 1_000_000_000) as u64,
+                    mix_hash: round_signature.get_hash().0,
+                    nonce: [0_u8; 8],
+                    extra_data: [0_u8; 32],
+                    base_fee_per_gas: BASE_FEE_PER_GAS,
+                    blob_gas_used: 0,
+                    excess_blob_gas: 0,
+                    parent_beacon_block_root: [0_u8; 32],
+                },
                 delayed_execution_results,
-                CHAIN_PARAMS.proposal_gas_limit,
             )
         }
 
@@ -1899,10 +1783,9 @@ mod test {
     fn setup<
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        EPT: ExecutionProtocol,
-        BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
         SBT: StateBackend + StateBackendTest,
-        BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+        BVT: BlockValidator<ST, SCT, EthExecutionProtocol, BPT, SBT>,
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
     >(
@@ -1914,13 +1797,9 @@ mod test {
         block_validator: impl Fn() -> BVT,
         execution_delay: SeqNum,
     ) -> (
-        EnvContext<ST, SCT, EPT, VTF, LT>,
-        Vec<NodeContext<ST, SCT, EPT, BPT, SBT, BVT, VTF, LT>>,
-    )
-    where
-        EPT::FinalizedHeader: MockableFinalizedHeader,
-        EPT::ProposedHeader: MockableProposedHeader,
-    {
+        EnvContext<ST, SCT, VTF, LT>,
+        Vec<NodeContext<ST, SCT, BPT, SBT, BVT, VTF, LT>>,
+    ) {
         let (keys, cert_keys, valset, _valmap) =
             create_keys_w_validators::<ST, SCT, _>(num_states, ValidatorSetFactory::default());
         let val_stakes = Vec::from_iter(valset.get_members().clone());
@@ -1932,7 +1811,7 @@ mod test {
         let mut dupkeys = create_keys::<ST>(num_states);
         let mut dupcertkeys = create_certificate_keys::<SCT>(num_states);
 
-        let ctxs: Vec<NodeContext<ST, SCT, EPT, BPT, SBT, BVT, _, _>> = (0..num_states)
+        let ctxs: Vec<NodeContext<ST, SCT, BPT, SBT, BVT, _, _>> = (0..num_states)
             .map(|i| {
                 let mut val_epoch_map = ValidatorsEpochMapping::new(valset_factory.clone());
                 val_epoch_map.insert(
@@ -2016,7 +1895,7 @@ mod test {
         );
         let epoch_manager = EpochManager::new(SeqNum(100), Round(20), &[(Epoch(1), Round(0))]);
 
-        let env: EnvContext<ST, SCT, EPT, VTF, LT> = EnvContext {
+        let env: EnvContext<ST, SCT, VTF, LT> = EnvContext {
             proposal_gen: ProposalGen::new(),
             malicious_proposal_gen: ProposalGen::new().with_timestamp(100),
             keys,
@@ -2037,14 +1916,13 @@ mod test {
         }
     }
 
-    fn extract_vote_msgs<ST, SCT, EPT, BPT, SBT>(
-        cmds: Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>>,
+    fn extract_vote_msgs<ST, SCT, BPT, SBT>(
+        cmds: Vec<ConsensusCommand<ST, SCT, EthExecutionProtocol, BPT, SBT>>,
     ) -> Vec<VoteMessage<SCT>>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        EPT: ExecutionProtocol,
-        BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
         SBT: StateBackend,
     {
         cmds.into_iter()
@@ -2061,14 +1939,13 @@ mod test {
             .collect::<Vec<_>>()
     }
 
-    fn extract_schedule_vote_timer<ST, SCT, EPT, BPT, SBT>(
-        cmds: Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>>,
+    fn extract_schedule_vote_timer<ST, SCT, BPT, SBT>(
+        cmds: Vec<ConsensusCommand<ST, SCT, EthExecutionProtocol, BPT, SBT>>,
     ) -> Vec<Round>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        EPT: ExecutionProtocol,
-        BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
         SBT: StateBackend,
     {
         cmds.into_iter()
@@ -2079,14 +1956,13 @@ mod test {
             .collect::<Vec<_>>()
     }
 
-    fn extract_create_proposal_command_round<ST, SCT, EPT, BPT, SBT>(
-        cmds: Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>>,
+    fn extract_create_proposal_command_round<ST, SCT, BPT, SBT>(
+        cmds: Vec<ConsensusCommand<ST, SCT, EthExecutionProtocol, BPT, SBT>>,
     ) -> Round
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        EPT: ExecutionProtocol,
-        BPT: BlockPolicy<ST, SCT, EPT, SBT> + std::fmt::Debug,
+        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT> + std::fmt::Debug,
         SBT: StateBackend + std::fmt::Debug,
     {
         cmds.iter()
@@ -2097,14 +1973,13 @@ mod test {
             .unwrap_or_else(|| panic!("couldn't extract proposal: {:?}", cmds))
     }
 
-    fn extract_blocksync_requests<ST, SCT, EPT, BPT, SBT>(
-        cmds: Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>>,
+    fn extract_blocksync_requests<ST, SCT, BPT, SBT>(
+        cmds: Vec<ConsensusCommand<ST, SCT, EthExecutionProtocol, BPT, SBT>>,
     ) -> Vec<BlockRange>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        EPT: ExecutionProtocol,
-        BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
         SBT: StateBackend,
     {
         cmds.into_iter()
@@ -2239,7 +2114,6 @@ mod test {
         let (env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthExecutionProtocol,
             BlockPolicyType,
             StateBackendType,
             BlockValidatorType,
@@ -2298,7 +2172,6 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthExecutionProtocol,
             BlockPolicyType,
             StateBackendType,
             BlockValidatorType,
@@ -2342,7 +2215,6 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthExecutionProtocol,
             BlockPolicyType,
             StateBackendType,
             BlockValidatorType,
@@ -2403,7 +2275,6 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthExecutionProtocol,
             BlockPolicyType,
             StateBackendType,
             BlockValidatorType,
@@ -2436,7 +2307,6 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthExecutionProtocol,
             BlockPolicyType,
             StateBackendType,
             BlockValidatorType,
@@ -2499,7 +2369,6 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthExecutionProtocol,
             BlockPolicyType,
             StateBackendType,
             BlockValidatorType,
@@ -2590,7 +2459,6 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthExecutionProtocol,
             BlockPolicyType,
             StateBackendType,
             BlockValidatorType,
@@ -2682,7 +2550,6 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthExecutionProtocol,
             BlockPolicyType,
             StateBackendType,
             BlockValidatorType,
@@ -2760,7 +2627,6 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthExecutionProtocol,
             BlockPolicyType,
             StateBackendType,
             BlockValidatorType,
@@ -2971,7 +2837,6 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthExecutionProtocol,
             BlockPolicyType,
             StateBackendType,
             BlockValidatorType,
@@ -2988,7 +2853,7 @@ mod test {
         );
         let mut wrapped_state = ctx[0].wrapped_state();
 
-        env.next_proposal(vec![EthHeader::from_seq_num(SeqNum(0))]);
+        env.next_proposal(Vec::new());
 
         let p1 = env.next_proposal(Vec::new());
 
@@ -3005,12 +2870,9 @@ mod test {
             ConsensusCommand::Schedule { duration: _ }
         ));
         assert!(matches!(cmds[3], ConsensusCommand::RequestSync { .. }));
-        assert_eq!(wrapped_state.metrics.consensus_events.rx_no_path_to_root, 1);
     }
 
-    /// Test consensus behavior when a state root hash is missing. This is
-    /// tested by only updating consensus with one state root, then handling a
-    /// proposal with state root lower than that
+    /// Test consensus behavior with mismatching eth header
     #[test]
     fn test_missing_state_root() {
         let num_state = 4;
@@ -3018,7 +2880,6 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthExecutionProtocol,
             BlockPolicyType,
             StateBackendType,
             BlockValidatorType,
@@ -3036,45 +2897,50 @@ mod test {
 
         let mut wrapped_state = ctx[0].wrapped_state();
 
-        // add state root for the genesis block
-        let cmds = wrapped_state.add_execution_result(ExecutionResult::Finalized(
-            GENESIS_SEQ_NUM,
-            EthHeader::from_seq_num(GENESIS_SEQ_NUM),
-        ));
-        assert!(cmds.is_empty());
-
         // prepare 5 blocks
         for _ in 0..4 {
             let p = env.next_proposal(Vec::new());
             let (author, _, p) = p.destructure();
             let _cmds = wrapped_state.handle_proposal_message(author, p);
         }
-        let p = env.next_proposal(vec![EthHeader::from_seq_num(SeqNum(0))]);
+        let p = env.next_proposal(vec![EthHeader(Header {
+            number: 0,
+            ..Default::default()
+        })]);
         let (author, _, p) = p.destructure();
+        let bid_1 = p.block_header.get_id();
         let _cmds = wrapped_state.handle_proposal_message(author, p);
+        // valid execution result, so is coherent
+        assert!(wrapped_state
+            .consensus
+            .pending_block_tree
+            .is_coherent(&bid_1));
 
-        assert_eq!(wrapped_state.metrics.consensus_events.rx_proposal, 5);
         assert_eq!(wrapped_state.consensus.get_current_round(), Round(5));
 
-        // only execution update for block 3 comes
-        let cmds = wrapped_state.add_execution_result(ExecutionResult::Finalized(
-            SeqNum(3),
-            EthHeader::from_seq_num(SeqNum(3)),
-        ));
-        assert!(cmds.is_empty());
+        assert_eq!(
+            wrapped_state.metrics.consensus_events.rx_execution_lagging,
+            0
+        );
 
         // Block 11 carries the state root hash from executing block 6 the state
         // root hash is missing. The certificates are processed - consensus enters new round and commit blocks, but it doesn't vote
-        let p = env.next_proposal(Vec::new());
+        let p = env.next_proposal(
+            // no eth header here
+            Vec::new(),
+        );
         let (author, _, p) = p.destructure();
+        let bid_2 = p.block_header.get_id();
 
         let cmds = wrapped_state.handle_proposal_message(author, p);
+        // invalid execution result, so incoherent and we don't vote
+        assert!(!wrapped_state
+            .consensus
+            .pending_block_tree
+            .is_coherent(&bid_2));
+        assert_eq!(wrapped_state.metrics.consensus_events.rx_bad_state_root, 1);
 
         assert_eq!(wrapped_state.consensus.get_current_round(), Round(6));
-        assert_eq!(
-            wrapped_state.metrics.consensus_events.rx_execution_lagging,
-            1
-        );
         assert_eq!(cmds.len(), 4);
         assert!(matches!(
             cmds[0],
@@ -3088,69 +2954,6 @@ mod test {
         ));
     }
 
-    #[test]
-    fn test_state_root_updates() {
-        let num_state = 4;
-        let execution_delay = SeqNum(1);
-        let (mut env, mut ctx) = setup::<
-            SignatureType,
-            SignatureCollectionType,
-            EthExecutionProtocol,
-            BlockPolicyType,
-            StateBackendType,
-            BlockValidatorType,
-            _,
-            _,
-        >(
-            num_state,
-            ValidatorSetFactory::default(),
-            SimpleRoundRobin::default(),
-            || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
-            execution_delay,
-        );
-        let node = &mut ctx[0].wrapped_state();
-
-        // delay gap in setup is 1
-
-        let cmds = node.add_execution_result(ExecutionResult::Finalized(
-            SeqNum(0),
-            EthHeader::from_seq_num(SeqNum(0)),
-        ));
-        assert!(cmds.is_empty());
-
-        let p0 = env.next_proposal(vec![EthHeader::from_seq_num(SeqNum(0))]);
-        let (author, _, verified_message) = p0.destructure();
-        let _ = node.handle_proposal_message(author, verified_message);
-
-        let p1 = env.next_proposal(vec![EthHeader::from_seq_num(SeqNum(1))]);
-        let (author, _, verified_message) = p1.destructure();
-        let _ = node.handle_proposal_message(author, verified_message);
-
-        // commit some blocks and confirm cleanup of state root hashes happened
-
-        let p2 = env.next_proposal(vec![EthHeader::from_seq_num(SeqNum(2))]);
-        let (author, _, verified_message) = p2.destructure();
-        let p2_cmds = node.handle_proposal_message(author, verified_message);
-        assert!(!find_commit_cmds(&p2_cmds).is_empty());
-        let cmds = node.add_execution_result(ExecutionResult::Finalized(
-            SeqNum(1),
-            EthHeader::from_seq_num(SeqNum(1)),
-        ));
-        assert!(cmds.is_empty());
-
-        // Delay gap is 1 and we have received proposals with seq num 0, 1, 2, 3
-        // state_root_validator had updates for 0, 1
-        //
-        // Delay gap is 1, so expect 1 to remain in finalized_execution_results
-        assert_eq!(1, node.consensus.finalized_execution_results.len());
-        assert!(node
-            .consensus
-            .finalized_execution_results
-            .contains_key(&SeqNum(1)));
-    }
-
     #[test_case(4; "4 participants")]
     #[test_case(5; "5 participants")]
     #[test_case(6; "6 participants")]
@@ -3161,7 +2964,6 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthExecutionProtocol,
             BlockPolicyType,
             StateBackendType,
             BlockValidatorType,
@@ -3267,7 +3069,6 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthExecutionProtocol,
             BlockPolicyType,
             StateBackendType,
             BlockValidatorType,
@@ -3337,7 +3138,6 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthExecutionProtocol,
             BlockPolicyType,
             StateBackendType,
             BlockValidatorType,
@@ -3384,7 +3184,6 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthExecutionProtocol,
             BlockPolicyType,
             StateBackendType,
             BlockValidatorType,
@@ -3507,7 +3306,6 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthExecutionProtocol,
             BlockPolicyType,
             StateBackendType,
             BlockValidatorType,
@@ -3578,7 +3376,6 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthExecutionProtocol,
             BlockPolicyType,
             StateBackendType,
             BlockValidatorType,
@@ -3646,7 +3443,6 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthExecutionProtocol,
             BlockPolicyType,
             StateBackendType,
             BlockValidatorType,
@@ -3752,7 +3548,6 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthExecutionProtocol,
             BlockPolicyType,
             StateBackendType,
             BlockValidatorType,
@@ -3849,7 +3644,6 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthExecutionProtocol,
             BlockPolicyType,
             StateBackendType,
             BlockValidatorType,
@@ -3962,7 +3756,6 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthExecutionProtocol,
             BlockPolicyType,
             StateBackendType,
             BlockValidatorType,
@@ -4112,7 +3905,6 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthExecutionProtocol,
             BlockPolicyType,
             StateBackendType,
             BlockValidatorType,
@@ -4232,7 +4024,6 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthExecutionProtocol,
             BlockPolicyType,
             StateBackendType,
             BlockValidatorType,
@@ -4274,11 +4065,10 @@ mod test {
     #[test]
     fn test_blocksync_requests() {
         let num_states = 2;
-        let execution_delay = SeqNum(4);
+        let execution_delay = SeqNum::MAX;
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthExecutionProtocol,
             BlockPolicyType,
             StateBackendType,
             BlockValidatorType,
@@ -4340,7 +4130,6 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthExecutionProtocol,
             BlockPolicyType,
             StateBackendType,
             BlockValidatorType,
@@ -4444,11 +4233,10 @@ mod test {
         // State 1 receives Block 4. It should validate Block 4, and send a vote message.
 
         let num_states = 2;
-        let execution_delay = SeqNum(4);
+        let execution_delay = SeqNum::MAX;
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthExecutionProtocol,
             BlockPolicyType,
             StateBackendType,
             BlockValidatorType,
@@ -4574,7 +4362,6 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthExecutionProtocol,
             BlockPolicyType,
             StateBackendType,
             BlockValidatorType,
@@ -4743,7 +4530,6 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthExecutionProtocol,
             EthBlockPolicy<SignatureType, SignatureCollectionType>,
             InMemoryState,
             EthValidator<SignatureType, SignatureCollectionType, InMemoryState>,
@@ -4838,7 +4624,6 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthExecutionProtocol,
             BlockPolicyType,
             StateBackendType,
             BlockValidatorType,
@@ -4869,7 +4654,10 @@ mod test {
         );
 
         // The author_<n>, proposal_message_<n> refer to the messages after the initial setup with execution_delay proposals.
-        let cp = env.next_proposal(Vec::new());
+        let cp = env.next_proposal(vec![EthHeader(Header {
+            number: 0,
+            ..Default::default()
+        })]);
         let (author_1, _, proposal_message_1) = cp.destructure();
         let block_1_id = proposal_message_1.block_header.get_id();
 
@@ -4882,11 +4670,17 @@ mod test {
             .expect("should be in the blocktree");
         assert!(block_1_blocktree_entry.is_coherent);
 
-        let cp = env.next_proposal(Vec::new());
+        let cp = env.next_proposal(vec![EthHeader(Header {
+            number: 1,
+            ..Default::default()
+        })]);
         let (author_2, _, proposal_message_2) = cp.destructure();
         let block_2_id = proposal_message_2.block_header.get_id();
 
-        let cp = env.next_proposal(Vec::new());
+        let cp = env.next_proposal(vec![EthHeader(Header {
+            number: 2,
+            ..Default::default()
+        })]);
         let (author_3, _, proposal_message_3) = cp.destructure();
         let block_3_id = proposal_message_3.block_header.get_id();
 

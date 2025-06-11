@@ -16,7 +16,7 @@ use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
     CertificateSignatureRecoverable,
 };
-use monad_types::{Epoch, ExecutionProtocol, MockableProposedHeader, NodeId, Round, SeqNum};
+use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, SeqNum};
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
@@ -42,7 +42,6 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    EPT::ProposedHeader: MockableProposedHeader,
 {
     fn default() -> Self {
         Self::new()
@@ -54,7 +53,6 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    EPT::ProposedHeader: MockableProposedHeader,
 {
     pub fn new() -> Self {
         let genesis_qc = QuorumCertificate::genesis_qc();
@@ -85,8 +83,12 @@ where
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
+        create_execution_inputs: impl FnOnce(
+            SeqNum,
+            u128,
+            RoundSignature<SCT::SignatureType>,
+        ) -> EPT::ProposedHeader,
         delayed_execution_results: Vec<EPT::FinalizedHeader>,
-        proposal_gas_limit: u64,
     ) -> Verified<ST, ProposalMessage<ST, SCT, EPT>> {
         // high_qc is the highest qc seen in a proposal
         let (qc, last_seq_num) = if self.last_tc.is_some() {
@@ -124,12 +126,7 @@ where
             self.epoch,
             self.round,
             delayed_execution_results,
-            EPT::ProposedHeader::create(
-                seq_num,
-                self.timestamp,
-                round_signature.get_hash().0,
-                proposal_gas_limit,
-            ),
+            create_execution_inputs(seq_num, self.timestamp, round_signature.clone()),
             block_body.get_id(),
             qc.clone(),
             seq_num,

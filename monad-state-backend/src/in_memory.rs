@@ -3,8 +3,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use alloy_consensus::Header;
 use alloy_primitives::Address;
-use monad_eth_types::{Balance, EthAccount, Nonce};
+use monad_eth_types::{Balance, EthAccount, EthHeader, Nonce};
 use monad_types::{BlockId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM};
 use serde::{Deserialize, Serialize};
 use tracing::trace;
@@ -228,6 +229,20 @@ impl StateBackend for InMemoryStateInner {
                 })
             })
             .collect())
+    }
+
+    fn get_execution_result(
+        &self,
+        _block_id: &BlockId,
+        seq_num: &SeqNum,
+        _round: &Round,
+        _is_finalized: bool,
+    ) -> Result<EthHeader, StateBackendError> {
+        // TODO make this mock less trivial
+        Ok(EthHeader(Header {
+            number: seq_num.0,
+            ..Default::default()
+        }))
     }
 
     fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum> {

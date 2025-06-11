@@ -6,7 +6,7 @@ use std::{
 
 use alloy_primitives::Address;
 use itertools::Itertools;
-use monad_eth_types::EthAccount;
+use monad_eth_types::{EthAccount, EthHeader};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{BlockId, DropTimer, Round, SeqNum};
 use tracing::warn;
@@ -16,6 +16,7 @@ struct RoundCache {
     block_id: BlockId,
     seq_num: SeqNum,
     accounts: BTreeMap<Address, Option<EthAccount>>,
+    execution_result: Option<EthHeader>,
 }
 
 #[derive(Debug)]
@@ -101,6 +102,7 @@ where
                     block_id: *block_id,
                     seq_num: *seq_num,
                     accounts: Default::default(),
+                    execution_result: None,
                 })
                 .accounts
                 .extend(
@@ -149,6 +151,41 @@ where
         }
 
         Ok(accounts_data)
+    }
+
+    fn get_execution_result(
+        &self,
+        block_id: &BlockId,
+        seq_num: &SeqNum,
+        round: &Round,
+        is_finalized: bool,
+    ) -> Result<EthHeader, StateBackendError> {
+        let mut cache = self.cache.lock().unwrap();
+
+        if let Some(round_cache) = cache.get(round) {
+            if &round_cache.block_id != block_id {
+                // drop cache
+                cache.remove(round);
+            } else if let Some(execution_result) = &round_cache.execution_result {
+                return Ok(execution_result.clone());
+            }
+        }
+
+        let execution_result =
+            self.state_backend
+                .get_execution_result(block_id, seq_num, round, is_finalized)?;
+
+        cache
+            .entry(*round)
+            .or_insert_with(|| RoundCache {
+                block_id: *block_id,
+                seq_num: *seq_num,
+                accounts: Default::default(),
+                execution_result: None,
+            })
+            .execution_result = Some(execution_result.clone());
+
+        Ok(execution_result)
     }
 
     fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum> {
