@@ -137,13 +137,16 @@ impl From<alloy_rlp::Error> for DeserializeError {
 
 impl<M: Decodable, ST: CertificateSignatureRecoverable> InboundRouterMessage<M, ST> {
     pub fn try_deserialize(data: &Bytes) -> Result<Self, DeserializeError> {
+        let mut data_ref = data.as_ref();
         let mut payload =
-            Header::decode_bytes(&mut data.as_ref(), true).map_err(DeserializeError::from)?;
-
+            Header::decode_bytes(&mut data_ref, true).map_err(DeserializeError::from)?;
+        if !data_ref.is_empty() {
+            return Err(DeserializeError("extra data after header".into()));
+        }
         let version =
             NetworkMessageVersion::decode(&mut payload).map_err(DeserializeError::from)?;
         let message_type = u8::decode(&mut payload).map_err(DeserializeError::from)?;
-        match message_type {
+        let result = match message_type {
             MESSAGE_TYPE_APP => {
                 match version.compression_version {
                     CompressionVersion::UncompressedVersion => {
@@ -192,6 +195,100 @@ impl<M: Decodable, ST: CertificateSignatureRecoverable> InboundRouterMessage<M, 
                 Ok(Self::FullNodesGroup(group_message))
             }
             _ => Err(DeserializeError("unknown message type".into())),
+        };
+        if !payload.is_empty() {
+            return Err(DeserializeError("extra data in payload".into()));
+        }
+        result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::BytesMut;
+    use monad_secp::SecpSignature;
+    use rstest::*;
+
+    use super::*;
+
+    #[derive(RlpEncodable, RlpDecodable)]
+    struct TestMessage {
+        value: u64,
+    }
+
+    fn prepare_data_with_extra_after_header() -> Bytes {
+        let msg = TestMessage { value: 42 };
+        let outbound_msg = OutboundRouterMessage::<TestMessage, SecpSignature>::AppMessage(msg);
+
+        let data = outbound_msg.try_serialize().unwrap();
+        let data_bytes = data.to_vec();
+        let mut buf = BytesMut::from(data_bytes.as_slice());
+        buf.extend_from_slice(b"extra_data");
+
+        buf.freeze()
+    }
+
+    fn prepare_data_with_extra_in_payload() -> Bytes {
+        let msg = TestMessage { value: 42 };
+        let version = NetworkMessageVersion::version();
+
+        let mut inner_buf = BytesMut::new();
+        version.encode(&mut inner_buf);
+        MESSAGE_TYPE_APP.encode(&mut inner_buf);
+        msg.encode(&mut inner_buf);
+        inner_buf.extend_from_slice(b"extra");
+
+        let mut buf = BytesMut::new();
+        Header {
+            list: true,
+            payload_length: inner_buf.len(),
+        }
+        .encode(&mut buf);
+        buf.extend_from_slice(&inner_buf);
+
+        buf.freeze()
+    }
+
+    fn prepare_valid_data() -> Bytes {
+        let msg = TestMessage { value: 42 };
+        let outbound_msg = OutboundRouterMessage::<TestMessage, SecpSignature>::AppMessage(msg);
+        outbound_msg.try_serialize().unwrap()
+    }
+
+    enum Expected {
+        Error(&'static str),
+        Success { value: u64 },
+    }
+
+    #[rstest]
+    #[case::extra_after_header(
+        prepare_data_with_extra_after_header(),
+        Expected::Error("extra data after header")
+    )]
+    #[case::extra_in_payload(
+        prepare_data_with_extra_in_payload(),
+        Expected::Error("extra data in payload")
+    )]
+    #[case::valid_message(prepare_valid_data(), Expected::Success { value: 42 })]
+    fn test_deserialize_validation(#[case] data: Bytes, #[case] expected: Expected) {
+        let result = InboundRouterMessage::<TestMessage, SecpSignature>::try_deserialize(&data);
+        match (result, expected) {
+            (Err(DeserializeError(msg)), Expected::Error(expected_msg)) => {
+                assert!(
+                    msg.contains(expected_msg),
+                    "error message '{}' should contain '{}'",
+                    msg,
+                    expected_msg
+                );
+            }
+            (Ok(InboundRouterMessage::AppMessage(decoded_msg)), Expected::Success { value }) => {
+                assert_eq!(decoded_msg.value, value);
+            }
+            (Ok(_), Expected::Success { .. }) => panic!("expected AppMessage variant"),
+            (Err(_), Expected::Success { .. }) => panic!("expected successful deserialization"),
+            (Ok(_), Expected::Error(expected_msg)) => {
+                panic!("expected error containing '{}'", expected_msg)
+            }
         }
     }
 }
