@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tracing::trace;
 
 use crate::{
-    chainstate::{self, get_block_key_from_tag, ChainState},
+    chainstate::{get_block_key_from_tag, ChainState, ChainStateError},
     eth_json_types::{
         BlockTagOrHash, BlockTags, EthHash, MonadBlock, MonadTransactionReceipt, Quantity,
     },
@@ -87,8 +87,8 @@ pub async fn monad_eth_getBlockByHash<T: Triedb>(
         Ok(block) => Ok(Some(MonadEthGetBlock {
             block: MonadBlock(block),
         })),
-        Err(chainstate::Error::ResourceNotFound) => Ok(None),
-        Err(chainstate::Error::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
+        Err(ChainStateError::ResourceNotFound) => Ok(None),
+        Err(ChainStateError::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
     }
 }
 
@@ -117,8 +117,8 @@ pub async fn monad_eth_getBlockByNumber<T: Triedb>(
         Ok(block) => Ok(Some(MonadEthGetBlock {
             block: MonadBlock(block),
         })),
-        Err(chainstate::Error::ResourceNotFound) => Ok(None),
-        Err(chainstate::Error::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
+        Err(ChainStateError::ResourceNotFound) => Ok(None),
+        Err(ChainStateError::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
     }
 }
 
@@ -141,8 +141,8 @@ pub async fn monad_eth_getBlockTransactionCountByHash<T: Triedb>(
         .await
     {
         Ok(block) => Ok(Some(format!("0x{:x}", block.transactions.len()))),
-        Err(chainstate::Error::ResourceNotFound) => Ok(None),
-        Err(chainstate::Error::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
+        Err(ChainStateError::ResourceNotFound) => Ok(None),
+        Err(ChainStateError::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
     }
 }
 
@@ -165,8 +165,8 @@ pub async fn monad_eth_getBlockTransactionCountByNumber<T: Triedb>(
         .await
     {
         Ok(block) => Ok(Some(format!("0x{:x}", block.transactions.len()))),
-        Err(chainstate::Error::ResourceNotFound) => Ok(None),
-        Err(chainstate::Error::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
+        Err(ChainStateError::ResourceNotFound) => Ok(None),
+        Err(ChainStateError::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
     }
 }
 
@@ -250,7 +250,7 @@ pub async fn monad_eth_getBlockReceipts<T: Triedb>(
 
     match chain_state.get_block_receipts(params.block).await {
         Ok(receipts) => Ok(Some(MonadEthGetBlockReceiptsResult(receipts))),
-        Err(chainstate::Error::ResourceNotFound) => Ok(None),
-        Err(chainstate::Error::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
+        Err(ChainStateError::ResourceNotFound) => Ok(None),
+        Err(ChainStateError::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
     }
 }

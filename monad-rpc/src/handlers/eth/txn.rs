@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, trace, warn};
 
 use crate::{
-    chainstate::{self, get_block_key_from_tag, ChainState},
+    chainstate::{get_block_key_from_tag, ChainState, ChainStateError},
     eth_json_types::{
         BlockTagOrHash, BlockTags, EthHash, MonadLog, MonadTransaction, MonadTransactionReceipt,
         Quantity, UnformattedData,
@@ -660,8 +660,8 @@ pub async fn monad_eth_getTransactionReceipt<T: Triedb>(
 
     match chain_state.get_transaction_receipt(params.tx_hash.0).await {
         Ok(receipt) => Ok(Some(MonadTransactionReceipt(receipt))),
-        Err(chainstate::Error::ResourceNotFound) => Ok(None),
-        Err(chainstate::Error::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
+        Err(ChainStateError::ResourceNotFound) => Ok(None),
+        Err(ChainStateError::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
     }
 }
 
@@ -682,8 +682,8 @@ pub async fn monad_eth_getTransactionByHash<T: Triedb>(
 
     match chain_state.get_transaction(params.tx_hash.0).await {
         Ok(tx) => Ok(Some(MonadTransaction(tx))),
-        Err(chainstate::Error::ResourceNotFound) => Ok(None),
-        Err(chainstate::Error::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
+        Err(ChainStateError::ResourceNotFound) => Ok(None),
+        Err(ChainStateError::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
     }
 }
 
@@ -711,8 +711,8 @@ pub async fn monad_eth_getTransactionByBlockHashAndIndex<T: Triedb>(
         .await
     {
         Ok(tx) => Ok(Some(MonadTransaction(tx))),
-        Err(chainstate::Error::ResourceNotFound) => Ok(None),
-        Err(chainstate::Error::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
+        Err(ChainStateError::ResourceNotFound) => Ok(None),
+        Err(ChainStateError::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
     }
 }
 
@@ -740,8 +740,8 @@ pub async fn monad_eth_getTransactionByBlockNumberAndIndex<T: Triedb>(
         .await
     {
         Ok(tx) => Ok(Some(MonadTransaction(tx))),
-        Err(chainstate::Error::ResourceNotFound) => Ok(None),
-        Err(chainstate::Error::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
+        Err(ChainStateError::ResourceNotFound) => Ok(None),
+        Err(ChainStateError::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
     }
 }
 

@@ -18,7 +18,7 @@ pub struct ChainState<T: Triedb> {
 }
 
 #[derive(Debug)]
-pub enum Error {
+pub enum ChainStateError {
     Triedb(String),
     ResourceNotFound,
 }
@@ -47,7 +47,7 @@ impl<T: Triedb> ChainState<T> {
     pub async fn get_transaction_receipt(
         &self,
         hash: [u8; 32],
-    ) -> Result<TransactionReceipt, Error> {
+    ) -> Result<TransactionReceipt, ChainStateError> {
         let latest_block_key = get_block_key_from_tag(&self.triedb_env, BlockTags::Latest);
         if let Some(TransactionLocation {
             tx_index,
@@ -56,7 +56,7 @@ impl<T: Triedb> ChainState<T> {
             .triedb_env
             .get_transaction_location_by_hash(latest_block_key, hash)
             .await
-            .map_err(Error::Triedb)?
+            .map_err(ChainStateError::Triedb)?
         {
             let block_key = self.triedb_env.get_block_key(SeqNum(block_num));
             if let Some(receipt) =
@@ -84,14 +84,14 @@ impl<T: Triedb> ChainState<T> {
             }
         }
 
-        Err(Error::ResourceNotFound)
+        Err(ChainStateError::ResourceNotFound)
     }
 
     pub async fn get_transaction_with_block_and_index(
         &self,
         block: BlockTagOrHash,
         index: u64,
-    ) -> Result<Transaction, Error> {
+    ) -> Result<Transaction, ChainStateError> {
         match block {
             BlockTagOrHash::BlockTags(block) => {
                 let block_key = get_block_key_from_tag(&self.triedb_env, block);
@@ -130,7 +130,7 @@ impl<T: Triedb> ChainState<T> {
                     .triedb_env
                     .get_block_number_by_hash(latest_block_key, hash.0)
                     .await
-                    .map_err(Error::Triedb)?
+                    .map_err(ChainStateError::Triedb)?
                 {
                     let block_key = self.triedb_env.get_block_key(SeqNum(block_num));
                     if let Some(tx) =
@@ -157,10 +157,10 @@ impl<T: Triedb> ChainState<T> {
             }
         }
 
-        Err(Error::ResourceNotFound)
+        Err(ChainStateError::ResourceNotFound)
     }
 
-    pub async fn get_transaction(&self, hash: [u8; 32]) -> Result<Transaction, Error> {
+    pub async fn get_transaction(&self, hash: [u8; 32]) -> Result<Transaction, ChainStateError> {
         let latest_block_key = get_block_key_from_tag(&self.triedb_env, BlockTags::Latest);
         if let Some(TransactionLocation {
             tx_index,
@@ -169,7 +169,7 @@ impl<T: Triedb> ChainState<T> {
             .triedb_env
             .get_transaction_location_by_hash(latest_block_key, hash)
             .await
-            .map_err(Error::Triedb)?
+            .map_err(ChainStateError::Triedb)?
         {
             let block_key = self.triedb_env.get_block_key(SeqNum(block_num));
             if let Some(tx) =
@@ -196,13 +196,13 @@ impl<T: Triedb> ChainState<T> {
             }
         }
 
-        Err(Error::ResourceNotFound)
+        Err(ChainStateError::ResourceNotFound)
     }
 
     pub async fn get_block_header(
         &self,
         block: BlockTagOrHash,
-    ) -> Result<alloy_consensus::Header, Error> {
+    ) -> Result<alloy_consensus::Header, ChainStateError> {
         let block_key = match block {
             BlockTagOrHash::BlockTags(tag) => get_block_key_from_tag(&self.triedb_env, tag),
             BlockTagOrHash::Hash(hash) => {
@@ -211,11 +211,11 @@ impl<T: Triedb> ChainState<T> {
                     .triedb_env
                     .get_block_number_by_hash(latest_block_key, hash.0)
                     .await
-                    .map_err(Error::Triedb)?
+                    .map_err(ChainStateError::Triedb)?
                 {
                     self.triedb_env.get_block_key(SeqNum(block_num))
                 } else {
-                    return Err(Error::ResourceNotFound);
+                    return Err(ChainStateError::ResourceNotFound);
                 }
             }
         };
@@ -224,7 +224,7 @@ impl<T: Triedb> ChainState<T> {
             .triedb_env
             .get_block_header(block_key)
             .await
-            .map_err(Error::Triedb)?
+            .map_err(ChainStateError::Triedb)?
         {
             return Ok(header.header);
         }
@@ -243,14 +243,14 @@ impl<T: Triedb> ChainState<T> {
             }
         }
 
-        Err(Error::ResourceNotFound)
+        Err(ChainStateError::ResourceNotFound)
     }
 
     pub async fn get_block(
         &self,
         block: BlockTagOrHash,
         return_full_txns: bool,
-    ) -> Result<Block, Error> {
+    ) -> Result<Block, ChainStateError> {
         let block_key = match block {
             BlockTagOrHash::BlockTags(tag) => get_block_key_from_tag(&self.triedb_env, tag),
             BlockTagOrHash::Hash(hash) => {
@@ -259,11 +259,11 @@ impl<T: Triedb> ChainState<T> {
                     .triedb_env
                     .get_block_number_by_hash(latest_block_key, hash.0)
                     .await
-                    .map_err(Error::Triedb)?
+                    .map_err(ChainStateError::Triedb)?
                 {
                     self.triedb_env.get_block_key(SeqNum(block_num))
                 } else {
-                    return Err(Error::ResourceNotFound);
+                    return Err(ChainStateError::ResourceNotFound);
                 }
             }
         };
@@ -272,7 +272,7 @@ impl<T: Triedb> ChainState<T> {
             .triedb_env
             .get_block_header(block_key)
             .await
-            .map_err(Error::Triedb)?
+            .map_err(ChainStateError::Triedb)?
         {
             if let Ok(transactions) = self.triedb_env.get_transactions(block_key).await {
                 return Ok(parse_block_content(
@@ -303,14 +303,14 @@ impl<T: Triedb> ChainState<T> {
             }
         }
 
-        Err(Error::ResourceNotFound)
+        Err(ChainStateError::ResourceNotFound)
     }
 
     /// Returns raw transaction receipts for a block.
     pub async fn get_raw_receipts(
         &self,
         block: BlockTags,
-    ) -> Result<Vec<alloy_consensus::ReceiptEnvelope>, Error> {
+    ) -> Result<Vec<alloy_consensus::ReceiptEnvelope>, ChainStateError> {
         let block_key = get_block_key_from_tag(&self.triedb_env, block);
         if let Ok(receipts) = self.triedb_env.get_receipts(block_key).await {
             let receipts: Vec<alloy_consensus::ReceiptEnvelope> = receipts
@@ -338,14 +338,14 @@ impl<T: Triedb> ChainState<T> {
             }
         }
 
-        Err(Error::ResourceNotFound)
+        Err(ChainStateError::ResourceNotFound)
     }
 
     /// Returns transaction receipts mapped to their block and transaction info.
     pub async fn get_block_receipts(
         &self,
         block: BlockTagOrHash,
-    ) -> Result<Vec<crate::eth_json_types::MonadTransactionReceipt>, Error> {
+    ) -> Result<Vec<crate::eth_json_types::MonadTransactionReceipt>, ChainStateError> {
         if let Ok(block_key) = crate::handlers::eth::block::get_block_key_from_tag_or_hash(
             &self.triedb_env,
             block.clone(),
@@ -356,7 +356,7 @@ impl<T: Triedb> ChainState<T> {
                 .triedb_env
                 .get_block_header(block_key)
                 .await
-                .map_err(Error::Triedb)?
+                .map_err(ChainStateError::Triedb)?
             {
                 // if block header is present but transactions are not, the block is statesynced
                 if let Ok(transactions) = self.triedb_env.get_transactions(block_key).await {
@@ -368,7 +368,7 @@ impl<T: Triedb> ChainState<T> {
                             header.hash,
                             crate::eth_json_types::MonadTransactionReceipt,
                         )
-                        .map_err(|_| Error::ResourceNotFound)?;
+                        .map_err(|_| ChainStateError::ResourceNotFound)?;
                         return Ok(block_receipts);
                     }
                 }
@@ -412,13 +412,13 @@ impl<T: Triedb> ChainState<T> {
                         block.header.hash_slow(),
                         crate::eth_json_types::MonadTransactionReceipt,
                     )
-                    .map_err(|_| Error::ResourceNotFound)?;
+                    .map_err(|_| ChainStateError::ResourceNotFound)?;
                     return Ok(block_receipts);
                 }
             }
         }
 
-        Err(Error::ResourceNotFound)
+        Err(ChainStateError::ResourceNotFound)
     }
 }
 
@@ -492,11 +492,11 @@ async fn get_transaction_from_triedb<T: Triedb>(
     triedb_env: &T,
     block_key: BlockKey,
     tx_index: u64,
-) -> Result<Option<Transaction>, Error> {
+) -> Result<Option<Transaction>, ChainStateError> {
     let header = match triedb_env
         .get_block_header(block_key)
         .await
-        .map_err(Error::Triedb)?
+        .map_err(ChainStateError::Triedb)?
     {
         Some(header) => header,
         None => return Ok(None),
@@ -505,7 +505,7 @@ async fn get_transaction_from_triedb<T: Triedb>(
     match triedb_env
         .get_transaction(block_key, tx_index)
         .await
-        .map_err(Error::Triedb)?
+        .map_err(ChainStateError::Triedb)?
     {
         Some(tx) => Ok(Some(parse_tx_content(
             header.hash,
@@ -523,11 +523,11 @@ async fn get_receipt_from_triedb<T: Triedb>(
     triedb_env: &T,
     block_key: BlockKey,
     tx_index: u64,
-) -> Result<Option<TransactionReceipt>, Error> {
+) -> Result<Option<TransactionReceipt>, ChainStateError> {
     let header = match triedb_env
         .get_block_header(block_key)
         .await
-        .map_err(Error::Triedb)?
+        .map_err(ChainStateError::Triedb)?
     {
         Some(header) => header,
         None => return Ok(None),
@@ -536,7 +536,7 @@ async fn get_receipt_from_triedb<T: Triedb>(
     let tx = match triedb_env
         .get_transaction(block_key, tx_index)
         .await
-        .map_err(Error::Triedb)?
+        .map_err(ChainStateError::Triedb)?
     {
         Some(tx) => tx,
         None => return Ok(None),
@@ -545,7 +545,7 @@ async fn get_receipt_from_triedb<T: Triedb>(
     match triedb_env
         .get_receipt(block_key, tx_index)
         .await
-        .map_err(Error::Triedb)?
+        .map_err(ChainStateError::Triedb)?
     {
         Some(receipt) => {
             // Get the previous receipt's cumulative gas used to calculate gas used
@@ -553,13 +553,13 @@ async fn get_receipt_from_triedb<T: Triedb>(
                 match triedb_env
                     .get_receipt(block_key, tx_index - 1)
                     .await
-                    .map_err(Error::Triedb)?
+                    .map_err(ChainStateError::Triedb)?
                 {
                     Some(prev_receipt) => {
                         receipt.receipt.cumulative_gas_used()
                             - prev_receipt.receipt.cumulative_gas_used()
                     }
-                    None => return Err(Error::Triedb("error getting receipt".into())),
+                    None => return Err(ChainStateError::Triedb("error getting receipt".into())),
                 }
             } else {
                 receipt.receipt.cumulative_gas_used()
