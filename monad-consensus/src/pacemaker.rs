@@ -134,6 +134,12 @@ where
         &self.last_round_tc
     }
 
+    pub fn restart_timer(&self) -> Vec<PacemakerCommand<SCT>> {
+        vec![PacemakerCommand::Schedule {
+            duration: self.get_round_timer(self.current_round),
+        }]
+    }
+
     fn get_round_timer(&self, round: Round) -> Duration {
         // worse case time is round timer and vote delay start at effectively the same time and so
         // the round needs to accomdate the full vote-delay time and a local processing time

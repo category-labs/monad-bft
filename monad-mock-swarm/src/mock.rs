@@ -214,6 +214,10 @@ impl<S: SwarmRelation> MockExecutor<S> {
         self.txpool.send_transaction(tx);
     }
 
+    pub fn set_enable_updates(&mut self, keep_update: bool) {
+        self.state_root_hash.set_enable_updates(keep_update);
+    }
+
     fn peek_event(&self) -> Option<(Duration, ExecutorEventType)> {
         std::iter::empty()
             .chain(

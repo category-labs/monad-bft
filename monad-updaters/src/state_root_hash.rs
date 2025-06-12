@@ -28,6 +28,7 @@ pub trait MockableStateRootHash:
 
     fn ready(&self) -> bool;
     fn get_validator_set_data(&self, epoch: Epoch) -> ValidatorSetData<Self::SignatureCollection>;
+    fn set_enable_updates(&mut self, on: bool);
 }
 
 impl<T: MockableStateRootHash + ?Sized> MockableStateRootHash for Box<T> {
@@ -40,6 +41,10 @@ impl<T: MockableStateRootHash + ?Sized> MockableStateRootHash for Box<T> {
 
     fn get_validator_set_data(&self, epoch: Epoch) -> ValidatorSetData<Self::SignatureCollection> {
         (**self).get_validator_set_data(epoch)
+    }
+
+    fn set_enable_updates(&mut self, on: bool) {
+        (**self).set_enable_updates(on)
     }
 }
 
@@ -138,6 +143,10 @@ where
     fn get_validator_set_data(&self, _epoch: Epoch) -> ValidatorSetData<Self::SignatureCollection> {
         self.genesis_validator_data.clone()
     }
+
+    fn set_enable_updates(&mut self, on: bool) {
+        self.enable_updates = on;
+    }
 }
 
 impl<ST, SCT, EPT> Executor for MockStateRootHashNop<ST, SCT, EPT>
@@ -210,6 +219,14 @@ where
         let this = self.deref_mut();
 
         if !this.enable_updates {
+            if this.waker.is_none() {
+                this.waker = Some(cx.waker().clone());
+            }
+
+            if this.ready() {
+                this.waker.take().unwrap().wake();
+            }
+
             return Poll::Pending;
         }
 
@@ -360,6 +377,8 @@ where
             self.val_data_1.clone()
         }
     }
+
+    fn set_enable_updates(&mut self, _on: bool) {}
 }
 
 impl<ST, SCT, EPT> Executor for MockStateRootHashSwap<ST, SCT, EPT>

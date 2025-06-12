@@ -469,6 +469,29 @@ where
         chain
     }
 
+    pub fn is_related_blocks(
+        &self,
+        ancestor_block_id: &BlockId,
+        descendent_block_id: &BlockId,
+    ) -> bool {
+        let Some(base_block) = self.tree.get(descendent_block_id) else {
+            return false;
+        };
+
+        let mut last_block = &base_block.validated_block;
+        if &last_block.get_id() == ancestor_block_id {
+            return true;
+        }
+
+        while let Some(parent) = self.tree.get(&last_block.get_parent_id()) {
+            last_block = &parent.validated_block;
+            if &last_block.get_id() == ancestor_block_id {
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn round_exists(&self, round: &Round) -> bool {
         self.inserted_rounds.contains(round)
     }

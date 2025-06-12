@@ -183,6 +183,18 @@ where
             .send_transaction(tx);
     }
 
+    pub fn set_enable_updates(
+        &mut self,
+        node_id: ID<CertificateSignaturePubKey<S::SignatureType>>,
+        keep_update: bool,
+    ) {
+        self.states
+            .get_mut(&node_id)
+            .expect("node should exist")
+            .executor
+            .set_enable_updates(keep_update);
+    }
+
     pub fn update_outbound_pipeline_for_all(&mut self, new_pipeline: S::Pipeline)
     where
         S::Pipeline: Clone,

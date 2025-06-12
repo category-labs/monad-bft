@@ -1,4 +1,9 @@
-use std::{collections::BTreeMap, fmt::Debug, marker::PhantomData, time::Duration};
+use std::{
+    collections::{BTreeMap, LinkedList},
+    fmt::Debug,
+    marker::PhantomData,
+    time::Duration,
+};
 
 use monad_blocktree::blocktree::BlockTree;
 use monad_chain_config::{
@@ -76,6 +81,7 @@ where
 
     finalized_execution_results: BTreeMap<SeqNum, EPT::FinalizedHeader>,
     proposed_execution_results: BTreeMap<Round, ProposedExecutionResult<EPT>>,
+    pending_proposals: BTreeMap<SeqNum, LinkedList<BlockId>>,
 }
 
 impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> PartialEq
@@ -164,6 +170,7 @@ where
 
     /// Destination address for proposal payments
     pub beneficiary: &'a [u8; 20],
+
     /// This nodes public NodeId; what other nodes see in the validator set
     pub nodeid: &'a NodeId<SCT::NodeIdPubKey>,
     /// Parameters for consensus algorithm behaviour
@@ -222,7 +229,9 @@ pub enum StateRootAction {
     /// received a majority quorum on the state root, or the state root is
     /// out-of-range. It's ok to insert to the block tree and observe if a QC
     /// forms on the block. But we shouldn't vote on the block
-    Defer,
+    MissingBlocks,
+    /// Execution result not ready
+    MissingER,
 }
 
 impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>
@@ -290,6 +299,7 @@ where
 
             finalized_execution_results: Default::default(),
             proposed_execution_results: Default::default(),
+            pending_proposals: Default::default(),
         }
     }
 
@@ -355,8 +365,11 @@ where
         &mut self,
         execution_result: ExecutionResult<EPT>,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
-        match execution_result {
+        let mut cmds = Vec::new();
+        let mut ancestor_block_id = self.consensus.pending_block_tree.root().block_id;
+        let expected_proposal_seqnum: u64 = match execution_result {
             ExecutionResult::Finalized(seq_num, execution_result) => {
+                trace!("Received finalized StateRoot for {:?}", seq_num.0);
                 match self.consensus.finalized_execution_results.entry(seq_num) {
                     std::collections::btree_map::Entry::Vacant(entry) => {
                         entry.insert(execution_result);
@@ -365,9 +378,18 @@ where
                         assert_eq!(entry.get(), &execution_result);
                     }
                 };
-                Vec::new()
+                seq_num.0.saturating_add(self.config.execution_delay.0)
             }
             ExecutionResult::Proposed(execution_result) => {
+                let seq_num = execution_result.seq_num;
+                let block_id = execution_result.block_id;
+
+                trace!(
+                    "Received proposed ExecutionResult for seq_num {:?}, round {:?}, pending_block_tree root round {:?}",
+                    seq_num.0,
+                    execution_result.round,
+                    self.consensus.pending_block_tree.root().round
+                );
                 if execution_result.round <= self.consensus.pending_block_tree.root().round {
                     // not necessary, but here for clarity
                     // try_update_coherency would drop it anyways
@@ -375,13 +397,69 @@ where
                     // the execution result will be re-queried under the Finalized nibble
                     return Vec::new();
                 }
-                let block_id = execution_result.block_id;
+
                 self.consensus
                     .proposed_execution_results
                     .insert(execution_result.round, execution_result);
-                self.try_update_coherency(block_id)
+
+                cmds.extend(self.try_update_coherency(block_id));
+
+                ancestor_block_id = block_id;
+                seq_num.0.saturating_add(self.config.execution_delay.0)
+            }
+        };
+
+        if let Some(list) = self
+            .consensus
+            .pending_proposals
+            .remove(&SeqNum(expected_proposal_seqnum))
+        {
+            let mut proposal_block_iter = list
+                .iter()
+                .filter_map(|block_id| self.consensus.pending_block_tree.get_block(block_id));
+
+            if let Some(proposal_block) = proposal_block_iter.find(|block| {
+                block.get_round() == self.consensus.pacemaker.get_current_round()
+                    && self
+                        .consensus
+                        .pending_block_tree
+                        .is_related_blocks(&ancestor_block_id, &block.get_id())
+            }) {
+                debug!(
+                    ?expected_proposal_seqnum,
+                    "ExecutionResult is matched for pending proposal"
+                );
+                cmds.extend(self.try_vote(&proposal_block.clone()));
+            }
+
+            info!(rx_execution_lagging_started_timer = ?self.metrics.consensus_events.rx_execution_lagging_started_timer,
+                  rx_execution_lagging_stopped_timer = ?self.metrics.consensus_events.rx_execution_lagging_stopped_timer, "start/stop timer counters");
+            if !cmds
+                .iter()
+                .any(|c| matches!(&c, ConsensusCommand::Schedule { duration: _ }))
+            {
+                info!(round = ?self.consensus.pacemaker.get_current_round(), ?expected_proposal_seqnum, "Restarting timer.");
+                let mut restart_timer_cmds: Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> = self
+                    .consensus
+                    .pacemaker
+                    .restart_timer()
+                    .into_iter()
+                    .map(|cmd| {
+                        ConsensusCommand::from_pacemaker_command(
+                            self.keypair,
+                            self.cert_keypair,
+                            self.version,
+                            cmd,
+                        )
+                    })
+                    .collect();
+                self.metrics
+                    .consensus_events
+                    .rx_execution_lagging_started_timer += 1;
+                cmds.append(&mut restart_timer_cmds);
             }
         }
+        cmds
     }
 
     /// handles proposal messages from other nodes
@@ -1052,6 +1130,17 @@ where
             self.consensus.finalized_execution_results.pop_first();
         }
 
+        while self
+            .consensus
+            .pending_proposals
+            .first_key_value()
+            .is_some_and(|(&proposed_seq_num, _)| {
+                proposed_seq_num <= last_committed_block.get_seq_num()
+            })
+        {
+            self.consensus.pending_proposals.pop_first();
+        }
+
         // enter new pacemaker epoch if committing the boundary block
         // bumps the current epoch
         cmds.extend(
@@ -1124,7 +1213,42 @@ where
             // this round and try to vote for that
             let state_root_action =
                 state_root_action.expect("should exist if proposal was handled this round");
-            cmds.extend(self.try_vote(&block, state_root_action));
+
+            debug!(round = ?block.get_round(), block_id = ?block.get_id(), ?state_root_action, "try vote");
+
+            // StateRootAction::MissingBlocks means we don't have enough information to
+            // decide if the state root hash is valid. It's ok to insert into the
+            // block tree, but we can't vote on the block
+            if matches!(state_root_action, StateRootAction::MissingBlocks) {
+                return cmds;
+            }
+
+            // Execution Results will be coming as the result must be committed at this point.
+            if matches!(state_root_action, StateRootAction::MissingER) {
+                if self
+                    .consensus
+                    .pending_block_tree
+                    .get_block(&block.get_id())
+                    .is_some()
+                {
+                    info!(round = ?block.get_round(), block_id = ?block.get_id(), seq_num = ?block.get_seq_num(), "Execution report is not ready. Stop the timer to wait for it");
+                    let pending_list = self
+                        .consensus
+                        .pending_proposals
+                        .entry(block.get_seq_num())
+                        .or_default();
+                    pending_list.push_back(block.get_id());
+                    cmds.push(ConsensusCommand::ScheduleReset);
+                    self.metrics
+                        .consensus_events
+                        .rx_execution_lagging_stopped_timer += 1;
+                }
+                return cmds;
+            }
+
+            assert!(matches!(state_root_action, StateRootAction::Proceed));
+
+            cmds.extend(self.try_vote(&block));
         } else {
             cmds.extend(self.try_propose());
         }
@@ -1149,6 +1273,7 @@ where
             self.state_backend,
         ) {
             // optimistically commit any block that has been added to the blocktree and is coherent
+            trace!(block=?newly_coherent_block, "Adding block to the proposed commit");
             cmds.push(ConsensusCommand::CommitBlocks(
                 OptimisticPolicyCommit::Proposed(newly_coherent_block.to_owned()),
             ));
@@ -1186,7 +1311,6 @@ where
     fn try_vote(
         &mut self,
         validated_block: &BPT::ValidatedBlock,
-        state_root_action: StateRootAction,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
         let mut cmds = Vec::new();
         let round = self.consensus.pacemaker.get_current_round();
@@ -1234,17 +1358,6 @@ where
             warn!("dropping proposal, is not coherent");
             return cmds;
         }
-
-        debug!(?round, block_id = ?validated_block.get_id(), ?state_root_action, "try vote");
-
-        // StateRootAction::Defer means we don't have enough information to
-        // decide if the state root hash is valid. It's ok to insert into the
-        // block tree, but we can't vote on the block
-        if matches!(state_root_action, StateRootAction::Defer) {
-            return cmds;
-        }
-
-        assert!(matches!(state_root_action, StateRootAction::Proceed));
 
         // decide if its safe to cast vote on this proposal
         let last_tc = self.consensus.pacemaker.get_last_round_tc();
@@ -1499,22 +1612,22 @@ where
         else {
             debug!("no path to root, unable to verify");
             self.metrics.consensus_events.rx_no_path_to_root += 1;
-            return StateRootAction::Defer;
+            return StateRootAction::MissingBlocks;
         };
 
         let Some(expected_execution_results) =
             self.get_expected_execution_results(p.block_header.seq_num, &pending_blocktree_blocks)
         else {
-            warn!(
+            info!(
                 block_seq_num =? p.block_header.seq_num,
-                "execution result not ready, unable to verify"
+                "execution result not ready, waiting for it"
             );
             self.metrics.consensus_events.rx_execution_lagging += 1;
-            return StateRootAction::Defer;
+            return StateRootAction::MissingER;
         };
 
         if expected_execution_results != p.block_header.delayed_execution_results {
-            debug!("State root hash in proposal conflicts with local value");
+            info!("State root hash in proposal conflicts with local value");
             self.metrics.consensus_events.rx_bad_state_root += 1;
             return StateRootAction::Reject;
         }
@@ -1610,7 +1723,7 @@ mod test {
     use monad_consensus_types::{
         block::{
             BlockPolicy, BlockRange, ConsensusBlockHeader, ConsensusFullBlock, ExecutionResult,
-            OptimisticPolicyCommit, GENESIS_TIMESTAMP,
+            OptimisticPolicyCommit, ProposedExecutionResult, GENESIS_TIMESTAMP,
         },
         block_validator::BlockValidator,
         checkpoint::RootInfo,
@@ -1630,9 +1743,7 @@ mod test {
     };
     use monad_eth_block_policy::EthBlockPolicy;
     use monad_eth_block_validator::EthValidator;
-    use monad_eth_types::{
-        Balance, EthBlockBody, EthExecutionProtocol, EthHeader, BASE_FEE_PER_GAS,
-    };
+    use monad_eth_types::{Balance, EthBlockBody, EthExecutionProtocol, EthHeader};
     use monad_multi_sig::MultiSig;
     use monad_state_backend::{InMemoryState, InMemoryStateInner, StateBackend, StateBackendTest};
     use monad_testutil::{
@@ -1658,9 +1769,6 @@ mod test {
         timestamp::BlockTimestamp, ConsensusCommand, ConsensusConfig, ConsensusState,
         ConsensusStateWrapper, OutgoingVoteStatus,
     };
-
-    const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;
-    const GAS_LIMIT: u64 = 30000;
 
     static CHAIN_PARAMS: ChainParams = ChainParams {
         tx_limit: 10_000,
@@ -1805,6 +1913,13 @@ mod test {
                 block.qc.get_round(),
                 BTreeMap::default(),
             );
+        }
+
+        fn add_execution_result(
+            &mut self,
+            execution_result: ExecutionResult<EPT>,
+        ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+            self.wrapped_state().add_execution_result(execution_result)
         }
     }
 
@@ -3075,7 +3190,7 @@ mod test {
             wrapped_state.metrics.consensus_events.rx_execution_lagging,
             1
         );
-        assert_eq!(cmds.len(), 4);
+        assert_eq!(cmds.len(), 5);
         assert!(matches!(
             cmds[0],
             ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Finalized(_))
@@ -3086,6 +3201,8 @@ mod test {
             cmds[3],
             ConsensusCommand::Schedule { duration: _ }
         ));
+        // Missing state root hash causes the timer to stop to wait for the execution results.
+        assert!(matches!(cmds[4], ConsensusCommand::ScheduleReset));
     }
 
     #[test]
@@ -3126,7 +3243,11 @@ mod test {
 
         let p1 = env.next_proposal(vec![EthHeader::from_seq_num(SeqNum(1))]);
         let (author, _, verified_message) = p1.destructure();
-        let _ = node.handle_proposal_message(author, verified_message);
+        let p1_cmds = node.handle_proposal_message(author, verified_message);
+
+        // no SRH, add the proposal p1 to the pending queue and stop timer
+        assert_eq!(p1_cmds.len(), 4);
+        assert!(matches!(p1_cmds[3], ConsensusCommand::ScheduleReset));
 
         // commit some blocks and confirm cleanup of state root hashes happened
 
@@ -3138,7 +3259,12 @@ mod test {
             SeqNum(1),
             EthHeader::from_seq_num(SeqNum(1)),
         ));
-        assert!(cmds.is_empty());
+        // After receiving missing execution result the timer is restarted.
+        assert_eq!(cmds.len(), 1);
+        assert!(matches!(
+            cmds[0],
+            ConsensusCommand::Schedule { duration: _ }
+        ));
 
         // Delay gap is 1 and we have received proposals with seq num 0, 1, 2, 3
         // state_root_validator had updates for 0, 1
@@ -4831,7 +4957,6 @@ mod test {
         assert_eq!(wrapped_state.consensus.get_current_round(), epoch_2_start);
     }
 
-    #[test]
     fn test_ledger_propose_and_commit() {
         let num_states = 2;
         let execution_delay = SeqNum(4);
@@ -4935,5 +5060,247 @@ mod test {
             .get_entry(&block_3_id)
             .expect("should be in the blocktree");
         assert!(block_3_blocktree_entry.is_coherent);
+    }
+
+    /// Test consensus behavior when a proposal with a missing state root hash is added.
+    /// The proposal is added to the pending queue, the timer is stopped and the round stays the same.
+    /// Once the state root hash is received the timer is restarted and round increases.
+    #[test]
+    fn test_proposial_miss_srh() {
+        let num_state = 4;
+        let execution_delay = SeqNum(3);
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            EthExecutionProtocol,
+            BlockPolicyType,
+            StateBackendType,
+            BlockValidatorType,
+            _,
+            _,
+        >(
+            num_state,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || EthValidator::new(0),
+            execution_delay,
+        );
+
+        let mut wrapped_state = ctx[0].wrapped_state();
+
+        // add state root for the genesis block
+        let cmds = wrapped_state.add_execution_result(ExecutionResult::Finalized(
+            GENESIS_SEQ_NUM,
+            EthHeader::from_seq_num(GENESIS_SEQ_NUM),
+        ));
+        assert!(cmds.is_empty());
+
+        // prepare execution_delay blocks
+        let mut proposed_block_headers = BTreeMap::new();
+
+        for _ in 0..execution_delay.0 - 1 {
+            let p = env.next_proposal(Vec::new());
+            let (author, _, p) = p.destructure();
+            proposed_block_headers.insert(p.block_header.seq_num, p.block_header.clone());
+            let _cmds = wrapped_state.handle_proposal_message(author, p.clone());
+        }
+        let p = env.next_proposal(vec![EthHeader::from_seq_num(GENESIS_SEQ_NUM)]);
+        let (author, _, p) = p.destructure();
+        let cmds = wrapped_state.handle_proposal_message(author, p);
+
+        assert_eq!(
+            wrapped_state.metrics.consensus_events.rx_proposal,
+            execution_delay.0
+        );
+        assert_eq!(
+            wrapped_state.consensus.get_current_round(),
+            Round(execution_delay.0)
+        );
+
+        let p = env.next_proposal(vec![EthHeader::from_seq_num(GENESIS_SEQ_NUM + SeqNum(1))]);
+        let (author, _, p) = p.destructure();
+
+        assert_eq!(
+            wrapped_state.metrics.consensus_events.rx_execution_lagging,
+            0
+        );
+        let cmds = wrapped_state.handle_proposal_message(author, p);
+        assert_eq!(
+            wrapped_state.metrics.consensus_events.rx_execution_lagging,
+            1
+        );
+        assert_eq!(cmds.len(), 5);
+        assert!(matches!(cmds[4], ConsensusCommand::ScheduleReset));
+        assert_eq!(
+            wrapped_state.consensus.get_current_round(),
+            Round(execution_delay.0 + 1)
+        );
+        assert_eq!(
+            wrapped_state
+                .metrics
+                .consensus_events
+                .rx_execution_lagging_stopped_timer,
+            1
+        );
+
+        let cmds = wrapped_state.add_execution_result(ExecutionResult::Finalized(
+            GENESIS_SEQ_NUM + SeqNum(1),
+            EthHeader::from_seq_num(GENESIS_SEQ_NUM + SeqNum(1)),
+        ));
+
+        assert_eq!(cmds.len(), 1);
+        assert!(matches!(
+            cmds[0],
+            ConsensusCommand::Schedule { duration: _ }
+        ));
+        assert_eq!(
+            wrapped_state
+                .metrics
+                .consensus_events
+                .rx_execution_lagging_started_timer,
+            1
+        );
+    }
+
+    #[test]
+    fn test_proposal_miss_srh_blocksync() {
+        let num_states = 2;
+        let execution_delay = SeqNum(4);
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            EthExecutionProtocol,
+            BlockPolicyType,
+            StateBackendType,
+            BlockValidatorType,
+            _,
+            _,
+        >(
+            num_states as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || EthValidator::new(0),
+            execution_delay,
+        );
+
+        let (n1, other_states) = ctx.split_first_mut().unwrap();
+        let (n2, _) = other_states.split_first_mut().unwrap();
+
+        // add state root for the genesis block
+        let cmds = n1.add_execution_result(ExecutionResult::Finalized(
+            GENESIS_SEQ_NUM,
+            EthHeader::from_seq_num(GENESIS_SEQ_NUM),
+        ));
+        assert!(cmds.is_empty());
+
+        // prepare execution_delay blocks
+        let mut proposed_block_headers = BTreeMap::new();
+        for _ in 0..execution_delay.0 - 1 {
+            let p = env.next_proposal(Vec::new());
+            let (author, _, p) = p.destructure();
+            proposed_block_headers.insert(p.block_header.seq_num, p.block_header.clone());
+            let _cmds = n1.handle_proposal_message(author, p.clone());
+            n1.ledger_propose(&p.block_header);
+        }
+        assert!(
+            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(execution_delay.0 - 1))
+        );
+
+        let cp = env.next_proposal(vec![EthHeader::from_seq_num(GENESIS_SEQ_NUM)]);
+        let (author_1, _, p_1) = cp.destructure();
+        let block_1_id = p_1.block_header.get_id();
+        let cmds = n1.handle_proposal_message(author_1, p_1);
+
+        assert_eq!(
+            n1.wrapped_state().metrics.consensus_events.rx_proposal,
+            execution_delay.0
+        );
+        assert_eq!(
+            n1.wrapped_state().consensus.get_current_round(),
+            Round(execution_delay.0)
+        );
+
+        // no blocksync requests
+        assert!(find_blocksync_request(&cmds).is_none());
+
+        // block 1 should be in the blocktree as coherent
+        let block_1_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_1_id)
+            .expect("should be in the blocktree");
+        assert!(block_1_blocktree_entry.is_coherent);
+
+        // generate block 2
+        let cp = env.next_proposal(vec![EthHeader::from_seq_num(GENESIS_SEQ_NUM + SeqNum(1))]);
+        let (author_2, _, proposal_message_2) = cp.destructure();
+        let block_2_id = proposal_message_2.block_header.get_id();
+
+        // generate block 3
+        let cp = env.next_proposal(vec![EthHeader::from_seq_num(GENESIS_SEQ_NUM + SeqNum(2))]);
+        let (author_3, _, proposal_message_3) = cp.destructure();
+        let block_3_id = proposal_message_3.block_header.get_id();
+
+        // state receives block 3
+        let cmds = n1.handle_proposal_message(author_3, proposal_message_3);
+
+        // should not vote for block 3
+        assert!(
+            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(execution_delay.0))
+        );
+        let requested_ranges = extract_blocksync_requests(cmds);
+        assert_eq!(requested_ranges.len(), 1);
+        // block 3 should be in the blocktree as incoherent
+        let block_3_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_3_id)
+            .expect("should be in the blocktree");
+        assert!(!block_3_blocktree_entry.is_coherent);
+
+        // blocksync response for state 2
+        let full_block_2 = ConsensusFullBlock::new(
+            proposal_message_2.block_header,
+            proposal_message_2.block_body,
+        )
+        .unwrap();
+
+        let cmds = n1.handle_block_sync(requested_ranges[0], vec![full_block_2]);
+
+        let block_2_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_2_id)
+            .expect("should be in the blocktree");
+        assert!(block_2_blocktree_entry.is_coherent);
+
+        // block 3 should be in the blocktree as coherent
+        let block_3_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_3_id)
+            .expect("should be in the blocktree");
+        assert!(block_3_blocktree_entry.is_coherent);
+
+        assert!(
+            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(execution_delay.0))
+        );
+
+        let seq_num_to_propose = GENESIS_SEQ_NUM + SeqNum(1);
+        let header = proposed_block_headers.get(&seq_num_to_propose).unwrap();
+        let cmds = n1.add_execution_result(ExecutionResult::Proposed(ProposedExecutionResult {
+            block_id: header.get_id(),
+            seq_num: seq_num_to_propose,
+            round: header.round,
+            result: EthHeader::from_seq_num(seq_num_to_propose),
+        }));
+
+        assert!(
+            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(execution_delay.0))
+        );
     }
 }

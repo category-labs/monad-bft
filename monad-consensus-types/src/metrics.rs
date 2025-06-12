@@ -99,6 +99,8 @@ metrics!(
             // proposal
             creating_proposal,
             rx_execution_lagging,
+            rx_execution_lagging_stopped_timer,
+            rx_execution_lagging_started_timer,
             rx_bad_state_root,
             rx_no_path_to_root,
             rx_proposal,
