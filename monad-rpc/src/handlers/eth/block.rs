@@ -94,7 +94,7 @@ pub async fn monad_eth_getBlockByHash<T: Triedb>(
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetBlockByNumberParams {
-    block_number: Quantity,
+    block_number: BlockTags,
     return_full_txns: bool,
 }
 
@@ -109,7 +109,7 @@ pub async fn monad_eth_getBlockByNumber<T: Triedb>(
     trace!("monad_eth_getBlockByNumber: {params:?}");
     match chain_state
         .get_block(
-            BlockTagOrHash::BlockTags(BlockTags::Number(params.block_number)),
+            BlockTagOrHash::BlockTags(params.block_number),
             params.return_full_txns,
         )
         .await
