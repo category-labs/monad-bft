@@ -1,7 +1,7 @@
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use monad_executor_glue::{
-    StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse, StateSyncUpsertType,
+    SessionId, StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse, StateSyncUpsertType,
     StateSyncUpsertV1, SELF_STATESYNC_VERSION,
 };
 
@@ -15,7 +15,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     let statesync_response: Wrapped<_> = Wrapped(Wrapped(Wrapped(Wrapped(Wrapped(Wrapped(
         StateSyncNetworkMessage::Response(StateSyncResponse {
             version: SELF_STATESYNC_VERSION,
-            nonce: 0,
+            session_id: SessionId(0),
             response_index: 0,
             request: StateSyncRequest {
                 version: SELF_STATESYNC_VERSION,
@@ -25,6 +25,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 from: 0,
                 until: 0,
                 old_target: 0,
+                session_id: SessionId(123),
             },
             response: (0..num_upserts)
                 .map(|_| StateSyncUpsertV1 {

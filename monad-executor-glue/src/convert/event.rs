@@ -20,8 +20,8 @@ use monad_types::ExecutionProtocol;
 use crate::{
     BlockSyncEvent, ConfigEvent, ConfigUpdate, ControlPanelEvent, GetFullNodes, GetPeers,
     KnownPeersUpdate, MempoolEvent, MonadEvent, ReloadConfig, SessionId, StateSyncBadVersion,
-    StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse,
-    StateSyncUpsertType, StateSyncUpsertV1, StateSyncVersion, ValidatorEvent,
+    StateSyncError, StateSyncErrorKind, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest,
+    StateSyncResponse, StateSyncUpsertType, StateSyncUpsertV1, StateSyncVersion, ValidatorEvent,
 };
 
 impl<ST, SCT, EPT> From<&MonadEvent<ST, SCT, EPT>> for ProtoMonadEvent
@@ -666,7 +666,7 @@ impl From<&StateSyncResponse> for monad_proto::proto::message::ProtoStateSyncRes
     fn from(response: &StateSyncResponse) -> Self {
         Self {
             version: StateSyncVersion::to_u32(&response.version),
-            nonce: response.nonce,
+            nonce: response.session_id.0,
             response_index: response.response_index,
             request: Some((&response.request).into()),
             upserts: response
@@ -702,6 +702,15 @@ impl From<&SessionId> for monad_proto::proto::message::ProtoStateSyncCompletion 
     }
 }
 
+impl From<&StateSyncError> for monad_proto::proto::message::ProtoStateSyncError {
+    fn from(value: &StateSyncError) -> Self {
+        Self {
+            kind: value.kind as i32,
+            session_id: value.session_id.0,
+        }
+    }
+}
+
 impl From<&StateSyncNetworkMessage> for monad_proto::proto::message::ProtoStateSyncNetworkMessage {
     fn from(value: &StateSyncNetworkMessage) -> Self {
         use monad_proto::proto::message::proto_state_sync_network_message::OneofMessage;
@@ -717,6 +726,9 @@ impl From<&StateSyncNetworkMessage> for monad_proto::proto::message::ProtoStateS
             },
             StateSyncNetworkMessage::Completion(completion) => Self {
                 oneof_message: Some(OneofMessage::Completion(completion.into())),
+            },
+            StateSyncNetworkMessage::ResponseError(response_error) => Self {
+                oneof_message: Some(OneofMessage::Error(response_error.into())),
             },
         }
     }
@@ -796,6 +808,7 @@ impl TryFrom<monad_proto::proto::message::ProtoStateSyncRequest> for StateSyncRe
             from: request.from,
             until: request.until,
             old_target: request.old_target,
+            session_id: SessionId(0),
         })
     }
 }
@@ -840,6 +853,34 @@ impl From<monad_proto::proto::message::ProtoStateSyncCompletion> for SessionId {
     }
 }
 
+impl From<monad_proto::proto::message::StateSyncErrorKind> for StateSyncErrorKind {
+    fn from(value: monad_proto::proto::message::StateSyncErrorKind) -> Self {
+        match value {
+            monad_proto::proto::message::StateSyncErrorKind::InsufficientResources => {
+                StateSyncErrorKind::InsufficientResources
+            }
+            monad_proto::proto::message::StateSyncErrorKind::ExecutionNotStarted => {
+                StateSyncErrorKind::ExecutionNotStarted
+            }
+            monad_proto::proto::message::StateSyncErrorKind::DbError => StateSyncErrorKind::DbError,
+        }
+    }
+}
+
+impl TryFrom<monad_proto::proto::message::ProtoStateSyncError> for StateSyncError {
+    type Error = ProtoError;
+
+    fn try_from(
+        value: monad_proto::proto::message::ProtoStateSyncError,
+    ) -> Result<Self, ProtoError> {
+        let kind = monad_proto::proto::message::StateSyncErrorKind::try_from(value.kind)?;
+        Ok(StateSyncError {
+            kind: kind.into(),
+            session_id: SessionId(value.session_id),
+        })
+    }
+}
+
 impl TryFrom<monad_proto::proto::message::ProtoStateSyncNetworkMessage>
     for StateSyncNetworkMessage
 {
@@ -858,7 +899,7 @@ impl TryFrom<monad_proto::proto::message::ProtoStateSyncNetworkMessage>
             OneofMessage::Response(response) => {
                 Ok(StateSyncNetworkMessage::Response(StateSyncResponse {
                     version: StateSyncVersion::from_u32(response.version),
-                    nonce: response.nonce,
+                    session_id: SessionId(response.nonce),
                     response_index: response.response_index,
                     request: response
                         .request
@@ -893,6 +934,7 @@ impl TryFrom<monad_proto::proto::message::ProtoStateSyncNetworkMessage>
             OneofMessage::Completion(completion) => {
                 Ok(StateSyncNetworkMessage::Completion(completion.into()))
             }
+            OneofMessage::Error(msg) => Ok(StateSyncNetworkMessage::ResponseError(msg.try_into()?)),
         }
     }
 }

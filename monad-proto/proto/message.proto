@@ -99,12 +99,24 @@ message ProtoStateSyncCompletion {
   uint64 session_id = 1;
 }
 
+enum StateSyncErrorKind {
+  INSUFFICIENT_RESOURCES = 0;
+  EXECUTION_NOT_STARTED = 1;
+  DB_ERROR = 2;
+}
+
+message ProtoStateSyncError {
+  StateSyncErrorKind kind = 1;
+  uint64 session_id = 2;
+}
+
 message ProtoStateSyncNetworkMessage {
   oneof OneofMessage {
     ProtoStateSyncRequest request = 1;
     ProtoStateSyncResponse response = 2;
     ProtoStateSyncBadVersion bad_version = 3;
     ProtoStateSyncCompletion completion = 4;
+    ProtoStateSyncError error = 5;
   }
 }
 

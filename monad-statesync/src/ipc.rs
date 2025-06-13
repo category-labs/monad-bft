@@ -10,9 +10,9 @@ use futures::{
 };
 use monad_crypto::certificate_signature::PubKey;
 use monad_executor_glue::{
-    SessionId, StateSyncBadVersion, StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse,
-    StateSyncUpsertType, StateSyncUpsertV1, SELF_STATESYNC_VERSION, STATESYNC_VERSION_MIN,
-    STATESYNC_VERSION_V2,
+    SessionId, StateSyncBadVersion, StateSyncError, StateSyncErrorKind, StateSyncNetworkMessage,
+    StateSyncRequest, StateSyncResponse, StateSyncUpsertType, StateSyncUpsertV1,
+    SELF_STATESYNC_VERSION, STATESYNC_VERSION_MIN, STATESYNC_VERSION_V2, STATESYNC_VERSION_V3,
 };
 use monad_types::NodeId;
 use tokio::{
@@ -125,15 +125,7 @@ struct StreamState<'a, PT: PubKey> {
         oneshot::Sender<()>,
     )>,
 
-    pending_requests: VecDeque<PendingRequest<PT>>,
     wip_response: Option<WipResponse<PT>>,
-}
-
-#[derive(Debug)]
-struct PendingRequest<PT: PubKey> {
-    from: NodeId<PT>,
-    rx_time: Instant,
-    request: StateSyncRequest,
 }
 
 // maximum number of responses we can send before client needs to acknowledge
@@ -173,6 +165,11 @@ const CLIENT_TIMEOUT: Duration = Duration::from_secs(60);
 
 impl<PT: PubKey> WipResponse<PT> {
     pub fn new(from: NodeId<PT>, rx_time: Instant, request: StateSyncRequest) -> Self {
+        let session_id = if request.version >= STATESYNC_VERSION_V3 {
+            request.session_id
+        } else {
+            SessionId(rand::random())
+        };
         Self {
             from,
             rx_time,
@@ -182,7 +179,7 @@ impl<PT: PubKey> WipResponse<PT> {
             response_size: 0,
             response: StateSyncResponse {
                 version: request.version,
-                nonce: rand::random(),
+                session_id,
                 response_index: 0,
                 request,
                 response: Vec::new(),
@@ -232,7 +229,6 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
             request_tx_reader,
             response_rx_writer,
 
-            pending_requests: Default::default(),
             wip_response: Default::default(),
         }
     }
@@ -339,7 +335,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
 
         let response = StateSyncResponse {
             version: wip_response.response.version,
-            nonce: wip_response.response.nonce,
+            session_id: wip_response.response.session_id,
             response_index: wip_response.response.response_index,
 
             request: wip_response.response.request,
@@ -366,7 +362,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
             tracing::warn!(
                 ?wip_response.from,
                 request =? response.request,
-                nonce =? response.nonce,
+                nonce =? response.session_id,
                 response_index = response.response_index,
                 "not sending statesync response, previous send failed"
             )
@@ -420,7 +416,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                     // response_n is overloaded to indicate that the response is done
                     wip_response.response.response_n = done.n;
                     if wip_response.pending_response_completions.is_some() {
-                        let _completion = Self::write_response(
+                        let _receiver = Self::write_response(
                             self.response_rx_writer,
                             wip_response.from,
                             StateSyncNetworkMessage::Response(wip_response.response),
@@ -429,17 +425,23 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                         tracing::warn!(
                             from =? wip_response.from,
                             request =? wip_response.response.request,
-                            nonce =? wip_response.response.nonce,
+                            nonce =? wip_response.response.session_id,
                             response_index = wip_response.response.response_index,
                             response_n = wip_response.response.response_n,
                             "not sending statesync response (final), previous send failed"
                         )
                     }
                 } else {
-                    // request failed, so don't send finish the response. we've dropped the
-                    // wip_response at this point.
+                    // request failed, send error to the client
+                    let _receiver = Self::write_response(
+                        self.response_rx_writer,
+                        wip_response.from,
+                        StateSyncNetworkMessage::ResponseError(StateSyncError {
+                            kind: StateSyncErrorKind::DbError,
+                            session_id: wip_response.response.session_id,
+                        }),
+                    );
                 }
-                self.try_queue_response().await?;
             }
         };
         Ok(())
@@ -507,11 +509,11 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         session_id: SessionId,
     ) -> Result<(), tokio::io::Error> {
         if let Some(wip_response) = self.wip_response.as_mut() {
-            if wip_response.from == from && wip_response.response.nonce == session_id.0 {
+            if wip_response.from == from && wip_response.response.session_id == session_id {
                 wip_response.unacknowledged_responses =
                     wip_response.unacknowledged_responses.saturating_sub(1);
             } else {
-                tracing::warn!(
+                tracing::debug!(
                     ?from,
                     ?session_id,
                     "unexpected completion from execution client"
@@ -520,12 +522,56 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
             wip_response.completion_time = Instant::now();
             self.maybe_send_batch();
         } else {
-            tracing::warn!(
+            tracing::debug!(
                 ?from,
                 ?session_id,
                 "unexpected completion from execution client, no pending response"
             );
         }
+        Ok(())
+    }
+
+    fn reply_bad_version(
+        &mut self,
+        from: NodeId<PT>,
+        request: StateSyncRequest,
+    ) -> Result<(), tokio::io::Error> {
+        tracing::debug!(
+            ?from,
+            ?request,
+            ?SELF_STATESYNC_VERSION,
+            "incompatible statesync request version"
+        );
+        let bad_version = StateSyncBadVersion {
+            min_version: STATESYNC_VERSION_MIN,
+            max_version: SELF_STATESYNC_VERSION,
+        };
+        let _receiver = Self::write_response(
+            self.response_rx_writer,
+            from,
+            StateSyncNetworkMessage::BadVersion(bad_version),
+        );
+        Ok(())
+    }
+
+    fn reply_insufficient_resources(
+        &mut self,
+        from: NodeId<PT>,
+        request: StateSyncRequest,
+    ) -> Result<(), tokio::io::Error> {
+        tracing::debug!(
+            ?from,
+            ?request,
+            "dropping statesync request, already servicing a request"
+        );
+        let _receiver = Self::write_response(
+            self.response_rx_writer,
+            from,
+            StateSyncNetworkMessage::ResponseError(StateSyncError {
+                kind: StateSyncErrorKind::InsufficientResources,
+                session_id: request.session_id,
+            }),
+        );
         Ok(())
     }
 
@@ -535,92 +581,21 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         request: StateSyncRequest,
     ) -> Result<(), tokio::io::Error> {
         if !request.version.is_compatible() {
-            tracing::debug!(
-                ?from,
-                ?request,
-                ?SELF_STATESYNC_VERSION,
-                "incompatible statesync request version"
-            );
-            let bad_version = StateSyncBadVersion {
-                min_version: STATESYNC_VERSION_MIN,
-                max_version: SELF_STATESYNC_VERSION,
-            };
-            let (completion_sender, _) = oneshot::channel();
-            if self
-                .response_rx_writer
-                .try_send((
-                    from,
-                    StateSyncNetworkMessage::BadVersion(bad_version),
-                    completion_sender,
-                ))
-                .is_err()
-            {
-                tracing::warn!("dropping outbound statesync response, consensus state backlogged?");
-            }
-
-            return Ok(());
+            return self.reply_bad_version(from, request);
         }
-
-        self.pending_requests.retain(|pending_request| {
-            // delete any requests from this peer for an old target
-            // delete any duplicate requests from this peer
-            !(pending_request.from == from
-                && (pending_request.request.target != request.target
-                    || pending_request.request == request))
-        });
-        if self
-            .wip_response
-            .as_ref()
-            .is_some_and(|wip_response| wip_response.response.request == request)
-        {
-            // we are already servicing this request, drop the new one
-            return Ok(());
-        }
-        self.pending_requests.push_back(PendingRequest {
-            from,
-            request,
-            rx_time: Instant::now(),
-        });
-        self.try_queue_response().await
-    }
-
-    async fn try_queue_response(&mut self) -> Result<(), tokio::io::Error> {
         if self.wip_response.is_some() {
-            // we already are servicing a pending request, so ignore
-            return Ok(());
+            return self.reply_insufficient_resources(from, request);
         }
 
-        let request = loop {
-            let Some(request) = self.pending_requests.pop_front() else {
-                // no more pending requests
-                return Ok(());
-            };
-
-            if request.rx_time.elapsed() > self.request_timeout {
-                tracing::debug!(
-                    ?request,
-                    request_timeout =? self.request_timeout,
-                    "dropping stale request"
-                );
-                continue;
-            }
-
-            break request;
-        };
-
-        self.wip_response = Some(WipResponse::new(
-            request.from,
-            request.rx_time,
-            request.request,
-        ));
+        self.wip_response = Some(WipResponse::new(from, Instant::now(), request));
 
         self.write_execution_request(bindings::monad_sync_request {
-            prefix: request.request.prefix,
-            prefix_bytes: request.request.prefix_bytes,
-            target: request.request.target,
-            from: request.request.from,
-            until: request.request.until,
-            old_target: request.request.old_target,
+            prefix: request.prefix,
+            prefix_bytes: request.prefix_bytes,
+            target: request.target,
+            from: request.from,
+            until: request.until,
+            old_target: request.old_target,
         })
         .await?;
 

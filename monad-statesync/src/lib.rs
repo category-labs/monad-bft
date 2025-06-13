@@ -147,6 +147,22 @@ where
                     };
                     statesync.handle_bad_version(from, bad_version);
                 }
+                StateSyncCommand::Message((
+                    from,
+                    StateSyncNetworkMessage::ResponseError(response_error),
+                )) => {
+                    let statesync = match &mut self.mode {
+                        StateSyncMode::Sync(sync) => sync,
+                        StateSyncMode::Live(_) => {
+                            tracing::trace!(
+                                ?from,
+                                "dropping statesync response error, already done syncing"
+                            );
+                            continue;
+                        }
+                    };
+                    statesync.handle_response_error(from, response_error);
+                }
                 StateSyncCommand::Message((from, StateSyncNetworkMessage::Request(request))) => {
                     let execution_ipc = match &mut self.mode {
                         StateSyncMode::Sync(_) => {

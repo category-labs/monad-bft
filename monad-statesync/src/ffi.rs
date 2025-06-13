@@ -13,8 +13,8 @@ use alloy_rlp::Encodable;
 use futures::{Future, Stream};
 use monad_crypto::certificate_signature::PubKey;
 use monad_executor_glue::{
-    SessionId, StateSyncBadVersion, StateSyncRequest, StateSyncResponse, StateSyncUpsertType,
-    SELF_STATESYNC_VERSION,
+    SessionId, StateSyncBadVersion, StateSyncError, StateSyncRequest, StateSyncResponse,
+    StateSyncUpsertType, SELF_STATESYNC_VERSION,
 };
 use monad_types::{DropTimer, NodeId, SeqNum};
 
@@ -67,6 +67,9 @@ pub(crate) enum SyncResponse<PT: PubKey> {
 }
 
 const NUM_PREFIXES: u64 = 256;
+
+// Maximum number of requests that can be sent to a single peer at a time
+pub(crate) const MAX_SERVER_REQUESTS: usize = 1;
 
 #[derive(Clone, Copy, Default)]
 struct Progress {
@@ -177,6 +180,7 @@ impl<PT: PubKey> StateSync<PT> {
                         from: request.from,
                         until: request.until,
                         old_target: request.old_target,
+                        session_id: SessionId(0),
                     }));
                     if result.is_err() {
                         eprintln!("invariant broken: send_request called after destroy");
@@ -269,7 +273,7 @@ impl<PT: PubKey> StateSync<PT> {
                                 );
                             }
                             request_tx
-                                .send(SyncRequest::Completion((from, SessionId(response.nonce))))
+                                .send(SyncRequest::Completion((from, response.session_id)))
                                 .expect("request_rx dropped");
                             if response.response_n != 0 {
                                 bindings::monad_statesync_client_handle_done(
@@ -386,6 +390,18 @@ impl<PT: PubKey> StateSync<PT> {
         }
 
         self.outbound_requests.handle_bad_version(from, bad_version);
+    }
+
+    pub fn handle_response_error(&mut self, from: NodeId<PT>, error: StateSyncError) {
+        if !self.state_sync_peers.iter().any(|trusted| trusted == &from) {
+            tracing::warn!(
+                ?from,
+                "dropping statesync response error from untrusted peer",
+            );
+            return;
+        }
+
+        self.outbound_requests.handle_server_error(from, error);
     }
 
     /// An estimate of current sync progress in `Target` units

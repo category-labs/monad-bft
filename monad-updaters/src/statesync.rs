@@ -11,8 +11,9 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{
-    MonadEvent, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest,
-    StateSyncResponse, StateSyncUpsertType, StateSyncUpsertV1, SELF_STATESYNC_VERSION,
+    MonadEvent, SessionId, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage,
+    StateSyncRequest, StateSyncResponse, StateSyncUpsertType, StateSyncUpsertV1,
+    SELF_STATESYNC_VERSION,
 };
 use monad_state_backend::{InMemoryState, StateBackend};
 use monad_types::{ExecutionProtocol, FinalizedHeader, NodeId, SeqNum, GENESIS_SEQ_NUM};
@@ -102,6 +103,7 @@ where
                         prefix_bytes: 1,
                         until: 0,
                         old_target: 0,
+                        session_id: SessionId(0),
                     };
                     self.request = Some(request);
                     self.events.extend(self.peers.iter().map(|peer| {
@@ -133,7 +135,7 @@ where
                         let serialized = serde_json::to_vec(state).unwrap();
                         let response = StateSyncResponse {
                             version: SELF_STATESYNC_VERSION,
-                            nonce: 0,
+                            session_id: SessionId(0),
                             response_index: 0,
 
                             request,
@@ -168,6 +170,7 @@ where
                     }
                     StateSyncNetworkMessage::BadVersion(_) => {}
                     StateSyncNetworkMessage::Completion(_) => {}
+                    StateSyncNetworkMessage::ResponseError(_) => {}
                 },
             }
         }

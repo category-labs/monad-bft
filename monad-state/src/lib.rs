@@ -36,8 +36,8 @@ use monad_executor_glue::{
     BlockSyncEvent, ClearMetrics, Command, ConfigEvent, ConfigReloadCommand, ConsensusEvent,
     ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers, LedgerCommand,
     MempoolEvent, Message, MonadEvent, ReadCommand, ReloadConfig, RouterCommand,
-    StateRootHashCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, TxPoolCommand,
-    ValidatorEvent, WriteCommand,
+    StateRootHashCommand, StateSyncCommand, StateSyncError, StateSyncErrorKind, StateSyncEvent,
+    StateSyncNetworkMessage, TxPoolCommand, ValidatorEvent, WriteCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{
@@ -395,6 +395,57 @@ where
 
     pub fn metrics(&self) -> &Metrics {
         &self.metrics
+    }
+
+    fn process_inbound_statesync_event(
+        &mut self,
+        from: NodeId<CertificateSignaturePubKey<ST>>,
+        message: StateSyncNetworkMessage,
+    ) -> Vec<
+        Command<
+            MonadEvent<ST, SCT, EPT>,
+            VerifiedMonadMessage<ST, SCT, EPT>,
+            ST,
+            SCT,
+            EPT,
+            BPT,
+            SBT,
+        >,
+    > {
+        match self.consensus {
+            ConsensusMode::Sync { .. } => match message {
+                StateSyncNetworkMessage::Request(request) => {
+                    vec![Command::RouterCommand(RouterCommand::Publish {
+                        target: RouterTarget::TcpPointToPoint {
+                            to: from,
+                            completion: None,
+                        },
+                        message: VerifiedMonadMessage::StateSyncMessage(
+                            StateSyncNetworkMessage::ResponseError(StateSyncError {
+                                kind: StateSyncErrorKind::ExecutionNotStarted,
+                                session_id: request.session_id,
+                            }),
+                        ),
+                    })]
+                }
+                StateSyncNetworkMessage::Response(_)
+                | StateSyncNetworkMessage::BadVersion(_)
+                | StateSyncNetworkMessage::ResponseError(_) => {
+                    vec![Command::StateSyncCommand(StateSyncCommand::Message((
+                        from, message,
+                    )))]
+                }
+                StateSyncNetworkMessage::Completion(_) => Vec::new(),
+            },
+            ConsensusMode::Live(_) => match message {
+                StateSyncNetworkMessage::Request(_) | StateSyncNetworkMessage::Completion(_) => {
+                    vec![Command::StateSyncCommand(StateSyncCommand::Message((
+                        from, message,
+                    )))]
+                }
+                _ => Vec::new(),
+            },
+        }
     }
 }
 
@@ -857,11 +908,7 @@ where
             }
             MonadEvent::StateSyncEvent(state_sync_event) => match state_sync_event {
                 StateSyncEvent::Inbound(sender, message) => {
-                    // TODO we need to add some sort of throttling to who we service... right now
-                    // we'll service indiscriminately
-                    vec![Command::StateSyncCommand(StateSyncCommand::Message((
-                        sender, message,
-                    )))]
+                    self.process_inbound_statesync_event(sender, message)
                 }
                 StateSyncEvent::Outbound(to, message, completion) => {
                     vec![Command::RouterCommand(RouterCommand::Publish {

@@ -562,7 +562,9 @@ const STATESYNC_VERSION_V0: StateSyncVersion = StateSyncVersion { major: 1, mino
 const STATESYNC_VERSION_V1: StateSyncVersion = StateSyncVersion { major: 1, minor: 1 };
 // Client is required to send completions since this version
 pub const STATESYNC_VERSION_V2: StateSyncVersion = StateSyncVersion { major: 1, minor: 2 };
-pub const SELF_STATESYNC_VERSION: StateSyncVersion = STATESYNC_VERSION_V2;
+// Request includes session id allocated by client, mirrored by server response
+pub const STATESYNC_VERSION_V3: StateSyncVersion = StateSyncVersion { major: 1, minor: 3 };
+pub const SELF_STATESYNC_VERSION: StateSyncVersion = STATESYNC_VERSION_V3;
 pub const STATESYNC_VERSION_MIN: StateSyncVersion = STATESYNC_VERSION_V0;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, RlpEncodable, RlpDecodable)]
@@ -588,16 +590,72 @@ impl StateSyncVersion {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, RlpEncodable)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct StateSyncRequest {
     pub version: StateSyncVersion,
-
+    pub session_id: SessionId,
     pub prefix: u64,
     pub prefix_bytes: u8,
     pub target: u64,
     pub from: u64,
     pub until: u64,
     pub old_target: u64,
+}
+
+impl Encodable for StateSyncRequest {
+    fn encode(&self, out: &mut dyn BufMut) {
+        if self.version >= STATESYNC_VERSION_V3 {
+            let enc: [&dyn Encodable; 8] = [
+                &self.version,
+                &self.prefix,
+                &self.prefix_bytes,
+                &self.target,
+                &self.from,
+                &self.until,
+                &self.old_target,
+                &self.session_id,
+            ];
+            encode_list::<_, dyn Encodable>(&enc, out);
+            return;
+        }
+        let enc: [&dyn Encodable; 7] = [
+            &self.version,
+            &self.prefix,
+            &self.prefix_bytes,
+            &self.target,
+            &self.from,
+            &self.until,
+            &self.old_target,
+        ];
+        encode_list::<_, dyn Encodable>(&enc, out);
+    }
+
+    fn length(&self) -> usize {
+        if self.version >= STATESYNC_VERSION_V3 {
+            let enc: Vec<&dyn Encodable> = vec![
+                &self.version,
+                &self.prefix,
+                &self.prefix_bytes,
+                &self.target,
+                &self.from,
+                &self.until,
+                &self.old_target,
+                &self.session_id,
+            ];
+            Encodable::length(&enc)
+        } else {
+            let enc: Vec<&dyn Encodable> = vec![
+                &self.version,
+                &self.prefix,
+                &self.prefix_bytes,
+                &self.target,
+                &self.from,
+                &self.until,
+                &self.old_target,
+            ];
+            Encodable::length(&enc)
+        }
+    }
 }
 
 impl Decodable for StateSyncRequest {
@@ -613,6 +671,19 @@ impl Decodable for StateSyncRequest {
             let from = u64::decode(&mut payload)?;
             let until = u64::decode(&mut payload)?;
             let old_target = u64::decode(&mut payload)?;
+            if version >= STATESYNC_VERSION_V3 {
+                let session_id = SessionId::decode(&mut payload)?;
+                return Ok(Self {
+                    version,
+                    session_id,
+                    prefix,
+                    prefix_bytes,
+                    target,
+                    from,
+                    until,
+                    old_target,
+                });
+            }
 
             Ok(Self {
                 version,
@@ -622,6 +693,7 @@ impl Decodable for StateSyncRequest {
                 from,
                 until,
                 old_target,
+                session_id: SessionId(0),
             })
         } else {
             // If the version is not compatible, skip the rest of payload we may not understand
@@ -633,6 +705,7 @@ impl Decodable for StateSyncRequest {
                 from: 0,
                 until: 0,
                 old_target: 0,
+                session_id: SessionId(0),
             })
         }
     }
@@ -713,7 +786,7 @@ impl Encodable for StateSyncUpsertType {
     }
 
     fn length(&self) -> usize {
-        // max enum value is << 127
+        // max enum value is < 127
         // the rlp encoding of integers between 0 and 127 is 1 byte.
         // the rlp encoding of a list of 1 byte is always 2 bytes
         2
@@ -747,7 +820,7 @@ pub struct StateSyncBadVersion {
 #[derive(Clone, PartialEq, Eq)]
 pub struct StateSyncResponse {
     pub version: StateSyncVersion,
-    pub nonce: u64,
+    pub session_id: SessionId,
     pub response_index: u32,
 
     pub request: StateSyncRequest,
@@ -762,7 +835,7 @@ impl Encodable for StateSyncResponse {
         if self.request.version >= STATESYNC_VERSION_V1 {
             let enc: [&dyn Encodable; 6] = [
                 &self.version,
-                &self.nonce,
+                &self.session_id,
                 &self.response_index,
                 &self.request,
                 &self.response,
@@ -774,7 +847,7 @@ impl Encodable for StateSyncResponse {
                 self.response.iter().map(StateSyncUpsertV1::as_v0).collect();
             let enc: [&dyn Encodable; 6] = [
                 &self.version,
-                &self.nonce,
+                &self.session_id,
                 &self.response_index,
                 &self.request,
                 &v0_response,
@@ -789,7 +862,7 @@ impl Encodable for StateSyncResponse {
         if self.request.version >= STATESYNC_VERSION_V1 {
             let enc: Vec<&dyn Encodable> = vec![
                 &self.version,
-                &self.nonce,
+                &self.session_id,
                 &self.response_index,
                 &self.request,
                 &self.response,
@@ -801,7 +874,7 @@ impl Encodable for StateSyncResponse {
                 self.response.iter().map(StateSyncUpsertV1::as_v0).collect();
             let enc: Vec<&dyn Encodable> = vec![
                 &self.version,
-                &self.nonce,
+                &self.session_id,
                 &self.response_index,
                 &self.request,
                 &v0_response,
@@ -817,7 +890,7 @@ impl Decodable for StateSyncResponse {
         let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
 
         let version = StateSyncVersion::decode(&mut payload)?;
-        let nonce = u64::decode(&mut payload)?;
+        let session_id = SessionId::decode(&mut payload)?;
         let response_index = u32::decode(&mut payload)?;
         let request = StateSyncRequest::decode(&mut payload)?;
         // check if server version is past V1: upsert fork
@@ -831,7 +904,7 @@ impl Decodable for StateSyncResponse {
 
         Ok(Self {
             version,
-            nonce,
+            session_id,
             response_index,
             request,
             response,
@@ -844,7 +917,7 @@ impl Debug for StateSyncResponse {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StateSyncResponse")
             .field("version", &self.version)
-            .field("nonce", &self.nonce)
+            .field("nonce", &self.session_id)
             .field("response_index", &self.response_index)
             .field("request", &self.request)
             .field("response_len", &self.response.len())
@@ -853,8 +926,21 @@ impl Debug for StateSyncResponse {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, RlpEncodable, RlpDecodable, Hash)]
 pub struct SessionId(pub u64);
+
+#[derive(Debug, Clone, PartialEq, Eq, Copy)]
+pub enum StateSyncErrorKind {
+    InsufficientResources,
+    ExecutionNotStarted,
+    DbError,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateSyncError {
+    pub kind: StateSyncErrorKind,
+    pub session_id: SessionId,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StateSyncNetworkMessage {
@@ -862,6 +948,70 @@ pub enum StateSyncNetworkMessage {
     Response(StateSyncResponse),
     BadVersion(StateSyncBadVersion),
     Completion(SessionId),
+    ResponseError(StateSyncError),
+}
+
+impl Encodable for StateSyncErrorKind {
+    fn encode(&self, out: &mut dyn BufMut) {
+        match self {
+            Self::InsufficientResources => {
+                let enc: [&dyn Encodable; 1] = [&1u8];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::ExecutionNotStarted => {
+                let enc: [&dyn Encodable; 1] = [&2u8];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::DbError => {
+                let enc: [&dyn Encodable; 1] = [&3u8];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+        }
+    }
+
+    fn length(&self) -> usize {
+        // max enum value is < 127
+        // the rlp encoding of integers between 0 and 127 is 1 byte.
+        // the rlp encoding of a list of 1 byte is always 2 bytes
+        2
+    }
+}
+
+impl Decodable for StateSyncErrorKind {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+
+        match u8::decode(&mut payload)? {
+            1 => Ok(Self::InsufficientResources),
+            2 => Ok(Self::ExecutionNotStarted),
+            3 => Ok(Self::DbError),
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown StateSyncErrorKind",
+            )),
+        }
+    }
+}
+
+impl Encodable for StateSyncError {
+    fn encode(&self, out: &mut dyn BufMut) {
+        let enc: [&dyn Encodable; 2] = [&self.kind, &self.session_id];
+        encode_list::<_, dyn Encodable>(&enc, out);
+    }
+
+    fn length(&self) -> usize {
+        let enc: Vec<&dyn Encodable> = vec![&self.kind, &self.session_id];
+        Encodable::length(&enc)
+    }
+}
+
+impl Decodable for StateSyncError {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+        let kind = StateSyncErrorKind::decode(&mut payload)?;
+        let session_id = SessionId::decode(&mut payload)?;
+
+        Ok(Self { kind, session_id })
+    }
 }
 
 impl Encodable for StateSyncNetworkMessage {
@@ -882,6 +1032,10 @@ impl Encodable for StateSyncNetworkMessage {
             }
             Self::Completion(session_id) => {
                 let enc: [&dyn Encodable; 3] = [&name, &4u8, &session_id];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::ResponseError(error) => {
+                let enc: [&dyn Encodable; 3] = [&name, &5u8, &error];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
         }
@@ -906,6 +1060,10 @@ impl Encodable for StateSyncNetworkMessage {
                 let enc: Vec<&dyn Encodable> = vec![&name, &4u8, &session_id];
                 Encodable::length(&enc)
             }
+            Self::ResponseError(error) => {
+                let enc: Vec<&dyn Encodable> = vec![&name, &5u8, &error];
+                Encodable::length(&enc)
+            }
         }
     }
 }
@@ -925,6 +1083,7 @@ impl Decodable for StateSyncNetworkMessage {
             2 => Ok(Self::Response(StateSyncResponse::decode(&mut payload)?)),
             3 => Ok(Self::BadVersion(StateSyncBadVersion::decode(&mut payload)?)),
             4 => Ok(Self::Completion(SessionId::decode(&mut payload)?)),
+            5 => Ok(Self::ResponseError(StateSyncError::decode(&mut payload)?)),
             _ => Err(alloy_rlp::Error::Custom(
                 "failed to decode unknown StateSyncNetworkMessage",
             )),
@@ -1217,6 +1376,7 @@ mod tests {
     use crate::{
         StateSyncRequest, StateSyncResponse, StateSyncUpsertType, StateSyncUpsertV1,
         StateSyncVersion, SELF_STATESYNC_VERSION, STATESYNC_VERSION_V0, STATESYNC_VERSION_V1,
+        STATESYNC_VERSION_V3,
     };
 
     #[test]
@@ -1236,7 +1396,7 @@ mod tests {
     ) -> StateSyncResponse {
         StateSyncResponse {
             version: server_version,
-            nonce: 0,
+            session_id: crate::SessionId(0),
             response_index: 0,
             request: StateSyncRequest {
                 version: client_version,
@@ -1246,6 +1406,11 @@ mod tests {
                 from: 10000000000,
                 until: 200000000,
                 old_target: 30000,
+                session_id: if server_version >= STATESYNC_VERSION_V3 {
+                    crate::SessionId(123)
+                } else {
+                    crate::SessionId(0)
+                },
             },
             response: vec![StateSyncUpsertV1 {
                 upsert_type: StateSyncUpsertType::Account,
@@ -1261,7 +1426,10 @@ mod tests {
         let serialized_response = alloy_rlp::encode(&response);
         let deserialized_response = alloy_rlp::decode_exact(&serialized_response).unwrap();
         if response != deserialized_response {
-            panic!("failed to roundtrip v0 statesync response")
+            panic!(
+                "failed to roundtrip v0 statesync response {:?} {:?}",
+                response, deserialized_response
+            )
         }
     }
 
@@ -1271,7 +1439,23 @@ mod tests {
         let serialized_response = alloy_rlp::encode(&response);
         let deserialized_response = alloy_rlp::decode_exact(&serialized_response).unwrap();
         if response != deserialized_response {
-            panic!("failed to roundtrip v1 statesync response")
+            panic!(
+                "failed to roundtrip v1 statesync response {:?} {:?}",
+                response, deserialized_response
+            )
+        }
+    }
+
+    #[test]
+    fn statesync_version_v1_3_roundtrip() {
+        let response = make_response(STATESYNC_VERSION_V3, STATESYNC_VERSION_V3);
+        let serialized_response = alloy_rlp::encode(&response);
+        let deserialized_response = alloy_rlp::decode_exact(&serialized_response).unwrap();
+        if response != deserialized_response {
+            panic!(
+                "failed to roundtrip v1 statesync response {:?} {:?}",
+                response, deserialized_response
+            )
         }
     }
 
@@ -1316,6 +1500,7 @@ mod tests {
             from: 9,
             until: 8,
             old_target: 7,
+            session_id: crate::SessionId(123),
         };
         let serialized_request = alloy_rlp::encode(request);
         let deserialized_request: StateSyncRequest =
@@ -1343,6 +1528,7 @@ mod tests {
             from: 9,
             until: 8,
             old_target: 7,
+            session_id: crate::SessionId(123),
         };
         let serialized_request = alloy_rlp::encode(request);
         let deserialized_request: StateSyncRequest =
@@ -1360,5 +1546,33 @@ mod tests {
         assert_eq!(deserialized_request.from, 0);
         assert_eq!(deserialized_request.until, 0);
         assert_eq!(deserialized_request.old_target, 0);
+    }
+
+    #[test]
+    fn statesync_error() {
+        let msg = crate::StateSyncNetworkMessage::ResponseError(crate::StateSyncError {
+            session_id: crate::SessionId(123),
+            kind: crate::StateSyncErrorKind::InsufficientResources,
+        });
+        let serialized_msg = alloy_rlp::encode(msg.clone());
+        let deserialized_msg: crate::StateSyncNetworkMessage =
+            alloy_rlp::decode_exact(&serialized_msg).unwrap();
+        assert_eq!(deserialized_msg, msg);
+        let msg = crate::StateSyncNetworkMessage::ResponseError(crate::StateSyncError {
+            session_id: crate::SessionId(123),
+            kind: crate::StateSyncErrorKind::ExecutionNotStarted,
+        });
+        let serialized_msg = alloy_rlp::encode(msg.clone());
+        let deserialized_msg: crate::StateSyncNetworkMessage =
+            alloy_rlp::decode_exact(&serialized_msg).unwrap();
+        assert_eq!(deserialized_msg, msg);
+        let msg = crate::StateSyncNetworkMessage::ResponseError(crate::StateSyncError {
+            session_id: crate::SessionId(123),
+            kind: crate::StateSyncErrorKind::DbError,
+        });
+        let serialized_msg = alloy_rlp::encode(msg.clone());
+        let deserialized_msg: crate::StateSyncNetworkMessage =
+            alloy_rlp::decode_exact(&serialized_msg).unwrap();
+        assert_eq!(deserialized_msg, msg);
     }
 }
