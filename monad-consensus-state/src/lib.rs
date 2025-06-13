@@ -25,6 +25,7 @@ use monad_consensus_types::{
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::TimeoutCertificate,
     voting::Vote,
+    RoundCertificate,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -62,8 +63,6 @@ where
     vote_state: VoteState<SCT>,
     /// Outgoing prepared votes to send to next leader
     scheduled_vote: Option<OutgoingVoteStatus>,
-    /// The highest QC (QC height determined by Round) known to this node
-    high_qc: QuorumCertificate<SCT>,
     /// Tracks and updates the current round
     pacemaker: Pacemaker<ST, SCT, EPT, CCT, CRT>,
     /// Policy for upholding consensus safety when voting or extending branches
@@ -86,7 +85,6 @@ where
     fn eq(&self, other: &Self) -> bool {
         self.pending_block_tree.eq(&other.pending_block_tree)
             && self.vote_state.eq(&other.vote_state)
-            && self.high_qc.eq(&other.high_qc)
             && self.pacemaker.eq(&other.pacemaker)
             && self.safety.eq(&other.safety)
     }
@@ -106,7 +104,6 @@ where
         f.debug_struct("ConsensusState")
             .field("pending_block_tree", &self.pending_block_tree)
             .field("vote_state", &self.vote_state)
-            .field("high_qc", &self.high_qc)
             .field("pacemaker", &self.pacemaker)
             .field("safety", &self.safety)
             .finish()
@@ -240,28 +237,21 @@ where
         root: RootInfo,
         high_qc: QuorumCertificate<SCT>,
     ) -> Self {
+        let pacemaker = Pacemaker::new(
+            config.delta,
+            config.chain_config,
+            config.delta, // TODO: change this to different value later
+            epoch_manager,
+            // TODO store high_certificate in forkpoint
+            RoundCertificate::Qc(high_qc.clone()),
+            high_qc.clone(),
+        );
         let high_qc_round = high_qc.get_round();
-        assert!(high_qc_round >= root.round);
-        let consensus_round = high_qc_round + Round(1);
-        let consensus_epoch = epoch_manager.get_epoch(consensus_round).unwrap_or_else(|| {
-            panic!(
-                "unknown epoch for consensus_round={:?}. try a newer forkpoint?",
-                consensus_round
-            )
-        });
         ConsensusState {
             pending_block_tree: BlockTree::new(root),
             scheduled_vote: None,
-            vote_state: VoteState::new(consensus_round),
-            high_qc,
-            pacemaker: Pacemaker::new(
-                config.delta,
-                config.chain_config,
-                config.delta, // TODO: change this to different value later
-                consensus_epoch,
-                consensus_round,
-                None,
-            ),
+            vote_state: VoteState::new(pacemaker.get_current_round()),
+            pacemaker,
             safety: Safety::new(
                 // ConsensusState is timed out synchronously on MonadState init, which always sets
                 // highest_vote_round to consensus_round
@@ -289,7 +279,7 @@ where
     }
 
     pub fn get_high_qc(&self) -> &QuorumCertificate<SCT> {
-        &self.high_qc
+        self.pacemaker.high_qc()
     }
 
     pub fn get_current_epoch(&self) -> Epoch {
@@ -327,7 +317,7 @@ where
         cmds.extend(
             self.consensus
                 .pacemaker
-                .handle_event(&mut self.consensus.safety, &self.consensus.high_qc)
+                .handle_event(&mut self.consensus.safety)
                 .into_iter()
                 .map(|cmd| {
                     ConsensusCommand::from_pacemaker_command(
@@ -374,7 +364,32 @@ where
         // a valid proposal will advance the pacemaker round so capture the original round before
         // handling the proposal certificate
         let _original_round = self.consensus.pacemaker.get_current_round();
-        cmds.extend(self.proposal_certificate_handling(&p));
+
+        let process_certificate_cmds = self.process_qc(&p.block_header.qc);
+        cmds.extend(process_certificate_cmds);
+
+        if let Some(last_round_tc) = p.last_round_tc.as_ref() {
+            debug!(?last_round_tc, "Handled proposal with TC");
+            self.metrics.consensus_events.proposal_with_tc += 1;
+            let advance_round_cmds = self
+                .consensus
+                .pacemaker
+                .process_certificate(
+                    self.metrics,
+                    self.epoch_manager,
+                    RoundCertificate::Tc(last_round_tc.clone()),
+                )
+                .into_iter()
+                .map(|cmd| {
+                    ConsensusCommand::from_pacemaker_command(
+                        self.keypair,
+                        self.cert_keypair,
+                        self.version,
+                        cmd,
+                    )
+                });
+            cmds.extend(advance_round_cmds);
+        }
 
         // author, leader, round checks
         let round = self.consensus.pacemaker.get_current_round();
@@ -587,7 +602,7 @@ where
             debug!(?qc, "Created QC");
             self.metrics.consensus_events.created_qc += 1;
 
-            cmds.extend(self.process_certificate_qc(&qc));
+            cmds.extend(self.process_qc(&qc));
             cmds.extend(self.try_propose());
         };
 
@@ -624,7 +639,7 @@ where
             .get_cert_pubkeys(&epoch)
             .expect("timeout message was verified");
 
-        let process_certificate_cmds = self.process_certificate_qc(&tm.tminfo.high_qc);
+        let process_certificate_cmds = self.process_qc(&tm.tminfo.high_qc);
         cmds.extend(process_certificate_cmds);
 
         if let Some(last_round_tc) = tm.last_round_tc.as_ref() {
@@ -633,7 +648,11 @@ where
             let advance_round_cmds = self
                 .consensus
                 .pacemaker
-                .advance_round_tc(last_round_tc, self.epoch_manager, self.metrics)
+                .process_certificate(
+                    self.metrics,
+                    self.epoch_manager,
+                    RoundCertificate::Tc(last_round_tc.clone()),
+                )
                 .into_iter()
                 .map(|cmd| {
                     ConsensusCommand::from_pacemaker_command(
@@ -646,14 +665,15 @@ where
             cmds.extend(advance_round_cmds);
         }
 
-        let (tc, remote_timeout_cmds) = self
+        let remote_timeout_cmds = self
             .consensus
             .pacemaker
             .process_remote_timeout::<VTF::ValidatorSetType>(
+                self.metrics,
+                self.epoch_manager,
                 validator_set,
                 validator_mapping,
                 &mut self.consensus.safety,
-                &self.consensus.high_qc,
                 author,
                 tmo_msg,
             );
@@ -666,25 +686,7 @@ where
                 cmd,
             )
         }));
-        if let Some(tc) = tc {
-            info!(?tc, "Created TC");
-            self.metrics.consensus_events.created_tc += 1;
-            let advance_round_cmds = self
-                .consensus
-                .pacemaker
-                .advance_round_tc(&tc, self.epoch_manager, self.metrics)
-                .into_iter()
-                .map(|cmd| {
-                    ConsensusCommand::from_pacemaker_command(
-                        self.keypair,
-                        self.cert_keypair,
-                        self.version,
-                        cmd,
-                    )
-                });
-            cmds.extend(advance_round_cmds);
-            cmds.extend(self.try_propose());
-        }
+        cmds.extend(self.try_propose());
 
         cmds
     }
@@ -844,15 +846,14 @@ where
         &mut self,
         qc: &QuorumCertificate<SCT>,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
-        trace!(?qc, our_high_qc = ?self.consensus.high_qc, "process qc");
+        trace!(?qc, our_high_qc = ?self.consensus.get_high_qc(), "process qc");
 
-        if Rank(qc.info) <= Rank(self.consensus.high_qc.info) {
+        if Rank(qc.info) <= Rank(self.consensus.get_high_qc().info) {
             self.metrics.consensus_events.process_old_qc += 1;
             return Vec::new();
         }
         self.metrics.consensus_events.process_qc += 1;
 
-        self.consensus.high_qc = qc.clone();
         let mut cmds = Vec::new();
         cmds.extend(self.try_commit(qc));
 
@@ -880,9 +881,39 @@ where
         // any time high_qc is updated, we generate a new checkpoint
         cmds.push(ConsensusCommand::CheckpointSave {
             root_seq_num: self.consensus.pending_block_tree.root().seq_num,
-            high_qc_round: self.consensus.high_qc.get_round(),
+            high_qc_round: self.consensus.get_high_qc().get_round(),
             checkpoint: self.checkpoint(),
         });
+
+        cmds.extend(
+            self.consensus
+                .pacemaker
+                .process_certificate(
+                    self.metrics,
+                    self.epoch_manager,
+                    RoundCertificate::Qc(qc.clone()),
+                )
+                .into_iter()
+                .map(|cmd| {
+                    ConsensusCommand::from_pacemaker_command(
+                        self.keypair,
+                        self.cert_keypair,
+                        self.version,
+                        cmd,
+                    )
+                }),
+        );
+
+        // retrieve missing blocks if processed QC is highest and points at an
+        // unknown block
+        cmds.extend(self.request_blocks_if_missing_ancestor());
+
+        // update vote_state round
+        // it's ok if not leader for round; we will never propose
+        self.consensus
+            .vote_state
+            .start_new_round(self.consensus.pacemaker.get_current_round());
+
         cmds
     }
 
@@ -899,7 +930,7 @@ where
         let base_epoch = self.consensus.pending_block_tree.root().epoch;
         Checkpoint {
             root: self.consensus.pending_block_tree.root().block_id,
-            high_qc: self.consensus.high_qc.clone(),
+            high_qc: self.consensus.get_high_qc().clone(),
             validator_sets: vec![
                 val_set_data(base_epoch)
                     .expect("checkpoint: no validator set populated for base_epoch"),
@@ -963,59 +994,6 @@ where
                 OptimisticPolicyCommit::Finalized(block.to_owned()),
             ));
         }
-
-        // enter new pacemaker epoch if committing the boundary block
-        // bumps the current epoch
-        cmds.extend(
-            self.consensus
-                .pacemaker
-                .advance_epoch(self.epoch_manager)
-                .into_iter()
-                .map(|cmd| {
-                    ConsensusCommand::from_pacemaker_command(
-                        self.keypair,
-                        self.cert_keypair,
-                        self.version,
-                        cmd,
-                    )
-                }),
-        );
-        cmds
-    }
-
-    #[must_use]
-    fn process_certificate_qc(
-        &mut self,
-        qc: &QuorumCertificate<SCT>,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
-        let mut cmds = Vec::new();
-        cmds.extend(self.process_qc(qc));
-
-        cmds.extend(
-            self.consensus
-                .pacemaker
-                .advance_round_qc(qc, self.epoch_manager, self.metrics)
-                .into_iter()
-                .map(|cmd| {
-                    ConsensusCommand::from_pacemaker_command(
-                        self.keypair,
-                        self.cert_keypair,
-                        self.version,
-                        cmd,
-                    )
-                }),
-        );
-
-        // retrieve missing blocks if processed QC is highest and points at an
-        // unknown block
-        cmds.extend(self.request_blocks_if_missing_ancestor());
-
-        // update vote_state round
-        // it's ok if not leader for round; we will never propose
-        self.consensus
-            .vote_state
-            .start_new_round(self.consensus.pacemaker.get_current_round());
-
         cmds
     }
 
@@ -1077,7 +1055,7 @@ where
         let Some(high_qc_seq_num) = self
             .consensus
             .pending_block_tree
-            .get_seq_num_of_qc(&self.consensus.high_qc)
+            .get_seq_num_of_qc(self.consensus.get_high_qc())
         else {
             return Vec::new();
         };
@@ -1147,11 +1125,11 @@ where
         debug!(?round, block_id = ?validated_block.get_id(), "try vote");
 
         // decide if its safe to cast vote on this proposal
-        let last_tc = self.consensus.pacemaker.get_last_round_tc();
+        let last_tc = self.consensus.pacemaker.last_round_tc().cloned();
         let vote = self
             .consensus
             .safety
-            .make_vote::<BPT, SBT>(validated_block, last_tc);
+            .make_vote::<BPT, SBT>(validated_block, &last_tc);
 
         debug!(?round, ?vote, "vote result");
 
@@ -1224,19 +1202,30 @@ where
         }
 
         // check that we have path to root and block is coherent
-        cmds.extend(self.try_update_coherency(self.consensus.high_qc.get_block_id()));
+        cmds.extend(self.try_update_coherency(self.consensus.get_high_qc().get_block_id()));
         if !self
             .consensus
             .pending_block_tree
-            .is_coherent(&self.consensus.high_qc.get_block_id())
+            .is_coherent(&self.consensus.get_high_qc().get_block_id())
         {
             return cmds;
         }
 
+        let last_round_tc = self.consensus.pacemaker.last_round_tc().cloned();
+
+        // make sure we haven't voted or timed out this round
+        if !self.consensus.safety.safe_to_vote(
+            round,
+            self.consensus.pacemaker.high_qc().get_round(),
+            &last_round_tc,
+        ) {
+            return cmds;
+        }
+
         // we passed all try_propose guards, so begin proposing
+        // TODO this can be deleted and folded into the safety checks
         self.consensus.last_proposed_round = round;
 
-        let last_round_tc = self.consensus.pacemaker.get_last_round_tc().clone();
         cmds.extend(self.process_new_round_event(last_round_tc));
         cmds
     }
@@ -1254,7 +1243,7 @@ where
             .epoch_manager
             .get_epoch(round)
             .expect("higher epoch exists");
-        let high_qc = self.consensus.high_qc.clone();
+        let high_qc = self.consensus.get_high_qc().clone();
 
         let parent_bid = high_qc.get_block_id();
         let round_signature = RoundSignature::new(round, self.cert_keypair);
@@ -1349,7 +1338,7 @@ where
     fn request_blocks_if_missing_ancestor(
         &mut self,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
-        let high_qc = &self.consensus.high_qc;
+        let high_qc = self.consensus.get_high_qc();
         let root_seq_num = self.consensus.pending_block_tree.get_root_seq_num();
 
         let Some(range) = self
@@ -1390,38 +1379,6 @@ where
         );
 
         vec![ConsensusCommand::RequestSync(range)]
-    }
-
-    #[must_use]
-    fn proposal_certificate_handling(
-        &mut self,
-        p: &ProposalMessage<ST, SCT, EPT>,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
-        let mut cmds = vec![];
-
-        let process_certificate_cmds = self.process_certificate_qc(&p.block_header.qc);
-        cmds.extend(process_certificate_cmds);
-
-        if let Some(last_round_tc) = p.last_round_tc.as_ref() {
-            debug!(?last_round_tc, "Handled proposal with TC");
-            self.metrics.consensus_events.proposal_with_tc += 1;
-            let advance_round_cmds = self
-                .consensus
-                .pacemaker
-                .advance_round_tc(last_round_tc, self.epoch_manager, self.metrics)
-                .into_iter()
-                .map(|cmd| {
-                    ConsensusCommand::from_pacemaker_command(
-                        self.keypair,
-                        self.cert_keypair,
-                        self.version,
-                        cmd,
-                    )
-                });
-            cmds.extend(advance_round_cmds);
-        }
-
-        cmds
     }
 }
 
@@ -2134,7 +2091,7 @@ mod test {
         );
 
         let mut wrapped_state = ctx[0].wrapped_state();
-        assert_eq!(wrapped_state.consensus.high_qc.get_round(), Round(0));
+        assert_eq!(wrapped_state.consensus.get_high_qc().get_round(), Round(0));
 
         let expected_qc_high_round = Round(5);
 
@@ -2158,11 +2115,11 @@ mod test {
         let _ = wrapped_state.handle_vote_message(*v2.author(), *v2);
 
         // less than 2f+1, so expect not locked
-        assert_eq!(wrapped_state.consensus.high_qc.get_round(), Round(0));
+        assert_eq!(wrapped_state.consensus.get_high_qc().get_round(), Round(0));
 
         let _ = wrapped_state.handle_vote_message(*v3.author(), *v3);
         assert_eq!(
-            wrapped_state.consensus.high_qc.get_round(),
+            wrapped_state.consensus.get_high_qc().get_round(),
             expected_qc_high_round
         );
         assert_eq!(wrapped_state.metrics.consensus_events.vote_received, 3);
@@ -2198,10 +2155,10 @@ mod test {
             wrapped_state.consensus.pacemaker.get_current_round(),
             Round(1)
         );
-        let _ = wrapped_state.consensus.pacemaker.handle_event(
-            &mut wrapped_state.consensus.safety,
-            &wrapped_state.consensus.high_qc,
-        );
+        let _ = wrapped_state
+            .consensus
+            .pacemaker
+            .handle_event(&mut wrapped_state.consensus.safety);
 
         // check no vote commands result from receiving the proposal for round 1
 
@@ -2588,10 +2545,10 @@ mod test {
         );
 
         // round 2 timeout
-        let pacemaker_cmds = wrapped_state.consensus.pacemaker.handle_event(
-            &mut wrapped_state.consensus.safety,
-            &wrapped_state.consensus.high_qc,
-        );
+        let pacemaker_cmds = wrapped_state
+            .consensus
+            .pacemaker
+            .handle_event(&mut wrapped_state.consensus.safety);
 
         let broadcast_cmd = pacemaker_cmds
             .iter()
@@ -2739,7 +2696,7 @@ mod test {
             }
         }
         // confirm that the votes lead to a QC forming (which leads to high_qc update)
-        assert_eq!(n2.consensus_state.high_qc.info, votes[0].vote);
+        assert_eq!(n2.consensus_state.get_high_qc().info, votes[0].vote);
 
         // use the correct proposal gen to make next proposal and send it to second_state
         let cp2 = env.next_proposal(Vec::new());
@@ -4516,109 +4473,6 @@ mod test {
             .get_entry(&block_4_id)
             .expect("should be in the blocktree");
         assert!(block_4_blocktree_entry.is_coherent);
-    }
-
-    /// Asserts that pacemaker epoch is brought to sync if blocktree commits
-    /// bump the current epoch
-    ///
-    /// 1. The node receives all the blocks in epoch 1 except the boundary
-    ///    block. These blocks bring it to the first round of epoch(2) but the
-    ///    node is still on epoch(1) as it hasn't committed the boundary block.
-    /// 2. Node receives boundary block and commits it. Assert that pacemaker
-    ///    epoch is bumped to epoch(2)
-    #[test]
-    fn test_pacemaker_advance_epoch_on_blocktree_commit() {
-        let num_states = 4;
-        let execution_delay = SeqNum::MAX;
-
-        let (mut env, mut ctx) = setup::<
-            SignatureType,
-            SignatureCollectionType,
-            EthBlockPolicy<SignatureType, SignatureCollectionType>,
-            InMemoryState,
-            EthValidator<SignatureType, SignatureCollectionType, InMemoryState>,
-            _,
-            _,
-        >(
-            num_states as u32,
-            ValidatorSetFactory::default(),
-            SimpleRoundRobin::default(),
-            || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(1337),
-            execution_delay,
-        );
-
-        let epoch_length = ctx[0].epoch_manager.val_set_update_interval;
-        let epoch_start_delay = ctx[0].epoch_manager.epoch_start_delay;
-        // we don't want to start execution, so set statesync threshold very high
-        ctx[0].consensus_config.live_to_statesync_threshold = SeqNum(u32::MAX.into());
-        ctx[0].consensus_config.start_execution_threshold = SeqNum(u32::MAX.into());
-
-        // enter the first round of epoch(2) via a QC. Node is unaware of the epoch change because of missing boundary block
-        // generate many proposal, skips the boundary block proposal
-        let mut proposals = Vec::new();
-        while proposals.len() < 2 * epoch_length.0 as usize {
-            let proposal = env.next_proposal(Vec::new());
-            proposals.push(proposal);
-        }
-
-        let boundary_block_pos = proposals
-            .iter()
-            .position(|p| p.block_header.seq_num.is_epoch_end(epoch_length))
-            .expect("boundary block in vector");
-        let boundary_block = proposals.remove(boundary_block_pos);
-        let epoch_2_start = boundary_block.block_header.round + epoch_start_delay;
-        proposals.retain(|p| p.block_header.round <= epoch_2_start);
-
-        // populate the next validator set
-        let valset = ctx[0]
-            .val_epoch_map
-            .get_val_set(&Epoch(1))
-            .unwrap()
-            .get_members()
-            .iter()
-            .map(|(node, stake)| (*node, *stake))
-            .collect_vec();
-        let cert_pubkeys = ValidatorMapping::new(
-            ctx[0]
-                .val_epoch_map
-                .get_cert_pubkeys(&(Epoch(1)))
-                .unwrap()
-                .map
-                .iter()
-                .map(|(node, pubkey)| (*node, *pubkey)),
-        );
-
-        ctx[0].val_epoch_map.insert(Epoch(2), valset, cert_pubkeys);
-
-        let (ctx0, ctx) = ctx.split_first_mut().unwrap();
-        let mut wrapped_state = ctx0.wrapped_state();
-
-        for verified_proposal in proposals {
-            let (author, _, proposal) = verified_proposal.destructure();
-            let _ = wrapped_state.handle_proposal_message(author, proposal);
-        }
-
-        // the node hasn't received the boundary block, so it is still in epoch(1)
-        assert_eq!(wrapped_state.consensus.get_current_epoch(), Epoch(1));
-        assert_eq!(wrapped_state.consensus.get_current_round(), epoch_2_start);
-
-        // receives boundary block, commits the entire block tree, enters new epoch
-        let (author, _, proposal) = boundary_block.destructure();
-        let cmds = wrapped_state.handle_proposal_message(author, proposal);
-        let enter_round_cmd = cmds
-            .iter()
-            .find(|cmd| matches!(cmd, ConsensusCommand::EnterRound(_, _)));
-        assert!(enter_round_cmd.is_some());
-        if let Some(ConsensusCommand::EnterRound(epoch, round)) = enter_round_cmd {
-            assert_eq!(epoch, &Epoch(2));
-            assert_eq!(round, &epoch_2_start);
-        } else {
-            unreachable!();
-        }
-        assert_eq!(wrapped_state.consensus.get_current_epoch(), Epoch(2));
-        assert_eq!(wrapped_state.consensus.get_current_round(), epoch_2_start);
     }
 
     #[test]

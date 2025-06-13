@@ -68,7 +68,7 @@ where
     /// A block is safe to vote on if it's strictly higher than the highest
     /// voted round, and it must be correctly extending a QC or TC from the
     /// previous round
-    fn safe_to_vote(
+    pub fn safe_to_vote(
         &self,
         block_round: Round,
         qc_round: Round,
