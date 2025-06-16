@@ -106,6 +106,7 @@ impl Metrics {
             .f64_histogram("monad.rpc.request_duration")
             .with_description("Duration of inbound http requests")
             .with_unit("s")
+            .with_boundaries(LOW_US_TO_S.to_vec())
             .build();
 
         let active_requests = meter
@@ -117,7 +118,7 @@ impl Metrics {
             .f64_histogram("monad.rpc.execution_duration")
             .with_description("duration of the rpc method execution")
             .with_unit("s")
-            .with_boundaries(LOW_MS_TO_S.to_vec())
+            .with_boundaries(LOW_US_TO_S.to_vec())
             .build();
 
         Self {
@@ -158,6 +159,8 @@ pub fn build_otel_meter_provider(
     Ok(provider_builder.build())
 }
 
-const LOW_MS_TO_S: &[f64] = &[
-    0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0,
+const LOW_US_TO_S: &[f64] = &[
+    0.000_001, 0.000_01, 0.000_1, // us
+    0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, //ms
+    1.0, 2.0, 5.0, 10.0, // s
 ];
