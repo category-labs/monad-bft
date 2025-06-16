@@ -85,7 +85,7 @@ where
     // This field is only populated when the execution protocol is EthExecutionProtocol
     eth: Option<(EthTxPool<ST, SCT, SBT>, BPT, SBT)>,
 
-    events: VecDeque<MempoolEvent<SCT, EPT>>,
+    events: VecDeque<MempoolEvent<ST, SCT, EPT>>,
     waker: Option<Waker>,
 
     metrics: EthTxPoolMetrics,

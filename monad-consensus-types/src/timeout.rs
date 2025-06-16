@@ -1,6 +1,9 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, marker::PhantomData};
 
 use alloy_rlp::{RlpDecodable, RlpEncodable};
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_types::*;
 
 use super::quorum_certificate::QuorumCertificate;
@@ -14,16 +17,24 @@ use crate::{
 /// Timeout message to broadcast to other nodes after a local timeout
 #[derive(Clone, Debug, PartialEq, Eq, RlpDecodable, RlpEncodable)]
 #[rlp(trailing)]
-pub struct Timeout<SCT: SignatureCollection> {
+pub struct Timeout<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     pub tminfo: TimeoutInfo<SCT>,
     /// if the high qc round != tminfo.round-1, then this must be the
     /// TC for tminfo.round-1. Otherwise it must be None
-    pub last_round_tc: Option<TimeoutCertificate<SCT>>,
+    pub last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
 }
 
 /// Data to include in a timeout
 #[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
-pub struct TimeoutInfo<SCT> {
+pub struct TimeoutInfo<SCT>
+where
+    SCT: SignatureCollection,
+{
     /// Epoch where the timeout happens
     pub epoch: Epoch,
     /// The round that timed out
@@ -39,7 +50,10 @@ pub struct TimeoutDigest {
     pub high_qc_round: Round,
 }
 
-impl<SCT: SignatureCollection> TimeoutInfo<SCT> {
+impl<SCT> TimeoutInfo<SCT>
+where
+    SCT: SignatureCollection,
+{
     pub fn timeout_digest(&self) -> TimeoutDigest {
         TimeoutDigest {
             epoch: self.epoch,
@@ -64,7 +78,12 @@ pub struct HighQcRoundSigColTuple<SCT> {
 /// form for a round
 /// A collection of Timeout messages is the basis for building a TC
 #[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
-pub struct TimeoutCertificate<SCT> {
+pub struct TimeoutCertificate<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     /// The epoch where the TC is created
     pub epoch: Epoch,
     /// The Timeout messages must have been for the same round
@@ -74,9 +93,17 @@ pub struct TimeoutCertificate<SCT> {
     /// proving that the supermajority of the network is locked on the
     /// same high_qc
     pub high_qc_rounds: Vec<HighQcRoundSigColTuple<SCT>>,
+
+    // TODO delete in v2
+    pub _phantom: PhantomData<(ST, SCT, EPT)>,
 }
 
-impl<SCT: SignatureCollection> TimeoutCertificate<SCT> {
+impl<ST, SCT, EPT> TimeoutCertificate<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     pub fn new(
         epoch: Epoch,
         round: Round,
@@ -115,11 +142,17 @@ impl<SCT: SignatureCollection> TimeoutCertificate<SCT> {
             epoch,
             round,
             high_qc_rounds,
+            _phantom: PhantomData,
         })
     }
 }
 
-impl<SCT> TimeoutCertificate<SCT> {
+impl<ST, SCT, EPT> TimeoutCertificate<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     pub fn max_round(&self) -> Round {
         self.high_qc_rounds
             .iter()

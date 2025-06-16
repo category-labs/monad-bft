@@ -1,4 +1,4 @@
-use std::cmp;
+use std::{cmp, marker::PhantomData};
 
 use monad_consensus_types::{
     block::BlockPolicy,
@@ -14,25 +14,46 @@ use monad_state_backend::StateBackend;
 use monad_types::{ExecutionProtocol, *};
 
 #[derive(PartialEq, Eq, Debug)]
-pub struct Safety {
+pub struct Safety<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     highest_vote_round: Round,
     highest_qc_round: Round,
+
+    _phantom: PhantomData<(ST, SCT, EPT)>,
 }
 
-impl Default for Safety {
+impl<ST, SCT, EPT> Default for Safety<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     fn default() -> Self {
         Self {
             highest_vote_round: GENESIS_ROUND,
             highest_qc_round: GENESIS_ROUND,
+
+            _phantom: PhantomData,
         }
     }
 }
 
-impl Safety {
+impl<ST, SCT, EPT> Safety<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     pub fn new(highest_vote_round: Round, highest_qc_round: Round) -> Self {
-        Safety {
+        Self {
             highest_vote_round,
             highest_qc_round,
+
+            _phantom: PhantomData,
         }
     }
 
@@ -47,27 +68,27 @@ impl Safety {
     /// A block is safe to vote on if it's strictly higher than the highest
     /// voted round, and it must be correctly extending a QC or TC from the
     /// previous round
-    fn safe_to_vote<SCT>(
+    fn safe_to_vote(
         &self,
         block_round: Round,
         qc_round: Round,
-        tc: &Option<TimeoutCertificate<SCT>>,
+        tc: &Option<TimeoutCertificate<ST, SCT, EPT>>,
     ) -> bool {
         if block_round <= cmp::max(self.highest_vote_round, qc_round) {
             return false;
         }
 
-        consecutive(block_round, qc_round) || safe_to_extend(block_round, qc_round, tc)
+        consecutive(block_round, qc_round) || Self::safe_to_extend(block_round, qc_round, tc)
     }
 
     /// A round is safe to timeout if there's no QC formed for that round, and
     /// we haven't voted for a higher round, which implies a QC/TC is formed for
     /// the round.
-    fn safe_to_timeout<SCT>(
+    fn safe_to_timeout(
         &self,
         round: Round,
         qc_round: Round,
-        tc: &Option<TimeoutCertificate<SCT>>,
+        tc: &Option<TimeoutCertificate<ST, SCT, EPT>>,
     ) -> bool {
         if qc_round < self.highest_qc_round
             || round + Round(1) <= self.highest_vote_round
@@ -85,12 +106,12 @@ impl Safety {
     }
 
     /// Make a TimeoutInfo if it's safe to timeout the current round
-    pub fn make_timeout<SCT: SignatureCollection>(
+    pub fn make_timeout(
         &mut self,
         epoch: Epoch,
         round: Round,
         high_qc: QuorumCertificate<SCT>,
-        last_tc: &Option<TimeoutCertificate<SCT>>,
+        last_tc: &Option<TimeoutCertificate<ST, SCT, EPT>>,
     ) -> Option<TimeoutInfo<SCT>> {
         let qc_round = high_qc.get_round();
         if self.safe_to_timeout(round, qc_round, last_tc) {
@@ -106,15 +127,12 @@ impl Safety {
     }
 
     /// Make a Vote if it's safe to vote in the round.
-    pub fn make_vote<ST, SCT, EPT, BPT, SBT>(
+    pub fn make_vote<BPT, SBT>(
         &mut self,
         block: &BPT::ValidatedBlock,
-        last_tc: &Option<TimeoutCertificate<SCT>>,
+        last_tc: &Option<TimeoutCertificate<ST, SCT, EPT>>,
     ) -> Option<Vote>
     where
-        ST: CertificateSignatureRecoverable,
-        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        EPT: ExecutionProtocol,
         BPT: BlockPolicy<ST, SCT, EPT, SBT>,
         SBT: StateBackend,
     {
@@ -136,19 +154,19 @@ impl Safety {
 
         None
     }
+
+    fn safe_to_extend(
+        block_round: Round,
+        qc_round: Round,
+        tc: &Option<TimeoutCertificate<ST, SCT, EPT>>,
+    ) -> bool {
+        match tc {
+            Some(t) => consecutive(block_round, t.round) && qc_round >= t.max_round(),
+            None => false,
+        }
+    }
 }
 
 pub(crate) fn consecutive(block_round: Round, round: Round) -> bool {
     block_round == round + Round(1)
-}
-
-fn safe_to_extend<SCT>(
-    block_round: Round,
-    qc_round: Round,
-    tc: &Option<TimeoutCertificate<SCT>>,
-) -> bool {
-    match tc {
-        Some(t) => consecutive(block_round, t.round) && qc_round >= t.max_round(),
-        None => false,
-    }
 }

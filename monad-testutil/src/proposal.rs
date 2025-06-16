@@ -25,14 +25,19 @@ use monad_validator::{
 };
 
 #[derive(Clone)]
-pub struct ProposalGen<ST, SCT, EPT> {
+pub struct ProposalGen<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     epoch: Epoch,
     round: Round,
     qc: QuorumCertificate<SCT>,
     qc_seq_num: SeqNum,
     high_qc: QuorumCertificate<SCT>,
     high_qc_seq_num: SeqNum,
-    last_tc: Option<TimeoutCertificate<SCT>>,
+    last_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
     timestamp: u128,
     phantom: PhantomData<(ST, EPT)>,
 }
@@ -166,7 +171,7 @@ where
             CertificateSignaturePubKey<ST>,
             SignatureCollectionKeyPairType<SCT>,
         >,
-    ) -> Vec<Verified<ST, TimeoutMessage<SCT>>> {
+    ) -> Vec<Verified<ST, TimeoutMessage<ST, SCT, EPT>>> {
         let node_ids = keys
             .iter()
             .map(|keypair| NodeId::new(keypair.pubkey()))
@@ -201,10 +206,11 @@ where
             high_qc_round,
             sigs: tmo_sig_col,
         };
-        let tc = TimeoutCertificate::<SCT> {
+        let tc = TimeoutCertificate::<ST, SCT, EPT> {
             epoch: self.epoch,
             round: self.round,
             high_qc_rounds: vec![high_qc_sig_tuple],
+            _phantom: PhantomData,
         };
 
         let timeout = Timeout {

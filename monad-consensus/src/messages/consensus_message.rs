@@ -30,7 +30,7 @@ where
     Vote(VoteMessage<SCT>),
 
     /// Consensus protocol timeout message
-    Timeout(TimeoutMessage<SCT>),
+    Timeout(TimeoutMessage<ST, SCT, EPT>),
 }
 
 impl<ST, SCT, EPT> Debug for ProtocolMessage<ST, SCT, EPT>

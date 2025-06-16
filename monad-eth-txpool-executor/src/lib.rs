@@ -63,8 +63,8 @@ where
     state_backend: SBT,
     chain_config: CCT,
 
-    events_tx: mpsc::UnboundedSender<MempoolEvent<SCT, EthExecutionProtocol>>,
-    events: mpsc::UnboundedReceiver<MempoolEvent<SCT, EthExecutionProtocol>>,
+    events_tx: mpsc::UnboundedSender<MempoolEvent<ST, SCT, EthExecutionProtocol>>,
+    events: mpsc::UnboundedReceiver<MempoolEvent<ST, SCT, EthExecutionProtocol>>,
 
     forwarding_manager: Pin<Box<EthTxPoolForwardingManager>>,
     preload_manager: Pin<Box<EthTxPoolPreloadManager>>,

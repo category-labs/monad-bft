@@ -272,7 +272,9 @@ impl GraphQLValidatorEvent<'_> {
     }
 }
 
-struct GraphQLMempoolEvent<'s>(&'s MempoolEvent<SignatureCollectionType, ExecutionProtocolType>);
+struct GraphQLMempoolEvent<'s>(
+    &'s MempoolEvent<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
+);
 #[Object]
 impl GraphQLMempoolEvent<'_> {
     async fn debug(&self) -> String {

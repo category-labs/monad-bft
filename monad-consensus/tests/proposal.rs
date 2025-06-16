@@ -1,3 +1,5 @@
+use std::marker::PhantomData;
+
 use monad_consensus::{
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
@@ -191,6 +193,7 @@ fn define_proposal_with_tc(
         epoch: tc_epoch, // wrong epoch here
         round: tc_round,
         high_qc_rounds: vec![high_qc_sig_tuple],
+        _phantom: PhantomData,
     };
 
     // moved here because of valmap ownership
@@ -1127,6 +1130,7 @@ fn test_validate_tc_invalid_tc_signature() {
             },
             sigs: sigcol,
         }],
+        _phantom: PhantomData,
     };
 
     let author = NodeId::new(keys[0].pubkey());
