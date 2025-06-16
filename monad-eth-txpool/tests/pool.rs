@@ -435,7 +435,7 @@ fn nontrivial_example() {
     let tx3 = make_legacy_tx(S1, 3 * BASE_FEE, GAS_LIMIT, 2, 10);
     let tx4 = make_legacy_tx(S2, 5 * BASE_FEE, GAS_LIMIT, 0, 10);
     let tx5 = make_legacy_tx(S2, 3 * BASE_FEE, GAS_LIMIT, 1, 10);
-    let tx6 = make_legacy_tx(S2, BASE_FEE, GAS_LIMIT, 2, 10);
+    let tx6 = make_legacy_tx(S2, 1 * BASE_FEE, GAS_LIMIT, 2, 10);
     let tx7 = make_legacy_tx(S3, 8 * BASE_FEE, GAS_LIMIT, 0, 10);
     let tx8 = make_legacy_tx(S3, 9 * BASE_FEE, GAS_LIMIT, 1, 10);
     let tx9 = make_legacy_tx(S3, 10 * BASE_FEE, GAS_LIMIT, 2, 10);
@@ -451,7 +451,7 @@ fn nontrivial_example() {
         TxPoolTestEvent::CreateProposal {
             tx_limit: 128,
             gas_limit: 1024 * GAS_LIMIT,
-            expected_txs: vec![&tx1, &tx7, &tx8, &tx9, &tx2, &tx4, &tx5, &tx3, &tx6],
+            expected_txs: vec![&tx1, &tx7, &tx8, &tx9, &tx4, &tx2, &tx5, &tx3, &tx6],
             add_to_blocktree: true,
         },
     ]);
@@ -478,7 +478,7 @@ fn another_non_trivial_example() {
         TxPoolTestEvent::CreateProposal {
             tx_limit: 128,
             gas_limit: 1024 * GAS_LIMIT,
-            expected_txs: vec![&tx1, &tx5, &tx6, &tx2, &tx3, &tx4],
+            expected_txs: vec![&tx1, &tx5, &tx6, &tx3, &tx2, &tx4],
             add_to_blocktree: true,
         },
     ]);
@@ -571,7 +571,7 @@ fn zero_gas_limit() {
 
 #[test]
 #[traced_test]
-fn nondeterminism() {
+fn insertion_order() {
     let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
     let tx2 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
     let tx3 = make_legacy_tx(S2, BASE_FEE, GAS_LIMIT, 0, 10);
@@ -585,7 +585,7 @@ fn nondeterminism() {
 
     run_simple([
         TxPoolTestEvent::InsertTxs {
-            txs: vec![&tx1, &tx2, &tx3, &tx4, &tx5, &tx6, &tx7, &tx8, &tx9, &tx10]
+            txs: vec![&tx1, &tx2, &tx3, &tx4, &tx5, &tx7, &tx8, &tx6, &tx9, &tx10]
                 .into_iter()
                 .map(|tx| (tx, true))
                 .collect_vec(),
@@ -594,7 +594,7 @@ fn nondeterminism() {
         TxPoolTestEvent::CreateProposal {
             tx_limit: 10,
             gas_limit: 10 * GAS_LIMIT,
-            expected_txs: vec![&tx9, &tx10, &tx7, &tx8, &tx5, &tx6, &tx3, &tx4, &tx1, &tx2],
+            expected_txs: vec![&tx1, &tx3, &tx5, &tx7, &tx9, &tx2, &tx4, &tx6, &tx8, &tx10],
             add_to_blocktree: true,
         },
     ]);

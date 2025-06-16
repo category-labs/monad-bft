@@ -11,12 +11,26 @@ use monad_eth_block_policy::{AccountNonceRetrievable, EthValidatedBlock};
 use super::list::TrackedTxList;
 use crate::pool::transaction::ValidEthTransaction;
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, PartialEq, Eq)]
 struct OrderedTxGroup<'a> {
     tx: &'a ValidEthTransaction,
     virtual_time: u64,
     address: &'a Address,
     queued: VecDeque<&'a ValidEthTransaction>,
+}
+
+impl PartialOrd for OrderedTxGroup<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for OrderedTxGroup<'_> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.tx
+            .cmp(other.tx)
+            .then_with(|| self.virtual_time.cmp(&other.virtual_time).reverse())
+    }
 }
 
 pub struct TrackedTxHeap<'a> {
@@ -36,6 +50,7 @@ impl<'a> TrackedTxHeap<'a> {
         let pending_account_nonces = extending_blocks.get_account_nonces();
 
         let mut heap_vec = Vec::with_capacity(tracked_txs.len());
+        let mut virtual_time = 0;
 
         for (address, tx_list) in tracked_txs {
             let mut queued = tx_list.get_queued(pending_account_nonces.get(address).cloned());
@@ -48,15 +63,16 @@ impl<'a> TrackedTxHeap<'a> {
 
             heap_vec.push(OrderedTxGroup {
                 tx,
-                virtual_time: 0,
+                virtual_time,
                 address,
                 queued: queued.collect(),
             });
+            virtual_time += 1;
         }
 
         Self {
             heap: BinaryHeap::from(heap_vec),
-            virtual_time: 0,
+            virtual_time,
         }
     }
 
@@ -109,13 +125,13 @@ impl<'a> TrackedTxHeap<'a> {
     ) {
         assert_eq!(address, tx.signer_ref());
 
-        self.virtual_time += 1;
         self.heap.push(OrderedTxGroup {
             tx,
             virtual_time: self.virtual_time,
             address,
             queued,
         });
+        self.virtual_time += 1;
     }
 }
 
