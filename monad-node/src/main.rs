@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::HashMap,
     marker::PhantomData,
     net::{SocketAddr, SocketAddrV4, ToSocketAddrs},
     time::Duration,
@@ -159,12 +159,6 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         })
         .get_locked_validator_sets(&node_state.forkpoint_config);
 
-    let checkpoint_validators_first = locked_epoch_validators
-        .first()
-        .expect("no validator sets")
-        .validators
-        .clone();
-
     let current_epoch = node_state.forkpoint_config.high_qc.get_epoch();
     let router: BoxUpdater<_, _> = {
         let raptor_router = build_raptorcast_router::<
@@ -209,22 +203,15 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
             .path();
     }
 
-    let mut bootstrap_validators = Vec::new();
-    let validator_set = checkpoint_validators_first
-        .0
-        .into_iter()
-        .map(|data| data.node_id)
-        .collect::<BTreeSet<_>>();
+    let mut bootstrap_nodes = Vec::new();
     for peer_config in &node_state.node_config.bootstrap.peers {
         let peer_id = NodeId::new(peer_config.secp256k1_pubkey);
-        if validator_set.contains(&peer_id) {
-            bootstrap_validators.push(peer_id);
-        }
+        bootstrap_nodes.push(peer_id);
     }
 
-    // default statesync peers to bootstrap validators if none is specified
+    // default statesync peers to bootstrap nodes if none is specified
     let state_sync_peers = if node_state.node_config.statesync.peers.is_empty() {
-        bootstrap_validators
+        bootstrap_nodes
     } else {
         node_state
             .node_config
@@ -534,11 +521,10 @@ where
         seq: peer_discovery_config.self_record_seq_num,
     };
     let self_record = MonadNameRecord::new(self_record, &identity);
-    // TODO: re-enable this check when peer discovery is activated
-    // assert!(
-    //     self_record.signature == peer_discovery_config.self_name_record_sig,
-    //     "self name record signature mismatch"
-    // );
+    assert!(
+        self_record.signature == peer_discovery_config.self_name_record_sig,
+        "self name record signature mismatch"
+    );
 
     // initial set of peers
     let peer_info = bootstrap_nodes
