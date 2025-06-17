@@ -70,6 +70,7 @@ pub enum EthTxPoolDropReason {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EthTxPoolInternalDropReason {
     StateBackendError,
+    NotReady,
 }
 
 impl EthTxPoolDropReason {

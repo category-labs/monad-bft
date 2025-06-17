@@ -124,7 +124,7 @@ fn run_custom_iter<const N: usize>(
     };
 
     let mut pool = EthTxPool::default_testing();
-    let mut metrics = EthTxPoolMetrics::default();
+    let metrics = EthTxPoolMetrics::default();
     let mut ipc_events = Vec::default();
     let mut event_tracker = EthTxPoolEventTracker::new(&metrics, &mut ipc_events);
 

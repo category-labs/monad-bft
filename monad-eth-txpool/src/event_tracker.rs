@@ -136,6 +136,11 @@ impl<'a> EthTxPoolEventTracker<'a> {
                     .drop_internal_state_backend_error
                     .fetch_add(1, Ordering::SeqCst);
             }
+            EthTxPoolDropReason::Internal(EthTxPoolInternalDropReason::NotReady) => {
+                self.metrics
+                    .drop_internal_not_ready
+                    .fetch_add(1, Ordering::SeqCst);
+            }
         }
 
         self.events.push(EthTxPoolEvent::Drop { tx_hash, reason });

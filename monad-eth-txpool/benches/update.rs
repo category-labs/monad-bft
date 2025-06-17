@@ -25,7 +25,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             );
             assert!(pending_txs.is_empty());
 
-            let mut metrics = EthTxPoolMetrics::default();
+            let metrics = EthTxPoolMetrics::default();
 
             let pool = BenchController::create_pool(&block_policy, Vec::default(), &metrics);
 

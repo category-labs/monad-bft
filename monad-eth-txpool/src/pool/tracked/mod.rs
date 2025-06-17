@@ -245,12 +245,6 @@ where
         min_promotable: usize,
         max_promotable: usize,
     ) -> bool {
-        let Some(last_commit) = &self.last_commit else {
-            warn!("txpool attempted to promote pending before first committed block");
-            return false;
-        };
-        let last_commit_seq_num = last_commit.seq_num;
-
         let Some(insertable) = MAX_ADDRESSES.checked_sub(self.txs.len()) else {
             return false;
         };
@@ -270,6 +264,20 @@ where
         if to_insert.is_empty() {
             return true;
         }
+
+        let Some(last_commit) = &self.last_commit else {
+            warn!("txpool attempted to promote pending before first committed block");
+            event_tracker.drop_all(
+                to_insert
+                    .into_values()
+                    .map(PendingTxList::into_map)
+                    .flat_map(BTreeMap::into_values)
+                    .map(ValidEthTransaction::into_raw),
+                EthTxPoolDropReason::Internal(EthTxPoolInternalDropReason::NotReady),
+            );
+            return false;
+        };
+        let last_commit_seq_num = last_commit.seq_num;
 
         let addresses = to_insert.len();
         let _timer = DropTimer::start(Duration::ZERO, |elapsed| {

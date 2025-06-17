@@ -66,7 +66,7 @@ impl<'a> BenchController<'a> {
 
         let state_backend = Self::generate_state_backend_for_txs(&txs);
 
-        let mut metrics = EthTxPoolMetrics::default();
+        let metrics = EthTxPoolMetrics::default();
         let pool = Self::create_pool(block_policy, txs, &metrics);
 
         Self {
