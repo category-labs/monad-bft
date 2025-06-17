@@ -166,14 +166,20 @@ where
             tokio::select! {
                 biased;
 
-                commands = command_rx.recv() => {
-                    let commands = commands.unwrap();
+                result = command_rx.recv() => {
+                    let Some(commands) = result else {
+                        warn!("command channel was dropped, shutting down txpool executor");
+                        break;
+                    };
 
                     self.exec(commands);
                 }
 
                 event = self.next() => {
-                    event_tx.send(event.unwrap()).await.unwrap();
+                    if let Err(err) = event_tx.send(event.unwrap()).await {
+                        warn!(?err, "failed to send event to BFT, shutting down txpool executor");
+                        break;
+                    }
                 }
             }
         }
