@@ -1224,6 +1224,7 @@ where
         }
 
         // check that we have path to root and block is coherent
+        cmds.extend(self.try_update_coherency(self.consensus.high_qc.get_block_id()));
         if !self
             .consensus
             .pending_block_tree
