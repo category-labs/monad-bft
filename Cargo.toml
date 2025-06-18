@@ -8,6 +8,7 @@ opt-level = 1
 
 [profile.release]
 debug = true
+lto = "thin"
 panic = "abort"
 
 [workspace.metadata.cargo-shear]
