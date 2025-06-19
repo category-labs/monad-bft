@@ -143,7 +143,7 @@ async fn main() -> std::io::Result<()> {
                 s3_bucket,
                 region, archive_url, "Initializing AWS archive reader"
             );
-            match ArchiveReader::init_aws_reader(
+            match ArchiveReader::init_v1_aws_reader(
                 s3_bucket.clone(),
                 Some(region.clone()),
                 archive_url,
@@ -168,10 +168,10 @@ async fn main() -> std::io::Result<()> {
         }
     };
 
-    let archive_reader = match (&args.mongo_db_name, &args.mongo_url) {
-        (Some(db_name), Some(url)) => {
+    let archive_reader = match (&args.mongo_db_name, &args.mongo_url, &args.archive_v2) {
+        (Some(db_name), Some(url), None) => {
             info!(url, db_name, "Initializing MongoDB archive reader");
-            match ArchiveReader::init_mongo_reader(
+            match ArchiveReader::init_v1_mongo_reader(
                 url.clone(),
                 db_name.clone(),
                 monad_archive::prelude::Metrics::none(),
@@ -195,6 +195,19 @@ async fn main() -> std::io::Result<()> {
                 }
             }
         }
+        (None, None, Some(v2_args)) => match ArchiveReader::init_v2_mongo_reader(v2_args).await {
+            Ok(mongo_reader) => {
+                info!("MongoDB archive reader initialized successfully");
+                if aws_archive_reader.is_some() {
+                    warn!("AWS archive reader configured, but V2 archive reader does not support v1 aws fallback");
+                }
+                Some(mongo_reader)
+            }
+            Err(error) => {
+                warn!(?error, "Unable to initialize MongoDB archive reader");
+                None
+            }
+        },
         _ => {
             if aws_archive_reader.is_some() {
                 info!("MongoDB configuration not provided, using AWS archive reader only");

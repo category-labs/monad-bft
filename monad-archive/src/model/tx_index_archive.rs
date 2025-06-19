@@ -1,6 +1,7 @@
 use std::ops::Deref;
 
 use alloy_primitives::{hex::ToHexExt, TxHash};
+use enum_dispatch::enum_dispatch;
 use eyre::bail;
 use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 
@@ -8,7 +9,7 @@ use super::{
     block_data_archive::BlockDataArchive,
     index_repr::{IndexDataStorageRepr, ReferenceV0},
 };
-use crate::{kvstore::KVReaderErased, prelude::*};
+use crate::{kvstore::KVReaderErased, model_v2::ModelV2, prelude::*};
 
 #[derive(Clone)]
 pub struct TxIndexArchiver {
@@ -27,33 +28,37 @@ impl Deref for TxIndexArchiver {
     }
 }
 
+#[enum_dispatch]
 pub trait IndexReader {
-    async fn resolve_from_bytes(&self, bytes: &[u8]) -> Result<TxIndexedData>;
     async fn get_latest_indexed(&self) -> Result<Option<u64>>;
     async fn get_tx_indexed_data(&self, tx_hash: &TxHash) -> Result<TxIndexedData>;
-    async fn get_tx_indexed_data_bulk(
-        &self,
-        tx_hashes: &[TxHash],
-    ) -> Result<HashMap<TxHash, TxIndexedData>>;
+
     async fn get_tx(&self, tx_hash: &TxHash) -> Result<(TxEnvelopeWithSender, HeaderSubset)>;
     async fn get_trace(&self, tx_hash: &TxHash) -> Result<(Vec<u8>, HeaderSubset)>;
     async fn get_receipt(&self, tx_hash: &TxHash) -> Result<(ReceiptWithLogIndex, HeaderSubset)>;
 }
 
+#[enum_dispatch(IndexReader)]
+#[derive(Clone)]
+pub enum IndexReaderErased {
+    IndexReaderImpl,
+    ModelV2,
+}
+
 #[derive(Clone)]
 pub struct IndexReaderImpl {
     pub index_store: KVReaderErased,
-    pub block_data_reader: BlockDataReaderErased,
+    pub block_data_reader: BlockDataArchive,
 }
 
 impl IndexReaderImpl {
     pub fn new(
         index_store: impl Into<KVReaderErased>,
-        block_data_reader: impl Into<BlockDataReaderErased>,
+        block_data_reader: BlockDataArchive,
     ) -> Self {
         Self {
             index_store: index_store.into(),
-            block_data_reader: block_data_reader.into(),
+            block_data_reader,
         }
     }
 
@@ -66,16 +71,18 @@ impl IndexReaderImpl {
             .wrap_err_with(|| format!("No data found in index for txhash: {}", &key))?;
         IndexDataStorageRepr::decode(&bytes)
     }
-}
 
-impl IndexReader for IndexReaderImpl {
-    async fn resolve_from_bytes(&self, bytes: &[u8]) -> Result<TxIndexedData> {
+    pub(crate) async fn resolve_from_bytes(&self, bytes: &[u8]) -> Result<TxIndexedData> {
         let repr = IndexDataStorageRepr::decode(bytes)?;
         repr.convert(&self.block_data_reader).await
     }
+}
 
+impl IndexReader for IndexReaderImpl {
     async fn get_latest_indexed(&self) -> Result<Option<u64>> {
-        self.block_data_reader.get_latest(LatestKind::Indexed).await
+        self.block_data_reader
+            .get_latest_kind(LatestKind::Indexed)
+            .await
     }
 
     /// Prefer get_tx, get_receipt, get_trace where possible to avoid unecessary network calls
@@ -84,30 +91,6 @@ impl IndexReader for IndexReaderImpl {
             .await?
             .convert(&self.block_data_reader)
             .await
-    }
-
-    async fn get_tx_indexed_data_bulk(
-        &self,
-        tx_hashes: &[TxHash],
-    ) -> Result<HashMap<TxHash, TxIndexedData>> {
-        let keys = tx_hashes
-            .iter()
-            .map(|h| h.encode_hex())
-            .collect::<Vec<String>>();
-        let reprs = self.index_store.bulk_get(&keys).await?;
-
-        let mut output = HashMap::new();
-        for (hash, key) in tx_hashes.iter().zip(keys) {
-            let Some(bytes) = reprs.get(&key) else {
-                continue;
-            };
-
-            let decoded = IndexDataStorageRepr::decode(bytes)?;
-            let converted = decoded.convert(&self.block_data_reader).await?;
-            output.insert(*hash, converted);
-        }
-
-        Ok(output)
     }
 
     async fn get_tx(&self, tx_hash: &TxHash) -> Result<(TxEnvelopeWithSender, HeaderSubset)> {
@@ -149,7 +132,7 @@ impl TxIndexArchiver {
 
     pub async fn update_latest_indexed(&self, block_num: u64) -> Result<()> {
         self.block_data_archive
-            .update_latest(block_num, LatestKind::Indexed)
+            .update_latest_kind(block_num, LatestKind::Indexed)
             .await
     }
 
@@ -274,12 +257,13 @@ mod tests {
             .await
             .unwrap();
 
-        let indexed = indexer.get_tx_indexed_data(tx.tx.tx_hash()).await.unwrap();
-        assert_eq!(indexed.tx.sender, tx.sender);
-        assert_eq!(indexed.trace, traces[0]);
-        assert_eq!(indexed.header_subset.block_number, 1);
-        assert_eq!(indexed.header_subset.block_hash, block.header.hash_slow());
-        assert_eq!(indexed.header_subset.gas_used, 21000);
+        let (tx, header_subset) = indexer.get_tx(tx.tx.tx_hash()).await.unwrap();
+        let (trace, _) = indexer.get_trace(tx.tx.tx_hash()).await.unwrap();
+        assert_eq!(tx.sender, tx.sender);
+        assert_eq!(trace, traces[0]);
+        assert_eq!(header_subset.block_number, 1);
+        assert_eq!(header_subset.block_hash, block.header.hash_slow());
+        assert_eq!(header_subset.gas_used, 21000);
     }
 
     #[tokio::test]
@@ -301,11 +285,11 @@ mod tests {
             .await
             .unwrap();
 
-        let indexed1 = indexer.get_tx_indexed_data(tx1.tx.tx_hash()).await.unwrap();
-        let indexed2 = indexer.get_tx_indexed_data(tx2.tx.tx_hash()).await.unwrap();
+        let (_, header_subset) = indexer.get_tx(tx1.tx.tx_hash()).await.unwrap();
+        let (_, header_subset2) = indexer.get_tx(tx2.tx.tx_hash()).await.unwrap();
 
-        assert_eq!(indexed1.header_subset.gas_used, 21000);
-        assert_eq!(indexed2.header_subset.gas_used, 21000); // 42000 - 21000
+        assert_eq!(header_subset.gas_used, 21000);
+        assert_eq!(header_subset2.gas_used, 21000); // 42000 - 21000
     }
 
     #[tokio::test]

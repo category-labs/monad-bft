@@ -3,18 +3,38 @@ use core::str;
 use alloy_consensus::{Block as AlloyBlock, BlockBody, Header, ReceiptEnvelope, TxEnvelope};
 use alloy_primitives::BlockHash;
 use alloy_rlp::{Decodable, Encodable, EMPTY_LIST_CODE};
-use eyre::{bail, OptionExt};
+use eyre::bail;
 use futures::try_join;
 use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
-use crate::{prelude::*, rlp_offset_scanner::get_all_tx_offsets};
+use super::{BlockArchiver, RangeRlp};
+use crate::{prelude::*, rlp_offset_scanner::get_rlp_list_ranges};
 
 pub type Block = AlloyBlock<TxEnvelopeWithSender, Header>;
 pub type BlockReceipts = Vec<ReceiptWithLogIndex>;
 pub type BlockTraces = Vec<Vec<u8>>;
 
+pub fn make_block(header: Header, transactions: Vec<TxEnvelopeWithSender>) -> Block {
+    Block {
+        header,
+        body: BlockBody {
+            transactions,
+            ommers: vec![],
+            withdrawals: Some(alloy_eips::eip4895::Withdrawals::default()),
+        },
+    }
+}
+
 const BLOCK_PADDING_WIDTH: usize = 12;
+
+// Table key constants
+const LATEST_UPLOADED_TABLE_KEY: &str = "latest";
+const LATEST_INDEXED_TABLE_KEY: &str = "latest_indexed";
+const BLOCK_TABLE_PREFIX: &str = "block";
+const BLOCK_HASH_TABLE_PREFIX: &str = "block_hash";
+const RECEIPTS_TABLE_PREFIX: &str = "receipts";
+const TRACES_TABLE_PREFIX: &str = "traces";
 
 pub(crate) enum BlockStorageRepr {
     V0(AlloyBlock<TxEnvelope, Header>),
@@ -30,24 +50,145 @@ pub(crate) enum ReceiptStorageRepr {
 #[derive(Clone)]
 pub struct BlockDataArchive {
     pub store: KVStoreErased,
+}
 
-    pub latest_uploaded_table_key: &'static str,
-    pub latest_indexed_table_key: &'static str,
-    pub block_table_prefix: &'static str,
-    pub block_hash_table_prefix: &'static str,
-    pub receipts_table_prefix: &'static str,
-    pub traces_table_prefix: &'static str,
+impl BlockArchiver for BlockDataArchive {
+    fn object_store(&self) -> KVStoreErased {
+        self.store.clone()
+    }
+
+    async fn update_latest(&self, block_num: u64) -> Result<()> {
+        self.update_latest_kind(block_num, LatestKind::Uploaded)
+            .await
+    }
+
+    async fn archive_block_data(
+        &self,
+        block: Block,
+        receipts: BlockReceipts,
+        traces: BlockTraces,
+    ) -> Result<()> {
+        let block_num = block.header.number;
+        try_join!(
+            self.archive_block(block),
+            self.archive_receipts(receipts, block_num),
+            self.archive_traces(traces, block_num)
+        )?;
+        Ok(())
+    }
 }
 
 impl BlockDataReader for BlockDataArchive {
-    fn get_bucket(&self) -> &str {
+    fn get_replica(&self) -> &str {
         self.store.bucket_name()
     }
 
-    async fn get_latest(&self, latest_kind: LatestKind) -> Result<Option<u64>> {
+    async fn get_latest(&self) -> Result<Option<u64>> {
+        self.get_latest_kind(LatestKind::Uploaded).await
+    }
+
+    async fn get_block_by_number(&self, block_num: u64) -> Result<Block> {
+        let bytes = self
+            .store
+            .get(&self.block_key(block_num))
+            .await?
+            .wrap_err("No block found")?;
+        BlockStorageRepr::decode_and_convert(&bytes)
+            .await
+            .wrap_err_with(|| format!("Failed to decode block: block_num: {}", block_num))
+    }
+
+    async fn get_block_receipts(&self, block_number: u64) -> Result<BlockReceipts> {
+        let receipts_key = self.receipts_key(block_number);
+
+        let bytes = self
+            .store
+            .get(&receipts_key)
+            .await?
+            .wrap_err("No receipts found")?;
+
+        ReceiptStorageRepr::decode_and_convert(&bytes).wrap_err_with(|| {
+            format!(
+                "Failed to decode block receipts: block_num: {}",
+                block_number
+            )
+        })
+    }
+
+    async fn get_block_traces(&self, block_number: u64) -> Result<BlockTraces> {
+        let traces_key = self.traces_key(block_number);
+
+        let rlp_traces = self
+            .store
+            .get(&traces_key)
+            .await?
+            .wrap_err("No traces found")?;
+        let mut rlp_traces_slice: &[u8] = &rlp_traces;
+
+        let traces = Vec::decode(&mut rlp_traces_slice).wrap_err("Cannot decode block")?;
+
+        Ok(traces)
+    }
+
+    async fn get_block_by_hash(&self, block_hash: &BlockHash) -> Result<Block> {
+        let block_hash_key_suffix = hex::encode(block_hash);
+        let block_hash_key = format!("{}/{}", BLOCK_HASH_TABLE_PREFIX, block_hash_key_suffix);
+
+        let block_num_bytes = self
+            .store
+            .get(&block_hash_key)
+            .await?
+            .wrap_err("No block found")?;
+
+        let block_num_str =
+            String::from_utf8(block_num_bytes.to_vec()).wrap_err("Invalid UTF-8 sequence")?;
+
+        let block_num = block_num_str.parse::<u64>().wrap_err_with(|| {
+            format!("Unable to convert block_number string to number (u64), value: {block_num_str}")
+        })?;
+
+        self.get_block_by_number(block_num).await
+    }
+}
+
+impl BlockDataArchive {
+    pub fn new(archive: impl Into<KVStoreErased>) -> Self {
+        BlockDataArchive {
+            store: archive.into(),
+        }
+    }
+
+    pub fn block_key(&self, block_num: u64) -> String {
+        format!(
+            "{}/{:0width$}",
+            BLOCK_TABLE_PREFIX,
+            block_num,
+            width = BLOCK_PADDING_WIDTH
+        )
+    }
+
+    pub fn receipts_key(&self, block_num: u64) -> String {
+        format!(
+            "{}/{:0width$}",
+            RECEIPTS_TABLE_PREFIX,
+            block_num,
+            width = BLOCK_PADDING_WIDTH
+        )
+    }
+
+    pub fn traces_key(&self, block_num: u64) -> String {
+        format!(
+            "{}/{:0width$}",
+            TRACES_TABLE_PREFIX,
+            block_num,
+            width = BLOCK_PADDING_WIDTH
+        )
+    }
+
+    pub async fn get_latest_kind(&self, latest_kind: LatestKind) -> Result<Option<u64>> {
         let key = match latest_kind {
-            LatestKind::Uploaded => &self.latest_uploaded_table_key,
-            LatestKind::Indexed => &self.latest_indexed_table_key,
+            LatestKind::Uploaded => LATEST_UPLOADED_TABLE_KEY,
+            LatestKind::Indexed => LATEST_INDEXED_TABLE_KEY,
         };
 
         let value = match self.store.get(key).await? {
@@ -66,175 +207,10 @@ impl BlockDataReader for BlockDataArchive {
             .map(Some)
     }
 
-    async fn get_block_by_number(&self, block_num: u64) -> Result<Block> {
-        self.try_get_block_by_number(block_num)
-            .await
-            .and_then(|opt| opt.ok_or_eyre("Block not found"))
-    }
-
-    async fn get_block_receipts(&self, block_number: u64) -> Result<BlockReceipts> {
-        self.try_get_block_receipts(block_number)
-            .await
-            .and_then(|opt| opt.ok_or_eyre("Receipt not found"))
-    }
-
-    async fn get_block_traces(&self, block_number: u64) -> Result<BlockTraces> {
-        let traces_key = self.traces_key(block_number);
-
-        let rlp_traces = self
-            .store
-            .get(&traces_key)
-            .await?
-            .wrap_err("No trace found")?;
-        let mut rlp_traces_slice: &[u8] = &rlp_traces;
-
-        let traces = Vec::decode(&mut rlp_traces_slice).wrap_err("Cannot decode block")?;
-
-        Ok(traces)
-    }
-
-    async fn get_block_by_hash(&self, block_hash: &BlockHash) -> Result<Block> {
-        let block_hash_key_suffix = hex::encode(block_hash);
-        let block_hash_key = format!("{}/{}", self.block_hash_table_prefix, block_hash_key_suffix);
-
-        let block_num_bytes = self
-            .store
-            .get(&block_hash_key)
-            .await?
-            .wrap_err("No block found")?;
-
-        let block_num_str =
-            String::from_utf8(block_num_bytes.to_vec()).wrap_err("Invalid UTF-8 sequence")?;
-
-        let block_num = block_num_str.parse::<u64>().wrap_err_with(|| {
-            format!("Unable to convert block_number string to number (u64), value: {block_num_str}")
-        })?;
-
-        self.get_block_by_number(block_num).await
-    }
-
-    async fn get_block_data_with_offsets(&self, block_num: u64) -> Result<BlockDataWithOffsets> {
-        let block_key = self.block_key(block_num);
-        let traces_key = self.traces_key(block_num);
-        let receipts_key = self.receipts_key(block_num);
-        let (block_rlp, traces_rlp, receipts_rlp) = try_join!(
-            self.store.get(&block_key),
-            self.store.get(&traces_key),
-            self.store.get(&receipts_key),
-        )?;
-
-        let (block_rlp, mut traces_rlp, receipts_rlp): (&[u8], &[u8], &[u8]) = (
-            &block_rlp.wrap_err("No block found")?,
-            &traces_rlp.wrap_err("No trace found")?,
-            &receipts_rlp.wrap_err("No receipt found")?,
-        );
-
-        // WARN: extracting offsets is the same for all representations currently, but that may not always be the case
-        let offsets = get_all_tx_offsets(
-            BlockStorageRepr::rlp_list_slice(block_rlp),
-            ReceiptStorageRepr::rlp_list_slice(receipts_rlp),
-            traces_rlp,
-        )?;
-
-        Ok(BlockDataWithOffsets {
-            block: BlockStorageRepr::decode_and_convert(block_rlp)
-                .await
-                .wrap_err("Failed to decode block")?,
-            receipts: ReceiptStorageRepr::decode_and_convert(receipts_rlp)
-                .wrap_err("Failed to decode receipts")?,
-            traces: Vec::<Vec<u8>>::decode(&mut traces_rlp).wrap_err("Failed to decode traces")?,
-            offsets: Some(offsets),
-        })
-    }
-
-    #[doc = " Get a block by its number, or return None if not found"]
-    async fn try_get_block_by_number(&self, block_num: u64) -> Result<Option<Block>> {
-        let Some(bytes) = self.store.get(&self.block_key(block_num)).await? else {
-            return Ok(None);
-        };
-        BlockStorageRepr::decode_and_convert(&bytes)
-            .await
-            .wrap_err_with(|| format!("Failed to decode block: block_num: {}", block_num))
-            .map(Some)
-    }
-
-    #[doc = " Get receipts for a block, or return None if not found"]
-    async fn try_get_block_receipts(&self, block_number: u64) -> Result<Option<BlockReceipts>> {
-        let receipts_key = self.receipts_key(block_number);
-
-        let Some(rlp_receipts) = self.store.get(&receipts_key).await? else {
-            return Ok(None);
-        };
-
-        ReceiptStorageRepr::decode_and_convert(&rlp_receipts)
-            .wrap_err_with(|| {
-                format!(
-                    "Failed to decode block receipts: block_num: {}",
-                    block_number
-                )
-            })
-            .map(Some)
-    }
-
-    #[doc = " Get execution traces for a block, or return None if not found"]
-    async fn try_get_block_traces(&self, block_number: u64) -> Result<Option<BlockTraces>> {
-        let traces_key = self.traces_key(block_number);
-
-        let Some(rlp_traces) = self.store.get(&traces_key).await? else {
-            return Ok(None);
-        };
-        let mut rlp_traces_slice: &[u8] = &rlp_traces;
-
-        Vec::decode(&mut rlp_traces_slice)
-            .wrap_err("Cannot decode block")
-            .map(Some)
-    }
-}
-
-impl BlockDataArchive {
-    pub fn new(archive: impl Into<KVStoreErased>) -> Self {
-        BlockDataArchive {
-            store: archive.into(),
-            block_table_prefix: "block",
-            block_hash_table_prefix: "block_hash",
-            receipts_table_prefix: "receipts",
-            traces_table_prefix: "traces",
-            latest_uploaded_table_key: "latest",
-            latest_indexed_table_key: "latest_indexed",
-        }
-    }
-
-    pub fn block_key(&self, block_num: u64) -> String {
-        format!(
-            "{}/{:0width$}",
-            self.block_table_prefix,
-            block_num,
-            width = BLOCK_PADDING_WIDTH
-        )
-    }
-
-    pub fn receipts_key(&self, block_num: u64) -> String {
-        format!(
-            "{}/{:0width$}",
-            self.receipts_table_prefix,
-            block_num,
-            width = BLOCK_PADDING_WIDTH
-        )
-    }
-
-    pub fn traces_key(&self, block_num: u64) -> String {
-        format!(
-            "{}/{:0width$}",
-            self.traces_table_prefix,
-            block_num,
-            width = BLOCK_PADDING_WIDTH
-        )
-    }
-
-    pub async fn update_latest(&self, block_num: u64, latest_kind: LatestKind) -> Result<()> {
+    pub async fn update_latest_kind(&self, block_num: u64, latest_kind: LatestKind) -> Result<()> {
         let key = match latest_kind {
-            LatestKind::Uploaded => &self.latest_uploaded_table_key,
-            LatestKind::Indexed => &self.latest_indexed_table_key,
+            LatestKind::Uploaded => LATEST_UPLOADED_TABLE_KEY,
+            LatestKind::Indexed => LATEST_INDEXED_TABLE_KEY,
         };
         let latest_value = format!("{:0width$}", block_num, width = BLOCK_PADDING_WIDTH);
         self.store.put(key, latest_value.as_bytes().to_vec()).await
@@ -247,7 +223,7 @@ impl BlockDataArchive {
 
         // 2) Insert into block_hash table
         let block_hash_key_suffix = hex::encode(block.header.hash_slow());
-        let block_hash_key = format!("{}/{}", self.block_hash_table_prefix, block_hash_key_suffix);
+        let block_hash_key = format!("{}/{}", BLOCK_HASH_TABLE_PREFIX, block_hash_key_suffix);
         let block_hash_value_string = block_num.to_string();
         let block_hash_value = block_hash_value_string.as_bytes();
 
@@ -278,6 +254,27 @@ impl BlockDataArchive {
         self.store
             .put(&self.traces_key(block_num), rlp_traces)
             .await
+    }
+
+    pub async fn get_traces_with_offsets(
+        &self,
+        block_num: u64,
+    ) -> Result<(BlockTraces, Vec<RangeRlp>)> {
+        let traces_key = self.traces_key(block_num);
+
+        let rlp_traces = self
+            .store
+            .get(&traces_key)
+            .await?
+            .wrap_err("No traces found")?;
+        let mut rlp_traces_slice: &[u8] = &rlp_traces;
+
+        let offsets =
+            get_rlp_list_ranges(&rlp_traces).wrap_err("Cannot get rlp list ranges for traces")?;
+
+        let traces = Vec::decode(&mut rlp_traces_slice).wrap_err("Cannot decode block")?;
+
+        Ok((traces, offsets))
     }
 }
 
@@ -388,18 +385,6 @@ impl BlockStorageRepr {
             BlockStorageRepr::V2(block) => block,
         })
     }
-
-    fn rlp_list_slice(buf: &[u8]) -> &[u8] {
-        if buf.len() < 2 {
-            return buf;
-        }
-
-        let marker_bytes = [buf[0], buf[1]];
-        match marker_bytes {
-            [Self::SENTINEL, Self::V0_MARKER] | [Self::SENTINEL, Self::V1_MARKER] => &buf[2..],
-            _ => buf,
-        }
-    }
 }
 
 impl ReceiptStorageRepr {
@@ -483,18 +468,6 @@ impl ReceiptStorageRepr {
             }
             ReceiptStorageRepr::V1(receipts) => receipts,
         })
-    }
-
-    fn rlp_list_slice(buf: &[u8]) -> &[u8] {
-        if buf.len() < 2 {
-            return buf;
-        }
-
-        let marker_bytes = [buf[0], buf[1]];
-        match marker_bytes {
-            [Self::SENTINEL, Self::V0_MARKER] | [Self::SENTINEL, Self::V1_MARKER] => &buf[2..],
-            _ => buf,
-        }
     }
 }
 
@@ -850,19 +823,20 @@ mod tests {
         let store = MemoryStorage::new("test");
         let archive = BlockDataArchive::new(store);
 
-        let initial_latest = archive.get_latest(LatestKind::Uploaded).await.unwrap();
+        let initial_latest = archive.get_latest_kind(LatestKind::Uploaded).await.unwrap();
         assert_eq!(initial_latest, None);
 
         archive
-            .update_latest(5, LatestKind::Uploaded)
+            .update_latest_kind(5, LatestKind::Uploaded)
             .await
             .unwrap();
 
-        let latest = archive.get_latest(LatestKind::Uploaded).await.unwrap();
+        let latest = archive.get_latest_kind(LatestKind::Uploaded).await.unwrap();
         assert_eq!(latest, Some(5));
     }
 
-    // A custom block creator so we don’t conflict with existing helpers.
+    // A custom block creator so we don't conflict with existing helpers.
+    #[allow(dead_code)]
     fn create_custom_block(num: u64) -> Block {
         Block {
             header: Header {
@@ -899,10 +873,10 @@ mod tests {
         // Insert non-UTF8 bytes for latest_uploaded_table_key.
         archive
             .store
-            .put(archive.latest_uploaded_table_key, vec![0xff, 0xfe])
+            .put(LATEST_UPLOADED_TABLE_KEY, vec![0xff, 0xfe])
             .await
             .unwrap();
-        assert!(archive.get_latest(LatestKind::Uploaded).await.is_err());
+        assert!(archive.get_latest_kind(LatestKind::Uploaded).await.is_err());
     }
 
     #[tokio::test]
@@ -911,10 +885,10 @@ mod tests {
         let archive = BlockDataArchive::new(store);
         archive
             .store
-            .put(archive.latest_uploaded_table_key, b"not_a_number".to_vec())
+            .put(LATEST_UPLOADED_TABLE_KEY, b"not_a_number".to_vec())
             .await
             .unwrap();
-        assert!(archive.get_latest(LatestKind::Uploaded).await.is_err());
+        assert!(archive.get_latest_kind(LatestKind::Uploaded).await.is_err());
     }
 
     #[test]
@@ -954,31 +928,5 @@ mod tests {
             .unwrap();
         assert!(archive.get_block_receipts(1).await.is_err());
         assert!(archive.get_block_traces(1).await.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_block_data_with_offsets() {
-        let store = MemoryStorage::new("test");
-        let archive = BlockDataArchive::new(store.clone());
-        let block = create_custom_block(1);
-        let receipt = ReceiptWithLogIndex {
-            receipt: ReceiptEnvelope::Eip1559(make_receipt(5)),
-            starting_log_index: 0,
-        };
-        let receipts = vec![receipt];
-        let traces = vec![vec![4, 5, 6]];
-        archive.archive_block(block.clone()).await.unwrap();
-        archive.archive_receipts(receipts.clone(), 1).await.unwrap();
-        archive.archive_traces(traces.clone(), 1).await.unwrap();
-
-        let data = archive.get_block_data_with_offsets(1).await.unwrap();
-        assert_eq!(data.block.header.number, 1);
-        assert_eq!(data.receipts.len(), receipts.len());
-        assert_eq!(data.traces, traces);
-        // Offsets should match the number of transactions in the block.
-        assert_eq!(
-            data.offsets.unwrap().len(),
-            data.block.body.transactions.len()
-        );
     }
 }

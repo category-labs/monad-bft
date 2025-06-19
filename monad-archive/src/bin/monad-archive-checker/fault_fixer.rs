@@ -273,35 +273,13 @@ async fn fix_fault(
     // Extract components from the good block data
     let (block, receipts, traces) = good_block_data;
 
-    // Archive the block
+    // Archive all block data
     faulty_replica_archiver
-        .archive_block(block.clone())
+        .archive_block_data(block.clone(), receipts.clone(), traces.clone())
         .await
         .with_context(|| {
             format!(
-                "Failed to archive block {} for replica {}",
-                fault.block_num, fault.replica
-            )
-        })?;
-
-    // Archive the receipts
-    faulty_replica_archiver
-        .archive_receipts(receipts.clone(), fault.block_num)
-        .await
-        .with_context(|| {
-            format!(
-                "Failed to archive receipts for block {} for replica {}",
-                fault.block_num, fault.replica
-            )
-        })?;
-
-    // Archive the traces
-    faulty_replica_archiver
-        .archive_traces(traces.clone(), fault.block_num)
-        .await
-        .with_context(|| {
-            format!(
-                "Failed to archive traces for block {} for replica {}",
+                "Failed to archive block data for block {} for replica {}",
                 fault.block_num, fault.replica
             )
         })?;
@@ -310,15 +288,12 @@ async fn fix_fault(
     // This is only needed for previously missing blocks
     if matches!(fault.fault, FaultKind::MissingBlock) {
         // Get the current latest uploaded block
-        let latest = faulty_replica_archiver
-            .get_latest(LatestKind::Uploaded)
-            .await?
-            .unwrap_or(0);
+        let latest = faulty_replica_archiver.get_latest().await?.unwrap_or(0);
 
         // Update the latest if this block is newer
         if latest < fault.block_num {
             faulty_replica_archiver
-                .update_latest(fault.block_num, LatestKind::Uploaded)
+                .update_latest(fault.block_num)
                 .await?;
         }
     }
@@ -335,7 +310,6 @@ async fn fix_fault(
 
 #[cfg(test)]
 mod tests {
-    use monad_archive::prelude::LatestKind;
 
     use super::*;
     use crate::{
@@ -372,17 +346,12 @@ mod tests {
         if let Some(archiver) = model.block_data_readers.get(good_replica_name) {
             // Add block data
             let (block, receipts, traces) = create_test_block_data(block_num, 1);
-            archiver.archive_block(block).await.unwrap();
             archiver
-                .archive_receipts(receipts, block_num)
+                .archive_block_data(block, receipts, traces)
                 .await
                 .unwrap();
-            archiver.archive_traces(traces, block_num).await.unwrap();
 
-            archiver
-                .update_latest(block_num, LatestKind::Uploaded)
-                .await
-                .unwrap();
+            archiver.update_latest(block_num).await.unwrap();
         }
 
         // Create a fault record (missing block)
@@ -478,18 +447,13 @@ mod tests {
                 // Add block data for both blocks
                 for block_num in [chunk_start + 1, chunk_start + 2] {
                     let (block, receipts, traces) = create_test_block_data(block_num, 1);
-                    archiver.archive_block(block).await.unwrap();
                     archiver
-                        .archive_receipts(receipts, block_num)
+                        .archive_block_data(block, receipts, traces)
                         .await
                         .unwrap();
-                    archiver.archive_traces(traces, block_num).await.unwrap();
                 }
 
-                archiver
-                    .update_latest(chunk_start + 2, LatestKind::Uploaded)
-                    .await
-                    .unwrap();
+                archiver.update_latest(chunk_start + 2).await.unwrap();
             }
         }
 
@@ -497,20 +461,13 @@ mod tests {
         if let Some(archiver) = model.block_data_readers.get(replica_name) {
             // Add the second block with incorrect data
             let (block, receipts, traces) = create_test_block_data(chunk_start + 2, 2); // Different data
-            archiver.archive_block(block).await.unwrap();
+
             archiver
-                .archive_receipts(receipts, chunk_start + 2)
-                .await
-                .unwrap();
-            archiver
-                .archive_traces(traces, chunk_start + 2)
+                .archive_block_data(block, receipts, traces)
                 .await
                 .unwrap();
 
-            archiver
-                .update_latest(chunk_start + 2, LatestKind::Uploaded)
-                .await
-                .unwrap();
+            archiver.update_latest(chunk_start + 2).await.unwrap();
         }
 
         let (fixed, failed) = {
@@ -607,20 +564,13 @@ mod tests {
         if let Some(archiver) = model.block_data_readers.get(good_replica_name) {
             // Add block data
             let (block, receipts, traces) = create_test_block_data(chunk_start + 1, 1);
-            archiver.archive_block(block).await.unwrap();
+
             archiver
-                .archive_receipts(receipts, chunk_start + 1)
-                .await
-                .unwrap();
-            archiver
-                .archive_traces(traces, chunk_start + 1)
+                .archive_block_data(block, receipts, traces)
                 .await
                 .unwrap();
 
-            archiver
-                .update_latest(chunk_start + 1, LatestKind::Uploaded)
-                .await
-                .unwrap();
+            archiver.update_latest(chunk_start + 1).await.unwrap();
         }
 
         // Simulate in dry-run mode

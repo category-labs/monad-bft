@@ -4,7 +4,7 @@ use monad_triedb_utils::triedb_env::ReceiptWithLogIndex;
 use tracing::trace;
 
 use crate::{
-    cli::AwsCliArgs,
+    cli::{AwsCliArgs, V2CliArgs},
     kvstore::{cloud_proxy::CloudProxyReader, mongo::MongoDbStorage},
     model::logs_index::LogsIndexArchiver,
     prelude::*,
@@ -19,7 +19,7 @@ pub enum LatestKind {
 #[derive(Clone)]
 pub struct ArchiveReader {
     block_data_reader: BlockDataReaderErased,
-    tx_index_reader: IndexReaderImpl,
+    tx_index_reader: IndexReaderErased,
     pub log_index: Option<LogsIndexArchiver>,
     fallback: Option<Box<ArchiveReader>>,
 }
@@ -27,7 +27,7 @@ pub struct ArchiveReader {
 impl ArchiveReader {
     pub fn new(
         block_data_reader: impl Into<BlockDataReaderErased>,
-        tx_index_reader: IndexReaderImpl,
+        tx_index_reader: impl Into<IndexReaderErased>,
         fallback: Option<Box<ArchiveReader>>,
         log_index: Option<LogsIndexArchiver>,
     ) -> ArchiveReader {
@@ -37,7 +37,7 @@ impl ArchiveReader {
         );
         let block_data_reader = block_data_reader.into();
         let reader = ArchiveReader {
-            tx_index_reader,
+            tx_index_reader: tx_index_reader.into(),
             block_data_reader,
             fallback,
             log_index,
@@ -46,7 +46,7 @@ impl ArchiveReader {
         reader
     }
 
-    pub async fn init_mongo_reader(
+    pub async fn init_v1_mongo_reader(
         url: String,
         db: String,
         metrics: Metrics,
@@ -74,7 +74,13 @@ impl ArchiveReader {
         ))
     }
 
-    pub async fn init_aws_reader(
+    pub async fn init_v2_mongo_reader(args: &V2CliArgs) -> Result<ArchiveReader> {
+        info!(?args, "Initializing MongoDB ArchiveReader");
+        let model_v2 = args.build_model_v2(&Metrics::none()).await?;
+        Ok(ArchiveReader::new(model_v2.clone(), model_v2, None, None))
+    }
+
+    pub async fn init_v1_aws_reader(
         bucket: String,
         region: Option<String>,
         url: &str,
@@ -142,7 +148,7 @@ impl ArchiveReader {
 
     async fn index_fallback_logic<'a, Ret, F, Fut>(&'a self, f: F) -> Result<Ret>
     where
-        F: Fn(&'a IndexReaderImpl) -> Fut,
+        F: Fn(&'a IndexReaderErased) -> Fut,
         Fut: std::future::Future<Output = Result<Ret>>,
     {
         let Some(fallback) = self.fallback.as_ref() else {
@@ -176,14 +182,6 @@ impl IndexReader for ArchiveReader {
             .await
     }
 
-    async fn get_tx_indexed_data_bulk(
-        &self,
-        tx_hashes: &[alloy_primitives::TxHash],
-    ) -> Result<HashMap<alloy_primitives::TxHash, TxIndexedData>> {
-        self.index_fallback_logic(|idx| idx.get_tx_indexed_data_bulk(tx_hashes))
-            .await
-    }
-
     async fn get_tx(
         &self,
         tx_hash: &alloy_primitives::TxHash,
@@ -206,21 +204,15 @@ impl IndexReader for ArchiveReader {
         self.index_fallback_logic(|idx| idx.get_receipt(tx_hash))
             .await
     }
-
-    async fn resolve_from_bytes(&self, bytes: &[u8]) -> Result<TxIndexedData> {
-        self.index_fallback_logic(|idx| idx.resolve_from_bytes(bytes))
-            .await
-    }
 }
 
 impl BlockDataReader for ArchiveReader {
-    fn get_bucket(&self) -> &str {
-        self.block_data_reader.get_bucket()
+    fn get_replica(&self) -> &str {
+        self.block_data_reader.get_replica()
     }
 
-    async fn get_latest(&self, latest_kind: LatestKind) -> Result<Option<u64>> {
-        self.bdr_fallback_logic(|bdr| bdr.get_latest(latest_kind))
-            .await
+    async fn get_latest(&self) -> Result<Option<u64>> {
+        self.bdr_fallback_logic(|bdr| bdr.get_latest()).await
     }
 
     async fn get_block_by_number(&self, block_num: u64) -> Result<Block> {
@@ -240,29 +232,6 @@ impl BlockDataReader for ArchiveReader {
 
     async fn get_block_traces(&self, block_number: u64) -> Result<BlockTraces> {
         self.bdr_fallback_logic(|bdr| bdr.get_block_traces(block_number))
-            .await
-    }
-
-    async fn get_block_data_with_offsets(&self, block_num: u64) -> Result<BlockDataWithOffsets> {
-        self.bdr_fallback_logic(|bdr| bdr.get_block_data_with_offsets(block_num))
-            .await
-    }
-
-    #[doc = " Get a block by its number, or return None if not found"]
-    async fn try_get_block_by_number(&self, block_num: u64) -> Result<Option<Block>> {
-        self.bdr_fallback_logic(|bdr| bdr.try_get_block_by_number(block_num))
-            .await
-    }
-
-    #[doc = " Get receipts for a block, or return None if not found"]
-    async fn try_get_block_receipts(&self, block_number: u64) -> Result<Option<BlockReceipts>> {
-        self.bdr_fallback_logic(|bdr| bdr.try_get_block_receipts(block_number))
-            .await
-    }
-
-    #[doc = " Get execution traces for a block, or return None if not found"]
-    async fn try_get_block_traces(&self, block_number: u64) -> Result<Option<BlockTraces>> {
-        self.bdr_fallback_logic(|bdr| bdr.try_get_block_traces(block_number))
             .await
     }
 }

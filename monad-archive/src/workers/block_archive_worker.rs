@@ -8,7 +8,7 @@ use futures::{try_join, StreamExt, TryStreamExt};
 use tokio::time::sleep;
 use tracing::{error, info, warn};
 
-use crate::prelude::*;
+use crate::{model::BlockArchiver, prelude::*};
 
 /// Main worker that archives block data from the execution database to durable storage.
 /// Continuously polls for new blocks and archives their data.
@@ -22,9 +22,9 @@ use crate::prelude::*;
 /// * `stop_block_override` - Optional block number to stop archiving at
 /// * `metrics` - Metrics collection interface
 pub async fn archive_worker(
-    block_data_source: (impl BlockDataReader + Sync),
-    fallback_source: Option<(impl BlockDataReader + Sync)>,
-    archive_writer: BlockDataArchive,
+    block_data_source: impl BlockDataReader,
+    fallback_source: Option<impl BlockDataReader>,
+    archive_writer: impl BlockArchiver,
     max_blocks_per_iteration: u64,
     max_concurrent_blocks: usize,
     mut start_block_override: Option<u64>,
@@ -37,7 +37,7 @@ pub async fn archive_worker(
         Some(start_block) => start_block,
         None => {
             let latest_uploaded = archive_writer
-                .get_latest(LatestKind::Uploaded)
+                .get_latest()
                 .await
                 .unwrap_or(Some(0))
                 .unwrap_or(0);
@@ -51,7 +51,7 @@ pub async fn archive_worker(
 
     loop {
         // query latest
-        let latest_source = match block_data_source.get_latest(LatestKind::Uploaded).await {
+        let latest_source = match block_data_source.get_latest().await {
             Ok(number) => number.unwrap_or(0),
             Err(e) => {
                 warn!("Error getting latest source block: {e:?}");
@@ -104,10 +104,10 @@ pub async fn archive_worker(
 }
 
 async fn archive_blocks(
-    reader: &(impl BlockDataReader + Sync),
-    fallback_reader: &Option<impl BlockDataReader + Sync>,
+    reader: &impl BlockDataReader,
+    fallback_reader: &Option<impl BlockDataReader>,
     range: RangeInclusive<u64>,
-    archiver: &BlockDataArchive,
+    archiver: &impl BlockArchiver,
     metrics: &Metrics,
     concurrency: usize,
     unsafe_skip_bad_blocks: bool,
@@ -129,7 +129,7 @@ async fn archive_blocks(
                 }
             }
         })
-        .buffered(concurrency)
+        .buffer_unordered(concurrency)
         .try_collect()
         .await;
 
@@ -156,15 +156,26 @@ async fn archive_block(
     reader: &impl BlockDataReader,
     fallback: &Option<impl BlockDataReader>,
     block_num: u64,
-    archiver: &BlockDataArchive,
+    archiver: &impl BlockArchiver,
     metrics: &Metrics,
 ) -> Result<()> {
-    let mut num_txs = None;
+    let (block, receipts, traces) = fetch_block_data(reader, fallback, block_num, metrics).await?;
+    archiver.archive_block_data(block, receipts, traces).await?;
 
+    info!(block_num, "Successfully archived block");
+    Ok(())
+}
+
+async fn fetch_block_data(
+    reader: &impl BlockDataReader,
+    fallback: &Option<impl BlockDataReader>,
+    block_num: u64,
+    metrics: &Metrics,
+) -> Result<(Block, BlockReceipts, BlockTraces)> {
     try_join!(
         async {
-            let block = match reader.get_block_by_number(block_num).await {
-                Ok(b) => b,
+            match reader.get_block_by_number(block_num).await {
+                Ok(b) => Ok(b),
                 Err(e) => {
                     let Some(fallback) = fallback.as_ref() else {
                         return Err(e);
@@ -174,15 +185,13 @@ async fn archive_block(
                         block_num, "Failed to read block from primary source, trying fallback..."
                     );
                     metrics.inc_counter(MetricNames::BLOCK_ARCHIVE_WORKER_BLOCK_FALLBACK);
-                    fallback.get_block_by_number(block_num).await?
+                    fallback.get_block_by_number(block_num).await
                 }
-            };
-            num_txs = Some(block.body.transactions.len());
-            archiver.archive_block(block).await
+            }
         },
         async {
-            let receipts = match reader.get_block_receipts(block_num).await {
-                Ok(b) => b,
+            match reader.get_block_receipts(block_num).await {
+                Ok(b) => Ok(b),
                 Err(e) => {
                     let Some(fallback) = fallback.as_ref() else {
                         return Err(e);
@@ -193,14 +202,13 @@ async fn archive_block(
                         "Failed to read block receipts from primary source, trying fallback..."
                     );
                     metrics.inc_counter(MetricNames::BLOCK_ARCHIVE_WORKER_RECEIPTS_FALLBACK);
-                    fallback.get_block_receipts(block_num).await?
+                    fallback.get_block_receipts(block_num).await
                 }
-            };
-            archiver.archive_receipts(receipts, block_num).await
+            }
         },
         async {
-            let traces = match reader.get_block_traces(block_num).await {
-                Ok(b) => b,
+            match reader.get_block_traces(block_num).await {
+                Ok(b) => Ok(b),
                 Err(e) => {
                     let Some(fallback) = fallback.as_ref() else {
                         return Err(e);
@@ -211,21 +219,15 @@ async fn archive_block(
                         "Failed to read block traces from primary source, trying fallback..."
                     );
                     metrics.inc_counter(MetricNames::BLOCK_ARCHIVE_WORKER_TRACES_FALLBACK);
-                    fallback.get_block_traces(block_num).await?
+                    fallback.get_block_traces(block_num).await
                 }
-            };
-            archiver.archive_traces(traces, block_num).await
+            }
         },
-    )?;
-    info!(block_num, num_txs, "Successfully archived block");
-    Ok(())
+    )
 }
 
-async fn checkpoint_latest(archiver: &BlockDataArchive, block_num: u64) {
-    match archiver
-        .update_latest(block_num, LatestKind::Uploaded)
-        .await
-    {
+async fn checkpoint_latest(archiver: &impl BlockArchiver, block_num: u64) {
+    match archiver.update_latest(block_num).await {
         Ok(()) => info!(block_num, "Set latest uploaded checkpoint"),
         Err(e) => error!(block_num, "Failed to set latest uploaded block: {e:?}"),
     }
@@ -300,7 +302,7 @@ mod tests {
         }
 
         archive
-            .update_latest(max_block_num, LatestKind::Uploaded)
+            .update_latest_kind(max_block_num, LatestKind::Uploaded)
             .await
             .unwrap();
     }
@@ -396,7 +398,7 @@ mod tests {
         mock_source(&reader, (0..=10).map(row)).await;
 
         assert_eq!(
-            reader.get_latest(LatestKind::Uploaded).await.unwrap(),
+            reader.get_latest_kind(LatestKind::Uploaded).await.unwrap(),
             Some(10)
         );
 
@@ -413,7 +415,10 @@ mod tests {
 
         assert_eq!(end_block, 10);
         assert_eq!(
-            archiver.get_latest(LatestKind::Uploaded).await.unwrap(),
+            archiver
+                .get_latest_kind(LatestKind::Uploaded)
+                .await
+                .unwrap(),
             Some(10)
         );
     }
@@ -440,7 +445,7 @@ mod tests {
         .await;
 
         assert_eq!(
-            reader.get_latest(LatestKind::Uploaded).await.unwrap(),
+            reader.get_latest_kind(LatestKind::Uploaded).await.unwrap(),
             Some(latest_source)
         );
 
@@ -457,7 +462,10 @@ mod tests {
 
         assert_eq!(end_block, end_of_first_chunk);
         assert_eq!(
-            archiver.get_latest(LatestKind::Uploaded).await.unwrap(),
+            archiver
+                .get_latest_kind(LatestKind::Uploaded)
+                .await
+                .unwrap(),
             Some(end_of_first_chunk)
         );
     }

@@ -45,7 +45,7 @@ async fn main() -> Result<()> {
     // Confirm connectivity
     if !args.skip_connectivity_check {
         block_data_reader
-            .get_latest(LatestKind::Uploaded)
+            .get_latest()
             .await
             .wrap_err("Cannot connect to block data source")?;
         tx_index_archiver

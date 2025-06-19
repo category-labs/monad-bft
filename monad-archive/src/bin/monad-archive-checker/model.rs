@@ -2,7 +2,11 @@ use std::collections::HashMap;
 
 use eyre::{Context, Result};
 use futures::future::try_join_all;
-use monad_archive::{cli::ArchiveArgs, prelude::*};
+use monad_archive::{
+    cli::ArchiveArgs,
+    model::{BlockArchiverErased, BlockDataReader},
+    prelude::*,
+};
 use serde::{Deserialize, Serialize};
 
 // Constants for S3 key prefixes defining the storage organization
@@ -32,7 +36,7 @@ pub fn good_blocks_key(starting_block_num: u64) -> String {
 #[derive(Clone)]
 pub struct CheckerModel {
     pub store: KVStoreErased,
-    pub block_data_readers: Arc<HashMap<String, BlockDataArchive>>,
+    pub block_data_readers: HashMap<String, BlockArchiverErased>,
 }
 
 impl CheckerModel {
@@ -43,8 +47,7 @@ impl CheckerModel {
         init_replicas: Option<HashSet<ArchiveArgs>>,
     ) -> Result<Self> {
         let store = store.into();
-        let block_data_readers =
-            Arc::new(Self::load_replicas(&store, metrics, init_replicas).await?);
+        let block_data_readers = Self::load_replicas(&store, metrics, init_replicas).await?;
         Ok(Self {
             store,
             block_data_readers,
@@ -81,7 +84,7 @@ impl CheckerModel {
         s3: &impl KVStore,
         metrics: &Metrics,
         init_replicas: Option<HashSet<ArchiveArgs>>,
-    ) -> Result<HashMap<String, BlockDataArchive>> {
+    ) -> Result<HashMap<String, BlockArchiverErased>> {
         let mut readers = HashMap::new();
 
         // Get the list of replicas from S3
@@ -107,7 +110,7 @@ impl CheckerModel {
         // Create a reader for each replica
         for args in replica_args {
             let replica_name = args.replica_name();
-            let reader = args.build_block_data_archive(metrics).await?;
+            let reader = args.build_block_archiver(metrics).await?;
             readers.insert(replica_name, reader);
         }
 
@@ -134,7 +137,7 @@ impl CheckerModel {
         let latest_per_replica =
             try_join_all(self.block_data_readers.values().map(|archive| async {
                 archive
-                    .get_latest(LatestKind::Uploaded)
+                    .get_latest()
                     .await
                     .map(|latest| latest.unwrap_or(0) - 1000)
             }))
@@ -290,15 +293,13 @@ impl CheckerModel {
         let reader = self.block_data_readers.get(replica_name).unwrap();
         // Try to get all the data for this block from this replica
         let block_result = try_join!(
-            reader.try_get_block_by_number(block_num),
-            reader.try_get_block_receipts(block_num),
-            reader.try_get_block_traces(block_num)
+            reader.get_block_by_number(block_num),
+            reader.get_block_receipts(block_num),
+            reader.get_block_traces(block_num)
         );
 
-        // Return the result (or None if any part failed)
         match block_result {
-            Ok((Some(block), Some(receipts), Some(traces))) => Some((block, receipts, traces)),
-            Ok(_) => None,
+            Ok((block, receipts, traces)) => Some((block, receipts, traces)),
             Err(e) => {
                 info!(
                     "Failed to fetch block {} from {}: {}",

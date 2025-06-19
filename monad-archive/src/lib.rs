@@ -6,6 +6,7 @@ pub mod fault;
 pub mod kvstore;
 pub mod metrics;
 pub mod model;
+pub mod model_v2;
 pub mod prelude;
 pub mod rlp_offset_scanner;
 pub mod workers;

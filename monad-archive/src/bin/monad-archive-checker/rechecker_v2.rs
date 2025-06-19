@@ -467,8 +467,6 @@ fn update_fault_metrics(
 
 #[cfg(test)]
 mod tests {
-    use monad_archive::prelude::LatestKind;
-
     use super::*;
     use crate::{
         checker::tests::{create_test_block_data, setup_test_model},
@@ -518,15 +516,10 @@ mod tests {
         if let Some(archiver) = model.block_data_readers.get("replica2") {
             for block_num in [chunk_start + 1, chunk_start + 2] {
                 let (block, receipts, traces) = create_test_block_data(block_num, 1);
-                archiver.archive_block(block).await.unwrap();
-                archiver
-                    .archive_receipts(receipts, block_num)
-                    .await
-                    .unwrap();
-                archiver.archive_traces(traces, block_num).await.unwrap();
+                archiver.archive_block_data(block, receipts, traces).await.unwrap();
             }
             archiver
-                .update_latest(chunk_start + 2, LatestKind::Uploaded)
+                .update_latest(chunk_start + 2)
                 .await
                 .unwrap();
         }
@@ -540,17 +533,9 @@ mod tests {
         // Now fix the first block in replica1 (was missing)
         if let Some(archiver) = model.block_data_readers.get("replica1") {
             let (block, receipts, traces) = create_test_block_data(chunk_start + 1, 1);
-            archiver.archive_block(block).await.unwrap();
+            archiver.archive_block_data(block, receipts, traces).await.unwrap();
             archiver
-                .archive_receipts(receipts, chunk_start + 1)
-                .await
-                .unwrap();
-            archiver
-                .archive_traces(traces, chunk_start + 1)
-                .await
-                .unwrap();
-            archiver
-                .update_latest(chunk_start + 1, LatestKind::Uploaded)
+                .update_latest(chunk_start + 1)
                 .await
                 .unwrap();
         }
@@ -677,17 +662,9 @@ mod tests {
         // Add the missing block to replica1 (fix the fault)
         if let Some(archiver) = model.block_data_readers.get("replica1") {
             let (block, receipts, traces) = create_test_block_data(chunk_start + 1, 1);
-            archiver.archive_block(block).await.unwrap();
+            archiver.archive_block_data(block, receipts, traces).await.unwrap();
             archiver
-                .archive_receipts(receipts, chunk_start + 1)
-                .await
-                .unwrap();
-            archiver
-                .archive_traces(traces, chunk_start + 1)
-                .await
-                .unwrap();
-            archiver
-                .update_latest(chunk_start + 1, LatestKind::Uploaded)
+                .update_latest(chunk_start + 1)
                 .await
                 .unwrap();
         }
@@ -997,15 +974,10 @@ mod tests {
         if let Some(archiver) = model.block_data_readers.get("replica1") {
             for block_num in chunk_start..(chunk_start + CHUNK_SIZE) {
                 let (block, receipts, traces) = create_test_block_data(block_num, 1);
-                archiver.archive_block(block).await.unwrap();
-                archiver
-                    .archive_receipts(receipts, block_num)
-                    .await
-                    .unwrap();
-                archiver.archive_traces(traces, block_num).await.unwrap();
+                archiver.archive_block_data(block, receipts, traces).await.unwrap();
             }
             archiver
-                .update_latest(chunk_start + CHUNK_SIZE - 1, LatestKind::Uploaded)
+                .update_latest(chunk_start + CHUNK_SIZE - 1)
                 .await
                 .unwrap();
         }
@@ -1015,15 +987,10 @@ mod tests {
             if let Some(archiver) = model.block_data_readers.get(replica) {
                 for block_num in chunk_start..(chunk_start + CHUNK_SIZE) {
                     let (block, receipts, traces) = create_test_block_data(block_num, 1);
-                    archiver.archive_block(block).await.unwrap();
-                    archiver
-                        .archive_receipts(receipts, block_num)
-                        .await
-                        .unwrap();
-                    archiver.archive_traces(traces, block_num).await.unwrap();
+                    archiver.archive_block_data(block, receipts, traces).await.unwrap();
                 }
                 archiver
-                    .update_latest(chunk_start + CHUNK_SIZE - 1, LatestKind::Uploaded)
+                    .update_latest(chunk_start + CHUNK_SIZE - 1)
                     .await
                     .unwrap();
             }
@@ -1128,15 +1095,7 @@ mod tests {
                 let (block, receipts, traces) = create_test_block_data(block_num, 1);
                 for replica in ["replica1", "replica2", "replica3"] {
                     if let Some(archiver) = model.block_data_readers.get(replica) {
-                        archiver.archive_block(block.clone()).await.unwrap();
-                        archiver
-                            .archive_receipts(receipts.clone(), block_num)
-                            .await
-                            .unwrap();
-                        archiver
-                            .archive_traces(traces.clone(), block_num)
-                            .await
-                            .unwrap();
+                        archiver.archive_block_data(block.clone(), receipts.clone(), traces.clone()).await.unwrap();
                     }
                 }
             }
@@ -1145,7 +1104,7 @@ mod tests {
         for replica in ["replica1", "replica2", "replica3"] {
             if let Some(archiver) = model.block_data_readers.get(replica) {
                 archiver
-                    .update_latest(2999, LatestKind::Uploaded)
+                    .update_latest(2999)
                     .await
                     .unwrap();
             }

@@ -648,6 +648,7 @@ pub mod tests {
     use alloy_rlp::Encodable;
     use monad_archive::{
         kvstore::memory::MemoryStorage,
+        model::BlockArchiverErased,
         test_utils::{mock_block, mock_rx, mock_tx},
     };
 
@@ -973,12 +974,12 @@ pub mod tests {
         for i in 1..=replicas {
             let reader_store: KVStoreErased = MemoryStorage::new(format!("reader-{}", i)).into();
             let reader = BlockDataArchive::new(reader_store);
-            block_data_readers.insert(format!("replica{}", i), reader);
+            block_data_readers.insert(format!("replica{}", i), reader.into());
         }
 
         CheckerModel {
             store,
-            block_data_readers: Arc::new(block_data_readers),
+            block_data_readers,
         }
     }
 
@@ -993,33 +994,23 @@ pub mod tests {
             let (block1, receipts1, traces1) = create_test_block_data(block_num, 1);
 
             if let Some(archiver) = model.block_data_readers.get("replica1") {
-                archiver.archive_block(block1.clone()).await.unwrap();
+                let BlockArchiverErased::BlockDataArchive(archiver) = archiver else {
+                    panic!("Archiver is not a BlockDataArchive");
+                };
+                archiver.archive_block_data(block1.clone(), receipts1.clone(), traces1.clone()).await.unwrap();
                 archiver
-                    .archive_receipts(receipts1.clone(), block_num)
-                    .await
-                    .unwrap();
-                archiver
-                    .archive_traces(traces1.clone(), block_num)
-                    .await
-                    .unwrap();
-                archiver
-                    .update_latest(block_num, LatestKind::Uploaded)
+                    .update_latest(block_num)
                     .await
                     .unwrap();
             }
 
             if let Some(archiver) = model.block_data_readers.get("replica2") {
-                archiver.archive_block(block1.clone()).await.unwrap();
+                let BlockArchiverErased::BlockDataArchive(archiver) = archiver else {
+                    panic!("Archiver is not a BlockDataArchive");
+                };
+                archiver.archive_block_data(block1.clone(), receipts1.clone(), traces1.clone()).await.unwrap();
                 archiver
-                    .archive_receipts(receipts1.clone(), block_num)
-                    .await
-                    .unwrap();
-                archiver
-                    .archive_traces(traces1.clone(), block_num)
-                    .await
-                    .unwrap();
-                archiver
-                    .update_latest(block_num, LatestKind::Uploaded)
+                    .update_latest(block_num)
                     .await
                     .unwrap();
             }
@@ -1035,14 +1026,12 @@ pub mod tests {
                 };
 
                 if let Some(archiver) = model.block_data_readers.get("replica3") {
-                    archiver.archive_block(block3).await.unwrap();
+                    let BlockArchiverErased::BlockDataArchive(archiver) = archiver else {
+                        panic!("Archiver is not a BlockDataArchive");
+                    };
+                    archiver.archive_block_data(block3, receipts3, traces3).await.unwrap();
                     archiver
-                        .archive_receipts(receipts3, block_num)
-                        .await
-                        .unwrap();
-                    archiver.archive_traces(traces3, block_num).await.unwrap();
-                    archiver
-                        .update_latest(block_num, LatestKind::Uploaded)
+                        .update_latest(block_num)
                         .await
                         .unwrap();
                 }
@@ -1122,6 +1111,10 @@ pub mod tests {
         // For replica3, leave block 205 missing (don't populate it)
         let missing_block = 205;
         if let Some(archiver) = model.block_data_readers.get("replica3") {
+            let BlockArchiverErased::BlockDataArchive(archiver) = archiver else {
+                panic!("Archiver is not a BlockDataArchive");
+            };
+
             // For each block except the missing one, archive the data
             for block_num in start_block..=end_block {
                 if block_num == missing_block {
@@ -1134,15 +1127,10 @@ pub mod tests {
                     create_test_block_data(block_num, 1)
                 };
 
-                archiver.archive_block(block).await.unwrap();
-                archiver
-                    .archive_receipts(receipts, block_num)
-                    .await
-                    .unwrap();
-                archiver.archive_traces(traces, block_num).await.unwrap();
+                archiver.archive_block_data(block, receipts, traces).await.unwrap();
             }
             archiver
-                .update_latest(end_block, LatestKind::Uploaded)
+                .update_latest(end_block)
                 .await
                 .unwrap();
         }
@@ -1183,6 +1171,10 @@ pub mod tests {
         // First populate replica1 and replica2 with normal data
         for replica_name in ["replica1", "replica2", "replica3"] {
             if let Some(archiver) = model.block_data_readers.get(replica_name) {
+                let BlockArchiverErased::BlockDataArchive(archiver) = archiver else {
+                    panic!("Archiver is not a BlockDataArchive");
+                };
+
                 for block_num in start_block..=end_block {
                     let (block, receipts, traces) = create_test_block_data(block_num, 1);
 
@@ -1218,15 +1210,10 @@ pub mod tests {
                         continue;
                     }
 
-                    archiver.archive_block(block).await.unwrap();
-                    archiver
-                        .archive_receipts(receipts, block_num)
-                        .await
-                        .unwrap();
-                    archiver.archive_traces(traces, block_num).await.unwrap();
+                    archiver.archive_block_data(block, receipts, traces).await.unwrap();
                 }
                 archiver
-                    .update_latest(end_block, LatestKind::Uploaded)
+                    .update_latest(end_block)
                     .await
                     .unwrap();
             }
@@ -1293,7 +1280,10 @@ pub mod tests {
 
         let model = CheckerModel {
             store: checker_store,
-            block_data_readers: Arc::new(block_data_readers),
+            block_data_readers: block_data_readers
+                .into_iter()
+                .map(|(k, v)| (k, v.into()))
+                .collect(),
         };
 
         // Test data setup
@@ -1307,17 +1297,9 @@ pub mod tests {
 
             for replica_name in ["replica1", "replica2"] {
                 if let Some(archiver) = model.block_data_readers.get(replica_name) {
-                    archiver.archive_block(block1.clone()).await.unwrap();
+                    archiver.archive_block_data(block1.clone(), receipts1.clone(), traces1.clone()).await.unwrap();
                     archiver
-                        .archive_receipts(receipts1.clone(), block_num)
-                        .await
-                        .unwrap();
-                    archiver
-                        .archive_traces(traces1.clone(), block_num)
-                        .await
-                        .unwrap();
-                    archiver
-                        .update_latest(block_num, LatestKind::Uploaded)
+                        .update_latest(block_num)
                         .await
                         .unwrap();
                 }
@@ -1331,14 +1313,9 @@ pub mod tests {
                     (block1, receipts1, traces1) // Same data
                 };
 
-                archiver.archive_block(block3).await.unwrap();
+                archiver.archive_block_data(block3, receipts3, traces3).await.unwrap();
                 archiver
-                    .archive_receipts(receipts3, block_num)
-                    .await
-                    .unwrap();
-                archiver.archive_traces(traces3, block_num).await.unwrap();
-                archiver
-                    .update_latest(block_num, LatestKind::Uploaded)
+                    .update_latest(block_num)
                     .await
                     .unwrap();
             }

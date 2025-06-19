@@ -16,7 +16,7 @@ use crate::{model::logs_index::LogsIndexArchiver, prelude::*};
 /// * `stop_block_override` - Optional block number to stop indexing at
 /// * `poll_frequency` - How often to check for new blocks
 pub async fn index_worker(
-    block_data_reader: impl BlockDataReader + Sync + Send,
+    block_data_reader: impl BlockDataReader + Send,
     indexer: TxIndexArchiver,
     log_index: Option<LogsIndexArchiver>,
     max_blocks_per_iteration: u64,
@@ -44,7 +44,7 @@ pub async fn index_worker(
 
     loop {
         // query latest
-        let latest_source = match block_data_reader.get_latest(LatestKind::Uploaded).await {
+        let latest_source = match block_data_reader.get_latest().await {
             Ok(number) => number.unwrap(),
             Err(e) => {
                 warn!("Error getting latest uploaded block: {e:?}");
@@ -112,7 +112,7 @@ async fn index_blocks(
                 }
             }
         })
-        .buffered(concurrency)
+        .buffer_unordered(concurrency)
         .try_fold(0, |total_txs, block_txs| async move {
             Ok(total_txs + block_txs)
         })
@@ -145,14 +145,20 @@ async fn handle_block(
     log_index: Option<&LogsIndexArchiver>,
     block_num: u64,
 ) -> Result<usize> {
-    let BlockDataWithOffsets {
-        block,
-        receipts,
-        traces,
-        offsets,
-    } = block_data_reader
-        .get_block_data_with_offsets(block_num)
-        .await?;
+    // let BlockDataWithOffsets {
+    //     block,
+    //     receipts,
+    //     traces,
+    //     offsets,
+    // } = block_data_reader
+    //     .get_block_data_with_offsets(block_num)
+    //     .await?;
+
+    let (block, receipts, traces) = try_join!(
+        block_data_reader.get_block_by_number(block_num),
+        block_data_reader.get_block_receipts(block_num),
+        block_data_reader.get_block_traces(block_num)
+    )?;
 
     let num_txs = block.body.transactions.len();
     info!(num_txs, block_num, "Indexing block...");
@@ -165,7 +171,7 @@ async fn handle_block(
     if let Some(log_index) = log_index {
         // Index Txs
         tx_index_archiver
-            .index_block(block.clone(), traces, receipts.clone(), offsets)
+            .index_block(block.clone(), traces, receipts.clone(), None)
             .await?;
 
         // Index Logs only when this writer is available
@@ -173,7 +179,7 @@ async fn handle_block(
     } else {
         // Index Txs
         tx_index_archiver
-            .index_block(block, traces, receipts, offsets)
+            .index_block(block, traces, receipts, None)
             .await?;
     }
 
@@ -182,15 +188,15 @@ async fn handle_block(
         let tx = tx.tx;
         let key = tx.tx_hash();
         match tx_index_archiver.get_tx_indexed_data(key).await {
-            Ok(resp) => {
-                if resp.header_subset.block_number != block_num
-                    || Some(&resp.receipt) != first_rx.as_ref()
-                    || Some(&resp.trace) != first_trace.as_ref()
+            Ok(tx_indexed_data) => {
+                if tx_indexed_data.header_subset.block_number != block_num
+                    || Some(&tx_indexed_data.receipt) != first_rx.as_ref()
+                    || Some(&tx_indexed_data.trace) != first_trace.as_ref()
                 {
                     warn!(
                         key = key.encode_hex(),
                         block_num,
-                        ?resp,
+                        ?tx,
                         "Returned index not as expected"
                     );
                 } else {
@@ -309,7 +315,10 @@ mod tests {
             reader.archive_traces(traces, block_num).await.unwrap();
         }
 
-        reader.update_latest(5, LatestKind::Uploaded).await.unwrap();
+        reader
+            .update_latest_kind(5, LatestKind::Uploaded)
+            .await
+            .unwrap();
         index_archiver.update_latest_indexed(0).await.unwrap();
 
         // Start worker that should process until block 2, then stop at missing block 3
@@ -376,7 +385,10 @@ mod tests {
         }
 
         // Set initial latest
-        reader.update_latest(5, LatestKind::Uploaded).await.unwrap();
+        reader
+            .update_latest_kind(5, LatestKind::Uploaded)
+            .await
+            .unwrap();
         // Set indexer's starting point
         index_archiver.update_latest_indexed(0).await.unwrap();
 
@@ -410,7 +422,7 @@ mod tests {
 
         // Update latest to include new blocks
         reader
-            .update_latest(10, LatestKind::Uploaded)
+            .update_latest_kind(10, LatestKind::Uploaded)
             .await
             .unwrap();
 
@@ -448,7 +460,10 @@ mod tests {
         }
 
         // Set up latest block in source
-        reader.update_latest(5, LatestKind::Uploaded).await.unwrap();
+        reader
+            .update_latest_kind(5, LatestKind::Uploaded)
+            .await
+            .unwrap();
         // Set indexer's starting point
         index_archiver.update_latest_indexed(0).await.unwrap();
 

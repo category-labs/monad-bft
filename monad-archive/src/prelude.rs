@@ -1,3 +1,4 @@
+use std::future::Future;
 pub use std::{
     collections::{HashMap, HashSet},
     ffi::OsString,
@@ -23,7 +24,16 @@ pub use crate::{
     },
     metrics::{MetricNames, Metrics},
     model::{
-        block_data_archive::*, tx_index_archive::*, BlockDataReader, BlockDataReaderErased,
-        BlockDataWithOffsets, HeaderSubset, TxByteOffsets, TxIndexedData,
+        block_data_archive::*, tx_index_archive::*, BlockArchiver, BlockDataReader,
+        BlockDataReaderErased, HeaderSubset, TxByteOffsets, TxIndexedData,
     },
+    model_v2::ModelV2,
 };
+
+pub async fn spawn_eyre<T: Future<Output = Result<O>> + Send + 'static, O: Send + 'static>(
+    req: T,
+    msg: &'static str,
+) -> Result<O> {
+    let x = tokio::spawn(req).await.wrap_err(msg)?;
+    x.wrap_err(msg)
+}

@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
+use monad_archive::cli::V2CliArgs;
 
 #[derive(Debug, Parser)]
 #[command(name = "monad-node", about, long_about = None)]
@@ -111,7 +112,17 @@ pub struct Cli {
     #[arg(long, default_value_t = 3)]
     pub max_voted_block_cache_len: u64,
 
-    /* Archive Options */
+    /**
+     *  Archive Options
+     **/
+
+    /// Archive V2 locator string
+    /// In the form of: `<mongo uri> <replica name> [optional <concurrency> <region>]`
+    /// Example 1: `mongodb://admin:pwd@localhost:27017 my_replica 10 us-east-1`
+    /// Example 2: `mongodb+srv://admin:pwd@localhost:27017 other_replica 100`
+    #[arg(value_parser = V2CliArgs::try_from_str)]
+    pub archive_v2: Option<V2CliArgs>,
+
     /// Set the s3 bucket name to read archive data from
     #[arg(long)]
     pub s3_bucket: Option<String>,
