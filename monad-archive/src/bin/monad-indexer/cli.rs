@@ -1,9 +1,12 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use monad_archive::cli::{ArchiveArgs, BlockDataReaderArgs};
 
 #[derive(Debug, Parser)]
 #[command(name = "monad-indexer", about, long_about = None)]
 pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<Commands>,
+
     /// Source to read block data that will be indexed
     #[arg(long, value_parser = clap::value_parser!(BlockDataReaderArgs))]
     pub block_data_source: BlockDataReaderArgs,
@@ -46,4 +49,10 @@ pub struct Cli {
 
     #[arg(long, default_value_t = false)]
     pub skip_connectivity_check: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Commands {
+    /// Migrate logs index
+    MigrateLogs,
 }

@@ -5,7 +5,10 @@ use monad_archive::{
 };
 use tracing::{info, Level};
 
+use crate::migrate_logs::run_migrate_logs;
+
 mod cli;
+mod migrate_logs;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -14,6 +17,13 @@ async fn main() -> Result<()> {
     let args = cli::Cli::parse();
     info!(?args, "Cli Arguments: ");
 
+    match args.command {
+        Some(cli::Commands::MigrateLogs) => run_migrate_logs(args).await,
+        None => run_indexer(args).await,
+    }
+}
+
+async fn run_indexer(args: cli::Cli) -> Result<()> {
     let metrics = Metrics::new(
         args.otel_endpoint,
         "monad-indexer",
@@ -41,18 +51,6 @@ async fn main() -> Result<()> {
         _ => None,
     };
     info!("Log index archiver: {:?}", log_index_archiver.is_some());
-
-    // Confirm connectivity
-    if !args.skip_connectivity_check {
-        block_data_reader
-            .get_latest(LatestKind::Uploaded)
-            .await
-            .wrap_err("Cannot connect to block data source")?;
-        tx_index_archiver
-            .get_latest_indexed()
-            .await
-            .wrap_err("Cannot connect to archive sink")?;
-    }
 
     // for testing
     if args.reset_index {
