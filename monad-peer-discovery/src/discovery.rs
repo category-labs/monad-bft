@@ -64,6 +64,8 @@ pub struct PeerDiscovery<ST: CertificateSignatureRecoverable> {
     pub min_active_connections: usize,
     // maximum number of active connections before pruning
     pub max_active_connections: usize,
+    // probability for dropping ping requests from full nodes when peer list larger than max_active_connections
+    pub drop_full_nodes_ping_probability: f64,
     pub rng: ChaCha8Rng,
 }
 
@@ -80,6 +82,7 @@ pub struct PeerDiscoveryBuilder<ST: CertificateSignatureRecoverable> {
     pub prune_threshold: u32,
     pub min_active_connections: usize,
     pub max_active_connections: usize,
+    pub drop_full_nodes_ping_probability: f64,
     pub rng_seed: u64,
 }
 
@@ -113,6 +116,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
             prune_threshold: self.prune_threshold,
             min_active_connections: self.min_active_connections,
             max_active_connections: self.max_active_connections,
+            drop_full_nodes_ping_probability: self.drop_full_nodes_ping_probability,
             rng: ChaCha8Rng::seed_from_u64(self.rng_seed),
         };
 
@@ -275,6 +279,30 @@ where
         *self.metrics.entry("recv_ping").or_default() += 1;
 
         let mut cmds = Vec::new();
+
+        // if peer list is larger than max_active_connections, drop public full node pings at a probability
+        if self.peer_info.len() >= self.max_active_connections {
+            let current_epoch_validators = self.epoch_validators.get(&self.current_epoch);
+            let next_epoch_validators = self.epoch_validators.get(&(self.current_epoch + Epoch(1)));
+            let is_validator = |node_id: &NodeId<CertificateSignaturePubKey<ST>>| {
+                current_epoch_validators.is_some_and(|validators| validators.contains(node_id))
+                    || next_epoch_validators.is_some_and(|validators| validators.contains(node_id))
+            };
+            let is_dedicated_full_node = self.dedicated_full_nodes.contains(&from);
+
+            if !is_validator(&from) && !is_dedicated_full_node {
+                // drop with probability defined by node operator
+                if self.rng.next_u32() as f64 / (u32::MAX as f64)
+                    < self.drop_full_nodes_ping_probability
+                {
+                    debug!(
+                        ?from,
+                        "dropping ping due to peer list size exceeding max size"
+                    );
+                    return cmds;
+                }
+            }
+        }
 
         if let Some(peer_name_record) = ping_msg.local_name_record {
             if self
@@ -892,6 +920,7 @@ mod tests {
             prune_threshold: 10,
             min_active_connections: 5,
             max_active_connections: 50,
+            drop_full_nodes_ping_probability: 1.0,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
 
@@ -950,6 +979,7 @@ mod tests {
             prune_threshold: 10,
             min_active_connections: 5,
             max_active_connections: 50,
+            drop_full_nodes_ping_probability: 1.0,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
 
@@ -989,6 +1019,7 @@ mod tests {
             prune_threshold: 10,
             min_active_connections: 5,
             max_active_connections: 50,
+            drop_full_nodes_ping_probability: 1.0,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
 
@@ -1079,6 +1110,7 @@ mod tests {
             prune_threshold: 10,
             min_active_connections: 5,
             max_active_connections: 50,
+            drop_full_nodes_ping_probability: 1.0,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
 
@@ -1144,6 +1176,7 @@ mod tests {
             prune_threshold: 10,
             min_active_connections: 5,
             max_active_connections: 50,
+            drop_full_nodes_ping_probability: 1.0,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
 
@@ -1205,6 +1238,7 @@ mod tests {
             prune_threshold: 10,
             min_active_connections: 5,
             max_active_connections: 50,
+            drop_full_nodes_ping_probability: 1.0,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
 
@@ -1246,6 +1280,7 @@ mod tests {
             prune_threshold: 10,
             min_active_connections: 5,
             max_active_connections: 50,
+            drop_full_nodes_ping_probability: 1.0,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
 
@@ -1292,6 +1327,7 @@ mod tests {
             prune_threshold: 3,
             min_active_connections: 5,
             max_active_connections: 50,
+            drop_full_nodes_ping_probability: 1.0,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
 
@@ -1330,6 +1366,7 @@ mod tests {
             prune_threshold: 3,
             min_active_connections: 5,
             max_active_connections: 50,
+            drop_full_nodes_ping_probability: 1.0,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
 
@@ -1394,6 +1431,7 @@ mod tests {
             prune_threshold: 3,
             min_active_connections: 0,
             max_active_connections: 1,
+            drop_full_nodes_ping_probability: 1.0,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
 
@@ -1431,6 +1469,7 @@ mod tests {
             prune_threshold: 3,
             min_active_connections: 5,
             max_active_connections: 50,
+            drop_full_nodes_ping_probability: 1.0,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
 
@@ -1521,6 +1560,7 @@ mod tests {
             prune_threshold: 3,
             min_active_connections: 5,
             max_active_connections: 50,
+            drop_full_nodes_ping_probability: 1.0,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
 
@@ -1548,5 +1588,53 @@ mod tests {
         } else {
             assert!(cmds.is_empty());
         }
+    }
+
+    #[test]
+    fn test_drop_full_node_ping() {
+        let keys = create_keys::<SignatureType>(3);
+        let node0_key = &keys[0];
+        let node0 = NodeId::new(node0_key.pubkey());
+        let node1_key = &keys[1];
+        let node1 = NodeId::new(node1_key.pubkey());
+        let node2_key = &keys[2];
+        let node2 = NodeId::new(node2_key.pubkey());
+
+        let mut state: PeerDiscovery<SignatureType> = PeerDiscovery {
+            self_id: node0,
+            self_record: generate_name_record(node0_key, 0),
+            current_epoch: Epoch(1),
+            epoch_validators: BTreeMap::new(),
+            dedicated_full_nodes: BTreeSet::new(),
+            peer_info: BTreeMap::from([(node1, PeerInfo {
+                last_ping: None,
+                unresponsive_pings: 0,
+                name_record: generate_name_record(node1_key, 0),
+            })]),
+            outstanding_lookup_requests: HashMap::new(),
+            metrics: HashMap::new(),
+            ping_period: Duration::from_secs(60),
+            refresh_period: Duration::from_secs(120),
+            request_timeout: Duration::from_secs(5),
+            prune_threshold: 3,
+            min_active_connections: 0,
+            max_active_connections: 1,
+            drop_full_nodes_ping_probability: 1.0,
+            rng: ChaCha8Rng::seed_from_u64(123456),
+        };
+
+        // node2 incoming ping exceeds the max active connections
+        let ping_msg = Ping {
+            id: 0,
+            local_name_record: Some(generate_name_record(node2_key, 0)),
+        };
+        let cmds = state.handle_ping(node2, ping_msg);
+
+        // ping request is dropped so there is no pong response
+        let pong = extract_pong(cmds);
+        assert_eq!(pong.len(), 0);
+
+        // node2 name record is not added
+        assert!(!state.peer_info.contains_key(&node2));
     }
 }

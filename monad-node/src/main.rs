@@ -601,6 +601,7 @@ where
         prune_threshold: peer_discovery_config.prune_threshold,
         min_active_connections: peer_discovery_config.min_active_connections,
         max_active_connections: peer_discovery_config.max_active_connections,
+        drop_full_nodes_ping_probability: peer_discovery_config.drop_full_nodes_ping_probability,
         rng_seed: 123456,
     };
     RaptorCast::new(RaptorCastConfig {

@@ -19,4 +19,5 @@ pub struct PeerDiscoveryConfig<ST: CertificateSignatureRecoverable> {
     pub prune_threshold: u32,
     pub min_active_connections: usize,
     pub max_active_connections: usize,
+    pub drop_full_nodes_ping_probability: f64,
 }

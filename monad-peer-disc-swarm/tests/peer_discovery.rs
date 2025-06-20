@@ -112,6 +112,7 @@ fn test_ping_pong() {
                         prune_threshold: 3,
                         min_active_connections: 5,
                         max_active_connections: 50,
+                        drop_full_nodes_ping_probability: 1.0,
                         rng_seed: 123456,
                     },
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
@@ -207,6 +208,7 @@ fn test_new_node_joining() {
                         prune_threshold: 3,
                         min_active_connections: 5,
                         max_active_connections: 50,
+                        drop_full_nodes_ping_probability: 1.0,
                         rng_seed: 123456,
                     },
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
@@ -278,6 +280,7 @@ fn test_update_name_record() {
                         prune_threshold: 3,
                         min_active_connections: 5,
                         max_active_connections: 50,
+                        drop_full_nodes_ping_probability: 1.0,
                         rng_seed: 123456,
                     },
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
@@ -342,6 +345,7 @@ fn test_update_name_record() {
             prune_threshold: 3,
             min_active_connections: 5,
             max_active_connections: 50,
+            drop_full_nodes_ping_probability: 1.0,
             rng_seed: 123456,
         },
         router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect()).build(),
@@ -411,6 +415,7 @@ fn test_prune_nodes() {
                         prune_threshold: 3,
                         min_active_connections: 5,
                         max_active_connections: 50,
+                        drop_full_nodes_ping_probability: 1.0,
                         rng_seed: 123456,
                     },
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
@@ -525,6 +530,7 @@ fn test_peer_lookup_random_nodes() {
                         prune_threshold: 3,
                         min_active_connections: 5,
                         max_active_connections: 50,
+                        drop_full_nodes_ping_probability: 1.0,
                         rng_seed: 123456,
                     },
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
@@ -641,6 +647,7 @@ fn test_peer_lookup_retry() {
                         prune_threshold: 3,
                         min_active_connections: 5,
                         max_active_connections: 50,
+                        drop_full_nodes_ping_probability: 1.0,
                         rng_seed: 123456,
                     },
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
@@ -725,6 +732,7 @@ fn test_ping_timeout() {
                         prune_threshold: 3,
                         min_active_connections: 5,
                         max_active_connections: 50,
+                        drop_full_nodes_ping_probability: 1.0,
                         rng_seed: 123456,
                     },
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
@@ -817,6 +825,7 @@ fn test_min_watermark() {
                         prune_threshold: 1,
                         min_active_connections: 2,
                         max_active_connections: 10,
+                        drop_full_nodes_ping_probability: 1.0,
                         rng_seed: 123456,
                     },
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
@@ -907,6 +916,7 @@ fn test_max_watermark() {
                         prune_threshold: 1,
                         min_active_connections: 1,
                         max_active_connections: 2,
+                        drop_full_nodes_ping_probability: 1.0,
                         rng_seed: 123456,
                     },
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
