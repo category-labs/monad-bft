@@ -1,6 +1,6 @@
 use std::{
     fs::{File, OpenOptions},
-    io::{Read, Write},
+    io::{ErrorKind, Read, Write},
     marker::PhantomData,
     path::PathBuf,
     time::SystemTime,
@@ -16,8 +16,10 @@ use monad_crypto::certificate_signature::{
 };
 use monad_types::{BlockId, ExecutionProtocol, Hash};
 
-pub const BLOCKDB_HEADER_EXTENSION: &str = ".header";
-pub const BLOCKDB_BODY_EXTENSION: &str = ".body";
+pub const BLOCKDB_HEADERS_PATH: &str = "headers";
+const BLOCKDB_BODIES_PATH: &str = "bodies";
+const BLOCKDB_PROPOSED_HEAD_PATH: &str = "proposed_head";
+const BLOCKDB_FINALIZED_HEAD_PATH: &str = "finalized_head";
 
 pub trait BlockPersist<ST, SCT, EPT>
 where
@@ -25,8 +27,14 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    fn write_bft_header(&self, block: &ConsensusBlockHeader<ST, SCT, EPT>) -> std::io::Result<()>;
-    fn write_bft_body(&self, payload: &ConsensusBlockBody<EPT>) -> std::io::Result<()>;
+    fn write_bft_header(
+        &mut self,
+        block: &ConsensusBlockHeader<ST, SCT, EPT>,
+    ) -> std::io::Result<()>;
+    fn write_bft_body(&mut self, payload: &ConsensusBlockBody<EPT>) -> std::io::Result<()>;
+
+    fn update_proposed_head(&mut self, block_id: &BlockId) -> std::io::Result<()>;
+    fn update_finalized_head(&mut self, block_id: &BlockId) -> std::io::Result<()>;
 
     fn read_bft_header(
         &self,
@@ -49,7 +57,10 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    ledger_path: PathBuf,
+    headers_path: PathBuf,
+    bodies_path: PathBuf,
+    proposed_head_path: PathBuf,
+    finalized_head_path: PathBuf,
 
     _pd: PhantomData<(ST, SCT, EPT)>,
 }
@@ -61,30 +72,48 @@ where
     EPT: ExecutionProtocol,
 {
     pub fn new(ledger_path: PathBuf) -> Self {
+        let headers_path = {
+            let headers_path = PathBuf::from(&ledger_path).join(BLOCKDB_HEADERS_PATH);
+            match std::fs::create_dir(&headers_path) {
+                Ok(_) => (),
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => (),
+                Err(e) => panic!("{}", e),
+            }
+            headers_path
+        };
+
+        let bodies_path = {
+            let bodies_path = PathBuf::from(&ledger_path).join(BLOCKDB_BODIES_PATH);
+            match std::fs::create_dir(&bodies_path) {
+                Ok(_) => (),
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => (),
+                Err(e) => panic!("{}", e),
+            }
+            bodies_path
+        };
+
+        let proposed_head_path = PathBuf::from(&headers_path).join(BLOCKDB_PROPOSED_HEAD_PATH);
+        let finalized_head_path = PathBuf::from(&headers_path).join(BLOCKDB_FINALIZED_HEAD_PATH);
+
         Self {
-            ledger_path,
+            headers_path,
+            bodies_path,
+            proposed_head_path,
+            finalized_head_path,
 
             _pd: PhantomData,
         }
     }
 
     fn header_path(&self, block_id: &BlockId) -> PathBuf {
-        let mut file_path = PathBuf::from(&self.ledger_path);
-        file_path.push(format!(
-            "{}{}",
-            block_id_to_hex_prefix(&block_id.0),
-            BLOCKDB_HEADER_EXTENSION
-        ));
+        let mut file_path = PathBuf::from(&self.headers_path);
+        file_path.push(block_id_to_hex_prefix(&block_id.0));
         file_path
     }
 
     fn body_path(&self, body_id: &ConsensusBlockBodyId) -> PathBuf {
-        let mut file_path = PathBuf::from(&self.ledger_path);
-        file_path.push(format!(
-            "{}{}",
-            block_id_to_hex_prefix(&body_id.0),
-            BLOCKDB_BODY_EXTENSION
-        ));
+        let mut file_path = PathBuf::from(&self.bodies_path);
+        file_path.push(block_id_to_hex_prefix(&body_id.0));
         file_path
     }
 }
@@ -95,7 +124,10 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    fn write_bft_header(&self, block: &ConsensusBlockHeader<ST, SCT, EPT>) -> std::io::Result<()> {
+    fn write_bft_header(
+        &mut self,
+        block: &ConsensusBlockHeader<ST, SCT, EPT>,
+    ) -> std::io::Result<()> {
         let file_path = self.header_path(&block.get_id());
 
         if let Ok(existing_header) = OpenOptions::new().write(true).open(&file_path) {
@@ -110,7 +142,7 @@ where
         Ok(())
     }
 
-    fn write_bft_body(&self, body: &ConsensusBlockBody<EPT>) -> std::io::Result<()> {
+    fn write_bft_body(&mut self, body: &ConsensusBlockBody<EPT>) -> std::io::Result<()> {
         let file_path = self.body_path(&body.get_id());
 
         if let Ok(existing_body) = OpenOptions::new().write(true).open(&file_path) {
@@ -122,6 +154,22 @@ where
         let mut f = File::create(file_path).unwrap();
         f.write_all(&alloy_rlp::encode(body)).unwrap();
 
+        Ok(())
+    }
+
+    fn update_proposed_head(&mut self, block_id: &BlockId) -> std::io::Result<()> {
+        let mut wip = PathBuf::from(&self.proposed_head_path);
+        wip.set_extension(".wip");
+        std::os::unix::fs::symlink(self.header_path(block_id), &wip)?;
+        std::fs::rename(&wip, &self.proposed_head_path)?;
+        Ok(())
+    }
+
+    fn update_finalized_head(&mut self, block_id: &BlockId) -> std::io::Result<()> {
+        let mut wip = PathBuf::from(&self.finalized_head_path);
+        wip.set_extension(".wip");
+        std::os::unix::fs::symlink(self.header_path(block_id), &wip)?;
+        std::fs::rename(&wip, &self.finalized_head_path)?;
         Ok(())
     }
 

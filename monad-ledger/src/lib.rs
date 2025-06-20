@@ -1,7 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
-    fs::{self, File},
-    io::{ErrorKind, Read, Seek, SeekFrom, Write},
+    io::ErrorKind,
     marker::PhantomData,
     path::PathBuf,
     pin::Pin,
@@ -18,9 +17,8 @@ use monad_consensus_types::{
     payload::{ConsensusBlockBody, ConsensusBlockBodyId},
     signature_collection::SignatureCollection,
 };
-use monad_crypto::{
-    certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
-    hasher::Hash,
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
@@ -46,9 +44,6 @@ where
     block_payload_cache: HashMap<ConsensusBlockBodyId, ConsensusBlockBody<EthExecutionProtocol>>,
     block_cache_index: BTreeMap<Round, (BlockId, ConsensusBlockBodyId)>,
 
-    wal: File,
-    wal_path: PathBuf,
-
     fetches_tx:
         tokio::sync::mpsc::UnboundedSender<BlockSyncResponseMessage<ST, SCT, EthExecutionProtocol>>,
     fetches: tokio::sync::mpsc::UnboundedReceiver<
@@ -68,70 +63,26 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     pub fn new(ledger_path: PathBuf) -> Self {
-        match fs::create_dir(&ledger_path) {
+        match std::fs::create_dir(&ledger_path) {
             Ok(_) => (),
             Err(e) if e.kind() == ErrorKind::AlreadyExists => (),
             Err(e) => panic!("{}", e),
         }
 
-        let wal_path = {
-            let mut wal_path = ledger_path.clone();
-            wal_path.push("wal");
-            wal_path
-        };
-        let mut wal = File::options()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&wal_path)
-            .expect("failed to open WAL");
-        let wal_len = wal.metadata().expect("failed to get wal metadata").len();
-        const EVENT_LEN: u64 = 33; // FIXME don't hardcode
-        wal.set_len(wal_len / EVENT_LEN * EVENT_LEN)
-            .expect("failed to set wal len");
-        let num_events = wal_len / EVENT_LEN;
-
         let bft_block_persist = FileBlockPersist::new(ledger_path);
-
-        let mut last_commit = None;
-        for event_idx in (0..num_events).rev() {
-            wal.seek(SeekFrom::Start(event_idx * EVENT_LEN))
-                .expect("failed to seek to event in wal");
-            let mut buf = [0_u8; EVENT_LEN as usize];
-            wal.read_exact(&mut buf)
-                .expect("failed to read event from wal");
-            let block_id = BlockId(Hash(buf[1..].try_into().expect("blockid not 32 bytes")));
-
-            if buf[0] == 1
-            // committed, FIXME const
-            {
-                let bft_block = bft_block_persist
-                    .read_bft_header(&block_id)
-                    .expect("failed to find bft block");
-                last_commit = Some((bft_block.seq_num, bft_block.round));
-                break;
-            }
-        }
-
-        wal.seek(SeekFrom::End(0))
-            .expect("failed to seek to end of wal");
 
         let (fetches_tx, fetches) = tokio::sync::mpsc::unbounded_channel();
         Self {
             bft_block_persist,
 
             metrics: Default::default(),
-            last_commit,
+            last_commit: None,
 
             block_cache_size: 1_000, // TODO configurable
 
             block_cache: Default::default(),
             block_payload_cache: Default::default(),
             block_cache_index: Default::default(),
-
-            wal,
-            wal_path,
 
             fetches_tx,
             fetches,
@@ -181,25 +132,7 @@ where
         self.block_cache.insert(block_id, monad_block);
     }
 
-    fn mark_proposed(&mut self, bft_block_id: &[u8; 32]) -> std::io::Result<()> {
-        let mut event: [u8; 33] = [0_u8; 33]; // FIXME
-        event[0] = 0; // FIXME
-        event[1..].copy_from_slice(bft_block_id);
-        self.wal.write_all(&event)?;
-        self.wal.flush()?;
-        Ok(())
-    }
-
-    fn mark_committed(&mut self, bft_block_id: &[u8; 32]) -> std::io::Result<()> {
-        let mut event: [u8; 33] = [0_u8; 33]; // FIXME
-        event[0] = 1; // FIXME
-        event[1..].copy_from_slice(bft_block_id);
-        self.wal.write_all(&event)?;
-        self.wal.flush()?;
-        Ok(())
-    }
-
-    fn write_bft_block(&self, full_block: &ConsensusFullBlock<ST, SCT, EthExecutionProtocol>) {
+    fn write_bft_block(&mut self, full_block: &ConsensusFullBlock<ST, SCT, EthExecutionProtocol>) {
         // unwrap because failure to persist a finalized block is fatal error
 
         // write payload first so that header always points to payload that exists
@@ -269,30 +202,6 @@ where
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
             match command {
-                LedgerCommand::LedgerClearWal => {
-                    if self.wal.metadata().expect("can't read meta").len() > 0 {
-                        let timestamp = std::time::UNIX_EPOCH
-                            .elapsed()
-                            .expect("failed to get duration since epoch");
-                        let _ = std::fs::rename(
-                            &self.wal_path,
-                            format!(
-                                "{}.{}",
-                                self.wal_path
-                                    .to_str()
-                                    .expect("wal_path is not valid unicode"),
-                                timestamp.as_millis()
-                            ),
-                        );
-                    }
-                    self.wal = File::options()
-                        .read(true)
-                        .write(true)
-                        .create(true)
-                        .truncate(true)
-                        .open(&self.wal_path)
-                        .expect("failed to open WAL");
-                }
                 LedgerCommand::LedgerCommit(OptimisticCommit::Proposed(block)) => {
                     let block_id = block.get_id();
                     let block_round = block.get_round();
@@ -312,7 +221,9 @@ where
                         continue;
                     }
 
-                    self.mark_proposed(&block_id.0 .0).unwrap();
+                    self.bft_block_persist
+                        .update_proposed_head(&block_id)
+                        .unwrap();
                 }
                 LedgerCommand::LedgerCommit(OptimisticCommit::Finalized(block)) => {
                     self.metrics[GAUGE_EXECUTION_LEDGER_NUM_COMMITS] += 1;
@@ -337,7 +248,9 @@ where
 
                     self.last_commit = Some((block.get_seq_num(), block.get_round()));
 
-                    self.mark_committed(&block_id.0 .0).unwrap();
+                    self.bft_block_persist
+                        .update_finalized_head(&block_id)
+                        .unwrap();
                 }
                 LedgerCommand::LedgerFetchHeaders(block_range) => {
                     // TODO cap max concurrent LedgerFetch? DOS vector

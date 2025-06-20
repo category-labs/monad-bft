@@ -96,7 +96,6 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    LedgerClearWal,
     LedgerCommit(OptimisticCommit<ST, SCT, EPT>),
     LedgerFetchHeaders(BlockRange),
     LedgerFetchPayload(ConsensusBlockBodyId),
@@ -110,7 +109,6 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LedgerCommand::LedgerClearWal => f.debug_tuple("LedgerClearWal").finish(),
             LedgerCommand::LedgerCommit(x) => f.debug_tuple("LedgerCommit").field(x).finish(),
             LedgerCommand::LedgerFetchHeaders(block_range) => f
                 .debug_tuple("LedgerFetchHeaders")

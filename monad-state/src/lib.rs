@@ -1101,15 +1101,12 @@ where
                     1,
                     "always 1 execution result after first k-1 blocks for now"
                 );
-                return vec![
-                    Command::LedgerCommand(LedgerCommand::LedgerClearWal),
-                    Command::StateSyncCommand(StateSyncCommand::RequestSync(
-                        delayed_execution_result
-                            .first()
-                            .expect("asserted 1 execution result")
-                            .clone(),
-                    )),
-                ];
+                return vec![Command::StateSyncCommand(StateSyncCommand::RequestSync(
+                    delayed_execution_result
+                        .first()
+                        .expect("asserted 1 execution result")
+                        .clone(),
+                ))];
             } else {
                 // if latest_block > state_root_seq_num, we can't RequestSync because we
                 // would be trying to sync backwards.

@@ -61,16 +61,6 @@ async fn main() -> Result<()> {
         ));
     }
 
-    if let Some(path) = args.wal_path {
-        info!("Spawning wal checkpoint worker...");
-        tokio::spawn(file_checkpoint_worker(
-            archive_writer.store.clone(),
-            path,
-            "wal".to_owned(),
-            Duration::from_secs(args.wal_checkpoint_freq_secs),
-        ));
-    }
-
     if let Some(path) = args.forkpoint_path {
         info!("Spawning forkpoint checkpoint worker...");
         tokio::spawn(file_checkpoint_worker(

@@ -156,7 +156,6 @@ where
     fn exec(&mut self, cmds: Vec<Self::Command>) {
         for cmd in cmds {
             match cmd {
-                LedgerCommand::LedgerClearWal => {}
                 LedgerCommand::LedgerCommit(OptimisticCommit::Proposed(block)) => {
                     self.state_backend.lock().unwrap().ledger_propose(
                         block.get_id(),

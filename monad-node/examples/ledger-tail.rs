@@ -8,13 +8,13 @@ use std::{
 use futures_util::{Stream, StreamExt};
 use inotify::{Inotify, WatchMask};
 use lru::LruCache;
-use monad_block_persist::{BlockPersist, FileBlockPersist, BLOCKDB_HEADER_EXTENSION};
+use monad_block_persist::{BlockPersist, FileBlockPersist, BLOCKDB_HEADERS_PATH};
 use monad_consensus_types::{
     block::{ConsensusBlockHeader, ConsensusFullBlock},
     validator_data::ValidatorsConfig,
 };
 use monad_node_config::{
-    ExecutionProtocolType, ForkpointConfig, MonadNodeConfig, SignatureCollectionType, SignatureType,
+    ExecutionProtocolType, MonadNodeConfig, SignatureCollectionType, SignatureType,
 };
 use monad_types::{BlockId, Hash, Round, GENESIS_ROUND};
 use monad_validator::{leader_election::LeaderElection, weighted_round_robin::WeightedRoundRobin};
@@ -53,11 +53,6 @@ async fn main() {
         .iter()
         .map(|peer| (peer.secp256k1_pubkey, peer.address.clone()))
         .collect();
-    let forkpoint_config: ForkpointConfig = toml::from_str(
-        &std::fs::read_to_string("/monad/config/forkpoint/forkpoint.toml")
-            .expect("forkpoint.toml not found"),
-    )
-    .unwrap();
 
     let mut epoch_validators = BTreeMap::default();
 
@@ -69,7 +64,6 @@ async fn main() {
 
     let mut last_round = GENESIS_ROUND;
     let mut block_stream = Box::pin(new_blocks(&ledger_path));
-
     while let Some(mut next_block) = block_stream.next().await {
         let mut block_queue = Vec::new();
         loop {
@@ -119,6 +113,7 @@ async fn main() {
             }
             last_round = block.get_round();
             visited_blocks.put(block.get_id(), block.header().clone());
+
             info!(
                 round =? block.get_round().0,
                 parent_round =? block.get_parent_round().0,
@@ -145,7 +140,14 @@ pub fn new_blocks(
     let inotify = Inotify::init().expect("error initializing inotify");
     inotify
         .watches()
-        .add(ledger_path, WatchMask::CLOSE_WRITE)
+        .add(
+            {
+                let mut headers_path = PathBuf::from(ledger_path);
+                headers_path.push(BLOCKDB_HEADERS_PATH);
+                headers_path
+            },
+            WatchMask::CLOSE_WRITE,
+        )
         .expect("failed to watch bft_block_header_path");
 
     let inotify_buffer = [0; 1024];
@@ -177,9 +179,7 @@ pub fn new_blocks(
                 }
             };
             let event_name = event.name?;
-            let filename = event_name
-                .to_str()?
-                .strip_suffix(BLOCKDB_HEADER_EXTENSION)?;
+            let filename = event_name.to_str()?;
             let block_id = BlockId(Hash(hex::decode(filename).ok()?.try_into().ok()?));
             read_full_block(&block_persist, &block_id)
         })();

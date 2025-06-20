@@ -118,7 +118,6 @@ where
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
             match command {
-                LedgerCommand::LedgerClearWal => {}
                 LedgerCommand::LedgerCommit(OptimisticCommit::Proposed(block)) => {
                     // generate eth block and update the state backend with committed nonces
                     let new_account_nonces = block
