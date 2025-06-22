@@ -342,11 +342,22 @@ where
     /// 1. carries a QC/TC from r-1, proving that the block is proposed on a
     ///    valid round
     fn well_formed_proposal(&self) -> Result<(), Error> {
-        well_formed(
+        let () = well_formed(
             self.obj.block_header.round,
             self.obj.block_header.qc.get_round(),
             &self.obj.last_round_tc,
-        )
+        )?;
+
+        if self
+            .obj
+            .last_round_tc
+            .as_ref()
+            .is_some_and(|tc| self.obj.block_header.qc.get_round() < tc.max_qc_round())
+        {
+            return Err(Error::NotWellFormed);
+        }
+
+        Ok(())
     }
 
     /// Check local epoch manager record for block.round is equal to block.epoch

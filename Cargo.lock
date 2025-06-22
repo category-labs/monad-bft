@@ -4469,7 +4469,6 @@ dependencies = [
  "monad-crypto",
  "monad-multi-sig",
  "monad-secp",
- "monad-state-backend",
  "monad-testutil",
  "monad-types",
  "monad-validator",

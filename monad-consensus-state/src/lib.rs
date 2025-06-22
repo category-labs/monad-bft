@@ -31,9 +31,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_state_backend::StateBackend;
-use monad_types::{
-    BlockId, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum, GENESIS_ROUND,
-};
+use monad_types::{BlockId, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum};
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
@@ -68,7 +66,6 @@ where
     /// Policy for upholding consensus safety when voting or extending branches
     safety: Safety<ST, SCT, EPT>,
     block_sync_requests: BTreeMap<BlockId, BlockSyncRequestStatus>,
-    last_proposed_round: Round,
 }
 
 impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> PartialEq
@@ -261,16 +258,9 @@ where
                 // we set this to high_qc_round here just because our consensus state machine unit
                 // tests don't assume that Round(1) gets timed out
                 high_qc_round, // highest_vote_round
-                high_qc_round, // highest_qc_round
             ),
 
             block_sync_requests: Default::default(),
-
-            // initial value here doesn't matter; it just must increase monotonically
-            // this is because we never propose on restart - we always time out
-            //
-            // on our first proposal, we will set this to the appropriate value
-            last_proposed_round: GENESIS_ROUND,
         }
     }
 
@@ -1007,14 +997,8 @@ where
 
         cmds.extend(self.try_update_coherency(block.get_id()));
 
-        // if the current round is the same as block round, try to vote. else, try to propose
-        if block.get_round() == self.consensus.pacemaker.get_current_round() {
-            // TODO: This block could be received via blocksync. Retrieve the block received
-            // this round and try to vote for that
-            cmds.extend(self.try_vote(&block));
-        } else {
-            cmds.extend(self.try_propose());
-        }
+        cmds.extend(self.try_vote(&block));
+        cmds.extend(self.try_propose());
 
         // statesync if too far from tip
         cmds.extend(self.maybe_statesync());
@@ -1076,7 +1060,12 @@ where
         validated_block: &BPT::ValidatedBlock,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
         let mut cmds = Vec::new();
-        let round = self.consensus.pacemaker.get_current_round();
+        let round = validated_block.get_round();
+
+        // only vote for proposals in the current round
+        if round != self.consensus.pacemaker.get_current_round() {
+            return cmds;
+        }
 
         let Some(parent_timestamp) = self
             .consensus
@@ -1124,45 +1113,48 @@ where
 
         debug!(?round, block_id = ?validated_block.get_id(), "try vote");
 
-        // decide if its safe to cast vote on this proposal
-        let last_tc = self.consensus.pacemaker.last_round_tc().cloned();
-        let vote = self
-            .consensus
-            .safety
-            .make_vote::<BPT, SBT>(validated_block, &last_tc);
+        if !self.consensus.safety.is_safe_to_vote(round) {
+            // we've already voted or timed out this round
+            return cmds;
+        }
+        self.consensus.safety.vote(round);
 
-        debug!(?round, ?vote, "vote result");
+        let v = Vote {
+            id: validated_block.get_id(),
+            round,
+            epoch: validated_block.get_epoch(),
+            parent_id: validated_block.get_parent_id(),
+            parent_round: validated_block.get_parent_round(),
+        };
 
-        if let Some(v) = vote {
-            match self.consensus.scheduled_vote {
-                Some(OutgoingVoteStatus::TimerFired) => {
-                    // timer already fired for this round so send vote immediately
+        match self.consensus.scheduled_vote {
+            Some(OutgoingVoteStatus::TimerFired) => {
+                // timer already fired for this round so send vote immediately
+                let vote_cmd = self.send_vote_and_reset_timer(round, v);
+                cmds.extend(vote_cmd);
+            }
+            Some(OutgoingVoteStatus::VoteReady(r)) if r.round >= v.round => {
+                panic!("trying to schedule another vote in same round. scheduled vote {:?}, new vote {:?}", r, v);
+            }
+            Some(OutgoingVoteStatus::VoteReady(_)) | None => {
+                if matches!(
+                    self.consensus.scheduled_vote,
+                    Some(OutgoingVoteStatus::VoteReady(_))
+                ) {
+                    warn!(
+                        scheduled_vote = ?self.consensus.scheduled_vote,
+                        new_vote = ?v,
+                        "network has different vote/proposal pacing than us"
+                    );
+                }
+
+                // if this is the next round after a timeout, we should vote immediately
+                // otherwise, schedule the vote for later
+                if self.consensus.pacemaker.last_round_tc().is_some() {
                     let vote_cmd = self.send_vote_and_reset_timer(round, v);
                     cmds.extend(vote_cmd);
-                }
-                Some(OutgoingVoteStatus::VoteReady(r)) if r.round >= v.round => {
-                    panic!("trying to schedule another vote in same round. scheduled vote {:?}, new vote {:?}", r, v);
-                }
-                Some(OutgoingVoteStatus::VoteReady(_)) | None => {
-                    if matches!(
-                        self.consensus.scheduled_vote,
-                        Some(OutgoingVoteStatus::VoteReady(_))
-                    ) {
-                        warn!(
-                            scheduled_vote = ?self.consensus.scheduled_vote,
-                            new_vote = ?v,
-                            "network has different vote/proposal pacing than us"
-                        );
-                    }
-
-                    // if this is the next round after a timeout, we should vote immediately
-                    // otherwise, schedule the vote for later
-                    if last_tc.is_some() {
-                        let vote_cmd = self.send_vote_and_reset_timer(round, v);
-                        cmds.extend(vote_cmd);
-                    } else {
-                        self.consensus.scheduled_vote = Some(OutgoingVoteStatus::VoteReady(v));
-                    }
+                } else {
+                    self.consensus.scheduled_vote = Some(OutgoingVoteStatus::VoteReady(v));
                 }
             }
         }
@@ -1189,15 +1181,10 @@ where
         };
 
         let leader = &self.election.get_leader(round, validator_set.get_members());
-        trace!(?round, ?leader, ?self.consensus.last_proposed_round, "try propose");
+        trace!(?round, ?leader, "try propose");
 
         // check that self is leader
         if self.nodeid != leader {
-            return cmds;
-        }
-
-        // make sure we haven't proposed in this round
-        if round <= self.consensus.last_proposed_round {
             return cmds;
         }
 
@@ -1211,21 +1198,12 @@ where
             return cmds;
         }
 
-        let last_round_tc = self.consensus.pacemaker.last_round_tc().cloned();
-
-        // make sure we haven't voted or timed out this round
-        if !self.consensus.safety.safe_to_vote(
-            round,
-            self.consensus.pacemaker.high_qc().get_round(),
-            &last_round_tc,
-        ) {
+        if !self.consensus.safety.is_safe_to_propose(round) {
             return cmds;
         }
+        self.consensus.safety.propose(round);
 
-        // we passed all try_propose guards, so begin proposing
-        // TODO this can be deleted and folded into the safety checks
-        self.consensus.last_proposed_round = round;
-
+        let last_round_tc = self.consensus.pacemaker.last_round_tc().cloned();
         cmds.extend(self.process_new_round_event(last_round_tc));
         cmds
     }

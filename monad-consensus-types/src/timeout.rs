@@ -153,7 +153,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    pub fn max_round(&self) -> Round {
+    pub fn max_qc_round(&self) -> Round {
         self.high_qc_rounds
             .iter()
             .map(|v| v.high_qc_round.qc_round)

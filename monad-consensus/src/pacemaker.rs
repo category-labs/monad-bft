@@ -7,7 +7,7 @@ use monad_consensus_types::{
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
     },
-    timeout::{Timeout, TimeoutCertificate},
+    timeout::{Timeout, TimeoutCertificate, TimeoutInfo},
     voting::ValidatorMapping,
     RoundCertificate,
 };
@@ -18,10 +18,7 @@ use monad_types::{Epoch, ExecutionProtocol, NodeId, Round};
 use monad_validator::{epoch_manager::EpochManager, validator_set::ValidatorSetType};
 use tracing::{debug, info};
 
-use crate::{
-    messages::message::TimeoutMessage,
-    validation::{message::well_formed, safety::Safety},
-};
+use crate::{messages::message::TimeoutMessage, validation::safety::Safety};
 
 /// Pacemaker is responsible for tracking and advancing rounds
 /// Rounds are advanced when QC/TCs are received.
@@ -219,32 +216,22 @@ where
         &self,
         safety: &mut Safety<ST, SCT, EPT>,
     ) -> Vec<PacemakerCommand<ST, SCT, EPT>> {
-        let mut cmds = vec![PacemakerCommand::ScheduleReset];
-        let maybe_broadcast = safety
-            .make_timeout(
-                self.current_epoch,
-                self.get_current_round(),
-                self.high_qc.clone(),
-                &self.last_round_tc().cloned(),
-            )
-            .map(|timeout_info| {
-                well_formed(
-                    timeout_info.round,
-                    timeout_info.high_qc.get_round(),
-                    &self.last_round_tc().cloned(),
-                )
-                .expect("invalid timeout");
-
-                PacemakerCommand::PrepareTimeout(Timeout {
-                    tminfo: timeout_info,
-                    last_round_tc: self.last_round_tc().cloned(),
-                })
-            });
-        cmds.extend(maybe_broadcast);
-        cmds.push(PacemakerCommand::Schedule {
-            duration: self.get_round_timer(self.get_current_round()),
-        });
-        cmds
+        let current_round = self.get_current_round();
+        safety.timeout(current_round);
+        vec![
+            PacemakerCommand::ScheduleReset,
+            PacemakerCommand::PrepareTimeout(Timeout {
+                tminfo: TimeoutInfo {
+                    epoch: self.get_current_epoch(),
+                    round: current_round,
+                    high_qc: self.high_qc.clone(),
+                },
+                last_round_tc: self.last_round_tc().cloned(),
+            }),
+            PacemakerCommand::Schedule {
+                duration: self.get_round_timer(current_round),
+            },
+        ]
     }
 
     /// handle the local timeout event
