@@ -45,7 +45,7 @@ impl PendingTxList {
 
     /// Produces a reference to the tx if it is present in the tx list after attempting to insert
     /// it.
-    pub fn try_insert(
+    pub fn try_insert_tx(
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         tx: ValidEthTransaction,
@@ -58,7 +58,7 @@ impl PendingTxList {
             Entry::Occupied(mut entry) => {
                 let existing_tx = entry.get();
 
-                if &tx < existing_tx {
+                if &tx <= existing_tx {
                     event_tracker.drop(tx.hash(), EthTxPoolDropReason::ExistingHigherPriority);
                     return None;
                 }

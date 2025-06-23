@@ -105,7 +105,7 @@ impl TrackedTxList {
                 let (existing_tx, existing_tx_insert_time) = entry.get();
 
                 if !tx_expired(existing_tx_insert_time, tx_expiry, &event_tracker.now)
-                    && &tx < existing_tx
+                    && &tx <= existing_tx
                 {
                     event_tracker.drop(tx.hash(), EthTxPoolDropReason::ExistingHigherPriority);
                     return None;

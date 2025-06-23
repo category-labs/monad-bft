@@ -409,6 +409,26 @@ fn test_basic_price_priority() {
 
 #[test]
 #[traced_test]
+fn test_resubmit_with_same_price() {
+    let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
+    let tx2 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 1000);
+
+    run_simple([
+        TxPoolTestEvent::InsertTxs {
+            txs: vec![(&tx1, true), (&tx2, false)],
+            expected_pool_size_change: 1,
+        },
+        TxPoolTestEvent::CreateProposal {
+            tx_limit: 2,
+            gas_limit: GAS_LIMIT * 2,
+            expected_txs: vec![&tx1],
+            add_to_blocktree: true,
+        },
+    ]);
+}
+
+#[test]
+#[traced_test]
 fn test_resubmit_with_better_price() {
     let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
     let tx2 = make_legacy_tx(S1, 2 * BASE_FEE, 2 * GAS_LIMIT, 0, 10);
@@ -728,7 +748,7 @@ fn test_nonce_exists_in_pending_block() {
 
     // generate two transactions, both with nonce = 0
     let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
-    let tx2 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 1000);
+    let tx2 = make_legacy_tx(S1, BASE_FEE + 1, GAS_LIMIT, 0, 1000);
 
     let tx3 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
 

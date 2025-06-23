@@ -62,7 +62,7 @@ impl PendingTxMap {
 
         match self.txs.entry(tx.signer()) {
             indexmap::map::Entry::Occupied(tx_list) => {
-                let tx = tx_list.into_mut().try_insert(event_tracker, tx)?;
+                let tx = tx_list.into_mut().try_insert_tx(event_tracker, tx)?;
 
                 self.num_txs += 1;
                 Some(tx)
