@@ -8,6 +8,7 @@ pub mod handlers;
 pub mod hex;
 pub mod jsonrpc;
 pub mod metrics;
+pub mod serialize;
 pub mod timing;
 pub mod trace;
 pub mod txpool;
