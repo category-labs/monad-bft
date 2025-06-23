@@ -1,8 +1,10 @@
 use std::{collections::BTreeMap, error::Error, ops::Bound, path::Path};
 
 use alloy_rlp::{RlpDecodable, RlpEncodable};
-use monad_crypto::certificate_signature::PubKey;
-use monad_types::{Epoch, NodeId, Stake};
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
+};
+use monad_types::{Epoch, ExecutionProtocol, NodeId, Stake};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
@@ -79,10 +81,15 @@ impl<SCT: SignatureCollection> ValidatorsConfig<SCT> {
             .1
     }
 
-    pub fn get_locked_validator_sets(
+    pub fn get_locked_validator_sets<ST, EPT>(
         &self,
-        forkpoint: &Checkpoint<SCT>,
-    ) -> Vec<ValidatorSetDataWithEpoch<SCT>> {
+        forkpoint: &Checkpoint<ST, SCT, EPT>,
+    ) -> Vec<ValidatorSetDataWithEpoch<SCT>>
+    where
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        EPT: ExecutionProtocol,
+    {
         forkpoint
             .validator_sets
             .iter()

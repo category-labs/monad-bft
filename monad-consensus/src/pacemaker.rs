@@ -85,7 +85,7 @@ where
     EPT: ExecutionProtocol,
 {
     /// event emitted whenever round changes. this is used by the router
-    EnterRound((Epoch, Round)),
+    EnterRound(Epoch, Round),
 
     /// create the Timeout which can be signed to create a TimeoutMessage
     /// this should be broadcast to all other nodes
@@ -151,6 +151,10 @@ where
         &self.high_qc
     }
 
+    pub fn high_certificate(&self) -> &RoundCertificate<ST, SCT, EPT> {
+        &self.high_certificate
+    }
+
     fn get_round_timer(&self, round: Round) -> Duration {
         // worse case time is round timer and vote delay start at effectively the same time and so
         // the round needs to accomdate the full vote-delay time and a local processing time
@@ -201,7 +205,7 @@ where
         self.pending_timeouts.clear();
 
         vec![
-            PacemakerCommand::EnterRound((self.current_epoch, self.get_current_round())),
+            PacemakerCommand::EnterRound(self.current_epoch, self.get_current_round()),
             PacemakerCommand::Schedule {
                 duration: self.get_round_timer(self.get_current_round()),
             },
@@ -556,7 +560,7 @@ mod test {
         assert_eq!(
             cmds,
             vec![
-                PacemakerCommand::EnterRound((Epoch(1), Round(2))),
+                PacemakerCommand::EnterRound(Epoch(1), Round(2)),
                 PacemakerCommand::Schedule {
                     duration: Duration::from_secs(3),
                 },
@@ -809,7 +813,7 @@ mod test {
         assert_eq!(
             cmds,
             vec![
-                PacemakerCommand::EnterRound((Epoch(1), Round(2))),
+                PacemakerCommand::EnterRound(Epoch(1), Round(2)),
                 PacemakerCommand::Schedule {
                     duration: Duration::from_secs(3),
                 },

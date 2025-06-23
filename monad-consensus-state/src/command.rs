@@ -11,7 +11,6 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::{BlockPolicy, BlockRange, ConsensusBlockHeader, OptimisticPolicyCommit},
-    checkpoint::Checkpoint,
     payload::RoundSignature,
     quorum_certificate::{QuorumCertificate, TimestampAdjustment},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -85,13 +84,6 @@ where
         root: ConsensusBlockHeader<ST, SCT, EPT>,
         high_qc: QuorumCertificate<SCT>,
     },
-    /// Checkpoints periodically can upload/backup the ledger and garbage collect persisted events
-    /// if necessary
-    CheckpointSave {
-        root_seq_num: SeqNum,
-        high_qc_round: Round,
-        checkpoint: Checkpoint<SCT>,
-    },
     // TODO-2 add command for updating validator_set/round
     // - to handle this command, we need to call message_state.set_round()
     TimestampUpdate(TimestampAdjustment),
@@ -116,7 +108,7 @@ where
         cmd: PacemakerCommand<ST, SCT, EPT>,
     ) -> Self {
         match cmd {
-            PacemakerCommand::EnterRound((epoch, round)) => {
+            PacemakerCommand::EnterRound(epoch, round) => {
                 ConsensusCommand::EnterRound(epoch, round)
             }
             PacemakerCommand::PrepareTimeout(tmo) => ConsensusCommand::Publish {

@@ -495,7 +495,7 @@ where
 /// The signature collections are created over `Hash(tc.round, high_qc.round)`
 ///
 /// See [monad_consensus_types::timeout::TimeoutInfo::timeout_digest]
-fn verify_tc<ST, SCT, EPT, VT>(
+pub fn verify_tc<ST, SCT, EPT, VT>(
     validators: &VT,
     validator_mapping: &ValidatorMapping<SCT::NodeIdPubKey, SignatureCollectionKeyPairType<SCT>>,
     tc: &TimeoutCertificate<ST, SCT, EPT>,

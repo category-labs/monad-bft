@@ -1,7 +1,13 @@
-use monad_types::{BlockId, Epoch, Round, SeqNum};
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
+use monad_types::{BlockId, Epoch, ExecutionProtocol, Round, SeqNum};
 use serde::{Deserialize, Serialize};
 
-use crate::{quorum_certificate::QuorumCertificate, signature_collection::SignatureCollection};
+use crate::{
+    quorum_certificate::QuorumCertificate, signature_collection::SignatureCollection,
+    RoundCertificate,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RootInfo {
@@ -14,13 +20,15 @@ pub struct RootInfo {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Checkpoint<SCT: SignatureCollection> {
+#[serde(bound(serialize = "", deserialize = ""))]
+pub struct Checkpoint<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     pub root: BlockId,
-    // TODO high_round?
-    #[serde(bound(
-        serialize = "SCT: SignatureCollection",
-        deserialize = "SCT: SignatureCollection",
-    ))]
+    pub high_certificate: RoundCertificate<ST, SCT, EPT>,
     pub high_qc: QuorumCertificate<SCT>,
 
     // TODO can we get rid of this by including an epoch_start_block_id in every block?

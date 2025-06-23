@@ -412,6 +412,38 @@ where
             .collect::<Vec<_>>()
     }
 
+    pub(super) fn checkpoint(&mut self) -> Option<CheckpointCommand<ST, SCT, EPT>> {
+        let ConsensusMode::Live(consensus) = self.consensus else {
+            return None;
+        };
+        let consensus = ConsensusStateWrapper {
+            consensus,
+
+            metrics: self.metrics,
+            epoch_manager: self.epoch_manager,
+            block_policy: self.block_policy,
+            state_backend: self.state_backend,
+
+            val_epoch_map: self.val_epoch_map,
+            election: self.leader_election,
+            version: self.version.protocol_version,
+
+            block_timestamp: self.block_timestamp,
+            block_validator: self.block_validator,
+            beneficiary: self.beneficiary,
+            nodeid: self.nodeid,
+            config: self.consensus_config,
+
+            keypair: self.keypair,
+            cert_keypair: self.cert_keypair,
+        };
+        let checkpoint = consensus.checkpoint();
+        Some(CheckpointCommand {
+            root_seq_num: consensus.consensus.blocktree().root().seq_num,
+            checkpoint,
+        })
+    }
+
     fn verify_and_validate_consensus_message(
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
@@ -502,7 +534,7 @@ where
 {
     state_root_delay: SeqNum,
     upcoming_leader_rounds: Vec<Round>,
-    command: ConsensusCommand<ST, SCT, EPT, BPT, SBT>,
+    pub command: ConsensusCommand<ST, SCT, EPT, BPT, SBT>,
 }
 
 impl<ST, SCT, EPT, BPT, SBT> From<WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT>>
@@ -644,15 +676,6 @@ where
                     MonadEvent::StateSyncEvent(StateSyncEvent::RequestSync { root, high_qc }),
                 )));
             }
-            ConsensusCommand::CheckpointSave {
-                root_seq_num,
-                high_qc_round,
-                checkpoint,
-            } => parent_cmds.push(Command::CheckpointCommand(CheckpointCommand {
-                root_seq_num,
-                high_qc_round,
-                checkpoint,
-            })),
             ConsensusCommand::TimestampUpdate(t) => {
                 parent_cmds.push(Command::TimestampCommand(TimestampCommand::AdjustDelta(t)))
             }

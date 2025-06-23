@@ -15,9 +15,11 @@ use monad_chain_config::{
 };
 use monad_consensus::{
     messages::consensus_message::ConsensusMessage,
-    validation::signing::{verify_qc, Unvalidated, Unverified, Validated, Verified},
+    validation::signing::{verify_qc, verify_tc, Unvalidated, Unverified, Validated, Verified},
 };
-use monad_consensus_state::{timestamp::BlockTimestamp, ConsensusConfig, ConsensusState};
+use monad_consensus_state::{
+    command::ConsensusCommand, timestamp::BlockTimestamp, ConsensusConfig, ConsensusState,
+};
 use monad_consensus_types::{
     block::{BlockPolicy, OptimisticCommit},
     block_validator::BlockValidator,
@@ -25,9 +27,11 @@ use monad_consensus_types::{
     metrics::Metrics,
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    timeout::TimeoutCertificate,
     validation,
     validator_data::ValidatorSetDataWithEpoch,
     voting::ValidatorMapping,
+    RoundCertificate,
 };
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -111,29 +115,50 @@ pub enum ForkpointValidationError {
     InvalidValidatorSetStartEpoch,
     /// high_qc cannot be verified
     InvalidQC,
+    InvalidHighCertificate,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Forkpoint<SCT: SignatureCollection>(pub Checkpoint<SCT>);
+pub struct Forkpoint<ST, SCT, EPT>(pub Checkpoint<ST, SCT, EPT>)
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol;
 
-impl<SCT: SignatureCollection> From<Checkpoint<SCT>> for Forkpoint<SCT> {
-    fn from(checkpoint: Checkpoint<SCT>) -> Self {
+impl<ST, SCT, EPT> From<Checkpoint<ST, SCT, EPT>> for Forkpoint<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn from(checkpoint: Checkpoint<ST, SCT, EPT>) -> Self {
         Self(checkpoint)
     }
 }
 
-impl<SCT: SignatureCollection> Deref for Forkpoint<SCT> {
-    type Target = Checkpoint<SCT>;
+impl<ST, SCT, EPT> Deref for Forkpoint<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    type Target = Checkpoint<ST, SCT, EPT>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl<SCT: SignatureCollection> Forkpoint<SCT> {
+impl<ST, SCT, EPT> Forkpoint<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     pub fn genesis() -> Self {
         Checkpoint {
             root: GENESIS_BLOCK_ID,
+            high_certificate: RoundCertificate::Qc(QuorumCertificate::genesis_qc()),
             high_qc: QuorumCertificate::genesis_qc(),
             validator_sets: vec![
                 LockedEpoch {
@@ -201,19 +226,33 @@ impl<SCT: SignatureCollection> Forkpoint<SCT> {
         };
 
         // 6.
-        self.validate_and_verify_qc(validator_set_factory, locked_validator_sets)?;
+        if self.high_certificate.round() < self.high_qc.get_round() {
+            return Err(ForkpointValidationError::InvalidHighCertificate);
+        }
+
+        match &self.high_certificate {
+            RoundCertificate::Qc(qc) => {
+                if &self.high_qc != qc {
+                    return Err(ForkpointValidationError::InvalidHighCertificate);
+                }
+                Self::validate_and_verify_qc(validator_set_factory, locked_validator_sets, qc)?;
+            }
+            RoundCertificate::Tc(tc) => {
+                Self::validate_and_verify_tc(validator_set_factory, locked_validator_sets, tc)?;
+            }
+        };
 
         Ok(())
     }
 
     fn validate_and_verify_qc(
-        &self,
         validator_set_factory: &impl ValidatorSetTypeFactory<NodeIdPubKey = SCT::NodeIdPubKey>,
         locked_validator_sets: &[ValidatorSetDataWithEpoch<SCT>],
+        qc: &QuorumCertificate<SCT>,
     ) -> Result<(), ForkpointValidationError> {
         let qc_validator_set = locked_validator_sets
             .iter()
-            .find(|locked| locked.epoch == self.high_qc.get_epoch())
+            .find(|locked| locked.epoch == qc.get_epoch())
             .map(|locked| &locked.validators)
             .ok_or(ForkpointValidationError::InvalidQC)?;
 
@@ -236,8 +275,45 @@ impl<SCT: SignatureCollection> Forkpoint<SCT> {
             .expect("ValidatorSetTypeFactory failed to init validator set");
 
         // 2.
-        if verify_qc(&qc_vset, &qc_vmap, &self.high_qc).is_err() {
+        if verify_qc(&qc_vset, &qc_vmap, qc).is_err() {
             return Err(ForkpointValidationError::InvalidQC);
+        }
+
+        Ok(())
+    }
+
+    fn validate_and_verify_tc(
+        validator_set_factory: &impl ValidatorSetTypeFactory<NodeIdPubKey = SCT::NodeIdPubKey>,
+        locked_validator_sets: &[ValidatorSetDataWithEpoch<SCT>],
+        tc: &TimeoutCertificate<ST, SCT, EPT>,
+    ) -> Result<(), ForkpointValidationError> {
+        let tc_validator_set = locked_validator_sets
+            .iter()
+            .find(|locked| locked.epoch == tc.epoch)
+            .map(|locked| &locked.validators)
+            .ok_or(ForkpointValidationError::InvalidHighCertificate)?;
+
+        let vset_stake = tc_validator_set
+            .0
+            .iter()
+            .map(|data| (data.node_id, data.stake))
+            .collect::<Vec<_>>();
+
+        let tc_vmap = ValidatorMapping::new(
+            tc_validator_set
+                .0
+                .iter()
+                .map(|data| (data.node_id, data.cert_pubkey))
+                .collect::<Vec<_>>(),
+        );
+
+        let tc_vset = validator_set_factory
+            .create(vset_stake)
+            .expect("ValidatorSetTypeFactory failed to init validator set");
+
+        // 2.
+        if verify_tc(&tc_vset, &tc_vmap, tc).is_err() {
+            return Err(ForkpointValidationError::InvalidHighCertificate);
         }
 
         Ok(())
@@ -260,6 +336,7 @@ where
     SBT: StateBackend,
 {
     Sync {
+        high_certificate: RoundCertificate<ST, SCT, EPT>,
         high_qc: QuorumCertificate<SCT>,
 
         block_buffer: BlockBuffer<ST, SCT, EPT>,
@@ -285,10 +362,12 @@ where
     CRT: ChainRevision,
 {
     fn start_sync(
+        high_certificate: RoundCertificate<ST, SCT, EPT>,
         high_qc: QuorumCertificate<SCT>,
         block_buffer: BlockBuffer<ST, SCT, EPT>,
     ) -> Self {
         Self::Sync {
+            high_certificate,
             high_qc,
             block_buffer,
 
@@ -677,7 +756,7 @@ where
     pub block_validator: BVT,
     pub block_policy: BPT,
     pub state_backend: SBT,
-    pub forkpoint: Forkpoint<SCT>,
+    pub forkpoint: Forkpoint<ST, SCT, EPT>,
     pub locked_epoch_validators: Vec<ValidatorSetDataWithEpoch<SCT>>,
     pub key: ST::KeyPairType,
     pub certkey: SignatureCollectionKeyPairType<SCT>,
@@ -748,6 +827,7 @@ where
 
             consensus_config: self.consensus_config,
             consensus: ConsensusMode::start_sync(
+                self.forkpoint.high_certificate.clone(),
                 self.forkpoint.high_qc.clone(),
                 BlockBuffer::new(
                     self.consensus_config.execution_delay,
@@ -775,6 +855,7 @@ where
 
         let Forkpoint(Checkpoint {
             root,
+            high_certificate: _,
             high_qc,
             validator_sets: _,
         }) = self.forkpoint;
@@ -826,10 +907,23 @@ where
             MonadEvent::ConsensusEvent(consensus_event) => {
                 let consensus_cmds = ConsensusChildState::new(self).update(consensus_event);
 
-                consensus_cmds
+                let take_checkpoint = consensus_cmds
+                    .iter()
+                    .find(|cmd| matches!(cmd.command, ConsensusCommand::EnterRound(_, _)))
+                    .is_some();
+
+                let mut cmds = consensus_cmds
                     .into_iter()
                     .flat_map(Into::<Vec<Command<_, _, _, _, _, _, _>>>::into)
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<_>>();
+
+                if take_checkpoint {
+                    if let Some(checkpoint) = ConsensusChildState::new(self).checkpoint() {
+                        cmds.push(Command::CheckpointCommand(checkpoint));
+                    }
+                }
+
+                cmds
             }
 
             MonadEvent::BlockSyncEvent(block_sync_event) => {
@@ -873,6 +967,7 @@ where
                     high_qc: new_high_qc,
                 } => {
                     let ConsensusMode::Sync {
+                        high_certificate,
                         high_qc,
                         block_buffer,
                         db_status,
@@ -882,6 +977,7 @@ where
                         unreachable!("Live -> RequestSync is an invalid state transition")
                     };
 
+                    *high_certificate = RoundCertificate::Qc(new_high_qc.clone());
                     *high_qc = new_high_qc;
                     block_buffer.re_root(new_root);
                     *db_status = DbSyncStatus::Waiting;
@@ -1046,6 +1142,7 @@ where
         >,
     > {
         let ConsensusMode::Sync {
+            high_certificate,
             high_qc,
             block_buffer,
             db_status,
@@ -1209,6 +1306,7 @@ where
             &self.epoch_manager,
             &self.consensus_config,
             root_info,
+            high_certificate.clone(),
             high_qc.clone(),
         );
         tracing::info!(?root_info, ?high_qc, "done syncing, initializing consensus");
@@ -1259,7 +1357,7 @@ mod test {
     const STATE_ROOT_DELAY: SeqNum = SeqNum(10);
 
     fn get_forkpoint() -> (
-        Forkpoint<SignatureCollectionType>,
+        Forkpoint<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
         Vec<ValidatorSetDataWithEpoch<SignatureCollectionType>>,
     ) {
         let (keys, cert_keys, _valset, valmap) = create_keys_w_validators::<
@@ -1292,8 +1390,9 @@ mod test {
 
         let qc = QuorumCertificate::new(vote, sigcol);
 
-        let forkpoint: Forkpoint<BlsSignatureCollection<monad_secp::PubKey>> = Checkpoint {
+        let forkpoint: Forkpoint<_, _, _> = Checkpoint {
             root: qc.get_block_id(),
+            high_certificate: RoundCertificate::Qc(qc.clone()),
             high_qc: qc,
             validator_sets: vec![
                 LockedEpoch {
@@ -1394,6 +1493,7 @@ mod test {
         let (mut forkpoint, locked_validator_sets) = get_forkpoint();
         // change qc content so signature collection is invalid
         forkpoint.0.high_qc.info.round = forkpoint.0.high_qc.get_round() - Round(1);
+        forkpoint.0.high_certificate = RoundCertificate::Qc(forkpoint.0.high_qc.clone());
 
         assert_eq!(
             forkpoint.validate(&ValidatorSetFactory::default(), &locked_validator_sets),

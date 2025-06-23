@@ -31,7 +31,8 @@ use crate::swarm_relation::SwarmRelation;
 
 pub struct MockExecutor<S: SwarmRelation> {
     ledger: S::Ledger,
-    checkpoint: MockCheckpoint<S::SignatureCollectionType>,
+    checkpoint:
+        MockCheckpoint<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>,
     state_root_hash: S::StateRootHashExecutor,
     loopback: LoopbackExecutor<
         MonadEvent<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>,
@@ -188,7 +189,10 @@ impl<S: SwarmRelation> MockExecutor<S> {
         }
     }
 
-    pub fn checkpoint(&self) -> Option<Checkpoint<S::SignatureCollectionType>> {
+    pub fn checkpoint(
+        &self,
+    ) -> Option<Checkpoint<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>>
+    {
         self.checkpoint
             .checkpoint
             .as_ref()

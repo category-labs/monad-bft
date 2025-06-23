@@ -42,7 +42,7 @@ where
     RE: Executor<Command = RouterCommand<ST, OM>>,
     TE: Executor<Command = TimerCommand<E>>,
     LE: Executor<Command = LedgerCommand<ST, SCT, EPT>>,
-    CE: Executor<Command = CheckpointCommand<SCT>>,
+    CE: Executor<Command = CheckpointCommand<ST, SCT, EPT>>,
     SE: Executor<Command = StateRootHashCommand>,
     TSE: Executor<Command = TimestampCommand>,
 

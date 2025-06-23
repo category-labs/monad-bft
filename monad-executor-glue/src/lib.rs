@@ -123,10 +123,14 @@ where
 }
 
 #[derive(Clone)]
-pub struct CheckpointCommand<SCT: SignatureCollection> {
+pub struct CheckpointCommand<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     pub root_seq_num: SeqNum,
-    pub high_qc_round: Round,
-    pub checkpoint: Checkpoint<SCT>,
+    pub checkpoint: Checkpoint<ST, SCT, EPT>,
 }
 
 pub enum StateRootHashCommand {
@@ -413,7 +417,7 @@ where
     RouterCommand(RouterCommand<ST, OM>),
     TimerCommand(TimerCommand<E>),
     LedgerCommand(LedgerCommand<ST, SCT, EPT>),
-    CheckpointCommand(CheckpointCommand<SCT>),
+    CheckpointCommand(CheckpointCommand<ST, SCT, EPT>),
     StateRootHashCommand(StateRootHashCommand),
     TimestampCommand(TimestampCommand),
 
@@ -438,7 +442,7 @@ where
         Vec<RouterCommand<ST, OM>>,
         Vec<TimerCommand<E>>,
         Vec<LedgerCommand<ST, SCT, EPT>>,
-        Vec<CheckpointCommand<SCT>>,
+        Vec<CheckpointCommand<ST, SCT, EPT>>,
         Vec<StateRootHashCommand>,
         Vec<TimestampCommand>,
         Vec<TxPoolCommand<ST, SCT, EPT, BPT, SBT>>,

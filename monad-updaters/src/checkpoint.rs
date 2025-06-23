@@ -1,15 +1,29 @@
 use std::{marker::PhantomData, path::PathBuf};
 
 use monad_consensus_types::signature_collection::SignatureCollection;
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::CheckpointCommand;
+use monad_types::ExecutionProtocol;
 
-pub struct MockCheckpoint<SCT: SignatureCollection> {
-    pub checkpoint: Option<CheckpointCommand<SCT>>,
+pub struct MockCheckpoint<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    pub checkpoint: Option<CheckpointCommand<ST, SCT, EPT>>,
     metrics: ExecutorMetrics,
 }
 
-impl<SCT: SignatureCollection> Default for MockCheckpoint<SCT> {
+impl<ST, SCT, EPT> Default for MockCheckpoint<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     fn default() -> Self {
         Self {
             checkpoint: None,
@@ -18,8 +32,13 @@ impl<SCT: SignatureCollection> Default for MockCheckpoint<SCT> {
     }
 }
 
-impl<SCT: SignatureCollection> Executor for MockCheckpoint<SCT> {
-    type Command = CheckpointCommand<SCT>;
+impl<ST, SCT, EPT> Executor for MockCheckpoint<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    type Command = CheckpointCommand<ST, SCT, EPT>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
@@ -32,15 +51,17 @@ impl<SCT: SignatureCollection> Executor for MockCheckpoint<SCT> {
     }
 }
 
-pub struct FileCheckpoint<SCT> {
+pub struct FileCheckpoint<ST, SCT, EPT> {
     out_path: PathBuf,
     metrics: ExecutorMetrics,
-    phantom: PhantomData<SCT>,
+    phantom: PhantomData<(ST, SCT, EPT)>,
 }
 
-impl<SCT> FileCheckpoint<SCT>
+impl<ST, SCT, EPT> FileCheckpoint<ST, SCT, EPT>
 where
-    SCT: SignatureCollection + Clone,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     pub fn new(out_path: PathBuf) -> Self {
         Self {
@@ -51,17 +72,18 @@ where
     }
 }
 
-impl<SCT> Executor for FileCheckpoint<SCT>
+impl<ST, SCT, EPT> Executor for FileCheckpoint<ST, SCT, EPT>
 where
-    SCT: SignatureCollection + Clone,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    type Command = CheckpointCommand<SCT>;
+    type Command = CheckpointCommand<ST, SCT, EPT>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
             let CheckpointCommand {
                 root_seq_num,
-                high_qc_round,
                 checkpoint,
             } = command;
             let checkpoint_str =
@@ -80,10 +102,11 @@ where
             };
             std::fs::write(
                 format!(
-                    "{}.{}.{}",
+                    "{}.{}.{}.{}",
                     self.out_path.to_string_lossy(),
                     root_seq_num.0,
-                    high_qc_round.0,
+                    checkpoint.high_qc.get_round().0,
+                    checkpoint.high_certificate.round().0,
                 ),
                 &checkpoint_str,
             )

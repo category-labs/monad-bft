@@ -32,6 +32,7 @@ mod sync_peers;
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
+#[serde(bound = "")]
 pub struct NodeConfig<ST: CertificateSignatureRecoverable> {
     /////////////////////////////////
     // NODE-SPECIFIC CONFIGURATION //
@@ -50,21 +51,15 @@ pub struct NodeConfig<ST: CertificateSignatureRecoverable> {
     pub statesync_threshold: u16,
     pub statesync_max_concurrent_requests: u8,
 
-    #[serde(bound = "ST: CertificateSignatureRecoverable")]
     pub bootstrap: NodeBootstrapConfig<ST>,
-    #[serde(bound = "ST: CertificateSignatureRecoverable")]
     pub fullnode_dedicated: FullNodeConfig<CertificateSignaturePubKey<ST>>,
-    #[serde(bound = "ST: CertificateSignatureRecoverable")]
     pub blocksync_override: BlockSyncPeersConfig<CertificateSignaturePubKey<ST>>,
-    #[serde(bound = "ST: CertificateSignatureRecoverable")]
     pub statesync: StateSyncPeersConfig<CertificateSignaturePubKey<ST>>,
     pub network: NodeNetworkConfig,
 
-    #[serde(bound = "ST: CertificateSignatureRecoverable")]
     pub peer_discovery: PeerDiscoveryConfig<ST>,
 
     pub raptor10_validator_redundancy_factor: u8, // validator -> validator
-    #[serde(bound = "ST: CertificateSignatureRecoverable")]
     pub fullnode_raptorcast: Option<FullNodeRaptorCastConfig<CertificateSignaturePubKey<ST>>>,
 
     // TODO split network-wide configuration into separate file
@@ -81,5 +76,6 @@ pub type SignatureCollectionType =
     BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>;
 pub type ExecutionProtocolType = EthExecutionProtocol;
 #[cfg(feature = "crypto")]
-pub type ForkpointConfig = Checkpoint<SignatureCollectionType>;
+pub type ForkpointConfig =
+    Checkpoint<SignatureType, SignatureCollectionType, ExecutionProtocolType>;
 pub type MonadNodeConfig = NodeConfig<SignatureType>;

@@ -1,20 +1,25 @@
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_types::*;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 
-use crate::{signature_collection::SignatureCollection, voting::*};
+use crate::{
+    signature_collection::{
+        deserialize_signature_collection, serialize_signature_collection, SignatureCollection,
+    },
+    voting::*,
+};
 
 #[non_exhaustive]
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodable, RlpDecodable)]
 #[serde(deny_unknown_fields)]
+#[serde(bound(
+    serialize = "SCT: SignatureCollection",
+    deserialize = "SCT: SignatureCollection",
+))]
 pub struct QuorumCertificate<SCT> {
     pub info: Vote,
     #[serde(serialize_with = "serialize_signature_collection::<_, SCT>")]
     #[serde(deserialize_with = "deserialize_signature_collection::<_, SCT>")]
-    #[serde(bound(
-        serialize = "SCT: SignatureCollection",
-        deserialize = "SCT: SignatureCollection",
-    ))]
     pub signatures: SCT,
 }
 
@@ -48,34 +53,6 @@ impl Ord for Rank {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.0.round.cmp(&other.0.round)
     }
-}
-
-fn serialize_signature_collection<S, SCT>(
-    signature_collection: &SCT,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    SCT: SignatureCollection,
-    S: Serializer,
-{
-    let hex_str = "0x".to_string() + &hex::encode(signature_collection.serialize());
-    serializer.serialize_str(&hex_str)
-}
-
-fn deserialize_signature_collection<'de, D, SCT>(deserializer: D) -> Result<SCT, D::Error>
-where
-    SCT: SignatureCollection,
-    D: Deserializer<'de>,
-{
-    let buf = <std::string::String as Deserialize>::deserialize(deserializer)?;
-
-    let Some(hex_str) = buf.strip_prefix("0x") else {
-        return Err(<D::Error as serde::de::Error>::custom("Missing hex prefix"));
-    };
-
-    let bytes = hex::decode(hex_str).map_err(<D::Error as serde::de::Error>::custom)?;
-
-    SCT::deserialize(bytes.as_ref()).map_err(<D::Error as serde::de::Error>::custom)
 }
 
 impl<SCT: SignatureCollection> QuorumCertificate<SCT> {

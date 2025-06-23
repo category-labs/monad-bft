@@ -78,7 +78,7 @@ pub fn make_monad_executor<ST, SCT>(
     >,
     TokioTimer<MonadEvent<ST, SCT, MockExecutionProtocol>>,
     MockLedger<ST, SCT, MockExecutionProtocol>,
-    MockCheckpoint<SCT>,
+    MockCheckpoint<ST, SCT, MockExecutionProtocol>,
     BoxUpdater<'static, StateRootHashCommand, MonadEvent<ST, SCT, MockExecutionProtocol>>,
     TokioTimestamp<ST, SCT, MockExecutionProtocol>,
     MockTxPoolExecutor<ST, SCT, MockExecutionProtocol, PassthruBlockPolicy, InMemoryState>,

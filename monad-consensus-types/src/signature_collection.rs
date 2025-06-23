@@ -3,6 +3,7 @@ use std::fmt::Debug;
 use alloy_rlp::{Decodable, Encodable};
 use monad_crypto::certificate_signature::{CertificateKeyPair, CertificateSignature, PubKey};
 use monad_types::NodeId;
+use serde::{Deserialize, Deserializer, Serializer};
 
 use crate::voting::ValidatorMapping;
 
@@ -82,4 +83,32 @@ pub trait SignatureCollection:
     fn deserialize(
         data: &[u8],
     ) -> Result<Self, SignatureCollectionError<Self::NodeIdPubKey, Self::SignatureType>>;
+}
+
+pub fn serialize_signature_collection<S, SCT>(
+    signature_collection: &SCT,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    SCT: SignatureCollection,
+    S: Serializer,
+{
+    let hex_str = "0x".to_string() + &hex::encode(signature_collection.serialize());
+    serializer.serialize_str(&hex_str)
+}
+
+pub fn deserialize_signature_collection<'de, D, SCT>(deserializer: D) -> Result<SCT, D::Error>
+where
+    SCT: SignatureCollection,
+    D: Deserializer<'de>,
+{
+    let buf = <std::string::String as Deserialize>::deserialize(deserializer)?;
+
+    let Some(hex_str) = buf.strip_prefix("0x") else {
+        return Err(<D::Error as serde::de::Error>::custom("Missing hex prefix"));
+    };
+
+    let bytes = hex::decode(hex_str).map_err(<D::Error as serde::de::Error>::custom)?;
+
+    SCT::deserialize(bytes.as_ref()).map_err(<D::Error as serde::de::Error>::custom)
 }

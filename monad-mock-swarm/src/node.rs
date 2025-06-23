@@ -337,7 +337,9 @@ impl<S: SwarmRelation> Node<S> {
         ValidatorSetData(validator_set_data)
     }
 
-    pub fn get_forkpoint(&self) -> Forkpoint<S::SignatureCollectionType> {
+    pub fn get_forkpoint(
+        &self,
+    ) -> Forkpoint<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType> {
         self.executor
             .checkpoint()
             .expect("no forkpoint generated")

@@ -5,11 +5,13 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_types::*;
+use serde::{Deserialize, Serialize};
 
-use super::quorum_certificate::QuorumCertificate;
 use crate::{
+    quorum_certificate::QuorumCertificate,
     signature_collection::{
-        SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
+        deserialize_signature_collection, serialize_signature_collection, SignatureCollection,
+        SignatureCollectionError, SignatureCollectionKeyPairType,
     },
     voting::ValidatorMapping,
 };
@@ -63,21 +65,30 @@ where
     }
 }
 
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(
+    Clone, Copy, Debug, Hash, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize,
+)]
 pub struct HighQcRound {
     pub qc_round: Round,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "SCT: SignatureCollection",
+    deserialize = "SCT: SignatureCollection"
+))]
 pub struct HighQcRoundSigColTuple<SCT> {
     pub high_qc_round: HighQcRound,
+    #[serde(serialize_with = "serialize_signature_collection::<_, SCT>")]
+    #[serde(deserialize_with = "deserialize_signature_collection::<_, SCT>")]
     pub sigs: SCT,
 }
 
 /// TimeoutCertificate is used to advance rounds when a QC is unable to
 /// form for a round
 /// A collection of Timeout messages is the basis for building a TC
-#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize)]
+#[serde(bound(serialize = "", deserialize = ""))]
 pub struct TimeoutCertificate<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -95,6 +106,7 @@ where
     pub high_qc_rounds: Vec<HighQcRoundSigColTuple<SCT>>,
 
     // TODO delete in v2
+    #[serde(skip)]
     pub _phantom: PhantomData<(ST, SCT, EPT)>,
 }
 

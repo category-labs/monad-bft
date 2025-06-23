@@ -2,6 +2,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_types::{ExecutionProtocol, Round};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     quorum_certificate::QuorumCertificate, signature_collection::SignatureCollection,
@@ -20,7 +21,8 @@ pub mod validation;
 pub mod validator_data;
 pub mod voting;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(bound(serialize = "", deserialize = ""))]
 pub enum RoundCertificate<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,

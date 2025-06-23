@@ -232,6 +232,7 @@ where
         epoch_manager: &EpochManager,
         config: &ConsensusConfig<CCT, CRT>,
         root: RootInfo,
+        high_certificate: RoundCertificate<ST, SCT, EPT>,
         high_qc: QuorumCertificate<SCT>,
     ) -> Self {
         let pacemaker = Pacemaker::new(
@@ -239,8 +240,7 @@ where
             config.chain_config,
             config.delta, // TODO: change this to different value later
             epoch_manager,
-            // TODO store high_certificate in forkpoint
-            RoundCertificate::Qc(high_qc.clone()),
+            high_certificate,
             high_qc.clone(),
         );
         let high_qc_round = high_qc.get_round();
@@ -868,13 +868,6 @@ where
         // statesync if too far from tip
         cmds.extend(self.maybe_statesync());
 
-        // any time high_qc is updated, we generate a new checkpoint
-        cmds.push(ConsensusCommand::CheckpointSave {
-            root_seq_num: self.consensus.pending_block_tree.root().seq_num,
-            high_qc_round: self.consensus.get_high_qc().get_round(),
-            checkpoint: self.checkpoint(),
-        });
-
         cmds.extend(
             self.consensus
                 .pacemaker
@@ -908,7 +901,7 @@ where
     }
 
     #[must_use]
-    fn checkpoint(&self) -> Checkpoint<SCT> {
+    pub fn checkpoint(&self) -> Checkpoint<ST, SCT, EPT> {
         let val_set_data = |epoch: Epoch| {
             // return early if validator set isn't locked
             let _ = self.val_epoch_map.get_val_set(&epoch)?;
@@ -920,6 +913,7 @@ where
         let base_epoch = self.consensus.pending_block_tree.root().epoch;
         Checkpoint {
             root: self.consensus.pending_block_tree.root().block_id,
+            high_certificate: self.consensus.pacemaker.high_certificate().clone(),
             high_qc: self.consensus.get_high_qc().clone(),
             validator_sets: vec![
                 val_set_data(base_epoch)
@@ -1394,6 +1388,7 @@ mod test {
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         timeout::Timeout,
         voting::{ValidatorMapping, Vote},
+        RoundCertificate,
     };
     use monad_crypto::{
         certificate_signature::{
@@ -1794,6 +1789,7 @@ mod test {
                         block_id: genesis_qc.get_block_id(),
                         timestamp_ns: GENESIS_TIMESTAMP,
                     },
+                    RoundCertificate::Qc(genesis_qc.clone()),
                     genesis_qc,
                 );
 
@@ -2801,14 +2797,13 @@ mod test {
 
         // the proposal still gets processed: the node enters a new round, and
         // issues a request for the block it skipped over
-        assert_eq!(cmds.len(), 4);
-        assert!(matches!(cmds[0], ConsensusCommand::CheckpointSave { .. }));
-        assert!(matches!(cmds[1], ConsensusCommand::EnterRound(_, _)));
+        assert_eq!(cmds.len(), 3);
+        assert!(matches!(cmds[0], ConsensusCommand::EnterRound(_, _)));
         assert!(matches!(
-            cmds[2],
+            cmds[1],
             ConsensusCommand::Schedule { duration: _ }
         ));
-        assert!(matches!(cmds[3], ConsensusCommand::RequestSync { .. }));
+        assert!(matches!(cmds[2], ConsensusCommand::RequestSync { .. }));
     }
 
     /// Test consensus behavior with mismatching eth header
@@ -2880,15 +2875,14 @@ mod test {
         assert_eq!(wrapped_state.metrics.consensus_events.rx_bad_state_root, 1);
 
         assert_eq!(wrapped_state.consensus.get_current_round(), Round(6));
-        assert_eq!(cmds.len(), 4);
+        assert_eq!(cmds.len(), 3);
         assert!(matches!(
             cmds[0],
             ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Finalized(_))
         ));
-        assert!(matches!(cmds[1], ConsensusCommand::CheckpointSave { .. }));
-        assert!(matches!(cmds[2], ConsensusCommand::EnterRound(_, _)));
+        assert!(matches!(cmds[1], ConsensusCommand::EnterRound(_, _)));
         assert!(matches!(
-            cmds[3],
+            cmds[2],
             ConsensusCommand::Schedule { duration: _ }
         ));
     }
