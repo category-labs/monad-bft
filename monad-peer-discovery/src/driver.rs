@@ -10,6 +10,7 @@ use futures::{Stream, StreamExt};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_executor::ExecutorMetrics;
 use monad_types::NodeId;
 use tokio_util::time::{DelayQueue, delay_queue::Key};
 use tracing::error;
@@ -223,6 +224,10 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
         MonadNameRecord<PD::SignatureType>,
     > {
         self.pd.get_name_records()
+    }
+
+    pub fn metrics(&self) -> &ExecutorMetrics {
+        self.pd.metrics()
     }
 }
 

@@ -19,7 +19,13 @@ use monad_peer_disc_swarm::{
 };
 use monad_peer_discovery::{
     MonadNameRecord, NameRecord, PeerDiscoveryAlgo, PeerDiscoveryEvent, PeerDiscoveryMessage,
-    discovery::{PeerDiscovery, PeerDiscoveryBuilder, PeerInfo},
+    discovery::{
+        GAUGE_PEER_DISC_DROP_LOOKUP_RESPONSE, GAUGE_PEER_DISC_DROP_PONG,
+        GAUGE_PEER_DISC_LOOKUP_TIMEOUT, GAUGE_PEER_DISC_PING_TIMEOUT,
+        GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST, GAUGE_PEER_DISC_RECV_PING, GAUGE_PEER_DISC_RECV_PONG,
+        GAUGE_PEER_DISC_REFRESH, GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST, GAUGE_PEER_DISC_SEND_PING,
+        GAUGE_PEER_DISC_SEND_PONG, PeerDiscovery, PeerDiscoveryBuilder, PeerInfo,
+    },
 };
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
 use monad_testutil::signing::create_keys;
@@ -134,10 +140,10 @@ fn test_ping_pong() {
     // other metrics should be 4 due to message delay
     for state in nodes.states().values() {
         let metrics = state.peer_disc_driver.get_peer_disc_state().metrics();
-        assert_eq!(metrics["send_ping"], 5);
-        assert_eq!(metrics["send_pong"], 4);
-        assert_eq!(metrics["recv_ping"], 4);
-        assert_eq!(metrics["recv_pong"], 4);
+        assert_eq!(metrics[GAUGE_PEER_DISC_SEND_PING], 5);
+        assert_eq!(metrics[GAUGE_PEER_DISC_SEND_PONG], 4);
+        assert_eq!(metrics[GAUGE_PEER_DISC_RECV_PING], 4);
+        assert_eq!(metrics[GAUGE_PEER_DISC_RECV_PONG], 4);
     }
 }
 
@@ -430,7 +436,7 @@ fn test_prune_nodes() {
     while nodes.step_until(Duration::from_secs(10)) {}
     for state in nodes.states().values() {
         let metrics = state.peer_disc_driver.get_peer_disc_state().metrics();
-        assert!(metrics["refresh"] == 2);
+        assert!(metrics[GAUGE_PEER_DISC_REFRESH] == 2);
     }
 
     // a node goes offline
@@ -444,7 +450,7 @@ fn test_prune_nodes() {
     for state in nodes.states().values() {
         let state = state.peer_disc_driver.get_peer_disc_state();
         let metrics = state.metrics();
-        assert!(metrics["refresh"] == 3);
+        assert!(metrics[GAUGE_PEER_DISC_REFRESH] == 3);
         assert!(state.peer_info.is_empty());
     }
 }
@@ -565,7 +571,7 @@ fn test_peer_lookup_random_nodes() {
 
     // check that NodeB sends pings to new nodes
     let metrics = node_b_state.metrics();
-    assert_eq!(metrics["send_ping"], 3);
+    assert_eq!(metrics[GAUGE_PEER_DISC_SEND_PING], 3);
 
     // check that NodeC and NodeD now has name record of NodeB
     for (node_id, state) in nodes.states() {
@@ -675,8 +681,8 @@ fn test_peer_lookup_retry() {
         if node == &node_b {
             let state = state.peer_disc_driver.get_peer_disc_state();
             let metrics = state.metrics();
-            assert_eq!(metrics["lookup_timeout"], 8);
-            assert_eq!(metrics["drop_lookup_response"], 8);
+            assert_eq!(metrics[GAUGE_PEER_DISC_LOOKUP_TIMEOUT], 8);
+            assert_eq!(metrics[GAUGE_PEER_DISC_DROP_LOOKUP_RESPONSE], 8);
 
             // Due to lookup timeout, NodeB still does not have name record of NodeC
             assert!(!state.peer_info.contains_key(&node_c));
@@ -750,10 +756,10 @@ fn test_ping_timeout() {
     for state in nodes.states().values() {
         let state = state.peer_disc_driver.get_peer_disc_state();
         let metrics = state.metrics();
-        assert_eq!(metrics["send_ping"], 5);
-        assert_eq!(metrics["ping_timeout"], 4);
-        assert_eq!(metrics["recv_pong"], 4);
-        assert_eq!(metrics["drop_pong"], 4);
+        assert_eq!(metrics[GAUGE_PEER_DISC_SEND_PING], 5);
+        assert_eq!(metrics[GAUGE_PEER_DISC_PING_TIMEOUT], 4);
+        assert_eq!(metrics[GAUGE_PEER_DISC_RECV_PONG], 4);
+        assert_eq!(metrics[GAUGE_PEER_DISC_DROP_PONG], 4);
 
         assert!(state.peer_info.is_empty());
     }
@@ -846,9 +852,9 @@ fn test_min_watermark() {
         }
 
         if node_id == &node_a {
-            assert_eq!(metrics["recv_lookup_request"], 3);
+            assert_eq!(metrics[GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST], 3);
         } else {
-            assert_eq!(metrics["send_lookup_request"], 1);
+            assert_eq!(metrics[GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST], 1);
         }
     }
 }

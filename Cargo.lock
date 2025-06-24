@@ -5202,6 +5202,7 @@ dependencies = [
  "futures",
  "hex",
  "monad-crypto",
+ "monad-executor",
  "monad-executor-glue",
  "monad-keystore",
  "monad-node-config",

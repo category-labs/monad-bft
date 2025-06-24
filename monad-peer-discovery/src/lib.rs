@@ -9,6 +9,7 @@ use message::{PeerLookupRequest, PeerLookupResponse, Ping, Pong};
 use monad_crypto::certificate_signature::{
     CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_executor::ExecutorMetrics;
 use monad_executor_glue::PeerEntry;
 use monad_types::{Epoch, NodeId};
 use tracing::warn;
@@ -19,8 +20,6 @@ pub mod message;
 pub mod mock;
 
 pub use message::PeerDiscoveryMessage;
-
-pub type PeerDiscMetrics = HashMap<&'static str, u64>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NameRecord {
@@ -236,7 +235,7 @@ pub trait PeerDiscoveryAlgo {
         peers: Vec<PeerEntry<Self::SignatureType>>,
     ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
-    fn metrics(&self) -> &PeerDiscMetrics;
+    fn metrics(&self) -> &ExecutorMetrics;
 
     fn get_addr_by_id(
         &self,

@@ -7,6 +7,7 @@ use std::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_executor::ExecutorMetrics;
 use monad_executor_glue::PeerEntry;
 use monad_types::{Epoch, NodeId};
 use rand::{RngCore, SeedableRng, seq::IteratorRandom};
@@ -14,15 +15,31 @@ use rand_chacha::ChaCha8Rng;
 use tracing::{debug, info, trace, warn};
 
 use crate::{
-    MonadNameRecord, NameRecord, PeerDiscMetrics, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder,
-    PeerDiscoveryCommand, PeerDiscoveryEvent, PeerDiscoveryMessage, PeerDiscoveryTimerCommand,
-    PeerLookupRequest, PeerLookupResponse, Ping, Pong, TimerKind,
+    MonadNameRecord, NameRecord, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryCommand,
+    PeerDiscoveryEvent, PeerDiscoveryMessage, PeerDiscoveryTimerCommand, PeerLookupRequest,
+    PeerLookupResponse, Ping, Pong, TimerKind,
 };
 
 /// Maximum number of peers to be included in a PeerLookupResponse
 const MAX_PEER_IN_RESPONSE: usize = 16;
 /// Number of peers to send lookup request to if fall below min active connections
 const NUM_LOOKUP_PEERS: usize = 3;
+
+/// Metrics constant
+pub const GAUGE_PEER_DISC_SEND_PING: &str = "monad.peer_disc.send_ping";
+pub const GAUGE_PEER_DISC_RECV_PING: &str = "monad.peer_disc.recv_ping";
+pub const GAUGE_PEER_DISC_PING_TIMEOUT: &str = "monad.peer_disc.ping_timeout";
+pub const GAUGE_PEER_DISC_SEND_PONG: &str = "monad.peer_disc.send_pong";
+pub const GAUGE_PEER_DISC_RECV_PONG: &str = "monad.peer_disc.recv_pong";
+pub const GAUGE_PEER_DISC_DROP_PONG: &str = "monad.peer_disc.drop_pong";
+pub const GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST: &str = "monad.peer_disc.send_lookup_request";
+pub const GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST: &str = "monad.peer_disc.recv_lookup_request";
+pub const GAUGE_PEER_DISC_RETRY_LOOKUP_REQUEST: &str = "monad.peer_disc.retry_lookup_request";
+pub const GAUGE_PEER_DISC_SEND_LOOKUP_RESPONSE: &str = "monad.peer_disc.send_lookup_response";
+pub const GAUGE_PEER_DISC_RECV_LOOKUP_RESPONSE: &str = "monad.peer_disc.recv_lookup_response";
+pub const GAUGE_PEER_DISC_DROP_LOOKUP_RESPONSE: &str = "monad.peer_disc.drop_lookup_response";
+pub const GAUGE_PEER_DISC_LOOKUP_TIMEOUT: &str = "monad.peer_disc.lookup_timeout";
+pub const GAUGE_PEER_DISC_REFRESH: &str = "monad.peer_disc.refresh";
 
 #[derive(Debug, Clone, Copy)]
 pub struct PeerInfo<ST: CertificateSignatureRecoverable> {
@@ -51,7 +68,7 @@ pub struct PeerDiscovery<ST: CertificateSignatureRecoverable> {
     // mapping of node IDs to their corresponding name records
     pub peer_info: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, PeerInfo<ST>>,
     pub outstanding_lookup_requests: HashMap<u32, LookupInfo<ST>>,
-    pub metrics: PeerDiscMetrics,
+    pub metrics: ExecutorMetrics,
     // duration before sending next ping
     pub ping_period: Duration,
     // duration before checking min/max watermark and decide to look for more peers or prune peers
@@ -262,7 +279,7 @@ where
             message: PeerDiscoveryMessage::Ping(ping_msg),
         });
 
-        *self.metrics.entry("send_ping").or_default() += 1;
+        self.metrics[GAUGE_PEER_DISC_SEND_PING] += 1;
         cmds
     }
 
@@ -272,7 +289,7 @@ where
         ping_msg: Ping<Self::SignatureType>,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!(?from, ?ping_msg, "handling ping request");
-        *self.metrics.entry("recv_ping").or_default() += 1;
+        self.metrics[GAUGE_PEER_DISC_RECV_PING] += 1;
 
         let mut cmds = Vec::new();
 
@@ -324,7 +341,7 @@ where
             message: PeerDiscoveryMessage::Pong(pong_msg),
         });
 
-        *self.metrics.entry("send_pong").or_default() += 1;
+        self.metrics[GAUGE_PEER_DISC_SEND_PONG] += 1;
         cmds
     }
 
@@ -334,7 +351,7 @@ where
         pong_msg: Pong,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!(?from, ?pong_msg, "handling pong response");
-        *self.metrics.entry("recv_pong").or_default() += 1;
+        self.metrics[GAUGE_PEER_DISC_RECV_PONG] += 1;
 
         let cmds = Vec::new();
 
@@ -348,14 +365,14 @@ where
                 info.unresponsive_pings = 0;
             } else {
                 debug!(?from, "dropping pong, ping id not found or does not match");
-                *self.metrics.entry("drop_pong").or_default() += 1;
+                self.metrics[GAUGE_PEER_DISC_DROP_PONG] += 1;
             }
         } else {
             debug!(
                 ?from,
                 "dropping pong, ping sender does not exist in peer info"
             );
-            *self.metrics.entry("drop_pong").or_default() += 1;
+            self.metrics[GAUGE_PEER_DISC_DROP_PONG] += 1;
         }
 
         cmds
@@ -381,7 +398,7 @@ where
         if let Some(last_ping) = peer_entry.last_ping {
             if last_ping.id == ping_id {
                 debug!(?to, ?ping_id, "handling ping timeout");
-                *self.metrics.entry("ping_timeout").or_default() += 1;
+                self.metrics[GAUGE_PEER_DISC_PING_TIMEOUT] += 1;
                 peer_entry.unresponsive_pings += 1;
                 peer_entry.last_ping = None;
             }
@@ -426,7 +443,7 @@ where
             message: PeerDiscoveryMessage::PeerLookupRequest(peer_lookup_request),
         });
 
-        *self.metrics.entry("send_lookup_request").or_default() += 1;
+        self.metrics[GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST] += 1;
         cmds
     }
 
@@ -436,7 +453,7 @@ where
         request: PeerLookupRequest<ST>,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!(?from, ?request, "handling peer lookup request");
-        *self.metrics.entry("recv_lookup_request").or_default() += 1;
+        self.metrics[GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST] += 1;
 
         let mut cmds = Vec::new();
         let target = request.target;
@@ -481,7 +498,7 @@ where
             message: PeerDiscoveryMessage::PeerLookupResponse(peer_lookup_response),
         });
 
-        *self.metrics.entry("send_lookup_response").or_default() += 1;
+        self.metrics[GAUGE_PEER_DISC_SEND_LOOKUP_RESPONSE] += 1;
         cmds
     }
 
@@ -491,7 +508,7 @@ where
         response: PeerLookupResponse<ST>,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!(?from, ?response, "handling peer lookup response");
-        *self.metrics.entry("recv_lookup_response").or_default() += 1;
+        self.metrics[GAUGE_PEER_DISC_RECV_LOOKUP_RESPONSE] += 1;
 
         let mut cmds = Vec::new();
 
@@ -505,7 +522,7 @@ where
                 ?response,
                 "peer lookup response not in outstanding requests, dropping response..."
             );
-            *self.metrics.entry("drop_lookup_response").or_default() += 1;
+            self.metrics[GAUGE_PEER_DISC_DROP_LOOKUP_RESPONSE] += 1;
             return cmds;
         }
 
@@ -514,7 +531,7 @@ where
                 ?response,
                 "response includes number of peers larger than max, dropping response..."
             );
-            *self.metrics.entry("drop_lookup_response").or_default() += 1;
+            self.metrics[GAUGE_PEER_DISC_DROP_LOOKUP_RESPONSE] += 1;
             return cmds;
         }
 
@@ -563,7 +580,7 @@ where
             ?lookup_id,
             "handling peer lookup request timeout"
         );
-        *self.metrics.entry("lookup_timeout").or_default() += 1;
+        self.metrics[GAUGE_PEER_DISC_LOOKUP_TIMEOUT] += 1;
         if lookup_info.num_retries >= self.prune_threshold {
             debug!(
                 ?lookup_id,
@@ -613,7 +630,7 @@ where
             ?new_lookup_id,
             "rescheduling peer lookup request"
         );
-        *self.metrics.entry("retry_lookup_request").or_default() += 1;
+        self.metrics[GAUGE_PEER_DISC_RETRY_LOOKUP_REQUEST] += 1;
 
         cmds
     }
@@ -621,7 +638,7 @@ where
     fn refresh(&mut self) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!("refreshing peer discovery");
 
-        *self.metrics.entry("refresh").or_default() += 1;
+        self.metrics[GAUGE_PEER_DISC_REFRESH] += 1;
         let mut cmds = Vec::new();
 
         // check whether a node id is a validator in the current and next epoch
@@ -746,7 +763,7 @@ where
         cmds
     }
 
-    fn metrics(&self) -> &PeerDiscMetrics {
+    fn metrics(&self) -> &ExecutorMetrics {
         &self.metrics
     }
 
@@ -885,7 +902,7 @@ mod tests {
             dedicated_full_nodes: BTreeSet::new(),
             peer_info,
             outstanding_lookup_requests: HashMap::new(),
-            metrics: HashMap::new(),
+            metrics: ExecutorMetrics::default(),
             ping_period: Duration::from_secs(60),
             refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),
@@ -943,7 +960,7 @@ mod tests {
             dedicated_full_nodes: BTreeSet::new(),
             peer_info,
             outstanding_lookup_requests: HashMap::new(),
-            metrics: HashMap::new(),
+            metrics: ExecutorMetrics::default(),
             ping_period: Duration::from_secs(60),
             refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),
@@ -982,7 +999,7 @@ mod tests {
             dedicated_full_nodes: BTreeSet::new(),
             peer_info: BTreeMap::new(),
             outstanding_lookup_requests: HashMap::new(),
-            metrics: HashMap::new(),
+            metrics: ExecutorMetrics::default(),
             ping_period: Duration::from_secs(60),
             refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),
@@ -1072,7 +1089,7 @@ mod tests {
             dedicated_full_nodes: BTreeSet::new(),
             peer_info,
             outstanding_lookup_requests: HashMap::new(),
-            metrics: HashMap::new(),
+            metrics: ExecutorMetrics::default(),
             ping_period: Duration::from_secs(60),
             refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),
@@ -1137,7 +1154,7 @@ mod tests {
                     open_discovery: false,
                 }),
             ]),
-            metrics: HashMap::new(),
+            metrics: ExecutorMetrics::default(),
             ping_period: Duration::from_secs(60),
             refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),
@@ -1198,7 +1215,7 @@ mod tests {
             dedicated_full_nodes: BTreeSet::new(),
             peer_info: BTreeMap::new(),
             outstanding_lookup_requests: HashMap::new(),
-            metrics: HashMap::new(),
+            metrics: ExecutorMetrics::default(),
             ping_period: Duration::from_secs(60),
             refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),
@@ -1239,7 +1256,7 @@ mod tests {
                 receiver: peer1_pubkey,
                 open_discovery: false,
             })]),
-            metrics: HashMap::new(),
+            metrics: ExecutorMetrics::default(),
             ping_period: Duration::from_secs(60),
             refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),
@@ -1285,7 +1302,7 @@ mod tests {
                 receiver: peer1_pubkey,
                 open_discovery: false,
             })]),
-            metrics: HashMap::new(),
+            metrics: ExecutorMetrics::default(),
             ping_period: Duration::from_secs(60),
             refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),
@@ -1323,7 +1340,7 @@ mod tests {
             dedicated_full_nodes: BTreeSet::new(),
             peer_info,
             outstanding_lookup_requests: HashMap::new(),
-            metrics: HashMap::new(),
+            metrics: ExecutorMetrics::default(),
             ping_period: Duration::from_secs(60),
             refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),
@@ -1387,7 +1404,7 @@ mod tests {
             dedicated_full_nodes,
             peer_info,
             outstanding_lookup_requests: HashMap::new(),
-            metrics: HashMap::new(),
+            metrics: ExecutorMetrics::default(),
             ping_period: Duration::from_secs(60),
             refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),
@@ -1424,7 +1441,7 @@ mod tests {
                 name_record: generate_name_record(node1_key, 1),
             })]),
             outstanding_lookup_requests: HashMap::new(),
-            metrics: HashMap::new(),
+            metrics: ExecutorMetrics::default(),
             ping_period: Duration::from_secs(60),
             refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),
@@ -1514,7 +1531,7 @@ mod tests {
             dedicated_full_nodes: BTreeSet::new(),
             peer_info,
             outstanding_lookup_requests: HashMap::new(),
-            metrics: HashMap::new(),
+            metrics: ExecutorMetrics::default(),
             ping_period: Duration::from_secs(60),
             refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),

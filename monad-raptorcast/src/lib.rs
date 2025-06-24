@@ -383,7 +383,9 @@ where
     }
 
     fn metrics(&self) -> ExecutorMetricsChain {
-        self.metrics.as_ref().into()
+        ExecutorMetricsChain::default()
+            .push(self.metrics.as_ref())
+            .push(self.peer_discovery_driver.metrics())
     }
 }
 

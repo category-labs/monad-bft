@@ -7,18 +7,19 @@ use std::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_executor::ExecutorMetrics;
 use monad_executor_glue::PeerEntry;
 use monad_types::{Epoch, NodeId};
 use tracing::debug;
 
 use crate::{
-    MonadNameRecord, PeerDiscMetrics, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder,
-    PeerDiscoveryCommand, PeerLookupRequest, PeerLookupResponse, Ping, Pong,
+    MonadNameRecord, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryCommand,
+    PeerLookupRequest, PeerLookupResponse, Ping, Pong,
 };
 
 pub struct NopDiscovery<ST: CertificateSignatureRecoverable> {
     known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4>,
-    metrics: PeerDiscMetrics,
+    metrics: ExecutorMetrics,
     pd: PhantomData<ST>,
 }
 
@@ -49,7 +50,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for NopDiscov
     ) {
         let state = NopDiscovery {
             known_addresses: self.known_addresses,
-            metrics: HashMap::new(),
+            metrics: ExecutorMetrics::default(),
             pd: PhantomData,
         };
         let cmds = Vec::new();
@@ -178,7 +179,7 @@ where
         Vec::new()
     }
 
-    fn metrics(&self) -> &PeerDiscMetrics {
+    fn metrics(&self) -> &ExecutorMetrics {
         &self.metrics
     }
 
