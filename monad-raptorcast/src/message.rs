@@ -61,14 +61,14 @@ pub enum OutboundRouterMessage<OM, ST: CertificateSignatureRecoverable> {
     FullNodesGroup(FullNodesGroupMessage<ST>),
 }
 
-#[derive(Debug)]
-pub struct SerializeError(pub String);
-
 impl<OM: Encodable, ST: CertificateSignatureRecoverable> OutboundRouterMessage<OM, ST> {
-    pub fn try_serialize(self) -> Result<Bytes, SerializeError> {
-        let mut buf = BytesMut::new();
-
+    pub fn serialize(self) -> Bytes {
         let version = NetworkMessageVersion::version();
+        self.serialize_with_version(version)
+    }
+
+    fn serialize_with_version(&self, version: NetworkMessageVersion) -> Bytes {
+        let mut buf = BytesMut::new();
         match self {
             Self::AppMessage(app_message) => {
                 match version.compression_version {
@@ -78,28 +78,38 @@ impl<OM: Encodable, ST: CertificateSignatureRecoverable> OutboundRouterMessage<O
                         encode_list::<_, dyn Encodable>(&enc, &mut buf);
                     }
                     CompressionVersion::DefaultZSTDVersion => {
-                        // compress message
                         let mut rlp_encoded_msg = BytesMut::new();
                         app_message.encode(&mut rlp_encoded_msg);
-                        // u32::MAX is 4GB
                         let message_len = rlp_encoded_msg.len() as u32;
 
                         let mut compressed_writer = BoundedWriter::new(message_len);
-                        ZstdCompression::default()
+                        match ZstdCompression::default()
                             .compress(&rlp_encoded_msg, &mut compressed_writer)
-                            .map_err(|err| {
-                                SerializeError(format!("compression error: {:?}", err))
-                            })?;
-                        let compressed_app_message: Bytes = compressed_writer.into();
-
-                        // encode as compressed message
-                        let enc: [&dyn Encodable; 4] = [
-                            &version,
-                            &MESSAGE_TYPE_APP,
-                            &message_len,
-                            &compressed_app_message,
-                        ];
-                        encode_list::<_, dyn Encodable>(&enc, &mut buf);
+                        {
+                            Ok(_) => {
+                                let compressed_app_message: Bytes = compressed_writer.into();
+                                let enc: [&dyn Encodable; 4] = [
+                                    &version,
+                                    &MESSAGE_TYPE_APP,
+                                    &message_len,
+                                    &compressed_app_message,
+                                ];
+                                encode_list::<_, dyn Encodable>(&enc, &mut buf);
+                            }
+                            Err(err) => {
+                                tracing::warn!(
+                                    ?err,
+                                    "compression failed, falling back to uncompressed"
+                                );
+                                let uncompressed_version = NetworkMessageVersion {
+                                    serialize_version: version.serialize_version,
+                                    compression_version: CompressionVersion::UncompressedVersion,
+                                };
+                                let enc: [&dyn Encodable; 3] =
+                                    [&uncompressed_version, &MESSAGE_TYPE_APP, &app_message];
+                                encode_list::<_, dyn Encodable>(&enc, &mut buf);
+                            }
+                        }
                     }
                 }
             }
@@ -116,7 +126,7 @@ impl<OM: Encodable, ST: CertificateSignatureRecoverable> OutboundRouterMessage<O
             }
         };
 
-        Ok(buf.into())
+        buf.into()
     }
 }
 
@@ -216,11 +226,16 @@ mod tests {
         value: u64,
     }
 
+    #[derive(RlpEncodable, RlpDecodable, Clone)]
+    struct SliceMessage {
+        data: Vec<u8>,
+    }
+
     fn prepare_data_with_extra_after_header() -> Bytes {
         let msg = TestMessage { value: 42 };
         let outbound_msg = OutboundRouterMessage::<TestMessage, SecpSignature>::AppMessage(msg);
 
-        let data = outbound_msg.try_serialize().unwrap();
+        let data = outbound_msg.serialize();
         let data_bytes = data.to_vec();
         let mut buf = BytesMut::from(data_bytes.as_slice());
         buf.extend_from_slice(b"extra_data");
@@ -252,7 +267,7 @@ mod tests {
     fn prepare_valid_data() -> Bytes {
         let msg = TestMessage { value: 42 };
         let outbound_msg = OutboundRouterMessage::<TestMessage, SecpSignature>::AppMessage(msg);
-        outbound_msg.try_serialize().unwrap()
+        outbound_msg.serialize()
     }
 
     enum Expected {
@@ -289,6 +304,28 @@ mod tests {
             (Ok(_), Expected::Error(expected_msg)) => {
                 panic!("expected error containing '{}'", expected_msg)
             }
+        }
+    }
+
+    #[test]
+    fn test_serialized_compressed_with_random_bytes() {
+        let random_bytes = SliceMessage {
+            data: vec![0x42, 0x73, 0x19, 0xAB, 0xCD, 0xEF],
+        };
+        let msg = OutboundRouterMessage::<_, SecpSignature>::AppMessage(random_bytes.clone());
+        let mut compressed_version = NetworkMessageVersion::version();
+        compressed_version.compression_version = CompressionVersion::DefaultZSTDVersion;
+
+        let serialized = msg.serialize_with_version(compressed_version);
+        let deserialized =
+            InboundRouterMessage::<SliceMessage, SecpSignature>::try_deserialize(&serialized);
+        assert!(deserialized.is_ok());
+
+        match deserialized.unwrap() {
+            InboundRouterMessage::AppMessage(msg) => {
+                assert_eq!(msg.data, random_bytes.data);
+            }
+            _ => panic!("expected AppMessage"),
         }
     }
 }

@@ -177,16 +177,7 @@ where
     ) {
         let router_msg: OutboundRouterMessage<OM, ST> =
             OutboundRouterMessage::FullNodesGroup(group_msg);
-        let msg_bytes = match router_msg.try_serialize() {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                tracing::error!(
-                    "RaptorCastSecondary failed to serialize during send_single_msg: {:?}",
-                    e
-                );
-                return;
-            }
-        };
+        let msg_bytes = router_msg.serialize();
         let udp_messages = Self::udp_build(
             &self.curr_epoch,
             BuildTarget::<ST>::PointToPoint(dest_node),

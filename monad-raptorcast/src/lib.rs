@@ -602,27 +602,21 @@ where
         {
             match peer_disc_emit {
                 PeerDiscoveryEmit::RouterCommand { target, message } => {
-                    match OutboundRouterMessage::try_serialize(
-                        OutboundRouterMessage::<OM, ST>::PeerDiscoveryMessage(message),
-                    ) {
-                        Ok(router_message) => {
-                            let current_epoch = this.current_epoch;
-                            let unicast_msg = udp_build(
-                                &current_epoch,
-                                BuildTarget::<ST>::PointToPoint(&target),
-                                router_message,
-                                this.mtu,
-                                &this.key,
-                                this.redundancy,
-                                &this.peer_discovery_driver.get_known_addresses(),
-                            );
-                            this.dataplane.udp_write_unicast(unicast_msg);
-                        }
-                        Err(e) => {
-                            warn!("unable to serialize peer discovery message {:?}", e);
-                            continue;
-                        }
-                    }
+                    let router_message =
+                        OutboundRouterMessage::serialize(
+                            OutboundRouterMessage::<OM, ST>::PeerDiscoveryMessage(message),
+                        );
+                    let current_epoch = this.current_epoch;
+                    let unicast_msg = udp_build(
+                        &current_epoch,
+                        BuildTarget::<ST>::PointToPoint(&target),
+                        router_message,
+                        this.mtu,
+                        &this.key,
+                        this.redundancy,
+                        &this.peer_discovery_driver.get_known_addresses(),
+                    );
+                    this.dataplane.udp_write_unicast(unicast_msg);
                 }
             }
         }
