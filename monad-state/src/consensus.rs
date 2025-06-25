@@ -155,14 +155,10 @@ where
                                     consensus_tip =? new_root.seq_num,
                                     "setting new statesync target",
                                 );
-                                cmds.push(WrappedConsensusCommand {
-                                    state_root_delay: self.consensus_config.execution_delay,
-                                    upcoming_leader_rounds: self.get_upcoming_leader_rounds(),
-                                    command: ConsensusCommand::RequestStateSync {
-                                        root: new_root,
-                                        high_qc: new_high_qc,
-                                    },
-                                });
+                                cmds.push(self.wrap(ConsensusCommand::RequestStateSync {
+                                    root: new_root,
+                                    high_qc: new_high_qc,
+                                }));
                             }
                         }
                     }
@@ -243,11 +239,7 @@ where
         };
         consensus_cmds
             .into_iter()
-            .map(|cmd| WrappedConsensusCommand {
-                state_root_delay: self.consensus_config.execution_delay,
-                upcoming_leader_rounds: self.get_upcoming_leader_rounds(),
-                command: cmd,
-            })
+            .map(|cmd| self.wrap(cmd))
             .collect::<Vec<_>>()
     }
 
@@ -404,11 +396,7 @@ where
 
         consensus_cmds
             .into_iter()
-            .map(|cmd| WrappedConsensusCommand {
-                state_root_delay: self.consensus_config.execution_delay,
-                upcoming_leader_rounds: self.get_upcoming_leader_rounds(),
-                command: cmd,
-            })
+            .map(|cmd| self.wrap(cmd))
             .collect::<Vec<_>>()
     }
 
@@ -486,9 +474,9 @@ where
         const SKIP_SELF: bool,
         const NUM: usize,
     >(
-        &mut self,
+        &self,
     ) -> Vec<(NodeId<CertificateSignaturePubKey<ST>>, Round)> {
-        let ConsensusMode::Live(mode) = self.consensus else {
+        let ConsensusMode::Live(mode) = &self.consensus else {
             return Vec::default();
         };
 
@@ -516,11 +504,22 @@ where
             .collect()
     }
 
-    fn get_upcoming_leader_rounds(&mut self) -> Vec<Round> {
+    fn get_upcoming_leader_rounds(&self) -> Vec<Round> {
         self.compute_upcoming_leader_round_pairs::<true, false, NUM_LEADERS_UPCOMING>()
             .into_iter()
             .map(|(_, round)| round)
             .collect()
+    }
+
+    pub(super) fn wrap(
+        &self,
+        command: ConsensusCommand<ST, SCT, EPT, BPT, SBT>,
+    ) -> WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT> {
+        WrappedConsensusCommand {
+            state_root_delay: self.consensus_config.execution_delay,
+            upcoming_leader_rounds: self.get_upcoming_leader_rounds(),
+            command,
+        }
     }
 }
 

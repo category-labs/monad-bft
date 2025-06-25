@@ -279,6 +279,35 @@ where
     pub fn get_current_round(&self) -> Round {
         self.pacemaker.get_current_round()
     }
+
+    #[must_use]
+    pub fn request_blocks_if_missing_ancestor(
+        &mut self,
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+        let high_qc = self.get_high_qc();
+        let Some(range) = self.pending_block_tree.maybe_fill_path_to_root(high_qc) else {
+            return Vec::new();
+        };
+        assert_ne!(range.num_blocks, SeqNum(0));
+
+        if self.block_sync_requests.contains_key(&range.last_block_id) {
+            return Vec::new();
+        }
+
+        debug!(?range, "consensus blocksyncing blocks up to root");
+
+        self.block_sync_requests.insert(
+            range.last_block_id,
+            BlockSyncRequestStatus {
+                range,
+                // the round of last_block_id would be more precise, but it doesn't matter
+                // because this is just used for garbage collection.
+                cancel_round: high_qc.get_round(),
+            },
+        );
+
+        vec![ConsensusCommand::RequestSync(range)]
+    }
 }
 
 impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
@@ -889,7 +918,7 @@ where
 
         // retrieve missing blocks if processed QC is highest and points at an
         // unknown block
-        cmds.extend(self.request_blocks_if_missing_ancestor());
+        cmds.extend(self.consensus.request_blocks_if_missing_ancestor());
 
         // update vote_state round
         // it's ok if not leader for round; we will never propose
@@ -997,7 +1026,7 @@ where
         // statesync if too far from tip
         cmds.extend(self.maybe_statesync());
 
-        cmds.extend(self.request_blocks_if_missing_ancestor());
+        cmds.extend(self.consensus.request_blocks_if_missing_ancestor());
 
         cmds
     }
@@ -1304,53 +1333,6 @@ where
             extending_blocks: pending_blocktree_blocks.into_iter().cloned().collect(),
             delayed_execution_results,
         }]
-    }
-
-    #[must_use]
-    fn request_blocks_if_missing_ancestor(
-        &mut self,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
-        let high_qc = self.consensus.get_high_qc();
-        let root_seq_num = self.consensus.pending_block_tree.get_root_seq_num();
-
-        let Some(range) = self
-            .consensus
-            .pending_block_tree
-            .maybe_fill_path_to_root(high_qc)
-        else {
-            return Vec::new();
-        };
-        assert_ne!(range.num_blocks, SeqNum(0));
-
-        if self
-            .consensus
-            .block_sync_requests
-            .contains_key(&range.last_block_id)
-        {
-            return Vec::new();
-        }
-
-        if root_seq_num + self.config.live_to_statesync_threshold <= range.num_blocks {
-            // crash the client to move into statesync mode and recover
-            panic!(
-                "blocksync request range is outside statesync threshold, range: {:?}",
-                range
-            );
-        }
-
-        debug!(?range, "consensus blocksyncing blocks up to root");
-
-        self.consensus.block_sync_requests.insert(
-            range.last_block_id,
-            BlockSyncRequestStatus {
-                range,
-                // the round of last_block_id would be more precise, but it doesn't matter
-                // because this is just used for garbage collection.
-                cancel_round: high_qc.get_round(),
-            },
-        );
-
-        vec![ConsensusCommand::RequestSync(range)]
     }
 }
 

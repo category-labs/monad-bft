@@ -1280,9 +1280,27 @@ where
                 consensus
                     .handle_validated_proposal(sender, proposal)
                     .into_iter()
-                    .flat_map(Into::<Vec<Command<_, _, _, _, _, _, _>>>::into),
+                    .flat_map(Into::<Vec<_>>::into),
             );
         }
+        {
+            // this is to make sure that we initiate blocksyncing from high_qc
+            // this only does anything if no cached proposals (with newer QCs) are processed above
+            // this likely would only happen if the chain was halted
+            let blocksync_cmds = {
+                let ConsensusMode::Live(consensus) = &mut self.consensus else {
+                    unreachable!()
+                };
+                consensus.request_blocks_if_missing_ancestor()
+            };
+            let mut consensus = ConsensusChildState::new(self);
+            commands.extend(
+                blocksync_cmds
+                    .into_iter()
+                    .map(|cmd| consensus.wrap(cmd))
+                    .flat_map(Into::<Vec<_>>::into),
+            );
+        };
         commands
     }
 }
