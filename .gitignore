@@ -15,6 +15,6 @@ test-keys
 .cargo/config.toml
 /*.log
 .gdbinit
+.devcontainer
 /venv
 /logs
-.devcontainer

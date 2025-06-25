@@ -21,9 +21,9 @@ use tokio::{
 };
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 use tracing::{debug, error, warn};
-use tracing_subscriber::{reload::Handle, EnvFilter, Registry};
+use tracing_subscriber::EnvFilter;
 
-pub type ReloadHandle = Handle<EnvFilter, Registry>;
+use crate::TracingReload;
 
 pub struct ControlPanelIpcReceiver<ST, SCT, EPT>
 where
@@ -36,7 +36,7 @@ where
 
     metrics: ExecutorMetrics,
 
-    reload_handle: ReloadHandle,
+    reload_handle: Box<dyn TracingReload>,
 }
 
 impl<ST, SCT, EPT> Stream for ControlPanelIpcReceiver<ST, SCT, EPT>
@@ -60,7 +60,7 @@ where
 {
     pub fn new(
         bind_path: PathBuf,
-        reload_handle: ReloadHandle,
+        reload_handle: Box<dyn TracingReload>,
         buf_size: usize,
     ) -> Result<Self, std::io::Error> {
         let (sender, receiver) = mpsc::channel(buf_size);

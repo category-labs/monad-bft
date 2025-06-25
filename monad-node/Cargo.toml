@@ -40,6 +40,7 @@ monad-updaters = { workspace = true, features = ["monad-triedb", "tokio"] }
 monad-validator = { workspace = true }
 monad-wal = { workspace = true }
 
+agent = { workspace = true }
 alloy-rlp = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
@@ -55,6 +56,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 toml = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
+tracing-manytrace = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 [target.'cfg(not(target_env = "msvc"))'.dependencies.tikv-jemallocator]
 workspace = true

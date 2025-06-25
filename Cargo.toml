@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["monad-*"]
-exclude = ["monad-cxx", "monad-scripts"]
+exclude = ["monad-cxx", "monad-scripts", "manytrace"]
 
 [profile.dev]
 opt-level = 1
@@ -90,6 +90,7 @@ actix-rt = "2.9.0"
 actix-web = "4.5.1"
 actix-ws = "0.3.0"
 aes = "0.8.3"
+agent = { path = "./manytrace/agent" }
 alloy-consensus = "0.8"
 alloy-eips = "0.8"
 alloy-json-rpc = "0.8"
@@ -200,6 +201,7 @@ tokio-util = "0.7"
 toml = "0.7"
 tracing = "0.1"
 tracing-actix-web = "0.7"
+tracing-manytrace = { path = "./manytrace/tracing-manytrace" }
 tracing-appender = "0.2"
 tracing-opentelemetry = "0.30"
 tracing-subscriber = "0.3"

@@ -77,4 +77,7 @@ pub struct Cli {
         default_value = ""
     )]
     pub pprof: String,
+
+    #[arg(long)]
+    pub manytrace_socket: Option<String>,
 }

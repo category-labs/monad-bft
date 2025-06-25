@@ -170,4 +170,7 @@ pub struct Cli {
     /// Sets the socket path for the monad execution event server
     #[arg(long)]
     pub exec_event_path: Option<PathBuf>,
+
+    #[arg(long)]
+    pub manytrace_socket: Option<String>,
 }

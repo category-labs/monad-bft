@@ -35,7 +35,7 @@ use monad_updaters::{
     tokio_timestamp::TokioTimestamp, txpool::MockTxPoolExecutor, BoxUpdater, Updater,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Layer};
 
 pub enum RouterConfig<ST, SCT, EPT>
 where
@@ -105,7 +105,13 @@ where
     <ST as CertificateSignature>::KeyPairType: Unpin,
     <SCT as SignatureCollection>::SignatureType: Unpin,
 {
-    let (_, reload_handle) = tracing_subscriber::reload::Layer::new(EnvFilter::from_default_env());
+    let (filter, reload_handle) =
+        tracing_subscriber::reload::Layer::new(EnvFilter::from_default_env());
+
+    let subscriber = tracing_subscriber::Registry::default()
+        .with(tracing_subscriber::fmt::Layer::default().with_filter(filter));
+
+    let _ = tracing::subscriber::set_global_default(subscriber);
 
     let dataplane_builder =
         DataplaneBuilder::new(&config.local_addr, 1_000).with_udp_buffer_size(62_500_000);
@@ -153,7 +159,7 @@ where
         txpool: MockTxPoolExecutor::default(),
         control_panel: ControlPanelIpcReceiver::new(
             format!("./monad_controlpanel_{}.sock", index).into(),
-            reload_handle,
+            Box::new(reload_handle),
             1000,
         )
         .expect("uds bind failed"),

@@ -35,6 +35,7 @@ pub struct NodeState {
 
     pub otel_endpoint_interval: Option<(String, Duration)>,
     pub pprof: String,
+    pub manytrace_socket: Option<String>,
 }
 
 impl NodeState {
@@ -57,6 +58,7 @@ impl NodeState {
             otel_endpoint,
             record_metrics_interval_seconds,
             pprof,
+            manytrace_socket,
         } = Cli::from_arg_matches_mut(&mut cmd.get_matches_mut())?;
 
         let keystore_password = keystore_password.as_deref().unwrap_or("");
@@ -142,6 +144,7 @@ impl NodeState {
 
             otel_endpoint_interval,
             pprof,
+            manytrace_socket,
         })
     }
 }

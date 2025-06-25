@@ -7,6 +7,7 @@ use std::{
     time::Duration,
 };
 
+use agent::AgentBuilder;
 use alloy_rlp::{Decodable, Encodable};
 use chrono::Utc;
 use clap::CommandFactory;
@@ -18,7 +19,7 @@ use monad_consensus_types::{
     signature_collection::SignatureCollection,
     validator_data::{ValidatorSetDataWithEpoch, ValidatorsConfig},
 };
-use monad_control_panel::ipc::ControlPanelIpcReceiver;
+use monad_control_panel::{ipc::ControlPanelIpcReceiver, TracingReload};
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
@@ -64,9 +65,11 @@ use opentelemetry_otlp::{MetricExporter, WithExportConfig};
 use rand_chacha::{rand_core::SeedableRng, ChaCha8Rng};
 use tokio::signal::unix::{signal, SignalKind};
 use tracing::{debug, error, event, info, warn, Instrument, Level};
+use tracing_manytrace::{ManytraceLayer, TracingExtension};
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
     layer::SubscriberExt,
+    Layer,
 };
 
 use self::{cli::Cli, error::NodeSetupError, state::NodeState};
@@ -83,9 +86,6 @@ static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 #[allow(non_upper_case_globals)]
 #[export_name = "malloc_conf"]
 pub static malloc_conf: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0";
-
-type ReloadHandle =
-    tracing_subscriber::reload::Handle<tracing_subscriber::EnvFilter, tracing_subscriber::Registry>;
 
 const CLIENT_VERSION: &str = env!("VERGEN_GIT_DESCRIBE");
 const STATESYNC_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -108,8 +108,8 @@ fn main() {
         .map_err(Into::into)
         .unwrap_or_else(|e: NodeSetupError| cmd.error(e.kind(), e).exit());
 
-    let reload_handle =
-        setup_tracing().unwrap_or_else(|e: NodeSetupError| cmd.error(e.kind(), e).exit());
+    let (reload_handle, _agent) = setup_tracing(&node_state)
+        .unwrap_or_else(|e: NodeSetupError| cmd.error(e.kind(), e).exit());
 
     drop(cmd);
 
@@ -136,26 +136,58 @@ fn main() {
     }
 }
 
-fn setup_tracing() -> Result<ReloadHandle, NodeSetupError> {
-    let (filter, reload_handle) =
-        tracing_subscriber::reload::Layer::new(tracing_subscriber::EnvFilter::from_default_env());
+fn setup_tracing(
+    node_state: &NodeState,
+) -> Result<(Box<dyn TracingReload>, Option<agent::Agent>), NodeSetupError> {
+    if let Some(socket_path) = &node_state.manytrace_socket {
+        let extension = std::sync::Arc::new(TracingExtension::new());
+        let agent = AgentBuilder::new(socket_path.clone())
+            .register_tracing(Box::new((*extension).clone()))
+            .build()
+            .map_err(|e| NodeSetupError::Custom {
+                kind: clap::error::ErrorKind::Io,
+                msg: format!("failed to build manytrace agent: {}", e),
+            })?;
+        let (filter, reload_handle) = tracing_subscriber::reload::Layer::new(
+            tracing_subscriber::EnvFilter::from_default_env(),
+        );
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(ManytraceLayer::new(extension))
+            .with(
+                FmtLayer::default()
+                    .json()
+                    .with_span_events(FmtSpan::NONE)
+                    .with_current_span(false)
+                    .with_span_list(false)
+                    .with_writer(std::io::stdout)
+                    .with_ansi(false)
+                    .with_filter(filter),
+            );
 
-    let subscriber = tracing_subscriber::Registry::default().with(filter).with(
-        FmtLayer::default()
-            .json()
-            .with_span_events(FmtSpan::NONE)
-            .with_current_span(false)
-            .with_span_list(false)
-            .with_writer(std::io::stdout)
-            .with_ansi(false),
-    );
+        tracing::subscriber::set_global_default(subscriber)?;
+        info!("manytrace tracing enabled");
+        Ok((Box::new(reload_handle), Some(agent)))
+    } else {
+        let (filter, reload_handle) = tracing_subscriber::reload::Layer::new(
+            tracing_subscriber::EnvFilter::from_default_env(),
+        );
 
-    tracing::subscriber::set_global_default(subscriber)?;
+        let subscriber = tracing_subscriber::Registry::default().with(filter).with(
+            FmtLayer::default()
+                .json()
+                .with_span_events(FmtSpan::NONE)
+                .with_current_span(false)
+                .with_span_list(false)
+                .with_writer(std::io::stdout)
+                .with_ansi(false),
+        );
 
-    Ok(reload_handle)
+        tracing::subscriber::set_global_default(subscriber)?;
+        Ok((Box::new(reload_handle), None))
+    }
 }
 
-async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), ()> {
+async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Result<(), ()> {
     let locked_epoch_validators = ValidatorsConfig::read_from_path(&node_state.validators_path)
         .unwrap_or_else(|err| {
             panic!(
