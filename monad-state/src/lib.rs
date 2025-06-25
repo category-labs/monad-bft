@@ -1,4 +1,4 @@
-use std::{fmt::Debug, marker::PhantomData, ops::Deref};
+use std::{collections::HashMap, fmt::Debug, marker::PhantomData, ops::Deref};
 
 use alloy_rlp::{encode_list, Decodable, Encodable, Header};
 use bytes::{Bytes, BytesMut};
@@ -27,7 +27,6 @@ use monad_consensus_types::{
     metrics::Metrics,
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    timeout::TimeoutCertificate,
     validation,
     validator_data::ValidatorSetDataWithEpoch,
     voting::ValidatorMapping,
@@ -230,91 +229,49 @@ where
             return Err(ForkpointValidationError::InvalidHighCertificate);
         }
 
+        let validators = locked_validator_sets
+            .iter()
+            .map(|locked| {
+                let stake = locked
+                    .validators
+                    .0
+                    .iter()
+                    .map(|data| (data.node_id, data.stake))
+                    .collect::<Vec<_>>();
+                let vset = validator_set_factory
+                    .create(stake)
+                    .expect("ValidatorSetTypeFactory failed to init validator set");
+                let vmap = ValidatorMapping::new(
+                    locked
+                        .validators
+                        .0
+                        .iter()
+                        .map(|data| (data.node_id, data.cert_pubkey))
+                        .collect::<Vec<_>>(),
+                );
+                (locked.epoch, (vset, vmap))
+            })
+            .collect::<HashMap<_, _>>();
+        let epoch_to_validators = |epoch, _round| {
+            let (vset, vmap) = validators
+                .get(&epoch)
+                .ok_or(validation::Error::ValidatorSetDataUnavailable)?;
+            Ok((vset, vmap))
+        };
+
         match &self.high_certificate {
             RoundCertificate::Qc(qc) => {
                 if &self.high_qc != qc {
                     return Err(ForkpointValidationError::InvalidHighCertificate);
                 }
-                Self::validate_and_verify_qc(validator_set_factory, locked_validator_sets, qc)?;
+                verify_qc(epoch_to_validators, qc)
+                    .map_err(|_| ForkpointValidationError::InvalidQC)?;
             }
             RoundCertificate::Tc(tc) => {
-                Self::validate_and_verify_tc(validator_set_factory, locked_validator_sets, tc)?;
+                verify_tc(epoch_to_validators, tc)
+                    .map_err(|_| ForkpointValidationError::InvalidHighCertificate)?;
             }
         };
-
-        Ok(())
-    }
-
-    fn validate_and_verify_qc(
-        validator_set_factory: &impl ValidatorSetTypeFactory<NodeIdPubKey = SCT::NodeIdPubKey>,
-        locked_validator_sets: &[ValidatorSetDataWithEpoch<SCT>],
-        qc: &QuorumCertificate<SCT>,
-    ) -> Result<(), ForkpointValidationError> {
-        let qc_validator_set = locked_validator_sets
-            .iter()
-            .find(|locked| locked.epoch == qc.get_epoch())
-            .map(|locked| &locked.validators)
-            .ok_or(ForkpointValidationError::InvalidQC)?;
-
-        let vset_stake = qc_validator_set
-            .0
-            .iter()
-            .map(|data| (data.node_id, data.stake))
-            .collect::<Vec<_>>();
-
-        let qc_vmap = ValidatorMapping::new(
-            qc_validator_set
-                .0
-                .iter()
-                .map(|data| (data.node_id, data.cert_pubkey))
-                .collect::<Vec<_>>(),
-        );
-
-        let qc_vset = validator_set_factory
-            .create(vset_stake)
-            .expect("ValidatorSetTypeFactory failed to init validator set");
-
-        // 2.
-        if verify_qc(&qc_vset, &qc_vmap, qc).is_err() {
-            return Err(ForkpointValidationError::InvalidQC);
-        }
-
-        Ok(())
-    }
-
-    fn validate_and_verify_tc(
-        validator_set_factory: &impl ValidatorSetTypeFactory<NodeIdPubKey = SCT::NodeIdPubKey>,
-        locked_validator_sets: &[ValidatorSetDataWithEpoch<SCT>],
-        tc: &TimeoutCertificate<ST, SCT, EPT>,
-    ) -> Result<(), ForkpointValidationError> {
-        let tc_validator_set = locked_validator_sets
-            .iter()
-            .find(|locked| locked.epoch == tc.epoch)
-            .map(|locked| &locked.validators)
-            .ok_or(ForkpointValidationError::InvalidHighCertificate)?;
-
-        let vset_stake = tc_validator_set
-            .0
-            .iter()
-            .map(|data| (data.node_id, data.stake))
-            .collect::<Vec<_>>();
-
-        let tc_vmap = ValidatorMapping::new(
-            tc_validator_set
-                .0
-                .iter()
-                .map(|data| (data.node_id, data.cert_pubkey))
-                .collect::<Vec<_>>(),
-        );
-
-        let tc_vset = validator_set_factory
-            .create(vset_stake)
-            .expect("ValidatorSetTypeFactory failed to init validator set");
-
-        // 2.
-        if verify_tc(&tc_vset, &tc_vmap, tc).is_err() {
-            return Err(ForkpointValidationError::InvalidHighCertificate);
-        }
 
         Ok(())
     }

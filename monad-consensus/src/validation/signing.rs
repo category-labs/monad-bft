@@ -14,7 +14,7 @@ use monad_crypto::{
     },
     hasher::{Hash, Hashable, Hasher, HasherType},
 };
-use monad_types::{ExecutionProtocol, NodeId, Stake, GENESIS_ROUND};
+use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, Stake, GENESIS_ROUND};
 use monad_validator::{
     epoch_manager::EpochManager,
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
@@ -328,10 +328,14 @@ where
     {
         self.well_formed_proposal()?;
         self.verify_epoch(epoch_manager)?;
-        verify_certificates(
-            epoch_manager,
-            val_epoch_map,
-            &self.obj.last_round_tc,
+        if let Some(tc) = &self.obj.last_round_tc {
+            verify_tc(
+                |epoch, round| epoch_to_validators(epoch_manager, val_epoch_map, epoch, round),
+                tc,
+            )?;
+        }
+        verify_qc(
+            |epoch, round| epoch_to_validators(epoch_manager, val_epoch_map, epoch, round),
             &self.obj.block_header.qc,
         )?;
 
@@ -412,10 +416,14 @@ where
         self.well_formed_timeout()?;
         self.verify_epoch(epoch_manager)?;
 
-        verify_certificates(
-            epoch_manager,
-            val_epoch_map,
-            &self.obj.timeout.last_round_tc,
+        if let Some(tc) = &self.obj.timeout.last_round_tc {
+            verify_tc(
+                |epoch, round| epoch_to_validators(epoch_manager, val_epoch_map, epoch, round),
+                tc,
+            )?;
+        }
+        verify_qc(
+            |epoch, round| epoch_to_validators(epoch_manager, val_epoch_map, epoch, round),
             &self.obj.timeout.tminfo.high_qc,
         )?;
 
@@ -441,53 +449,34 @@ where
     }
 }
 
-fn verify_certificates<ST, SCT, EPT, VTF, VT>(
-    epoch_manager: &EpochManager,
-    val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
-    tc: &Option<TimeoutCertificate<ST, SCT, EPT>>,
-    qc: &QuorumCertificate<SCT>,
-) -> Result<(), Error>
+fn epoch_to_validators<'a, SCT, VTF, VT>(
+    epoch_manager: &'a EpochManager,
+    val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
+    epoch: Epoch,
+    round: Round,
+) -> Result<
+    (
+        &'a VT,
+        &'a ValidatorMapping<SCT::NodeIdPubKey, SignatureCollectionKeyPairType<SCT>>,
+    ),
+    Error,
+>
 where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    EPT: ExecutionProtocol,
+    SCT: SignatureCollection,
     VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
     VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
 {
-    if let Some(tc) = tc {
-        let tc_epoch = tc.epoch;
-        let local_tc_epoch = epoch_manager
-            .get_epoch(tc.round)
-            .ok_or(Error::InvalidEpoch)?;
-        if tc_epoch != local_tc_epoch {
-            return Err(Error::InvalidEpoch);
-        }
-        let validator_set = val_epoch_map
-            .get_val_set(&tc_epoch)
-            .ok_or(Error::ValidatorSetDataUnavailable)?;
-        let validator_cert_pubkeys = val_epoch_map
-            .get_cert_pubkeys(&tc_epoch)
-            .ok_or(Error::ValidatorSetDataUnavailable)?;
-        verify_tc(validator_set, validator_cert_pubkeys, tc)?;
-    }
-
-    let qc_epoch = qc.get_epoch();
-    let local_qc_epoch = epoch_manager
-        .get_epoch(qc.get_round())
-        .ok_or(Error::InvalidEpoch)?;
-    if qc_epoch != local_qc_epoch {
+    if epoch != epoch_manager.get_epoch(round).ok_or(Error::InvalidEpoch)? {
         return Err(Error::InvalidEpoch);
     }
-
     let validator_set = val_epoch_map
-        .get_val_set(&qc_epoch)
+        .get_val_set(&epoch)
         .ok_or(Error::ValidatorSetDataUnavailable)?;
     let validator_cert_pubkeys = val_epoch_map
-        .get_cert_pubkeys(&qc_epoch)
+        .get_cert_pubkeys(&epoch)
         .ok_or(Error::ValidatorSetDataUnavailable)?;
-    verify_qc(validator_set, validator_cert_pubkeys, qc)?;
 
-    Ok(())
+    Ok((validator_set, validator_cert_pubkeys))
 }
 
 /// Verify the timeout certificate
@@ -495,9 +484,17 @@ where
 /// The signature collections are created over `Hash(tc.round, high_qc.round)`
 ///
 /// See [monad_consensus_types::timeout::TimeoutInfo::timeout_digest]
-pub fn verify_tc<ST, SCT, EPT, VT>(
-    validators: &VT,
-    validator_mapping: &ValidatorMapping<SCT::NodeIdPubKey, SignatureCollectionKeyPairType<SCT>>,
+pub fn verify_tc<'a, ST, SCT, EPT, VT>(
+    epoch_to_validators: impl FnOnce(
+        Epoch,
+        Round,
+    ) -> Result<
+        (
+            &'a VT,
+            &'a ValidatorMapping<SCT::NodeIdPubKey, SignatureCollectionKeyPairType<SCT>>,
+        ),
+        Error,
+    >,
     tc: &TimeoutCertificate<ST, SCT, EPT>,
 ) -> Result<(), Error>
 where
@@ -506,6 +503,8 @@ where
     EPT: ExecutionProtocol,
     VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
 {
+    let (validators, validator_mapping) = epoch_to_validators(tc.epoch, tc.round)?;
+
     let mut node_ids = Vec::new();
     for t in tc.high_qc_rounds.iter() {
         if t.high_qc_round.qc_round >= tc.round {
@@ -538,15 +537,25 @@ where
 /// Verify the quorum certificate
 ///
 /// Verify the signature collection and super majority stake signed
-pub fn verify_qc<SCT, VT>(
-    validators: &VT,
-    validator_mapping: &ValidatorMapping<SCT::NodeIdPubKey, SignatureCollectionKeyPairType<SCT>>,
+pub fn verify_qc<'a, SCT, VT>(
+    epoch_to_validators: impl FnOnce(
+        Epoch,
+        Round,
+    ) -> Result<
+        (
+            &'a VT,
+            &'a ValidatorMapping<SCT::NodeIdPubKey, SignatureCollectionKeyPairType<SCT>>,
+        ),
+        Error,
+    >,
     qc: &QuorumCertificate<SCT>,
 ) -> Result<(), Error>
 where
     SCT: SignatureCollection,
     VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
 {
+    let (validators, validator_mapping) = epoch_to_validators(qc.get_epoch(), qc.get_round())?;
+
     if qc.get_round() == GENESIS_ROUND {
         if qc == &QuorumCertificate::genesis_qc() {
             return Ok(());
@@ -660,10 +669,10 @@ mod test {
     };
     use test_case::test_case;
 
-    use super::{verify_certificates, verify_qc, verify_tc, Verified};
+    use super::{verify_qc, verify_tc, Verified};
     use crate::{
         messages::message::{ProposalMessage, TimeoutMessage},
-        validation::signing::{Unvalidated, VoteMessage},
+        validation::signing::{epoch_to_validators, Unvalidated, VoteMessage},
     };
 
     type SignatureType = NopSignature;
@@ -719,7 +728,7 @@ mod test {
                 _phantom: PhantomData,
             };
 
-        verify_tc(&vset, &vmap, &tc)
+        verify_tc(|_epoch, _round| Ok((&vset, &vmap)), &tc)
     }
 
     /// The signature collection is created on a Vote different from the one in
@@ -751,7 +760,7 @@ mod test {
         let qc = QuorumCertificate::new(vote2, sigs);
 
         assert!(matches!(
-            verify_qc(&vset, &val_mapping, &qc),
+            verify_qc(|_epoch, _round| Ok((&vset, &val_mapping)), &qc),
             Err(Error::InvalidSignature)
         ));
     }
@@ -790,7 +799,7 @@ mod test {
         let qc = QuorumCertificate::new(vote, sig_col);
 
         assert!(matches!(
-            verify_qc(&vset, &vmap, &qc),
+            verify_qc(|_epoch, _round| Ok((&vset, &vmap)), &qc),
             Err(Error::InsufficientStake)
         ));
     }
@@ -841,7 +850,7 @@ mod test {
             };
 
         assert!(matches!(
-            verify_tc(&vset, &vmap, &tc),
+            verify_tc(|_epoch, _round| Ok((&vset, &vmap)), &tc),
             Err(Error::InsufficientStake)
         ));
     }
@@ -885,7 +894,7 @@ mod test {
             };
 
         assert!(matches!(
-            verify_tc(&vset, &val_mapping, &tc),
+            verify_tc(|_epoch, _round| Ok((&vset, &val_mapping)), &tc),
             Err(Error::InvalidSignature)
         ));
     }
@@ -1192,17 +1201,15 @@ mod test {
 
         // moved here because of valmap ownership
         let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
-        let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+        let mut val_epoch_map: ValidatorsEpochMapping<_, SignatureCollectionType> =
+            ValidatorsEpochMapping::new(ValidatorSetFactory::default());
         val_epoch_map.insert(Epoch(1), validator_stakes, valmap);
 
         let qc = QuorumCertificate::new(vote, sigcol);
-        let verify_result = verify_certificates::<
-            SignatureType,
-            SignatureCollectionType,
-            ExecutionProtocolType,
-            _,
-            _,
-        >(&epoch_manager, &val_epoch_map, &None, &qc);
+        let verify_result = verify_qc(
+            |epoch, round| epoch_to_validators(&epoch_manager, &val_epoch_map, epoch, round),
+            &qc,
+        );
         assert_eq!(verify_result, Err(Error::InvalidEpoch));
     }
 
@@ -1274,18 +1281,19 @@ mod test {
 
         // moved here because of valmap ownership
         let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
-        let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+        let mut val_epoch_map: ValidatorsEpochMapping<_, SignatureCollectionType> =
+            ValidatorsEpochMapping::new(ValidatorSetFactory::default());
         val_epoch_map.insert(Epoch(1), validator_stakes, valmap);
 
-        let qc_verify_result = verify_certificates::<
-            SignatureType,
-            SignatureCollectionType,
-            ExecutionProtocolType,
-            _,
-            _,
-        >(&epoch_manager, &val_epoch_map, &None, &qc);
+        let qc_verify_result = verify_qc(
+            |epoch, round| epoch_to_validators(&epoch_manager, &val_epoch_map, epoch, round),
+            &qc,
+        );
         assert_eq!(qc_verify_result, Ok(()));
-        let tc_verify_result = verify_certificates(&epoch_manager, &val_epoch_map, &Some(tc), &qc);
+        let tc_verify_result = verify_tc(
+            |epoch, round| epoch_to_validators(&epoch_manager, &val_epoch_map, epoch, round),
+            &tc,
+        );
         assert_eq!(tc_verify_result, Err(Error::InvalidEpoch));
     }
 }
