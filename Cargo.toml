@@ -18,6 +18,7 @@ ignored = [
     "monad-peer-disc-swarm",
     "monad-tracing-timing",
     "monad-event-ring",
+    "monad-exec-events",
 ]
 
 [workspace.dependencies]
@@ -45,6 +46,7 @@ monad-eth-txpool-types = { path = "./monad-eth-txpool-types" }
 monad-eth-types = { path = "./monad-eth-types" }
 monad-ethcall = { path = "./monad-ethcall" }
 monad-event-ring = { path = "./monad-event-ring" }
+monad-exec-events = { path = "./monad-exec-events" }
 monad-executor = { path = "./monad-executor" }
 monad-executor-glue = { path = "./monad-executor-glue" }
 monad-keystore = { path = "./monad-keystore" }
@@ -179,6 +181,7 @@ simple-xml-builder = "1.1"
 socket2 = "0.5.9"
 sorted_vector_map = "0.2.0"
 sorted-vec = "0.8.3"
+strum = "0.26.3"
 syn = { version = "1.0.0", features = ["full"] }
 tempfile = "3.5"
 test-case = "3.0"

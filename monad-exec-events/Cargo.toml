@@ -1,0 +1,40 @@
+[package]
+name = "monad-exec-events"
+description = "Rust API for consuming execution events"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+monad-event-ring = { workspace = true }
+
+alloy-consensus = { workspace = true, optional = true }
+alloy-primitives = { workspace = true, optional = true }
+alloy-rpc-types = { workspace = true, optional = true }
+chrono = { workspace = true }
+hex = { workspace = true }
+itertools = { workspace = true, optional = true }
+libc = { workspace = true }
+serde = { workspace = true, features = ["derive", "rc"] }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+zstd = { workspace = true }
+
+[build-dependencies]
+bindgen = { workspace = true }
+
+[dev-dependencies]
+alloy-primitives = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+criterion = { workspace = true }
+itertools = { workspace = true }
+ratatui = "0.29.0"
+strum = { workspace = true }
+
+[features]
+default = []
+alloy = ["dep:alloy-consensus", "dep:alloy-primitives", "dep:alloy-rpc-types", "dep:itertools"]
+
+[[bench]]
+name = "snapshot_exec"
+harness = false
