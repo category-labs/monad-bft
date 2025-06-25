@@ -5049,6 +5049,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-exec-events"
+version = "0.1.0"
+dependencies = [
+ "bindgen 0.71.1",
+ "criterion",
+ "monad-event-ring",
+]
+
+[[package]]
 name = "monad-executor"
 version = "0.1.0"
 dependencies = [

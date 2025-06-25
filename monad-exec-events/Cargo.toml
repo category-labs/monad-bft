@@ -1,0 +1,18 @@
+[package]
+name = "monad-exec-events"
+description = "Rust API for consuming execution events"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+monad-event-ring = { workspace = true }
+
+[build-dependencies]
+bindgen = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "snapshot_exec"
+harness = false
