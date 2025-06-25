@@ -49,15 +49,15 @@ pub(crate) fn ref_from_bytes<T>(bytes: &'_ [u8]) -> Result<&'_ T, String> {
 /// parsing the event, [`monad_exec_txn_start`](crate::ffi::monad_exec_txn_start). This function
 /// takes a fn which, given this `&T` reference, produces an array of trailing byte sizes which are
 /// subsequently split out and produced alongisde the `&T`.
-pub(crate) fn ref_from_bytes_with_trailing<'reader, T, const N: usize>(
-    bytes: &'reader [u8],
+pub(crate) fn ref_from_bytes_with_trailing<'ring, T, const N: usize>(
+    bytes: &'ring [u8],
     trailing_lengths: impl FnOnce(&T) -> [usize; N],
-) -> Result<(&'reader T, [&'reader [u8]; N]), String> {
+) -> Result<(&'ring T, [&'ring [u8]; N]), String> {
     let (value, mut bytes) = split_ref_from_bytes::<T>(bytes)?;
 
     let trailing_lengths = trailing_lengths(value);
 
-    let mut trailing: [MaybeUninit<&'reader [u8]>; N] =
+    let mut trailing: [MaybeUninit<&'ring [u8]>; N] =
         unsafe { MaybeUninit::uninit().assume_init() };
 
     for (idx, length) in trailing_lengths.into_iter().enumerate() {

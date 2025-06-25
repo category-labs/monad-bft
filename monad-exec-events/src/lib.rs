@@ -52,11 +52,27 @@
 //!
 //! For more details about EventRing operation in general, see the
 //! [`monad_event_ring`](../monad_event_ring/index.html) library documentation.
+//!
+//! # Block-Oriented Updates
+//!
+//! The [`ExecEventRingType`] enables an `EventRing` to produce individual `monad` execution events.
+//! While many applications may benefit from operating on individual events or by observing them
+//! as quickly as possible, many would prefer to process entire blocks. This library provides the
+//! [`ExecutedBlockBuilder`] utility to reconstruct blocks from an event stream produced by an
+//! [`ExecEventRing`]. See [`ExecutedBlockBuilder`] for more details.
+//!
+//! This utility however produces all blocks that are executed, which could be in any
+//! [`BlockCommitState`]. For applications interested in consuming blocks once they have reached a
+//! certain commit state, usually [`BlockCommitState::Finalized`], applications can use the
+//! [`CommitStateBlockBuilder`] which produces a block along with its current commit state every time
+//! the block's commit state changes. See [`CommitStateBlockBuilder`] for more details.
 
 use monad_event_ring::{EventRing, SnapshotEventRing};
 
-pub use self::events::*;
+pub use self::{block::*, block_builder::*, events::*};
 
+mod block;
+mod block_builder;
 mod events;
 pub mod ffi;
 

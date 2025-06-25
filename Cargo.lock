@@ -5052,9 +5052,15 @@ dependencies = [
 name = "monad-exec-events"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus",
+ "alloy-primitives",
+ "alloy-rpc-types",
  "bindgen 0.71.1",
  "criterion",
+ "itertools 0.10.5",
  "monad-event-ring",
+ "serde",
+ "tracing",
 ]
 
 [[package]]
