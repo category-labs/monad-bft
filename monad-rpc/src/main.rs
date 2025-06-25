@@ -9,7 +9,7 @@ use monad_event_ring::EventRing;
 use monad_node_config::MonadNodeConfig;
 use monad_pprof::start_pprof_server;
 use monad_rpc::{
-    chainstate::ChainState,
+    chainstate::{buffer::ChainStateBuffer, ChainState},
     comparator::RpcComparator,
     event::EventServer,
     handlers::{
@@ -233,9 +233,60 @@ async fn main() -> std::io::Result<()> {
         .as_ref()
         .map(|provider| metrics::Metrics::new(provider.clone().meter("opentelemetry")));
 
+    // Configure event ring, websocket server and event cache.
+    let (ws_server_handle, events_for_cache) = if let Some(exec_event_path) = args.exec_event_path {
+        let event_ring =
+            EventRing::new_from_path(exec_event_path).expect("Execution event ring is ready");
+
+        let events_client = EventServer::start(event_ring);
+
+        // Subscribe to the event server to populate the event cache.
+        let events_for_cache = events_client
+            .subscribe()
+            .expect("Failed to subscribe to event server");
+
+        let ws_server_handle = args.ws_enabled.then(|| {
+            HttpServer::new(move || {
+                App::new()
+                    .app_data(web::Data::new(events_client.clone()))
+                    .service(
+                        web::resource("/").route(web::get().to(websocket::handler::ws_handler)),
+                    )
+            })
+            .bind((args.rpc_addr.clone(), args.ws_port))
+            .expect("Failed to bind WebSocket server")
+            .shutdown_timeout(1)
+            .workers(args.ws_worker_threads)
+        });
+
+        (ws_server_handle, Some(events_for_cache))
+    } else {
+        if args.ws_enabled {
+            panic!("exec-event-path is not set but is required for websockets");
+        }
+
+        (None, None)
+    };
+
+    let event_buffer = if let Some(mut events_for_cache) = events_for_cache {
+        let event_buffer = Arc::new(ChainStateBuffer::new(1024));
+
+        let event_buffer2 = event_buffer.clone();
+        tokio::spawn(async move {
+            while let Ok(event) = events_for_cache.recv().await {
+                event_buffer2.insert(event).await;
+            }
+        });
+
+        Some(event_buffer)
+    } else {
+        None
+    };
+
     let chain_state = triedb_env
         .clone()
-        .map(|t| ChainState::new(t, archive_reader.clone()));
+        .map(|t| ChainState::new(event_buffer, t, archive_reader.clone()));
+
     let rpc_comparator: Option<RpcComparator> = args
         .rpc_comparison_endpoint
         .as_ref()
@@ -265,32 +316,6 @@ async fn main() -> std::io::Result<()> {
         with_metrics.clone(),
         rpc_comparator.clone(),
     );
-
-    let ws_server_handle = if let Some(exec_event_path) = args.exec_event_path {
-        let event_ring =
-            EventRing::new_from_path(exec_event_path).expect("Execution event ring is ready");
-
-        args.ws_enabled.then(|| {
-            let events_for_ws = EventServer::start(event_ring);
-            HttpServer::new(move || {
-                App::new()
-                    .app_data(web::Data::new(events_for_ws.clone()))
-                    .service(
-                        web::resource("/").route(web::get().to(websocket::handler::ws_handler)),
-                    )
-            })
-            .bind((args.rpc_addr.clone(), args.ws_port))
-            .expect("Failed to bind WebSocket server")
-            .shutdown_timeout(1)
-            .workers(args.ws_worker_threads)
-        })
-    } else {
-        if args.ws_enabled {
-            panic!("exec-event-path is not set but is required for websockets");
-        }
-
-        None
-    };
 
     // Configure the rpc server with or without metrics
     let app = match with_metrics {
@@ -395,10 +420,7 @@ mod tests {
                 .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
                 .app_data(web::PayloadConfig::default().limit(2_000_000))
                 .app_data(web::Data::new(app_state.clone()))
-                .service(web::resource("/").route(web::post().to(rpc_handler)))
-                .service(
-                    web::resource("/ws/").route(web::get().to(websocket::handler::ws_handler)),
-                ),
+                .service(web::resource("/").route(web::post().to(rpc_handler))),
         )
         .await
     }
