@@ -34,6 +34,18 @@ pub struct NodeNetworkConfig {
 
     #[serde(default = "default_udp_message_max_age_ms")]
     pub udp_message_max_age_ms: u64,
+
+    #[serde(default = "default_tcp_connections_limit")]
+    pub tcp_connections_limit: usize,
+
+    #[serde(default = "default_tcp_per_ip_connections_limit")]
+    pub tcp_per_ip_connections_limit: usize,
+
+    #[serde(default = "default_tcp_rate_limit_rps")]
+    pub tcp_rate_limit_rps: u32,
+
+    #[serde(default = "default_tcp_rate_limit_burst")]
+    pub tcp_rate_limit_burst: u32,
 }
 
 // When running in docker with vpnkit, the maximum safe MTU is 1480, as per:
@@ -49,4 +61,20 @@ fn default_buffer_size() -> Option<usize> {
 
 fn default_udp_message_max_age_ms() -> u64 {
     10_000 // 10 seconds in milliseconds
+}
+
+fn default_tcp_connections_limit() -> usize {
+    1000
+}
+
+fn default_tcp_per_ip_connections_limit() -> usize {
+    5
+}
+
+fn default_tcp_rate_limit_rps() -> u32 {
+    1000
+}
+
+fn default_tcp_rate_limit_burst() -> u32 {
+    200
 }

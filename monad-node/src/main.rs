@@ -613,6 +613,15 @@ where
     if let Some(buffer_size) = network_config.buffer_size {
         dp_builder = dp_builder.with_udp_buffer_size(buffer_size);
     }
+    dp_builder = dp_builder
+        .with_tcp_connections_limit(
+            network_config.tcp_connections_limit,
+            network_config.tcp_per_ip_connections_limit,
+        )
+        .with_tcp_rps_burst(
+            network_config.tcp_rate_limit_rps,
+            network_config.tcp_rate_limit_burst,
+        );
 
     let self_id = NodeId::new(identity.pubkey());
     let self_record = NameRecord {

@@ -16,8 +16,9 @@
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     future::Future as _,
+    iter::once,
     marker::PhantomData,
-    net::{SocketAddr, SocketAddrV4},
+    net::{IpAddr, SocketAddr, SocketAddrV4},
     ops::DerefMut,
     pin::{pin, Pin},
     sync::{Arc, Mutex},
@@ -323,6 +324,25 @@ where
                 RouterCommand::UpdateCurrentRound(epoch, round) => {
                     if self.current_epoch < epoch {
                         tracing::trace!(?epoch, ?round, "RaptorCast UpdateCurrentRound");
+
+                        {
+                            let pd_driver = self.peer_discovery_driver.lock().unwrap();
+                            let added: Vec<_> = self
+                                .epoch_validators
+                                .get(&epoch)
+                                .into_iter()
+                                .flat_map(|val| iter_ips(val, &*pd_driver))
+                                .collect();
+                            let removed: Vec<_> = self
+                                .epoch_validators
+                                .get(&self.current_epoch)
+                                .into_iter()
+                                .flat_map(|val| iter_ips(val, &*pd_driver))
+                                .collect();
+                            drop(pd_driver);
+                            self.dataplane_writer.update_trusted(added, removed);
+                        }
+
                         self.current_epoch = epoch;
                         self.rebroadcast_map.delete_expired_groups(epoch, round);
                         while let Some(entry) = self.epoch_validators.first_entry() {
@@ -570,6 +590,17 @@ where
     }
 }
 
+fn iter_ips<'a, ST: CertificateSignatureRecoverable, PD: PeerDiscoveryAlgo<SignatureType = ST>>(
+    validators: &'a EpochValidators<ST>,
+    peer_discovery: &'a PeerDiscoveryDriver<PD>,
+) -> impl Iterator<Item = IpAddr> + 'a {
+    validators
+        .validators
+        .iter()
+        .filter_map(|(node_id, _)| peer_discovery.get_addr(node_id))
+        .map(|socket| socket.ip())
+}
+
 impl<ST, M, OM, E, PD> Stream for RaptorCast<ST, M, OM, E, PD>
 where
     ST: CertificateSignatureRecoverable,
@@ -732,6 +763,7 @@ where
                     ?src_addr,
                     "invalid message, message length less than signature size"
                 );
+                this.dataplane_writer.disconnect(src_addr);
                 continue;
             }
             let signature_bytes = &payload[..SIGNATURE_SIZE];
@@ -739,6 +771,7 @@ where
                 Ok(signature) => signature,
                 Err(err) => {
                     warn!(?err, ?src_addr, "invalid signature");
+                    this.dataplane_writer.disconnect(src_addr);
                     continue;
                 }
             };
@@ -748,6 +781,7 @@ where
                     Ok(message) => message,
                     Err(err) => {
                         warn!(?err, ?src_addr, "failed to deserialize message");
+                        this.dataplane_writer.disconnect(src_addr);
                         continue;
                     }
                 };
@@ -757,6 +791,7 @@ where
                 Ok(from) => from,
                 Err(err) => {
                     warn!(?err, ?src_addr, "failed to recover pubkey");
+                    this.dataplane_writer.disconnect(src_addr);
                     continue;
                 }
             };
@@ -774,11 +809,13 @@ where
                         ?message,
                         "dropping peer discovery message, should come through udp channel"
                     );
+                    this.dataplane_writer.disconnect(src_addr);
                     continue;
                 }
                 InboundRouterMessage::FullNodesGroup(_group_message) => {
                     // pass TCP message to MultiRouter
                     warn!("FullNodesGroup protocol via TCP not implemented");
+                    this.dataplane_writer.disconnect(src_addr);
                     continue;
                 }
             }
