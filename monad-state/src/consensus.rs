@@ -15,6 +15,7 @@ use monad_consensus_types::{
     metrics::Metrics,
     payload::{ConsensusBlockBody, ConsensusBlockBodyInner},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    tip::ConsensusTip,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -138,6 +139,7 @@ where
                         Self::verify_and_validate_consensus_message(
                             self.epoch_manager,
                             self.val_epoch_map,
+                            self.leader_election,
                             self.version,
                             self.metrics,
                             sender,
@@ -199,6 +201,7 @@ where
                 match Self::verify_and_validate_consensus_message(
                     consensus.epoch_manager,
                     consensus.val_epoch_map,
+                    consensus.election,
                     self.version,
                     consensus.metrics,
                     sender,
@@ -209,7 +212,7 @@ where
                             consensus.handle_proposal_message(author, msg.clone());
                         // Maybe we could skip the below command if we could somehow determine that
                         // the peer isn't publishing to full nodes at the moment?
-                        let epoch = msg.block_header.epoch;
+                        let epoch = msg.tip.block_header.epoch;
                         let cons_msg = ConsensusMessage {
                             version: consensus.version.to_owned(),
                             message: ProtocolMessage::Proposal(msg),
@@ -226,6 +229,12 @@ where
                     }
                     Ok((author, ProtocolMessage::Timeout(msg))) => {
                         consensus.handle_timeout_message(author, msg)
+                    }
+                    Ok((author, ProtocolMessage::RoundRecovery(msg))) => {
+                        consensus.handle_round_recovery_message(author, msg)
+                    }
+                    Ok((author, ProtocolMessage::NoEndorsement(msg))) => {
+                        consensus.handle_no_endorsement_message(author, msg)
                     }
                     Err(evidence) => evidence,
                 }
@@ -300,6 +309,7 @@ where
                 delayed_execution_results,
                 proposed_execution_inputs,
                 last_round_tc,
+                fresh_proposal_certificate,
             } => {
                 consensus.metrics.consensus_events.creating_proposal += 1;
                 let block_body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
@@ -319,7 +329,13 @@ where
                 );
 
                 let p = ProposalMessage {
-                    block_header,
+                    proposal_epoch: epoch,
+                    proposal_round: round,
+                    tip: ConsensusTip::new(
+                        consensus.keypair,
+                        block_header,
+                        fresh_proposal_certificate,
+                    ),
                     block_body,
                     last_round_tc,
                 };
@@ -435,6 +451,7 @@ where
     fn verify_and_validate_consensus_message(
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
+        election: &LT,
         version: &MonadVersion,
         metrics: &mut Metrics,
 
@@ -459,7 +476,12 @@ where
 
         // Validated message according to consensus protocol spec
         let validated_mesage = verified_message
-            .validate(epoch_manager, val_epoch_map, version.protocol_version)
+            .validate(
+                epoch_manager,
+                val_epoch_map,
+                election,
+                version.protocol_version,
+            )
             .map_err(|e| {
                 handle_validation_error(e, metrics);
                 // TODO-2: collect evidence
@@ -604,6 +626,7 @@ where
                 high_qc,
                 round_signature,
                 last_round_tc,
+                fresh_proposal_certificate,
 
                 tx_limit,
                 proposal_gas_limit,
@@ -621,6 +644,7 @@ where
                     high_qc,
                     round_signature,
                     last_round_tc,
+                    fresh_proposal_certificate,
 
                     tx_limit,
                     proposal_gas_limit,
@@ -640,7 +664,7 @@ where
                 match commit {
                     OptimisticPolicyCommit::Proposed(block) => {
                         let block_id = block.get_id();
-                        let round = block.get_round();
+                        let round = block.get_block_round();
                         let seq_num = block.get_seq_num();
                     }
                     OptimisticPolicyCommit::Finalized(block) => {

@@ -149,6 +149,7 @@ where
                     high_qc,
                     round_signature,
                     last_round_tc,
+                    fresh_proposal_certificate,
                     tx_limit: _,
                     proposal_gas_limit: _,
                     proposal_byte_limit: _,
@@ -170,6 +171,7 @@ where
                             body: MockExecutionBody::default(),
                         },
                         last_round_tc,
+                        fresh_proposal_certificate,
                     });
 
                     if let Some(waker) = self.waker.take() {
@@ -216,6 +218,7 @@ where
                     high_qc,
                     round_signature,
                     last_round_tc,
+                    fresh_proposal_certificate,
                     tx_limit,
                     proposal_gas_limit,
                     proposal_byte_limit,
@@ -250,6 +253,7 @@ where
                         delayed_execution_results,
                         proposed_execution_inputs,
                         last_round_tc,
+                        fresh_proposal_certificate,
                     });
 
                     if let Some(waker) = self.waker.take() {

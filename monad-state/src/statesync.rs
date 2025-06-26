@@ -85,7 +85,7 @@ where
 
         let root = self.full_blocks.get(&self.root)?;
         Some(RootInfo {
-            round: root.get_round(),
+            round: root.get_block_round(),
             seq_num: root.get_seq_num(),
             epoch: root.get_epoch(),
             block_id: root.get_id(),
@@ -110,13 +110,13 @@ where
         // TODO more validation? leader checking? more sophisticated eviction?
 
         let root_seq_num = self.root_seq_num()?;
-        if proposal.block_header.seq_num < root_seq_num {
+        if proposal.tip.block_header.seq_num < root_seq_num {
             return None;
         }
-        let proposal_qc = proposal.block_header.qc.clone();
+        let proposal_qc = proposal.tip.block_header.qc.clone();
         self.block_headers.insert(
-            proposal.block_header.get_id(),
-            proposal.block_header.clone(),
+            proposal.tip.block_header.get_id(),
+            proposal.tip.block_header.clone(),
         );
 
         self.proposal_buffer.push_back((author, proposal));
@@ -124,7 +124,8 @@ where
             self.proposal_buffer.pop_front();
         }
 
-        let finalized_block_id = proposal_qc.get_committable_id()?;
+        let qc_parent_block = self.block_headers.get(&proposal_qc.get_block_id())?;
+        let finalized_block_id = proposal_qc.get_committable_id(qc_parent_block)?;
         let finalized_block = self.block_headers.get(&finalized_block_id)?;
 
         if finalized_block.seq_num <= root_seq_num + self.resync_threshold {
@@ -153,13 +154,13 @@ where
         self.full_blocks
             .retain(|_id, block| block.get_seq_num() + self.state_root_delay >= new_root.seq_num);
         for (_sender, proposal) in &self.proposal_buffer {
-            if proposal.block_header.seq_num <= new_root.seq_num {
+            if proposal.tip.block_header.seq_num <= new_root.seq_num {
                 if let Ok(full_block) = ConsensusFullBlock::new(
-                    proposal.block_header.clone(),
+                    proposal.tip.block_header.clone(),
                     proposal.block_body.clone(),
                 ) {
                     self.full_blocks
-                        .insert(proposal.block_header.get_id(), full_block);
+                        .insert(proposal.tip.block_header.get_id(), full_block);
                 }
             }
             // we could also evict from proposal_buffer here, but unnecessary

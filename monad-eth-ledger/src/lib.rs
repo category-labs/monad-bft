@@ -140,15 +140,15 @@ where
                     state.ledger_propose(
                         block.get_id(),
                         block.get_seq_num(),
-                        block.get_round(),
-                        block.get_parent_round(),
+                        block.get_block_round(),
+                        block.get_parent_block_round(),
                         new_account_nonces,
                     );
 
-                    match self.blocks.entry(block.get_round()) {
+                    match self.blocks.entry(block.get_block_round()) {
                         std::collections::btree_map::Entry::Vacant(entry) => {
                             let block_id = block.get_id();
-                            let round = block.get_round();
+                            let round = block.get_block_round();
                             entry.insert(block);
                             self.block_ids.insert(block_id, round);
                         }

@@ -1,8 +1,11 @@
-use std::{collections::HashMap, marker::PhantomData};
+use std::collections::HashMap;
 
-use alloy_rlp::{RlpDecodable, RlpEncodable};
-use monad_crypto::certificate_signature::{
-    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
+use monad_crypto::{
+    certificate_signature::{
+        CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
+    },
+    hasher::{Hashable, Hasher},
 };
 use monad_types::*;
 use serde::{Deserialize, Serialize};
@@ -13,7 +16,8 @@ use crate::{
         deserialize_signature_collection, serialize_signature_collection, SignatureCollection,
         SignatureCollectionError, SignatureCollectionKeyPairType,
     },
-    voting::ValidatorMapping,
+    tip::ConsensusTip,
+    voting::{ValidatorMapping, Vote},
 };
 
 /// Timeout message to broadcast to other nodes after a local timeout
@@ -25,51 +29,285 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    pub tminfo: TimeoutInfo<SCT>,
+    pub tminfo: TimeoutInfo,
+    pub timeout_signature: SCT::SignatureType,
+
+    pub high_extend: HighExtendVote<ST, SCT, EPT>,
+
     /// if the high qc round != tminfo.round-1, then this must be the
     /// TC for tminfo.round-1. Otherwise it must be None
     pub last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
 }
 
-/// Data to include in a timeout
-#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
-pub struct TimeoutInfo<SCT>
+/// An integrity hash over all the fields
+impl<ST, SCT, EPT> Hashable for Timeout<ST, SCT, EPT>
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    /// Epoch where the timeout happens
-    pub epoch: Epoch,
-    /// The round that timed out
-    pub round: Round,
-    /// The node's highest known qc
-    pub high_qc: QuorumCertificate<SCT>,
+    fn hash(&self, state: &mut impl Hasher) {
+        state.update(alloy_rlp::encode(self));
+    }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
-pub struct TimeoutDigest {
-    pub epoch: Epoch,
-    pub round: Round,
-    pub high_qc_round: Round,
-}
-
-impl<SCT> TimeoutInfo<SCT>
+impl<ST, SCT, EPT> Timeout<ST, SCT, EPT>
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    pub fn timeout_digest(&self) -> TimeoutDigest {
-        TimeoutDigest {
-            epoch: self.epoch,
-            round: self.round,
-            high_qc_round: self.high_qc.get_round(),
+    pub fn new(
+        cert_keypair: &SignatureCollectionKeyPairType<SCT>,
+        timeout: TimeoutInfo,
+        high_extend: HighExtend<ST, SCT, EPT>,
+        last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
+    ) -> Self {
+        let timeout_digest = alloy_rlp::encode(&timeout);
+        let timeout_signature =
+            <SCT::SignatureType as CertificateSignature>::sign(&timeout_digest, cert_keypair);
+
+        let high_extend = match high_extend {
+            HighExtend::Qc(qc) => HighExtendVote::Qc(qc),
+            HighExtend::Tip(tip) => {
+                let vote_digest = alloy_rlp::encode(Vote {
+                    round: timeout.round,
+                    epoch: timeout.epoch,
+                    id: tip.block_header.get_id(),
+                    block_round: tip.block_header.block_round,
+                });
+                let vote_signature =
+                    <SCT::SignatureType as CertificateSignature>::sign(&vote_digest, cert_keypair);
+                HighExtendVote::Tip(tip, vote_signature)
+            }
+        };
+
+        Self {
+            tminfo: timeout,
+            high_extend,
+            last_round_tc,
+
+            timeout_signature,
         }
     }
 }
 
-#[derive(
-    Clone, Copy, Debug, Hash, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize,
-)]
-pub struct HighQcRound {
-    pub qc_round: Round,
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(bound(serialize = "", deserialize = ""))]
+pub enum HighExtend<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    Tip(ConsensusTip<ST, SCT, EPT>),
+    Qc(QuorumCertificate<SCT>),
+}
+
+impl<ST, SCT, EPT> PartialOrd for HighExtend<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        match (&self, other) {
+            (Self::Qc(qc_1), Self::Qc(qc_2)) => {
+                if qc_1.get_round() == qc_2.get_round() {
+                    None
+                } else {
+                    Some(qc_1.get_round().cmp(&qc_2.get_round()))
+                }
+            }
+            (Self::Tip(tip_1), Self::Tip(tip_2)) => {
+                if tip_1.block_header.block_round == tip_2.block_header.block_round {
+                    None
+                } else {
+                    Some(
+                        tip_1
+                            .block_header
+                            .block_round
+                            .cmp(&tip_2.block_header.block_round),
+                    )
+                }
+            }
+            (Self::Qc(qc_1), Self::Tip(tip_2)) => {
+                if qc_1.get_round() == tip_2.block_header.block_round {
+                    // QC takes precedence
+                    Some(std::cmp::Ordering::Greater)
+                } else {
+                    Some(qc_1.get_round().cmp(&tip_2.block_header.block_round))
+                }
+            }
+            (Self::Tip(tip_1), Self::Qc(qc_2)) => {
+                if tip_1.block_header.block_round == qc_2.get_round() {
+                    // QC takes precedence
+                    Some(std::cmp::Ordering::Less)
+                } else {
+                    Some(tip_1.block_header.block_round.cmp(&qc_2.get_round()))
+                }
+            }
+        }
+    }
+}
+
+impl<ST, SCT, EPT> HighExtend<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    pub fn qc(&self) -> &QuorumCertificate<SCT> {
+        match &self {
+            Self::Tip(tip) => &tip.block_header.qc,
+            Self::Qc(qc) => qc,
+        }
+    }
+}
+
+impl<ST, SCT, EPT> Encodable for HighExtend<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        match &self {
+            Self::Tip(tip) => {
+                let enc: [&dyn Encodable; 2] = [&1u8, tip];
+                alloy_rlp::encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::Qc(qc) => {
+                let enc: [&dyn Encodable; 2] = [&2u8, qc];
+                alloy_rlp::encode_list::<_, dyn Encodable>(&enc, out);
+            }
+        }
+    }
+}
+
+impl<ST, SCT, EPT> Decodable for HighExtend<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+        match u8::decode(&mut payload)? {
+            1 => {
+                let tip = ConsensusTip::decode(&mut payload)?;
+                Ok(Self::Tip(tip))
+            }
+            2 => {
+                let qc = QuorumCertificate::decode(&mut payload)?;
+                Ok(Self::Qc(qc))
+            }
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown HighExtend",
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HighExtendVote<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    Tip(
+        ConsensusTip<ST, SCT, EPT>,
+        SCT::SignatureType, // vote
+    ),
+    Qc(QuorumCertificate<SCT>),
+}
+
+impl<ST, SCT, EPT> HighExtendVote<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    pub fn qc(&self) -> &QuorumCertificate<SCT> {
+        match &self {
+            Self::Tip(tip, _) => &tip.block_header.qc,
+            Self::Qc(qc) => qc,
+        }
+    }
+}
+
+impl<ST, SCT, EPT> Encodable for HighExtendVote<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        match &self {
+            Self::Tip(tip, vote_signature) => {
+                let enc: [&dyn Encodable; 3] = [&1u8, tip, vote_signature];
+                alloy_rlp::encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::Qc(qc) => {
+                let enc: [&dyn Encodable; 2] = [&2u8, qc];
+                alloy_rlp::encode_list::<_, dyn Encodable>(&enc, out);
+            }
+        }
+    }
+}
+
+impl<ST, SCT, EPT> Decodable for HighExtendVote<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+        match u8::decode(&mut payload)? {
+            1 => {
+                let tip = ConsensusTip::decode(&mut payload)?;
+                let vote_signature = SCT::SignatureType::decode(&mut payload)?;
+                Ok(Self::Tip(tip, vote_signature))
+            }
+            2 => {
+                let qc = QuorumCertificate::decode(&mut payload)?;
+                Ok(Self::Qc(qc))
+            }
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown HighExtend",
+            )),
+        }
+    }
+}
+
+impl<ST, SCT, EPT> From<HighExtendVote<ST, SCT, EPT>> for HighExtend<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn from(high_extend: HighExtendVote<ST, SCT, EPT>) -> Self {
+        match high_extend {
+            HighExtendVote::Qc(qc) => Self::Qc(qc),
+            HighExtendVote::Tip(tip, _) => Self::Tip(tip),
+        }
+    }
+}
+
+/// Data to include in a timeout
+#[derive(Clone, Debug, PartialEq, Eq, Hash, RlpEncodable, RlpDecodable)]
+pub struct TimeoutInfo {
+    /// Epoch where the timeout happens
+    pub epoch: Epoch,
+    /// The round that timed out
+    pub round: Round,
+    /// The node's highest voted tip
+    pub high_qc_round: Round,
+    /// The node's highest voted tip, if greater than high_qc_round
+    /// Otherwise, is zero (GENESIS_ROUND)
+    pub high_tip_round: Round,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize)]
@@ -77,8 +315,9 @@ pub struct HighQcRound {
     serialize = "SCT: SignatureCollection",
     deserialize = "SCT: SignatureCollection"
 ))]
-pub struct HighQcRoundSigColTuple<SCT> {
-    pub high_qc_round: HighQcRound,
+pub struct HighTipRoundSigColTuple<SCT> {
+    pub high_qc_round: Round,
+    pub high_tip_round: Round,
     #[serde(serialize_with = "serialize_signature_collection::<_, SCT>")]
     #[serde(deserialize_with = "deserialize_signature_collection::<_, SCT>")]
     pub sigs: SCT,
@@ -100,14 +339,11 @@ where
     /// The Timeout messages must have been for the same round
     /// to create a TC
     pub round: Round,
-    /// signatures over the round of the TC and the high qc round,
-    /// proving that the supermajority of the network is locked on the
-    /// same high_qc
-    pub high_qc_rounds: Vec<HighQcRoundSigColTuple<SCT>>,
+    /// signatures over the round of the TC and the high tip round,
+    pub tip_rounds: Vec<HighTipRoundSigColTuple<SCT>>,
 
-    // TODO delete in v2
-    #[serde(skip)]
-    pub _phantom: PhantomData<(ST, SCT, EPT)>,
+    // corresponds to the highest tip (or qc if no tip) in tip_rounds
+    pub high_extend: HighExtend<ST, SCT, EPT>,
 }
 
 impl<ST, SCT, EPT> TimeoutCertificate<ST, SCT, EPT>
@@ -119,57 +355,52 @@ where
     pub fn new(
         epoch: Epoch,
         round: Round,
-        high_qc_round_sig_tuple: &[(
-            NodeId<SCT::NodeIdPubKey>,
-            TimeoutInfo<SCT>,
-            SCT::SignatureType,
-        )],
+        high_tip_round_sig_tuple: &[(NodeId<SCT::NodeIdPubKey>, Timeout<ST, SCT, EPT>)],
         validator_mapping: &ValidatorMapping<
             SCT::NodeIdPubKey,
             SignatureCollectionKeyPairType<SCT>,
         >,
     ) -> Result<Self, SignatureCollectionError<SCT::NodeIdPubKey, SCT::SignatureType>> {
-        let mut sigs = HashMap::new();
-        for (node_id, tmo_info, sig) in high_qc_round_sig_tuple {
-            let high_qc_round = HighQcRound {
-                qc_round: tmo_info.high_qc.get_round(),
-            };
-            let tminfo_digest = tmo_info.timeout_digest();
-            let entry = sigs
-                .entry(high_qc_round)
-                .or_insert((tminfo_digest, Vec::new()));
-            assert_eq!(entry.0, tminfo_digest);
-            entry.1.push((*node_id, *sig));
+        let mut highest_extend = HighExtend::Qc(QuorumCertificate::genesis_qc());
+        let mut sigs: HashMap<TimeoutInfo, Vec<_>> = HashMap::new();
+        for (node_id, timeout) in high_tip_round_sig_tuple {
+            let entry = sigs.entry(timeout.tminfo.clone()).or_default();
+            entry.push((*node_id, timeout.timeout_signature));
+
+            let timeout_high_extend: HighExtend<_, _, _> = timeout.high_extend.clone().into();
+            if timeout_high_extend > highest_extend {
+                highest_extend = timeout_high_extend;
+            }
         }
-        let mut high_qc_rounds = Vec::new();
-        for (high_qc_round, (tminfo_digest, sigs)) in sigs.into_iter() {
-            let tminfo_digest_enc = alloy_rlp::encode(tminfo_digest);
+
+        let mut tip_rounds = Vec::new();
+        for (timeout_info, sigs) in sigs.into_iter() {
+            let tminfo_digest_enc = alloy_rlp::encode(&timeout_info);
             let sct = SCT::new(sigs, validator_mapping, tminfo_digest_enc.as_ref())?;
-            high_qc_rounds.push(HighQcRoundSigColTuple::<SCT> {
-                high_qc_round,
+            tip_rounds.push(HighTipRoundSigColTuple {
+                high_qc_round: timeout_info.high_qc_round,
+                high_tip_round: timeout_info.high_tip_round,
                 sigs: sct,
             });
         }
+
         Ok(Self {
             epoch,
             round,
-            high_qc_rounds,
-            _phantom: PhantomData,
+            tip_rounds,
+            high_extend: highest_extend,
         })
     }
 }
 
-impl<ST, SCT, EPT> TimeoutCertificate<ST, SCT, EPT>
+#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+pub struct NoTipCertificate<SCT>
 where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    EPT: ExecutionProtocol,
+    SCT: SignatureCollection,
 {
-    pub fn max_qc_round(&self) -> Round {
-        self.high_qc_rounds
-            .iter()
-            .map(|v| v.high_qc_round.qc_round)
-            .max()
-            .expect("verification of received TimeoutCertificates should have rejected any with empty high_qc_rounds")
-    }
+    pub epoch: Epoch,
+    pub round: Round,
+    pub tip_rounds: Vec<HighTipRoundSigColTuple<SCT>>,
+
+    pub high_qc: QuorumCertificate<SCT>,
 }

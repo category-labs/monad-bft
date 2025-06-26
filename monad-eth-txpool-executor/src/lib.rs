@@ -236,6 +236,7 @@ where
                     high_qc,
                     round_signature,
                     last_round_tc,
+                    fresh_proposal_certificate,
                     tx_limit,
                     proposal_gas_limit,
                     proposal_byte_limit,
@@ -280,6 +281,7 @@ where
                                     delayed_execution_results,
                                     proposed_execution_inputs,
                                     last_round_tc,
+                                    fresh_proposal_certificate,
                                 })
                                 .expect("events never dropped");
                         }

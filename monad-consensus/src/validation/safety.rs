@@ -1,6 +1,6 @@
-use std::marker::PhantomData;
-
-use monad_consensus_types::signature_collection::SignatureCollection;
+use monad_consensus_types::{
+    signature_collection::SignatureCollection, tip::ConsensusTip, RoundCertificate,
+};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -20,10 +20,12 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    highest_vote: Round,
-    highest_propose: Round,
+    maybe_high_tip: Option<ConsensusTip<ST, SCT, EPT>>,
 
-    _phantom: PhantomData<(ST, SCT, EPT)>,
+    highest_vote: Round,
+    highest_no_endorse: Round,
+    highest_propose: Round,
+    highest_recovery_request: Round,
 }
 
 impl<ST, SCT, EPT> Default for Safety<ST, SCT, EPT>
@@ -34,10 +36,11 @@ where
 {
     fn default() -> Self {
         Self {
+            maybe_high_tip: None,
             highest_vote: GENESIS_ROUND,
+            highest_no_endorse: GENESIS_ROUND,
             highest_propose: GENESIS_ROUND,
-
-            _phantom: PhantomData,
+            highest_recovery_request: GENESIS_ROUND,
         }
     }
 }
@@ -48,12 +51,30 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    pub fn new(highest_vote: Round) -> Self {
+    pub fn new(
+        high_certificate: RoundCertificate<ST, SCT, EPT>,
+        maybe_high_tip: Option<ConsensusTip<ST, SCT, EPT>>,
+    ) -> Self {
+        let current_round = high_certificate.round() + Round(1);
         Self {
-            highest_vote,
-            highest_propose: highest_vote,
+            maybe_high_tip,
 
-            _phantom: PhantomData,
+            highest_vote: current_round,
+            highest_no_endorse: current_round,
+            highest_propose: current_round,
+            highest_recovery_request: current_round,
+        }
+    }
+
+    pub fn maybe_high_tip(&self) -> Option<&ConsensusTip<ST, SCT, EPT>> {
+        self.maybe_high_tip.as_ref()
+    }
+
+    pub(crate) fn process_certificate(&mut self, certificate: &RoundCertificate<ST, SCT, EPT>) {
+        if let Some(tip) = &self.maybe_high_tip {
+            if certificate.qc().get_round() >= tip.block_header.block_round {
+                self.maybe_high_tip = None;
+            }
         }
     }
 
@@ -61,9 +82,19 @@ where
         round > self.highest_vote
     }
 
-    pub fn vote(&mut self, round: Round) {
+    pub fn vote(&mut self, round: Round, tip: ConsensusTip<ST, SCT, EPT>) {
         assert!(self.is_safe_to_vote(round));
         self.highest_vote = round;
+        self.maybe_high_tip = Some(tip);
+    }
+
+    pub fn is_safe_to_no_endorse(&self, round: Round) -> bool {
+        round > self.highest_no_endorse.max(self.highest_vote)
+    }
+
+    pub fn no_endorse(&mut self, round: Round) {
+        assert!(self.is_safe_to_no_endorse(round));
+        self.highest_no_endorse = round;
     }
 
     pub fn timeout(&mut self, round: Round) {
@@ -78,5 +109,14 @@ where
     pub fn propose(&mut self, round: Round) {
         assert!(self.is_safe_to_propose(round));
         self.highest_propose = round;
+    }
+
+    pub fn is_safe_to_recovery_request(&mut self, round: Round) -> bool {
+        round > self.highest_recovery_request
+    }
+
+    pub fn recovery_request(&mut self, round: Round) {
+        assert!(self.is_safe_to_recovery_request(round));
+        self.highest_recovery_request = round;
     }
 }

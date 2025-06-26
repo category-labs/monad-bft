@@ -54,6 +54,8 @@ where
                     ProtocolMessage::Proposal(_) => self.drop_proposal,
                     ProtocolMessage::Vote(_) => self.drop_vote,
                     ProtocolMessage::Timeout(_) => self.drop_timeout,
+                    ProtocolMessage::RoundRecovery(_) => false,
+                    ProtocolMessage::NoEndorsement(_) => false,
                 }
             }
             VerifiedMonadMessage::BlockSyncRequest(_)
@@ -129,12 +131,12 @@ where
         let capture = match &message {
             VerifiedMonadMessage::Consensus(consensus_msg) => {
                 match &consensus_msg.deref().deref().message {
-                    ProtocolMessage::Proposal(p) => {
-                        TwinsCapture::Process(pid, p.block_header.round)
-                    }
+                    ProtocolMessage::Proposal(p) => TwinsCapture::Process(pid, p.proposal_round),
                     ProtocolMessage::Vote(v) => TwinsCapture::Process(pid, v.vote.round),
                     // timeout naturally spread because liveness
                     ProtocolMessage::Timeout(_) => TwinsCapture::Spread(pid),
+                    ProtocolMessage::RoundRecovery(m) => TwinsCapture::Process(pid, m.round),
+                    ProtocolMessage::NoEndorsement(m) => TwinsCapture::Process(pid, m.msg.round),
                 }
             }
             VerifiedMonadMessage::BlockSyncRequest(_)

@@ -99,7 +99,7 @@ where
     fn update_cache(&mut self, monad_block: ConsensusFullBlock<ST, SCT, EthExecutionProtocol>) {
         let block_id = monad_block.get_id();
         let payload_id = monad_block.get_body_id();
-        let block_round = monad_block.get_round();
+        let block_round = monad_block.get_block_round();
 
         let maybe_removed = self
             .block_cache_index
@@ -204,7 +204,7 @@ where
             match command {
                 LedgerCommand::LedgerCommit(OptimisticCommit::Proposed(block)) => {
                     let block_id = block.get_id();
-                    let block_round = block.get_round();
+                    let block_round = block.get_block_round();
 
                     // this can panic because failure to persist a block is fatal error
                     self.write_bft_block(&block);
@@ -229,7 +229,7 @@ where
                     self.metrics[GAUGE_EXECUTION_LEDGER_NUM_COMMITS] += 1;
 
                     let block_id = block.get_id();
-                    let block_round = block.get_round();
+                    let block_round = block.get_block_round();
                     let num_tx = block.body().execution_body.transactions.len() as u64;
                     let block_num = block.get_seq_num().0;
                     info!(num_tx, block_num, "committed block");
@@ -246,7 +246,7 @@ where
                         continue;
                     }
 
-                    self.last_commit = Some((block.get_seq_num(), block.get_round()));
+                    self.last_commit = Some((block.get_seq_num(), block.get_block_round()));
 
                     self.bft_block_persist
                         .update_finalized_head(&block_id)

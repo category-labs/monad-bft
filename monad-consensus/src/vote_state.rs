@@ -213,8 +213,7 @@ mod test {
             id: BlockId(Hash([0x00_u8; 32])),
             epoch: Epoch(1),
             round: vote_round,
-            parent_id: BlockId(Hash([0x00_u8; 32])),
-            parent_round: Round(0),
+            block_round: vote_round,
         };
 
         let mut vm = VoteMessage::new(v, certkeypair);

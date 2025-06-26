@@ -97,7 +97,6 @@ where
                 children_blocks: Vec::new(),
             },
             tree: Default::default(),
-
             inserted_rounds: Default::default(),
         }
     }
@@ -168,7 +167,7 @@ where
             .iter()
             .filter_map(|(block_id, block)| {
                 if block.validated_block.get_parent_round()
-                    < new_root_entry.validated_block.get_round()
+                    < new_root_entry.validated_block.get_block_round()
                 {
                     Some(block_id)
                 } else {
@@ -181,13 +180,13 @@ where
             self.tree.remove(&block_to_delete);
         }
         while self.inserted_rounds.first().is_some_and(|inserted_round| {
-            inserted_round <= &new_root_entry.validated_block.get_round()
+            inserted_round <= &new_root_entry.validated_block.get_block_round()
         }) {
             self.inserted_rounds.pop_first();
         }
         self.root = Root {
             info: RootInfo {
-                round: new_root_entry.validated_block.get_round(),
+                round: new_root_entry.validated_block.get_block_round(),
                 seq_num: new_root_entry.validated_block.get_seq_num(),
                 epoch: new_root_entry.validated_block.get_epoch(),
                 block_id: new_root_entry.validated_block.get_id(),
@@ -210,7 +209,7 @@ where
         let new_block_id = block.get_id();
         let parent_id = block.get_parent_id();
 
-        self.inserted_rounds.insert(block.get_round());
+        self.inserted_rounds.insert(block.get_block_round());
         self.tree.insert(block);
 
         if parent_id == self.root.info.block_id {
@@ -321,7 +320,14 @@ where
                 continue;
             }
 
-            let Some(committable_block_id) = qc.get_committable_id() else {
+            let Some(qc_parent_block) = self.tree.get(&qc.get_block_id()) else {
+                // parent block doesn't exist, or parent block is root
+                continue;
+            };
+
+            let Some(committable_block_id) =
+                qc.get_committable_id(qc_parent_block.validated_block.header())
+            else {
                 // qc is not committable (not consecutive rounds)
                 continue;
             };
@@ -346,7 +352,7 @@ where
 
     /// returns a BlockRange that should be requested to fill the path from `qc` to the tree root.
     pub fn maybe_fill_path_to_root(&self, qc: &QuorumCertificate<SCT>) -> Option<BlockRange> {
-        if self.root.info.round >= qc.get_round() {
+        if self.root.info.round >= qc.get_block_round() {
             // root cannot be an ancestor of qc
             return None;
         }
@@ -355,7 +361,7 @@ where
         let mut num_blocks = SeqNum(1);
         while let Some(known_block_entry) = self.tree.get(&maybe_unknown_bid) {
             // If the parent round == self.root, we have path to root
-            if known_block_entry.validated_block.get_parent_round() == self.root.info.round {
+            if known_block_entry.validated_block.get_parent_block_round() == self.root.info.round {
                 assert_eq!(
                     known_block_entry.validated_block.get_parent_id(),
                     self.root.info.block_id
@@ -437,7 +443,7 @@ where
     /// A block is valid to insert if it does not already exist in the block
     /// tree and its round is greater than the round of the root
     pub fn is_valid_to_insert(&self, b: &ConsensusBlockHeader<ST, SCT, EPT>) -> bool {
-        !self.tree.contains_key(&b.get_id()) && b.round > self.root.info.round
+        !self.tree.contains_key(&b.get_id()) && b.block_round > self.root.info.round
     }
 
     pub fn tree(&self) -> &Tree<ST, SCT, EPT, BPT, SBT> {
@@ -552,9 +558,8 @@ mod test {
         Vote {
             id: block.get_id(),
             epoch: block.epoch,
-            round: block.round,
-            parent_id: block.get_parent_id(),
-            parent_round: block.qc.get_round(),
+            round: block.block_round,
+            block_round: block.block_round,
         }
     }
 
@@ -566,9 +571,8 @@ mod test {
         let vote = Vote {
             id: block.get_id(),
             epoch: block.epoch,
-            round: block.round,
-            parent_id: block.get_parent_id(),
-            parent_round: block.qc.get_round(),
+            block_round: block.block_round,
+            round: block.block_round,
         };
         QC::new(vote, MockSignatures::with_pubkeys(&[]))
     }
@@ -601,7 +605,7 @@ mod test {
         tx_bytes: &[u8],
     ) -> FullBlock {
         let parent = parent.header();
-        let round = maybe_round.unwrap_or(parent.round + Round(1));
+        let round = maybe_round.unwrap_or(parent.block_round + Round(1));
 
         let body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: MockExecutionBody {

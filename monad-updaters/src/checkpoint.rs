@@ -102,10 +102,9 @@ where
             };
             std::fs::write(
                 format!(
-                    "{}.{}.{}.{}",
+                    "{}.{}.{}",
                     self.out_path.to_string_lossy(),
                     root_seq_num.0,
-                    checkpoint.high_qc.get_round().0,
                     checkpoint.high_certificate.round().0,
                 ),
                 &checkpoint_str,

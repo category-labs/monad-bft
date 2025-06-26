@@ -23,6 +23,9 @@ pub struct InMemoryStateInner {
     /// will pass if the sum doesn't exceed the max account balance
     max_account_balance: Balance,
     execution_delay: SeqNum,
+
+    /// can be used to mess with eth-header execution results
+    pub extra_data: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +60,7 @@ impl InMemoryStateInner {
             proposals: Default::default(),
             max_account_balance,
             execution_delay,
+            extra_data: 0,
         }))
     }
     pub fn new(
@@ -69,6 +73,7 @@ impl InMemoryStateInner {
             proposals: Default::default(),
             max_account_balance,
             execution_delay,
+            extra_data: 0,
         }))
     }
 
@@ -241,6 +246,7 @@ impl StateBackend for InMemoryStateInner {
         // TODO make this mock less trivial
         Ok(EthHeader(Header {
             number: seq_num.0,
+            gas_limit: self.extra_data,
             ..Default::default()
         }))
     }

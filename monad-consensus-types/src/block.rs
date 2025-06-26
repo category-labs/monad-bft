@@ -30,15 +30,16 @@ pub struct BlockRange {
 /// structure of the consensus block
 /// the payload field is used to carry the data of the block
 /// which is agnostic to the actual protocol of consensus
-#[derive(Clone, RlpDecodable, RlpEncodable)]
+#[derive(Clone, PartialEq, Eq, RlpDecodable, RlpEncodable)]
 pub struct ConsensusBlockHeader<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    /// round this block was proposed in
-    pub round: Round,
+    /// round this block was first proposed in
+    /// note that this will differ from proposal_round for a reproposal
+    pub block_round: Round,
     /// Epoch this block was proposed in
     pub epoch: Epoch,
     /// Certificate of votes for the parent block
@@ -75,24 +76,6 @@ where
     }
 }
 
-impl<ST, SCT, EPT> PartialEq for ConsensusBlockHeader<ST, SCT, EPT>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    EPT: ExecutionProtocol,
-{
-    fn eq(&self, other: &Self) -> bool {
-        self.get_id() == other.get_id()
-    }
-}
-impl<ST, SCT, EPT> Eq for ConsensusBlockHeader<ST, SCT, EPT>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    EPT: ExecutionProtocol,
-{
-}
-
 impl<ST, SCT, EPT> Debug for ConsensusBlockHeader<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -103,7 +86,7 @@ where
         f.debug_struct("ConsensusBlockHeader")
             .field("author", &self.author)
             .field("epoch", &self.epoch)
-            .field("round", &self.round)
+            .field("block_round", &self.block_round)
             .field("block_body_id", &self.block_body_id)
             .field("qc", &self.qc)
             .field("seq_num", &self.seq_num)
@@ -123,7 +106,7 @@ where
     pub fn new(
         author: NodeId<SCT::NodeIdPubKey>,
         epoch: Epoch,
-        round: Round,
+        block_round: Round,
         delayed_execution_results: Vec<EPT::FinalizedHeader>,
         execution_inputs: EPT::ProposedHeader,
         block_body_id: ConsensusBlockBodyId,
@@ -135,7 +118,7 @@ where
         Self {
             author,
             epoch,
-            round,
+            block_round,
             delayed_execution_results,
             execution_inputs,
             block_body_id,
@@ -355,8 +338,11 @@ where
     pub fn get_body_id(&self) -> ConsensusBlockBodyId {
         self.header.block_body_id
     }
-    pub fn get_round(&self) -> Round {
-        self.header.round
+    pub fn get_block_round(&self) -> Round {
+        self.header.block_round
+    }
+    pub fn get_parent_block_round(&self) -> Round {
+        self.header.qc.get_block_round()
     }
     pub fn get_parent_round(&self) -> Round {
         self.header.qc.get_round()

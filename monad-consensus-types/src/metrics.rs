@@ -105,7 +105,12 @@ metrics!(
             commit_block,
             enter_new_round_qc,
             enter_new_round_tc,
-            trigger_state_sync
+            trigger_state_sync,
+            handle_round_recovery,
+            invalid_round_recovery_leader,
+            handle_no_endorsement,
+            old_no_endorsement_received,
+            created_nec
         ]
     ),
     (

@@ -1,8 +1,12 @@
 use alloy_rlp::{RlpDecodable, RlpEncodable};
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_types::*;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    block::ConsensusBlockHeader,
     signature_collection::{
         deserialize_signature_collection, serialize_signature_collection, SignatureCollection,
     },
@@ -65,9 +69,8 @@ impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
         let vote = Vote {
             id: GENESIS_BLOCK_ID,
             epoch: Epoch(1),
+            block_round: GENESIS_ROUND,
             round: GENESIS_ROUND,
-            parent_id: GENESIS_BLOCK_ID,
-            parent_round: GENESIS_ROUND,
         };
 
         let sigs = SCT::new(Vec::new(), &ValidatorMapping::new(std::iter::empty()), &[])
@@ -79,13 +82,28 @@ impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
         }
     }
 
-    /// Returns a committable block_id, if exists
-    pub fn get_committable_id(&self) -> Option<BlockId> {
-        if self.info.round == self.info.parent_round + Round(1) {
-            Some(self.info.parent_id)
+    /// returns a committable block_id if the commit rule passes
+    ///
+    /// qc_parent_block MUST be the the block that self points to
+    pub fn get_committable_id<ST, EPT>(
+        &self,
+        qc_parent_block: &ConsensusBlockHeader<ST, SCT, EPT>,
+    ) -> Option<BlockId>
+    where
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        EPT: ExecutionProtocol,
+    {
+        assert_eq!(self.info.id, qc_parent_block.get_id());
+        if self.info.round == qc_parent_block.qc.info.round + Round(1) {
+            Some(qc_parent_block.get_parent_id())
         } else {
             None
         }
+    }
+
+    pub fn get_block_round(&self) -> Round {
+        self.info.block_round
     }
 
     pub fn get_round(&self) -> Round {

@@ -52,7 +52,20 @@ impl BlockTimestamp {
         prev_block_ts: u128,
         curr_block_ts: u128,
         vote_delay_ns: u128,
+        is_reproposal: bool,
     ) -> Option<TimestampAdjustment> {
+        if is_reproposal {
+            // we can't validate precise bounds of reproposal
+            // just make sure that it's monotonically increasing and less than current time
+            return if curr_block_ts > prev_block_ts && curr_block_ts < self.local_time_ns {
+                Some(TimestampAdjustment {
+                    delta: 0,
+                    direction: TimestampAdjustmentDirection::Forward,
+                })
+            } else {
+                None
+            };
+        }
         let delta = curr_block_ts.checked_sub(prev_block_ts);
         match delta {
             // block timestamp must be strictly monotonically increasing
@@ -97,12 +110,12 @@ mod test {
         let mut b = BlockTimestamp::new(10, 1);
         b.update_time(0);
 
-        assert!(b.valid_block_timestamp(1, 1, 0).is_none());
-        assert!(b.valid_block_timestamp(2, 1, 0).is_none());
-        assert!(b.valid_block_timestamp(0, 11, 0).is_none());
+        assert!(b.valid_block_timestamp(1, 1, 0, false).is_none());
+        assert!(b.valid_block_timestamp(2, 1, 0, false).is_none());
+        assert!(b.valid_block_timestamp(0, 11, 0, false).is_none());
 
         assert!(matches!(
-            b.valid_block_timestamp(0, 11, 20),
+            b.valid_block_timestamp(0, 11, 20, false),
             Some(TimestampAdjustment {
                 delta: 10,
                 direction: TimestampAdjustmentDirection::Forward
@@ -110,7 +123,7 @@ mod test {
         ));
 
         assert!(matches!(
-            b.valid_block_timestamp(1, 2, 0),
+            b.valid_block_timestamp(1, 2, 0, false),
             Some(TimestampAdjustment {
                 delta: 1,
                 direction: TimestampAdjustmentDirection::Forward
@@ -120,7 +133,7 @@ mod test {
         b.update_time(10);
 
         assert!(matches!(
-            b.valid_block_timestamp(5, 8, 0),
+            b.valid_block_timestamp(5, 8, 0, false),
             Some(TimestampAdjustment {
                 delta: 1,
                 direction: TimestampAdjustmentDirection::Backward
