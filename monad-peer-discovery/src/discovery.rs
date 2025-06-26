@@ -40,6 +40,7 @@ pub const GAUGE_PEER_DISC_RECV_LOOKUP_RESPONSE: &str = "monad.peer_disc.recv_loo
 pub const GAUGE_PEER_DISC_DROP_LOOKUP_RESPONSE: &str = "monad.peer_disc.drop_lookup_response";
 pub const GAUGE_PEER_DISC_LOOKUP_TIMEOUT: &str = "monad.peer_disc.lookup_timeout";
 pub const GAUGE_PEER_DISC_REFRESH: &str = "monad.peer_disc.refresh";
+pub const GAUGE_PEER_DISC_NUM_CONNECTED_PEERS: &str = "monad.peer_disc.num_connected_peers";
 
 #[derive(Debug, Clone, Copy)]
 pub struct PeerInfo<ST: CertificateSignatureRecoverable> {
@@ -234,6 +235,8 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
                 name_record,
             });
         }
+
+        self.metrics[GAUGE_PEER_DISC_NUM_CONNECTED_PEERS] = self.peer_info.len() as u64;
 
         // send pings to newly modified/added peers
         self.send_ping(node_id)
@@ -697,6 +700,8 @@ where
                 cmds.extend(self.send_peer_lookup_request(peer, self.self_id, true));
             }
         }
+
+        self.metrics[GAUGE_PEER_DISC_NUM_CONNECTED_PEERS] = self.peer_info.len() as u64;
 
         // reset timer to schedule for the next refresh
         cmds.extend(self.reset_refresh_timer());
