@@ -70,13 +70,12 @@ ARG TRIEDB_TARGET=triedb_driver
 # Builder
 COPY . .
 RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" \
-    CC=gcc-15 CXX=g++-15 cargo build --release --bin monad-node --features full-node --bin monad-keystore --bin monad-debug-node --example ledger-tail --example wal2json --example wal-tool --example triedb-debug --example triedb-bench --example sign-name-record && \
+    CC=gcc-15 CXX=g++-15 cargo build --release --bin monad-node --features full-node --bin monad-keystore --bin monad-debug-node --example ledger-tail --example wal2json --example triedb-debug --example triedb-bench --example sign-name-record && \
     mv target/release/monad-node monad-node && \
     mv target/release/monad-keystore keystore && \
     mv target/release/monad-debug-node monad-debug-node && \
     mv target/release/examples/ledger-tail ledger-tail && \
     mv target/release/examples/wal2json wal2json && \
-    mv target/release/examples/wal-tool wal-tool && \
     mv target/release/examples/triedb-debug triedb-debug && \
     mv target/release/examples/triedb-bench triedb-bench && \
     mv target/release/examples/sign-name-record sign-name-record && \
@@ -98,7 +97,6 @@ COPY --from=builder /usr/src/monad-bft/keystore /usr/local/bin/keystore
 COPY --from=builder /usr/src/monad-bft/monad-debug-node/monad-debug-node /usr/local/bin/monad-debug-node
 COPY --from=builder /usr/src/monad-bft/ledger-tail /usr/local/bin/ledger-tail
 COPY --from=builder /usr/src/monad-bft/wal2json /usr/local/bin/wal2json
-COPY --from=builder /usr/src/monad-bft/wal-tool /usr/local/bin/wal-tool
 COPY --from=builder /usr/src/monad-bft/triedb-debug /usr/local/bin/triedb-debug
 COPY --from=builder /usr/src/monad-bft/triedb-bench /usr/local/bin/triedb-bench
 COPY --from=builder /usr/src/monad-bft/sign-name-record /usr/local/bin/sign-name-record
@@ -114,7 +112,6 @@ RUN strip \
     /usr/local/bin/monad-debug-node \
     /usr/local/bin/ledger-tail \
     /usr/local/bin/wal2json \
-    /usr/local/bin/wal-tool \
     /usr/local/bin/triedb-debug \
     /usr/local/bin/triedb-bench \
     /usr/local/bin/sign-name-record \

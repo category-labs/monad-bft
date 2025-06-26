@@ -16,20 +16,14 @@ bytes = { workspace = true }
 
 [dev-dependencies]
 monad-bls = { workspace = true }
-monad-consensus = { workspace = true }
 monad-crypto = { workspace = true }
 monad-eth-types = { workspace = true }
 monad-executor-glue = { workspace = true }
 monad-secp = { workspace = true }
 monad-types = { workspace = true }
 
-chrono = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 criterion = { workspace = true }
-crossterm = { workspace = true }
-itertools = { workspace = true }
-ratatui = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 
