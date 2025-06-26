@@ -67,8 +67,6 @@ fn setup_block(
         id: BlockId(Hash([0x00_u8; 32])),
         epoch: qc_epoch,
         round: qc_round,
-        parent_id: BlockId(Hash([0x00_u8; 32])),
-        parent_round: qc_parent_round,
     };
 
     let qc = QuorumCertificate::<MockSignatures<SignatureType>>::new(
@@ -163,8 +161,6 @@ fn define_proposal_with_tc(
         id: BlockId(Hash([0x09_u8; 32])),
         epoch: qc_epoch,
         round: qc_round,
-        parent_id: BlockId(Hash([0x00_u8; 32])),
-        parent_round: qc_parent_round,
     };
 
     let qc = QuorumCertificate::<MockSignatures<SignatureType>>::new(

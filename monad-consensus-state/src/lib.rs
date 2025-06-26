@@ -941,7 +941,17 @@ where
         let mut cmds = Vec::new();
         debug!(?qc, "try committing blocks using qc");
 
-        let Some(committable_block_id) = qc.get_committable_id() else {
+        let Some(qc_parent) = self
+            .consensus
+            .pending_block_tree
+            .get_block(&qc.get_block_id())
+        else {
+            // the block that the qc points to doesn't exist
+            // or parent block is root, which
+            return cmds;
+        };
+
+        let Some(committable_block_id) = qc.get_committable_id(qc_parent.header()) else {
             // qc is not committable (not consecutive rounds)
             return cmds;
         };
@@ -1117,8 +1127,6 @@ where
             id: validated_block.get_id(),
             round,
             epoch: validated_block.get_epoch(),
-            parent_id: validated_block.get_parent_id(),
-            parent_round: validated_block.get_parent_round(),
         };
 
         match self.consensus.scheduled_vote {
@@ -2073,8 +2081,6 @@ mod test {
             id: BlockId(Hash([0x00_u8; 32])),
             epoch: Epoch(1),
             round: expected_qc_high_round,
-            parent_id: BlockId(Hash([0x00_u8; 32])),
-            parent_round: expected_qc_high_round - Round(1),
         };
 
         let vm1 = VoteMessage::<SignatureCollectionType>::new(v, &env.cert_keys[1]);
@@ -2421,9 +2427,6 @@ mod test {
         assert!(
             matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(1))
         );
-        assert!(
-            matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == v.parent_round + Round(1))
-        );
 
         let rounds = extract_proposal_commit_rounds(cmds);
         assert_eq!(rounds, vec![Round(1)]);
@@ -2435,9 +2438,6 @@ mod test {
 
         assert!(
             matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(2))
-        );
-        assert!(
-            matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == v.parent_round + Round(1))
         );
 
         let rounds = extract_proposal_commit_rounds(cmds);
@@ -2514,9 +2514,6 @@ mod test {
         assert!(
             matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(2))
         );
-        assert!(
-            matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == v.parent_round + Round(1))
-        );
 
         // round 2 timeout
         let pacemaker_cmds = wrapped_state
@@ -2550,7 +2547,7 @@ mod test {
         let p3_votes = extract_vote_msgs(cmds);
         assert!(p3_votes.len() == 1);
         let p3_vote = p3_votes[0].vote;
-        assert!(p3_vote.round != p3_vote.parent_round + Round(1));
+        assert_eq!(p3_vote.round, Round(3));
     }
 
     // this test checks that a malicious proposal sent only to the next leader is

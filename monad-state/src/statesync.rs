@@ -124,7 +124,8 @@ where
             self.proposal_buffer.pop_front();
         }
 
-        let finalized_block_id = proposal_qc.get_committable_id()?;
+        let qc_parent_block = self.block_headers.get(&proposal_qc.get_block_id())?;
+        let finalized_block_id = proposal_qc.get_committable_id(qc_parent_block)?;
         let finalized_block = self.block_headers.get(&finalized_block_id)?;
 
         if finalized_block.seq_num <= root_seq_num + self.resync_threshold {

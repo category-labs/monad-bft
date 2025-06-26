@@ -321,7 +321,14 @@ where
                 continue;
             }
 
-            let Some(committable_block_id) = qc.get_committable_id() else {
+            let Some(qc_parent_block) = self.tree.get(&qc.get_block_id()) else {
+                // parent block doesn't exist, or parent block is root
+                continue;
+            };
+
+            let Some(committable_block_id) =
+                qc.get_committable_id(qc_parent_block.validated_block.header())
+            else {
                 // qc is not committable (not consecutive rounds)
                 continue;
             };
@@ -553,8 +560,6 @@ mod test {
             id: block.get_id(),
             epoch: block.epoch,
             round: block.round,
-            parent_id: block.get_parent_id(),
-            parent_round: block.qc.get_round(),
         }
     }
 
@@ -567,8 +572,6 @@ mod test {
             id: block.get_id(),
             epoch: block.epoch,
             round: block.round,
-            parent_id: block.get_parent_id(),
-            parent_round: block.qc.get_round(),
         };
         QC::new(vote, MockSignatures::with_pubkeys(&[]))
     }

@@ -912,8 +912,6 @@ mod test {
         let vote = Vote {
             id: BlockId(Hash([0x00_u8; 32])),
             round: Round(3),
-            parent_id: BlockId(Hash([0x01_u8; 32])),
-            parent_round: Round(2),
             ..DontCare::dont_care()
         };
 
@@ -976,8 +974,6 @@ mod test {
         // create an old qc on Round(3)
         let vote = Vote {
             round: Round(3),
-            parent_id: BlockId(Hash([0x01_u8; 32])),
-            parent_round: Round(2),
             ..DontCare::dont_care()
         };
 
@@ -1114,8 +1110,6 @@ mod test {
             id: BlockId(Hash([0x0a_u8; 32])),
             epoch: Epoch(2), // wrong epoch: should be 1
             round: Round(10),
-            parent_id: BlockId(Hash([0x09_u8; 32])),
-            parent_round: Round(9),
         };
 
         let vote_message = VoteMessage::<SignatureCollectionType>::new(vote, author_cert_key);
@@ -1172,8 +1166,6 @@ mod test {
             id: BlockId(Hash([0x09_u8; 32])),
             epoch: Epoch(2), // wrong epoch
             round: Round(10),
-            parent_id: BlockId(Hash([0x0a_u8; 32])),
-            parent_round: Round(9),
         };
 
         let msg = alloy_rlp::encode(vote);
@@ -1220,8 +1212,6 @@ mod test {
             id: BlockId(Hash([0x09_u8; 32])),
             epoch: Epoch(1), // correct epoch
             round: Round(10),
-            parent_id: BlockId(Hash([0x0a_u8; 32])),
-            parent_round: Round(9),
         };
 
         let msg = alloy_rlp::encode(vote);
