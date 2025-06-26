@@ -78,6 +78,10 @@ async fn handler(
 ) {
     debug!(?hostname, ?peer_addr, "ws connection opened");
 
+    if let Some(metrics) = &app_state.metrics {
+        metrics.record_websocket_connection(1);
+    }
+
     let mut last_heartbeat = Instant::now();
     let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
 
@@ -96,10 +100,10 @@ async fn handler(
         tokio::select! {
             _ = interval.tick() => {
                 if Instant::now().duration_since(last_heartbeat) > Duration::from_secs(CLIENT_TIMEOUT_SECS) {
-                    break CloseReason {
+                    break Some(CloseReason {
                         code: ws::CloseCode::Protocol,
                         description: Some(format!("ws server did not receive ping in {CLIENT_TIMEOUT_SECS}s"))
-                    };
+                    });
                 }
 
                 if let Err(err) = session.ping(b"").await {
@@ -126,7 +130,7 @@ async fn handler(
                         match request {
                             Ok(req) => {
                                 if let Err(close_reason) = handle_request(&mut session, &mut subscriptions, &app_state, req).await {
-                                    break close_reason;
+                                    break Some(close_reason);
                                 }
                             }
                             Err(e) => {
@@ -134,7 +138,7 @@ async fn handler(
                                     .text(to_response(&crate::jsonrpc::Response::from_error(e)))
                                     .await {
                                     warn!(?err, "ws handler AggregatedMessage text error");
-                                    return;
+                                    break None;
                                 }
                             }
                         };
@@ -147,7 +151,7 @@ async fn handler(
                         match request {
                             Ok(req) => {
                                 if let Err(close_reason) = handle_request(&mut session, &mut subscriptions, &app_state, req).await {
-                                    break close_reason;
+                                    break Some(close_reason);
                                 }
                             }
                             Err(e) => {
@@ -155,25 +159,25 @@ async fn handler(
                                     .binary(to_response(&crate::jsonrpc::Response::from_error(e)))
                                     .await {
                                     warn!(?err, "ws handler AggregatedMessage binary error");
-                                    return;
+                                    break None;
                                 }
                             }
                         };
                     }
                     Some(Ok(AggregatedMessage::Close(close_reason))) => {
                         debug!(?hostname, ?peer_addr, ?close_reason, "ws connection closed by request");
-                        return;
+                        break None;
                     }
                     Some(Err(err)) => {
                         error!(?err, "ws connection protocol error");
-                        break CloseReason {
+                        break Some(CloseReason {
                             code: ws::CloseCode::Protocol,
                             description: Some(format!("ws protocol error: {err:#?}"))
-                        };
+                        });
                     }
                     None => {
                         warn!(?hostname, ?peer_addr, "ws connection closed abruptly");
-                        return;
+                        break None;
                     }
                 }
             }
@@ -181,24 +185,24 @@ async fn handler(
                 match cmd {
                     Ok(msg) => {
                         if let Err(close_reason) = handle_notification(&mut session, &subscriptions, msg).await {
-                            break close_reason;
+                            break Some(close_reason);
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(skipped_messages)) => {
                         warn!(?skipped_messages, "ws handler lagging");
 
-                        break CloseReason {
+                        break Some(CloseReason {
                             code: ws::CloseCode::Error,
                             description: Some("ws server lagging, please try again later".to_string())
-                        };
+                        });
                     }
                     Err(broadcast::error::RecvError::Closed) => {
                         error!("ws handler detected event server close");
 
-                        break CloseReason {
+                        break Some(CloseReason {
                             code: ws::CloseCode::Error,
                             description: Some("ws server shutdown".to_string())
-                        };
+                        });
                     }
                 }
             }
@@ -207,8 +211,19 @@ async fn handler(
 
     debug!(?hostname, ?peer_addr, ?close_reason, "ws connection closed");
 
-    if let Err(err) = session.close(Some(close_reason)).await {
-        warn!("ws handler close error: {err:?}");
+    if let Some(reason) = close_reason {
+        session
+            .close(Some(reason))
+            .await
+            .unwrap_or_else(|err| warn!("ws handler close error: {err:?}"));
+    }
+
+    if let Some(metrics) = &app_state.metrics {
+        metrics.record_websocket_connection(-1);
+
+        subscriptions.iter().for_each(|(_, subs)| {
+            metrics.record_websocket_topic(-(subs.len() as i64));
+        });
     }
 }
 
@@ -404,6 +419,10 @@ async fn handle_request(
                 .entry(req.kind)
                 .or_default()
                 .push((id, filter));
+
+            if let Some(metrics) = &app_state.metrics {
+                metrics.record_websocket_topic(1);
+            }
         }
         "eth_unsubscribe" => {
             let Ok(req) = serde_json::from_value::<EthUnsubscribeRequest>(request.params) else {
@@ -437,6 +456,12 @@ async fn handle_request(
                 if vec.len() < original_len {
                     exists = true;
                     break;
+                }
+            }
+
+            if exists {
+                if let Some(metrics) = &app_state.metrics {
+                    metrics.record_websocket_topic(-1);
                 }
             }
 

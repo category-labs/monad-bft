@@ -97,6 +97,8 @@ fn attributes_from_request(req: &ServiceRequest) -> Vec<KeyValue> {
 pub struct Metrics {
     request_duration: Histogram<f64>,
     active_requests: UpDownCounter<i64>,
+    active_websocket_connections: UpDownCounter<i64>,
+    active_websocket_topics: UpDownCounter<i64>,
     pub(crate) execution_histogram: Histogram<f64>,
 }
 
@@ -114,6 +116,16 @@ impl Metrics {
             .with_description("Number of concurrent http requests that are in-flight")
             .build();
 
+        let active_websocket_connections = meter
+            .i64_up_down_counter("monad.ws.active_connections")
+            .with_description("Number of active websocket connections")
+            .build();
+
+        let active_websocket_topics = meter
+            .i64_up_down_counter("monad.ws.active_topics")
+            .with_description("Number of active websocket topics")
+            .build();
+
         let execution_histogram = meter
             .f64_histogram("monad.rpc.execution_duration")
             .with_description("duration of the rpc method execution")
@@ -124,8 +136,18 @@ impl Metrics {
         Self {
             request_duration,
             active_requests,
+            active_websocket_connections,
+            active_websocket_topics,
             execution_histogram,
         }
+    }
+
+    pub fn record_websocket_connection(&self, increment: i64) {
+        self.active_websocket_connections.add(increment, &[]);
+    }
+
+    pub fn record_websocket_topic(&self, increment: i64) {
+        self.active_websocket_topics.add(increment, &[]);
     }
 }
 
