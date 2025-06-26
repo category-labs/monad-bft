@@ -1272,9 +1272,7 @@ mod test {
             let vote = Vote {
                 id: block.get_id(),
                 epoch: block.epoch,
-                round: block.round,
-                parent_id: block.qc.get_block_id(),
-                parent_round: block.qc.get_round(),
+                round: block.block_round,
             };
 
             let msg = alloy_rlp::encode(vote);

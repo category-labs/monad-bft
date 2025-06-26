@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -8,12 +8,11 @@ use alloy_primitives::Address;
 use itertools::Itertools;
 use monad_eth_types::{EthAccount, EthHeader};
 use monad_state_backend::{StateBackend, StateBackendError};
-use monad_types::{BlockId, DropTimer, Round, SeqNum};
+use monad_types::{BlockId, DropTimer, SeqNum};
 use tracing::warn;
 
 #[derive(Debug)]
-struct RoundCache {
-    block_id: BlockId,
+struct BlockCache {
     seq_num: SeqNum,
     accounts: BTreeMap<Address, Option<EthAccount>>,
     execution_result: Option<EthHeader>,
@@ -22,7 +21,7 @@ struct RoundCache {
 #[derive(Debug)]
 pub struct StateBackendCache<SBT> {
     // used so that StateBackendCache can maintain a logically immutable interface
-    cache: Arc<Mutex<BTreeMap<Round, RoundCache>>>,
+    cache: Arc<Mutex<HashMap<BlockId, BlockCache>>>,
     state_backend: SBT,
     execution_delay: SeqNum,
 }
@@ -48,7 +47,6 @@ where
         &self,
         block_id: &BlockId,
         seq_num: &SeqNum,
-        round: &Round,
         is_finalized: bool,
         addresses: impl Iterator<Item = &'a Address>,
     ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
@@ -63,19 +61,11 @@ where
         // pass in a unique set of accounts
         let unique_addresses = addresses.iter().unique().copied();
         // find accounts that are missing from cache
-        let cache_misses: Vec<_> = match cache.get(round) {
+        let cache_misses: Vec<_> = match cache.get(block_id) {
             None => unique_addresses.collect(),
-            Some(round_cache) => {
-                if &round_cache.block_id != block_id {
-                    // drop cache, fetching new block_id for given round
-                    cache.remove(round);
-                    unique_addresses.collect()
-                } else {
-                    unique_addresses
-                        .filter(|&address| !round_cache.accounts.contains_key(address))
-                        .collect()
-                }
-            }
+            Some(block_cache) => unique_addresses
+                .filter(|&address| !block_cache.accounts.contains_key(address))
+                .collect(),
         };
 
         if !cache_misses.is_empty() {
@@ -91,15 +81,13 @@ where
                 self.state_backend.get_account_statuses(
                     block_id,
                     seq_num,
-                    round,
                     is_finalized,
                     cache_misses.iter().copied(),
                 )?
             };
             cache
-                .entry(*round)
-                .or_insert_with(|| RoundCache {
-                    block_id: *block_id,
+                .entry(*block_id)
+                .or_insert_with(|| BlockCache {
                     seq_num: *seq_num,
                     accounts: Default::default(),
                     execution_result: None,
@@ -113,16 +101,14 @@ where
                 )
         }
 
-        let round_cache = cache
-            .get(round)
+        let block_cache = cache
+            .get(block_id)
             .expect("cache must be populated... we asserted nonzero addresses at the start");
-
-        assert_eq!(&round_cache.block_id, block_id);
 
         let accounts_data = addresses
             .iter()
             .map(|&address| {
-                round_cache
+                block_cache
                     .accounts
                     .get(address)
                     .expect("cache was hydrated")
@@ -134,21 +120,7 @@ where
             .raw_read_latest_finalized_block()
             .unwrap_or(SeqNum::MAX);
 
-        while cache.first_entry().is_some_and(|entry| {
-            (entry.get().seq_num + self.execution_delay) < last_finalized_block
-        }) {
-            let (evicted, _) = cache.pop_first().expect("nonempty");
-            if &evicted == round {
-                let maybe_latest = cache.last_key_value().map(|(latest, _)| latest);
-                tracing::warn!(
-                    ?evicted,
-                    ?round,
-                    ?maybe_latest,
-                    ?last_finalized_block,
-                    "unexpected cache thrashing? only expect queries on the delay latest finalized blocks"
-                );
-            }
-        }
+        cache.retain(|_, block| block.seq_num + self.execution_delay >= last_finalized_block);
 
         Ok(accounts_data)
     }
@@ -157,28 +129,23 @@ where
         &self,
         block_id: &BlockId,
         seq_num: &SeqNum,
-        round: &Round,
         is_finalized: bool,
     ) -> Result<EthHeader, StateBackendError> {
         let mut cache = self.cache.lock().unwrap();
 
-        if let Some(round_cache) = cache.get(round) {
-            if &round_cache.block_id != block_id {
-                // drop cache
-                cache.remove(round);
-            } else if let Some(execution_result) = &round_cache.execution_result {
+        if let Some(block_cache) = cache.get(block_id) {
+            if let Some(execution_result) = &block_cache.execution_result {
                 return Ok(execution_result.clone());
             }
         }
 
         let execution_result =
             self.state_backend
-                .get_execution_result(block_id, seq_num, round, is_finalized)?;
+                .get_execution_result(block_id, seq_num, is_finalized)?;
 
         cache
-            .entry(*round)
-            .or_insert_with(|| RoundCache {
-                block_id: *block_id,
+            .entry(*block_id)
+            .or_insert_with(|| BlockCache {
                 seq_num: *seq_num,
                 accounts: Default::default(),
                 execution_result: None,

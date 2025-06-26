@@ -17,9 +17,9 @@ use monad_crypto::certificate_signature::{
 use monad_eth_txpool_types::TransactionError;
 use monad_eth_types::{Balance, EthAccount, EthExecutionProtocol, EthHeader, Nonce};
 use monad_state_backend::{StateBackend, StateBackendError};
-use monad_types::{BlockId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM};
+use monad_types::{BlockId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_SEQ_NUM};
 use sorted_vector_map::SortedVectorMap;
-use tracing::{debug, trace, warn};
+use tracing::{trace, warn};
 
 /// Retriever trait for account nonces from block(s)
 pub trait AccountNonceRetrievable {
@@ -127,7 +127,6 @@ pub fn static_validate_transaction(
 struct BlockLookupIndex {
     block_id: BlockId,
     seq_num: SeqNum,
-    round: Round,
     is_finalized: bool,
 }
 
@@ -348,7 +347,7 @@ where
                 block_number,
                 CommittedBlock {
                     block_id: block.get_id(),
-                    round: block.get_round(),
+                    round: block.get_block_round(),
                     nonces: BlockAccountNonce {
                         nonces: block.get_account_nonces(),
                     },
@@ -462,16 +461,10 @@ where
         base_seq_num: &SeqNum,
     ) -> Result<BlockLookupIndex, StateBackendError> {
         if base_seq_num <= &self.last_commit {
-            debug!(
-                ?base_seq_num,
-                last_commit = self.last_commit.0,
-                "base seq num committed"
-            );
             if base_seq_num == &GENESIS_SEQ_NUM {
                 Ok(BlockLookupIndex {
                     block_id: GENESIS_BLOCK_ID,
                     seq_num: GENESIS_SEQ_NUM,
-                    round: GENESIS_ROUND,
                     is_finalized: true,
                 })
             } else {
@@ -483,12 +476,10 @@ where
                 Ok(BlockLookupIndex {
                     block_id: committed_block.block_id,
                     seq_num: *base_seq_num,
-                    round: committed_block.round,
                     is_finalized: true,
                 })
             }
         } else if let Some(extending_blocks) = extending_blocks {
-            debug!(?base_seq_num, "base seq num proposed");
             let proposed_block = extending_blocks
                 .iter()
                 .find(|block| &block.get_seq_num() == base_seq_num)
@@ -496,7 +487,6 @@ where
             Ok(BlockLookupIndex {
                 block_id: proposed_block.get_id(),
                 seq_num: *base_seq_num,
-                round: proposed_block.get_round(),
                 is_finalized: false,
             })
         } else {
@@ -515,7 +505,6 @@ where
         state_backend.get_account_statuses(
             &block_index.block_id,
             base_seq_num,
-            &block_index.round,
             block_index.is_finalized,
             addresses,
         )
@@ -670,7 +659,7 @@ where
         if block.get_seq_num() != extending_seq_num + SeqNum(1) {
             warn!(
                 seq_num =? block.header().seq_num,
-                round =? block.header().round,
+                round =? block.header().block_round,
                 "block not coherent, doesn't equal parent_seq_num + 1"
             );
             return Err(BlockPolicyError::BlockNotCoherent);
@@ -679,7 +668,7 @@ where
         if block.get_timestamp() <= extending_timestamp {
             warn!(
                 seq_num =? block.header().seq_num,
-                round =? block.header().round,
+                round =? block.header().block_round,
                 ?extending_timestamp,
                 block_timestamp =? block.get_timestamp(),
                 "block not coherent, timestamp not monotonically increasing"
@@ -695,7 +684,7 @@ where
         if block.get_execution_results() != &expected_execution_results {
             warn!(
                 seq_num =? block.header().seq_num,
-                round =? block.header().round,
+                round =? block.header().block_round,
                 ?expected_execution_results,
                 block_execution_results =? block.get_execution_results(),
                 "block not coherent, execution result mismatch"
@@ -735,7 +724,7 @@ where
             if &txn_nonce != expected_nonce {
                 warn!(
                     seq_num =? block.header().seq_num,
-                    round =? block.header().round,
+                    round =? block.header().block_round,
                     "block not coherent, invalid nonce"
                 );
                 return Err(BlockPolicyError::BlockNotCoherent);
@@ -775,7 +764,7 @@ where
                 );
                 warn!(
                     seq_num =? block.header().seq_num,
-                    round =? block.header().round,
+                    round =? block.header().block_round,
                     "block not coherent, invalid balance"
                 );
                 return Err(BlockPolicyError::BlockNotCoherent);
@@ -799,7 +788,6 @@ where
         let expected_execution_result = state_backend.get_execution_result(
             &block_index.block_id,
             &block_index.seq_num,
-            &block_index.round,
             block_index.is_finalized,
         )?;
 

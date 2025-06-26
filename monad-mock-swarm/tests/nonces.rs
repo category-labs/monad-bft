@@ -347,6 +347,52 @@ mod test {
     }
 
     #[test]
+    fn test_nec() {
+        let sender_1_key = B256::repeat_byte(15);
+        let mut swarm = generate_eth_swarm(4, vec![secret_to_eth_address(sender_1_key)]);
+
+        // pick the second node because it proposes in the first `delay` blocks
+        let bad_node_idx = 1;
+
+        {
+            let (_id, node) = swarm.states().iter().nth(bad_node_idx).unwrap();
+            let sbt = node.state.state_backend();
+            sbt.lock().unwrap().extra_data = 1;
+        }
+
+        while swarm
+            .step_until(&mut UntilTerminator::new().until_block(10))
+            .is_some()
+        {}
+
+        // only 1 NEC is constructed, for the first block the bad node produces
+        // after that, the bad node will have fallen behind
+        assert_eq!(
+            swarm
+                .states()
+                .iter()
+                .map(|(_, state)| state.state.metrics().consensus_events.created_nec)
+                .max()
+                .unwrap(),
+            1
+        );
+
+        let ledger_lens = swarm
+            .states()
+            .values()
+            .map(|x| x.executor.ledger().get_finalized_blocks().len())
+            .collect::<Vec<_>>();
+        for (i, ledger_len) in ledger_lens.iter().enumerate() {
+            if i == bad_node_idx {
+                // bad node can't validate block 4, so block 3 is never committed
+                assert_eq!(*ledger_len, 2);
+            } else {
+                assert!(*ledger_len >= 10);
+            }
+        }
+    }
+
+    #[test]
     fn committed_nonces() {
         let sender_1_key = B256::repeat_byte(15);
         let sender_2_key = B256::repeat_byte(16);

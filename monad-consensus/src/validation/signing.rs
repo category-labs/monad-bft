@@ -2,9 +2,11 @@ use std::{collections::BTreeMap, ops::Deref};
 
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_consensus_types::{
+    no_endorsement::{FreshProposalCertificate, NoEndorsementCertificate, NoEndorsementMessage},
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    timeout::{TimeoutCertificate, TimeoutDigest},
+    timeout::{HighExtend, HighExtendVote, NoTipCertificate, TimeoutCertificate, TimeoutInfo},
+    tip::ConsensusTip,
     validation::Error,
     voting::ValidatorMapping,
 };
@@ -17,16 +19,14 @@ use monad_crypto::{
 use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, Stake, GENESIS_ROUND};
 use monad_validator::{
     epoch_manager::EpochManager,
+    leader_election::LeaderElection,
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
-use crate::{
-    messages::{
-        consensus_message::{ConsensusMessage, ProtocolMessage},
-        message::{ProposalMessage, TimeoutMessage, VoteMessage},
-    },
-    validation::message::well_formed,
+use crate::messages::{
+    consensus_message::{ConsensusMessage, ProtocolMessage},
+    message::{ProposalMessage, RoundRecoveryMessage, TimeoutMessage, VoteMessage},
 };
 
 /// A verified message carries a valid signature created by the author. It's
@@ -266,15 +266,17 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    pub fn validate<VTF, VT>(
+    pub fn validate<VTF, VT, LT>(
         self,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
+        election: &LT,
         version: u32,
     ) -> Result<Validated<ProtocolMessage<ST, SCT, EPT>>, Error>
     where
         VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+        LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
         if self.obj.version != version {
             return Err(Error::InvalidVersion);
@@ -282,7 +284,8 @@ where
 
         Ok(match self.obj.message {
             ProtocolMessage::Proposal(m) => {
-                let validated = Unvalidated::new(m).validate(epoch_manager, val_epoch_map)?;
+                let validated =
+                    Unvalidated::new(m).validate(epoch_manager, val_epoch_map, election)?;
                 Validated {
                     message: Unvalidated::new(ProtocolMessage::Proposal(validated.into_inner())),
                 }
@@ -294,9 +297,27 @@ where
                 }
             }
             ProtocolMessage::Timeout(m) => {
-                let validated = Unvalidated::new(m).validate(epoch_manager, val_epoch_map)?;
+                let validated =
+                    Unvalidated::new(m).validate(epoch_manager, val_epoch_map, election)?;
                 Validated {
                     message: Unvalidated::new(ProtocolMessage::Timeout(validated.into_inner())),
+                }
+            }
+            ProtocolMessage::RoundRecovery(m) => {
+                let validated =
+                    Unvalidated::new(m).validate(epoch_manager, val_epoch_map, election)?;
+                Validated {
+                    message: Unvalidated::new(ProtocolMessage::RoundRecovery(
+                        validated.into_inner(),
+                    )),
+                }
+            }
+            ProtocolMessage::NoEndorsement(m) => {
+                let validated = Unvalidated::new(m).validate(epoch_manager)?;
+                Validated {
+                    message: Unvalidated::new(ProtocolMessage::NoEndorsement(
+                        validated.into_inner(),
+                    )),
                 }
             }
         })
@@ -312,27 +333,39 @@ where
     // A verified proposal is one which is well-formed, has valid signatures for
     // the present TC or QC, and epoch number is consistent with local records
     // for block.round
-    pub fn validate<VTF, VT>(
+    pub fn validate<VTF, VT, LT>(
         self,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
+        election: &LT,
     ) -> Result<Validated<ProposalMessage<ST, SCT, EPT>>, Error>
     where
         VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+        LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
-        self.well_formed_proposal()?;
-        self.verify_epoch(epoch_manager)?;
         if let Some(tc) = &self.obj.last_round_tc {
             verify_tc(
-                |epoch, round| epoch_to_validators(epoch_manager, val_epoch_map, epoch, round),
+                &|epoch, round| {
+                    epoch_to_validators(epoch_manager, val_epoch_map, election, epoch, round)
+                },
                 tc,
             )?;
+            // last_round_tc must be from the previous round
+            if self.obj.proposal_round != tc.round + Round(1) {
+                return Err(Error::NotWellFormed);
+            }
         }
-        verify_qc(
-            |epoch, round| epoch_to_validators(epoch_manager, val_epoch_map, epoch, round),
-            &self.obj.block_header.qc,
+
+        verify_tip(
+            &|epoch, round| {
+                epoch_to_validators(epoch_manager, val_epoch_map, election, epoch, round)
+            },
+            &self.obj.tip,
         )?;
+
+        self.well_formed_proposal()?;
+        self.verify_epoch(epoch_manager)?;
 
         Ok(Validated { message: self })
     }
@@ -341,19 +374,46 @@ where
     /// 1. carries a QC/TC from r-1, proving that the block is proposed on a
     ///    valid round
     fn well_formed_proposal(&self) -> Result<(), Error> {
-        let () = well_formed(
-            self.obj.block_header.round,
-            self.obj.block_header.qc.get_round(),
-            &self.obj.last_round_tc,
-        )?;
-
-        if self
-            .obj
-            .last_round_tc
-            .as_ref()
-            .is_some_and(|tc| self.obj.block_header.qc.get_round() < tc.max_qc_round())
-        {
+        if self.obj.tip.block_header.block_body_id != self.obj.block_body.get_id() {
             return Err(Error::NotWellFormed);
+        }
+
+        if self.obj.proposal_round == self.obj.tip.block_header.qc.get_round() + Round(1) {
+            // Consecutive QC
+            if self.obj.last_round_tc.is_some() {
+                return Err(Error::NotWellFormed);
+            }
+            return Ok(());
+        }
+        // last_round_tc must exist
+        let Some(tc) = &self.obj.last_round_tc else {
+            return Err(Error::NotWellFormed);
+        };
+
+        match &tc.high_extend {
+            HighExtend::Qc(tc_qc) => {
+                if tc_qc.get_round() != self.obj.tip.block_header.qc.get_round() {
+                    // qc of p.tc.high_extend and p.tip must match
+                    return Err(Error::NotWellFormed);
+                }
+            }
+            HighExtend::Tip(tc_tip) => {
+                if tc_tip == &self.obj.tip {
+                    // matches high_tip, so we don't need to check anything else
+                    // this implies that the qc of p.tc.high_extend and p.tip match
+                } else {
+                    if self.obj.proposal_round != self.obj.tip.block_header.block_round {
+                        // must be a fresh proposal if doesn't match high_tip
+                        return Err(Error::NotWellFormed);
+                    }
+                    if tc_tip.block_header.qc.get_round()
+                        != self.obj.tip.block_header.qc.get_round()
+                    {
+                        // qc of p.tc.high_extend and p.tip must match
+                        return Err(Error::NotWellFormed);
+                    }
+                }
+            }
         }
 
         Ok(())
@@ -361,10 +421,12 @@ where
 
     /// Check local epoch manager record for block.round is equal to block.epoch
     fn verify_epoch(&self, epoch_manager: &EpochManager) -> Result<(), Error> {
-        match epoch_manager.get_epoch(self.obj.block_header.round) {
-            Some(epoch) if self.obj.block_header.epoch == epoch => Ok(()),
+        match epoch_manager.get_epoch(self.obj.proposal_round) {
+            Some(epoch) if self.obj.proposal_epoch == epoch => Ok(()),
             _ => Err(Error::InvalidEpoch),
-        }
+        }?;
+
+        Ok(())
     }
 }
 
@@ -399,28 +461,56 @@ where
     EPT: ExecutionProtocol,
 {
     /// A valid timeout message is well-formed, and carries valid QC/TC
-    pub fn validate<VTF, VT>(
+    pub fn validate<VTF, VT, LT>(
         self,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
+        election: &LT,
     ) -> Result<Validated<TimeoutMessage<ST, SCT, EPT>>, Error>
     where
         VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+        LT: LeaderElection<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
-        self.well_formed_timeout()?;
-        self.verify_epoch(epoch_manager)?;
-
-        if let Some(tc) = &self.obj.timeout.last_round_tc {
+        if let Some(tc) = &self.obj.last_round_tc {
             verify_tc(
-                |epoch, round| epoch_to_validators(epoch_manager, val_epoch_map, epoch, round),
+                &|epoch, round| {
+                    epoch_to_validators(epoch_manager, val_epoch_map, election, epoch, round)
+                },
                 tc,
             )?;
+            // last_round_tc must be from the previous round
+            if self.obj.tminfo.round != tc.round + Round(1) {
+                return Err(Error::NotWellFormed);
+            }
         }
-        verify_qc(
-            |epoch, round| epoch_to_validators(epoch_manager, val_epoch_map, epoch, round),
-            &self.obj.timeout.tminfo.high_qc,
+        verify_high_extend(
+            &|epoch, round| {
+                epoch_to_validators(epoch_manager, val_epoch_map, election, epoch, round)
+            },
+            &self.obj.high_extend.clone().into(),
         )?;
+        match &self.obj.high_extend {
+            HighExtendVote::Qc(qc) => {
+                if self.obj.tminfo.high_tip_round != GENESIS_ROUND {
+                    return Err(Error::NotWellFormed);
+                }
+                if self.obj.tminfo.high_qc_round != qc.get_round() {
+                    return Err(Error::NotWellFormed);
+                }
+            }
+            HighExtendVote::Tip(tip, _) => {
+                if self.obj.tminfo.high_tip_round != tip.block_header.block_round {
+                    return Err(Error::NotWellFormed);
+                }
+                if self.obj.tminfo.high_qc_round >= tip.block_header.block_round {
+                    return Err(Error::NotWellFormed);
+                }
+            }
+        }
+
+        self.well_formed_timeout()?;
+        self.verify_epoch(epoch_manager)?;
 
         Ok(Validated { message: self })
     }
@@ -428,31 +518,120 @@ where
     /// A well-formed timeout carries a QC/TC from r-1, proving that it's timing
     /// out a valid round
     fn well_formed_timeout(&self) -> Result<(), Error> {
-        well_formed(
-            self.obj.timeout.tminfo.round,
-            self.obj.timeout.tminfo.high_qc.get_round(),
-            &self.obj.timeout.last_round_tc,
-        )
+        if self.obj.tminfo.round == self.obj.high_extend.qc().get_round() + Round(1) {
+            // Consecutive QC
+            if self.obj.last_round_tc.is_some() {
+                return Err(Error::NotWellFormed);
+            }
+            return Ok(());
+        }
+        // last_round_tc must exist
+        let Some(_tc) = &self.obj.last_round_tc else {
+            return Err(Error::NotWellFormed);
+        };
+        Ok(())
     }
 
     /// Check local epoch manager record for timeout.round is equal to timeout.epoch
     fn verify_epoch(&self, epoch_manager: &EpochManager) -> Result<(), Error> {
-        match epoch_manager.get_epoch(self.obj.timeout.tminfo.round) {
-            Some(epoch) if self.obj.timeout.tminfo.epoch == epoch => Ok(()),
+        match epoch_manager.get_epoch(self.obj.tminfo.round) {
+            Some(epoch) if self.obj.tminfo.epoch == epoch => Ok(()),
             _ => Err(Error::InvalidEpoch),
         }
     }
 }
 
-fn epoch_to_validators<'a, SCT, VTF, VT>(
+impl<ST, SCT, EPT> Unvalidated<RoundRecoveryMessage<ST, SCT, EPT>>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    /// A valid timeout message is well-formed, and carries valid QC/TC
+    pub fn validate<VTF, VT, LT>(
+        self,
+        epoch_manager: &EpochManager,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
+        election: &LT,
+    ) -> Result<Validated<RoundRecoveryMessage<ST, SCT, EPT>>, Error>
+    where
+        VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
+        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+        LT: LeaderElection<NodeIdPubKey = SCT::NodeIdPubKey>,
+    {
+        verify_tc(
+            &|epoch, round| {
+                epoch_to_validators(epoch_manager, val_epoch_map, election, epoch, round)
+            },
+            &self.obj.tc,
+        )?;
+
+        self.well_formed_round_recovery()?;
+        self.verify_epoch(epoch_manager)?;
+
+        Ok(Validated { message: self })
+    }
+
+    fn well_formed_round_recovery(&self) -> Result<(), Error> {
+        if self.obj.round != self.obj.tc.round + Round(1) {
+            return Err(Error::InvalidTcRound);
+        }
+        match &self.obj.tc.high_extend {
+            HighExtend::Qc(_) => return Err(Error::NotWellFormed),
+            HighExtend::Tip(_) => {}
+        };
+
+        Ok(())
+    }
+
+    /// Check local epoch manager record for timeout.round is equal to timeout.epoch
+    fn verify_epoch(&self, epoch_manager: &EpochManager) -> Result<(), Error> {
+        match epoch_manager.get_epoch(self.obj.round) {
+            Some(epoch) if self.obj.epoch == epoch => Ok(()),
+            _ => Err(Error::InvalidEpoch),
+        }
+    }
+}
+
+impl<SCT> Unvalidated<NoEndorsementMessage<SCT>>
+where
+    SCT: SignatureCollection,
+{
+    /// A valid timeout message is well-formed, and carries valid QC/TC
+    pub fn validate(
+        self,
+        epoch_manager: &EpochManager,
+    ) -> Result<Validated<NoEndorsementMessage<SCT>>, Error> {
+        self.well_formed_no_endorsement()?;
+        self.verify_epoch(epoch_manager)?;
+
+        Ok(Validated { message: self })
+    }
+
+    fn well_formed_no_endorsement(&self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Check local epoch manager record for timeout.round is equal to timeout.epoch
+    fn verify_epoch(&self, epoch_manager: &EpochManager) -> Result<(), Error> {
+        match epoch_manager.get_epoch(self.obj.msg.round) {
+            Some(epoch) if self.obj.msg.epoch == epoch => Ok(()),
+            _ => Err(Error::InvalidEpoch),
+        }
+    }
+}
+
+fn epoch_to_validators<'a, SCT, VTF, VT, LT>(
     epoch_manager: &'a EpochManager,
     val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
+    election: &LT,
     epoch: Epoch,
     round: Round,
 ) -> Result<
     (
         &'a VT,
         &'a ValidatorMapping<SCT::NodeIdPubKey, SignatureCollectionKeyPairType<SCT>>,
+        NodeId<SCT::NodeIdPubKey>,
     ),
     Error,
 >
@@ -460,6 +639,7 @@ where
     SCT: SignatureCollection,
     VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
     VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+    LT: LeaderElection<NodeIdPubKey = SCT::NodeIdPubKey>,
 {
     if epoch != epoch_manager.get_epoch(round).ok_or(Error::InvalidEpoch)? {
         return Err(Error::InvalidEpoch);
@@ -471,7 +651,9 @@ where
         .get_cert_pubkeys(&epoch)
         .ok_or(Error::ValidatorSetDataUnavailable)?;
 
-    Ok((validator_set, validator_cert_pubkeys))
+    let leader = election.get_leader(round, validator_set.get_members());
+
+    Ok((validator_set, validator_cert_pubkeys, leader))
 }
 
 /// Verify the timeout certificate
@@ -480,13 +662,14 @@ where
 ///
 /// See [monad_consensus_types::timeout::TimeoutInfo::timeout_digest]
 pub fn verify_tc<'a, ST, SCT, EPT, VT>(
-    epoch_to_validators: impl FnOnce(
+    epoch_to_validators: &impl Fn(
         Epoch,
         Round,
     ) -> Result<
         (
             &'a VT,
             &'a ValidatorMapping<SCT::NodeIdPubKey, SignatureCollectionKeyPairType<SCT>>,
+            NodeId<SCT::NodeIdPubKey>,
         ),
         Error,
     >,
@@ -498,18 +681,28 @@ where
     EPT: ExecutionProtocol,
     VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
 {
-    let (validators, validator_mapping) = epoch_to_validators(tc.epoch, tc.round)?;
+    let (validators, validator_mapping, _leader) = epoch_to_validators(tc.epoch, tc.round)?;
 
     let mut node_ids = Vec::new();
-    for t in tc.high_qc_rounds.iter() {
-        if t.high_qc_round.qc_round >= tc.round {
+    let mut highest_qc_round = GENESIS_ROUND;
+    let mut highest_tip_round = GENESIS_ROUND;
+    for t in tc.tip_rounds.iter() {
+        if t.high_qc_round >= tc.round {
             return Err(Error::InvalidTcRound);
         }
 
-        let td = TimeoutDigest {
+        if t.high_qc_round > highest_qc_round {
+            highest_qc_round = t.high_qc_round;
+        }
+        if t.high_tip_round > highest_tip_round {
+            highest_tip_round = t.high_tip_round;
+        }
+
+        let td = TimeoutInfo {
             epoch: tc.epoch,
             round: tc.round,
-            high_qc_round: t.high_qc_round.qc_round,
+            high_qc_round: t.high_qc_round,
+            high_tip_round: t.high_tip_round,
         };
         let msg = alloy_rlp::encode(td);
 
@@ -526,6 +719,28 @@ where
         return Err(Error::InsufficientStake);
     }
 
+    verify_high_extend(epoch_to_validators, &tc.high_extend)?;
+    match &tc.high_extend {
+        HighExtend::Qc(qc) => {
+            if qc.get_round() != highest_qc_round {
+                return Err(Error::NotWellFormed);
+            }
+            if highest_tip_round > highest_qc_round {
+                // higher tip exists
+                return Err(Error::NotWellFormed);
+            }
+        }
+        HighExtend::Tip(tip) => {
+            if tip.block_header.block_round != highest_tip_round {
+                return Err(Error::NotWellFormed);
+            }
+            if highest_qc_round >= highest_tip_round {
+                // qc for same or higher round exists
+                return Err(Error::NotWellFormed);
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -533,13 +748,14 @@ where
 ///
 /// Verify the signature collection and super majority stake signed
 pub fn verify_qc<'a, SCT, VT>(
-    epoch_to_validators: impl FnOnce(
+    epoch_to_validators: &impl Fn(
         Epoch,
         Round,
     ) -> Result<
         (
             &'a VT,
             &'a ValidatorMapping<SCT::NodeIdPubKey, SignatureCollectionKeyPairType<SCT>>,
+            NodeId<SCT::NodeIdPubKey>,
         ),
         Error,
     >,
@@ -549,7 +765,8 @@ where
     SCT: SignatureCollection,
     VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
 {
-    let (validators, validator_mapping) = epoch_to_validators(qc.get_epoch(), qc.get_round())?;
+    let (validators, validator_mapping, _leader) =
+        epoch_to_validators(qc.get_epoch(), qc.get_round())?;
 
     if qc.get_round() == GENESIS_ROUND {
         if qc == &QuorumCertificate::genesis_qc() {
@@ -562,6 +779,162 @@ where
     let node_ids = qc
         .signatures
         .verify(validator_mapping, qc_msg.as_ref())
+        .map_err(|_| Error::InvalidSignature)?;
+
+    if !validators.has_super_majority_votes(&node_ids) {
+        return Err(Error::InsufficientStake);
+    }
+
+    Ok(())
+}
+
+/// Verify the high_extend
+pub fn verify_high_extend<'a, ST, SCT, EPT, VT>(
+    epoch_to_validators: &impl Fn(
+        Epoch,
+        Round,
+    ) -> Result<
+        (
+            &'a VT,
+            &'a ValidatorMapping<SCT::NodeIdPubKey, SignatureCollectionKeyPairType<SCT>>,
+            NodeId<SCT::NodeIdPubKey>,
+        ),
+        Error,
+    >,
+    high_extend: &HighExtend<ST, SCT, EPT>,
+) -> Result<(), Error>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+{
+    match high_extend {
+        HighExtend::Qc(qc) => {
+            verify_qc(epoch_to_validators, qc)?;
+        }
+        HighExtend::Tip(tip) => {
+            verify_tip(epoch_to_validators, tip)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Verify the tip
+pub fn verify_tip<'a, ST, SCT, EPT, VT>(
+    epoch_to_validators: &impl Fn(
+        Epoch,
+        Round,
+    ) -> Result<
+        (
+            &'a VT,
+            &'a ValidatorMapping<SCT::NodeIdPubKey, SignatureCollectionKeyPairType<SCT>>,
+            NodeId<SCT::NodeIdPubKey>,
+        ),
+        Error,
+    >,
+    tip: &ConsensusTip<ST, SCT, EPT>,
+) -> Result<(), Error>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+{
+    let (_, _, leader) = epoch_to_validators(tip.block_header.epoch, tip.block_header.block_round)?;
+
+    let tip_author = tip
+        .signature_author()
+        .map_err(|_| Error::InvalidSignature)?;
+    if tip_author != leader.pubkey() || tip_author != tip.block_header.author.pubkey() {
+        return Err(Error::InvalidAuthor);
+    }
+
+    verify_qc(&epoch_to_validators, &tip.block_header.qc)?;
+    match &tip.fresh_certificate {
+        Some(FreshProposalCertificate::Nec(nec)) => {
+            verify_nec(&epoch_to_validators, nec)?;
+        }
+        Some(FreshProposalCertificate::NoTip(NoTipCertificate {
+            epoch,
+            round,
+            tip_rounds,
+            high_qc,
+        })) => {
+            verify_tc(
+                epoch_to_validators,
+                &TimeoutCertificate::<ST, SCT, EPT> {
+                    epoch: *epoch,
+                    round: *round,
+                    tip_rounds: tip_rounds.clone(),
+                    high_extend: HighExtend::Qc(high_qc.clone()),
+                },
+            )?;
+        }
+        None => {}
+    };
+
+    if tip.block_header.block_round == tip.block_header.qc.get_round() + Round(1) {
+        // consecutive QC, no fresh_certificate needed
+        if tip.fresh_certificate.is_some() {
+            return Err(Error::NotWellFormed);
+        }
+
+        Ok(())
+    } else {
+        // fresh_certificate needed
+        match &tip.fresh_certificate {
+            None => return Err(Error::NotWellFormed),
+            Some(FreshProposalCertificate::Nec(nec)) => {
+                if nec.msg.round != tip.block_header.block_round {
+                    return Err(Error::NotWellFormed);
+                }
+                if nec.msg.tip_qc_round != tip.block_header.qc.get_round() {
+                    return Err(Error::NotWellFormed);
+                }
+            }
+            Some(FreshProposalCertificate::NoTip(no_tip)) => {
+                if no_tip.round + Round(1) != tip.block_header.block_round {
+                    return Err(Error::NotWellFormed);
+                }
+                if no_tip.high_qc.get_round() != tip.block_header.qc.get_round() {
+                    return Err(Error::NotWellFormed);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Verify the nec
+///
+/// Verify the signature collection and super majority stake signed
+pub fn verify_nec<'a, SCT, VT>(
+    epoch_to_validators: impl Fn(
+        Epoch,
+        Round,
+    ) -> Result<
+        (
+            &'a VT,
+            &'a ValidatorMapping<SCT::NodeIdPubKey, SignatureCollectionKeyPairType<SCT>>,
+            NodeId<SCT::NodeIdPubKey>,
+        ),
+        Error,
+    >,
+    nec: &NoEndorsementCertificate<SCT>,
+) -> Result<(), Error>
+where
+    SCT: SignatureCollection,
+    VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+{
+    let (validators, validator_mapping, _leader) =
+        epoch_to_validators(nec.msg.epoch, nec.msg.round)?;
+
+    let nec_msg = alloy_rlp::encode(&nec.msg);
+    let node_ids = nec
+        .signatures
+        .verify(validator_mapping, nec_msg.as_ref())
         .map_err(|_| Error::InvalidSignature)?;
 
     if !validators.has_super_majority_votes(&node_ids) {
@@ -616,8 +989,6 @@ impl<PT: PubKey> ValidatorPubKey for PT {
 
 #[cfg(test)]
 mod test {
-    use std::marker::PhantomData;
-
     use monad_consensus_types::{
         block::{
             ConsensusBlockHeader, MockExecutionBody, MockExecutionProposedHeader,
@@ -626,10 +997,8 @@ mod test {
         payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
         quorum_certificate::QuorumCertificate,
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-        timeout::{
-            HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutDigest,
-            TimeoutInfo,
-        },
+        timeout::{HighExtend, HighTipRoundSigColTuple, TimeoutCertificate, TimeoutInfo},
+        tip::ConsensusTip,
         validation::Error,
         voting::{ValidatorMapping, Vote},
     };
@@ -652,6 +1021,7 @@ mod test {
         epoch_manager::EpochManager,
         validator_set::{ValidatorSetFactory, ValidatorSetType, ValidatorSetTypeFactory},
         validators_epoch_mapping::ValidatorsEpochMapping,
+        weighted_round_robin::WeightedRoundRobin,
     };
     use test_case::test_case;
 
@@ -680,18 +1050,19 @@ mod test {
             _,
         >(3, ValidatorSetFactory::default());
 
-        let high_qc_rounds = [
-            HighQcRound { qc_round: Round(1) },
-            HighQcRound { qc_round: Round(2) },
-            HighQcRound { qc_round: Round(3) },
+        let tip_rounds = [
+            Round(1),
+            Round(2),
+            Round(3),
         ]
         .iter()
         .zip(0..3)
         .map(|(x, i)| {
-            let td = TimeoutDigest {
+            let td = TimeoutInfo {
                 epoch: Epoch(1),
                 round: Round(5),
-                high_qc_round: x.qc_round,
+                high_qc_round: *x,
+                high_tip_round: GENESIS_ROUND,
             };
             let msg = alloy_rlp::encode(td);
 
@@ -699,22 +1070,50 @@ mod test {
 
             let sigcol = <SignatureCollectionType as SignatureCollection>::new(sigs, &vmap, msg.as_ref()).unwrap();
 
-            HighQcRoundSigColTuple {
+            HighTipRoundSigColTuple {
                 high_qc_round: *x,
+                high_tip_round: GENESIS_ROUND,
                 sigs: sigcol,
             }
         })
         .collect();
 
+        let qc = {
+            let vote = Vote {
+                round: Round(3),
+                ..DontCare::dont_care()
+            };
+            let msg = alloy_rlp::encode(vote);
+            let qc_sigs: Vec<_> = keypairs.iter().zip(certkeys.iter()).map(
+                |(keypair, cert_keypair)|
+                (
+                    NodeId::new(keypair.pubkey()),
+                    <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg.as_ref(), cert_keypair)
+                )).collect();
+            let qc_sigcol =
+                <SignatureCollectionType as SignatureCollection>::new(qc_sigs, &vmap, msg.as_ref())
+                    .unwrap();
+            QuorumCertificate::new(
+                Vote {
+                    round: Round(3),
+                    ..DontCare::dont_care()
+                },
+                qc_sigcol,
+            )
+        };
+
         let tc: TimeoutCertificate<SignatureType, SignatureCollectionType, ExecutionProtocolType> =
             TimeoutCertificate {
                 epoch: Epoch(1),
                 round: Round(round),
-                high_qc_rounds,
-                _phantom: PhantomData,
+                tip_rounds,
+                high_extend: HighExtend::Qc(qc),
             };
 
-        verify_tc(|_epoch, _round| Ok((&vset, &vmap)), &tc)
+        verify_tc(
+            &|_epoch, _round| Ok((&vset, &vmap, NodeId::new(keypairs[0].pubkey()))),
+            &tc,
+        )
     }
 
     /// The signature collection is created on a Vote different from the one in
@@ -746,7 +1145,10 @@ mod test {
         let qc = QuorumCertificate::new(vote2, sigs);
 
         assert!(matches!(
-            verify_qc(|_epoch, _round| Ok((&vset, &val_mapping)), &qc),
+            verify_qc(
+                &|_epoch, _round| Ok((&vset, &val_mapping, NodeId::new(keypair.pubkey()))),
+                &qc,
+            ),
             Err(Error::InvalidSignature)
         ));
     }
@@ -785,7 +1187,10 @@ mod test {
         let qc = QuorumCertificate::new(vote, sig_col);
 
         assert!(matches!(
-            verify_qc(|_epoch, _round| Ok((&vset, &vmap)), &qc),
+            verify_qc(
+                &|_epoch, _round| Ok((&vset, &vmap, NodeId::new(keypairs[0].pubkey()))),
+                &qc,
+            ),
             Err(Error::InsufficientStake)
         ));
     }
@@ -801,18 +1206,19 @@ mod test {
         let epoch = Epoch(1);
         let round = Round(5);
 
-        let high_qc_rounds = [
-            HighQcRound { qc_round: Round(1) },
-            HighQcRound { qc_round: Round(2) },
+        let tip_rounds = [
+            Round(1),
+            Round(2),
         ]
         .iter()
         .zip(keypairs[..2].iter())
         .zip(certkeys[..2].iter())
         .map(|((x, keypair), certkey)| {
-            let td = TimeoutDigest {
+            let td = TimeoutInfo {
                 epoch: Epoch(1),
                 round: Round(5),
-                high_qc_round: x.qc_round,
+                high_qc_round: *x,
+                high_tip_round: GENESIS_ROUND,
             };
             let msg = alloy_rlp::encode(td);
 
@@ -820,23 +1226,51 @@ mod test {
 
             let sigcol = <SignatureCollectionType as SignatureCollection>::new(sigs, &vmap, msg.as_ref()).unwrap();
 
-            HighQcRoundSigColTuple {
+            HighTipRoundSigColTuple {
                 high_qc_round: *x,
+                high_tip_round: GENESIS_ROUND,
                 sigs: sigcol,
             }
         })
         .collect();
 
+        let qc = {
+            let vote = Vote {
+                round: Round(3),
+                ..DontCare::dont_care()
+            };
+            let msg = alloy_rlp::encode(vote);
+            let qc_sigs: Vec<_> = keypairs.iter().zip(certkeys.iter()).map(
+                |(keypair, cert_keypair)|
+                (
+                    NodeId::new(keypair.pubkey()),
+                    <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg.as_ref(), cert_keypair)
+                )).collect();
+            let qc_sigcol =
+                <SignatureCollectionType as SignatureCollection>::new(qc_sigs, &vmap, msg.as_ref())
+                    .unwrap();
+            QuorumCertificate::new(
+                Vote {
+                    round: Round(2),
+                    ..DontCare::dont_care()
+                },
+                qc_sigcol,
+            )
+        };
+
         let tc: TimeoutCertificate<SignatureType, SignatureCollectionType, ExecutionProtocolType> =
             TimeoutCertificate {
                 epoch,
                 round,
-                high_qc_rounds,
-                _phantom: PhantomData,
+                tip_rounds,
+                high_extend: HighExtend::Qc(qc),
             };
 
         assert!(matches!(
-            verify_tc(|_epoch, _round| Ok((&vset, &vmap)), &tc),
+            verify_tc(
+                &|_epoch, _round| Ok((&vset, &vmap, NodeId::new(keypairs[0].pubkey()))),
+                &tc
+            ),
             Err(Error::InsufficientStake)
         ));
     }
@@ -845,13 +1279,14 @@ mod test {
     /// TC::epoch. Expect TC signature verification to fail
     #[test]
     fn test_tc_verify_epoch_no_match() {
-        let tmo_info = TimeoutInfo::<SignatureCollectionType> {
+        let tmo_info = TimeoutInfo {
             epoch: Epoch(2), // an intentionally malformed tmo_info
             round: Round(1),
-            high_qc: QuorumCertificate::genesis_qc(),
+            high_qc_round: GENESIS_ROUND,
+            high_tip_round: GENESIS_ROUND,
         };
 
-        let tmo_digest = alloy_rlp::encode(tmo_info.timeout_digest());
+        let tmo_digest = alloy_rlp::encode(&tmo_info);
 
         let keypair = get_key::<SignatureType>(6);
         let cert_keypair = get_certificate_key::<SignatureCollectionType>(6);
@@ -870,17 +1305,19 @@ mod test {
             TimeoutCertificate {
                 epoch: Epoch(1),
                 round: Round(1),
-                high_qc_rounds: vec![HighQcRoundSigColTuple {
-                    high_qc_round: HighQcRound {
-                        qc_round: GENESIS_ROUND,
-                    },
+                tip_rounds: vec![HighTipRoundSigColTuple {
+                    high_qc_round: GENESIS_ROUND,
+                    high_tip_round: GENESIS_ROUND,
                     sigs: sigcol,
                 }],
-                _phantom: PhantomData,
+                high_extend: HighExtend::Qc(QuorumCertificate::genesis_qc()),
             };
 
         assert!(matches!(
-            verify_tc(|_epoch, _round| Ok((&vset, &val_mapping)), &tc),
+            verify_tc(
+                &|_epoch, _round| Ok((&vset, &val_mapping, NodeId::new(keypair.pubkey()))),
+                &tc
+            ),
             Err(Error::InvalidSignature)
         ));
     }
@@ -895,20 +1332,20 @@ mod test {
             SignatureCollectionType,
             _,
         >(2, ValidatorSetFactory::default());
+        let election = WeightedRoundRobin::default();
 
         // TC doesn't have any signatures
-        let tc = TimeoutCertificate {
-            epoch: Epoch(1),
-            round: Round(3),
-            high_qc_rounds: vec![],
-            _phantom: PhantomData,
-        };
+        let tc: TimeoutCertificate<SignatureType, SignatureCollectionType, ExecutionProtocolType> =
+            TimeoutCertificate {
+                epoch: Epoch(1),
+                round: Round(3),
+                tip_rounds: vec![],
+                high_extend: HighExtend::Qc(QuorumCertificate::genesis_qc()),
+            };
 
         let vote = Vote {
             id: BlockId(Hash([0x00_u8; 32])),
             round: Round(3),
-            parent_id: BlockId(Hash([0x01_u8; 32])),
-            parent_round: Round(2),
             ..DontCare::dont_care()
         };
 
@@ -924,23 +1361,22 @@ mod test {
 
         let qc = QuorumCertificate::new(vote, sig_col);
 
-        let tmo_info = TimeoutInfo::<SignatureCollectionType> {
+        let timeout = TimeoutInfo {
             epoch: Epoch(1),
 
             round: Round(4),
-            high_qc: qc,
+            high_qc_round: qc.get_round(),
+            high_tip_round: GENESIS_ROUND,
         };
 
-        let tmo = Timeout::<SignatureType, SignatureCollectionType, ExecutionProtocolType> {
-            tminfo: tmo_info,
-            last_round_tc: Some(tc),
-        };
-
-        let unvalidated_tmo_msg = Unvalidated::new(TimeoutMessage::<
-            SignatureType,
-            SignatureCollectionType,
-            ExecutionProtocolType,
-        >::new(tmo, &certkeys[0]));
+        let unvalidated_tmo_msg =
+            Unvalidated::new(TimeoutMessage::<
+                SignatureType,
+                SignatureCollectionType,
+                ExecutionProtocolType,
+            >::new(
+                &certkeys[0], timeout, HighExtend::Qc(qc), Some(tc)
+            ));
 
         let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
         let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
@@ -950,7 +1386,7 @@ mod test {
             vmap,
         );
 
-        let err = unvalidated_tmo_msg.validate(&epoch_manager, &val_epoch_map);
+        let err = unvalidated_tmo_msg.validate(&epoch_manager, &val_epoch_map, &election);
 
         assert!(matches!(err, Err(Error::InsufficientStake)));
     }
@@ -964,6 +1400,7 @@ mod test {
             SignatureCollectionType,
             _,
         >(2, ValidatorSetFactory::default());
+        let election = WeightedRoundRobin::default();
 
         let tmo_epoch = Epoch(1);
         let tmo_round = Round(5);
@@ -971,8 +1408,6 @@ mod test {
         // create an old qc on Round(3)
         let vote = Vote {
             round: Round(3),
-            parent_id: BlockId(Hash([0x01_u8; 32])),
-            parent_round: Round(2),
             ..DontCare::dont_care()
         };
 
@@ -988,22 +1423,21 @@ mod test {
 
         let qc = QuorumCertificate::new(vote, sig_col);
 
-        let tmo_info = TimeoutInfo::<SignatureCollectionType> {
+        let timeout = TimeoutInfo {
             epoch: tmo_epoch,
             round: tmo_round,
-            high_qc: qc,
+            high_qc_round: qc.get_round(),
+            high_tip_round: GENESIS_ROUND,
         };
 
-        let tmo = Timeout::<SignatureType, SignatureCollectionType, ExecutionProtocolType> {
-            tminfo: tmo_info,
-            last_round_tc: None,
-        };
-
-        let unvalidated_byzantine_tmo_msg = Unvalidated::new(TimeoutMessage::<
-            SignatureType,
-            SignatureCollectionType,
-            ExecutionProtocolType,
-        >::new(tmo, &certkeys[0]));
+        let unvalidated_byzantine_tmo_msg =
+            Unvalidated::new(TimeoutMessage::<
+                SignatureType,
+                SignatureCollectionType,
+                ExecutionProtocolType,
+            >::new(
+                &certkeys[0], timeout, HighExtend::Qc(qc), None
+            ));
 
         let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
         let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
@@ -1013,7 +1447,7 @@ mod test {
             vmap,
         );
 
-        let err = unvalidated_byzantine_tmo_msg.validate(&epoch_manager, &val_epoch_map);
+        let err = unvalidated_byzantine_tmo_msg.validate(&epoch_manager, &val_epoch_map, &election);
         assert!(matches!(err, Err(Error::NotWellFormed)));
     }
 
@@ -1051,6 +1485,7 @@ mod test {
         >(4, ValidatorSetFactory::default());
 
         let validator_stakes = Vec::from_iter(valset.get_members().clone());
+        let election = WeightedRoundRobin::default();
 
         let author = &keys[0];
         let author_cert_key = &cert_keys[0];
@@ -1081,14 +1516,17 @@ mod test {
             SignatureCollectionType,
             MockExecutionProtocol,
         > = ProposalMessage {
-            block_header: block,
+            proposal_epoch: block.epoch,
+            proposal_round: block.block_round,
             block_body: payload,
             last_round_tc: None,
+            tip: ConsensusTip::new(&keys[0], block, None),
         };
 
         let unvalidated_proposal = Unvalidated::new(proposal);
 
-        let maybe_validated = unvalidated_proposal.validate(&epoch_manager, &val_epoch_map);
+        let maybe_validated =
+            unvalidated_proposal.validate(&epoch_manager, &val_epoch_map, &election);
 
         assert_eq!(maybe_validated, Err(Error::InvalidEpoch));
     }
@@ -1109,8 +1547,6 @@ mod test {
             id: BlockId(Hash([0x0a_u8; 32])),
             epoch: Epoch(2), // wrong epoch: should be 1
             round: Round(10),
-            parent_id: BlockId(Hash([0x09_u8; 32])),
-            parent_round: Round(9),
         };
 
         let vote_message = VoteMessage::<SignatureCollectionType>::new(vote, author_cert_key);
@@ -1129,6 +1565,7 @@ mod test {
             _,
         >(4, ValidatorSetFactory::default());
         let validator_stakes = Vec::from_iter(valset.get_members().clone());
+        let election = WeightedRoundRobin::default();
 
         let author_cert_key = &cert_keys[0];
 
@@ -1136,21 +1573,28 @@ mod test {
         let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
         val_epoch_map.insert(Epoch(1), validator_stakes, valmap);
 
-        let timeout: Timeout<SignatureType, SignatureCollectionType, ExecutionProtocolType> =
-            Timeout {
-                tminfo: TimeoutInfo {
-                    epoch: Epoch(2), // wrong epoch: should be 1
-                    round: Round(1),
-                    high_qc: QuorumCertificate::<SignatureCollectionType>::genesis_qc(),
-                },
-                last_round_tc: None,
-            };
+        let timeout = TimeoutInfo {
+            epoch: Epoch(2), // wrong epoch: should be 1
+            round: Round(1),
+            high_qc_round: GENESIS_ROUND,
+            high_tip_round: GENESIS_ROUND,
+        };
 
-        let timeout_message = TimeoutMessage::new(timeout, author_cert_key);
+        let timeout_message: TimeoutMessage<
+            SignatureType,
+            SignatureCollectionType,
+            ExecutionProtocolType,
+        > = TimeoutMessage::new(
+            author_cert_key,
+            timeout,
+            HighExtend::Qc(QuorumCertificate::genesis_qc()),
+            None,
+        );
 
         let unvalidated_timeout = Unvalidated::new(timeout_message);
 
-        let maybe_validated = unvalidated_timeout.validate(&epoch_manager, &val_epoch_map);
+        let maybe_validated =
+            unvalidated_timeout.validate(&epoch_manager, &val_epoch_map, &election);
         assert_eq!(maybe_validated, Err(Error::InvalidEpoch));
     }
 
@@ -1162,13 +1606,12 @@ mod test {
             _,
         >(4, ValidatorSetFactory::default());
         let validator_stakes = Vec::from_iter(valset.get_members().clone());
+        let election = WeightedRoundRobin::default();
 
         let vote = Vote {
             id: BlockId(Hash([0x09_u8; 32])),
             epoch: Epoch(2), // wrong epoch
             round: Round(10),
-            parent_id: BlockId(Hash([0x0a_u8; 32])),
-            parent_round: Round(9),
         };
 
         let msg = alloy_rlp::encode(vote);
@@ -1193,7 +1636,9 @@ mod test {
 
         let qc = QuorumCertificate::new(vote, sigcol);
         let verify_result = verify_qc(
-            |epoch, round| epoch_to_validators(&epoch_manager, &val_epoch_map, epoch, round),
+            &|epoch, round| {
+                epoch_to_validators(&epoch_manager, &val_epoch_map, &election, epoch, round)
+            },
             &qc,
         );
         assert_eq!(verify_result, Err(Error::InvalidEpoch));
@@ -1207,14 +1652,13 @@ mod test {
             _,
         >(4, ValidatorSetFactory::default());
         let validator_stakes = Vec::from_iter(valset.get_members().clone());
+        let election = WeightedRoundRobin::default();
 
         // create valid QC
         let vote = Vote {
             id: BlockId(Hash([0x09_u8; 32])),
             epoch: Epoch(1), // correct epoch
             round: Round(10),
-            parent_id: BlockId(Hash([0x0a_u8; 32])),
-            parent_round: Round(9),
         };
 
         let msg = alloy_rlp::encode(vote);
@@ -1236,10 +1680,11 @@ mod test {
         let tminfo = TimeoutInfo {
             epoch: Epoch(2), // wrong epoch
             round: Round(11),
-            high_qc: qc.clone(),
+            high_qc_round: qc.get_round(),
+            high_tip_round: GENESIS_ROUND,
         };
 
-        let tmo_digest = alloy_rlp::encode(tminfo.timeout_digest());
+        let tmo_digest = alloy_rlp::encode(&tminfo);
         let mut tc_sigs = Vec::new();
         for (key, certkey) in keys.iter().zip(cert_keys.iter()) {
             let node_id = NodeId::new(key.pubkey());
@@ -1250,10 +1695,9 @@ mod test {
         let tmo_sig_col =
             SignatureCollectionType::new(tc_sigs, &valmap, tmo_digest.as_ref()).unwrap();
 
-        let high_qc_sig_tuple = HighQcRoundSigColTuple {
-            high_qc_round: HighQcRound {
-                qc_round: qc.get_round(),
-            },
+        let high_qc_sig_tuple = HighTipRoundSigColTuple {
+            high_tip_round: GENESIS_ROUND,
+            high_qc_round: qc.get_round(),
             sigs: tmo_sig_col,
         };
 
@@ -1261,8 +1705,8 @@ mod test {
             TimeoutCertificate {
                 epoch: Epoch(2), // wrong epoch here
                 round: Round(11),
-                high_qc_rounds: vec![high_qc_sig_tuple],
-                _phantom: PhantomData,
+                tip_rounds: vec![high_qc_sig_tuple],
+                high_extend: HighExtend::Qc(qc.clone()),
             };
 
         // moved here because of valmap ownership
@@ -1272,12 +1716,16 @@ mod test {
         val_epoch_map.insert(Epoch(1), validator_stakes, valmap);
 
         let qc_verify_result = verify_qc(
-            |epoch, round| epoch_to_validators(&epoch_manager, &val_epoch_map, epoch, round),
+            &|epoch, round| {
+                epoch_to_validators(&epoch_manager, &val_epoch_map, &election, epoch, round)
+            },
             &qc,
         );
         assert_eq!(qc_verify_result, Ok(()));
         let tc_verify_result = verify_tc(
-            |epoch, round| epoch_to_validators(&epoch_manager, &val_epoch_map, epoch, round),
+            &|epoch, round| {
+                epoch_to_validators(&epoch_manager, &val_epoch_map, &election, epoch, round)
+            },
             &tc,
         );
         assert_eq!(tc_verify_result, Err(Error::InvalidEpoch));

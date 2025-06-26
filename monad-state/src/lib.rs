@@ -48,8 +48,10 @@ use monad_types::{
     GENESIS_ROUND,
 };
 use monad_validator::{
-    epoch_manager::EpochManager, leader_election::LeaderElection,
-    validator_set::ValidatorSetTypeFactory, validators_epoch_mapping::ValidatorsEpochMapping,
+    epoch_manager::EpochManager,
+    leader_election::LeaderElection,
+    validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
+    validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
 use self::{
@@ -155,7 +157,6 @@ where
         Checkpoint {
             root: GENESIS_BLOCK_ID,
             high_certificate: RoundCertificate::Qc(QuorumCertificate::genesis_qc()),
-            high_qc: QuorumCertificate::genesis_qc(),
             validator_sets: vec![
                 LockedEpoch {
                     epoch: Epoch(1),
@@ -190,6 +191,7 @@ where
         &self,
         validator_set_factory: &impl ValidatorSetTypeFactory<NodeIdPubKey = SCT::NodeIdPubKey>,
         locked_validator_sets: &[ValidatorSetDataWithEpoch<SCT>],
+        election: &impl LeaderElection<NodeIdPubKey = SCT::NodeIdPubKey>,
     ) -> Result<(), ForkpointValidationError> {
         // 1.
         if self.validator_sets.len() < 2 {
@@ -222,10 +224,6 @@ where
         };
 
         // 6.
-        if self.high_certificate.round() < self.high_qc.get_round() {
-            return Err(ForkpointValidationError::InvalidHighCertificate);
-        }
-
         let validators = locked_validator_sets
             .iter()
             .map(|locked| {
@@ -249,23 +247,21 @@ where
                 (locked.epoch, (vset, vmap))
             })
             .collect::<HashMap<_, _>>();
-        let epoch_to_validators = |epoch, _round| {
+        let epoch_to_validators = |epoch, round| {
             let (vset, vmap) = validators
                 .get(&epoch)
                 .ok_or(validation::Error::ValidatorSetDataUnavailable)?;
-            Ok((vset, vmap))
+            let leader = election.get_leader(round, vset.get_members());
+            Ok((vset, vmap, leader))
         };
 
         match &self.high_certificate {
             RoundCertificate::Qc(qc) => {
-                if &self.high_qc != qc {
-                    return Err(ForkpointValidationError::InvalidHighCertificate);
-                }
-                verify_qc(epoch_to_validators, qc)
+                verify_qc(&epoch_to_validators, qc)
                     .map_err(|_| ForkpointValidationError::InvalidQC)?;
             }
             RoundCertificate::Tc(tc) => {
-                verify_tc(epoch_to_validators, tc)
+                verify_tc(&epoch_to_validators, tc)
                     .map_err(|_| ForkpointValidationError::InvalidHighCertificate)?;
             }
         };
@@ -291,7 +287,6 @@ where
 {
     Sync {
         high_certificate: RoundCertificate<ST, SCT, EPT>,
-        high_qc: QuorumCertificate<SCT>,
 
         block_buffer: BlockBuffer<ST, SCT, EPT>,
 
@@ -317,12 +312,10 @@ where
 {
     fn start_sync(
         high_certificate: RoundCertificate<ST, SCT, EPT>,
-        high_qc: QuorumCertificate<SCT>,
         block_buffer: BlockBuffer<ST, SCT, EPT>,
     ) -> Self {
         Self::Sync {
             high_certificate,
-            high_qc,
             block_buffer,
 
             db_status: DbSyncStatus::Waiting,
@@ -333,10 +326,15 @@ where
 
     fn current_epoch(&self) -> Epoch {
         match self {
-            ConsensusMode::Sync { high_qc, .. } => {
+            ConsensusMode::Sync {
+                high_certificate, ..
+            } => {
                 // TODO do we need to check the boundary condition if high_qc is on the epoch
                 // boundary? Probably doesn't matter that much
-                high_qc.get_epoch()
+                match high_certificate {
+                    RoundCertificate::Qc(qc) => qc.get_epoch(),
+                    RoundCertificate::Tc(tc) => tc.epoch,
+                }
             }
             ConsensusMode::Live(consensus) => consensus.get_current_epoch(),
         }
@@ -404,6 +402,10 @@ where
             ConsensusMode::Sync { .. } => None,
             ConsensusMode::Live(consensus) => Some(consensus),
         }
+    }
+
+    pub fn state_backend(&self) -> &SBT {
+        &self.state_backend
     }
 
     pub fn epoch_manager(&self) -> &EpochManager {
@@ -755,8 +757,11 @@ where
         >,
     ) {
         assert_eq!(
-            self.forkpoint
-                .validate(&self.validator_set_factory, &self.locked_epoch_validators),
+            self.forkpoint.validate(
+                &self.validator_set_factory,
+                &self.locked_epoch_validators,
+                &self.leader_election
+            ),
             Ok(())
         );
 
@@ -782,7 +787,6 @@ where
             consensus_config: self.consensus_config,
             consensus: ConsensusMode::start_sync(
                 self.forkpoint.high_certificate.clone(),
-                self.forkpoint.high_qc.clone(),
                 BlockBuffer::new(
                     self.consensus_config.execution_delay,
                     self.forkpoint.root,
@@ -809,8 +813,7 @@ where
 
         let Forkpoint(Checkpoint {
             root,
-            high_certificate: _,
-            high_qc,
+            high_certificate,
             validator_sets: _,
         }) = self.forkpoint;
 
@@ -820,7 +823,7 @@ where
             )));
         }
 
-        tracing::info!(?root, ?high_qc, "starting up, syncing");
+        tracing::info!(?root, ?high_certificate, "starting up, syncing");
         init_cmds.extend(monad_state.maybe_start_consensus());
 
         (monad_state, init_cmds)
@@ -855,8 +858,6 @@ where
             SBT,
         >,
     > {
-        let _event_span = tracing::debug_span!("event_span", ?event).entered();
-
         match event {
             MonadEvent::ConsensusEvent(consensus_event) => {
                 let consensus_cmds = ConsensusChildState::new(self).update(consensus_event);
@@ -930,7 +931,6 @@ where
                 } => {
                     let ConsensusMode::Sync {
                         high_certificate,
-                        high_qc,
                         block_buffer,
                         db_status,
                         updating_target,
@@ -939,8 +939,7 @@ where
                         unreachable!("Live -> RequestSync is an invalid state transition")
                     };
 
-                    *high_certificate = RoundCertificate::Qc(new_high_qc.clone());
-                    *high_qc = new_high_qc;
+                    *high_certificate = RoundCertificate::Qc(new_high_qc);
                     block_buffer.re_root(new_root);
                     *db_status = DbSyncStatus::Waiting;
                     *updating_target = false;
@@ -1105,7 +1104,6 @@ where
     > {
         let ConsensusMode::Sync {
             high_certificate,
-            high_qc,
             block_buffer,
             db_status,
             updating_target: _,
@@ -1206,7 +1204,7 @@ where
                 } = self
                     .consensus_config
                     .chain_config
-                    .get_chain_revision(full_block.header().round)
+                    .get_chain_revision(full_block.header().block_round)
                     .chain_params();
                 let ExecutionChainParams { max_code_size } = {
                     // u64::MAX seconds is ~500 Billion years
@@ -1269,9 +1267,12 @@ where
             &self.consensus_config,
             root_info,
             high_certificate.clone(),
-            high_qc.clone(),
         );
-        tracing::info!(?root_info, ?high_qc, "done syncing, initializing consensus");
+        tracing::info!(
+            ?root_info,
+            ?high_certificate,
+            "done syncing, initializing consensus"
+        );
         self.consensus = ConsensusMode::Live(consensus);
         commands.push(Command::StateSyncCommand(StateSyncCommand::StartExecution));
         commands.extend(self.update(MonadEvent::ConsensusEvent(ConsensusEvent::Timeout)));
@@ -1298,7 +1299,7 @@ where
                 };
                 consensus.request_blocks_if_missing_ancestor()
             };
-            let mut consensus = ConsensusChildState::new(self);
+            let consensus = ConsensusChildState::new(self);
             commands.extend(
                 blocksync_cmds
                     .into_iter()
@@ -1324,7 +1325,9 @@ mod test {
     use monad_secp::SecpSignature;
     use monad_testutil::validators::create_keys_w_validators;
     use monad_types::{BlockId, Hash, NodeId, Round, SeqNum, Stake};
-    use monad_validator::validator_set::ValidatorSetFactory;
+    use monad_validator::{
+        validator_set::ValidatorSetFactory, weighted_round_robin::WeightedRoundRobin,
+    };
 
     use super::*;
 
@@ -1339,6 +1342,7 @@ mod test {
     fn get_forkpoint() -> (
         Forkpoint<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
         Vec<ValidatorSetDataWithEpoch<SignatureCollectionType>>,
+        WeightedRoundRobin<CertificateSignaturePubKey<SignatureType>>,
     ) {
         let (keys, cert_keys, _valset, valmap) = create_keys_w_validators::<
             SignatureType,
@@ -1350,8 +1354,6 @@ mod test {
             id: BlockId(Hash([0x06_u8; 32])),
             epoch: Epoch(3),
             round: Round(4030),
-            parent_id: BlockId(Hash([0x06_u8; 32])),
-            parent_round: Round(4027),
         };
         let qc_seq_num = SeqNum(2998); // one block before boundary block
 
@@ -1372,8 +1374,7 @@ mod test {
 
         let forkpoint: Forkpoint<_, _, _> = Checkpoint {
             root: qc.get_block_id(),
-            high_certificate: RoundCertificate::Qc(qc.clone()),
-            high_qc: qc,
+            high_certificate: RoundCertificate::Qc(qc),
             validator_sets: vec![
                 LockedEpoch {
                     epoch: Epoch(3),
@@ -1401,14 +1402,18 @@ mod test {
             })
             .collect();
 
-        (forkpoint, validator_sets)
+        (forkpoint, validator_sets, WeightedRoundRobin::default())
     }
 
     #[test]
     fn test_forkpoint_serde() {
-        let (forkpoint, locked_validator_sets) = get_forkpoint();
+        let (forkpoint, locked_validator_sets, election) = get_forkpoint();
         assert!(forkpoint
-            .validate(&ValidatorSetFactory::default(), &locked_validator_sets)
+            .validate(
+                &ValidatorSetFactory::default(),
+                &locked_validator_sets,
+                &election
+            )
             .is_ok());
         let ser = toml::to_string_pretty(&forkpoint.0).unwrap();
 
@@ -1420,12 +1425,16 @@ mod test {
 
     #[test]
     fn test_forkpoint_validate_1() {
-        let (mut forkpoint, mut locked_validator_sets) = get_forkpoint();
+        let (mut forkpoint, mut locked_validator_sets, election) = get_forkpoint();
         let popped_1 = forkpoint.0.validator_sets.pop().unwrap();
         let popped_2 = locked_validator_sets.pop().unwrap();
 
         assert_eq!(
-            forkpoint.validate(&ValidatorSetFactory::default(), &locked_validator_sets),
+            forkpoint.validate(
+                &ValidatorSetFactory::default(),
+                &locked_validator_sets,
+                &election
+            ),
             Err(ForkpointValidationError::TooFewValidatorSets)
         );
 
@@ -1436,30 +1445,42 @@ mod test {
         locked_validator_sets.push(popped_2.clone());
         locked_validator_sets.push(popped_2);
         assert_eq!(
-            forkpoint.validate(&ValidatorSetFactory::default(), &locked_validator_sets),
+            forkpoint.validate(
+                &ValidatorSetFactory::default(),
+                &locked_validator_sets,
+                &election
+            ),
             Err(ForkpointValidationError::TooManyValidatorSets)
         );
     }
 
     #[test]
     fn test_forkpoint_validate_2() {
-        let (mut forkpoint, locked_validator_sets) = get_forkpoint();
+        let (mut forkpoint, locked_validator_sets, election) = get_forkpoint();
         forkpoint.0.validator_sets[0].epoch.0 -= 1;
 
         assert_eq!(
-            forkpoint.validate(&ValidatorSetFactory::default(), &locked_validator_sets),
+            forkpoint.validate(
+                &ValidatorSetFactory::default(),
+                &locked_validator_sets,
+                &election
+            ),
             Err(ForkpointValidationError::ValidatorSetsNotConsecutive)
         );
     }
 
     #[test]
     fn test_forkpoint_validate_4() {
-        let (mut forkpoint, locked_validator_sets) = get_forkpoint();
+        let (mut forkpoint, locked_validator_sets, election) = get_forkpoint();
 
         forkpoint.0.validator_sets[0].round = None;
 
         assert_eq!(
-            forkpoint.validate(&ValidatorSetFactory::default(), &locked_validator_sets),
+            forkpoint.validate(
+                &ValidatorSetFactory::default(),
+                &locked_validator_sets,
+                &election
+            ),
             Err(ForkpointValidationError::InvalidValidatorSetStartRound)
         );
     }
@@ -1470,13 +1491,20 @@ mod test {
 
     #[test]
     fn test_forkpoint_validate_6() {
-        let (mut forkpoint, locked_validator_sets) = get_forkpoint();
+        let (mut forkpoint, locked_validator_sets, election) = get_forkpoint();
+
+        let RoundCertificate::Qc(qc) = &mut forkpoint.0.high_certificate else {
+            unreachable!();
+        };
         // change qc content so signature collection is invalid
-        forkpoint.0.high_qc.info.round = forkpoint.0.high_qc.get_round() - Round(1);
-        forkpoint.0.high_certificate = RoundCertificate::Qc(forkpoint.0.high_qc.clone());
+        qc.info.round = qc.info.round - Round(1);
 
         assert_eq!(
-            forkpoint.validate(&ValidatorSetFactory::default(), &locked_validator_sets),
+            forkpoint.validate(
+                &ValidatorSetFactory::default(),
+                &locked_validator_sets,
+                &election
+            ),
             Err(ForkpointValidationError::InvalidQC)
         );
     }

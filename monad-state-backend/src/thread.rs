@@ -2,7 +2,7 @@ use std::sync::{mpsc, Arc};
 
 use alloy_primitives::Address;
 use monad_eth_types::{EthAccount, EthHeader};
-use monad_types::{BlockId, Round, SeqNum};
+use monad_types::{BlockId, SeqNum};
 use tracing::warn;
 
 use crate::{StateBackend, StateBackendError};
@@ -15,7 +15,6 @@ enum StateBackendThreadRequest {
     GetAccountStatuses {
         block_id: BlockId,
         seq_num: SeqNum,
-        round: Round,
         is_finalized: bool,
         addresses: Vec<Address>,
         tx: mpsc::SyncSender<Result<Vec<Option<EthAccount>>, StateBackendError>>,
@@ -23,7 +22,6 @@ enum StateBackendThreadRequest {
     GetExecutionResult {
         block_id: BlockId,
         seq_num: SeqNum,
-        round: Round,
         is_finalized: bool,
         tx: mpsc::SyncSender<Result<EthHeader, StateBackendError>>,
     },
@@ -81,14 +79,12 @@ impl StateBackend for StateBackendThreadClient {
         &self,
         block_id: &BlockId,
         seq_num: &SeqNum,
-        round: &Round,
         is_finalized: bool,
         addresses: impl Iterator<Item = &'a Address>,
     ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
         self.send_and_recv_request(|tx| StateBackendThreadRequest::GetAccountStatuses {
             block_id: block_id.to_owned(),
             seq_num: seq_num.to_owned(),
-            round: round.to_owned(),
             is_finalized,
             addresses: addresses.cloned().collect(),
             tx,
@@ -99,13 +95,11 @@ impl StateBackend for StateBackendThreadClient {
         &self,
         block_id: &BlockId,
         seq_num: &SeqNum,
-        round: &Round,
         is_finalized: bool,
     ) -> Result<EthHeader, StateBackendError> {
         self.send_and_recv_request(|tx| StateBackendThreadRequest::GetExecutionResult {
             block_id: block_id.to_owned(),
             seq_num: seq_num.to_owned(),
-            round: round.to_owned(),
             is_finalized,
             tx,
         })
@@ -163,7 +157,6 @@ where
                 StateBackendThreadRequest::GetAccountStatuses {
                     block_id,
                     seq_num,
-                    round,
                     is_finalized,
                     addresses,
                     tx,
@@ -171,7 +164,6 @@ where
                     tx.send(state_backend.get_account_statuses(
                         &block_id,
                         &seq_num,
-                        &round,
                         is_finalized,
                         addresses.iter(),
                     ))
@@ -180,17 +172,11 @@ where
                 StateBackendThreadRequest::GetExecutionResult {
                     block_id,
                     seq_num,
-                    round,
                     is_finalized,
                     tx,
                 } => {
-                    tx.send(state_backend.get_execution_result(
-                        &block_id,
-                        &seq_num,
-                        &round,
-                        is_finalized,
-                    ))
-                    .expect("StateBackendThreadClient is alive");
+                    tx.send(state_backend.get_execution_result(&block_id, &seq_num, is_finalized))
+                        .expect("StateBackendThreadClient is alive");
                 }
                 StateBackendThreadRequest::RawReadEarliestFinalizedBlock { tx } => {
                     tx.send(state_backend.raw_read_earliest_finalized_block())
@@ -216,7 +202,7 @@ mod test {
     use std::time::Duration;
 
     use monad_eth_types::Balance;
-    use monad_types::{SeqNum, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM};
+    use monad_types::{SeqNum, GENESIS_BLOCK_ID, GENESIS_SEQ_NUM};
 
     use crate::{InMemoryStateInner, StateBackend, StateBackendThreadClient};
 
@@ -227,13 +213,7 @@ mod test {
 
         {
             let get_account_statuses = client
-                .get_account_statuses(
-                    &GENESIS_BLOCK_ID,
-                    &GENESIS_SEQ_NUM,
-                    &GENESIS_ROUND,
-                    true,
-                    [].into_iter(),
-                )
+                .get_account_statuses(&GENESIS_BLOCK_ID, &GENESIS_SEQ_NUM, true, [].into_iter())
                 .unwrap();
 
             assert_eq!(get_account_statuses.len(), 0);

@@ -11,6 +11,7 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::{BlockPolicy, BlockRange, ConsensusBlockHeader, OptimisticPolicyCommit},
+    no_endorsement::FreshProposalCertificate,
     payload::RoundSignature,
     quorum_certificate::{QuorumCertificate, TimestampAdjustment},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -58,6 +59,7 @@ where
         high_qc: QuorumCertificate<SCT>,
         round_signature: RoundSignature<SCT::SignatureType>,
         last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
+        fresh_proposal_certificate: Option<FreshProposalCertificate<SCT>>,
 
         tx_limit: usize,
         proposal_gas_limit: u64,
@@ -111,15 +113,22 @@ where
             PacemakerCommand::EnterRound(epoch, round) => {
                 ConsensusCommand::EnterRound(epoch, round)
             }
-            PacemakerCommand::PrepareTimeout(tmo) => ConsensusCommand::Publish {
-                // TODO should this be sent to epoch of next round?
-                target: RouterTarget::Broadcast(tmo.tminfo.epoch),
-                message: ConsensusMessage {
-                    version,
-                    message: ProtocolMessage::Timeout(TimeoutMessage::new(tmo, cert_keypair)),
+            PacemakerCommand::PrepareTimeout(timeout, high_extend, last_round_tc) => {
+                ConsensusCommand::Publish {
+                    // TODO should this be sent to epoch of next round?
+                    target: RouterTarget::Broadcast(timeout.epoch),
+                    message: ConsensusMessage {
+                        version,
+                        message: ProtocolMessage::Timeout(TimeoutMessage::new(
+                            cert_keypair,
+                            timeout,
+                            high_extend,
+                            last_round_tc,
+                        )),
+                    }
+                    .sign(keypair),
                 }
-                .sign(keypair),
-            },
+            }
             PacemakerCommand::Schedule { duration } => ConsensusCommand::Schedule { duration },
             PacemakerCommand::ScheduleReset => ConsensusCommand::ScheduleReset,
         }

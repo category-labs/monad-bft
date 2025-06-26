@@ -85,6 +85,7 @@ metrics!(
             out_of_order_proposals,
             created_vote,
             old_vote_received,
+            future_vote_received,
             vote_received,
             created_qc,
             old_remote_timeout,
@@ -104,7 +105,13 @@ metrics!(
             commit_block,
             enter_new_round_qc,
             enter_new_round_tc,
-            trigger_state_sync
+            trigger_state_sync,
+            handle_round_recovery,
+            invalid_round_recovery_leader,
+            handle_no_endorsement,
+            old_no_endorsement_received,
+            future_no_endorsement_received,
+            created_nec
         ]
     ),
     (

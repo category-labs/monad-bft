@@ -4,10 +4,7 @@ use monad_crypto::certificate_signature::{
 use monad_types::{BlockId, Epoch, ExecutionProtocol, Round, SeqNum};
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    quorum_certificate::QuorumCertificate, signature_collection::SignatureCollection,
-    RoundCertificate,
-};
+use crate::{signature_collection::SignatureCollection, RoundCertificate};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RootInfo {
@@ -29,7 +26,6 @@ where
 {
     pub root: BlockId,
     pub high_certificate: RoundCertificate<ST, SCT, EPT>,
-    pub high_qc: QuorumCertificate<SCT>,
 
     // TODO can we get rid of this by including an epoch_start_block_id in every block?
     pub validator_sets: Vec<LockedEpoch>,

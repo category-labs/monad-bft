@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, VecDeque},
     marker::PhantomData,
     ops::DerefMut,
     pin::Pin,
@@ -23,7 +23,7 @@ use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
 use monad_state_backend::{InMemoryState, StateBackendTest};
-use monad_types::{BlockId, Round, SeqNum};
+use monad_types::{BlockId, SeqNum};
 use monad_updaters::ledger::MockableLedger;
 
 /// A ledger for commited Monad Blocks
@@ -35,9 +35,8 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    blocks: BTreeMap<Round, ConsensusFullBlock<ST, SCT, EthExecutionProtocol>>,
+    blocks: BTreeMap<BlockId, ConsensusFullBlock<ST, SCT, EthExecutionProtocol>>,
     finalized: BTreeMap<SeqNum, ConsensusFullBlock<ST, SCT, EthExecutionProtocol>>,
-    block_ids: HashMap<BlockId, Round>,
     events: VecDeque<BlockSyncEvent<ST, SCT, EthExecutionProtocol>>,
 
     state: InMemoryState,
@@ -55,7 +54,6 @@ where
         MockEthLedger {
             blocks: Default::default(),
             finalized: Default::default(),
-            block_ids: Default::default(),
             events: Default::default(),
 
             state,
@@ -74,18 +72,12 @@ where
         let mut headers = VecDeque::new();
         while (headers.len() as u64) < block_range.num_blocks.0 {
             // TODO add max number of headers to read
-            let Some(block_round) = self.block_ids.get(&next_block_id) else {
+            let Some(next_block) = self.blocks.get(&next_block_id) else {
                 return BlockSyncHeadersResponse::NotAvailable(block_range);
             };
 
-            let block_header = self
-                .blocks
-                .get(block_round)
-                .expect("round to blockid invariant")
-                .header();
-
-            headers.push_front(block_header.clone());
-            next_block_id = block_header.get_parent_id();
+            headers.push_front(next_block.header().clone());
+            next_block_id = next_block.get_parent_id();
         }
 
         BlockSyncHeadersResponse::Found((block_range, headers.into()))
@@ -140,22 +132,12 @@ where
                     state.ledger_propose(
                         block.get_id(),
                         block.get_seq_num(),
-                        block.get_round(),
-                        block.get_parent_round(),
+                        block.get_block_round(),
+                        block.get_parent_id(),
                         new_account_nonces,
                     );
 
-                    match self.blocks.entry(block.get_round()) {
-                        std::collections::btree_map::Entry::Vacant(entry) => {
-                            let block_id = block.get_id();
-                            let round = block.get_round();
-                            entry.insert(block);
-                            self.block_ids.insert(block_id, round);
-                        }
-                        std::collections::btree_map::Entry::Occupied(entry) => {
-                            assert_eq!(entry.get(), &block, "two conflicting blocks committed")
-                        }
-                    }
+                    self.blocks.insert(block.get_id(), block);
                 }
                 LedgerCommand::LedgerCommit(OptimisticCommit::Finalized(block)) => {
                     self.finalized.insert(block.get_seq_num(), block.clone());

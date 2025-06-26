@@ -1,6 +1,6 @@
 use alloy_primitives::keccak256;
 use alloy_rlp::Encodable;
-use monad_types::Round;
+use monad_types::BlockId;
 use tracing::warn;
 
 // Table nibbles
@@ -21,7 +21,7 @@ const FINALIZED_NIBBLE: u8 = 1;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Version {
-    Proposal(Round),
+    Proposal(BlockId),
     Finalized,
 }
 
@@ -43,9 +43,9 @@ pub fn create_triedb_key(version: Version, key: KeyInput) -> (Vec<u8>, u8) {
     let mut key_nibbles: Vec<u8> = vec![];
 
     match version {
-        Version::Proposal(round) => {
+        Version::Proposal(block_id) => {
             key_nibbles.push(PROPOSAL_NIBBLE);
-            for byte in round.0.to_be_bytes() {
+            for byte in block_id.0 .0 {
                 key_nibbles.push(byte >> 4);
                 key_nibbles.push(byte & 0xF);
             }

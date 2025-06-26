@@ -160,14 +160,14 @@ where
                     self.state_backend.lock().unwrap().ledger_propose(
                         block.get_id(),
                         block.get_seq_num(),
-                        block.get_round(),
-                        block.get_parent_round(),
+                        block.get_block_round(),
+                        block.get_parent_id(),
                         BTreeMap::default(), // TODO parse out txs
                     );
-                    match self.blocks.entry(block.get_round()) {
+                    match self.blocks.entry(block.get_block_round()) {
                         std::collections::btree_map::Entry::Vacant(entry) => {
                             let block_id = block.get_id();
-                            let round = block.get_round();
+                            let round = block.get_block_round();
                             entry.insert(block);
                             self.block_ids.insert(block_id, round);
                         }
@@ -176,7 +176,7 @@ where
                                 self.block_ids.remove(&entry.get().get_id());
 
                                 let block_id = block.get_id();
-                                let round = block.get_round();
+                                let round = block.get_block_round();
                                 entry.insert(block);
                                 self.block_ids.insert(block_id, round);
                             }

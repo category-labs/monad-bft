@@ -165,7 +165,11 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         })
         .get_locked_validator_sets(&node_state.forkpoint_config);
 
-    let current_epoch = node_state.forkpoint_config.high_qc.get_epoch();
+    let current_epoch = node_state
+        .forkpoint_config
+        .high_certificate
+        .qc()
+        .get_epoch();
     let router: BoxUpdater<_, _> = {
         let raptor_router = build_raptorcast_router::<
             SignatureType,
@@ -279,7 +283,13 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
             node_state.chain_config,
             node_state
                 .chain_config
-                .get_chain_revision(node_state.forkpoint_config.high_qc.get_round())
+                .get_chain_revision(
+                    node_state
+                        .forkpoint_config
+                        .high_certificate
+                        .qc()
+                        .get_round(),
+                )
                 .chain_params()
                 .proposal_gas_limit,
         )

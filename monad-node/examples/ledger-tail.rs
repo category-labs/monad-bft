@@ -98,8 +98,9 @@ async fn main() {
                 });
 
             for skipped_round in (last_round.0 + 1)
-                .max(block.get_round().0 - 5)
-                .min(block.get_round().0)..block.get_round().0
+                .max(block.get_block_round().0 - 5)
+                .min(block.get_block_round().0)
+                ..block.get_block_round().0
             {
                 let skipped_leader =
                     WeightedRoundRobin::default().get_leader(Round(skipped_round), validators);
@@ -111,12 +112,11 @@ async fn main() {
                     "skipped_block"
                 );
             }
-            last_round = block.get_round();
+            last_round = block.get_block_round();
             visited_blocks.put(block.get_id(), block.header().clone());
 
             info!(
-                round =? block.get_round().0,
-                parent_round =? block.get_parent_round().0,
+                round =? block.get_block_round().0,
                 epoch =? block.header().epoch.0,
                 seq_num =? block.header().seq_num.0,
                 num_tx =? block.body().execution_body.transactions.len(),

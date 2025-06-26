@@ -32,14 +32,10 @@ impl<PT: PubKey, VKT: CertificateKeyPair> IntoIterator for ValidatorMapping<PT, 
 pub struct Vote {
     /// id of the proposed block
     pub id: BlockId,
-    /// round of the proposed block
+    /// the round that this vote is for
     pub round: Round,
-    /// epoch of the proposed block
+    /// the epoch of the round that this vote is for
     pub epoch: Epoch,
-    /// parent block id of the proposed block
-    pub parent_id: BlockId,
-    /// parent round of the proposed block
-    pub parent_round: Round,
 }
 
 impl std::fmt::Debug for Vote {
@@ -47,9 +43,7 @@ impl std::fmt::Debug for Vote {
         f.debug_struct("Vote")
             .field("id", &self.id)
             .field("epoch", &self.epoch)
-            .field("r", &self.round)
-            .field("pid", &self.parent_id)
-            .field("pr", &self.parent_round)
+            .field("round", &self.round)
             .finish()
     }
 }
@@ -60,8 +54,6 @@ impl DontCare for Vote {
             id: BlockId(Hash([0x0_u8; 32])),
             epoch: Epoch(1),
             round: Round(0),
-            parent_id: BlockId(Hash([0x0_u8; 32])),
-            parent_round: Round(0),
         }
     }
 }

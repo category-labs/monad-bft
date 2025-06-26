@@ -393,16 +393,14 @@ impl BlsSignature {
     }
 
     pub fn serialize(&self) -> Vec<u8> {
-        self.0.serialize().to_vec()
+        self.compress()
     }
 
     /// Deserializes a signature from bytes without performing subgroup checks.
     /// The subgroup check is performed in verify() by calling underlying BLST's verify function with `sig_groupcheck`
     /// parameter to true.
     pub fn deserialize(message: &[u8]) -> Result<Self, BlsError> {
-        blst_core::Signature::deserialize(message)
-            .map(Self)
-            .map_err(BlsError)
+        Self::uncompress(message)
     }
 
     pub fn compress(&self) -> Vec<u8> {

@@ -159,7 +159,10 @@ where
         }
 
         if let Some(author_pubkey) = author_pubkey {
-            if let Err(e) = header.round_signature.verify(header.round, author_pubkey) {
+            if let Err(e) = header
+                .round_signature
+                .verify(header.block_round, author_pubkey)
+            {
                 warn!("Invalid randao_reveal signature, reason: {:?}", e);
                 return Err(BlockValidationError::RandaoError);
             };

@@ -21,7 +21,7 @@ use monad_eth_types::{EthAccount, EthExecutionProtocol, EthHeader};
 use monad_secp::SecpSignature;
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_triedb::TriedbHandle;
-use monad_types::{BlockId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM};
+use monad_types::{BlockId, Hash, SeqNum, GENESIS_BLOCK_ID, GENESIS_SEQ_NUM};
 use tracing::{debug, trace, warn};
 
 use crate::{
@@ -61,9 +61,9 @@ impl TriedbReader {
         Some(SeqNum(latest_voted))
     }
 
-    pub fn get_latest_voted_round(&self) -> Option<Round> {
-        let latest_voted = self.handle.latest_voted_round()?;
-        Some(Round(latest_voted))
+    pub fn get_latest_voted_block_id(&self) -> Option<BlockId> {
+        let latest_voted = self.handle.latest_voted_block_id()?;
+        Some(BlockId(Hash(latest_voted)))
     }
 
     pub fn get_latest_finalized_block(&self) -> Option<SeqNum> {
@@ -105,24 +105,10 @@ impl TriedbReader {
         &self,
         block_id: &BlockId,
         seq_num: &SeqNum,
-        round: &Round,
     ) -> Option<EthHeader> {
-        let bft_id = self.get_bft_block_id(seq_num, round)?;
-        if block_id != &bft_id {
-            return None;
-        }
-
         let (triedb_key, key_len_nibbles) =
-            create_triedb_key(Version::Proposal(*round), KeyInput::BlockHeader);
+            create_triedb_key(Version::Proposal(*block_id), KeyInput::BlockHeader);
         let eth_header_bytes = self.handle.read(&triedb_key, key_len_nibbles, seq_num.0)?;
-
-        // We need to re-check the block id to make sure that this block was not overwritten.
-        // This can only happen in the case of equivocation, where there can be 2 proposals for the
-        // same round.
-        let bft_id = self.get_bft_block_id(seq_num, round)?;
-        if block_id != &bft_id {
-            return None;
-        }
 
         let mut rlp_buf = eth_header_bytes.as_slice();
         let block_header = Header::decode(&mut rlp_buf).expect("invalid rlp eth header");
@@ -134,7 +120,7 @@ impl TriedbReader {
     pub fn get_bft_block(
         &self,
         seq_num: &SeqNum,
-        round: &Round,
+        block_id: &BlockId,
     ) -> Option<
         ConsensusBlockHeader<
             SecpSignature,
@@ -142,22 +128,22 @@ impl TriedbReader {
             EthExecutionProtocol,
         >,
     > {
-        if seq_num == &GENESIS_SEQ_NUM || round == &GENESIS_ROUND {
+        if seq_num == &GENESIS_SEQ_NUM || block_id == &GENESIS_BLOCK_ID {
             // execution populates a garbage genesis consensus block
             return None;
         }
 
         let (triedb_key, key_len_nibbles) =
-            create_triedb_key(Version::Proposal(*round), KeyInput::BftBlock);
+            create_triedb_key(Version::Proposal(*block_id), KeyInput::BftBlock);
         let bft_block = self.handle.read(&triedb_key, key_len_nibbles, seq_num.0)?;
 
         let block: ConsensusBlockHeader<_, _, _> = alloy_rlp::decode_exact(&bft_block)
             .unwrap_or_else(|err| {
                 panic!(
-                    "failed to decode rlp ConsensusBlockHeader, err={:?}, seq_num={:?}, round={:?}, hex_hash={}, hex={}",
+                    "failed to decode rlp ConsensusBlockHeader, err={:?}, seq_num={:?}, block_id={:?}, hex_hash={}, hex={}",
                     err,
                     seq_num,
-                    round,
+                    block_id,
                     {
                         let mut hasher = HasherType::new();
                         hasher.update(&bft_block);
@@ -168,16 +154,6 @@ impl TriedbReader {
             });
 
         Some(block)
-    }
-
-    // only guaranteed to work for proposals
-    pub fn get_bft_block_id(&self, seq_num: &SeqNum, round: &Round) -> Option<BlockId> {
-        if round == &GENESIS_ROUND && seq_num == &GENESIS_SEQ_NUM {
-            return Some(GENESIS_BLOCK_ID);
-        }
-
-        let bft_block = self.get_bft_block(seq_num, round)?;
-        Some(bft_block.get_id())
     }
 
     // for accessing Version::Proposed, bft_id MUST BE VERIFIED
@@ -257,7 +233,6 @@ impl StateBackend for TriedbReader {
         &self,
         block_id: &BlockId,
         seq_num: &SeqNum,
-        round: &Round,
         is_finalized: bool,
         eth_addresses: impl Iterator<Item = &'a Address>,
     ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
@@ -273,7 +248,6 @@ impl StateBackend for TriedbReader {
             let Some(statuses) =
                 self.get_accounts_async(seq_num, Version::Finalized, eth_addresses)
             else {
-                tracing::error!(?seq_num, "finalized block expired out");
                 return Err(StateBackendError::NotAvailableYet);
             };
 
@@ -287,31 +261,18 @@ impl StateBackend for TriedbReader {
             // block >= earliest
             statuses
         } else {
-            // check proposed, validate block_id
-            trace!(?seq_num, ?round, "triedb read proposed");
+            trace!(?seq_num, ?block_id, "triedb read proposed");
 
-            let Some(bft_block_id) = self.get_bft_block_id(seq_num, round) else {
+            // make sure the block is committed before reading accounts
+            let Some(_header) = self.get_proposed_eth_header(block_id, seq_num) else {
                 return Err(StateBackendError::NotAvailableYet);
             };
-            if &bft_block_id != block_id {
-                return Err(StateBackendError::NotAvailableYet);
-            }
 
             let Some(statuses) =
-                self.get_accounts_async(seq_num, Version::Proposal(*round), eth_addresses)
+                self.get_accounts_async(seq_num, Version::Proposal(*block_id), eth_addresses)
             else {
-                tracing::error!(?seq_num, "proposed block expired out");
                 return Err(StateBackendError::NotAvailableYet);
             };
-
-            // check that block wasn't overrwritten
-            let Some(bft_block_id) = self.get_bft_block_id(seq_num, round) else {
-                return Err(StateBackendError::NotAvailableYet);
-            };
-            if &bft_block_id != block_id {
-                return Err(StateBackendError::NotAvailableYet);
-            }
-
             statuses
         };
 
@@ -325,7 +286,6 @@ impl StateBackend for TriedbReader {
         &self,
         block_id: &BlockId,
         seq_num: &SeqNum,
-        round: &Round,
         is_finalized: bool,
     ) -> Result<EthHeader, StateBackendError> {
         if is_finalized
@@ -338,35 +298,16 @@ impl StateBackend for TriedbReader {
 
             // block <= latest
             let Some(header) = self.get_finalized_eth_header(seq_num) else {
-                tracing::error!(?seq_num, "finalized block eth header expired out");
                 return Err(StateBackendError::NotAvailableYet);
             };
-
             Ok(header)
         } else {
-            // check proposed, validate block_id
-            trace!(?seq_num, ?round, "triedb read eth header proposed");
+            // check proposed
+            trace!(?seq_num, ?block_id, "triedb read eth header proposed");
 
-            let Some(bft_block_id) = self.get_bft_block_id(seq_num, round) else {
+            let Some(header) = self.get_proposed_eth_header(block_id, seq_num) else {
                 return Err(StateBackendError::NotAvailableYet);
             };
-            if &bft_block_id != block_id {
-                return Err(StateBackendError::NotAvailableYet);
-            }
-
-            let Some(header) = self.get_proposed_eth_header(block_id, seq_num, round) else {
-                tracing::error!(?seq_num, "proposed block eth header expired out");
-                return Err(StateBackendError::NotAvailableYet);
-            };
-
-            // check that block wasn't overrwritten
-            let Some(bft_block_id) = self.get_bft_block_id(seq_num, round) else {
-                return Err(StateBackendError::NotAvailableYet);
-            };
-            if &bft_block_id != block_id {
-                return Err(StateBackendError::NotAvailableYet);
-            }
-
             Ok(header)
         }
     }

@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 use monad_consensus::{
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
@@ -11,15 +9,21 @@ use monad_consensus_types::{
     block::{
         ConsensusBlockHeader, MockExecutionBody, MockExecutionProposedHeader, MockExecutionProtocol,
     },
+    no_endorsement::FreshProposalCertificate,
     payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    timeout::{HighQcRound, HighQcRoundSigColTuple, TimeoutCertificate, TimeoutInfo},
+    timeout::{
+        HighExtend, HighTipRoundSigColTuple, NoTipCertificate, TimeoutCertificate, TimeoutInfo,
+    },
+    tip::ConsensusTip,
     validation::Error,
     voting::Vote,
 };
 use monad_crypto::{
-    certificate_signature::{CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey},
+    certificate_signature::{
+        CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey, PubKey,
+    },
     hasher::Hash,
     NopKeyPair, NopPubKey, NopSignature,
 };
@@ -28,9 +32,10 @@ use monad_testutil::{
     signing::{MockSignatures, TestSigner},
     validators::create_keys_w_validators,
 };
-use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
+use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, GENESIS_ROUND};
 use monad_validator::{
     epoch_manager::EpochManager,
+    leader_election::LeaderElection,
     validator_set::{ValidatorSetFactory, ValidatorSetType},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
@@ -45,6 +50,19 @@ type ExecutionProtocolType = MockExecutionProtocol;
 static NUM_NODES: u32 = 4;
 static VAL_SET_UPDATE_INTERVAL: SeqNum = SeqNum(2000);
 static EPOCH_START_DELAY: Round = Round(50);
+
+struct FakeLeaderElection<PT: PubKey>(NodeId<PT>);
+
+impl<PT: PubKey> LeaderElection for FakeLeaderElection<PT> {
+    type NodeIdPubKey = PT;
+    fn get_leader(
+        &self,
+        _round: Round,
+        _validators: &std::collections::BTreeMap<NodeId<Self::NodeIdPubKey>, monad_types::Stake>,
+    ) -> NodeId<Self::NodeIdPubKey> {
+        self.0
+    }
+}
 
 fn setup_block(
     author: NodeId<PubKeyType>,
@@ -67,8 +85,6 @@ fn setup_block(
         id: BlockId(Hash([0x00_u8; 32])),
         epoch: qc_epoch,
         round: qc_round,
-        parent_id: BlockId(Hash([0x00_u8; 32])),
-        parent_round: qc_parent_round,
     };
 
     let qc = QuorumCertificate::<MockSignatures<SignatureType>>::new(
@@ -150,6 +166,7 @@ fn define_proposal_with_tc(
     Vec<NopKeyPair>,
     EpochManager,
     ValidatorsEpochMapping<ValidatorSetFactory<NopPubKey>, MockSignatureCollectionType>,
+    FakeLeaderElection<NopPubKey>,
     ProposalMessage<SignatureType, MockSignatureCollectionType, ExecutionProtocolType>,
 ) {
     let (keys, cert_keys, vset, vmap) = create_keys_w_validators::<
@@ -163,8 +180,6 @@ fn define_proposal_with_tc(
         id: BlockId(Hash([0x09_u8; 32])),
         epoch: qc_epoch,
         round: qc_round,
-        parent_id: BlockId(Hash([0x00_u8; 32])),
-        parent_round: qc_parent_round,
     };
 
     let qc = QuorumCertificate::<MockSignatures<SignatureType>>::new(
@@ -177,10 +192,9 @@ fn define_proposal_with_tc(
         ),
     );
 
-    let high_qc_sig_tuple = HighQcRoundSigColTuple {
-        high_qc_round: HighQcRound {
-            qc_round: qc.get_round(),
-        },
+    let tip_round = HighTipRoundSigColTuple {
+        high_qc_round: qc.get_round(),
+        high_tip_round: GENESIS_ROUND,
         sigs: MockSignatures::with_pubkeys(
             keys.iter()
                 .map(|kp| kp.pubkey())
@@ -192,8 +206,8 @@ fn define_proposal_with_tc(
     let tc = TimeoutCertificate {
         epoch: tc_epoch, // wrong epoch here
         round: tc_round,
-        high_qc_rounds: vec![high_qc_sig_tuple],
-        _phantom: PhantomData,
+        tip_rounds: vec![tip_round],
+        high_extend: HighExtend::Qc(qc.clone()),
     };
 
     // moved here because of valmap ownership
@@ -228,12 +242,31 @@ fn define_proposal_with_tc(
     );
 
     let proposal = ProposalMessage {
-        block_header: block,
+        tip: ConsensusTip::new(
+            &keys[0],
+            block,
+            Some(FreshProposalCertificate::NoTip(NoTipCertificate {
+                epoch: tc.epoch,
+                round: tc.round,
+                tip_rounds: tc.tip_rounds.clone(),
+                high_qc: qc,
+            })),
+        ),
+        proposal_epoch: block_epoch,
+        proposal_round: block_round,
+
         block_body: payload,
         last_round_tc: Some(tc),
     };
 
-    (keys, cert_keys, epoch_manager, val_epoch_map, proposal)
+    (
+        keys,
+        cert_keys,
+        epoch_manager,
+        val_epoch_map,
+        FakeLeaderElection(author),
+        proposal,
+    )
 }
 
 // test_verify tests hit all error messages in order of appearence
@@ -282,7 +315,9 @@ fn test_verify_incorrect_block_epoch(known_round: Round, block_round: Round) {
     );
 
     let proposal = ProtocolMessage::Proposal(ProposalMessage {
-        block_header: block,
+        tip: ConsensusTip::new(&keypairs[0], block, None),
+        proposal_epoch: block_epoch,
+        proposal_round: block_round,
         block_body: payload,
         last_round_tc: None,
     });
@@ -337,7 +372,9 @@ fn test_verify_invalid_signature() {
     );
 
     let proposal = ProtocolMessage::Proposal(ProposalMessage {
-        block_header: block,
+        tip: ConsensusTip::new(author_keypair, block, None),
+        proposal_epoch: block_epoch,
+        proposal_round: block_round,
         block_body: payload,
         last_round_tc: None,
     });
@@ -359,7 +396,9 @@ fn test_verify_invalid_signature() {
     );
 
     let other_proposal = ProtocolMessage::Proposal(ProposalMessage {
-        block_header: other_block,
+        tip: ConsensusTip::new(author_keypair, other_block, None),
+        proposal_epoch: block_epoch,
+        proposal_round: block_round,
         block_body: other_payload,
         last_round_tc: None,
     });
@@ -417,7 +456,9 @@ fn test_verify_proposal_happy() {
     );
 
     let proposal = ProtocolMessage::Proposal(ProposalMessage {
-        block_header: block,
+        tip: ConsensusTip::new(&keypairs[0], block, None),
+        proposal_epoch: block_epoch,
+        proposal_round: block_round,
         block_body: payload,
         last_round_tc: None,
     });
@@ -485,13 +526,15 @@ fn test_validate_missing_tc(qc_round: Round) {
     );
 
     let proposal = Unvalidated::new(ProposalMessage {
-        block_header: block,
+        tip: ConsensusTip::new(&keypairs[0], block, None),
+        proposal_epoch: block_epoch,
+        proposal_round: block_round,
         block_body: payload,
         last_round_tc: None,
     });
 
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map),
+        proposal.validate(&epoch_manager, &val_epoch_map, &FakeLeaderElection(author)),
         Err(Error::NotWellFormed)
     );
 }
@@ -533,13 +576,15 @@ fn test_validate_incorrect_block_epoch(known_epoch: Epoch, block_epoch: Epoch) {
     );
 
     let proposal = Unvalidated::new(ProposalMessage {
-        block_header: block,
+        tip: ConsensusTip::new(&keypairs[0], block, None),
+        proposal_epoch: block_epoch,
+        proposal_round: block_round,
         block_body: payload,
         last_round_tc: None,
     });
 
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map),
+        proposal.validate(&epoch_manager, &val_epoch_map, &FakeLeaderElection(author)),
         Err(Error::InvalidEpoch)
     );
 }
@@ -580,14 +625,16 @@ fn test_validate_qc_epoch() {
     );
 
     let proposal = Unvalidated::new(ProposalMessage {
-        block_header: block,
+        tip: ConsensusTip::new(&keypairs[0], block, None),
+        proposal_epoch: block_epoch,
+        proposal_round: block_round,
         block_body: payload,
         last_round_tc: None,
     });
 
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map),
-        Err(Error::InvalidEpoch)
+        proposal.validate(&epoch_manager, &val_epoch_map, &FakeLeaderElection(author)),
+        Err(Error::ValidatorSetDataUnavailable)
     );
 }
 // qc epoch is not equal to local epoch corresponding to qc round
@@ -627,13 +674,15 @@ fn test_validate_mismatch_qc_epoch() {
     );
 
     let proposal = Unvalidated::new(ProposalMessage {
-        block_header: block,
+        tip: ConsensusTip::new(&keypairs[0], block, None),
+        proposal_epoch: block_epoch,
+        proposal_round: block_round,
         block_body: payload,
         last_round_tc: None,
     });
 
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map),
+        proposal.validate(&epoch_manager, &val_epoch_map, &FakeLeaderElection(author)),
         Err(Error::InvalidEpoch)
     );
 }
@@ -674,13 +723,15 @@ fn test_proposal_invalid_qc_validator_set() {
     );
 
     let proposal = Unvalidated::new(ProposalMessage {
-        block_header: block,
+        tip: ConsensusTip::new(&keypairs[0], block, None),
+        proposal_epoch: block_epoch,
+        proposal_round: block_round,
         block_body: payload,
         last_round_tc: None,
     });
 
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map),
+        proposal.validate(&epoch_manager, &val_epoch_map, &FakeLeaderElection(author)),
         Err(Error::ValidatorSetDataUnavailable)
     );
 }
@@ -717,13 +768,15 @@ fn test_validate_insufficient_qc_stake() {
     );
 
     let proposal = Unvalidated::new(ProposalMessage {
-        block_header: block,
+        tip: ConsensusTip::new(&keypairs[0], block, None),
+        proposal_epoch: block_epoch,
+        proposal_round: block_round,
         block_body: payload,
         last_round_tc: None,
     });
 
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map),
+        proposal.validate(&epoch_manager, &val_epoch_map, &FakeLeaderElection(author)),
         Err(Error::InsufficientStake)
     );
 }
@@ -765,12 +818,16 @@ fn test_validate_qc_happy() {
     );
 
     let proposal = Unvalidated::new(ProposalMessage {
-        block_header: block,
+        tip: ConsensusTip::new(&keypairs[0], block, None),
+        proposal_epoch: block_epoch,
+        proposal_round: block_round,
         block_body: payload,
         last_round_tc: None,
     });
 
-    assert!(proposal.validate(&epoch_manager, &val_epoch_map).is_ok());
+    assert!(proposal
+        .validate(&epoch_manager, &val_epoch_map, &FakeLeaderElection(author))
+        .is_ok());
 }
 
 // The test_validate_tc set hits all error messages in sequential order
@@ -803,7 +860,7 @@ fn test_validate_tc_invalid_round_block(block_round: Round, tc_round: Round) {
 
     let tc_epoch = Epoch(3);
 
-    let (_, _, epoch_manager, val_epoch_map, proposal) = define_proposal_with_tc(
+    let (_, _, epoch_manager, val_epoch_map, election, proposal) = define_proposal_with_tc(
         known_epoch,
         known_round,
         val_epoch,
@@ -820,8 +877,8 @@ fn test_validate_tc_invalid_round_block(block_round: Round, tc_round: Round) {
 
     let proposal = Unvalidated::new(proposal);
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map),
-        Err(Error::NotWellFormed)
+        proposal.validate(&epoch_manager, &val_epoch_map, &election),
+        Err(Error::InvalidEpoch)
     );
 }
 // TC Epoch does not exist as determined by tc.round
@@ -843,7 +900,7 @@ fn test_validate_tc_invalid_epoch() {
     let tc_epoch = Epoch(10);
     let tc_round = Round(9);
 
-    let (_, _, epoch_manager, val_epoch_map, proposal) = define_proposal_with_tc(
+    let (_, _, epoch_manager, val_epoch_map, election, proposal) = define_proposal_with_tc(
         known_epoch,
         known_round,
         val_epoch,
@@ -860,7 +917,7 @@ fn test_validate_tc_invalid_epoch() {
 
     let proposal = Unvalidated::new(proposal);
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map),
+        proposal.validate(&epoch_manager, &val_epoch_map, &election),
         Err(Error::InvalidEpoch)
     );
 }
@@ -883,7 +940,7 @@ fn test_validate_tc_incorrect_epoch() {
     let tc_epoch = Epoch(3);
     let tc_round = Round(1);
 
-    let (_, _, epoch_manager, val_epoch_map, proposal) = define_proposal_with_tc(
+    let (_, _, epoch_manager, val_epoch_map, election, proposal) = define_proposal_with_tc(
         known_epoch,
         known_round,
         val_epoch,
@@ -900,7 +957,7 @@ fn test_validate_tc_incorrect_epoch() {
 
     let proposal = Unvalidated::new(proposal);
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map),
+        proposal.validate(&epoch_manager, &val_epoch_map, &election),
         Err(Error::InvalidEpoch)
     );
 }
@@ -923,7 +980,7 @@ fn test_validate_tc_invalid_val_set() {
     let tc_epoch = known_epoch;
     let tc_round = Round(0);
 
-    let (_, _, epoch_manager, val_epoch_map, proposal) = define_proposal_with_tc(
+    let (_, _, epoch_manager, val_epoch_map, election, proposal) = define_proposal_with_tc(
         known_epoch,
         known_round,
         val_epoch,
@@ -940,7 +997,7 @@ fn test_validate_tc_invalid_val_set() {
 
     let proposal = Unvalidated::new(proposal);
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map),
+        proposal.validate(&epoch_manager, &val_epoch_map, &election),
         Err(Error::ValidatorSetDataUnavailable)
     );
 }
@@ -963,7 +1020,7 @@ fn test_validate_tc_invalid_round() {
     let tc_epoch = Epoch(1);
     let tc_round = Round(0);
 
-    let (_, _, epoch_manager, val_epoch_map, proposal) = define_proposal_with_tc(
+    let (_, _, epoch_manager, val_epoch_map, election, proposal) = define_proposal_with_tc(
         known_epoch,
         known_round,
         val_epoch,
@@ -980,7 +1037,7 @@ fn test_validate_tc_invalid_round() {
 
     let proposal = Unvalidated::new(proposal);
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map),
+        proposal.validate(&epoch_manager, &val_epoch_map, &election),
         Err(Error::InvalidTcRound)
     );
 }
@@ -1003,7 +1060,7 @@ fn test_validate_tc_happy() {
     let tc_epoch = Epoch(1);
     let tc_round = block_round - Round(1);
 
-    let (_, _, epoch_manager, val_epoch_map, proposal) = define_proposal_with_tc(
+    let (_, _, epoch_manager, val_epoch_map, election, proposal) = define_proposal_with_tc(
         known_epoch,
         known_round,
         val_epoch,
@@ -1019,7 +1076,9 @@ fn test_validate_tc_happy() {
     );
 
     let proposal = Unvalidated::new(proposal);
-    assert!(proposal.validate(&epoch_manager, &val_epoch_map).is_ok());
+    assert!(proposal
+        .validate(&epoch_manager, &val_epoch_map, &election)
+        .is_ok());
 }
 
 // Mismatch between TC and tminfo
@@ -1039,13 +1098,14 @@ fn test_validate_tc_invalid_tc_signature() {
     let tc_epoch_signed = Epoch(2);
     let tc_round_signed = Round(2);
 
-    let tmo_info = TimeoutInfo::<SignatureCollectionType> {
+    let tmo_info = TimeoutInfo {
         epoch: tc_epoch_signed,
         round: tc_round_signed,
-        high_qc: QuorumCertificate::genesis_qc(),
+        high_qc_round: GENESIS_ROUND,
+        high_tip_round: GENESIS_ROUND,
     };
 
-    let tmo_digest = alloy_rlp::encode(tmo_info.timeout_digest());
+    let tmo_digest = alloy_rlp::encode(&tmo_info);
 
     let (keys, certkeys, epoch_manager, val_epoch_map) =
         setup_val_state(known_epoch, known_round, val_epoch);
@@ -1067,13 +1127,12 @@ fn test_validate_tc_invalid_tc_signature() {
     let tc = TimeoutCertificate {
         epoch: tc_epoch,
         round: tc_round,
-        high_qc_rounds: vec![HighQcRoundSigColTuple {
-            high_qc_round: HighQcRound {
-                qc_round: QuorumCertificate::<SignatureCollectionType>::genesis_qc().get_round(),
-            },
+        tip_rounds: vec![HighTipRoundSigColTuple {
+            high_qc_round: GENESIS_ROUND,
+            high_tip_round: GENESIS_ROUND,
             sigs: sigcol,
         }],
-        _phantom: PhantomData,
+        high_extend: HighExtend::Qc(QuorumCertificate::genesis_qc()),
     };
 
     let author = NodeId::new(keys[0].pubkey());
@@ -1101,14 +1160,16 @@ fn test_validate_tc_invalid_tc_signature() {
         );
 
     let proposal = ProposalMessage {
-        block_header: block,
+        tip: ConsensusTip::new(&keys[0], block, None),
+        proposal_epoch: block_epoch,
+        proposal_round: block_round,
         block_body: payload,
         last_round_tc: Some(tc),
     };
     let proposal = Unvalidated::new(proposal);
 
     assert!(matches!(
-        proposal.validate(&epoch_manager, &val_epoch_map),
+        proposal.validate(&epoch_manager, &val_epoch_map, &FakeLeaderElection(author),),
         Err(Error::InvalidSignature)
     ));
 }
@@ -1133,7 +1194,7 @@ fn test_validate_genesis_sig() {
     let tc_epoch = Epoch(1);
     let tc_round = block_round - Round(1);
 
-    let (_, _, epoch_manager, val_epoch_map, proposal) = define_proposal_with_tc(
+    let (_, _, epoch_manager, val_epoch_map, election, proposal) = define_proposal_with_tc(
         known_epoch,
         known_round,
         val_epoch,
@@ -1149,7 +1210,7 @@ fn test_validate_genesis_sig() {
     );
     let proposal = Unvalidated::new(proposal);
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map),
+        proposal.validate(&epoch_manager, &val_epoch_map, &election),
         Err(Error::InvalidSignature)
     );
 }

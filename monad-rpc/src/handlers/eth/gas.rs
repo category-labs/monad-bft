@@ -9,7 +9,7 @@ use alloy_rpc_types::FeeHistory;
 use monad_ethcall::{CallResult, EthCallExecutor, StateOverrideSet};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb};
-use monad_types::{Round, SeqNum};
+use monad_types::{BlockId, Hash, SeqNum};
 use serde::Deserialize;
 use tokio::sync::Mutex;
 use tracing::trace;
@@ -67,9 +67,9 @@ impl EthCallProvider for GasEstimator {
         txn: TxEnvelope,
         eth_call_executor: Option<Arc<Mutex<EthCallExecutor>>>,
     ) -> CallResult {
-        let (block_number, block_round) = match self.block_key {
+        let (block_number, block_id) = match self.block_key {
             BlockKey::Finalized(FinalizedBlockKey(SeqNum(n))) => (n, None),
-            BlockKey::Proposed(ProposedBlockKey(SeqNum(n), Round(r))) => (n, Some(r)),
+            BlockKey::Proposed(ProposedBlockKey(SeqNum(n), BlockId(Hash(id)))) => (n, Some(id)),
         };
 
         let chain_id = self.chain_id;
@@ -84,7 +84,7 @@ impl EthCallProvider for GasEstimator {
             header,
             sender,
             block_number,
-            block_round,
+            block_id,
             eth_call_executor.unwrap(),
             &state_override,
             false,

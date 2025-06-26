@@ -3,20 +3,19 @@ use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::{
     metrics::Metrics,
-    quorum_certificate::QuorumCertificate,
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
     },
-    timeout::{Timeout, TimeoutCertificate, TimeoutInfo},
+    timeout::{HighExtend, TimeoutCertificate, TimeoutInfo},
     voting::ValidatorMapping,
     RoundCertificate,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_types::{Epoch, ExecutionProtocol, NodeId, Round};
+use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, GENESIS_ROUND};
 use monad_validator::{epoch_manager::EpochManager, validator_set::ValidatorSetType};
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::{messages::message::TimeoutMessage, validation::safety::Safety};
 
@@ -48,7 +47,6 @@ where
 
     // the certificate that advanced us to our current round
     high_certificate: RoundCertificate<ST, SCT, EPT>,
-    high_qc: QuorumCertificate<SCT>,
 
     /// map of the TimeoutMessages from other Nodes
     /// only needs to be stored for the current round as timeout messages
@@ -89,7 +87,11 @@ where
 
     /// create the Timeout which can be signed to create a TimeoutMessage
     /// this should be broadcast to all other nodes
-    PrepareTimeout(Timeout<ST, SCT, EPT>),
+    PrepareTimeout(
+        TimeoutInfo,
+        HighExtend<ST, SCT, EPT>,
+        Option<TimeoutCertificate<ST, SCT, EPT>>,
+    ),
 
     /// schedule a local round timeout event after duration
     Schedule { duration: Duration },
@@ -113,7 +115,6 @@ where
         local_processing: Duration,
         epoch_manager: &EpochManager,
         high_certificate: RoundCertificate<ST, SCT, EPT>,
-        high_qc: QuorumCertificate<SCT>,
     ) -> Self {
         let current_round = high_certificate.round() + Round(1);
         Self {
@@ -124,7 +125,6 @@ where
                 .get_epoch(current_round)
                 .expect("init round must exist in epoch manager"),
             high_certificate,
-            high_qc,
             pending_timeouts: BTreeMap::new(),
 
             phase: PhaseHonest::Zero,
@@ -138,17 +138,6 @@ where
 
     pub fn get_current_epoch(&self) -> Epoch {
         self.current_epoch
-    }
-
-    pub fn last_round_tc(&self) -> Option<&TimeoutCertificate<ST, SCT, EPT>> {
-        match &self.high_certificate {
-            RoundCertificate::Qc(_) => None,
-            RoundCertificate::Tc(tc) => Some(tc),
-        }
-    }
-
-    pub fn high_qc(&self) -> &QuorumCertificate<SCT> {
-        &self.high_qc
     }
 
     pub fn high_certificate(&self) -> &RoundCertificate<ST, SCT, EPT> {
@@ -171,21 +160,18 @@ where
     /// enter a new round. Phase is set to PhaseHonest::Zero and all
     /// pending timeout messages are cleared.
     /// Creates the command to start the local round timeout
+    #[must_use]
     pub fn process_certificate(
         &mut self,
         metrics: &mut Metrics,
         epoch_manager: &EpochManager,
+        safety: &mut Safety<ST, SCT, EPT>,
         certificate: RoundCertificate<ST, SCT, EPT>,
     ) -> Vec<PacemakerCommand<ST, SCT, EPT>> {
-        if let RoundCertificate::Qc(qc) = &certificate {
-            if qc.get_round() > self.high_qc.get_round() {
-                self.high_qc = qc.clone();
-            }
-        }
-
         if certificate.round() <= self.high_certificate.round() {
             return Default::default();
         }
+        debug!(?certificate, "advancing round");
         match &certificate {
             RoundCertificate::Qc(_) => {
                 metrics.consensus_events.enter_new_round_qc += 1;
@@ -195,8 +181,8 @@ where
             }
         };
 
+        safety.process_certificate(&certificate);
         self.high_certificate = certificate;
-        assert!(self.high_qc.get_round() <= self.high_certificate.round());
         self.current_epoch = epoch_manager
             .get_epoch(self.get_current_round())
             .expect("epoch always available for higher round");
@@ -222,16 +208,42 @@ where
     ) -> Vec<PacemakerCommand<ST, SCT, EPT>> {
         let current_round = self.get_current_round();
         safety.timeout(current_round);
+
+        let high_extend = safety
+            .maybe_high_tip()
+            .map_or(HighExtend::Qc(self.high_certificate.qc().clone()), |tip| {
+                HighExtend::Tip(tip.clone())
+            });
+
+        let (high_tip_round, high_qc_round) = match &high_extend {
+            HighExtend::Tip(tip) => (
+                tip.block_header.block_round,
+                tip.block_header.qc.get_round(),
+            ),
+            HighExtend::Qc(qc) => (GENESIS_ROUND, qc.get_round()),
+        };
+
+        let timeout = TimeoutInfo {
+            epoch: self.get_current_epoch(),
+            round: current_round,
+            high_tip_round,
+            high_qc_round,
+        };
+
+        let last_round_tc = if high_qc_round + Round(1) == current_round {
+            None
+        } else {
+            match &self.high_certificate {
+                RoundCertificate::Qc(_) => {
+                    unreachable!("if high_qc was not from last round, tc must exist")
+                }
+                RoundCertificate::Tc(tc) => Some(tc),
+            }
+        };
+
         vec![
             PacemakerCommand::ScheduleReset,
-            PacemakerCommand::PrepareTimeout(Timeout {
-                tminfo: TimeoutInfo {
-                    epoch: self.get_current_epoch(),
-                    round: current_round,
-                    high_qc: self.high_qc.clone(),
-                },
-                last_round_tc: self.last_round_tc().cloned(),
-            }),
+            PacemakerCommand::PrepareTimeout(timeout, high_extend, last_round_tc.cloned()),
             PacemakerCommand::Schedule {
                 duration: self.get_round_timer(current_round),
             },
@@ -240,7 +252,7 @@ where
 
     /// handle the local timeout event
     #[must_use]
-    pub fn handle_event(
+    pub fn process_local_timeout(
         &mut self,
         safety: &mut Safety<ST, SCT, EPT>,
     ) -> Vec<PacemakerCommand<ST, SCT, EPT>> {
@@ -271,7 +283,7 @@ where
     {
         let mut ret_commands = Vec::new();
 
-        let tm_info = &timeout_msg.timeout.tminfo;
+        let tm_info = &timeout_msg.tminfo;
         if tm_info.round < self.get_current_round() {
             return ret_commands;
         }
@@ -306,17 +318,17 @@ where
                 tm_info.round,
                 self.pending_timeouts
                     .iter()
-                    .map(|(node_id, tm_msg)| (*node_id, tm_msg.timeout.tminfo.clone(), tm_msg.sig))
+                    .map(|(node_id, tm_msg)| (*node_id, tm_msg.clone()))
                     .collect::<Vec<_>>()
                     .as_slice(),
                 validator_mapping,
             ) {
                 Ok(tc) => {
-                    info!(?tc, "Created TC");
                     metrics.consensus_events.created_tc += 1;
                     ret_commands.extend(self.process_certificate(
                         metrics,
                         epoch_manager,
+                        safety,
                         RoundCertificate::Tc(tc),
                     ));
                     assert_eq!(self.phase, PhaseHonest::Zero);
@@ -342,9 +354,12 @@ where
         &mut self,
         invalid_timeouts: Vec<(NodeId<SCT::NodeIdPubKey>, SCT::SignatureType)>,
     ) -> Vec<PacemakerCommand<ST, SCT, EPT>> {
-        for (node_id, sig) in invalid_timeouts {
+        for (node_id, timeout_signature) in invalid_timeouts {
             let removed = self.pending_timeouts.remove(&node_id);
-            debug_assert_eq!(removed.expect("Timeout removed").sig, sig);
+            debug_assert_eq!(
+                removed.expect("Timeout removed").timeout_signature,
+                timeout_signature
+            );
         }
         // TODO-3: evidence collection
         vec![]
@@ -361,7 +376,8 @@ mod test {
     };
     use monad_consensus_types::{
         block::MockExecutionProtocol,
-        timeout::{TimeoutDigest, TimeoutInfo},
+        quorum_certificate::QuorumCertificate,
+        timeout::{HighExtendVote, TimeoutInfo},
         voting::Vote,
     };
     use monad_crypto::{
@@ -403,8 +419,6 @@ mod test {
             id: BlockId(Hash([0x00_u8; 32])),
             epoch: qc_epoch,
             round: qc_round,
-            parent_id: BlockId(Hash([0x00_u8; 32])),
-            parent_round: Round(0),
         };
 
         let vote_hash = alloy_rlp::encode(vote);
@@ -434,20 +448,27 @@ mod test {
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
     {
-        let timeout = Timeout {
-            tminfo: TimeoutInfo {
-                epoch: timeout_epoch,
-                round: timeout_round,
-                high_qc,
-            },
-            last_round_tc: None,
+        let timeout = TimeoutInfo {
+            epoch: timeout_epoch,
+            round: timeout_round,
+            high_tip_round: GENESIS_ROUND,
+            high_qc_round: high_qc.get_round(),
         };
 
         let invalid_msg = b"invalid";
 
-        let mut tmo_msg = TimeoutMessage::<ST, SCT, EPT>::new(timeout, certkeypair);
+        let mut tmo_msg = TimeoutMessage::<ST, SCT, EPT>::new(
+            certkeypair,
+            timeout,
+            HighExtend::Qc(high_qc),
+            None,
+        );
         if !valid {
-            tmo_msg.sig =
+            if let HighExtendVote::Tip(_, vote_signature) = &mut tmo_msg.high_extend {
+                *vote_signature =
+                    <SCT::SignatureType as CertificateSignature>::sign(invalid_msg, certkeypair);
+            }
+            tmo_msg.timeout_signature =
                 <SCT::SignatureType as CertificateSignature>::sign(invalid_msg, certkeypair);
         }
         tmo_msg
@@ -469,7 +490,6 @@ mod test {
             Duration::from_secs(0),
             &epoch_manager,
             RoundCertificate::Qc(QuorumCertificate::genesis_qc()),
-            QuorumCertificate::genesis_qc(),
         );
         let mut safety = Safety::default();
 
@@ -540,7 +560,7 @@ mod test {
         assert_eq!(pacemaker.phase, PhaseHonest::One);
         assert_eq!(cmds.len(), 3);
         assert!(matches!(cmds[0], PacemakerCommand::ScheduleReset));
-        assert!(matches!(cmds[1], PacemakerCommand::PrepareTimeout(_)));
+        assert!(matches!(cmds[1], PacemakerCommand::PrepareTimeout(_, _, _)));
         assert!(matches!(cmds[2], PacemakerCommand::Schedule { .. }));
 
         // TC is created, round is incremented, and back to PhaseHonest::Zero
@@ -596,7 +616,6 @@ mod test {
             Duration::from_secs(0),
             &epoch_manager,
             RoundCertificate::Qc(QuorumCertificate::genesis_qc()),
-            QuorumCertificate::genesis_qc(),
         );
         let mut safety = Safety::default();
 
@@ -688,7 +707,6 @@ mod test {
             Duration::from_secs(0),
             &epoch_manager,
             RoundCertificate::Qc(QuorumCertificate::genesis_qc()),
-            QuorumCertificate::genesis_qc(),
         );
         let mut safety = Safety::default();
 
@@ -790,15 +808,18 @@ mod test {
         assert_eq!(pacemaker.get_current_round(), Round(2));
 
         // assert the TC is created over the two valid timeouts
-        let td = TimeoutDigest {
+        let td = TimeoutInfo {
             epoch: Epoch(1),
             round: Round(1),
             high_qc_round: Round(0),
+            high_tip_round: GENESIS_ROUND,
         };
         let timeout_hash = alloy_rlp::encode(td);
-        let tc = pacemaker.last_round_tc().unwrap();
-        assert_eq!(tc.high_qc_rounds.len(), 1);
-        let sc = tc.high_qc_rounds.first().unwrap().sigs.clone();
+        let RoundCertificate::Tc(tc) = &pacemaker.high_certificate else {
+            panic!("high_certificate should be a TC")
+        };
+        assert_eq!(tc.tip_rounds.len(), 1);
+        let sc = tc.tip_rounds.first().unwrap().sigs.clone();
         assert_eq!(
             sc.verify(&vmap, timeout_hash.as_ref())
                 .unwrap()

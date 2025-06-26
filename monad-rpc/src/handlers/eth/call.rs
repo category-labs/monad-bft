@@ -17,7 +17,7 @@ use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{
     BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb, TriedbPath,
 };
-use monad_types::{Round, SeqNum};
+use monad_types::{BlockId, Hash, SeqNum};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tracing::trace;
@@ -614,9 +614,9 @@ async fn prepare_eth_call<T: Triedb + TriedbPath>(
         .expect("chain id must be populated")
         .to::<u64>();
     let txn: TxEnvelope = params.tx().clone().try_into()?;
-    let (block_number, block_round) = match block_key {
+    let (block_number, block_id) = match block_key {
         BlockKey::Finalized(FinalizedBlockKey(SeqNum(n))) => (n, None),
-        BlockKey::Proposed(ProposedBlockKey(SeqNum(n), Round(r))) => (n, Some(r)),
+        BlockKey::Proposed(ProposedBlockKey(SeqNum(n), BlockId(Hash(id)))) => (n, Some(id)),
     };
 
     let state_overrides = params.state_overrides().clone();
@@ -628,7 +628,7 @@ async fn prepare_eth_call<T: Triedb + TriedbPath>(
         header.header,
         sender,
         block_number,
-        block_round,
+        block_id,
         eth_call_executor,
         &state_overrides,
         trace,

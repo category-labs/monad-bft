@@ -15,7 +15,7 @@ use alloy_primitives::{keccak256, Address, FixedBytes, U256};
 use alloy_rlp::{encode_list, BytesMut, Decodable, Encodable};
 use futures::{channel::oneshot, FutureExt};
 use monad_triedb::{TraverseEntry, TriedbHandle};
-use monad_types::{Round, SeqNum};
+use monad_types::{BlockId, Hash, SeqNum};
 use serde::{Deserialize, Serialize};
 use tracing::{error, warn};
 
@@ -181,15 +181,15 @@ const MAX_POLL_COMPLETIONS: usize = usize::MAX;
 const META_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 fn get_latest_voted_block_key(triedb_handle: &TriedbHandle) -> Option<ProposedBlockKey> {
-    let latest_voted_round_before = Round(triedb_handle.latest_voted_round()?);
+    let latest_voted_id_before = BlockId(Hash(triedb_handle.latest_voted_block_id()?));
     let latest_voted_seq_num = SeqNum(triedb_handle.latest_voted_block()?);
-    let latest_voted_round_after = Round(triedb_handle.latest_voted_round()?);
-    if latest_voted_round_before != latest_voted_round_after {
+    let latest_voted_id_after = BlockId(Hash(triedb_handle.latest_voted_block_id()?));
+    if latest_voted_id_before != latest_voted_id_after {
         return None;
     }
     Some(ProposedBlockKey(
         latest_voted_seq_num,
-        latest_voted_round_before,
+        latest_voted_id_before,
     ))
 }
 
@@ -265,10 +265,10 @@ fn polling_thread(
                 {
                     meta.voted_proposals.pop_first();
                 }
-                if let BlockKey::Proposed(ProposedBlockKey(voted_seq_num, voted_round)) =
+                if let BlockKey::Proposed(ProposedBlockKey(voted_seq_num, voted_block_id)) =
                     latest_voted
                 {
-                    meta.voted_proposals.insert(voted_seq_num, voted_round);
+                    meta.voted_proposals.insert(voted_seq_num, voted_block_id);
                 }
             }
         }
@@ -425,7 +425,7 @@ fn populate_cache(
 pub struct FinalizedBlockKey(pub SeqNum);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 // Note that SeqNum needs to be first, because this implements Ord/PartialOrd
-pub struct ProposedBlockKey(pub SeqNum, pub Round);
+pub struct ProposedBlockKey(pub SeqNum, pub BlockId);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockKey {
     Finalized(FinalizedBlockKey),
@@ -445,7 +445,7 @@ impl From<BlockKey> for Version {
     fn from(key: BlockKey) -> Self {
         match key {
             BlockKey::Finalized(FinalizedBlockKey(_)) => Self::Finalized,
-            BlockKey::Proposed(ProposedBlockKey(_, round)) => Self::Proposal(round),
+            BlockKey::Proposed(ProposedBlockKey(_, block_id)) => Self::Proposal(block_id),
         }
     }
 }
@@ -538,7 +538,7 @@ pub struct TriedbEnv {
 struct TriedbEnvMeta {
     latest_finalized: FinalizedBlockKey,
     latest_voted: BlockKey,
-    voted_proposals: BTreeMap<SeqNum, Round>,
+    voted_proposals: BTreeMap<SeqNum, BlockId>,
 
     cache_manager: CacheManager,
 }
@@ -889,7 +889,7 @@ impl Triedb for TriedbEnv {
         let meta = self.meta.lock().expect("mutex poisoned");
         let latest_safe_voted = meta.latest_safe_voted();
         match meta.voted_proposals.get(&latest_safe_voted) {
-            Some(round) => BlockKey::Proposed(ProposedBlockKey(latest_safe_voted, *round)),
+            Some(block_id) => BlockKey::Proposed(ProposedBlockKey(latest_safe_voted, *block_id)),
             None => BlockKey::Finalized(meta.latest_finalized),
         }
     }
@@ -898,9 +898,9 @@ impl Triedb for TriedbEnv {
         if seq_num > meta.latest_safe_voted() {
             // this block is not voted on yet, but it's safe to default to finalized
             BlockKey::Finalized(FinalizedBlockKey(seq_num))
-        } else if let Some(&voted_round) = meta.voted_proposals.get(&seq_num) {
+        } else if let Some(&voted_block_id) = meta.voted_proposals.get(&seq_num) {
             // there's an unfinalized, voted proposal with this seq_num
-            BlockKey::Proposed(ProposedBlockKey(seq_num, voted_round))
+            BlockKey::Proposed(ProposedBlockKey(seq_num, voted_block_id))
         } else {
             // this seq_num is finalized
             BlockKey::Finalized(FinalizedBlockKey(seq_num))

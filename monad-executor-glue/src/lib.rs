@@ -19,6 +19,7 @@ use monad_consensus_types::{
     },
     checkpoint::Checkpoint,
     metrics::Metrics,
+    no_endorsement::FreshProposalCertificate,
     payload::{ConsensusBlockBodyId, RoundSignature},
     quorum_certificate::{QuorumCertificate, TimestampAdjustment},
     signature_collection::SignatureCollection,
@@ -434,6 +435,7 @@ where
         high_qc: QuorumCertificate<SCT>,
         round_signature: RoundSignature<SCT::SignatureType>,
         last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
+        fresh_proposal_certificate: Option<FreshProposalCertificate<SCT>>,
 
         tx_limit: usize,
         proposal_gas_limit: u64,
@@ -480,6 +482,7 @@ where
                 high_qc,
                 round_signature,
                 last_round_tc,
+                fresh_proposal_certificate,
                 tx_limit,
                 proposal_gas_limit,
                 proposal_byte_limit,
@@ -495,6 +498,7 @@ where
                 .field("high_qc", high_qc)
                 .field("round_signature", round_signature)
                 .field("last_round_tc", last_round_tc)
+                .field("fresh_proposal_certificate", fresh_proposal_certificate)
                 .field("tx_limit", tx_limit)
                 .field("proposal_gas_limit", proposal_gas_limit)
                 .field("proposal_byte_limit", proposal_byte_limit)
@@ -992,6 +996,7 @@ where
         delayed_execution_results: Vec<EPT::FinalizedHeader>,
         proposed_execution_inputs: ProposedExecutionInputs<EPT>,
         last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
+        fresh_proposal_certificate: Option<FreshProposalCertificate<SCT>>,
     },
 
     /// Txs that are incoming via other nodes
@@ -1022,6 +1027,7 @@ where
                 delayed_execution_results,
                 proposed_execution_inputs,
                 last_round_tc,
+                fresh_proposal_certificate,
             } => {
                 let mut tc_buf = BytesMut::new();
                 match last_round_tc {
@@ -1035,7 +1041,19 @@ where
                     }
                 }
 
-                let enc: [&dyn Encodable; 10] = [
+                let mut fc_buf = BytesMut::new();
+                match fresh_proposal_certificate {
+                    None => {
+                        let enc: [&dyn Encodable; 1] = [&1u8];
+                        encode_list::<_, dyn Encodable>(&enc, &mut fc_buf);
+                    }
+                    Some(nec) => {
+                        let enc: [&dyn Encodable; 2] = [&2u8, &nec];
+                        encode_list::<_, dyn Encodable>(&enc, &mut fc_buf);
+                    }
+                }
+
+                let enc: [&dyn Encodable; 11] = [
                     &1u8,
                     epoch,
                     round,
@@ -1046,6 +1064,7 @@ where
                     delayed_execution_results,
                     proposed_execution_inputs,
                     &tc_buf,
+                    &fc_buf,
                 ];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
@@ -1084,10 +1103,20 @@ where
                 let tc = match u8::decode(&mut tc_payload)? {
                     1 => Ok(None),
                     2 => Ok(Some(TimeoutCertificate::<ST, SCT, EPT>::decode(
-                        &mut payload,
+                        &mut tc_payload,
                     )?)),
                     _ => Err(alloy_rlp::Error::Custom(
                         "failed to decode unknown tc in mempool event",
+                    )),
+                }?;
+                let mut fc_payload = Header::decode_bytes(&mut payload, true)?;
+                let fc = match u8::decode(&mut fc_payload)? {
+                    1 => Ok(None),
+                    2 => Ok(Some(FreshProposalCertificate::<SCT>::decode(
+                        &mut fc_payload,
+                    )?)),
+                    _ => Err(alloy_rlp::Error::Custom(
+                        "failed to decode unknown fc in mempool event",
                     )),
                 }?;
                 Ok(Self::Proposal {
@@ -1100,6 +1129,7 @@ where
                     delayed_execution_results,
                     proposed_execution_inputs,
                     last_round_tc: tc,
+                    fresh_proposal_certificate: fc,
                 })
             }
             2 => {
@@ -1136,6 +1166,7 @@ where
                 delayed_execution_results,
                 proposed_execution_inputs,
                 last_round_tc,
+                fresh_proposal_certificate,
             } => f
                 .debug_struct("Proposal")
                 .field("epoch", epoch)
@@ -1147,6 +1178,7 @@ where
                 .field("delayed_execution_results", delayed_execution_results)
                 .field("proposed_execution_inputs", proposed_execution_inputs)
                 .field("last_round_tc", last_round_tc)
+                .field("fresh_proposal_certificate", fresh_proposal_certificate)
                 .finish(),
             Self::ForwardedTxs { sender, txs } => f
                 .debug_struct("ForwardedTxs")

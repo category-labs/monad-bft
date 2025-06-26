@@ -55,8 +55,9 @@ int triedb_finalize(bytes value);
 
 // returns MAX if doesn't exist
 uint64_t triedb_latest_voted_block(triedb *);
-// returns MAX if doesn't exist
-uint64_t triedb_latest_voted_round(triedb *);
+// returns NULL if doesn't exist
+// triedb_finalize must be called if not null
+bytes triedb_latest_voted_block_id(triedb *);
 // returns MAX if doesn't exist
 uint64_t triedb_latest_finalized_block(triedb *);
 // returns MAX if doesn't exist

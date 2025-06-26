@@ -9,14 +9,15 @@ use monad_consensus_types::{
     payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
+    timeout::{HighExtend, HighTipRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
+    tip::ConsensusTip,
     voting::{ValidatorMapping, Vote},
 };
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
     CertificateSignatureRecoverable,
 };
-use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, SeqNum};
+use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, SeqNum, GENESIS_ROUND};
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
@@ -148,7 +149,13 @@ where
         self.qc_seq_num = seq_num;
 
         let proposal = ProposalMessage {
-            block_header,
+            proposal_epoch: self.epoch,
+            proposal_round: self.round,
+            tip: ConsensusTip::new(
+                leader_key,
+                block_header,
+                None, // FIXME
+            ),
             block_body,
             last_round_tc: self.last_tc.clone(),
         };
@@ -180,17 +187,14 @@ where
             return Vec::new();
         }
 
-        let high_qc_round = HighQcRound {
-            qc_round: self.high_qc.get_round(),
-        };
-
         let tminfo = TimeoutInfo {
             epoch: self.epoch,
             round: self.round,
-            high_qc: self.high_qc.clone(),
+            high_qc_round: self.high_qc.get_round(),
+            high_tip_round: GENESIS_ROUND,
         };
 
-        let tmo_digest = alloy_rlp::encode(tminfo.timeout_digest());
+        let tmo_digest = alloy_rlp::encode(&tminfo);
         // aggregate all tmo signatures into one collection because all nodes share a global state
         // in reality we don't have this configuration because timeout messages
         // can't all contain TC carrying signatures from all validators. It's fine
@@ -202,26 +206,26 @@ where
             tc_sigs.push((*node_id, sig));
         }
         let tmo_sig_col = SCT::new(tc_sigs, validator_mapping, tmo_digest.as_ref()).unwrap();
-        let high_qc_sig_tuple = HighQcRoundSigColTuple {
-            high_qc_round,
-            sigs: tmo_sig_col,
-        };
         let tc = TimeoutCertificate::<ST, SCT, EPT> {
             epoch: self.epoch,
             round: self.round,
-            high_qc_rounds: vec![high_qc_sig_tuple],
-            _phantom: PhantomData,
-        };
-
-        let timeout = Timeout {
-            tminfo,
-            last_round_tc: self.last_tc.clone(),
+            tip_rounds: vec![HighTipRoundSigColTuple {
+                high_qc_round: self.high_qc.get_round(),
+                high_tip_round: GENESIS_ROUND,
+                sigs: tmo_sig_col,
+            }],
+            high_extend: HighExtend::Qc(self.high_qc.clone()),
         };
 
         let mut tmo_msgs = Vec::new();
         for (key, certkey) in keys.iter().zip(certkeys.iter()) {
-            let tmo_msg = TimeoutMessage::new(timeout.clone(), certkey);
-            tmo_msgs.push(Verified::<ST, _>::new(tmo_msg, key));
+            let timeout = Timeout::new(
+                certkey,
+                tminfo.clone(),
+                HighExtend::Qc(self.high_qc.clone()),
+                Some(tc.clone()),
+            );
+            tmo_msgs.push(Verified::<ST, _>::new(timeout, key));
         }
 
         // entering new round through tc
@@ -243,9 +247,7 @@ where
         let vote = Vote {
             id: block.get_id(),
             epoch: block.epoch,
-            round: block.round,
-            parent_id: block.qc.get_block_id(),
-            parent_round: block.qc.get_round(),
+            round: block.block_round,
         };
 
         let msg = alloy_rlp::encode(vote);

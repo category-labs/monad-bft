@@ -379,30 +379,35 @@ int triedb_finalize(bytes value)
 
 uint64_t triedb_latest_voted_block(triedb *db)
 {
-    uint64_t latest_voted_block_id = db->db_.get_latest_voted_block_id();
-    return latest_voted_block_id;
+    uint64_t latest_voted_version = db->db_.get_latest_voted_version();
+    return latest_voted_version;
 }
 
-uint64_t triedb_latest_voted_round(triedb *db)
+bytes triedb_latest_voted_block_id(triedb *db)
 {
-    uint64_t latest_round = db->db_.get_latest_voted_round();
-    return latest_round;
+    monad::bytes32_t latest_voted_block_id = db->db_.get_latest_voted_block_id();
+    if (latest_voted_block_id == monad::bytes32_t{}) {
+        return nullptr;
+    }
+    auto id = new uint8_t[32];
+    std::copy_n(latest_voted_block_id.bytes, 32, id);
+    return id;
 }
 
 uint64_t triedb_latest_finalized_block(triedb *db)
 {
-    uint64_t latest_block_id = db->db_.get_latest_finalized_block_id();
-    return latest_block_id;
+    uint64_t latest_finalized_version = db->db_.get_latest_finalized_version();
+    return latest_finalized_version;
 }
 
 uint64_t triedb_latest_verified_block(triedb *db)
 {
-    uint64_t latest_block_id = db->db_.get_latest_verified_block_id();
-    return latest_block_id;
+    uint64_t latest_verified_version = db->db_.get_latest_verified_version();
+    return latest_verified_version;
 }
 
 uint64_t triedb_earliest_finalized_block(triedb *db)
 {
-    uint64_t earliest_block_id = db->db_.get_earliest_block_id();
-    return earliest_block_id;
+    uint64_t earliest_finalized_block = db->db_.get_earliest_version();
+    return earliest_finalized_block;
 }

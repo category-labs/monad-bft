@@ -155,7 +155,7 @@ pub async fn eth_call(
     block_header: Header,
     sender: Address,
     block_number: u64,
-    block_round: Option<u64>,
+    block_id: Option<[u8; 32]>,
     eth_call_executor: Arc<Mutex<EthCallExecutor>>,
     state_override_set: &StateOverrideSet,
     trace: bool,
@@ -267,6 +267,9 @@ pub async fn eth_call(
         }
     };
 
+    let block_id = block_id.unwrap_or([0_u8; 32]);
+    let rlp_encoded_block_id = alloy_rlp::encode(block_id);
+
     let (send, recv) = channel();
     let sender_ctx = Box::new(SenderContext { sender: send });
 
@@ -287,7 +290,8 @@ pub async fn eth_call(
             rlp_encoded_sender.as_ptr(),
             rlp_encoded_sender.len(),
             block_number,
-            block_round.unwrap_or(u64::MAX),
+            rlp_encoded_block_id.as_ptr(),
+            rlp_encoded_block_id.len(),
             override_ctx,
             Some(eth_call_submit_callback),
             sender_ctx_ptr as *mut std::ffi::c_void,
