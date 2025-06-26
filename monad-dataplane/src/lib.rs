@@ -30,7 +30,7 @@ use futures::channel::oneshot;
 use monoio::{spawn, time::Instant, IoUringDriver, RuntimeBuilder};
 use tcp::{TcpConfig, TcpControl, TcpRateLimit};
 use tokio::sync::mpsc::{self, error::TrySendError};
-use tracing::warn;
+use tracing::{debug, warn};
 
 pub(crate) mod addrlist;
 pub(crate) mod ban_expiry;
@@ -296,6 +296,10 @@ impl Dataplane {
         self.writer.remove_trusted(addr);
     }
 
+    pub fn update_trusted(&self, added: Vec<IpAddr>, removed: Vec<IpAddr>) {
+        self.writer.update_trusted(added, removed);
+    }
+
     /// ban ip address. ban duration is specified in dataplane config.
     pub fn ban(&self, ip: IpAddr) {
         self.writer.ban(ip);
@@ -520,18 +524,27 @@ impl DataplaneWriter {
     /// add_trusted marks ip address as trusted.
     /// connections limits are not applied to trusted ips.
     pub fn add_trusted(&self, addr: IpAddr) {
-        self.inner.addrlist.add_trusted(addr);
+        self.inner.addrlist.add_trusted(&addr);
     }
 
     /// remove_trusted removes ip address from trusted list.
     pub fn remove_trusted(&self, addr: IpAddr) {
-        self.inner.addrlist.remove_trusted(addr);
+        self.inner.addrlist.remove_trusted(&addr);
+    }
+
+    /// update_trusted updates the trusted addresses.
+    pub fn update_trusted(&self, added: Vec<IpAddr>, removed: Vec<IpAddr>) {
+        debug!(?added, ?removed, "updating trusted entities");
+
+        self.inner
+            .addrlist
+            .update_trusted(added.into_iter(), removed.into_iter());
     }
 
     /// ban ip address. ban duration is specified in dataplane config.
     pub fn ban(&self, ip: IpAddr) {
         let now = Instant::now();
-        self.inner.addrlist.ban(ip, now);
+        self.inner.addrlist.ban(&ip, now);
         self.inner.notify_ban_expiry.send((ip, now)).unwrap();
         self.disconnect_ip(ip);
     }
