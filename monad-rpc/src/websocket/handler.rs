@@ -23,8 +23,10 @@ use crate::{
         FixedData, MonadNotification, SubscriptionKind,
     },
     event::{EventServerClient, EventServerClientError, EventServerEvent},
+    handlers::{resources::MonadRpcResources, rpc_select},
     jsonrpc::{JsonRpcError, Request, RequestWrapper},
     serialize::SharedJsonSerialized,
+    timing::RequestId,
 };
 
 const RECV_MAX_CONTINUATION_SIZE: usize = 2 * 1024 * 1024;
@@ -39,6 +41,7 @@ pub struct SubscriptionId(pub FixedData<16>);
 pub async fn ws_handler(
     req: HttpRequest,
     stream: web::Payload,
+    app_state: web::Data<MonadRpcResources>,
     event_server_client: web::Data<EventServerClient>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let rx = event_server_client.subscribe().map_err(|err| {
@@ -59,6 +62,7 @@ pub async fn ws_handler(
         req.connection_info().host().to_string(),
         req.connection_info().peer_addr().map(ToString::to_string),
         rx,
+        app_state,
     ));
 
     Ok(res)
@@ -70,6 +74,7 @@ async fn handler(
     hostname: String,
     peer_addr: Option<String>,
     rx: broadcast::Receiver<EventServerEvent>,
+    app_state: web::Data<MonadRpcResources>,
 ) {
     debug!(?hostname, ?peer_addr, "ws connection opened");
 
@@ -120,7 +125,7 @@ async fn handler(
 
                         match request {
                             Ok(req) => {
-                                if let Err(close_reason) = handle_request(&mut session, &mut subscriptions, req).await {
+                                if let Err(close_reason) = handle_request(&mut session, &mut subscriptions, &app_state, req).await {
                                     break close_reason;
                                 }
                             }
@@ -141,7 +146,7 @@ async fn handler(
 
                         match request {
                             Ok(req) => {
-                                if let Err(close_reason) = handle_request(&mut session, &mut subscriptions, req).await {
+                                if let Err(close_reason) = handle_request(&mut session, &mut subscriptions, &app_state, req).await {
                                     break close_reason;
                                 }
                             }
@@ -319,6 +324,7 @@ fn apply_logs_filter<'a>(
 async fn handle_request(
     ctx: &mut actix_ws::Session,
     subscriptions: &mut HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<Filter>)>>,
+    app_state: &MonadRpcResources,
     request: Request,
 ) -> Result<(), CloseReason> {
     match request.method.as_str() {
@@ -451,19 +457,15 @@ async fn handle_request(
                 });
             }
         }
-        _ => {
+        method => {
+            let result = rpc_select(app_state, method, request.params, RequestId::random()).await;
             if let Err(err) = ctx
-                .text(to_response(&crate::jsonrpc::Response::new(
-                    None,
-                    Some(JsonRpcError::method_not_found()),
-                    request.id,
+                .text(to_response(&crate::jsonrpc::Response::from_result(
+                    request.id, result,
                 )))
                 .await
             {
-                warn!(
-                    ?err,
-                    "ws handle_request failed to send method_not_found error"
-                );
+                warn!(?err, "ws handle_request failed to send rpc response");
                 return Err(CloseReason {
                     code: ws::CloseCode::Error,
                     description: None,

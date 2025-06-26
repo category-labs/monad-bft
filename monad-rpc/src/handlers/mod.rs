@@ -925,7 +925,7 @@ enabled_methods!(
 );
 
 #[tracing::instrument(level = "debug", skip(app_state))]
-async fn rpc_select(
+pub async fn rpc_select(
     app_state: &MonadRpcResources,
     method: &str,
     params: Value,

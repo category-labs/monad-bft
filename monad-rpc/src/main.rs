@@ -234,7 +234,7 @@ async fn main() -> std::io::Result<()> {
         .map(|provider| metrics::Metrics::new(provider.clone().meter("opentelemetry")));
 
     // Configure event ring, websocket server and event cache.
-    let (ws_server_handle, events_for_cache) = if let Some(exec_event_path) = args.exec_event_path {
+    let (events_client, events_for_cache) = if let Some(exec_event_path) = args.exec_event_path {
         let event_ring =
             EventRing::new_from_path(exec_event_path).expect("Execution event ring is ready");
 
@@ -245,21 +245,7 @@ async fn main() -> std::io::Result<()> {
             .subscribe()
             .expect("Failed to subscribe to event server");
 
-        let ws_server_handle = args.ws_enabled.then(|| {
-            HttpServer::new(move || {
-                App::new()
-                    .app_data(web::Data::new(events_client.clone()))
-                    .service(
-                        web::resource("/").route(web::get().to(websocket::handler::ws_handler)),
-                    )
-            })
-            .bind((args.rpc_addr.clone(), args.ws_port))
-            .expect("Failed to bind WebSocket server")
-            .shutdown_timeout(1)
-            .workers(args.ws_worker_threads)
-        });
-
-        (ws_server_handle, Some(events_for_cache))
+        (Some(events_client), Some(events_for_cache))
     } else {
         if args.ws_enabled {
             panic!("exec-event-path is not set but is required for websockets");
@@ -316,6 +302,27 @@ async fn main() -> std::io::Result<()> {
         with_metrics.clone(),
         rpc_comparator.clone(),
     );
+
+    // Configure the websocket server if enabled
+    let ws_server_handle = if let Some(events_client) = events_client {
+        let ws_app_data = app_state.clone();
+        args.ws_enabled.then(|| {
+            HttpServer::new(move || {
+                App::new()
+                    .app_data(web::Data::new(events_client.clone()))
+                    .app_data(web::Data::new(ws_app_data.clone()))
+                    .service(
+                        web::resource("/").route(web::get().to(websocket::handler::ws_handler)),
+                    )
+            })
+            .bind((args.rpc_addr.clone(), args.ws_port))
+            .expect("Failed to bind WebSocket server")
+            .shutdown_timeout(1)
+            .workers(args.ws_worker_threads)
+        })
+    } else {
+        None
+    };
 
     // Configure the rpc server with or without metrics
     let app = match with_metrics {
