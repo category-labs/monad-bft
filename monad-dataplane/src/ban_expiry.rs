@@ -144,7 +144,7 @@ mod tests {
         addr: IpAddr,
     ) {
         let now = Instant::now();
-        addrlist.ban(addr, now);
+        addrlist.ban(&addr, now);
         tx.send((addr, now)).unwrap();
 
         let mut ban_expiry_future = pin!(ban_expiry::task(addrlist.clone(), rx, ban_duration));
@@ -169,7 +169,7 @@ mod tests {
         addr: IpAddr,
     ) {
         let now = Instant::now();
-        addrlist.ban(addr, now);
+        addrlist.ban(&addr, now);
         tx.send((addr, now)).unwrap();
 
         let mut ban_expiry_future = pin!(ban_expiry::task(addrlist.clone(), rx, ban_duration));
@@ -179,7 +179,7 @@ mod tests {
         sleep(ban_duration / 2).await;
 
         let now = Instant::now();
-        addrlist.ban(addr, now);
+        addrlist.ban(&addr, now);
         tx.send((addr, now)).unwrap();
         assert_eq!(poll!(&mut ban_expiry_future), Poll::Pending);
 

@@ -125,6 +125,7 @@ impl Drop for TxStatePeerHandle {
             .borrow_mut()
             .peer_channels
             .remove(&self.addr);
+        trace!(?self.addr, "removed peer from tx channels map");
     }
 }
 
@@ -144,10 +145,12 @@ pub async fn task(mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>) {
         debug!(?addr, len = msg.msg.len(), "queueing up TCP message");
 
         if let Some((msg_receiver, tx_state_peer_handle)) = tx_state.push(&addr, msg) {
+            let peer_count = tx_state.inner.borrow().peer_channels.len();
             trace!(
                 conn_id,
                 ?addr,
-                "spawning TCP transmit connection task for peer"
+                total_tx_connections = peer_count,
+                "spawning tcp transmit connection task for peer"
             );
 
             spawn(task_connection(
@@ -171,7 +174,7 @@ async fn task_connection(
     trace!(
         conn_id,
         ?addr,
-        "starting TCP transmit connection task for peer"
+        "starting tcp transmit connection task for peer"
     );
 
     if let Err(err) = connect_and_send_messages(conn_id, &addr, &mut msg_receiver).await {
@@ -187,7 +190,7 @@ async fn task_connection(
             ?addr,
             ?err,
             additional_messages_dropped,
-            "error transmitting TCP message"
+            "error transmitting tcp message"
         );
 
         // Sleep to avoid reconnecting too soon.
@@ -197,7 +200,7 @@ async fn task_connection(
     trace!(
         conn_id,
         ?addr,
-        "exiting TCP transmit connection task for peer"
+        "exiting tcp transmit connection task for peer"
     );
 }
 
@@ -211,7 +214,7 @@ async fn connect_and_send_messages(
         .unwrap_or_else(|_| Err(Error::from(ErrorKind::TimedOut)))
         .map_err(|err| Error::other(format!("error connecting to remote host: {}", err)))?;
 
-    trace!(conn_id, ?addr, "outbound TCP connection established");
+    trace!(conn_id, ?addr, "outbound tcp connection established");
 
     conn_cork(stream.as_raw_fd(), true);
 
