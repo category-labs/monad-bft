@@ -81,76 +81,126 @@ impl AddrEntry {
     }
 }
 
+#[derive(Debug)]
+struct Entries(HashMap<IpAddr, AddrEntry>);
+
 #[derive(Debug, Clone)]
 pub(crate) struct Addrlist {
-    entries: Arc<Mutex<HashMap<IpAddr, AddrEntry>>>,
+    entries: Arc<Mutex<Entries>>,
+}
+
+impl Entries {
+    fn new() -> Self {
+        Self(HashMap::new())
+    }
+
+    fn add_trusted(&mut self, addr: &IpAddr) {
+        self.0
+            .entry(*addr)
+            .and_modify(|e| e.set_trusted(true))
+            .or_insert_with(AddrEntry::new_trusted);
+    }
+
+    fn remove_trusted(&mut self, addr: &IpAddr) {
+        if let Some(entry) = self.0.get_mut(addr) {
+            entry.set_trusted(false);
+        }
+
+        match self.status(addr) {
+            Status::Unknown => {
+                self.0.remove(addr);
+            }
+            Status::Banned => {}
+            Status::Trusted => {}
+        }
+    }
+
+    fn ban(&mut self, addr: &IpAddr, timestamp: Instant) {
+        self.0
+            .entry(*addr)
+            .and_modify(|e| e.ban_at(timestamp))
+            .or_insert_with(|| AddrEntry::new_banned_at(timestamp));
+    }
+
+    fn unban(&mut self, addr: &IpAddr) {
+        if let Some(entry) = self.0.get_mut(addr) {
+            entry.unban();
+            if !entry.is_trusted() {
+                self.0.remove(addr);
+            }
+        }
+    }
+
+    fn banned_at(&self, addr: &IpAddr) -> Option<Instant> {
+        self.0.get(addr).and_then(|entry| entry.banned_at)
+    }
+
+    fn status(&self, addr: &IpAddr) -> Status {
+        match self.0.get(addr) {
+            Some(entry) if entry.is_banned() => Status::Banned,
+            Some(entry) if entry.is_trusted() => Status::Trusted,
+            _ => Status::Unknown,
+        }
+    }
 }
 
 impl Addrlist {
     pub(crate) fn new() -> Self {
         Self {
-            entries: Arc::new(Mutex::new(HashMap::new())),
+            entries: Arc::new(Mutex::new(Entries::new())),
         }
     }
 
     pub(crate) fn new_with_trusted(trusted: impl Iterator<Item = IpAddr>) -> Self {
         let addrlist = Self::new();
         for ip in trusted {
-            addrlist.add_trusted(ip);
+            addrlist.add_trusted(&ip);
         }
         addrlist
     }
 
-    pub(crate) fn add_trusted(&self, addr: IpAddr) {
+    pub(crate) fn add_trusted(&self, addr: &IpAddr) {
         let mut entries = self.entries.lock().unwrap();
-        entries
-            .entry(addr)
-            .and_modify(|e| e.set_trusted(true))
-            .or_insert_with(AddrEntry::new_trusted);
+        entries.add_trusted(addr);
     }
 
-    pub(crate) fn remove_trusted(&self, addr: IpAddr) {
+    pub(crate) fn remove_trusted(&self, addr: &IpAddr) {
         let mut entries = self.entries.lock().unwrap();
-        if let Some(entry) = entries.get_mut(&addr) {
-            entry.set_trusted(false);
-            if !entry.is_banned() {
-                entries.remove(&addr);
-            }
+        entries.remove_trusted(addr);
+    }
+
+    pub(crate) fn update_trusted(
+        &self,
+        added: impl Iterator<Item = IpAddr>,
+        removed: impl Iterator<Item = IpAddr>,
+    ) {
+        let mut entries = self.entries.lock().unwrap();
+
+        for addr in removed {
+            entries.remove_trusted(&addr);
+        }
+
+        for addr in added {
+            entries.add_trusted(&addr);
         }
     }
 
-    pub(crate) fn ban(&self, addr: IpAddr, timestamp: Instant) {
+    pub(crate) fn ban(&self, addr: &IpAddr, timestamp: Instant) {
         let mut entries = self.entries.lock().unwrap();
-        entries
-            .entry(addr)
-            .and_modify(|e| e.ban_at(timestamp))
-            .or_insert_with(|| AddrEntry::new_banned_at(timestamp));
+        entries.ban(addr, timestamp);
     }
 
     pub(crate) fn unban(&self, addr: &IpAddr) {
         let mut entries = self.entries.lock().unwrap();
-        if let Some(entry) = entries.get_mut(addr) {
-            entry.unban();
-            if !entry.is_trusted() {
-                entries.remove(addr);
-            }
-        }
+        entries.unban(addr);
     }
 
     pub(crate) fn banned_at(&self, addr: &IpAddr) -> Option<Instant> {
-        self.entries
-            .lock()
-            .unwrap()
-            .get(addr)
-            .and_then(|entry| entry.banned_at)
+        self.entries.lock().unwrap().banned_at(addr)
     }
 
     pub(crate) fn status(&self, addr: &IpAddr) -> Status {
-        match self.entries.lock().unwrap().get(addr) {
-            Some(entry) if entry.is_banned() => Status::Banned,
-            Some(entry) if entry.is_trusted() => Status::Trusted,
-            _ => Status::Unknown,
-        }
+        self.entries.lock().unwrap().status(addr)
     }
 }
 
@@ -177,7 +227,7 @@ mod tests {
     fn test_add_and_remove_banned(addrlist: Addrlist, #[case] addr: IpAddr) {
         assert!(matches!(addrlist.status(&addr), Status::Unknown));
 
-        addrlist.ban(addr, Instant::now());
+        addrlist.ban(&addr, Instant::now());
         assert!(matches!(addrlist.status(&addr), Status::Banned));
 
         addrlist.unban(&addr);
@@ -189,18 +239,18 @@ mod tests {
     fn test_add_and_remove_trusted(addrlist: Addrlist, #[case] addr: IpAddr) {
         assert!(matches!(addrlist.status(&addr), Status::Unknown));
 
-        addrlist.add_trusted(addr);
+        addrlist.add_trusted(&addr);
         assert!(matches!(addrlist.status(&addr), Status::Trusted));
 
-        addrlist.remove_trusted(addr);
+        addrlist.remove_trusted(&addr);
         assert!(matches!(addrlist.status(&addr), Status::Unknown));
     }
 
     #[rstest]
     #[case::ipv4_precedence(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1)))]
     fn test_banned_precedence_over_trusted(addrlist: Addrlist, #[case] addr: IpAddr) {
-        addrlist.add_trusted(addr);
-        addrlist.ban(addr, Instant::now());
+        addrlist.add_trusted(&addr);
+        addrlist.ban(&addr, Instant::now());
 
         assert!(matches!(addrlist.status(&addr), Status::Banned));
 
@@ -221,21 +271,21 @@ mod tests {
         let addr3 = IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9));
 
         let ban_time = Instant::now();
-        addrlist.ban(addr1, ban_time);
-        addrlist.add_trusted(addr2);
+        addrlist.ban(&addr1, ban_time);
+        addrlist.add_trusted(&addr2);
 
         assert!(matches!(addrlist.status(&addr1), Status::Banned));
         assert!(matches!(addrlist.status(&addr2), Status::Trusted));
         assert!(matches!(addrlist.status(&addr3), Status::Unknown));
 
-        addrlist.ban(addr2, ban_time);
+        addrlist.ban(&addr2, ban_time);
         assert!(matches!(addrlist.status(&addr2), Status::Banned));
     }
 
     #[rstest]
     fn test_remove_nonexistent_addresses(addrlist: Addrlist, ipv4_addr: IpAddr) {
         addrlist.unban(&ipv4_addr);
-        addrlist.remove_trusted(ipv4_addr);
+        addrlist.remove_trusted(&ipv4_addr);
 
         assert!(matches!(addrlist.status(&ipv4_addr), Status::Unknown));
     }
@@ -245,7 +295,7 @@ mod tests {
         assert!(addrlist.banned_at(&ipv4_addr).is_none());
 
         let ban_timestamp = Instant::now();
-        addrlist.ban(ipv4_addr, ban_timestamp);
+        addrlist.ban(&ipv4_addr, ban_timestamp);
         let banned_time = addrlist.banned_at(&ipv4_addr);
         assert!(banned_time.is_some());
         assert_eq!(banned_time.unwrap(), ban_timestamp);

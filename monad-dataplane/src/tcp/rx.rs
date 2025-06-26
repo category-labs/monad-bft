@@ -69,27 +69,57 @@ impl RxState {
 
     fn apply_limits(&self, ip: IpAddr) -> Result<ConnectionToken, ()> {
         let status = self.addrlist.status(&ip);
-        trace!(?ip, %status, "applying limits for incoming tcp connection");
         match status {
             Status::Banned => {
-                warn!(?ip, "address is banned, rejecting tcp connection");
+                warn!(?ip, "banned address attempting connection, dropping");
                 Err(())
             }
-            Status::Trusted => Ok(ConnectionToken::Trusted),
+            Status::Trusted => {
+                let inner_ref = self.inner.borrow();
+                trace!(
+                    ?ip,
+                    total_connections = inner_ref.num_connections,
+                    connection_limit = inner_ref.tcp_connections_limit,
+                    "trusted peer connection accepted"
+                );
+                Ok(ConnectionToken::Trusted)
+            }
             Status::Unknown => {
                 let mut inner_ref = self.inner.borrow_mut();
                 if inner_ref.num_connections >= inner_ref.tcp_connections_limit {
+                    debug!(
+                        ?ip,
+                        total_connections = inner_ref.num_connections,
+                        connection_limit = inner_ref.tcp_connections_limit,
+                        "total connection limit reached, dropping"
+                    );
                     return Err(());
                 }
                 {
                     let per_ip_limit = inner_ref.tcp_per_ip_connections_limit;
                     let count_ref = inner_ref.num_connections_per_ip.entry(ip).or_insert(0);
                     if *count_ref >= per_ip_limit {
+                        debug!(
+                            ?ip,
+                            ip_connections = *count_ref,
+                            per_ip_limit,
+                            "per-ip connection limit reached, dropping"
+                        );
                         return Err(());
                     }
                     *count_ref += 1;
                 }
                 inner_ref.num_connections += 1;
+                trace!(
+                    ?ip,
+                    total_connections = inner_ref.num_connections,
+                    ip_connections = inner_ref
+                        .num_connections_per_ip
+                        .get(&ip)
+                        .copied()
+                        .unwrap_or(0),
+                    "unknown peer connection accepted"
+                );
                 Ok(ConnectionToken::Unknown {
                     inner: self.inner.clone(),
                     ip,
@@ -110,15 +140,17 @@ enum ConnectionToken {
 impl Drop for ConnectionToken {
     fn drop(&mut self) {
         match self {
-            ConnectionToken::Trusted => {}
+            ConnectionToken::Trusted => {
+                trace!("trusted connection dropped");
+            }
             ConnectionToken::Unknown { inner, ip } => {
                 let mut inner_ref = inner.borrow_mut();
                 inner_ref.num_connections -= 1;
-                if let Some(count_ref) = inner_ref.num_connections_per_ip.get_mut(&ip) {
+                if let Some(count_ref) = inner_ref.num_connections_per_ip.get_mut(ip) {
                     if *count_ref > 1 {
                         *count_ref -= 1;
                     } else {
-                        inner_ref.num_connections_per_ip.remove(&ip);
+                        inner_ref.num_connections_per_ip.remove(ip);
                     }
                 } else {
                     warn!(%ip, "num_connections_per_ip should not be empty")
@@ -154,7 +186,6 @@ pub(crate) async fn task(
         match tcp_listener.accept().await {
             Ok((tcp_stream, addr)) => match rx_state.apply_limits(addr.ip()) {
                 Ok(conn_state) => {
-                    trace!(conn_id, ?addr, "accepted TCP connection");
                     spawn(task_connection(
                         rate_limit.new_rate_limiter(),
                         tcp_control_map.clone(),
@@ -169,12 +200,12 @@ pub(crate) async fn task(
                     debug!(
                         conn_id,
                         ?addr,
-                        "connection limit reached, rejecting TCP connection"
+                        "connection limit reached, rejecting tcp connection"
                     );
                 }
             },
             Err(err) => {
-                warn!(conn_id, ?err, "error accepting TCP connection");
+                warn!(conn_id, ?err, "error accepting tcp connection");
             }
         }
 
@@ -202,7 +233,7 @@ async fn task_connection(
                         break;
                     }
                     Some(TcpControlMsg::Disconnect) => {
-                        trace!(conn_id, ?addr, "disconnecting tcp connection");
+                        trace!(conn_id, ?addr, "received disconnect control message");
                         break;
                     }
                 }
@@ -234,6 +265,11 @@ async fn task_connection(
         }
     }
     tcp_control_map.unregister(&(addr.ip(), addr.port(), conn_id));
+    trace!(
+        conn_id,
+        ?addr,
+        "connection task ended, unregistered from control map"
+    );
 }
 
 async fn read_message(

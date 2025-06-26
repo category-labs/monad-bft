@@ -26,6 +26,7 @@ use monoio::{
     spawn,
 };
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tracing::trace;
 use zerocopy::{
     byteorder::little_endian::{U32, U64},
     AsBytes, FromBytes,
@@ -159,17 +160,32 @@ impl TcpControl {
     #[allow(unused)]
     pub(crate) fn disconnect_ip(&self, ip: IpAddr) {
         let map = self.0.lock().unwrap();
-        for (_, tx) in map.range((ip, u16::MIN, u64::MIN)..(ip, u16::MAX, u64::MAX)) {
+        let mut count = 0;
+        for (id, tx) in map.range((ip, u16::MIN, u64::MIN)..(ip, u16::MAX, u64::MAX)) {
             let _ = tx.send(TcpControlMsg::Disconnect);
+            count += 1;
         }
+        trace!(
+            ?ip,
+            connections_disconnected = count,
+            "completed ip disconnect"
+        );
     }
 
     #[allow(unused)]
     pub(crate) fn disconnect_socket(&self, ip: IpAddr, port: u16) {
         let map = self.0.lock().unwrap();
+        let mut count = 0;
         for (_, tx) in map.range((ip, port, u64::MIN)..(ip, port, u64::MAX)) {
             let _ = tx.send(TcpControlMsg::Disconnect);
+            count += 1;
         }
+        trace!(
+            ?ip,
+            port,
+            connections_disconnected = count,
+            "completed socket disconnect"
+        );
     }
 }
 

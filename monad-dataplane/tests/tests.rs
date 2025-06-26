@@ -555,7 +555,7 @@ async fn test_tcp_limits_are_applied(
 
     assert!(rx.block_until_ready(Duration::from_secs(1)));
 
-    let payload1: Vec<u8> = "first message".try_into().unwrap();
+    let payload1: Vec<u8> = "first message".into();
 
     tx1.tcp_write(
         rx_addr,
@@ -568,7 +568,7 @@ async fn test_tcp_limits_are_applied(
     let recv_msg = rx.tcp_read().await;
     assert_eq!(recv_msg.payload, payload1);
 
-    let payload2: Vec<u8> = "second message".try_into().unwrap();
+    let payload2: Vec<u8> = "second message".into();
     tx2.tcp_write(
         rx_addr,
         TcpMsg {
@@ -578,10 +578,9 @@ async fn test_tcp_limits_are_applied(
     );
 
     let result = async {
-        match monoio::time::timeout(Duration::from_millis(50), rx.tcp_read()).await {
-            Ok(msg) => Some(msg),
-            Err(_) => None,
-        }
+        monoio::time::timeout(Duration::from_millis(50), rx.tcp_read())
+            .await
+            .ok()
     }
     .await;
 
@@ -623,10 +622,9 @@ async fn test_tcp_rps_limits() {
     }
 
     let result = async {
-        match monoio::time::timeout(Duration::from_millis(50), rx.tcp_read()).await {
-            Ok(msg) => Some(msg),
-            Err(_) => None,
-        }
+        monoio::time::timeout(Duration::from_millis(50), rx.tcp_read())
+            .await
+            .ok()
     }
     .await;
     assert!(result.is_none());
@@ -656,7 +654,7 @@ async fn test_tcp_limits_ignored_for_trusted(
 
     assert!(rx.block_until_ready(Duration::from_secs(1)));
 
-    let payload1: Vec<u8> = "first message".try_into().unwrap();
+    let payload1: Vec<u8> = "first message".into();
 
     tx1.tcp_write(
         rx_addr,
@@ -669,7 +667,7 @@ async fn test_tcp_limits_ignored_for_trusted(
     let recv_msg = rx.tcp_read().await;
     assert_eq!(recv_msg.payload, payload1);
 
-    let payload2: Vec<u8> = "second message".try_into().unwrap();
+    let payload2: Vec<u8> = "second message".into();
     tx2.tcp_write(
         rx_addr,
         TcpMsg {
@@ -694,7 +692,7 @@ async fn test_tcp_banned() {
 
     assert!(rx.block_until_ready(Duration::from_secs(1)));
 
-    let payload1: Vec<u8> = "first message".try_into().unwrap();
+    let payload1: Vec<u8> = "first message".into();
     tx1.tcp_write(
         rx_addr,
         TcpMsg {
@@ -708,7 +706,7 @@ async fn test_tcp_banned() {
     // once banned all further message will be dropped for next 5 minutes
     rx.ban("127.0.0.1".parse().unwrap());
 
-    let payload2: Vec<u8> = "second message".try_into().unwrap();
+    let payload2: Vec<u8> = "second message".into();
     tx1.tcp_write(
         rx_addr,
         TcpMsg {
@@ -717,10 +715,9 @@ async fn test_tcp_banned() {
         },
     );
     let result = async {
-        match monoio::time::timeout(Duration::from_millis(50), rx.tcp_read()).await {
-            Ok(msg) => Some(msg),
-            Err(_) => None,
-        }
+        monoio::time::timeout(Duration::from_millis(50), rx.tcp_read())
+            .await
+            .ok()
     }
     .await;
     assert!(result.is_none());
