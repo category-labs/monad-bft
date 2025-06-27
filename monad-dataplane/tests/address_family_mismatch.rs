@@ -25,8 +25,7 @@ fn address_family_mismatch() {
     }));
 
     for addr in BIND_ADDRS {
-        let mut dataplane =
-            DataplaneBuilder::new(&addr.parse().unwrap(), UP_BANDWIDTH_MBPS).build();
+        let dataplane = DataplaneBuilder::new(&addr.parse().unwrap(), UP_BANDWIDTH_MBPS).build();
 
         // Allow Dataplane thread to set itself up.
         sleep(Duration::from_millis(10));

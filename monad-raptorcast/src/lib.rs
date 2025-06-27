@@ -18,7 +18,8 @@ use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_dataplane::{
-    udp::segment_size_for_mtu, BroadcastMsg, Dataplane, DataplaneBuilder, TcpMsg, UnicastMsg,
+    udp::segment_size_for_mtu, BroadcastMsg, DataplaneBuilder, DataplaneWriter, TcpMsg, TcpReader,
+    UnicastMsg,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
@@ -31,6 +32,7 @@ use monad_peer_discovery::{
 use monad_types::{
     Deserializable, DropTimer, Epoch, ExecutionProtocol, NodeId, RouterTarget, Serializable,
 };
+use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
 
 pub mod config;
@@ -60,6 +62,7 @@ where
     pub up_bandwidth_mbps: u64,
     pub mtu: u16,
     pub buffer_size: Option<usize>,
+    pub signature_validation_workers: Option<usize>,
 }
 
 pub struct RaptorCast<ST, M, OM, SE, PD>
@@ -85,12 +88,15 @@ where
     udp_state: udp::UdpState<ST>,
     mtu: u16,
 
-    dataplane: Dataplane,
+    dataplane: DataplaneWriter,
+    tcp_reader: TcpReader,
     pending_events: VecDeque<RaptorCastEvent<M::Event, ST>>,
 
     waker: Option<Waker>,
     metrics: ExecutorMetrics,
     _phantom: PhantomData<(OM, SE)>,
+
+    parsed_payload_rx: mpsc::Receiver<udp::ParsedPayload<ST>>,
 }
 
 pub enum PeerManagerResponse<ST: CertificateSignatureRecoverable> {
@@ -113,6 +119,7 @@ where
     pub fn new<B>(config: RaptorCastConfig<ST, B>) -> Self
     where
         B: PeerDiscoveryAlgoBuilder<PeerDiscoveryAlgoType = PD>,
+        ST: Send + Sync + 'static,
     {
         assert!(config.redundancy >= 1);
         let self_id = NodeId::new(config.key.pubkey());
@@ -122,6 +129,16 @@ where
         }
         let dataplane = builder.build();
         let is_fullnode = false; // This will come from the config in upcoming PR
+
+        let num_workers = config.signature_validation_workers.unwrap_or(1);
+
+        let (dataplane, dataplane_reader) = dataplane.split();
+        let (tcp_reader, udp_reader) = dataplane_reader.split();
+        let signature_cache = moka::sync::Cache::builder()
+            .max_capacity(udp::SIGNATURE_CACHE_SIZE.get())
+            .build();
+
+        let parsed_payload_rx = udp::setup_sig_workers(udp_reader, num_workers, signature_cache);
 
         Self {
             epoch_validators: Default::default(),
@@ -138,11 +155,14 @@ where
             mtu: config.mtu,
 
             dataplane,
+            tcp_reader,
             pending_events: Default::default(),
 
             waker: None,
             metrics: Default::default(),
             _phantom: PhantomData,
+
+            parsed_payload_rx,
         }
     }
 
@@ -473,7 +493,9 @@ where
 
         loop {
             // while let doesn't compile
-            let Poll::Ready(message) = pin!(this.dataplane.udp_read()).poll_unpin(cx) else {
+            let Poll::Ready(Some(parsed_payload)) =
+                pin!(this.parsed_payload_rx.recv()).poll_unpin(cx)
+            else {
                 break;
             };
 
@@ -484,9 +506,9 @@ where
             // decoded (AKA parsed, original) message.
             // Stream the chunks to our dedicated full-nodes as we receive them.
             let decoded_app_messages = {
-                // FIXME: pass dataplane as arg to handle_message
+                // FIXME: pass dataplane as arg to handle_parsed_payload
                 let dataplane = RefCell::new(&mut this.dataplane);
-                this.udp_state.handle_message(
+                this.udp_state.handle_parsed_payload(
                     &this.rebroadcast_map,
                     |targets, payload, bcast_stride| {
                         // Callback for re-broadcasting raptorcast chunks to other RaptorCast participants (validator peers)
@@ -509,7 +531,7 @@ where
                             stride: bcast_stride,
                         });
                     },
-                    message,
+                    parsed_payload,
                 )
             };
             let deserialized_app_messages =
@@ -550,7 +572,8 @@ where
             }
         }
 
-        while let Poll::Ready((from_addr, message)) = pin!(this.dataplane.tcp_read()).poll_unpin(cx)
+        while let Poll::Ready((from_addr, message)) =
+            pin!(this.tcp_reader.tcp_read()).poll_unpin(cx)
         {
             // check message length to prevent panic during message slicing
             if message.len() < SIGNATURE_SIZE {

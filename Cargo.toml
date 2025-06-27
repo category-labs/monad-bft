@@ -143,6 +143,7 @@ jemalloc_pprof = "0.7"
 libc = "0.2.153"
 lru = "0.12"
 lz4 = "1.28"
+moka = { version = "0.12", features = ["sync"] }
 mongodb = "3.2.1"
 monoio = { version = "0.2.4", features = ["sync"] }
 notify = "6.1.1"

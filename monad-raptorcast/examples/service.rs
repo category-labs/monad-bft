@@ -126,6 +126,7 @@ fn service(
                     up_bandwidth_mbps: 1_000,
                     mtu: DEFAULT_MTU,
                     buffer_size: None,
+                    signature_validation_workers: None,
                 };
 
                 let mut service = RaptorCast::<

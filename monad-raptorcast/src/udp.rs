@@ -3,6 +3,7 @@ use std::{
     net::SocketAddr,
     num::NonZero,
     ops::Range,
+    thread,
 };
 
 use bitvec::prelude::*;
@@ -15,11 +16,13 @@ use monad_crypto::{
     },
     hasher::{Hasher, HasherType},
 };
-use monad_dataplane::RecvMsg;
+use monad_dataplane::{RecvMsg, UdpReader};
 use monad_merkle::{MerkleHash, MerkleProof, MerkleTree};
 use monad_raptor::{ManagedDecoder, SOURCE_SYMBOLS_MIN};
 use monad_types::{Epoch, NodeId};
 use rand::seq::SliceRandom;
+use tokio::sync::mpsc;
+use tracing::{info, warn};
 
 use crate::{
     util::{compute_hash, AppMessageHash, BuildTarget, HexBytes, NodeIdHash, ReBroadcastGroupMap},
@@ -28,7 +31,7 @@ use crate::{
 
 pub const PENDING_MESSAGE_CACHE_SIZE: NonZero<usize> = unsafe { NonZero::new_unchecked(1_000) };
 
-pub const SIGNATURE_CACHE_SIZE: NonZero<usize> = unsafe { NonZero::new_unchecked(10_000) };
+pub const SIGNATURE_CACHE_SIZE: NonZero<u64> = unsafe { NonZero::new_unchecked(10_000) };
 pub const RECENTLY_DECODED_CACHE_SIZE: NonZero<usize> = unsafe { NonZero::new_unchecked(10_000) };
 
 // We assume an MTU of at least 1280 (the IPv6 minimum MTU), which for the maximum Merkle tree
@@ -84,8 +87,6 @@ pub(crate) struct UdpState<ST: CertificateSignatureRecoverable> {
     // TODO strong bound on max amount of memory used per decoder?
     // TODO make eviction more sophisticated than LRU - should look at unix_ts_ms as well
     pending_message_cache: LruCache<MessageCacheKey<CertificateSignaturePubKey<ST>>, DecoderState>,
-    signature_cache:
-        LruCache<[u8; HEADER_LEN as usize + 20], NodeId<CertificateSignaturePubKey<ST>>>,
     /// Value in this map represents the # of excess chunks received for a successfully decoded msg
     recently_decoded_cache:
         LruCache<MessageCacheKey<CertificateSignaturePubKey<ST>>, RecentlyDecodedState>,
@@ -108,31 +109,36 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             self_id,
 
             pending_message_cache: LruCache::unbounded(),
-            signature_cache: LruCache::new(SIGNATURE_CACHE_SIZE),
             recently_decoded_cache: LruCache::new(RECENTLY_DECODED_CACHE_SIZE),
         }
     }
 
-    /// Given a RecvMsg, emits all decoded messages while rebroadcasting as necessary
-    pub fn handle_message(
+    pub fn handle_parsed_payload(
         &mut self,
         group_map: &ReBroadcastGroupMap<ST>,
         rebroadcast: impl FnMut(Vec<NodeId<CertificateSignaturePubKey<ST>>>, Bytes, u16),
         forward: impl FnMut(Bytes, u16),
-        message: RecvMsg,
+        parsed_payload: ParsedPayload<ST>,
     ) -> Vec<(NodeId<CertificateSignaturePubKey<ST>>, Bytes)> {
         let self_id = self.self_id;
         let self_hash = compute_hash(&self_id);
 
-        let mut broadcast_batcher =
-            BroadcastBatcher::new(self_id, rebroadcast, &message.payload, message.stride);
-        // batch packets forwarding to full nodes
-        let mut full_node_forward_batcher =
-            ForwardBatcher::new(self_id, forward, &message.payload, message.stride);
+        let mut broadcast_batcher = BroadcastBatcher::new(
+            self_id,
+            rebroadcast,
+            &parsed_payload.payload.payload,
+            parsed_payload.payload.stride,
+        );
+        let mut full_node_forward_batcher = ForwardBatcher::new(
+            self_id,
+            forward,
+            &parsed_payload.payload.payload,
+            parsed_payload.payload.stride,
+        );
 
-        let mut messages = Vec::new(); // The return result; decoded messages
+        let mut messages = Vec::new();
 
-        for payload_start_idx in (0..message.payload.len()).step_by(message.stride.into()) {
+        for parsed_message in parsed_payload.messages {
             // scoped variables are dropped in reverse order of declaration.
             // when *batch_guard is dropped, packets can get flushed
             //
@@ -141,26 +147,16 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             let mut full_node_forward_batch_guard = full_node_forward_batcher.create_flush_guard();
             let mut batch_guard = broadcast_batcher.create_flush_guard();
 
-            let payload_end_idx =
-                (payload_start_idx + usize::from(message.stride)).min(message.payload.len());
-            let payload = message.payload.slice(payload_start_idx..payload_end_idx);
-            // "message" here means a raptor-casted chunk (AKA r10 symbol), not the whole final message (proposal)
-            let parsed_message = match parse_message::<ST>(&mut self.signature_cache, payload) {
-                Ok(message) => message,
-                Err(err) => {
-                    tracing::debug!(src_addr = ?message.src_addr, ?err, "unable to parse message");
-                    continue;
-                }
-            };
+            let parsed_message_ref = &parsed_message.message;
 
             // Enforce a minimum chunk size for messages consisting of multiple source chunks.
-            if parsed_message.chunk.len() < MIN_CHUNK_LENGTH
-                && usize::try_from(parsed_message.app_message_len).unwrap()
-                    > parsed_message.chunk.len()
+            if parsed_message_ref.chunk.len() < MIN_CHUNK_LENGTH
+                && usize::try_from(parsed_message_ref.app_message_len).unwrap()
+                    > parsed_message_ref.chunk.len()
             {
                 tracing::debug!(
-                    src_addr = ?message.src_addr,
-                    chunk_length = parsed_message.chunk.len(),
+                    src_addr = ?parsed_payload.payload.src_addr,
+                    chunk_length = parsed_message_ref.chunk.len(),
                     MIN_CHUNK_LENGTH,
                     "dropping undersized received message",
                 );
@@ -170,73 +166,74 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             // Note: The check that parsed_message.author is valid is already
             // done in iterate_rebroadcast_peers(), but we want to drop invalid
             // chunks ASAP, before changing `recently_decoded_state.
-            if parsed_message.broadcast {
-                if !group_map.check_source(Epoch(parsed_message.epoch), &parsed_message.author) {
+            if parsed_message_ref.broadcast {
+                if !group_map
+                    .check_source(Epoch(parsed_message_ref.epoch), &parsed_message_ref.author)
+                {
                     tracing::debug!(
-                        src_addr = ?message.src_addr,
-                        author =? parsed_message.author,
-                        epoch =? parsed_message.epoch,
+                        src_addr = ?parsed_payload.payload.src_addr,
+                        author =? parsed_message_ref.author,
+                        epoch =? parsed_message_ref.epoch,
                         "not in raptorcast group"
                     );
                     continue;
                 }
-            } else if self_hash != parsed_message.recipient_hash {
+            } else if self_hash != parsed_message_ref.recipient_hash {
                 tracing::debug!(
-                    src_addr = ?message.src_addr,
+                    src_addr = ?parsed_payload.payload.src_addr,
                     ?self_hash,
-                    recipient_hash =? parsed_message.recipient_hash,
+                    recipient_hash =? parsed_message_ref.recipient_hash,
                     "dropping spoofed message"
                 );
                 continue;
             }
 
-            let encoding_symbol_id = parsed_message.chunk_id.into();
+            let encoding_symbol_id = parsed_message_ref.chunk_id.into();
 
             tracing::trace!(
-                src_addr = ?message.src_addr,
+                src_addr = ?parsed_payload.payload.src_addr,
                 self_id =? self.self_id,
-                author =? parsed_message.author,
-                unix_ts_ms = parsed_message.unix_ts_ms,
-                app_message_hash =? parsed_message.app_message_hash,
+                author =? parsed_message_ref.author,
+                unix_ts_ms = parsed_message_ref.unix_ts_ms,
+                app_message_hash =? parsed_message_ref.app_message_hash,
                 encoding_symbol_id,
                 "received encoded symbol"
             );
 
-            let app_message_len: usize = parsed_message.app_message_len.try_into().unwrap();
+            let app_message_len: usize = parsed_message_ref.app_message_len.try_into().unwrap();
             let key = MessageCacheKey {
-                unix_ts_ms: parsed_message.unix_ts_ms,
-                author: parsed_message.author,
-                app_message_hash: parsed_message.app_message_hash,
+                unix_ts_ms: parsed_message_ref.unix_ts_ms,
+                author: parsed_message_ref.author,
+                app_message_hash: parsed_message_ref.app_message_hash,
                 app_message_len,
             };
 
             let mut try_rebroadcast_symbol = || {
-                // rebroadcast raptorcast chunks if necessary
-                if parsed_message.broadcast {
-                    if self_hash == parsed_message.recipient_hash {
+                if parsed_message_ref.broadcast {
+                    if self_hash == parsed_message_ref.recipient_hash {
                         let maybe_targets = group_map.iterate_rebroadcast_peers(
-                            Epoch(parsed_message.epoch),
-                            &parsed_message.author,
+                            Epoch(parsed_message_ref.epoch),
+                            &parsed_message_ref.author,
                         );
                         if let Some(targets) = maybe_targets {
                             batch_guard.queue_broadcast(
-                                payload_start_idx,
-                                payload_end_idx,
-                                &parsed_message.author,
+                                parsed_message.idx_start,
+                                parsed_message.idx_end,
+                                &parsed_message_ref.author,
                                 || targets.cloned().collect(),
                             )
                         }
                     }
 
-                    // forward all broadcast packets to full nodes
-                    full_node_forward_batch_guard.queue_forward(payload_start_idx, payload_end_idx);
+                    full_node_forward_batch_guard
+                        .queue_forward(parsed_message.idx_start, parsed_message.idx_end);
                 }
             };
 
             if let Some(recently_decoded_state) = self.recently_decoded_cache.get_mut(&key) {
                 if is_valid_symbol::<ST>(
                     self.self_id,
-                    &parsed_message,
+                    parsed_message_ref,
                     recently_decoded_state.symbol_len,
                     recently_decoded_state.encoded_symbol_capacity,
                     &recently_decoded_state.seen_esis,
@@ -255,7 +252,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
 
             let decoder_state_result =
                 self.pending_message_cache.try_get_or_insert_mut(key, || {
-                    let symbol_len = parsed_message.chunk.len();
+                    let symbol_len = parsed_message_ref.chunk.len();
 
                     // symbol_len is always greater than zero, so this division is safe
                     let num_source_symbols =
@@ -281,12 +278,11 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
 
             if !is_valid_symbol::<ST>(
                 self.self_id,
-                &parsed_message,
+                parsed_message_ref,
                 decoder_state.decoder.symbol_len(),
                 decoder_state.encoded_symbol_capacity,
                 &decoder_state.seen_esis,
             ) {
-                // invalid symbol
                 continue;
             }
             decoder_state.seen_esis.set(encoding_symbol_id, true);
@@ -297,11 +293,11 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
 
             decoder_state
                 .decoder
-                .received_encoded_symbol(&parsed_message.chunk, encoding_symbol_id);
+                .received_encoded_symbol(&parsed_message_ref.chunk, encoding_symbol_id);
 
             *decoder_state
                 .recipient_chunks
-                .entry(parsed_message.recipient_hash)
+                .entry(parsed_message_ref.recipient_hash)
                 .or_insert(0) += 1;
 
             if decoder_state.decoder.try_decode() {
@@ -313,9 +309,9 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 if app_message_len > 10_000 {
                     tracing::debug!(
                         ?self_id,
-                        author =? parsed_message.author,
-                        unix_ts_ms = parsed_message.unix_ts_ms,
-                        app_message_hash =? parsed_message.app_message_hash,
+                        author =? parsed_message_ref.author,
+                        unix_ts_ms = parsed_message_ref.unix_ts_ms,
+                        app_message_hash =? parsed_message_ref.app_message_hash,
                         encoding_symbol_id,
                         app_message_len,
                         "reconstructed large message"
@@ -357,7 +353,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                     },
                 );
 
-                messages.push((parsed_message.author, decoded));
+                messages.push((parsed_message_ref.author, Bytes::from(decoded)));
             }
         }
 
@@ -958,6 +954,99 @@ pub enum MessageValidationError {
     InvalidSignature,
     InvalidTreeDepth,
     InvalidMerkleProof,
+    TimestampTooOld,
+    TimestampTooFuture,
+}
+
+pub(crate) struct ParsedPayload<ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    pub payload: RecvMsg,
+    pub messages: Vec<ParsedMessage<ST>>,
+}
+
+pub(crate) struct ParsedMessage<ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    pub idx_start: usize,
+    pub idx_end: usize,
+    pub message: ValidatedMessage<CertificateSignaturePubKey<ST>>,
+}
+
+pub(crate) fn setup_sig_workers<ST>(
+    udp_reader: UdpReader,
+    num_workers: usize,
+    signature_cache: moka::sync::Cache<
+        [u8; HEADER_LEN as usize + 20],
+        NodeId<CertificateSignaturePubKey<ST>>,
+    >,
+) -> mpsc::Receiver<ParsedPayload<ST>>
+where
+    ST: CertificateSignatureRecoverable + Send + Sync + 'static,
+{
+    let (output_tx, output_rx) = mpsc::channel(1000);
+
+    for worker_id in 0..num_workers {
+        let udp_reader = udp_reader.clone();
+        let signature_cache = signature_cache.clone();
+        let output_tx = output_tx.clone();
+
+        thread::Builder::new()
+            .name(format!("sig-worker-{}", worker_id))
+            .spawn(move || loop {
+                let recv_msg = udp_reader.read_blocking();
+                if let Some(parsed_payload) = prepare_parsed_payload(&signature_cache, recv_msg) {
+                    if let Err(_) = output_tx.blocking_send(parsed_payload) {
+                        info!("output channel closed, exiting worker");
+                        return;
+                    }
+                }
+            })
+            .expect("Failed to spawn sig worker thread");
+    }
+
+    output_rx
+}
+
+fn prepare_parsed_payload<ST: CertificateSignatureRecoverable>(
+    signature_cache: &moka::sync::Cache<
+        [u8; HEADER_LEN as usize + 20],
+        NodeId<CertificateSignaturePubKey<ST>>,
+    >,
+    recv_msg: RecvMsg,
+) -> Option<ParsedPayload<ST>> {
+    let mut parsed_messages = Vec::new();
+    // Parse entire payload with stride information
+    for payload_start_idx in (0..recv_msg.payload.len()).step_by(recv_msg.stride.into()) {
+        let payload_end_idx =
+            (payload_start_idx + usize::from(recv_msg.stride)).min(recv_msg.payload.len());
+        let payload_slice = recv_msg.payload.slice(payload_start_idx..payload_end_idx);
+
+        match parse_message::<ST>(&signature_cache, payload_slice) {
+            Ok(validated_message) => {
+                let parsed_message = ParsedMessage {
+                    idx_start: payload_start_idx,
+                    idx_end: payload_end_idx,
+                    message: validated_message,
+                };
+                parsed_messages.push(parsed_message);
+            }
+            Err(err) => {
+                warn!("message validation error: {:?}", err);
+            }
+        }
+    }
+
+    if !parsed_messages.is_empty() {
+        Some(ParsedPayload {
+            payload: recv_msg,
+            messages: parsed_messages,
+        })
+    } else {
+        None
+    }
 }
 
 /// - 65 bytes => Signature of sender over hash(rest of message up to merkle proof, concatenated
@@ -982,7 +1071,7 @@ pub enum MessageValidationError {
 /// - 2 bytes (u16) => This chunk's id
 /// - rest => data
 pub fn parse_message<ST>(
-    signature_cache: &mut LruCache<
+    signature_cache: &moka::sync::Cache<
         [u8; HEADER_LEN as usize + 20],
         NodeId<CertificateSignaturePubKey<ST>>,
     >,
@@ -1097,16 +1186,20 @@ where
     signed_over[..HEADER_LEN as usize].copy_from_slice(&message[..HEADER_LEN as usize]);
     signed_over[HEADER_LEN as usize..].copy_from_slice(&root);
 
-    let author = *signature_cache.try_get_or_insert(signed_over, || {
-        let author = signature
-            .recover_pubkey(&signed_over[SIGNATURE_SIZE..])
-            .map_err(|_| MessageValidationError::InvalidSignature)?;
-        Ok(NodeId::new(author))
-    })?;
+    let author = if let Some(author) = signature_cache.get(&signed_over) {
+        author
+    } else {
+        let author = NodeId::new(
+            signature
+                .recover_pubkey(&signed_over[SIGNATURE_SIZE..])
+                .map_err(|_| MessageValidationError::InvalidSignature)?,
+        );
+        signature_cache.insert(signed_over, author);
+        author
+    };
 
     Ok(ValidatedMessage {
         message,
-
         author,
         epoch,
         unix_ts_ms,
@@ -1363,7 +1456,7 @@ mod tests {
 
     use bytes::{Bytes, BytesMut};
     use itertools::Itertools;
-    use lru::LruCache;
+    use moka::sync::Cache;
     use monad_crypto::{
         certificate_signature::CertificateSignaturePubKey,
         hasher::{Hasher, HasherType},
@@ -1374,7 +1467,7 @@ mod tests {
 
     use super::UdpState;
     use crate::{
-        udp::{build_messages, parse_message, SIGNATURE_CACHE_SIZE},
+        udp::{build_messages, parse_message, prepare_parsed_payload, SIGNATURE_CACHE_SIZE},
         util::{BuildTarget, EpochValidators, FullNodes, ReBroadcastGroupMap, Validator},
     };
 
@@ -1445,7 +1538,7 @@ mod tests {
             &known_addresses,
         );
 
-        let mut signature_cache = LruCache::new(SIGNATURE_CACHE_SIZE);
+        let mut signature_cache = Cache::new(SIGNATURE_CACHE_SIZE.get());
 
         for (_to, mut aggregate_message) in messages {
             while !aggregate_message.is_empty() {
@@ -1482,7 +1575,7 @@ mod tests {
             &known_addresses,
         );
 
-        let mut signature_cache = LruCache::new(SIGNATURE_CACHE_SIZE);
+        let mut signature_cache = Cache::new(SIGNATURE_CACHE_SIZE.get());
 
         for (_to, mut aggregate_message) in messages {
             while !aggregate_message.is_empty() {
@@ -1532,7 +1625,7 @@ mod tests {
             &known_addresses,
         );
 
-        let mut signature_cache = LruCache::new(SIGNATURE_CACHE_SIZE);
+        let mut signature_cache = Cache::new(SIGNATURE_CACHE_SIZE.get());
 
         let mut used_ids = HashSet::new();
 
@@ -1566,7 +1659,7 @@ mod tests {
             &known_addresses,
         );
 
-        let mut signature_cache = LruCache::new(SIGNATURE_CACHE_SIZE);
+        let mut signature_cache = Cache::new(SIGNATURE_CACHE_SIZE.get());
 
         let mut used_ids: HashMap<SocketAddr, HashSet<_>> = HashMap::new();
 
@@ -1612,12 +1705,14 @@ mod tests {
             payload,
             stride: 1024,
         };
-
-        udp_state.handle_message(
-            &group_map,
-            |_targets, _payload, _stride| {},
-            |_payload, _stride| {},
-            recv_msg,
-        );
+        let cache = moka::sync::Cache::new(100);
+        if let Some(parsed_payload) = prepare_parsed_payload(&cache, recv_msg) {
+            udp_state.handle_parsed_payload(
+                &group_map,
+                |_targets, _payload, _stride| {},
+                |_payload, _stride| {},
+                parsed_payload,
+            );
+        }
     }
 }

@@ -103,7 +103,6 @@ async fn rx(udp_socket_rx: UdpSocket, udp_ingress_tx: mpsc::Sender<RecvMsg>) {
                     payload,
                     stride: len.max(1).try_into().unwrap(),
                 };
-
                 if let Err(err) = udp_ingress_tx.send(msg).await {
                     warn!(?src_addr, ?err, "error queueing up received UDP message");
                     break;

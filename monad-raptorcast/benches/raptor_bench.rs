@@ -3,7 +3,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use bytes::Bytes;
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
 use itertools::Itertools;
-use lru::LruCache;
+use moka::sync::Cache;
 use monad_crypto::hasher::{Hasher, HasherType};
 use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_raptor::ManagedDecoder;
@@ -109,7 +109,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         .collect_vec();
 
         let example_chunk = parse_message::<SecpSignature>(
-            &mut LruCache::new(SIGNATURE_CACHE_SIZE),
+            &mut Cache::new(SIGNATURE_CACHE_SIZE.get()),
             messages[0].clone().split_to(DEFAULT_SEGMENT_SIZE.into()),
         )
         .expect("valid chunk");
@@ -117,7 +117,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         b.iter_batched(
             || messages.clone(),
             |messages| {
-                let mut signature_cache = LruCache::new(SIGNATURE_CACHE_SIZE);
+                let mut signature_cache = Cache::new(SIGNATURE_CACHE_SIZE.get());
                 let mut decoder = {
                     let symbol_len = example_chunk.chunk.len();
 

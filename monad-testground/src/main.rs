@@ -296,6 +296,7 @@ where
                             up_bandwidth_mbps: 1_000,
                             mtu: DEFAULT_MTU,
                             buffer_size: Some(62_500_000),
+                            signature_validation_workers: None,
                         }),
                     },
                     ledger_config: match args.ledger {

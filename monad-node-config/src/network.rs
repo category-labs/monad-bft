@@ -16,6 +16,8 @@ pub struct NodeNetworkConfig {
 
     #[serde(default = "default_mtu")]
     pub mtu: u16,
+
+    pub signature_validation_workers: Option<usize>,
 }
 
 // When running in docker with vpnkit, the maximum safe MTU is 1480, as per:

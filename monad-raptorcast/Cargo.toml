@@ -29,6 +29,8 @@ hex = { workspace = true }
 iset = { workspace = true }
 itertools = { workspace = true }
 lru = { workspace = true }
+moka = { workspace = true }
+tokio = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 tracing = { workspace = true }

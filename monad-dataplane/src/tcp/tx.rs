@@ -205,7 +205,6 @@ async fn connect_and_send_messages(
     loop {
         let msg = match msg_receiver.try_recv() {
             Ok(msg) => msg,
-            Err(TryRecvError::Disconnected) => break,
             Err(TryRecvError::Empty) => {
                 conn_cork(stream.as_raw_fd(), false);
 
@@ -218,6 +217,7 @@ async fn connect_and_send_messages(
                     Err(_) => break,
                 }
             }
+            Err(TryRecvError::Disconnected) => break,
         };
 
         let message_count = msg_receiver.max_capacity() - msg_receiver.capacity();
