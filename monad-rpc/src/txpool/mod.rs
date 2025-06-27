@@ -85,10 +85,13 @@ impl EthTxPoolBridge {
 
         cleanup_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-        loop {
+        let err = loop {
             tokio::select! {
                 result = tx_receiver.recv_async() => {
-                    let tx_pair = result.unwrap();
+                    let tx_pair = match result {
+                        Ok(tx_pair) => tx_pair,
+                        Err(e) => break e,
+                    };
 
                     for (tx, tx_status_send) in std::iter::once(tx_pair).chain(tx_receiver.drain()) {
                         self.state.add_tx(&mut self.eviction_queue, &tx, tx_status_send);
@@ -115,7 +118,9 @@ impl EthTxPoolBridge {
                     self.state.cleanup(&mut self.eviction_queue, now);
                 }
             }
-        }
+        };
+
+        warn!(?err, "TxPoolBridge shutting down")
     }
 }
 
