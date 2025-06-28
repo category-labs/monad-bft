@@ -77,12 +77,20 @@ optional = true
 [dev-dependencies]
 monad-eth-testutil = { workspace = true }
 
+alloy-consensus = { workspace = true, features = ["arbitrary"] }
 alloy-rpc-client = { workspace = true }
+alloy-rpc-types = { workspace = true, features = ["arbitrary", "k256"] }
 alloy-signer = { workspace = true }
 alloy-signer-local = { workspace = true }
+arbitrary = { workspace = true }
+criterion = { workspace = true }
 reqwest = { workspace = true }
 test-case = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 
 [build-dependencies]
 vergen-git2 = { workspace = true }
+
+[[bench]]
+name = "serialize"
+harness = false

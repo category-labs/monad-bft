@@ -80,8 +80,8 @@ monad-validator = { path = "./monad-validator" }
 monad-wal = { path = "./monad-wal" }
 
 actix = "0.13"
-actix-server = "2.5.1"
 actix-http = "3.6.0"
+actix-server = "2.5.1"
 actix-test = "0.1"
 actix-web = "4.5.1"
 actix-web-actors = "4.3.0"
@@ -102,6 +102,7 @@ alloy-sol-macro = "0.8"
 alloy-sol-types = "0.8"
 alloy-transport = "0.8"
 alloy-transport-http = "0.8"
+arbitrary = "1.4.1"
 as-any = "0.3.1"
 async-graphql = "7.0"
 auto_impl = "1.2"
