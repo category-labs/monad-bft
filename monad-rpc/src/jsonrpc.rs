@@ -1,7 +1,7 @@
 //! reference: https://www.jsonrpc.org/specification
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{value::RawValue, Value};
 
 pub const JSONRPC_VERSION: &str = "2.0";
 
@@ -54,14 +54,24 @@ impl Request {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Response {
     pub jsonrpc: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<Value>,
+    pub result: Option<Box<RawValue>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<JsonRpcError>,
     pub id: Value,
+}
+
+impl PartialEq for Response {
+    fn eq(&self, other: &Self) -> bool {
+        self.jsonrpc == other.jsonrpc
+            && self.result.as_ref().map(|result| result.get())
+                == other.result.as_ref().map(|result| result.get())
+            && self.error == other.error
+            && self.id == other.id
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -72,7 +82,7 @@ pub enum ResponseWrapper<T> {
 }
 
 impl Response {
-    pub fn new(result: Option<Value>, error: Option<JsonRpcError>, id: Value) -> Self {
+    pub fn new(result: Option<Box<RawValue>>, error: Option<JsonRpcError>, id: Value) -> Self {
         Self {
             jsonrpc: JSONRPC_VERSION.into(),
             result,
@@ -81,7 +91,7 @@ impl Response {
         }
     }
 
-    pub fn from_result(request_id: Value, result: Result<Value, JsonRpcError>) -> Self {
+    pub fn from_result(request_id: Value, result: Result<Box<RawValue>, JsonRpcError>) -> Self {
         match result {
             Ok(v) => Self::new(Some(v), None, request_id),
             Err(e) => Self::new(None, Some(e), request_id),

@@ -5,7 +5,7 @@ use alloy_primitives::{Address, FixedBytes, LogData, U256};
 use alloy_rpc_types::{Block, FeeHistory, Header, Log, Transaction, TransactionReceipt};
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::Value;
+use serde_json::value::RawValue;
 use tracing::debug;
 
 use crate::{
@@ -359,8 +359,8 @@ impl Default for BlockTagOrHash {
     }
 }
 
-pub fn serialize_result<T: Serialize>(value: T) -> Result<Value, JsonRpcError> {
-    serde_json::to_value(value).map_err(|e| {
+pub fn serialize_result<T: Serialize>(value: T) -> Result<Box<RawValue>, JsonRpcError> {
+    serde_json::value::to_raw_value(&value).map_err(|e| {
         debug!("blockdb serialize error {:?}", e);
         JsonRpcError::internal_error(format!("serialization error: {}", e))
     })
