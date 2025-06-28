@@ -8,6 +8,14 @@ on:
     paths:
       - "monad-rpc/**"
 
+concurrency:
+  group: >
+    ${{
+      github.event_name == 'pull_request'
+      && format('pr-{0}-openrpc', github.event.pull_request.number)
+      || format('push-{0}-openrpc', github.ref)
+    }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
