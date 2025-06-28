@@ -12,7 +12,7 @@ use std::{
 use alloy_rlp::{Decodable, Encodable};
 use bytes::{Bytes, BytesMut};
 use futures::{channel::oneshot, FutureExt, Stream, StreamExt};
-use message::{DeserializeError, InboundRouterMessage, OutboundRouterMessage};
+use message::{InboundRouterMessage, OutboundRouterMessage};
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -28,9 +28,7 @@ use monad_peer_discovery::{
     driver::{PeerDiscoveryDriver, PeerDiscoveryEmit},
     PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryEvent,
 };
-use monad_types::{
-    Deserializable, DropTimer, Epoch, ExecutionProtocol, NodeId, RouterTarget, Serializable,
-};
+use monad_types::{DropTimer, Epoch, ExecutionProtocol, NodeId, RouterTarget};
 use tracing::{debug, error, warn};
 
 pub mod config;
@@ -65,8 +63,8 @@ where
 pub struct RaptorCast<ST, M, OM, SE, PD>
 where
     ST: CertificateSignatureRecoverable,
-    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes> + Decodable,
-    OM: Serializable<Bytes> + Encodable + Into<M> + Clone,
+    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
+    OM: Encodable + Into<M> + Clone,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
 {
     key: ST::KeyPairType,
@@ -106,8 +104,8 @@ pub enum RaptorCastEvent<E, ST: CertificateSignatureRecoverable> {
 impl<ST, M, OM, SE, PD> RaptorCast<ST, M, OM, SE, PD>
 where
     ST: CertificateSignatureRecoverable,
-    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes> + Decodable,
-    OM: Serializable<Bytes> + Encodable + Into<M> + Clone,
+    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
+    OM: Encodable + Into<M> + Clone,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
 {
     pub fn new<B>(config: RaptorCastConfig<ST, B>) -> Self
@@ -180,8 +178,8 @@ where
 impl<ST, M, OM, SE, PD> Executor for RaptorCast<ST, M, OM, SE, PD>
 where
     ST: CertificateSignatureRecoverable,
-    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes> + Decodable,
-    OM: Serializable<Bytes> + Encodable + Into<M> + Clone,
+    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
+    OM: Encodable + Into<M> + Clone,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
 {
     type Command = RouterCommand<ST, OM>;
@@ -266,10 +264,8 @@ where
                                 continue;
                             };
 
-                            let app_message = message.serialize();
-
                             if epoch_validators.validators.contains_key(&self_id) {
-                                let message: M = message.into();
+                                let message: M = message.clone().into();
                                 self.pending_events
                                     .push_back(RaptorCastEvent::Message(message.event(self_id)));
                                 if let Some(waker) = self.waker.take() {
@@ -299,11 +295,12 @@ where
                                 )),
                                 _ => unreachable!(),
                             };
-
+                            let outbound_message =
+                                OutboundRouterMessage::<OM, ST>::AppMessage(message).serialize();
                             let unicast_msg = udp_build(
                                 &epoch,
                                 build_target,
-                                app_message,
+                                outbound_message,
                                 self.mtu,
                                 &self.key,
                                 self.redundancy,
@@ -320,11 +317,13 @@ where
                                     waker.wake()
                                 }
                             } else {
-                                let app_message = message.serialize();
+                                let outbound_message =
+                                    OutboundRouterMessage::<OM, ST>::AppMessage(message)
+                                        .serialize();
                                 let unicast_msg = udp_build(
                                     &self.current_epoch,
                                     BuildTarget::<ST>::PointToPoint(&to),
-                                    app_message,
+                                    outbound_message,
                                     self.mtu,
                                     &self.key,
                                     self.redundancy,
@@ -342,7 +341,9 @@ where
                                     waker.wake()
                                 }
                             } else {
-                                self.tcp_build_and_send(&to, || message.serialize(), completion)
+                                let app_message =
+                                    OutboundRouterMessage::<OM, ST>::AppMessage(message);
+                                self.tcp_build_and_send(&to, || app_message.serialize(), completion)
                             }
                         }
                     };
@@ -392,7 +393,7 @@ where
 fn udp_build<ST: CertificateSignatureRecoverable>(
     epoch: &Epoch,
     build_target: BuildTarget<ST>,
-    app_message: Bytes,
+    outbound_message: Bytes,
     mtu: u16,
     key: &ST::KeyPairType,
     redundancy: u8,
@@ -410,7 +411,7 @@ fn udp_build<ST: CertificateSignatureRecoverable>(
     let messages = udp::build_messages::<ST>(
         key,
         segment_size,
-        app_message,
+        outbound_message,
         redundancy,
         epoch.0,
         unix_ts_ms,
@@ -424,28 +425,11 @@ fn udp_build<ST: CertificateSignatureRecoverable>(
     }
 }
 
-fn try_deserialize_router_message<
-    ST: CertificateSignatureRecoverable,
-    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes> + Decodable,
->(
-    bytes: &Bytes,
-) -> Result<InboundRouterMessage<M, ST>, DeserializeError> {
-    // try to deserialize as a new message first
-    let Ok(inbound) = InboundRouterMessage::<M, ST>::try_deserialize(bytes) else {
-        // if that fails, try to deserialize as an old message instead
-        return match M::deserialize(bytes) {
-            Ok(old_message) => Ok(InboundRouterMessage::AppMessage(old_message)),
-            Err(err) => Err(DeserializeError(format!("{:?}", err))),
-        };
-    };
-    Ok(inbound)
-}
-
 impl<ST, M, OM, E, PD> Stream for RaptorCast<ST, M, OM, E, PD>
 where
     ST: CertificateSignatureRecoverable,
-    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes> + Decodable,
-    OM: Serializable<Bytes> + Encodable + Into<M> + Clone,
+    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
+    OM: Encodable + Into<M> + Clone,
     E: From<RaptorCastEvent<M::Event, ST>>,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     PeerDiscoveryDriver<PD>: Unpin,
@@ -516,7 +500,7 @@ where
                 decoded_app_messages
                     .into_iter()
                     .filter_map(|(from, decoded)| {
-                        match try_deserialize_router_message::<ST, M>(&decoded) {
+                        match InboundRouterMessage::<M, ST>::try_deserialize(&decoded) {
                             Ok(inbound) => match inbound {
                                 InboundRouterMessage::AppMessage(app_message) => {
                                     Some(app_message.event(from))
@@ -570,7 +554,7 @@ where
             };
             let app_message_bytes = message.slice(SIGNATURE_SIZE..);
             let deserialized_message =
-                match try_deserialize_router_message::<ST, M>(&app_message_bytes) {
+                match InboundRouterMessage::<M, ST>::try_deserialize(&app_message_bytes) {
                     Ok(message) => message,
                     Err(err) => {
                         warn!(?err, ?from_addr, "failed to deserialize message");

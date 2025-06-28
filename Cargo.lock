@@ -5089,7 +5089,6 @@ name = "monad-node"
 version = "0.1.0"
 dependencies = [
  "alloy-rlp",
- "bytes",
  "chrono",
  "clap 4.5.40",
  "futures-util",

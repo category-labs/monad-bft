@@ -6,7 +6,6 @@ use std::{
 };
 
 use alloy_rlp::{Decodable, Encodable};
-use bytes::Bytes;
 use chrono::Utc;
 use clap::CommandFactory;
 use futures_util::{FutureExt, StreamExt};
@@ -42,9 +41,7 @@ use monad_state_backend::StateBackendThreadClient;
 use monad_statesync::StateSync;
 use monad_triedb_cache::StateBackendCache;
 use monad_triedb_utils::TriedbReader;
-use monad_types::{
-    Deserializable, DropTimer, Epoch, NodeId, Round, SeqNum, Serializable, GENESIS_SEQ_NUM,
-};
+use monad_types::{DropTimer, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_updaters::{
     checkpoint::FileCheckpoint, config_loader::ConfigLoader, loopback::LoopbackExecutor,
     parent::ParentExecutor, timer::TokioTimer, tokio_timestamp::TokioTimestamp,
@@ -498,14 +495,12 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>>
-        + Deserializable<Bytes>
         + Decodable
         + From<OM>
         + Send
         + Sync
         + 'static,
-    <M as Deserializable<Bytes>>::ReadError: 'static,
-    OM: Serializable<Bytes> + Encodable + Clone + Send + Sync + 'static,
+    OM: Encodable + Clone + Send + Sync + 'static,
 {
     let Some(SocketAddr::V4(self_address)) = resolve_domain_v4(
         &NodeId::new(identity.pubkey()),
