@@ -23,8 +23,13 @@ where
         result,
     ));
 
-    // HttpResponse::Ok().json(&response) in monad-rpc/src/handlers/mod.rs
-    serde_json::to_string(&response).unwrap()
+    let response_raw_value = serde_json::value::to_raw_value(&response).unwrap();
+
+    // HttpResponse::Ok().json(response_raw_value) in monad-rpc/src/handlers/mod.rs
+    let ret = serde_json::to_string(&response_raw_value).unwrap();
+    assert_eq!(ret.as_str(), response_raw_value.get());
+
+    ret
 }
 
 fn bench_serialize<T, M>(g: &mut BenchmarkGroup<'_, M>, name: &'static str, value: &T)

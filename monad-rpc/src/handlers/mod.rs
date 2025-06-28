@@ -137,24 +137,22 @@ pub async fn rpc_handler(
         }
     };
 
-    // check if the response size exceeds the limit
-    // return invalid request error if it does
-    match serde_json::to_vec(&response) {
-        Ok(bytes) => {
-            if bytes.len() > app_state.max_response_size as usize {
-                info!("response exceed size limit: {body:?}");
-                return HttpResponse::Ok().json(Response::from_error(JsonRpcError::custom(
-                    "response exceed size limit".to_string(),
-                )));
-            }
-        }
+    let response_raw_value = match serde_json::value::to_raw_value(&response) {
         Err(e) => {
             debug!("response serialization error: {e}");
             return HttpResponse::Ok().json(Response::from_error(JsonRpcError::internal_error(
                 format!("serialization error: {}", e),
             )));
         }
+        Ok(response) => response,
     };
+
+    if response_raw_value.get().as_bytes().len() > app_state.max_response_size as usize {
+        info!("response exceed size limit: {body:?}");
+        return HttpResponse::Ok().json(Response::from_error(JsonRpcError::custom(
+            "response exceed size limit".to_string(),
+        )));
+    }
 
     // log the request and response based on the response content
     match &response {
@@ -170,7 +168,7 @@ pub async fn rpc_handler(
         _ => debug!(?body, ?response, ?request_id, "rpc_batch_request/response"),
     }
 
-    HttpResponse::Ok().json(&response)
+    HttpResponse::Ok().json(response_raw_value)
 }
 
 #[allow(non_snake_case)]
