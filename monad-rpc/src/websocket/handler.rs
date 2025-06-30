@@ -296,6 +296,12 @@ fn apply_logs_filter<'a>(
     if let Some(filter) = filter {
         let filtered_params: FilteredParams = FilteredParams::new(Some(filter.clone()));
 
+        if !filtered_params.filter_block_range(header.number)
+            || !filtered_params.filter_block_hash(header.hash)
+        {
+            return None;
+        }
+
         if !FilteredParams::matches_address(
             header.logs_bloom,
             &FilteredParams::address_filter(&filter.address),
