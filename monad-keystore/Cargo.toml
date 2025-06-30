@@ -30,3 +30,4 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 tiny-bip39 = { workspace = true }
 unicode-normalization = { workspace = true }
+zeroize = { workspace = true }

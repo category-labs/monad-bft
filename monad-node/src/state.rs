@@ -151,7 +151,7 @@ fn load_secp256k1_keypair(path: &Path, keystore_password: &str) -> Result<KeyPai
     if result.is_ok() {
         let mut secret = result.unwrap();
         if secret.len() == 32 {
-            return Ok(KeyPair::from_bytes(&mut secret)?);
+            return Ok(KeyPair::from_bytes(secret.as_mut())?);
         }
     }
     Err(NodeSetupError::Custom {
@@ -168,7 +168,7 @@ fn load_bls12_381_keypair(
     if result.is_ok() {
         let mut secret = result.unwrap();
         if secret.len() == 32 {
-            return Ok(BlsKeyPair::from_bytes(&mut secret)?);
+            return Ok(BlsKeyPair::from_bytes(secret.as_mut())?);
         }
     }
     Err(NodeSetupError::Custom {

@@ -5017,6 +5017,7 @@ dependencies = [
  "sha2",
  "tiny-bip39",
  "unicode-normalization",
+ "zeroize",
 ]
 
 [[package]]

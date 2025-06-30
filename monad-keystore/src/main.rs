@@ -9,8 +9,9 @@ use bip39::{Language, Mnemonic, MnemonicType, Seed};
 use clap::{Parser, Subcommand, ValueEnum};
 use monad_bls::BlsKeyPair;
 use monad_secp::KeyPair;
+use zeroize::Zeroize;
 
-use crate::keystore::Keystore;
+use crate::keystore::{Keystore, SecretKey};
 
 pub mod checksum_module;
 pub mod cipher_module;
@@ -100,7 +101,7 @@ fn main() {
             // get the HD wallet seed and the corresponding private key
             let seed = Seed::new(&mnemonic, "");
             let root_xprv = XPrv::new(seed.as_bytes()).expect("Failed to derive root key");
-            let private_key = root_xprv.private_key().to_bytes();
+            let mut private_key = root_xprv.private_key().to_bytes();
             println!(
                 "Keep your private key securely: {:?}",
                 hex::encode(private_key)
@@ -118,6 +119,7 @@ fn main() {
             } else {
                 println!("Keystore file generation failed, try again.");
             }
+            private_key.zeroize();
         }
         Commands::Recover {
             keystore_path,
@@ -151,12 +153,12 @@ fn main() {
             };
             println!(
                 "Keep your private key securely: {:?}",
-                hex::encode(&private_key)
+                hex::encode(private_key.as_ref())
             );
 
             if let Some(key_type) = key_type {
                 // print public key
-                print_public_key(&private_key, key_type);
+                print_public_key(private_key.as_ref(), key_type);
             }
         }
         Commands::Import {
@@ -169,16 +171,18 @@ fn main() {
                 Some(hex) => hex,
                 None => &private_key,
             };
-            let private_key =
+            let private_key_vec =
                 hex::decode(private_key_hex).expect("failed to parse private key as hex");
+            let private_key: SecretKey = private_key_vec.into();
 
             if let Some(key_type) = key_type {
                 // print public key
-                print_public_key(&private_key, key_type);
+                print_public_key(private_key.as_ref(), key_type);
             }
 
             // generate keystore json file
-            let result = Keystore::create_keystore_json(&private_key, &password, &keystore_path);
+            let result =
+                Keystore::create_keystore_json(private_key.as_ref(), &password, &keystore_path);
             if result.is_ok() {
                 println!("Successfully generated keystore file.");
             } else {

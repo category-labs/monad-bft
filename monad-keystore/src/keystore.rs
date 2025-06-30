@@ -7,6 +7,7 @@ use std::{
 use rand::{RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{
     checksum_module::{ChecksumError, ChecksumHash},
@@ -56,6 +57,41 @@ impl From<serde_json::Error> for KeystoreError {
 impl From<std::io::Error> for KeystoreError {
     fn from(err: std::io::Error) -> KeystoreError {
         KeystoreError::FileIOError(err)
+    }
+}
+
+#[derive(Zeroize, ZeroizeOnDrop)]
+pub struct SecretKey(Vec<u8>);
+
+impl SecretKey {
+    pub fn new(data: Vec<u8>) -> Self {
+        Self(data)
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl From<Vec<u8>> for SecretKey {
+    fn from(data: Vec<u8>) -> Self {
+        Self::new(data)
+    }
+}
+
+impl AsRef<[u8]> for SecretKey {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl AsMut<[u8]> for SecretKey {
+    fn as_mut(&mut self) -> &mut [u8] {
+        &mut self.0
     }
 }
 
@@ -112,13 +148,15 @@ impl CryptoModules {
             .filter(|&c| !c.is_control())
             .collect::<String>();
 
-        let encryption_key = self
+        let mut encryption_key = self
             .kdf
             .derive_key(password_nfkd.as_bytes())
             .map_err(KeystoreError::KDFError)?;
 
         let ciphertext = self.cipher.encrypt(private_key, &encryption_key);
         let checksum = self.hash.generate_checksum(&encryption_key, &ciphertext);
+
+        encryption_key.zeroize();
 
         Ok((ciphertext, checksum))
     }
@@ -132,13 +170,13 @@ impl CryptoModules {
         ciphertext: &[u8],
         password: &str,
         checksum: &[u8],
-    ) -> Result<Vec<u8>, KeystoreError> {
+    ) -> Result<SecretKey, KeystoreError> {
         let password_nfkd = password
             .nfkd()
             .filter(|&c| !c.is_control())
             .collect::<String>();
 
-        let decryption_key = self
+        let mut decryption_key = self
             .kdf
             .derive_key(password_nfkd.as_bytes())
             .map_err(KeystoreError::KDFError)?;
@@ -147,7 +185,10 @@ impl CryptoModules {
             .verify_checksum(&decryption_key, ciphertext, checksum)
             .map_err(KeystoreError::ChecksumError)?;
 
-        Ok(self.cipher.decrypt(ciphertext, &decryption_key))
+        let result = self.cipher.decrypt(ciphertext, &decryption_key);
+        decryption_key.zeroize();
+
+        Ok(SecretKey::new(result))
     }
 }
 
@@ -174,7 +215,7 @@ impl Keystore {
     }
 
     // Reads a keystore json file and obtain the corresponding private key
-    pub fn load_key(path: &Path, password: &str) -> Result<Vec<u8>, KeystoreError> {
+    pub fn load_key(path: &Path, password: &str) -> Result<SecretKey, KeystoreError> {
         let mut file = File::open(path)?;
         let mut contents = String::new();
         file.read_to_string(&mut contents)?;

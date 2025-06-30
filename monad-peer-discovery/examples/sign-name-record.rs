@@ -50,7 +50,7 @@ fn main() {
         address: self_address,
         seq: self_record_seq_num,
     };
-    let keypair = KeyPair::from_bytes(&mut private_key).expect("Invalid keypair");
+    let keypair = KeyPair::from_bytes(private_key.as_mut()).expect("Invalid keypair");
     let signed_name_record: MonadNameRecord<SecpSignature> =
         MonadNameRecord::new(name_record, &keypair);
 
