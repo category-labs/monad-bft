@@ -3,10 +3,12 @@ use bytes::{Bytes, BytesMut};
 use monad_compress::{util::BoundedWriter, zstd::ZstdCompression, CompressionAlgo};
 use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
 use monad_peer_discovery::PeerDiscoveryMessage;
+use thiserror::Error;
 
 use super::raptorcast_secondary::group_message::FullNodesGroupMessage;
 
 const SERIALIZE_VERSION: u32 = 1;
+const MAX_MESSAGE_SIZE: usize = u32::MAX as usize;
 
 enum CompressionVersion {
     UncompressedVersion,
@@ -40,6 +42,7 @@ impl Decodable for CompressionVersion {
 struct NetworkMessageVersion {
     pub serialize_version: u32,
     pub compression_version: CompressionVersion,
+    pub max_message: usize,
 }
 
 impl NetworkMessageVersion {
@@ -47,6 +50,7 @@ impl NetworkMessageVersion {
         Self {
             serialize_version: SERIALIZE_VERSION,
             compression_version: CompressionVersion::UncompressedVersion,
+            max_message: MAX_MESSAGE_SIZE,
         }
     }
 }
@@ -61,13 +65,24 @@ pub enum OutboundRouterMessage<OM, ST: CertificateSignatureRecoverable> {
     FullNodesGroup(FullNodesGroupMessage<ST>),
 }
 
+#[derive(Debug, Error)]
+pub enum SerializeError {
+    #[error("final message too large: {0} bytes exceeds maximum of {1} bytes")]
+    FinalMsgTooLarge(usize, usize),
+    #[error("inner rlp message too large: {0} bytes exceeds maximum of {1} bytes")]
+    InnerMsgTooLarge(usize, usize),
+}
+
 impl<OM: Encodable, ST: CertificateSignatureRecoverable> OutboundRouterMessage<OM, ST> {
-    pub fn serialize(self) -> Bytes {
+    pub fn try_serialize(self) -> Result<Bytes, SerializeError> {
         let version = NetworkMessageVersion::version();
-        self.serialize_with_version(version)
+        self.try_serialize_with_version(version)
     }
 
-    fn serialize_with_version(&self, version: NetworkMessageVersion) -> Bytes {
+    fn try_serialize_with_version(
+        &self,
+        version: NetworkMessageVersion,
+    ) -> Result<Bytes, SerializeError> {
         let mut buf = BytesMut::new();
         match self {
             Self::AppMessage(app_message) => {
@@ -80,7 +95,18 @@ impl<OM: Encodable, ST: CertificateSignatureRecoverable> OutboundRouterMessage<O
                     CompressionVersion::DefaultZSTDVersion => {
                         let mut rlp_encoded_msg = BytesMut::new();
                         app_message.encode(&mut rlp_encoded_msg);
-                        let message_len = rlp_encoded_msg.len() as u32;
+                        if rlp_encoded_msg.len() > version.max_message {
+                            return Err(SerializeError::InnerMsgTooLarge(
+                                rlp_encoded_msg.len(),
+                                version.max_message,
+                            ));
+                        };
+                        let message_len = u32::try_from(rlp_encoded_msg.len()).map_err(|_| {
+                            SerializeError::InnerMsgTooLarge(
+                                rlp_encoded_msg.len(),
+                                version.max_message,
+                            )
+                        })?;
 
                         let mut compressed_writer = BoundedWriter::new(message_len);
                         match ZstdCompression::default()
@@ -104,6 +130,7 @@ impl<OM: Encodable, ST: CertificateSignatureRecoverable> OutboundRouterMessage<O
                                 let uncompressed_version = NetworkMessageVersion {
                                     serialize_version: version.serialize_version,
                                     compression_version: CompressionVersion::UncompressedVersion,
+                                    max_message: version.max_message,
                                 };
                                 let enc: [&dyn Encodable; 3] =
                                     [&uncompressed_version, &MESSAGE_TYPE_APP, &app_message];
@@ -125,8 +152,13 @@ impl<OM: Encodable, ST: CertificateSignatureRecoverable> OutboundRouterMessage<O
                 encode_list::<_, dyn Encodable>(&enc, &mut buf);
             }
         };
-
-        buf.into()
+        if buf.len() > version.max_message {
+            return Err(SerializeError::FinalMsgTooLarge(
+                buf.len(),
+                version.max_message,
+            ));
+        }
+        Ok(buf.into())
     }
 }
 
@@ -168,6 +200,12 @@ impl<M: Decodable, ST: CertificateSignatureRecoverable> InboundRouterMessage<M, 
                     CompressionVersion::DefaultZSTDVersion => {
                         let decompressed_message_len =
                             u32::decode(&mut payload).map_err(DeserializeError::from)?;
+                        if decompressed_message_len as usize > version.max_message {
+                            return Err(DeserializeError(format!(
+                                "message size {} exceeds maximum allowed size {}",
+                                decompressed_message_len, version.max_message
+                            )));
+                        }
                         let compressed_app_message =
                             Bytes::decode(&mut payload).map_err(DeserializeError::from)?;
 
@@ -235,7 +273,7 @@ mod tests {
         let msg = TestMessage { value: 42 };
         let outbound_msg = OutboundRouterMessage::<TestMessage, SecpSignature>::AppMessage(msg);
 
-        let data = outbound_msg.serialize();
+        let data = outbound_msg.try_serialize().unwrap();
         let data_bytes = data.to_vec();
         let mut buf = BytesMut::from(data_bytes.as_slice());
         buf.extend_from_slice(b"extra_data");
@@ -267,7 +305,7 @@ mod tests {
     fn prepare_valid_data() -> Bytes {
         let msg = TestMessage { value: 42 };
         let outbound_msg = OutboundRouterMessage::<TestMessage, SecpSignature>::AppMessage(msg);
-        outbound_msg.serialize()
+        outbound_msg.try_serialize().unwrap()
     }
 
     enum Expected {
@@ -316,7 +354,7 @@ mod tests {
         let mut compressed_version = NetworkMessageVersion::version();
         compressed_version.compression_version = CompressionVersion::DefaultZSTDVersion;
 
-        let serialized = msg.serialize_with_version(compressed_version);
+        let serialized = msg.try_serialize_with_version(compressed_version).unwrap();
         let deserialized =
             InboundRouterMessage::<SliceMessage, SecpSignature>::try_deserialize(&serialized);
         assert!(deserialized.is_ok());
@@ -326,6 +364,26 @@ mod tests {
                 assert_eq!(msg.data, random_bytes.data);
             }
             _ => panic!("expected AppMessage"),
+        }
+    }
+
+    #[test]
+    fn test_message_too_large() {
+        let mut version = NetworkMessageVersion::version();
+        version.max_message = 100;
+
+        let large_data = vec![0u8; 200];
+        let large_msg = SliceMessage { data: large_data };
+        let msg = OutboundRouterMessage::<_, SecpSignature>::AppMessage(large_msg);
+
+        let result = msg.try_serialize_with_version(version);
+        assert!(result.is_err());
+
+        if let Err(SerializeError::FinalMsgTooLarge(size, max)) = result {
+            assert!(size > max);
+            assert_eq!(max, 100);
+        } else {
+            panic!("expected FinalMsgTooLarge error");
         }
     }
 }

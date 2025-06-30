@@ -31,6 +31,7 @@ itertools = { workspace = true }
 lru = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
+thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

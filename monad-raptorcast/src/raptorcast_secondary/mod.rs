@@ -29,6 +29,7 @@ use monad_executor_glue::{Message, PeerEntry, RouterCommand};
 use monad_peer_discovery::{driver::PeerDiscoveryDriver, PeerDiscoveryAlgo, PeerDiscoveryEvent};
 use monad_types::{DropTimer, Epoch, NodeId};
 use publisher::Publisher;
+use tracing::error;
 
 use super::{
     config::RaptorCastConfig,
@@ -204,7 +205,13 @@ where
         );
         let router_msg: OutboundRouterMessage<OM, ST> =
             OutboundRouterMessage::FullNodesGroup(group_msg);
-        let msg_bytes = router_msg.serialize();
+        let msg_bytes = match router_msg.try_serialize() {
+            Ok(msg) => msg,
+            Err(err) => {
+                error!(?err, "failed to serialize a message");
+                return;
+            }
+        };
         let udp_messages = Self::udp_build(
             &self.curr_epoch,
             BuildTarget::<ST>::PointToPoint(dest_node),
@@ -382,8 +389,17 @@ where
                         .unwrap()
                         .get_known_addresses();
 
-                    let outbound_message =
-                        OutboundRouterMessage::<OM, ST>::AppMessage(message).serialize();
+                    let outbound_message = match OutboundRouterMessage::<OM, ST>::AppMessage(
+                        message,
+                    )
+                    .try_serialize()
+                    {
+                        Ok(msg) => msg,
+                        Err(err) => {
+                            error!(?err, "failed to serialize a message");
+                            continue;
+                        }
+                    };
 
                     // Split outbound_message into raptorcast chunks that we can
                     // send to full nodes.

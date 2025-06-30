@@ -412,7 +412,15 @@ where
                                 _ => unreachable!(),
                             };
                             let outbound_message =
-                                OutboundRouterMessage::<OM, ST>::AppMessage(message).serialize();
+                                match OutboundRouterMessage::<OM, ST>::AppMessage(message)
+                                    .try_serialize()
+                                {
+                                    Ok(msg) => msg,
+                                    Err(err) => {
+                                        error!(?err, "failed to serialize a message");
+                                        continue;
+                                    }
+                                };
                             let rc_chunks: UnicastMsg = Self::udp_build(
                                 &epoch,
                                 build_target,
@@ -435,8 +443,15 @@ where
                                 );
                             } else {
                                 let outbound_message =
-                                    OutboundRouterMessage::<OM, ST>::AppMessage(message)
-                                        .serialize();
+                                    match OutboundRouterMessage::<OM, ST>::AppMessage(message)
+                                        .try_serialize()
+                                    {
+                                        Ok(msg) => msg,
+                                        Err(err) => {
+                                            error!(?err, "failed to serialize a message");
+                                            continue;
+                                        }
+                                    };
                                 let rc_chunks: UnicastMsg = Self::udp_build(
                                     &self.current_epoch,
                                     BuildTarget::<ST>::PointToPoint(&to),
@@ -461,7 +476,14 @@ where
                             } else {
                                 let app_message =
                                     OutboundRouterMessage::<OM, ST>::AppMessage(message);
-                                self.tcp_build_and_send(&to, || app_message.serialize(), completion)
+                                match app_message.try_serialize() {
+                                    Ok(serialized) => {
+                                        self.tcp_build_and_send(&to, || serialized, completion)
+                                    }
+                                    Err(err) => {
+                                        error!(?err, "failed to serialize a message");
+                                    }
+                                }
                             }
                         }
                     };
@@ -737,9 +759,16 @@ where
             while let Poll::Ready(Some(peer_disc_emit)) = pd_driver.poll_next_unpin(cx) {
                 match peer_disc_emit {
                     PeerDiscoveryEmit::RouterCommand { target, message } => {
-                        let router_message = OutboundRouterMessage::serialize(
-                            OutboundRouterMessage::<OM, ST>::PeerDiscoveryMessage(message),
-                        );
+                        let router_message =
+                            match OutboundRouterMessage::<OM, ST>::PeerDiscoveryMessage(message)
+                                .try_serialize()
+                            {
+                                Ok(msg) => msg,
+                                Err(err) => {
+                                    error!(?err, "failed to serialize peer discovery message");
+                                    continue;
+                                }
+                            };
                         let current_epoch = this.current_epoch;
                         let unicast_msg = Self::udp_build(
                             &current_epoch,
