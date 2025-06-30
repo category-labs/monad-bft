@@ -484,7 +484,10 @@ where
                 self.peer_info
                     .iter()
                     .filter(|(node_id, _)| is_validator(node_id))
-                    .choose_multiple(&mut self.rng, MAX_PEER_IN_RESPONSE - name_records.len())
+                    .choose_multiple(
+                        &mut self.rng,
+                        MAX_PEER_IN_RESPONSE.saturating_sub(name_records.len()),
+                    )
                     .into_iter()
                     .map(|(_, peer)| peer.name_record),
             );
