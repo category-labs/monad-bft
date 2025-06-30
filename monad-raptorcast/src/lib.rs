@@ -36,15 +36,14 @@ use monad_peer_discovery::{
 };
 use monad_types::{DropTimer, Epoch, ExecutionProtocol, NodeId, RouterTarget};
 use tracing::{debug, error, warn};
-use util::{BuildTarget, EpochValidators, FullNodes, Group, ReBroadcastGroupMap, Validator};
+use util::{BuildTarget, EpochValidators, FullNodes, Group, ReBroadcastGroupMap, Validator, Redundancy};
+use raptorcast_secondary::group_message::FullNodesGroupMessage;
 
 pub mod config;
 pub mod message;
 pub mod raptorcast_secondary;
 pub mod udp;
 pub mod util;
-
-use raptorcast_secondary::group_message::FullNodesGroupMessage;
 
 const SIGNATURE_SIZE: usize = 65;
 
@@ -56,7 +55,7 @@ where
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
 {
     signing_key: Arc<ST::KeyPairType>,
-    redundancy: u8,
+    redundancy: Redundancy,
     is_fullnode: bool,
 
     // Raptorcast group with stake information. For the send side (i.e., initiating proposals)
@@ -130,7 +129,7 @@ where
             peer_discovery_driver,
 
             signing_key: config.shared_key.clone(),
-            redundancy: config.primary_instance.raptor10_redundancy,
+            redundancy: Redundancy::from_u8(config.primary_instance.raptor10_redundancy),
 
             current_epoch: Epoch(0),
 
@@ -218,7 +217,7 @@ where
         outbound_message: Bytes,
         mtu: u16,
         signing_key: &Arc<ST::KeyPairType>,
-        redundancy: u8,
+        redundancy: Redundancy,
         known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
     ) -> UnicastMsg {
         let segment_size = segment_size_for_mtu(mtu);

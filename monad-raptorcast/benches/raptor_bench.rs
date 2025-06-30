@@ -9,7 +9,7 @@ use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_raptor::ManagedDecoder;
 use monad_raptorcast::{
     udp::{build_messages, parse_message, MAX_REDUNDANCY, SIGNATURE_CACHE_SIZE},
-    util::{BuildTarget, EpochValidators, FullNodes, Validator},
+    util::{BuildTarget, EpochValidators, FullNodes, Redundancy, Validator},
 };
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{NodeId, Stake};
@@ -56,7 +56,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 &keys[0],
                 DEFAULT_SEGMENT_SIZE, // segment_size
                 message.clone(),
-                2, // redundancy,
+                Redundancy::from_u8(2),
                 0, // epoch_no
                 0, // unix_ts_ms
                 BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
@@ -98,7 +98,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             &keys[0],
             DEFAULT_SEGMENT_SIZE, // segment_size
             message.clone(),
-            2, // redundancy,
+            Redundancy::from_u8(2),
             0, // epoch_no
             0, // unix_ts_ms
             BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
@@ -123,7 +123,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
 
                     // data_size is always greater than zero, so this division is safe
                     let num_source_symbols = message_size.div_ceil(symbol_len);
-                    let encoded_symbol_capacity = MAX_REDUNDANCY * num_source_symbols;
+                    let encoded_symbol_capacity = MAX_REDUNDANCY.scale(num_source_symbols).unwrap();
 
                     ManagedDecoder::new(num_source_symbols, encoded_symbol_capacity, symbol_len)
                         .unwrap()

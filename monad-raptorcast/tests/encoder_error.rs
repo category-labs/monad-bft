@@ -7,7 +7,7 @@ use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_raptor::SOURCE_SYMBOLS_MAX;
 use monad_raptorcast::{
     udp::build_messages,
-    util::{BuildTarget, EpochValidators, FullNodes, Validator},
+    util::{BuildTarget, EpochValidators, FullNodes, Redundancy, Validator},
 };
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{NodeId, Stake};
@@ -59,7 +59,7 @@ pub fn encoder_error() {
         &keys[0],
         DEFAULT_SEGMENT_SIZE,
         message,
-        1, // redundancy,
+        Redundancy::from_u8(1),
         0, // epoch_no
         0, // unix_ts_ms
         BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),

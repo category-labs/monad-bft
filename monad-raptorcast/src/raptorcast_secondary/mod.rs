@@ -37,7 +37,7 @@ use super::{
     config::RaptorCastConfig,
     message::OutboundRouterMessage,
     udp,
-    util::{BuildTarget, FullNodes, Group},
+    util::{BuildTarget, FullNodes, Group, Redundancy},
     RaptorCastEvent,
 };
 
@@ -66,7 +66,7 @@ where
 
     // Args for encoding outbound (validator -> full-node) messages
     signing_key: Arc<ST::KeyPairType>, // for re-signing app messages
-    raptor10_redundancy: u8,
+    raptor10_redundancy: Redundancy,
     curr_epoch: Epoch,
 
     mtu: u16,
@@ -131,7 +131,7 @@ where
         Self {
             role,
             signing_key: config.shared_key.clone(),
-            raptor10_redundancy,
+            raptor10_redundancy: Redundancy::from_u8(raptor10_redundancy),
             curr_epoch: Epoch(0),
             mtu: config.mtu,
             dataplane,
@@ -150,7 +150,7 @@ where
         outbound_message: Bytes,
         mtu: u16,
         signing_key: &Arc<ST::KeyPairType>,
-        redundancy: u8,
+        redundancy: Redundancy,
         known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
     ) -> UnicastMsg {
         let outbound_message_len = outbound_message.len();

@@ -519,6 +519,66 @@ where
     }
 }
 
+// Represented as a fixed-point number with 11 fractional bits.
+//
+// +-------------------------------------+
+// | Bit 15 ...................... Bit 0 |
+// | [ I I I I I F F F F F F F F F F F ] |
+// |   (5 bits)  (11 bits)               |
+// +-------------------------------------+
+//
+// I = Integer part (bits 15..11)
+// F = Fractional part (bits 10..0)
+// Value = Integer + Fraction / 2^11
+// Range: 0 to ~31.9995, Increments: ~0.000488
+#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash)]
+pub struct Redundancy(u16);
+
+impl Redundancy {
+    pub const ZERO: Self = Self(0);
+    pub const BITS: u32 = 16;
+    pub const FRAC_BITS: u32 = 11;
+    pub const MIN: Self = Self(u16::MIN);
+    pub const MAX: Self = Self(u16::MAX);
+    pub const DELTA: Self = Self(1);
+    pub const MAX_MULTIPLIER: usize = usize::MAX / (u16::MAX as usize);
+
+    // guaranteed to be lossless for num in [0,32).
+    pub const fn from_u8(num: u8) -> Self {
+        assert!((num as u16) <= u16::MAX >> Self::FRAC_BITS);
+        Redundancy((num as u16) << Self::FRAC_BITS)
+    }
+
+    // may round to the nearest representable number when needed
+    pub fn from_f32(num: f32) -> Option<Self> {
+        let scaled = (num * (1u32 << Self::FRAC_BITS) as f32).round() as u32;
+
+        if scaled > u16::MAX as u32 {
+            None
+        } else {
+            Some(Redundancy(scaled as u16))
+        }
+    }
+
+    pub fn to_f32(&self) -> f32 {
+        self.0 as f32 / (1u32 << Self::FRAC_BITS) as f32
+    }
+
+    pub fn scale(&self, base: usize) -> Option<usize> {
+        if base > Self::MAX_MULTIPLIER {
+            return None;
+        }
+        let scaled = (self.0 as usize).checked_mul(base)?;
+        Some(scaled.div_ceil(1 << Self::FRAC_BITS))
+    }
+}
+
+impl fmt::Debug for Redundancy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.to_f32().fmt(f)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -697,5 +757,41 @@ mod tests {
             &nid(1), // self_id
         );
         group.get_validator_id(); // should panic
+    }
+
+    #[test]
+    fn test_valid_redundancy_range() {
+        assert_eq!(Redundancy::MIN.to_f32(), 0.0);
+        assert_eq!(Redundancy::MAX.to_f32(), 31.999512);
+        assert_eq!(Redundancy::DELTA.to_f32(), 0.00048828125);
+
+        assert_eq!(Redundancy::from_f32(2.5).map(|r| r.to_f32()), Some(2.5));
+        assert_eq!(
+            Redundancy::from_f32(2.1).map(|r| r.to_f32()),
+            Some(2.1000977)
+        );
+
+        assert_eq!(Redundancy::from_u8(31).scale(100), Some(3100));
+        assert_eq!(Redundancy::from_u8(1).scale(100), Some(100));
+        assert_eq!(Redundancy::from_u8(2).scale(100), Some(200));
+        assert_eq!(Redundancy::from_f32(2.5).unwrap().scale(100), Some(250));
+
+        assert_eq!(Redundancy::from_u8(0).scale(100), Some(0));
+        assert_eq!(Redundancy::MAX.scale(100), Some(3200));
+
+        assert_eq!(
+            Redundancy::MAX.scale(Redundancy::MAX_MULTIPLIER),
+            // +1 because Redundancy::MAX is fractional, and the
+            // resultant gets rounded up
+            Some((usize::MAX >> Redundancy::FRAC_BITS) + 1)
+        );
+        assert_eq!(Redundancy::MAX.scale(Redundancy::MAX_MULTIPLIER + 1), None);
+
+        assert!((u16::MAX as usize)
+            .checked_mul(Redundancy::MAX_MULTIPLIER)
+            .is_some());
+        assert!((u16::MAX as usize)
+            .checked_mul(Redundancy::MAX_MULTIPLIER + 1)
+            .is_none());
     }
 }

@@ -22,7 +22,10 @@ use monad_types::{Epoch, NodeId};
 use rand::seq::SliceRandom;
 
 use crate::{
-    util::{compute_hash, AppMessageHash, BuildTarget, HexBytes, NodeIdHash, ReBroadcastGroupMap},
+    util::{
+        compute_hash, AppMessageHash, BuildTarget, HexBytes, NodeIdHash, ReBroadcastGroupMap,
+        Redundancy,
+    },
     SIGNATURE_SIZE,
 };
 
@@ -50,7 +53,7 @@ const MAX_NUM_PACKETS: usize = 65535;
 //
 // We pick 7 because that is the largest value that works for all values of K, as K
 // can be at most 8192, and there can be at most 65521 encoding symbol IDs.
-pub const MAX_REDUNDANCY: usize = 7;
+pub const MAX_REDUNDANCY: Redundancy = Redundancy::from_u8(7);
 
 // For a tree depth of 1, every encoded symbol is its own Merkle tree, and there will be no
 // Merkle proof section in the constructed RaptorCast packets.
@@ -261,7 +264,9 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                     // symbol_len is always greater than zero, so this division is safe
                     let num_source_symbols =
                         app_message_len.div_ceil(symbol_len).max(SOURCE_SYMBOLS_MIN);
-                    let encoded_symbol_capacity = MAX_REDUNDANCY * num_source_symbols;
+                    let encoded_symbol_capacity = MAX_REDUNDANCY
+                        .scale(num_source_symbols)
+                        .expect("num_source_symbols doesn't fit in usize");
 
                     ManagedDecoder::new(num_source_symbols, encoded_symbol_capacity, symbol_len)
                         .map(|decoder| DecoderState {
@@ -362,7 +367,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             }
         }
 
-        while self.pending_message_cache.len() > PENDING_MESSAGE_CACHE_SIZE.into() {
+        while self.pending_message_cache.len() > PENDING_MESSAGE_CACHE_SIZE.get() {
             let (key, decoder_state) = self.pending_message_cache.pop_lru().expect("nonempty");
             tracing::debug!(
                 num_source_symbols = decoder_state.decoder.num_source_symbols(),
@@ -496,7 +501,7 @@ pub fn build_messages<ST>(
     key: &ST::KeyPairType,
     segment_size: u16, // Each chunk in the returned Vec (Bytes element of the tuple) will be limited to this size
     app_message: Bytes, // This is the actual message that gets raptor-10 encoded and split into UDP chunks
-    redundancy: u8,     // 2 == send 1 extra packet for every 1 original
+    redundancy: Redundancy,
     epoch_no: u64,
     unix_ts_ms: u64,
     build_target: BuildTarget<ST>,
@@ -531,7 +536,7 @@ pub fn build_messages_with_length<ST>(
     segment_size: u16,
     app_message: Bytes,
     app_message_len: u32,
-    redundancy: u8, // 2 == send 1 extra packet for every 1 original
+    redundancy: Redundancy,
     epoch_no: u64,
     unix_ts_ms: u64,
     build_target: BuildTarget<ST>,
@@ -545,7 +550,7 @@ where
         return Vec::new();
     }
 
-    if redundancy == 0 {
+    if redundancy == Redundancy::ZERO {
         tracing::error!("build_messages_with_length() called with redundancy = 0");
         return Vec::new();
     }
@@ -588,12 +593,13 @@ where
     // datagram can only effectively transport `data_size` (~1220) bytes out of
     // a total of `app_message_len` bytes (~18% total overhead).
     let num_packets: usize = {
-        let mut num_packets: usize = (app_message_len
-            .div_ceil(u32::from(data_size))
-            .max(SOURCE_SYMBOLS_MIN.try_into().unwrap())
-            * u32::from(redundancy))
-        .try_into()
-        .expect("num_packets doesn't fit in usize");
+        let mut num_packets: usize = (app_message_len as usize)
+            .div_ceil(usize::from(data_size))
+            .max(SOURCE_SYMBOLS_MIN);
+        // amplify by redundancy factor
+        num_packets = redundancy
+            .scale(num_packets)
+            .expect("redundancy-scaled num_packets doesn't fit in usize");
 
         if let BuildTarget::Broadcast(epoch_validators) = &build_target {
             num_packets = num_packets
@@ -667,7 +673,7 @@ where
                 ?self_id,
                 unix_ts_ms,
                 app_message_len,
-                redundancy,
+                ?redundancy,
                 data_size,
                 num_packets,
                 ?app_message_hash,
@@ -708,7 +714,7 @@ where
                 ?self_id,
                 unix_ts_ms,
                 app_message_len,
-                redundancy,
+                ?redundancy,
                 data_size,
                 num_packets,
                 ?app_message_hash,
@@ -792,7 +798,7 @@ where
                 ?self_id,
                 unix_ts_ms,
                 app_message_len,
-                redundancy,
+                ?redundancy,
                 data_size,
                 num_packets,
                 ?app_message_hash,
@@ -1402,7 +1408,9 @@ mod tests {
     use super::UdpState;
     use crate::{
         udp::{build_messages, parse_message, SIGNATURE_CACHE_SIZE},
-        util::{BuildTarget, EpochValidators, FullNodes, ReBroadcastGroupMap, Validator},
+        util::{
+            BuildTarget, EpochValidators, FullNodes, ReBroadcastGroupMap, Redundancy, Validator,
+        },
     };
 
     type SignatureType = SecpSignature;
@@ -1465,7 +1473,7 @@ mod tests {
             &key,
             DEFAULT_SEGMENT_SIZE, // segment_size
             app_message.clone(),
-            2,     // redundancy,
+            Redundancy::from_u8(2),
             EPOCH, // epoch_no
             UNIX_TS_MS,
             BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
@@ -1502,7 +1510,7 @@ mod tests {
             &key,
             DEFAULT_SEGMENT_SIZE, // segment_size
             app_message,
-            2,     // redundancy,
+            Redundancy::from_u8(2),
             EPOCH, // epoch_no
             UNIX_TS_MS,
             BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
@@ -1552,7 +1560,7 @@ mod tests {
             &key,
             DEFAULT_SEGMENT_SIZE, // segment_size
             app_message,
-            2,     // redundancy,
+            Redundancy::from_u8(2),
             EPOCH, // epoch_no
             UNIX_TS_MS,
             BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
@@ -1586,7 +1594,7 @@ mod tests {
             &key,
             DEFAULT_SEGMENT_SIZE, // segment_size
             app_message,
-            2,     // redundancy,
+            Redundancy::from_u8(2),
             EPOCH, // epoch_no
             UNIX_TS_MS,
             BuildTarget::Broadcast(epoch_validators),

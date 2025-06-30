@@ -21,7 +21,7 @@ use monad_raptor::SOURCE_SYMBOLS_MAX;
 use monad_raptorcast::{
     new_defaulted_raptorcast_for_tests,
     udp::{build_messages, build_messages_with_length, MAX_REDUNDANCY},
-    util::{BuildTarget, EpochValidators, FullNodes, Validator},
+    util::{BuildTarget, EpochValidators, FullNodes, Validator, Redundancy},
     RaptorCastEvent,
 };
 use monad_secp::{KeyPair, SecpSignature};
@@ -78,7 +78,7 @@ pub fn different_symbol_sizes() {
             &tx_keypair,
             segment_size,
             message.clone(),
-            2, // redundancy,
+            Redundancy::from_u8(2),
             0, // epoch_no
             0, // unix_ts_ms
             BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
@@ -142,7 +142,7 @@ pub fn buffer_count_overflow() {
         &tx_keypair,
         DEFAULT_SEGMENT_SIZE,
         message,
-        2, // redundancy,
+        Redundancy::from_u8(2),
         0, // epoch_no
         0, // unix_ts_ms
         BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
@@ -200,7 +200,7 @@ pub fn oversized_message() {
         ((SOURCE_SYMBOLS_MAX + 1) * usize::from(DEFAULT_SEGMENT_SIZE))
             .try_into()
             .unwrap(),
-        2, // redundancy,
+        Redundancy::from_u8(2),
         0, // epoch_no
         0, // unix_ts_ms
         BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
@@ -278,9 +278,9 @@ pub fn valid_rebroadcast() {
         &tx_keypair,
         DEFAULT_SEGMENT_SIZE,
         message,
-        MAX_REDUNDANCY as u8, // redundancy,
-        0,                    // epoch_no
-        0,                    // unix_ts_ms
+        MAX_REDUNDANCY, // redundancy,
+        0,              // epoch_no
+        0,              // unix_ts_ms
         BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
         &known_addresses,
     );
