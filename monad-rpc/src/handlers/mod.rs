@@ -390,20 +390,21 @@ async fn eth_getLogs(
     app_state: &MonadRpcResources,
     params: Value,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-
-    let params = serde_json::from_value(params).invalid_params()?;
-    monad_eth_getLogs(
-        triedb_env,
-        &app_state.archive_reader,
-        app_state.logs_max_block_range,
-        params,
-        app_state.use_eth_get_logs_index,
-        app_state.dry_run_get_logs_index,
-        app_state.max_finalized_block_cache_len,
-    )
-    .await
-    .map(serialize_result)?
+    if let Some(chain_state) = app_state.chain_state.as_ref() {
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_eth_getLogs(
+            chain_state,
+            app_state.logs_max_block_range,
+            params,
+            app_state.use_eth_get_logs_index,
+            app_state.dry_run_get_logs_index,
+            app_state.max_finalized_block_cache_len,
+        )
+        .await
+        .map(serialize_result)?
+    } else {
+        Err(JsonRpcError::method_not_supported())
+    }
 }
 
 #[allow(non_snake_case)]

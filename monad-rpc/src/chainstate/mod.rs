@@ -1,15 +1,32 @@
+use std::collections::{HashMap, HashSet};
+
 use alloy_consensus::{Header as RlpHeader, Transaction as _};
-use alloy_primitives::{FixedBytes, U256};
-use alloy_rpc_types::{Block, BlockTransactions, Header, Transaction, TransactionReceipt};
+use alloy_eips::BlockNumberOrTag;
+use alloy_primitives::{Address, Bloom, FixedBytes, B256, U256};
+use alloy_rpc_types::{
+    Block, BlockTransactions, Filter, FilterBlockOption, FilterSet, FilteredParams, Header, Log,
+    Transaction, TransactionReceipt,
+};
+use futures::{stream, StreamExt, TryStreamExt};
+use itertools::Either;
 use monad_archive::{
     model::BlockDataReader,
-    prelude::{ArchiveReader, IndexReader, TxEnvelopeWithSender},
+    prelude::{ArchiveReader, Context, ContextCompat, IndexReader, TxEnvelopeWithSender},
 };
-use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, TransactionLocation, Triedb};
+use monad_triedb_utils::triedb_env::{
+    BlockHeader, BlockKey, FinalizedBlockKey, TransactionLocation, Triedb,
+};
 use monad_types::SeqNum;
-use tracing::{error, warn};
+use tracing::{debug, error, trace, warn};
 
-use crate::eth_json_types::{BlockTagOrHash, BlockTags};
+use crate::{
+    eth_json_types::{BlockTagOrHash, BlockTags, MonadLog, Quantity},
+    handlers::eth::{
+        block::block_receipts,
+        txn::{parse_tx_receipt, FilterError},
+    },
+    jsonrpc::{JsonRpcError, JsonRpcResult},
+};
 
 #[derive(Clone)]
 pub struct ChainState<T: Triedb> {
@@ -420,6 +437,395 @@ impl<T: Triedb> ChainState<T> {
 
         Err(ChainStateError::ResourceNotFound)
     }
+
+    pub async fn get_logs(
+        &self,
+        filter: Filter,
+        max_block_range: u64,
+        use_eth_get_logs_index: bool,
+        dry_run_get_logs_index: bool,
+        max_finalized_block_cache_len: u64,
+    ) -> JsonRpcResult<Vec<MonadLog>> {
+        let (from_block, to_block) = match filter.block_option {
+            FilterBlockOption::Range {
+                from_block,
+                to_block,
+            } => {
+                let into_block_tag = |block: Option<BlockNumberOrTag>| -> BlockTags {
+                    match block {
+                        None => BlockTags::default(),
+                        Some(b) => match b {
+                            BlockNumberOrTag::Number(q) => BlockTags::Number(Quantity(q)),
+                            _ => BlockTags::Latest,
+                        },
+                    }
+                };
+                let from_block_tag = into_block_tag(from_block);
+                let to_block_tag = into_block_tag(to_block);
+
+                let from_block = get_block_key_from_tag(&self.triedb_env, from_block_tag);
+                let to_block = get_block_key_from_tag(&self.triedb_env, to_block_tag);
+                let latest_block = get_block_key_from_tag(&self.triedb_env, BlockTags::Latest);
+                (
+                    from_block.seq_num().0,
+                    std::cmp::min(to_block.seq_num().0, latest_block.seq_num().0),
+                )
+            }
+            FilterBlockOption::AtBlockHash(block_hash) => {
+                let latest_block_key = get_block_key_from_tag(&self.triedb_env, BlockTags::Latest);
+
+                let block = self
+                    .triedb_env
+                    .get_block_number_by_hash(latest_block_key, block_hash.into())
+                    .await
+                    .map_err(|e| {
+                        warn!("Error getting block number by hash: {e:?}");
+                        JsonRpcError::internal_error("could not get block hash".to_string())
+                    })?;
+                let block_num = match block {
+                    Some(block_num) => block_num,
+                    None => {
+                        // retry from archive reader if block hash not available in triedb
+                        if let Some(archive_reader) = &self.archive_reader {
+                            if let Ok(block) = archive_reader
+                                .get_block_by_hash(&block_hash)
+                                .await
+                                .inspect_err(|e| {
+                                    warn!("Error getting block by hash from archive: {e:?}");
+                                })
+                            {
+                                block.header.number
+                            } else {
+                                return Ok(vec![]);
+                            }
+                        } else {
+                            return Ok(vec![]);
+                        }
+                    }
+                };
+                (block_num, block_num)
+            }
+        };
+
+        if from_block > to_block {
+            return Err(FilterError::InvalidBlockRange.into());
+        }
+        if to_block - from_block > max_block_range {
+            return Err(FilterError::RangeTooLarge.into());
+        }
+
+        let latest_block = get_block_key_from_tag(&self.triedb_env, BlockTags::Latest)
+            .seq_num()
+            .0;
+        // Only use index if no blocks are cached, otherwise use triedb + cache
+        let to_block_outside_cache = to_block + max_finalized_block_cache_len < latest_block;
+        // Determine if the request actually filters any logs.
+        // We only want to use the index if the query constrains the result set.
+        // This is the case when either:
+        //  * at least one address is provided, or
+        //  * at least one topic filter set is non‑empty (i.e. it contains a value to match on).
+        let has_filters = !filter.address.is_empty() || filter.topics.iter().any(|t| !t.is_empty());
+
+        if use_eth_get_logs_index
+            && self.archive_reader.is_some()
+            && to_block_outside_cache
+            && has_filters
+        {
+            let archive_reader = self.archive_reader.as_ref().unwrap();
+            trace!("Using eth_getLogs index");
+            match get_logs_with_index(archive_reader, from_block, to_block, &filter).await {
+                Ok(logs) => {
+                    return Ok(logs.into_iter().map(MonadLog).collect());
+                }
+                Err(e) => {
+                    debug!(
+                    "Error getting logs with index. Falling back to unindexed method. Error: {e:?}"
+                );
+                }
+            }
+        }
+
+        let filtered_params = FilteredParams::new(Some(filter.clone()));
+        let block_range = from_block..=to_block;
+
+        let filter_match =
+            |bloom: Bloom, address: &FilterSet<Address>, topics: &[FilterSet<B256>]| -> bool {
+                FilteredParams::matches_address(bloom, &FilteredParams::address_filter(address))
+                    && FilteredParams::matches_topics(bloom, &FilteredParams::topics_filter(topics))
+            };
+
+        let triedb_stream = stream::iter(block_range)
+            .map(|block_num| {
+                let block_key = self.triedb_env.get_block_key(SeqNum(block_num));
+                let filter_clone = filter.clone();
+                async move {
+                    if let Some(header) = self
+                        .triedb_env
+                        .get_block_header(block_key)
+                        .await
+                        .map_err(JsonRpcError::internal_error)?
+                    {
+                        if filter_match(
+                            header.header.logs_bloom,
+                            &filter_clone.address,
+                            &filter_clone.topics,
+                        ) {
+                            // try fetching from triedb
+                            if let Ok(transactions) =
+                                self.triedb_env.get_transactions(block_key).await
+                            {
+                                let bloom_receipts = self
+                                    .triedb_env
+                                    .get_receipts(block_key)
+                                    .await
+                                    .map_err(JsonRpcError::internal_error)?;
+                                // successfully fetched from triedb
+                                Ok(Either::Left((header, transactions, bloom_receipts)))
+                            } else {
+                                // header exists but not transactions, block is statesynced
+                                // pass block number to try for archive
+                                Ok(Either::Right(block_num))
+                            }
+                        } else {
+                            Ok(Either::Left((header, vec![], vec![])))
+                        }
+                    } else {
+                        Ok(Either::Right(block_num)) // pass block number to try for archive
+                    }
+                }
+            })
+            .buffered(10);
+
+        let data = triedb_stream
+            .map(|result| {
+                let filter_clone = filter.clone();
+                async move {
+                    match result {
+                        Ok(Either::Left(data)) => Ok(data), // successfully fetched from triedb
+                        Ok(Either::Right(block_num)) => {
+                            // fallback and try fetching from archive
+                            if let Some(archive_reader) = &self.archive_reader {
+                                let block = archive_reader
+                                    .get_block_by_number(block_num)
+                                    .await
+                                    .map_err(|e| {
+                                        warn!("Error getting block header from archiver: {e:?}");
+                                        JsonRpcError::internal_error(
+                                            "error getting block header from archiver".into(),
+                                        )
+                                    })?;
+                                if filter_match(
+                                    block.header.logs_bloom,
+                                    &filter_clone.address,
+                                    &filter_clone.topics,
+                                ) {
+                                    let bloom_receipts = archive_reader
+                                        .get_block_receipts(block_num)
+                                        .await
+                                        .map_err(|e| {
+                                            warn!(
+                                                "Error getting block receipts from archiver: {e:?}"
+                                            );
+                                            JsonRpcError::internal_error(
+                                                "error getting block receipts from archiver".into(),
+                                            )
+                                        })?;
+                                    Ok((
+                                        BlockHeader {
+                                            hash: block.header.hash_slow(),
+                                            header: block.header,
+                                        },
+                                        block.body.transactions,
+                                        bloom_receipts,
+                                    ))
+                                } else {
+                                    Ok((
+                                        BlockHeader {
+                                            hash: block.header.hash_slow(),
+                                            header: block.header,
+                                        },
+                                        vec![],
+                                        vec![],
+                                    ))
+                                }
+                            } else {
+                                Err(JsonRpcError::internal_error(
+                                    "error getting block header from triedb and archive".into(),
+                                ))
+                            }
+                        }
+                        Err(err) => Err(err),
+                    }
+                }
+            })
+            .buffered(100)
+            .collect::<Vec<_>>()
+            .await;
+
+        let data = data.into_iter().collect::<Result<Vec<_>, _>>()?;
+
+        let receipts: Vec<TransactionReceipt> = data
+            .iter()
+            .map(|(header, transactions, bloom_receipts)| {
+                block_receipts(
+                    transactions.to_vec(),
+                    bloom_receipts.to_vec(),
+                    &header.header,
+                    header.hash,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect();
+
+        let receipt_logs: Vec<Log> = receipts
+            .into_iter()
+            .flat_map(|receipt| {
+                let logs: Vec<Log> = receipt
+                    .inner
+                    .logs()
+                    .iter()
+                    .filter(|log: &&Log| {
+                        !(filtered_params.filter.is_some()
+                            && (!filtered_params.filter_address(&log.address())
+                                || !filtered_params.filter_topics(log.topics())))
+                    })
+                    .cloned()
+                    .collect();
+                logs
+            })
+            .collect();
+
+        if dry_run_get_logs_index {
+            let non_indexed = HashSet::from_iter(receipt_logs.iter().cloned());
+            if let Some(archive_reader) = self.archive_reader.clone() {
+                tokio::spawn(async move {
+                    if let Err(e) = check_dry_run_get_logs_index(
+                        archive_reader,
+                        from_block,
+                        to_block,
+                        filter,
+                        non_indexed,
+                    )
+                    .await
+                    {
+                        warn!("Error checking dry run get logs index: {e:?}");
+                    }
+                });
+            }
+        }
+
+        Ok(receipt_logs.into_iter().map(MonadLog).collect())
+    }
+}
+
+async fn check_dry_run_get_logs_index(
+    archive_reader: ArchiveReader,
+    from_block: u64,
+    to_block: u64,
+    filter: Filter,
+    non_indexed: HashSet<Log>,
+) -> monad_archive::prelude::Result<()> {
+    let indexed = get_logs_with_index(&archive_reader, from_block, to_block, &filter)
+        .await
+        .map(HashSet::from_iter)
+        .wrap_err("Error getting logs with index")?;
+
+    let group_by = |mut map: HashMap<_, _>, log: &Log| {
+        let Some(block_number) = log.block_number else {
+            return map;
+        };
+        let Some(transaction_hash) = log.transaction_hash else {
+            return map;
+        };
+        map.entry(block_number)
+            .or_insert_with(|| Vec::with_capacity(2))
+            .push(transaction_hash.to_string());
+        map
+    };
+
+    let non_indexed_only = non_indexed
+        .difference(&indexed)
+        .fold(HashMap::new(), group_by);
+    let indexed_only = indexed
+        .difference(&non_indexed)
+        .fold(HashMap::new(), group_by);
+
+    if non_indexed_only.is_empty() && indexed_only.is_empty() {
+        debug!("Indexed and non-indexed logs are identical");
+    } else {
+        let non_indexed_only_json = serde_json::to_string(&non_indexed_only)?;
+        let indexed_only_json = serde_json::to_string(&indexed_only)?;
+        warn!(
+            non_indexed_only = non_indexed_only_json,
+            indexed_only = indexed_only_json,
+            "Index and non-index logs are not identical"
+        );
+    }
+
+    Ok(())
+}
+
+async fn get_logs_with_index(
+    reader: &ArchiveReader,
+    from_block: u64,
+    to_block: u64,
+    filter: &Filter,
+) -> monad_archive::prelude::Result<Vec<Log>> {
+    let log_index = reader
+        .log_index
+        .as_ref()
+        .wrap_err("Log index reader not present")?;
+
+    let latest_indexed_tx = reader
+        .get_latest_indexed()
+        .await?
+        .wrap_err("Latest indexed tx not found")?;
+
+    if latest_indexed_tx < to_block {
+        monad_archive::prelude::bail!(
+            "Latest indexed tx is less than to_block. {}, {}",
+            latest_indexed_tx,
+            to_block
+        );
+    }
+
+    let filtered_params = FilteredParams::new(Some(filter.clone()));
+
+    // Note: we an limit returned (and queried!) data by using `query_logs_index_streamed`
+    // and take_while we're under the response size limit
+    let potential_matches = log_index
+        .query_logs(from_block, to_block, filter.address.iter(), &filter.topics)
+        .await?;
+    let potential_matches = potential_matches.try_collect::<Vec<_>>().await?;
+
+    Ok(potential_matches
+        .into_iter()
+        .flat_map(|tx_data| {
+            let receipt = parse_tx_receipt(
+                tx_data.header_subset.base_fee_per_gas,
+                Some(tx_data.header_subset.block_timestamp),
+                tx_data.header_subset.block_hash,
+                tx_data.tx,
+                tx_data.header_subset.gas_used,
+                tx_data.receipt,
+                tx_data.header_subset.block_number,
+                tx_data.header_subset.tx_index,
+            );
+            receipt
+                .inner
+                .logs()
+                .iter()
+                .filter(|log: &&Log| {
+                    !(filtered_params.filter.is_some()
+                        && (!filtered_params.filter_address(&log.address())
+                            || !filtered_params.filter_topics(log.topics())))
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .collect())
 }
 
 fn parse_block_content(
