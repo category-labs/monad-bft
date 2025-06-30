@@ -16,6 +16,7 @@
 use std::{
     collections::HashMap,
     pin::pin,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -29,7 +30,7 @@ use monad_exec_events::BlockCommitState;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::{value::RawValue, Value};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Semaphore, TryAcquireError};
 use tracing::{debug, error, warn};
 
 use crate::{
@@ -53,12 +54,32 @@ const CLIENT_TIMEOUT_SECS: u64 = 60;
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, Deserialize, Serialize)]
 pub struct SubscriptionId(pub FixedData<16>);
 
+#[derive(Clone)]
+pub struct ConnectionLimit(Arc<Semaphore>);
+
+impl ConnectionLimit {
+    pub fn new(limit: usize) -> Self {
+        Self(Arc::new(Semaphore::new(limit)))
+    }
+}
+
 pub async fn ws_handler(
     req: HttpRequest,
     stream: web::Payload,
     app_state: web::Data<MonadRpcResources>,
     event_server_client: web::Data<EventServerClient>,
+    conn_limit: web::Data<ConnectionLimit>,
 ) -> Result<HttpResponse, actix_web::Error> {
+    let permit = match conn_limit.0.clone().try_acquire_owned() {
+        Ok(p) => p,
+        Err(TryAcquireError::NoPermits) => {
+            return Err(actix_web::error::ErrorServiceUnavailable(
+                "WebSocket connection limit reached",
+            ))
+        }
+        Err(e) => return Err(actix_web::error::ErrorInternalServerError(e)),
+    };
+
     let rx = event_server_client.subscribe().map_err(|err| {
         match err {
             EventServerClientError::ServerCrashed => {
@@ -104,6 +125,7 @@ pub async fn ws_handler(
                 metrics.record_websocket_topic(-(subs.len() as i64));
             });
         }
+        drop(permit);
     });
 
     Ok(res)
@@ -585,6 +607,7 @@ mod tests {
 
     use actix_http::{ws, ws::Frame};
     use actix_web::{web, App};
+    use awc::error::WsClientError;
     use bytes::Bytes;
     use futures_util::{SinkExt as _, StreamExt as _};
     use monad_event_ring::SnapshotEventRing;
@@ -599,6 +622,7 @@ mod tests {
         handlers::{eth::call::EthCallStatsTracker, resources::MonadRpcResources},
         hex,
         txpool::EthTxPoolBridgeClient,
+        websocket::handler::ConnectionLimit,
     };
 
     fn create_test_server() -> actix_test::TestServer {
@@ -638,12 +662,14 @@ mod tests {
             metrics: None,
             rpc_comparator: None,
         };
+        let conn_limit = ConnectionLimit::new(100);
 
         actix_test::start(move || {
             App::new()
                 .app_data(web::JsonConfig::default().limit(8192))
                 .app_data(web::Data::new(ws_server_handle.clone()))
                 .app_data(web::Data::new(app_state.clone()))
+                .app_data(web::Data::new(conn_limit.clone()))
                 .service(web::resource("/ws/").route(web::get().to(ws_handler)))
         })
     }
@@ -811,5 +837,40 @@ mod tests {
             update1.is_some(),
             "Connection 1 did not receive block update"
         );
+    }
+
+    #[actix_rt::test]
+    async fn websocket_connection_limit() {
+        let server = create_test_server();
+
+        let mut live = Vec::new();
+
+        for n in 0..=101 {
+            let url = format!("{}ws/", server.url(""));
+            let res = actix_test::Client::new().ws(url).connect().await;
+
+            match (n, res) {
+                // first 100 must succeed
+                (0..=99, Ok((_resp, framed))) => live.push(framed),
+
+                // 101-st (n == 100) must fail with 503
+                (100, Err(WsClientError::InvalidResponseStatus(code))) => {
+                    assert_eq!(code, actix_web::http::StatusCode::SERVICE_UNAVAILABLE);
+
+                    for mut ws in live.drain(0..100) {
+                        // graceful close; ignore errors
+                        let _ = ws
+                            .send(ws::Message::Close(Some(ws::CloseReason {
+                                code: ws::CloseCode::Normal,
+                                description: None,
+                            })))
+                            .await;
+                    }
+                }
+                (101, Ok((_resp, framed))) => live.push(framed),
+                (i, Ok(_)) => panic!("conn {} unexpectedly succeeded", i),
+                (i, Err(e)) => panic!("conn {} failed: {:?}", i, e),
+            }
+        }
     }
 }

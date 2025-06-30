@@ -52,6 +52,10 @@ pub struct Cli {
     #[arg(long, default_value_t = 2)]
     pub ws_worker_threads: usize,
 
+    /// Set the connection limit for WebSocket server
+    #[arg(long, default_value_t = 500)]
+    pub ws_conn_limit: usize,
+
     /// Set the max number of requests in a batch request
     #[arg(long, default_value_t = 5000)]
     pub batch_request_limit: u16,

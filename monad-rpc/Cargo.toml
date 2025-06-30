@@ -87,6 +87,7 @@ alloy-rpc-types = { workspace = true, features = ["arbitrary", "k256"] }
 alloy-signer = { workspace = true }
 alloy-signer-local = { workspace = true }
 arbitrary = { workspace = true }
+awc = { workspace = true }
 criterion = { workspace = true }
 reqwest = { workspace = true }
 test-case = { workspace = true }

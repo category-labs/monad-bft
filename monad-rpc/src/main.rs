@@ -353,9 +353,12 @@ async fn main() -> std::io::Result<()> {
     // Configure the websocket server if enabled
     let ws_server_handle = if let Some(events_client) = events_client {
         let ws_app_data = app_state.clone();
+        let conn_limit = websocket::handler::ConnectionLimit::new(args.ws_conn_limit);
+
         args.ws_enabled.then(|| {
             HttpServer::new(move || {
                 App::new()
+                    .app_data(web::Data::new(conn_limit.clone()))
                     .app_data(web::Data::new(events_client.clone()))
                     .app_data(web::Data::new(ws_app_data.clone()))
                     .service(
