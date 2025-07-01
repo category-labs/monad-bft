@@ -2,13 +2,13 @@ use std::collections::{HashMap, HashSet};
 
 use alloy_consensus::{Header as RlpHeader, Transaction as _};
 use alloy_eips::BlockNumberOrTag;
-use alloy_primitives::{Address, Bloom, FixedBytes, B256, U256};
+use alloy_primitives::{Bloom, FixedBytes, U256};
 use alloy_rpc_types::{
-    Block, BlockTransactions, Filter, FilterBlockOption, FilterSet, FilteredParams, Header, Log,
-    Transaction, TransactionReceipt,
+    Block, BlockTransactions, Filter, FilterBlockOption, FilteredParams, Header, Log, Transaction,
+    TransactionReceipt,
 };
 use futures::{stream, StreamExt, TryStreamExt};
-use itertools::Either;
+use itertools::{Either, Itertools};
 use monad_archive::{
     model::BlockDataReader,
     prelude::{ArchiveReader, Context, ContextCompat, IndexReader, TxEnvelopeWithSender},
@@ -446,6 +446,8 @@ impl<T: Triedb> ChainState<T> {
         dry_run_get_logs_index: bool,
         max_finalized_block_cache_len: u64,
     ) -> JsonRpcResult<Vec<MonadLog>> {
+        let latest_block_number = self.get_latest_block_number();
+
         let (from_block, to_block) = match filter.block_option {
             FilterBlockOption::Range {
                 from_block,
@@ -465,10 +467,10 @@ impl<T: Triedb> ChainState<T> {
 
                 let from_block = get_block_key_from_tag(&self.triedb_env, from_block_tag);
                 let to_block = get_block_key_from_tag(&self.triedb_env, to_block_tag);
-                let latest_block = get_block_key_from_tag(&self.triedb_env, BlockTags::Latest);
+
                 (
                     from_block.seq_num().0,
-                    std::cmp::min(to_block.seq_num().0, latest_block.seq_num().0),
+                    std::cmp::min(to_block.seq_num().0, latest_block_number),
                 )
             }
             FilterBlockOption::AtBlockHash(block_hash) => {
@@ -482,6 +484,7 @@ impl<T: Triedb> ChainState<T> {
                         warn!("Error getting block number by hash: {e:?}");
                         JsonRpcError::internal_error("could not get block hash".to_string())
                     })?;
+
                 let block_num = match block {
                     Some(block_num) => block_num,
                     None => {
@@ -503,6 +506,7 @@ impl<T: Triedb> ChainState<T> {
                         }
                     }
                 };
+
                 (block_num, block_num)
             }
         };
@@ -514,11 +518,8 @@ impl<T: Triedb> ChainState<T> {
             return Err(FilterError::RangeTooLarge.into());
         }
 
-        let latest_block = get_block_key_from_tag(&self.triedb_env, BlockTags::Latest)
-            .seq_num()
-            .0;
         // Only use index if no blocks are cached, otherwise use triedb + cache
-        let to_block_outside_cache = to_block + max_finalized_block_cache_len < latest_block;
+        let to_block_outside_cache = to_block + max_finalized_block_cache_len < latest_block_number;
         // Determine if the request actually filters any logs.
         // We only want to use the index if the query constrains the result set.
         // This is the case when either:
@@ -545,19 +546,22 @@ impl<T: Triedb> ChainState<T> {
             }
         }
 
-        let filtered_params = FilteredParams::new(Some(filter.clone()));
-        let block_range = from_block..=to_block;
+        let address_filter = FilteredParams::address_filter(&filter.address);
+        let topics_filter = FilteredParams::topics_filter(&filter.topics);
 
-        let filter_match =
-            |bloom: Bloom, address: &FilterSet<Address>, topics: &[FilterSet<B256>]| -> bool {
-                FilteredParams::matches_address(bloom, &FilteredParams::address_filter(address))
-                    && FilteredParams::matches_topics(bloom, &FilteredParams::topics_filter(topics))
-            };
+        let filter_match = |bloom: Bloom| -> bool {
+            FilteredParams::matches_address(bloom, &address_filter)
+                && FilteredParams::matches_topics(bloom, &topics_filter)
+        };
+
+        let filtered_params = FilteredParams::new(Some(filter.clone()));
+
+        let block_range = from_block..=to_block;
 
         let triedb_stream = stream::iter(block_range)
             .map(|block_num| {
                 let block_key = self.triedb_env.get_block_key(SeqNum(block_num));
-                let filter_clone = filter.clone();
+
                 async move {
                     if let Some(header) = self
                         .triedb_env
@@ -565,11 +569,7 @@ impl<T: Triedb> ChainState<T> {
                         .await
                         .map_err(JsonRpcError::internal_error)?
                     {
-                        if filter_match(
-                            header.header.logs_bloom,
-                            &filter_clone.address,
-                            &filter_clone.topics,
-                        ) {
+                        if filter_match(header.header.logs_bloom) {
                             // try fetching from triedb
                             if let Ok(transactions) =
                                 self.triedb_env.get_transactions(block_key).await
@@ -598,7 +598,6 @@ impl<T: Triedb> ChainState<T> {
 
         let data = triedb_stream
             .map(|result| {
-                let filter_clone = filter.clone();
                 async move {
                     match result {
                         Ok(Either::Left(data)) => Ok(data), // successfully fetched from triedb
@@ -614,11 +613,7 @@ impl<T: Triedb> ChainState<T> {
                                             "error getting block header from archiver".into(),
                                         )
                                     })?;
-                                if filter_match(
-                                    block.header.logs_bloom,
-                                    &filter_clone.address,
-                                    &filter_clone.topics,
-                                ) {
+                                if filter_match(block.header.logs_bloom) {
                                     let bloom_receipts = archive_reader
                                         .get_block_receipts(block_num)
                                         .await
@@ -664,7 +659,7 @@ impl<T: Triedb> ChainState<T> {
 
         let data = data.into_iter().collect::<Result<Vec<_>, _>>()?;
 
-        let receipts: Vec<TransactionReceipt> = data
+        let receipt_logs = data
             .iter()
             .map(|(header, transactions, bloom_receipts)| {
                 block_receipts(
@@ -674,31 +669,32 @@ impl<T: Triedb> ChainState<T> {
                     header.hash,
                 )
             })
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .flatten()
-            .collect();
+            .flatten_ok()
+            .map_ok(|receipt| {
+                let logs = match receipt.inner {
+                    alloy_consensus::ReceiptEnvelope::Legacy(receipt_with_bloom)
+                    | alloy_consensus::ReceiptEnvelope::Eip2930(receipt_with_bloom)
+                    | alloy_consensus::ReceiptEnvelope::Eip1559(receipt_with_bloom)
+                    | alloy_consensus::ReceiptEnvelope::Eip4844(receipt_with_bloom)
+                    | alloy_consensus::ReceiptEnvelope::Eip7702(receipt_with_bloom) => {
+                        receipt_with_bloom.receipt.logs
+                    }
+                    _ => unreachable!(),
+                };
 
-        let receipt_logs: Vec<Log> = receipts
-            .into_iter()
-            .flat_map(|receipt| {
-                let logs: Vec<Log> = receipt
-                    .inner
-                    .logs()
-                    .iter()
-                    .filter(|log: &&Log| {
-                        !(filtered_params.filter.is_some()
-                            && (!filtered_params.filter_address(&log.address())
-                                || !filtered_params.filter_topics(log.topics())))
-                    })
-                    .cloned()
-                    .collect();
-                logs
+                logs.into_iter().filter(|log| {
+                    !(filtered_params.filter.is_some()
+                        && (!filtered_params.filter_address(&log.address())
+                            || !filtered_params.filter_topics(log.topics())))
+                })
             })
-            .collect();
+            .flatten_ok()
+            .map_ok(MonadLog)
+            .collect::<Result<Vec<_>, _>>()?;
 
         if dry_run_get_logs_index {
-            let non_indexed = HashSet::from_iter(receipt_logs.iter().cloned());
+            let non_indexed =
+                HashSet::from_iter(receipt_logs.iter().map(|monad_log| &monad_log.0).cloned());
             if let Some(archive_reader) = self.archive_reader.clone() {
                 tokio::spawn(async move {
                     if let Err(e) = check_dry_run_get_logs_index(
@@ -716,7 +712,7 @@ impl<T: Triedb> ChainState<T> {
             }
         }
 
-        Ok(receipt_logs.into_iter().map(MonadLog).collect())
+        Ok(receipt_logs)
     }
 }
 
