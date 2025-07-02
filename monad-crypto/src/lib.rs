@@ -6,6 +6,7 @@ pub mod hasher;
 
 pub mod certificate_signature;
 
+#[derive(Clone)]
 pub struct NopKeyPair {
     pubkey: NopPubKey,
 }
