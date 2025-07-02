@@ -45,8 +45,8 @@ ping_period = 30
 refresh_period = 120
 request_timeout = 5
 prune_threshold = 5
-min_active_connections = 0
-max_active_connections = 200
+min_num_peers = 0
+max_num_peers = 200
 
 [fullnode_dedicated]
 identities = []

@@ -17,6 +17,6 @@ pub struct PeerDiscoveryConfig<ST: CertificateSignatureRecoverable> {
     pub refresh_period: u64,
     pub request_timeout: u64,
     pub prune_threshold: u32,
-    pub min_active_connections: usize,
-    pub max_active_connections: usize,
+    pub min_num_peers: usize,
+    pub max_num_peers: usize,
 }

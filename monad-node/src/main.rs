@@ -34,7 +34,7 @@ use monad_node_config::{
     PeerDiscoveryConfig, SignatureCollectionType, SignatureType,
 };
 use monad_peer_discovery::{
-    discovery::{PeerDiscovery, PeerDiscoveryBuilder, PeerInfo},
+    discovery::{PeerDiscovery, PeerDiscoveryBuilder},
     MonadNameRecord, NameRecord,
 };
 use monad_pprof::start_pprof_server;
@@ -564,7 +564,7 @@ where
     );
 
     // initial set of peers
-    let peer_info = bootstrap_nodes
+    let routing_info = bootstrap_nodes
         .peers
         .iter()
         .filter_map(|peer| {
@@ -593,13 +593,9 @@ where
             {
                 Ok(_) => Some((
                     node_id,
-                    PeerInfo {
-                        last_ping: None,
-                        unresponsive_pings: 0,
-                        name_record: MonadNameRecord {
-                            name_record,
-                            signature: peer.name_record_sig,
-                        },
+                    MonadNameRecord {
+                        name_record,
+                        signature: peer.name_record_sig,
                     },
                 )),
                 Err(_) => {
@@ -689,13 +685,13 @@ where
         current_epoch,
         epoch_validators,
         pinned_full_nodes,
-        peer_info,
+        routing_info,
         ping_period: Duration::from_secs(peer_discovery_config.ping_period),
         refresh_period: Duration::from_secs(peer_discovery_config.refresh_period),
         request_timeout: Duration::from_secs(peer_discovery_config.request_timeout),
         prune_threshold: peer_discovery_config.prune_threshold,
-        min_active_connections: peer_discovery_config.min_active_connections,
-        max_active_connections: peer_discovery_config.max_active_connections,
+        min_num_peers: peer_discovery_config.min_num_peers,
+        max_num_peers: peer_discovery_config.max_num_peers,
         rng: ChaCha8Rng::from_entropy(),
     };
 

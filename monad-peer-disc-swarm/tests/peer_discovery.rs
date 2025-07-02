@@ -18,14 +18,14 @@ use monad_peer_disc_swarm::{
     builder::PeerDiscSwarmBuilder,
 };
 use monad_peer_discovery::{
-    MonadNameRecord, NameRecord, PeerDiscoveryAlgo, PeerDiscoveryMessage,
+    MonadNameRecord, NameRecord, PeerDiscoveryAlgo, PeerDiscoveryEvent, PeerDiscoveryMessage,
     discovery::{
         GAUGE_PEER_DISC_DROP_LOOKUP_RESPONSE, GAUGE_PEER_DISC_DROP_PONG,
         GAUGE_PEER_DISC_LOOKUP_TIMEOUT, GAUGE_PEER_DISC_PING_TIMEOUT,
         GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST, GAUGE_PEER_DISC_RECV_PING, GAUGE_PEER_DISC_RECV_PONG,
         GAUGE_PEER_DISC_RECV_TARGETED_LOOKUP_REQUEST, GAUGE_PEER_DISC_REFRESH,
         GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST, GAUGE_PEER_DISC_SEND_PING, GAUGE_PEER_DISC_SEND_PONG,
-        PeerDiscovery, PeerDiscoveryBuilder, PeerInfo,
+        PeerDiscovery, PeerDiscoveryBuilder,
     },
 };
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
@@ -60,11 +60,11 @@ type PubKeyType = NopPubKey;
 type SignatureType = NopSignature;
 type KeyPairType = <SignatureType as CertificateSignature>::KeyPairType;
 
-/// TestConfig can be used to configure different peer_info and pinned_full_nodes for each node
-/// E.g. a peer_info of {0: {1,2}, 1: {0}, 2: {0,1}} means that
-/// node0 has node1 and node2 in its peer_info
-/// node1 has node0 in its peer_info
-/// node2 has node0 and node1 in its peer_info
+/// TestConfig can be used to configure different routing_info and pinned_full_nodes for each node
+/// E.g. a routing_info of {0: {1,2}, 1: {0}, 2: {0,1}} means that
+/// node0 has node1 and node2 in its routing_info
+/// node1 has node0 in its routing_info
+/// node2 has node0 and node1 in its routing_info
 /// TODO: in the future, we can support different configs like different ping_period for different nodes too
 #[derive(Clone)]
 struct TestConfig {
@@ -72,13 +72,13 @@ struct TestConfig {
     pub current_epoch: Epoch,
     pub epoch_validators: BTreeMap<Epoch, BTreeSet<usize>>,
     pub pinned_full_nodes: BTreeMap<usize, BTreeSet<usize>>,
-    pub peer_info: BTreeMap<usize, BTreeSet<usize>>,
+    pub routing_info: BTreeMap<usize, BTreeSet<usize>>,
     pub ping_period: Duration,
     pub refresh_period: Duration,
     pub request_timeout: Duration,
     pub prune_threshold: u32,
-    pub min_active_connections: usize,
-    pub max_active_connections: usize,
+    pub min_num_peers: usize,
+    pub max_num_peers: usize,
     pub outbound_pipeline: Vec<GenericTransformer<PubKeyType, PeerDiscoveryMessage<SignatureType>>>,
 }
 
@@ -90,13 +90,13 @@ impl Default for TestConfig {
             current_epoch: Epoch(1),
             epoch_validators: BTreeMap::from([(Epoch(1), BTreeSet::from([0, 1]))]),
             pinned_full_nodes: BTreeMap::default(),
-            peer_info: BTreeMap::from([(0, BTreeSet::from([1])), (1, BTreeSet::from([0]))]),
+            routing_info: BTreeMap::from([(0, BTreeSet::from([1])), (1, BTreeSet::from([0]))]),
             ping_period: Duration::from_secs(5),
             refresh_period: Duration::from_secs(30),
             request_timeout: Duration::from_secs(1),
             prune_threshold: 3,
-            min_active_connections: 5,
-            max_active_connections: 50,
+            min_num_peers: 5,
+            max_num_peers: 50,
             outbound_pipeline: vec![],
         }
     }
@@ -129,15 +129,9 @@ fn setup_keys_and_swarm_builder(
     PeerDiscSwarmBuilder<PeerDiscSwarm, PeerDiscoveryBuilder<SignatureType>>,
 ) {
     let keys = create_keys::<SignatureType>(config.num_nodes);
-    let all_peers: BTreeMap<NodeId<PubKeyType>, PeerInfo<SignatureType>> = keys
+    let all_peers: BTreeMap<NodeId<PubKeyType>, MonadNameRecord<SignatureType>> = keys
         .iter()
-        .map(|k| {
-            (NodeId::new(k.pubkey()), PeerInfo {
-                last_ping: None,
-                unresponsive_pings: 0,
-                name_record: generate_name_record(k),
-            })
-        })
+        .map(|k| (NodeId::new(k.pubkey()), generate_name_record(k)))
         .collect();
     let epoch_validators = config
         .epoch_validators
@@ -159,18 +153,17 @@ fn setup_keys_and_swarm_builder(
             .enumerate()
             .map(|(i, key)| {
                 let self_id = NodeId::new(key.pubkey());
-                let peer_info = config
-                    .peer_info
+                let routing_info = config
+                    .routing_info
                     .get(&i)
                     .unwrap_or(&BTreeSet::new())
                     .iter()
                     .map(|&id| {
                         let peer_key = &keys[id];
-                        (NodeId::new(peer_key.pubkey()), PeerInfo {
-                            last_ping: None,
-                            unresponsive_pings: 0,
-                            name_record: generate_name_record(peer_key),
-                        })
+                        (
+                            NodeId::new(peer_key.pubkey()),
+                            generate_name_record(peer_key),
+                        )
                     })
                     .collect::<BTreeMap<_, _>>();
                 let pinned_full_nodes = config
@@ -190,13 +183,13 @@ fn setup_keys_and_swarm_builder(
                         current_epoch: config.current_epoch,
                         epoch_validators: epoch_validators.clone(),
                         pinned_full_nodes,
-                        peer_info,
+                        routing_info,
                         ping_period: config.ping_period,
                         refresh_period: config.refresh_period,
                         request_timeout: config.request_timeout,
                         prune_threshold: config.prune_threshold,
-                        min_active_connections: config.min_active_connections,
-                        max_active_connections: config.max_active_connections,
+                        min_num_peers: config.min_num_peers,
+                        max_num_peers: config.max_num_peers,
                         rng: ChaCha8Rng::seed_from_u64(123456), // fixed seed for reproducibility
                     },
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
@@ -242,7 +235,7 @@ fn test_new_node_joining() {
     // 3 nodes: Node0, Node1, Node2
     // two bootstrap nodes where addresses are known to each other
     // one new joining node where it knows the bootstrap nodes addresses but not vice versa
-    // initialize peer info of the three nodes
+    // initialize routing info of the three nodes
     // Node0 name record: Node1
     // Node1 name record: Node0
     // Node2 name record: Node0, Node1
@@ -250,7 +243,7 @@ fn test_new_node_joining() {
     let config = TestConfig {
         num_nodes: 3,
         epoch_validators: BTreeMap::from([(Epoch(1), BTreeSet::from([0, 1, 2]))]),
-        peer_info: BTreeMap::from([
+        routing_info: BTreeMap::from([
             (0, BTreeSet::from([1])),
             (1, BTreeSet::from([0])),
             (2, BTreeSet::from([0, 1])),
@@ -265,14 +258,14 @@ fn test_new_node_joining() {
     let mut nodes = swarm_builder.build();
     while nodes.step_until(Duration::from_secs(0)) {}
 
-    // Node0, Node1 and Node2 should now have peer_info of each other
+    // Node0, Node1 and Node2 should now have routing_info of each other
     for state in nodes.states().values() {
         let state = state.peer_disc_driver.get_peer_disc_state();
         for node_id in node_ids.iter() {
             if node_id == &state.self_id {
                 continue;
             }
-            assert!(state.peer_info.contains_key(node_id));
+            assert!(state.routing_info.contains_key(node_id));
         }
     }
 }
@@ -291,14 +284,14 @@ fn test_update_name_record() {
 
     while nodes.step_until(Duration::from_secs(0)) {}
 
-    // Node0, Node1 should have peer info of each other
+    // Node0, Node1 should have routing info of each other
     for state in nodes.states().values() {
         let state = state.peer_disc_driver.get_peer_disc_state();
         for node_id in node_ids.iter() {
             if node_id == &state.self_id {
                 continue;
             }
-            assert!(state.peer_info.contains_key(node_id));
+            assert!(state.routing_info.contains_key(node_id));
         }
     }
 
@@ -334,17 +327,13 @@ fn test_update_name_record() {
             current_epoch: config.current_epoch,
             epoch_validators: BTreeMap::new(),
             pinned_full_nodes: BTreeSet::new(),
-            peer_info: BTreeMap::from([(node_1, PeerInfo {
-                last_ping: None,
-                unresponsive_pings: 0,
-                name_record: generate_name_record(node_1_key),
-            })]),
+            routing_info: BTreeMap::from([(node_1, generate_name_record(node_1_key))]),
             ping_period: config.ping_period,
             refresh_period: config.refresh_period,
             request_timeout: config.request_timeout,
             prune_threshold: config.prune_threshold,
-            min_active_connections: config.min_active_connections,
-            max_active_connections: config.max_active_connections,
+            min_num_peers: config.min_num_peers,
+            max_num_peers: config.max_num_peers,
             rng: ChaCha8Rng::seed_from_u64(123456),
         },
         router_scheduler: NoSerRouterConfig::new(node_ids.iter().cloned().collect()).build(),
@@ -356,21 +345,20 @@ fn test_update_name_record() {
 
     while nodes.step_until(Duration::from_secs(0)) {}
 
-    // Node1 should have the peer info of Node0 updated
+    // Node1 should have the routing info of Node0 updated
     let node_1_state = nodes
         .states()
         .get(&node_1)
         .expect("Node1 state should exist");
-    let peer_info = &node_1_state
+    let routing_info = &node_1_state
         .peer_disc_driver
         .get_peer_disc_state()
-        .peer_info;
-    let node_0_record = peer_info
+        .routing_info;
+    let node_0_record = routing_info
         .get(&node_0)
-        .expect("Node1 should have node0 name record")
-        .name_record;
+        .expect("Node1 should have node0 name record");
 
-    assert_eq!(node_0_record, new_name_record);
+    assert_eq!(*node_0_record, new_name_record);
 }
 
 #[traced_test]
@@ -389,8 +377,10 @@ fn test_prune_nodes() {
     // refresh is called at t=0 and t=10
     while nodes.step_until(Duration::from_secs(10)) {}
     for state in nodes.states().values() {
-        let metrics = state.peer_disc_driver.get_peer_disc_state().metrics();
-        assert!(metrics[GAUGE_PEER_DISC_REFRESH] == 2);
+        let state = state.peer_disc_driver.get_peer_disc_state();
+        let metrics = state.metrics();
+        assert_eq!(metrics[GAUGE_PEER_DISC_REFRESH], 2);
+        assert!(!state.connection_info.is_empty());
     }
 
     // a node goes offline
@@ -398,14 +388,24 @@ fn test_prune_nodes() {
     let offline_node = NodeId::new(offline_key.pubkey());
     nodes.remove_state(&offline_node);
 
-    // the offline node should be pruned
+    // the offline node should be pruned (no longer sending pings to)
     while nodes.step_until(Duration::from_secs(20)) {}
+    let mut num_send_pings = 0;
     assert_eq!(nodes.states().len(), 1);
     for state in nodes.states().values() {
         let state = state.peer_disc_driver.get_peer_disc_state();
         let metrics = state.metrics();
-        assert!(metrics[GAUGE_PEER_DISC_REFRESH] == 3);
-        assert!(state.peer_info.is_empty());
+        assert_eq!(metrics[GAUGE_PEER_DISC_REFRESH], 3);
+        assert!(state.connection_info.is_empty());
+
+        num_send_pings = metrics[GAUGE_PEER_DISC_SEND_PING];
+    }
+
+    while nodes.step_until(Duration::from_secs(30)) {}
+    for state in nodes.states().values() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
+        let metrics = state.metrics();
+        assert_eq!(metrics[GAUGE_PEER_DISC_SEND_PING], num_send_pings);
     }
 }
 
@@ -413,7 +413,7 @@ fn test_prune_nodes() {
 #[test]
 fn test_peer_lookup_open_discovery() {
     // 4 nodes: Node0, Node1, Node2, Node3, Node4
-    // initialize peer info
+    // initialize routing info
     // Node0 name record: Node1, Node2, Node3
     // Node1 name record: Node0
     // Node2 name record: <empty>
@@ -421,7 +421,7 @@ fn test_peer_lookup_open_discovery() {
     let config = TestConfig {
         num_nodes: 4,
         epoch_validators: BTreeMap::from([(Epoch(1), BTreeSet::from([0, 1, 2, 3]))]),
-        peer_info: BTreeMap::from([
+        routing_info: BTreeMap::from([
             (0, BTreeSet::from([1, 2, 3])),
             (1, BTreeSet::from([0])),
             (2, BTreeSet::new()),
@@ -449,7 +449,7 @@ fn test_peer_lookup_open_discovery() {
         if node_id == &node_1_state.self_id {
             continue;
         }
-        assert!(node_1_state.peer_info.contains_key(node_id));
+        assert!(node_1_state.routing_info.contains_key(node_id));
     }
 
     // check that Node1 sends pings to new nodes
@@ -462,7 +462,7 @@ fn test_peer_lookup_open_discovery() {
         if node_id == &node_ids[1] {
             continue;
         }
-        assert!(state.peer_info.contains_key(&node_ids[1]));
+        assert!(state.routing_info.contains_key(&node_ids[1]));
     }
 }
 
@@ -470,20 +470,20 @@ fn test_peer_lookup_open_discovery() {
 #[test]
 fn test_peer_lookup_targeted_nodes() {
     // 3 nodes: Node0, Node1, Node2
-    // initialize peer info
+    // initialize routing info
     // Node0 name record: Node1, Node2
     // Node1 name record: Node0
     // All three nodes are validators, Node1 is missing Node2 name record
     let config = TestConfig {
         num_nodes: 3,
         epoch_validators: BTreeMap::from([(Epoch(1), BTreeSet::from([0, 1, 2]))]),
-        peer_info: BTreeMap::from([
+        routing_info: BTreeMap::from([
             (0, BTreeSet::from([1, 2])),
             (1, BTreeSet::from([0])),
             (2, BTreeSet::new()),
         ]),
         refresh_period: Duration::from_secs(10),
-        min_active_connections: 1,
+        min_num_peers: 1,
         ..Default::default()
     };
     let (keys, swarm_builder) = setup_keys_and_swarm_builder(config);
@@ -496,7 +496,7 @@ fn test_peer_lookup_targeted_nodes() {
 
     while nodes.step_until(Duration::from_secs(10)) {}
 
-    // Node1 has number of peers larger than min active connections but still missing validator NodeC
+    // Node1 has number of peers larger than min number of peers but still missing validator NodeC
     // Node1 should send targeted lookup request to Node0 asking for Node2
     for state in nodes.states().values() {
         let state = state.peer_disc_driver.get_peer_disc_state();
@@ -505,7 +505,7 @@ fn test_peer_lookup_targeted_nodes() {
             if node_id == &state.self_id {
                 continue;
             }
-            assert!(state.peer_info.contains_key(node_id));
+            assert!(state.routing_info.contains_key(node_id));
         }
 
         if state.self_id == node_ids[0] {
@@ -526,7 +526,7 @@ fn test_peer_lookup_retry() {
     let config = TestConfig {
         num_nodes: 3,
         ping_period: Duration::from_secs(15),
-        peer_info: BTreeMap::from([
+        routing_info: BTreeMap::from([
             (0, BTreeSet::from([1, 2])),
             (1, BTreeSet::from([0])),
             (2, BTreeSet::new()),
@@ -555,7 +555,7 @@ fn test_peer_lookup_retry() {
             assert_eq!(metrics[GAUGE_PEER_DISC_DROP_LOOKUP_RESPONSE], 4);
 
             // Due to lookup timeout, Node1 still does not have name record of Node2
-            assert!(!state.peer_info.contains_key(&node_ids[2]));
+            assert!(!state.routing_info.contains_key(&node_ids[2]));
         }
     }
 }
@@ -591,7 +591,15 @@ fn test_ping_timeout() {
         assert_eq!(metrics[GAUGE_PEER_DISC_RECV_PONG], 4);
         assert_eq!(metrics[GAUGE_PEER_DISC_DROP_PONG], 4);
 
-        assert!(state.peer_info.is_empty());
+        assert!(state.connection_info.is_empty());
+    }
+
+    // no more pings after sent after connection is pruned
+    while nodes.step_until(Duration::from_secs(30)) {}
+    for state in nodes.states().values() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
+        let metrics = state.metrics();
+        assert_eq!(metrics[GAUGE_PEER_DISC_SEND_PING], 5);
     }
 }
 
@@ -604,14 +612,14 @@ fn test_min_watermark() {
     let config = TestConfig {
         num_nodes: 4,
         epoch_validators: BTreeMap::from([(Epoch(1), BTreeSet::from([0, 1, 2, 3]))]),
-        peer_info: BTreeMap::from([
+        routing_info: BTreeMap::from([
             (0, BTreeSet::new()),
             (1, BTreeSet::from([0])),
             (2, BTreeSet::from([0])),
             (3, BTreeSet::from([0])),
         ]),
-        min_active_connections: 2,
-        max_active_connections: 10,
+        min_num_peers: 2,
+        max_num_peers: 10,
         ..Default::default()
     };
     let (keys, swarm_builder) = setup_keys_and_swarm_builder(config);
@@ -632,7 +640,7 @@ fn test_min_watermark() {
             if peer_id == &state.self_id {
                 continue;
             }
-            assert!(state.peer_info.contains_key(peer_id));
+            assert!(state.routing_info.contains_key(peer_id));
         }
 
         if node_id == &node_ids[0] {
@@ -648,12 +656,12 @@ fn test_min_watermark() {
 fn test_max_watermark() {
     // 5 nodes: Node0, Node1, Node2, Node3, Node4
     // Node0 is a validator, Node1, Node2, Node3 are full nodes
-    // Node4 is a dedicated full node for Node0
+    // Node4 is a pinned full node for Node0
     let config = TestConfig {
         num_nodes: 5,
         epoch_validators: BTreeMap::from([(Epoch(1), BTreeSet::from([0]))]),
         pinned_full_nodes: BTreeMap::from([(0, BTreeSet::from([4]))]),
-        peer_info: BTreeMap::from([
+        routing_info: BTreeMap::from([
             (0, BTreeSet::from([1, 2, 3, 4])),
             (1, BTreeSet::from([0, 2, 3, 4])),
             (2, BTreeSet::from([0, 1, 3, 4])),
@@ -663,8 +671,8 @@ fn test_max_watermark() {
         ping_period: Duration::from_secs(2),
         refresh_period: Duration::from_secs(5),
         prune_threshold: 1,
-        min_active_connections: 1,
-        max_active_connections: 2,
+        min_num_peers: 1,
+        max_num_peers: 2,
         ..Default::default()
     };
     let (keys, swarm_builder) = setup_keys_and_swarm_builder(config.clone());
@@ -681,13 +689,278 @@ fn test_max_watermark() {
         let state = state.peer_disc_driver.get_peer_disc_state();
 
         // Node4 is inactive, should be pruned by Node1, Node2 and Node3, but should not be pruned by Node0 (due to pinned full node)
+        // Node4 is pinned full node for Node0, should not be pruned in routing info of Node0
         if node_id == &node_ids[0] {
-            assert!(state.peer_info.contains_key(&node_ids[4]));
-        } else {
-            assert!(!state.peer_info.contains_key(&node_ids[4]));
+            assert!(state.routing_info.contains_key(&node_ids[4]));
         }
 
-        // additional full nodes above max_active_connections are pruned
-        assert!(state.peer_info.len() <= 2);
+        // Node4 being inactive should be pruned in connection info of all nodes
+        assert!(!state.connection_info.contains_key(&node_ids[4]));
+
+        // additional full nodes above max_num_peers are pruned
+        assert!(state.routing_info.len() <= 2);
+    }
+}
+
+#[traced_test]
+#[test]
+fn test_full_nodes_connection() {
+    // 6 nodes: Node0, Node1, Node2, Node3, Node4, Node5
+    // Node0, Node1, Node2, Node3 are validators, Node4 and Node 5 are full nodes
+    // Node4 name record: Node0, Node1, Node2
+    // Node5 name record: Node0, Node1, Node2
+    let config = TestConfig {
+        num_nodes: 6,
+        epoch_validators: BTreeMap::from([(Epoch(1), BTreeSet::from([0, 1, 2, 3]))]),
+        routing_info: BTreeMap::from([
+            (0, BTreeSet::from([1, 2, 3])),
+            (1, BTreeSet::from([0, 2, 3])),
+            (2, BTreeSet::from([0, 1, 3])),
+            (3, BTreeSet::from([0, 1, 2])),
+            (4, BTreeSet::from([0, 1, 2])),
+            (5, BTreeSet::from([0, 1, 2])),
+        ]),
+        ping_period: Duration::from_secs(2),
+        refresh_period: Duration::from_secs(5),
+        min_num_peers: 2,
+        max_num_peers: 4,
+        ..Default::default()
+    };
+    let (keys, swarm_builder) = setup_keys_and_swarm_builder(config.clone());
+    let node_ids = keys
+        .iter()
+        .map(|k| NodeId::new(k.pubkey()))
+        .collect::<Vec<_>>();
+    let mut nodes = swarm_builder.build();
+    // Node5 will join later, so we remove its state for now
+    let _node_5_state = nodes
+        .remove_state(&node_ids[5])
+        .expect("Node5 state should exist");
+
+    while nodes.step_until(Duration::from_secs(0)) {}
+
+    for (node_id, state) in nodes.states() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
+
+        // Node4 send pings to Node0, Node1, and Node2, so it should have connections to them
+        // Node4 have the name record of Node3 but is not connected to it
+        if node_id == &node_ids[4] {
+            assert_eq!(state.connection_info.len(), 3);
+            assert!(state.connection_info.contains_key(&node_ids[0]));
+            assert!(state.connection_info.contains_key(&node_ids[1]));
+            assert!(state.connection_info.contains_key(&node_ids[2]));
+            assert_eq!(state.routing_info.len(), 4);
+        }
+
+        // Node0, Node1, and Node2 should have connections and name record of Node4
+        // Node3 should not have connection to Node4
+        if node_id == &node_ids[0] || node_id == &node_ids[1] || node_id == &node_ids[2] {
+            assert!(state.connection_info.contains_key(&node_ids[4]));
+            assert!(state.routing_info.contains_key(&node_ids[4]));
+        } else if node_id == &node_ids[3] {
+            assert!(!state.connection_info.contains_key(&node_ids[4]));
+            assert!(!state.routing_info.contains_key(&node_ids[4]));
+        }
+    }
+
+    // Node5 which is a full node now joins the network
+    let node_5_builder = NodeBuilder {
+        id: node_ids[5],
+        addr: generate_name_record(&keys[5]).address(),
+        algo_builder: PeerDiscoveryBuilder {
+            self_id: node_ids[5],
+            self_record: generate_name_record(&keys[5]),
+            current_epoch: config.current_epoch,
+            epoch_validators: BTreeMap::from([(
+                Epoch(1),
+                BTreeSet::from([node_ids[0], node_ids[1], node_ids[2], node_ids[3]]),
+            )]),
+            pinned_full_nodes: BTreeSet::new(),
+            routing_info: BTreeMap::from([
+                (node_ids[0], generate_name_record(&keys[0])),
+                (node_ids[1], generate_name_record(&keys[1])),
+                (node_ids[2], generate_name_record(&keys[2])),
+                (node_ids[3], generate_name_record(&keys[3])),
+            ]),
+            ping_period: config.ping_period,
+            refresh_period: config.refresh_period,
+            request_timeout: config.request_timeout,
+            prune_threshold: config.prune_threshold,
+            min_num_peers: config.min_num_peers,
+            max_num_peers: config.max_num_peers,
+            rng: ChaCha8Rng::seed_from_u64(123456),
+        },
+        router_scheduler: NoSerRouterConfig::new(node_ids.iter().cloned().collect()).build(),
+        seed: 1,
+        outbound_pipeline: vec![],
+    };
+    nodes.add_state(node_5_builder);
+
+    while nodes.step_until(Duration::from_secs(10)) {}
+
+    // Node0, Node1, Node2 already have maximum number of peers, so they should not connect to Node5
+    // and should not have its name record
+    // Node5 will look for other validators and connect to Node3 instead
+    for (node_id, state) in nodes.states() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
+        if node_id == &node_ids[0] || node_id == &node_ids[1] || node_id == &node_ids[2] {
+            assert!(!state.connection_info.contains_key(&node_ids[5]));
+            assert!(!state.routing_info.contains_key(&node_ids[5]));
+        } else if node_id == &node_ids[3] {
+            // Node3 should now have connection to Node5
+            assert!(state.connection_info.contains_key(&node_ids[5]));
+            assert!(state.routing_info.contains_key(&node_ids[5]));
+        } else if node_id == &node_ids[5] {
+            // Node5 should have connection to Node3
+            assert!(state.connection_info.contains_key(&node_ids[3]));
+            assert!(state.routing_info.contains_key(&node_ids[3]));
+        }
+    }
+}
+
+#[traced_test]
+#[test]
+fn test_full_node_promoted_to_validator() {
+    // 6 nodes: Node0, Node1, Node2, Node3, Node4, Node5
+    // Node0, Node1, Node2, Node3, Node4 are validators, Node5 is a full node
+    // Node5 name record: Node0, Node1, Node2
+    let config = TestConfig {
+        num_nodes: 6,
+        epoch_validators: BTreeMap::from([
+            (Epoch(1), BTreeSet::from([0, 1, 2, 3, 4])),
+            (Epoch(2), BTreeSet::from([0, 1, 2, 3, 4])),
+            (Epoch(3), BTreeSet::from([0, 1, 2, 3, 4, 5])),
+        ]),
+        routing_info: BTreeMap::from([
+            (0, BTreeSet::from([1, 2, 3, 4])),
+            (1, BTreeSet::from([0, 2, 3, 4])),
+            (2, BTreeSet::from([0, 1, 3, 4])),
+            (3, BTreeSet::from([0, 1, 2, 4])),
+            (4, BTreeSet::from([0, 1, 2, 3])),
+            (5, BTreeSet::from([0, 1, 2])),
+        ]),
+        ping_period: Duration::from_secs(2),
+        refresh_period: Duration::from_secs(5),
+        min_num_peers: 3,
+        max_num_peers: 10,
+        ..Default::default()
+    };
+    let (keys, swarm_builder) = setup_keys_and_swarm_builder(config);
+    let node_ids = keys
+        .iter()
+        .map(|k| NodeId::new(k.pubkey()))
+        .collect::<Vec<_>>();
+    let mut nodes = swarm_builder.build();
+
+    while nodes.step_until(Duration::from_secs(0)) {}
+
+    for (node_id, state) in nodes.states() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
+
+        // Node5 should have connections to Node0, Node1, and Node2 and not the other validators
+        // Node5 should have the name records of all validators
+        if node_id == &node_ids[5] {
+            assert_eq!(state.connection_info.len(), 3);
+            assert!(state.connection_info.contains_key(&node_ids[0]));
+            assert!(state.connection_info.contains_key(&node_ids[1]));
+            assert!(state.connection_info.contains_key(&node_ids[2]));
+            assert_eq!(state.routing_info.len(), 5);
+        }
+    }
+
+    // Node5 is promoted to validator
+    let epoch_change_event = PeerDiscoveryEvent::UpdateCurrentEpoch { epoch: Epoch(2) };
+    nodes.insert_test_event(&node_ids[5], Duration::from_secs(0), epoch_change_event);
+
+    while nodes.step_until(Duration::from_secs(0)) {}
+
+    // Node5 should now have connections to all validators
+    for (node_id, state) in nodes.states() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
+
+        if node_id == &node_ids[5] {
+            assert_eq!(state.connection_info.len(), 5);
+            for peer_id in node_ids.iter() {
+                if peer_id == &state.self_id {
+                    continue;
+                }
+                assert!(state.connection_info.contains_key(peer_id));
+                assert!(state.routing_info.contains_key(peer_id));
+            }
+        }
+    }
+}
+
+#[traced_test]
+#[test]
+fn test_validator_demoted_to_full_node() {
+    // 5 nodes: Node0, Node1, Node2, Node3, Node4
+    // Node0, Node1, Node2, Node3, Node4 are validators
+    // Fully connected network
+    let config = TestConfig {
+        num_nodes: 5,
+        epoch_validators: BTreeMap::from([
+            (Epoch(1), BTreeSet::from([0, 1, 2, 3, 4])),
+            (Epoch(2), BTreeSet::from([0, 1, 2, 3])),
+        ]),
+        routing_info: BTreeMap::from([
+            (0, BTreeSet::from([1, 2, 3, 4])),
+            (1, BTreeSet::from([0, 2, 3, 4])),
+            (2, BTreeSet::from([0, 1, 3, 4])),
+            (3, BTreeSet::from([0, 1, 2, 4])),
+            (4, BTreeSet::from([0, 1, 2, 3])),
+        ]),
+        ping_period: Duration::from_secs(2),
+        refresh_period: Duration::from_secs(5),
+        min_num_peers: 3,
+        max_num_peers: 10,
+        ..Default::default()
+    };
+    let (keys, swarm_builder) = setup_keys_and_swarm_builder(config);
+    let node_ids = keys
+        .iter()
+        .map(|k| NodeId::new(k.pubkey()))
+        .collect::<Vec<_>>();
+    let mut nodes = swarm_builder.build();
+
+    while nodes.step_until(Duration::from_secs(0)) {}
+
+    for state in nodes.states().values() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
+
+        // all nodes have connections to each other
+        for peer_id in node_ids.iter() {
+            if peer_id == &state.self_id {
+                continue;
+            }
+            assert!(state.connection_info.contains_key(peer_id));
+            assert!(state.routing_info.contains_key(peer_id));
+        }
+    }
+
+    // Node4 is demoted to a full node
+    let epoch_change_event = PeerDiscoveryEvent::UpdateCurrentEpoch { epoch: Epoch(2) };
+    nodes.insert_test_event(&node_ids[4], Duration::from_secs(0), epoch_change_event);
+
+    while nodes.step_until(Duration::from_secs(10)) {}
+
+    // Node4 should now be only connected to three upstream validators
+    for (node_id, state) in nodes.states() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
+
+        if node_id == &node_ids[4] {
+            assert_eq!(state.connection_info.len(), 3);
+            assert_eq!(state.routing_info.len(), 4);
+            continue;
+        }
+
+        // other nodes should still have connections to each other
+        for peer_id in node_ids.iter() {
+            if peer_id == &state.self_id {
+                continue;
+            }
+            assert!(state.connection_info.contains_key(peer_id));
+            assert!(state.routing_info.contains_key(peer_id));
+        }
     }
 }

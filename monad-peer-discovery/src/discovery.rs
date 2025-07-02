@@ -24,10 +24,14 @@ use crate::{
 const MAX_PEER_IN_RESPONSE: usize = 16;
 /// Number of peers to send lookup request to
 const NUM_LOOKUP_PEERS: usize = 3;
+/// Number of validators to connect to if self is a full node
+// TODO: this should be configurable (e.g. a dedicated full node does not need to have 3 upstream validators)
+const NUM_UPSTREAM_VALIDATORS: usize = 3;
 
 /// Metrics constant
 pub const GAUGE_PEER_DISC_SEND_PING: &str = "monad.peer_disc.send_ping";
 pub const GAUGE_PEER_DISC_RECV_PING: &str = "monad.peer_disc.recv_ping";
+pub const GAUGE_PEER_DISC_DROP_PING: &str = "monad.peer_disc.drop_ping";
 pub const GAUGE_PEER_DISC_PING_TIMEOUT: &str = "monad.peer_disc.ping_timeout";
 pub const GAUGE_PEER_DISC_SEND_PONG: &str = "monad.peer_disc.send_pong";
 pub const GAUGE_PEER_DISC_RECV_PONG: &str = "monad.peer_disc.recv_pong";
@@ -46,11 +50,19 @@ pub const GAUGE_PEER_DISC_LOOKUP_TIMEOUT: &str = "monad.peer_disc.lookup_timeout
 pub const GAUGE_PEER_DISC_REFRESH: &str = "monad.peer_disc.refresh";
 pub const GAUGE_PEER_DISC_NUM_CONNECTED_PEERS: &str = "monad.peer_disc.num_connected_peers";
 
+/// validator role is given if the node is a validator in the current or next epoch.
+/// this is to ensure the node starts connecting to other validators even if joining
+/// as a validator only in the next epoch
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Role {
+    Validator,
+    FullNode,
+}
+
 #[derive(Debug, Clone, Copy)]
-pub struct PeerInfo<ST: CertificateSignatureRecoverable> {
+pub struct ConnectionInfo<ST: CertificateSignatureRecoverable> {
     pub last_ping: Option<Ping<ST>>,
     pub unresponsive_pings: u32,
-    pub name_record: MonadNameRecord<ST>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -66,12 +78,20 @@ pub struct LookupInfo<ST: CertificateSignatureRecoverable> {
 pub struct PeerDiscovery<ST: CertificateSignatureRecoverable> {
     pub self_id: NodeId<CertificateSignaturePubKey<ST>>,
     pub self_record: MonadNameRecord<ST>,
+    // role of the node in the current epoch
+    self_role: Role,
     pub current_epoch: Epoch,
+    // mapping of epoch to validators in that epoch
     pub epoch_validators: BTreeMap<Epoch, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
     // pinned full nodes are dedicated and prioritized full nodes passed in from config that will not be pruned
     pub pinned_full_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
     // mapping of node IDs to their corresponding name records
-    pub peer_info: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, PeerInfo<ST>>,
+    pub routing_info: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<ST>>,
+    // mapping of node IDs to their connection info, used to track ping status
+    // connection_info is a subset of routing_info, i.e. only nodes that are currently connected
+    pub connection_info: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, ConnectionInfo<ST>>,
+    // mapping of lookup IDs to their corresponding lookup info, node will only entertain lookup response
+    // that matches a local lookup ID
     pub outstanding_lookup_requests: HashMap<u32, LookupInfo<ST>>,
     pub metrics: ExecutorMetrics,
     // duration before sending next ping
@@ -82,10 +102,10 @@ pub struct PeerDiscovery<ST: CertificateSignatureRecoverable> {
     pub request_timeout: Duration,
     // number of unresponsive pings allowed before being pruned
     pub prune_threshold: u32,
-    // minimum number of active connections before actively sending peer lookup requests
-    pub min_active_connections: usize,
-    // maximum number of active connections before pruning
-    pub max_active_connections: usize,
+    // minimum number of peers before actively sending peer lookup requests
+    pub min_num_peers: usize,
+    // maximum number of peers before pruning
+    pub max_num_peers: usize,
     pub rng: ChaCha8Rng,
 }
 
@@ -95,13 +115,13 @@ pub struct PeerDiscoveryBuilder<ST: CertificateSignatureRecoverable> {
     pub current_epoch: Epoch,
     pub epoch_validators: BTreeMap<Epoch, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
     pub pinned_full_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
-    pub peer_info: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, PeerInfo<ST>>,
+    pub routing_info: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<ST>>,
     pub ping_period: Duration,
     pub refresh_period: Duration,
     pub request_timeout: Duration,
     pub prune_threshold: u32,
-    pub min_active_connections: usize,
-    pub max_active_connections: usize,
+    pub min_num_peers: usize,
+    pub max_num_peers: usize,
     pub rng: ChaCha8Rng,
 }
 
@@ -118,28 +138,36 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
     ) {
         debug!("initializing peer discovery");
         assert!(self.ping_period > self.request_timeout);
-        assert!(self.max_active_connections > self.min_active_connections);
+        assert!(self.max_num_peers > self.min_num_peers);
 
+        let self_role = Role::FullNode;
         let mut state = PeerDiscovery {
             self_id: self.self_id,
             self_record: self.self_record,
+            self_role,
             current_epoch: self.current_epoch,
             epoch_validators: self.epoch_validators,
             pinned_full_nodes: self.pinned_full_nodes,
-            peer_info: self.peer_info.clone(),
+            routing_info: self.routing_info.clone(),
+            connection_info: Default::default(),
             outstanding_lookup_requests: Default::default(),
             metrics: Default::default(),
             ping_period: self.ping_period,
             refresh_period: self.refresh_period,
             request_timeout: self.request_timeout,
             prune_threshold: self.prune_threshold,
-            min_active_connections: self.min_active_connections,
-            max_active_connections: self.max_active_connections,
+            min_num_peers: self.min_num_peers,
+            max_num_peers: self.max_num_peers,
             rng: self.rng,
         };
 
+        // if self is a validator in the current or next epoch, update self role
+        if state.is_validator(&self.self_id) {
+            state.self_role = Role::Validator;
+        }
+
         let mut cmds = self
-            .peer_info
+            .routing_info
             .into_iter()
             .flat_map(|(node_id, _)| state.send_ping(node_id))
             .collect::<Vec<_>>();
@@ -151,6 +179,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
 }
 
 impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
+    // schedule for next ping
     fn reset_ping_timer(
         &self,
         peer: NodeId<CertificateSignaturePubKey<ST>>,
@@ -176,6 +205,23 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
                 timer_kind: TimerKind::SendPing,
                 duration: self.ping_period,
                 on_timeout: PeerDiscoveryEvent::SendPing { to: peer },
+            }),
+        ]
+    }
+
+    // stop sending ping to a peer
+    fn clear_ping_timer(
+        &self,
+        peer: NodeId<CertificateSignaturePubKey<ST>>,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
+        vec![
+            PeerDiscoveryCommand::TimerCommand(PeerDiscoveryTimerCommand::ScheduleReset {
+                node_id: peer,
+                timer_kind: TimerKind::PingTimeout,
+            }),
+            PeerDiscoveryCommand::TimerCommand(PeerDiscoveryTimerCommand::ScheduleReset {
+                node_id: peer,
+                timer_kind: TimerKind::SendPing,
             }),
         ]
     }
@@ -217,38 +263,91 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
 
     fn insert_peer(
         &mut self,
-        node_id: NodeId<CertificateSignaturePubKey<ST>>,
+        peer_id: NodeId<CertificateSignaturePubKey<ST>>,
         name_record: MonadNameRecord<ST>,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
-        // make sure self record is never inserted into peer info
-        if node_id == self.self_id {
+        // make sure self record is never inserted into routing info
+        if peer_id == self.self_id {
             return vec![];
         }
 
         // insert name record
-        if let Some(info) = self.peer_info.get_mut(&node_id) {
-            if name_record.seq() > info.name_record.seq() {
+        if let Some(current_name_record) = self.routing_info.get_mut(&peer_id) {
+            if name_record.seq() > current_name_record.seq() {
                 // update name record
-                debug!(?node_id, ?name_record, "name record updated");
-                info.name_record = name_record;
+                debug!(?peer_id, ?name_record, "name record updated");
+                *current_name_record = name_record;
             } else {
                 // exit if seq num is not incremented
                 return vec![];
             }
         } else {
             // peer is not present, insert peer
-            debug!(?node_id, ?name_record, "name record inserted");
-            self.peer_info.insert(node_id, PeerInfo {
-                last_ping: None,
-                unresponsive_pings: 0,
-                name_record,
-            });
+            debug!(?peer_id, ?name_record, "name record inserted");
+            self.routing_info.insert(peer_id, name_record);
         }
 
-        self.metrics[GAUGE_PEER_DISC_NUM_CONNECTED_PEERS] = self.peer_info.len() as u64;
+        self.metrics[GAUGE_PEER_DISC_NUM_CONNECTED_PEERS] = self.routing_info.len() as u64;
 
         // send pings to newly modified/added peers
-        self.send_ping(node_id)
+        // full nodes only need to connect to a few validators so they don't need to immediately connect if incoming node is a validator
+        if self.self_role == Role::FullNode && self.is_validator(&peer_id) {
+            return self.look_for_upstream_validators();
+        }
+
+        self.send_ping(peer_id)
+    }
+
+    fn look_for_upstream_validators(&mut self) -> Vec<PeerDiscoveryCommand<ST>> {
+        let mut cmds = Vec::new();
+
+        // full node will try to connect to NUM_UPSTREAM_VALIDATORS
+        // if insufficient connected upstream validators, try to send pings to new validators
+        let connected_validators = self
+            .connection_info
+            .keys()
+            .filter(|&node_id| self.is_validator(node_id))
+            .collect::<HashSet<_>>();
+
+        let slots_to_fill = NUM_UPSTREAM_VALIDATORS.saturating_sub(connected_validators.len());
+        if slots_to_fill > 0 {
+            // when selecting new upstream validators, make sure they are not already currently connected validators
+            // TODO: we should also prioritize validators that are not recently pruned for connection info for better heuristics
+            let available_validators = self
+                .routing_info
+                .keys()
+                .filter(|&node_id| {
+                    !connected_validators.contains(node_id)
+                        && self.is_validator(node_id)
+                        && node_id != &self.self_id
+                })
+                .copied()
+                .collect::<Vec<_>>();
+
+            let new_upstream_validators = available_validators
+                .iter()
+                .choose_multiple(&mut self.rng, slots_to_fill);
+
+            debug!(
+                ?new_upstream_validators,
+                "looking for upstream validators to connect to",
+            );
+
+            for &validator in new_upstream_validators {
+                cmds.extend(self.send_ping(validator));
+            }
+        }
+
+        cmds
+    }
+
+    // a helper function to check if a node is a validator in the current or next epoch
+    // TODO: maybe rename this function
+    fn is_validator(&self, node_id: &NodeId<CertificateSignaturePubKey<ST>>) -> bool {
+        let current_epoch_validators = self.epoch_validators.get(&self.current_epoch);
+        let next_epoch_validators = self.epoch_validators.get(&(self.current_epoch + Epoch(1)));
+        current_epoch_validators.is_some_and(|validators| validators.contains(node_id))
+            || next_epoch_validators.is_some_and(|validators| validators.contains(node_id))
     }
 }
 
@@ -267,7 +366,7 @@ where
         let mut cmds = Vec::new();
 
         // must have a MonadNameRecord to send a ping
-        let Some(peer_entry) = self.peer_info.get_mut(&to) else {
+        if !self.routing_info.contains_key(&to) {
             warn!(
                 ?to,
                 "name record not present locally but trying to send ping"
@@ -281,7 +380,16 @@ where
             local_name_record: Some(self.self_record),
         };
 
-        peer_entry.last_ping = Some(ping_msg);
+        // record connection info
+        self.connection_info
+            .entry(to)
+            .and_modify(|connection_entry| {
+                connection_entry.last_ping = Some(ping_msg);
+            })
+            .or_insert_with(|| ConnectionInfo {
+                last_ping: Some(ping_msg),
+                unresponsive_pings: 0,
+            });
 
         // reset timer to schedule for the next ping
         cmds.extend(self.reset_ping_timer(to, ping_msg.id));
@@ -305,11 +413,25 @@ where
 
         let mut cmds = Vec::new();
 
+        // drop ping if peer list is full and incoming ping is not from a validator or pinned full node
+        if self.routing_info.len() >= self.max_num_peers
+            && !self.is_validator(&from)
+            && !self.pinned_full_nodes.contains(&from)
+            && !self.routing_info.contains_key(&from)
+        {
+            debug!(
+                ?from,
+                "peer list is full, dropping ping request from non-validator and non-pinned-full-node peer"
+            );
+            self.metrics[GAUGE_PEER_DISC_DROP_PING] += 1;
+            return cmds;
+        }
+
         if let Some(peer_name_record) = ping_msg.local_name_record {
             if self
-                .peer_info
+                .routing_info
                 .get(&from)
-                .is_none_or(|local| peer_name_record.seq() > local.name_record.seq())
+                .is_none_or(|local| peer_name_record.seq() > local.seq())
             {
                 let verified = peer_name_record
                     .recover_pubkey()
@@ -322,18 +444,17 @@ where
                     return cmds;
                 }
             } else if self
-                .peer_info
+                .routing_info
                 .get(&from)
-                .is_some_and(|local| peer_name_record.seq() < local.name_record.seq())
+                .is_some_and(|local| peer_name_record.seq() < local.seq())
             {
                 warn!(
                     ?from,
                     "peer updated name record sequence number went backwards"
                 );
                 return cmds;
-            } else if self.peer_info.get(&from).is_some_and(|local| {
-                peer_name_record.seq() == local.name_record.seq()
-                    && peer_name_record != local.name_record
+            } else if self.routing_info.get(&from).is_some_and(|local| {
+                peer_name_record.seq() == local.seq() && peer_name_record != *local
             }) {
                 warn!(
                     ?from,
@@ -367,8 +488,8 @@ where
 
         let cmds = Vec::new();
 
-        // if ping id matches, update peer info
-        if let Some(info) = self.peer_info.get_mut(&from) {
+        // if ping id matches, update connection info
+        if let Some(info) = self.connection_info.get_mut(&from) {
             if info
                 .last_ping
                 .is_some_and(|last_ping| last_ping.id == pong_msg.ping_id)
@@ -382,7 +503,7 @@ where
         } else {
             debug!(
                 ?from,
-                "dropping pong, ping sender does not exist in peer info"
+                "dropping pong, ping sender does not exist in connection info"
             );
             self.metrics[GAUGE_PEER_DISC_DROP_PONG] += 1;
         }
@@ -398,21 +519,21 @@ where
         trace!(?to, "ping timeout");
         let cmds = Vec::new();
 
-        let Some(peer_entry) = self.peer_info.get_mut(&to) else {
-            warn!(
+        let Some(info) = self.connection_info.get_mut(&to) else {
+            debug!(
                 ?to,
-                "name record not present locally, dropping ping timeout..."
+                "connection info not present locally, dropping ping timeout..."
             );
             return cmds;
         };
 
         // record timeout
-        if let Some(last_ping) = peer_entry.last_ping {
+        if let Some(last_ping) = info.last_ping {
             if last_ping.id == ping_id {
                 debug!(?to, ?ping_id, "handling ping timeout");
                 self.metrics[GAUGE_PEER_DISC_PING_TIMEOUT] += 1;
-                peer_entry.unresponsive_pings += 1;
-                peer_entry.last_ping = None;
+                info.unresponsive_pings += 1;
+                info.last_ping = None;
             }
         }
 
@@ -473,8 +594,8 @@ where
         let mut name_records = if target == self.self_id {
             vec![self.self_record]
         } else {
-            match self.peer_info.get(&target) {
-                Some(info) => vec![info.name_record],
+            match self.routing_info.get(&target) {
+                Some(name_record) => vec![*name_record],
                 None => vec![],
             }
         };
@@ -483,23 +604,20 @@ where
         if request.open_discovery {
             self.metrics[GAUGE_PEER_DISC_RECV_OPEN_LOOKUP_REQUEST] += 1;
             // return random subset of validators (current and next epoch) up to MAX_PEER_IN_RESPONSE
-            let current_epoch_validators = self.epoch_validators.get(&self.current_epoch);
-            let next_epoch_validators = self.epoch_validators.get(&(self.current_epoch + Epoch(1)));
-            let is_validator = |node_id: &NodeId<CertificateSignaturePubKey<ST>>| {
-                current_epoch_validators.is_some_and(|validators| validators.contains(node_id))
-                    || next_epoch_validators.is_some_and(|validators| validators.contains(node_id))
-            };
-
+            let validators: BTreeMap<_, _> = self
+                .routing_info
+                .iter()
+                .filter(|(node_id, _)| self.is_validator(node_id))
+                .collect();
             name_records.extend(
-                self.peer_info
+                validators
                     .iter()
-                    .filter(|(node_id, _)| is_validator(node_id))
                     .choose_multiple(
                         &mut self.rng,
                         MAX_PEER_IN_RESPONSE.saturating_sub(name_records.len()),
                     )
                     .into_iter()
-                    .map(|(_, peer)| peer.name_record),
+                    .map(|(_, name_record)| *name_record),
             );
         } else {
             self.metrics[GAUGE_PEER_DISC_RECV_TARGETED_LOOKUP_REQUEST] += 1;
@@ -553,7 +671,7 @@ where
             return cmds;
         }
 
-        // update peer info
+        // update routing info
         for name_record in response.name_records {
             // verify signature of name record
             let node_id = match name_record.recover_pubkey() {
@@ -665,20 +783,29 @@ where
             self.pinned_full_nodes.contains(node_id)
         };
 
-        // prune unresponsive nodes
-        // we currently do not prune validators in current and next epoch, and also pinned full nodes
-        self.peer_info.retain(|node_id, info| {
-            info.unresponsive_pings < self.prune_threshold
-                || is_validator(node_id)
-                || is_pinned_full_node(node_id)
-        });
+        // stop sending pings to nodes that have not responded beyond the prune threshold
+        let mut retained = BTreeMap::new();
+        for (node_id, info) in self.connection_info.iter() {
+            if info.unresponsive_pings < self.prune_threshold {
+                retained.insert(*node_id, *info);
+            } else {
+                debug!(?node_id, "stop sending ping to unresponsive peer");
+                cmds.extend(self.clear_ping_timer(*node_id));
+                if !self.is_validator(node_id) && !self.pinned_full_nodes.contains(node_id) {
+                    // if it's a full node, also remove it from routing info
+                    self.routing_info.remove(node_id);
+                }
+            }
+        }
+        self.connection_info = retained;
 
-        // if still above max active peers, randomly choose a few full nodes and prune them
+        // if number of peers above max number of peers, randomly choose a few full nodes and prune them from routing_info
+        // validators and pinned full nodes will not be pruned
         // TODO: do not prune full nodes in ConfirmGroup
-        if self.peer_info.len() > self.max_active_connections {
-            let num_to_prune = self.peer_info.len() - self.max_active_connections;
+        if self.routing_info.len() > self.max_num_peers {
+            let num_to_prune = self.routing_info.len() - self.max_num_peers;
             let nodes_to_prune = self
-                .peer_info
+                .routing_info
                 .keys()
                 .filter_map(|node| {
                     (!is_validator(node) && !is_pinned_full_node(node)).then_some(node)
@@ -687,22 +814,25 @@ where
                 .choose_multiple(&mut self.rng, num_to_prune);
 
             if nodes_to_prune.is_empty() {
-                info!("more validators and pinned full nodes than max active connections");
+                info!("more validators and pinned full nodes than max number of peers");
             } else {
                 for node_id in nodes_to_prune {
                     debug!(?node_id, "pruning excessive full nodes");
-                    self.peer_info.remove(&node_id);
+                    self.routing_info.remove(&node_id);
+                    self.connection_info.remove(&node_id);
+                    cmds.extend(self.clear_ping_timer(node_id));
                 }
             }
         }
-        trace!("Current peer info: {:?}", self.peer_info);
+        trace!("Current routing info: {:?}", self.routing_info);
+        trace!("Current connection info: {:?}", self.connection_info);
 
         let missing_validators = current_epoch_validators
             .into_iter()
             .flatten()
             .chain(next_epoch_validators.into_iter().flatten())
             .filter(|validator| {
-                !self.peer_info.contains_key(validator) && *validator != &self.self_id
+                !self.routing_info.contains_key(validator) && *validator != &self.self_id
             })
             .cloned()
             .collect::<HashSet<_>>()
@@ -710,20 +840,20 @@ where
             .choose_multiple(&mut self.rng, NUM_LOOKUP_PEERS);
 
         let chosen_peers = self
-            .peer_info
+            .routing_info
             .keys()
             .cloned()
             .choose_multiple(&mut self.rng, NUM_LOOKUP_PEERS);
 
-        if self.peer_info.len() < self.min_active_connections {
-            // if below the min active peers, choose a few peers and do open discovery
+        if self.routing_info.len() < self.min_num_peers {
+            // if number of peers below the min number of peers, choose a few peers and do open discovery
             debug!(?chosen_peers, "discover more peers");
 
             for (validator_id, peer) in missing_validators.iter().zip(chosen_peers.iter()) {
                 cmds.extend(self.send_peer_lookup_request(*peer, *validator_id, true));
             }
         } else if !missing_validators.is_empty() {
-            // if already above the min active peers, send targeted peer lookup request for missing validators
+            // if number of peers already above the min number of peers, send targeted peer lookup request for missing validators
             for (validator_id, peer) in missing_validators.iter().zip(chosen_peers.iter()) {
                 debug!(
                     ?validator_id,
@@ -733,7 +863,12 @@ where
             }
         }
 
-        self.metrics[GAUGE_PEER_DISC_NUM_CONNECTED_PEERS] = self.peer_info.len() as u64;
+        // if self is a full node, try to connect to a few current validators if not already connected
+        if self.self_role == Role::FullNode {
+            cmds.extend(self.look_for_upstream_validators());
+        }
+
+        self.metrics[GAUGE_PEER_DISC_NUM_CONNECTED_PEERS] = self.routing_info.len() as u64;
 
         // reset timer to schedule for the next refresh
         cmds.extend(self.reset_refresh_timer());
@@ -747,12 +882,54 @@ where
     }
 
     fn update_current_epoch(&mut self, epoch: Epoch) -> Vec<PeerDiscoveryCommand<ST>> {
-        let cmds = Vec::new();
+        let mut cmds = Vec::new();
 
         if epoch > self.current_epoch {
             debug!(?epoch, "updating current epoch in peer discovery");
             self.current_epoch = epoch;
+
+            // if a full node gets promoted to a validator, send pings to all validators in the current and next epoch
+            if self.self_role == Role::FullNode && self.is_validator(&self.self_id) {
+                self.self_role = Role::Validator;
+
+                let current_validators = self.epoch_validators.get(&epoch);
+                let next_validators = self.epoch_validators.get(&(epoch + Epoch(1)));
+                let validators: HashSet<_> = current_validators
+                    .into_iter()
+                    .chain(next_validators)
+                    .flat_map(|v| v.iter())
+                    .cloned()
+                    .collect();
+
+                for validator in validators {
+                    cmds.extend(self.send_ping(validator));
+                }
+            }
+
+            // if a validator gets demoted to a full node, remove connections to all validators but NUM_UPSTREAM_VALIDATORS
+            if self.self_role == Role::Validator && !self.is_validator(&self.self_id) {
+                self.self_role = Role::FullNode;
+
+                let validators: Vec<_> = self
+                    .routing_info
+                    .keys()
+                    .filter(|node_id| self.is_validator(node_id))
+                    .collect();
+
+                let keep = validators
+                    .into_iter()
+                    .choose_multiple(&mut self.rng, NUM_UPSTREAM_VALIDATORS);
+
+                for peer in self.routing_info.keys() {
+                    if !keep.contains(&peer) {
+                        cmds.extend(self.clear_ping_timer(*peer));
+                        self.connection_info.remove(peer);
+                    }
+                }
+            }
         }
+
+        // clean up historical epoch validators
         self.epoch_validators
             .retain(|epoch, _| *epoch + Epoch(1) >= self.current_epoch);
 
@@ -810,24 +987,24 @@ where
     }
 
     fn get_addr_by_id(&self, id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<SocketAddrV4> {
-        self.peer_info
+        self.routing_info
             .get(id)
-            .map(|info| info.name_record.name_record.address)
+            .map(|name_record| name_record.address())
     }
 
     fn get_known_addrs(&self) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4> {
-        self.peer_info
+        self.routing_info
             .iter()
-            .map(|(id, info)| (*id, info.name_record.name_record.address))
+            .map(|(id, name_record)| (*id, name_record.address()))
             .collect()
     }
 
     fn get_name_records(
         &self,
     ) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<ST>> {
-        self.peer_info
+        self.routing_info
             .iter()
-            .map(|(id, info)| (*id, info.name_record))
+            .map(|(id, name_record)| (*id, *name_record))
             .collect()
     }
 }
@@ -872,34 +1049,32 @@ mod tests {
         self_key: &KeyPairType,
         peer_keys: Vec<&KeyPairType>,
     ) -> PeerDiscovery<SignatureType> {
-        let peer_info = peer_keys
+        let routing_info = peer_keys
             .into_iter()
             .map(|key| {
                 let node_id = NodeId::new(key.pubkey());
                 let name_record = generate_name_record(key, 0);
-                (node_id, PeerInfo {
-                    last_ping: None,
-                    unresponsive_pings: 0,
-                    name_record,
-                })
+                (node_id, name_record)
             })
             .collect::<BTreeMap<_, _>>();
 
         PeerDiscovery {
             self_id: NodeId::new(self_key.pubkey()),
             self_record: generate_name_record(self_key, 0),
+            self_role: Role::FullNode,
             current_epoch: Epoch(1),
             epoch_validators: BTreeMap::new(),
             pinned_full_nodes: BTreeSet::new(),
-            peer_info,
+            routing_info,
+            connection_info: BTreeMap::new(),
             outstanding_lookup_requests: HashMap::new(),
             metrics: ExecutorMetrics::default(),
             ping_period: Duration::from_secs(60),
             refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),
             prune_threshold: 10,
-            min_active_connections: 5,
-            max_active_connections: 50,
+            min_num_peers: 5,
+            max_num_peers: 50,
             rng: ChaCha8Rng::seed_from_u64(123456),
         }
     }
@@ -932,13 +1107,18 @@ mod tests {
             .collect::<Vec<_>>()
     }
 
-    fn extract_ping(cmds: Vec<PeerDiscoveryCommand<SignatureType>>) -> Vec<Ping<SignatureType>> {
+    fn extract_ping(
+        cmds: Vec<PeerDiscoveryCommand<SignatureType>>,
+    ) -> Vec<(
+        NodeId<CertificateSignaturePubKey<SignatureType>>,
+        Ping<SignatureType>,
+    )> {
         cmds.into_iter()
             .filter_map(|c| match c {
                 PeerDiscoveryCommand::RouterCommand {
-                    target: _,
+                    target,
                     message: PeerDiscoveryMessage::Ping(ping),
-                } => Some(ping),
+                } => Some((target, ping)),
                 _ => None,
             })
             .collect::<Vec<_>>()
@@ -974,11 +1154,11 @@ mod tests {
         assert_eq!(cmds.len(), 5);
 
         // last_ping is recorded correctly
-        let peer_info = state.peer_info.get(&peer1_pubkey);
-        assert!(peer_info.is_some());
-        assert!(peer_info.unwrap().last_ping.is_some());
-        assert_eq!(peer_info.unwrap().unresponsive_pings, 0);
-        let ping_msg = peer_info.unwrap().last_ping.unwrap();
+        let connection_info = state.connection_info.get(&peer1_pubkey);
+        assert!(connection_info.is_some());
+        assert!(connection_info.unwrap().last_ping.is_some());
+        assert_eq!(connection_info.unwrap().unresponsive_pings, 0);
+        let ping_msg = connection_info.unwrap().last_ping.unwrap();
 
         // should not be able to send ping to peer where its name record does not exist locally
         let cmds = state.send_ping(peer2_pubkey);
@@ -989,10 +1169,10 @@ mod tests {
             ping_id: ping_msg.id,
             local_record_seq: 0,
         });
-        let peer_info = state.peer_info.get(&peer1_pubkey);
-        assert!(peer_info.is_some());
-        assert!(peer_info.unwrap().last_ping.is_none());
-        assert_eq!(peer_info.unwrap().unresponsive_pings, 0);
+        let connection_info = state.connection_info.get(&peer1_pubkey);
+        assert!(connection_info.is_some());
+        assert!(connection_info.unwrap().last_ping.is_none());
+        assert_eq!(connection_info.unwrap().unresponsive_pings, 0);
     }
 
     #[test]
@@ -1003,16 +1183,23 @@ mod tests {
         let peer1_pubkey = NodeId::new(peer1.pubkey());
 
         let mut state = generate_test_state(peer0, vec![peer1]);
+        let last_ping = Ping {
+            id: 12345,
+            local_name_record: Some(generate_name_record(peer1, 0)),
+        };
+        state.connection_info.insert(peer1_pubkey, ConnectionInfo {
+            last_ping: Some(last_ping),
+            unresponsive_pings: 3,
+        });
 
         // should not record pong when ping_id doesn't match
         state.handle_pong(peer1_pubkey, Pong {
-            ping_id: 1,
+            ping_id: 54321, // incorrect ping id,
             local_record_seq: 0,
         });
-        let peer_info = state.peer_info.get(&peer1_pubkey);
-        assert!(peer_info.is_some());
-        assert!(peer_info.unwrap().last_ping.is_none());
-        assert_eq!(peer_info.unwrap().unresponsive_pings, 0);
+        let connection_info = state.connection_info.get(&peer1_pubkey);
+        assert!(connection_info.is_some());
+        assert_eq!(connection_info.unwrap().last_ping, Some(last_ping));
     }
 
     #[test]
@@ -1029,7 +1216,7 @@ mod tests {
         let cmds = state.send_peer_lookup_request(peer1_pubkey, peer2_pubkey, false);
         assert_eq!(cmds.len(), 2);
         assert_eq!(state.outstanding_lookup_requests.keys().len(), 1);
-        assert!(!state.peer_info.contains_key(&peer2_pubkey));
+        assert!(!state.routing_info.contains_key(&peer2_pubkey));
         let requests = extract_lookup_requests(cmds);
         let original_lookup_id = requests[0].lookup_id;
         assert_eq!(
@@ -1046,7 +1233,7 @@ mod tests {
             state.handle_peer_lookup_timeout(peer1_pubkey, peer2_pubkey, requests[0].lookup_id);
         assert_eq!(cmds.len(), 2);
         assert_eq!(state.outstanding_lookup_requests.keys().len(), 1);
-        assert!(!state.peer_info.contains_key(&peer2_pubkey));
+        assert!(!state.routing_info.contains_key(&peer2_pubkey));
         let requests = extract_lookup_requests(cmds);
         assert_eq!(requests.len(), 1);
         assert_ne!(original_lookup_id, requests[0].lookup_id); // new lookup id generated
@@ -1066,8 +1253,8 @@ mod tests {
             name_records: vec![record],
         });
 
-        // peer2 should be added to peer info and outstanding requests should be cleared
-        assert!(state.peer_info.contains_key(&peer2_pubkey));
+        // peer2 should be added to routing info and outstanding requests should be cleared
+        assert!(state.routing_info.contains_key(&peer2_pubkey));
         assert_eq!(state.outstanding_lookup_requests.keys().len(), 0);
     }
 
@@ -1082,13 +1269,14 @@ mod tests {
         let peer3 = &keys[3];
         let peer3_pubkey = NodeId::new(peer3.pubkey());
 
-        // peer_info contains peer1 and peer2
+        // routing_info contains peer1 and peer2
         let mut state = generate_test_state(peer0, vec![peer1, peer2]);
+        state.self_role = Role::Validator;
         state
             .epoch_validators
             .insert(Epoch(1), BTreeSet::from([peer1_pubkey, peer2_pubkey]));
 
-        // receive a peer lookup request for peer3, which is not in peer_info
+        // receive a peer lookup request for peer3, which is not in routing_info
         let cmds = state.handle_peer_lookup_request(peer1_pubkey, PeerLookupRequest {
             lookup_id: 1,
             target: peer3_pubkey,
@@ -1137,15 +1325,7 @@ mod tests {
             target: peer1_pubkey,
             name_records: vec![record],
         });
-        assert_eq!(
-            state
-                .peer_info
-                .get(&peer1_pubkey)
-                .unwrap()
-                .name_record
-                .seq(),
-            2
-        );
+        assert_eq!(state.routing_info.get(&peer1_pubkey).unwrap().seq(), 2);
 
         // should not update name record if record has lower sequence number (seq num decremented to 1)
         let record = generate_name_record(peer1, 1);
@@ -1154,15 +1334,7 @@ mod tests {
             target: peer1_pubkey,
             name_records: vec![record],
         });
-        assert_eq!(
-            state
-                .peer_info
-                .get(&peer1_pubkey)
-                .unwrap()
-                .name_record
-                .seq(),
-            2
-        );
+        assert_eq!(state.routing_info.get(&peer1_pubkey).unwrap().seq(), 2);
     }
 
     #[test]
@@ -1181,7 +1353,7 @@ mod tests {
             target: peer1_pubkey,
             name_records: vec![record],
         });
-        assert!(!state.peer_info.contains_key(&peer1_pubkey));
+        assert!(!state.routing_info.contains_key(&peer1_pubkey));
     }
 
     #[test]
@@ -1208,11 +1380,11 @@ mod tests {
             target: peer1_pubkey,
             name_records: vec![record; MAX_PEER_IN_RESPONSE + 1],
         });
-        assert!(!state.peer_info.contains_key(&peer1_pubkey));
+        assert!(!state.routing_info.contains_key(&peer1_pubkey));
     }
 
     #[test]
-    fn test_prune() {
+    fn test_prune_connections_and_lookup_request() {
         let keys = create_keys::<SignatureType>(2);
         let peer0 = &keys[0];
         let peer1 = &keys[1];
@@ -1220,16 +1392,15 @@ mod tests {
 
         let mut state = generate_test_state(peer0, vec![]);
 
-        // add peer1 to peer info with unresponsive pings
+        // add peer1 to routing info with unresponsive pings
         // and outstanding lookup request with num_retries above prune threshold
         let lookup_id = 1;
-        let peer_info = BTreeMap::from([(peer1_pubkey, PeerInfo {
+        let connection_info = BTreeMap::from([(peer1_pubkey, ConnectionInfo {
             last_ping: None,
             unresponsive_pings: 5,
-            name_record: generate_name_record(peer1, 0),
         })]);
         state.prune_threshold = 3;
-        state.peer_info = peer_info;
+        state.connection_info = connection_info;
         state
             .outstanding_lookup_requests
             .insert(lookup_id, LookupInfo {
@@ -1239,14 +1410,14 @@ mod tests {
             });
 
         state.refresh();
-        assert!(state.peer_info.is_empty());
+        assert!(state.routing_info.is_empty());
 
         state.handle_peer_lookup_timeout(peer1_pubkey, peer1_pubkey, lookup_id);
         assert!(state.outstanding_lookup_requests.is_empty());
     }
 
     #[test]
-    fn test_below_min_active_connections() {
+    fn test_below_min_num_peers() {
         let keys = create_keys::<SignatureType>(3);
         let peer0 = &keys[0];
         let peer0_pubkey = NodeId::new(peer0.pubkey());
@@ -1274,7 +1445,7 @@ mod tests {
     }
 
     #[test]
-    fn test_above_max_active_connections() {
+    fn test_above_max_num_peers() {
         let keys = create_keys::<SignatureType>(4);
         let peer0 = &keys[0];
         let peer1 = &keys[1];
@@ -1284,20 +1455,109 @@ mod tests {
         let peer3 = &keys[3];
         let peer3_pubkey = NodeId::new(peer3.pubkey());
 
-        // Peer1 in validator set, Peer2 is dedicated full node
+        // Peer1 in validator set, Peer2 is pinned full node
         let mut state = generate_test_state(peer0, vec![peer1, peer2, peer3]);
-        state.min_active_connections = 0;
-        state.max_active_connections = 1;
+        state.min_num_peers = 0;
+        state.max_num_peers = 1;
         state
             .epoch_validators
             .insert(Epoch(1), BTreeSet::from([peer1_pubkey]));
         state.pinned_full_nodes.insert(peer2_pubkey);
 
-        // prune nodes, but validators and dedicated full nodes are not pruned even if above max active connections
+        // prune nodes, but validators and pinned full nodes are not pruned even if above max number of peers
         state.refresh();
-        assert!(state.peer_info.contains_key(&peer1_pubkey));
-        assert!(state.peer_info.contains_key(&peer2_pubkey));
-        assert!(!state.peer_info.contains_key(&peer3_pubkey));
+        assert!(state.routing_info.contains_key(&peer1_pubkey));
+        assert!(state.routing_info.contains_key(&peer2_pubkey));
+        assert!(!state.routing_info.contains_key(&peer3_pubkey));
+    }
+
+    #[test_case(Role::FullNode; "self full node")]
+    #[test_case(Role::Validator; "self validator")]
+    fn test_incoming_ping_above_max_num_peers(role: Role) {
+        let keys = create_keys::<SignatureType>(5);
+        let peer0 = &keys[0];
+        let peer1 = &keys[1];
+        let peer2 = &keys[2];
+        let peer2_pubkey = NodeId::new(peer2.pubkey());
+        let peer3 = &keys[3];
+        let peer3_pubkey = NodeId::new(peer3.pubkey());
+        let peer4 = &keys[4];
+        let peer4_pubkey = NodeId::new(peer4.pubkey());
+
+        // max number of peers is 1, peer 1 is already in routing info occupying the slot
+        let mut state = generate_test_state(peer0, vec![peer1]);
+        state.min_num_peers = 0;
+        state.max_num_peers = 1;
+        state.self_role = role;
+        state
+            .epoch_validators
+            .insert(Epoch(1), BTreeSet::from([peer2_pubkey]));
+        state.pinned_full_nodes.insert(peer3_pubkey);
+
+        // peer2 is a validator, it is added to routing info although already exceeding max number of peers
+        let cmds = state.handle_ping(peer2_pubkey, Ping {
+            id: 2,
+            local_name_record: Some(generate_name_record(peer2, 0)),
+        });
+        assert!(state.routing_info.contains_key(&peer2_pubkey));
+        assert_eq!(state.routing_info.len(), 2);
+        // both full node and validator should add peer2 to connection info and send ping
+        assert!(state.connection_info.contains_key(&peer2_pubkey));
+        let cmds = extract_ping(cmds);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].0, peer2_pubkey);
+
+        // peer3 is a pinned full node, it is also added to the routing info
+        let cmds = state.handle_ping(peer3_pubkey, Ping {
+            id: 3,
+            local_name_record: Some(generate_name_record(peer3, 0)),
+        });
+        assert!(state.routing_info.contains_key(&peer3_pubkey));
+        assert_eq!(state.routing_info.len(), 3);
+        // both full node and validator should add peer3 to connection info and send ping
+        assert!(state.connection_info.contains_key(&peer3_pubkey));
+        let cmds = extract_ping(cmds);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].0, peer3_pubkey);
+
+        // peer4 is a full node, it is not added to the routing info
+        let cmds = state.handle_ping(peer4_pubkey, Ping {
+            id: 4,
+            local_name_record: Some(generate_name_record(peer4, 0)),
+        });
+        assert!(!state.routing_info.contains_key(&peer4_pubkey));
+        assert_eq!(state.routing_info.len(), 3);
+        // peer4 should not be added to connection info and should not send ping
+        assert!(!state.connection_info.contains_key(&peer4_pubkey));
+        assert!(extract_ping(cmds).is_empty());
+    }
+
+    #[test]
+    fn test_look_for_upstream_validators() {
+        let keys = create_keys::<SignatureType>(5);
+        let peer0 = &keys[0];
+        let peer1 = &keys[1];
+        let peer1_pubkey = NodeId::new(peer1.pubkey());
+        let peer2 = &keys[2];
+        let peer2_pubkey = NodeId::new(peer2.pubkey());
+        let peer3 = &keys[3];
+        let peer3_pubkey = NodeId::new(peer3.pubkey());
+
+        // connection info is empty
+        let mut state = generate_test_state(peer0, vec![peer1, peer2, peer3]);
+        state.epoch_validators.insert(
+            Epoch(1),
+            BTreeSet::from([peer1_pubkey, peer2_pubkey, peer3_pubkey]),
+        );
+
+        // a full node should send pings to look for upstream validators if insufficient
+        let cmds = state.refresh();
+        let ping_cmds = extract_ping(cmds);
+        assert_eq!(ping_cmds.len(), 3);
+        // check that pings are sent to peer1, peer2 and peer3
+        assert!(ping_cmds.iter().any(|(target, _)| *target == peer1_pubkey));
+        assert!(ping_cmds.iter().any(|(target, _)| *target == peer2_pubkey));
+        assert!(ping_cmds.iter().any(|(target, _)| *target == peer3_pubkey));
     }
 
     #[test]
@@ -1345,7 +1605,7 @@ mod tests {
             PeerDiscoveryCommand::RouterCommand { .. }
         ));
 
-        let ping = extract_ping(cmds)[0];
+        let (_, ping) = extract_ping(cmds)[0];
 
         // ping always carries local_name_record
         assert!(ping.local_name_record.is_some());
@@ -1371,17 +1631,14 @@ mod tests {
         let peer1 = &keys[1];
         let peer1_pubkey = NodeId::new(peer1.pubkey());
 
-        let peer_info = match known_record {
-            Some(record) => BTreeMap::from([(peer1_pubkey, PeerInfo {
-                last_ping: None,
-                unresponsive_pings: 0,
-                name_record: MonadNameRecord::new(record, peer1),
-            })]),
+        let routing_info = match known_record {
+            Some(record) => BTreeMap::from([(peer1_pubkey, MonadNameRecord::new(record, peer1))]),
             None => BTreeMap::new(),
         };
 
         let mut state = generate_test_state(peer0, vec![]);
-        state.peer_info = peer_info;
+        state.self_role = Role::Validator;
+        state.routing_info = routing_info;
 
         let cmds = state.handle_ping(peer1_pubkey, Ping {
             id: 7,
@@ -1402,12 +1659,7 @@ mod tests {
                 local_record_seq: 0
             });
 
-            let node1_record = state
-                .peer_info
-                .get(&peer1_pubkey)
-                .unwrap()
-                .name_record
-                .name_record;
+            let node1_record = state.routing_info.get(&peer1_pubkey).unwrap().name_record;
             assert_eq!(expected_record, node1_record);
         } else {
             assert!(cmds.is_empty());
