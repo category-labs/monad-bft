@@ -1,7 +1,9 @@
 use std::{
     collections::HashMap,
     marker::PhantomData,
-    net::{SocketAddr, SocketAddrV4, ToSocketAddrs},
+    net::{SocketAddr, ToSocketAddrs},
+    process,
+    sync::Arc,
     time::Duration,
 };
 
@@ -20,6 +22,7 @@ use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
+use monad_dataplane::DataplaneBuilder;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
 use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig};
@@ -27,7 +30,7 @@ use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
 use monad_ledger::MonadBlockFileLedger;
 use monad_node_config::{
-    ExecutionProtocolType, FullNodeIdentityConfig, NodeBootstrapConfig, NodeNetworkConfig,
+    ExecutionProtocolType, FullNodeIdentityConfig, NodeBootstrapConfig, NodeConfig,
     PeerDiscoveryConfig, SignatureCollectionType, SignatureType,
 };
 use monad_peer_discovery::{
@@ -35,7 +38,12 @@ use monad_peer_discovery::{
     MonadNameRecord, NameRecord,
 };
 use monad_pprof::start_pprof_server;
-use monad_raptorcast::{RaptorCast, RaptorCastConfig};
+use monad_raptorcast::config::{
+    GroupSchedulingConfig, RaptorCastConfig, RaptorCastConfigPrimary,
+    RaptorCastConfigSecondaryClient, RaptorCastConfigSecondaryPublisher,
+    SecondaryRaptorCastModeConfig,
+};
+use monad_router_multi::MultiRouter;
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::StateBackendThreadClient;
 use monad_statesync::StateSync;
@@ -54,7 +62,7 @@ use monad_wal::{wal::WALoggerConfig, PersistenceLoggerBuilder};
 use opentelemetry::metrics::MeterProvider;
 use opentelemetry_otlp::{MetricExporter, WithExportConfig};
 use tokio::signal::unix::{signal, SignalKind};
-use tracing::{error, event, info, warn, Instrument, Level};
+use tracing::{debug, error, event, info, warn, Instrument, Level};
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
     layer::SubscriberExt,
@@ -164,7 +172,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
             MonadMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
             VerifiedMonadMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
         >(
-            node_state.node_config.network.clone(),
+            node_state.node_config.clone(),
             node_state.node_config.peer_discovery,
             node_state.router_identity,
             node_state.node_config.bootstrap.clone(),
@@ -483,14 +491,14 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
 }
 
 async fn build_raptorcast_router<ST, SCT, M, OM>(
-    network_config: NodeNetworkConfig,
+    node_config: NodeConfig<ST>,
     peer_discovery_config: PeerDiscoveryConfig<ST>,
     identity: ST::KeyPairType,
     bootstrap_nodes: NodeBootstrapConfig<ST>,
     full_nodes: &[FullNodeIdentityConfig<CertificateSignaturePubKey<ST>>],
     locked_epoch_validators: Vec<ValidatorSetDataWithEpoch<SCT>>,
     current_epoch: Epoch,
-) -> RaptorCast<ST, M, OM, MonadEvent<ST, SCT, ExecutionProtocolType>, PeerDiscovery<ST>>
+) -> MultiRouter<ST, M, OM, MonadEvent<ST, SCT, ExecutionProtocolType>, PeerDiscovery<ST>>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -511,6 +519,28 @@ where
             peer_discovery_config.self_address
         );
     };
+
+    tracing::debug!(
+        "Monad-node ({}) starting at address: {}, pid: {}",
+        if cfg!(feature = "full-node") {
+            "full-node"
+        } else {
+            "validator"
+        },
+        &self_address,
+        process::id()
+    );
+
+    let network_config = node_config.network;
+
+    let mut dp_builder = DataplaneBuilder::new(
+        &SocketAddr::V4(self_address),
+        network_config.max_mbps.into(),
+    );
+    if let Some(buffer_size) = network_config.buffer_size {
+        dp_builder = dp_builder.with_udp_buffer_size(buffer_size);
+    }
+
     let self_record = NameRecord {
         address: self_address,
         seq: peer_discovery_config.self_record_seq_num,
@@ -598,22 +628,70 @@ where
         max_active_connections: peer_discovery_config.max_active_connections,
         rng_seed: 123456,
     };
-    RaptorCast::new(RaptorCastConfig {
-        key: identity,
-        full_nodes: full_nodes
-            .iter()
-            .map(|full_node| NodeId::new(full_node.secp256k1_pubkey))
-            .collect(),
+
+    let secondary_instance = {
+        if let Some(cfg_2nd) = node_config.fullnode_raptorcast {
+            match cfg_2nd.mode {
+                monad_node_config::fullnode_raptorcast::SecondaryRaptorCastModeConfig::None => {
+                    debug!("Configured with Secondary RaptorCast instance: None");
+                    SecondaryRaptorCastModeConfig::None
+                }
+
+                monad_node_config::fullnode_raptorcast::SecondaryRaptorCastModeConfig::Client => {
+                    debug!("Configured with Secondary RaptorCast instance: Client");
+                    SecondaryRaptorCastModeConfig::Client(RaptorCastConfigSecondaryClient {
+                        bandwidth_cost_per_group_member: cfg_2nd.bandwidth_cost_per_group_member,
+                        bandwidth_capacity: cfg_2nd.bandwidth_capacity,
+                        invite_future_dist_min: cfg_2nd.invite_future_dist_min,
+                        invite_future_dist_max: cfg_2nd.invite_future_dist_max,
+                        invite_accept_heartbeat: Duration::from_millis(cfg_2nd.invite_accept_heartbeat_ms),
+                        raptor10_redundancy: cfg_2nd.raptor10_fullnode_redundancy_factor,
+                    })
+                }
+
+                monad_node_config::fullnode_raptorcast::SecondaryRaptorCastModeConfig::Publisher => {
+                    debug!("Configured with Secondary RaptorCast instance: Publisher");
+                    let full_nodes_prioritized: Vec<NodeId<CertificateSignaturePubKey<ST>>> = cfg_2nd
+                        .full_nodes_prioritized
+                        .identities
+                        .iter()
+                        .map(|id| NodeId::new(id.secp256k1_pubkey))
+                        .collect();
+                    SecondaryRaptorCastModeConfig::Publisher(RaptorCastConfigSecondaryPublisher {
+                        full_nodes_prioritized,
+                        group_scheduling: GroupSchedulingConfig {
+                            max_group_size: cfg_2nd.max_group_size,
+                            round_span: cfg_2nd.round_span,
+                            invite_lookahead: cfg_2nd.invite_lookahead,
+                            max_invite_wait: cfg_2nd.max_invite_wait,
+                            deadline_round_dist: cfg_2nd.deadline_round_dist,
+                            init_empty_round_span: cfg_2nd.init_empty_round_span,
+                        },
+                        raptor10_redundancy: cfg_2nd.raptor10_fullnode_redundancy_factor,
+                    })
+                }
+            }
+        } else {
+            SecondaryRaptorCastModeConfig::None
+        }
+    };
+
+    MultiRouter::new(
+        RaptorCastConfig {
+            shared_key: Arc::new(identity),
+            mtu: network_config.mtu,
+            primary_instance: RaptorCastConfigPrimary {
+                raptor10_redundancy: node_config.raptor10_validator_redundancy_factor,
+                fullnode_dedicated: full_nodes
+                    .iter()
+                    .map(|full_node| NodeId::new(full_node.secp256k1_pubkey))
+                    .collect(),
+            },
+            secondary_instance,
+        },
+        dp_builder,
         peer_discovery_builder,
-        redundancy: 3,
-        local_addr: SocketAddr::V4(SocketAddrV4::new(
-            network_config.bind_address_host,
-            network_config.bind_address_port,
-        )),
-        up_bandwidth_mbps: network_config.max_mbps.into(),
-        mtu: network_config.mtu,
-        buffer_size: network_config.buffer_size,
-    })
+    )
 }
 
 fn resolve_domain_v4<P: PubKey>(node_id: &NodeId<P>, domain: &String) -> Option<SocketAddr> {

@@ -16,8 +16,8 @@ use tracing::{debug, info, trace, warn};
 
 use crate::{
     MonadNameRecord, NameRecord, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryCommand,
-    PeerDiscoveryEvent, PeerDiscoveryMessage, PeerDiscoveryTimerCommand, PeerLookupRequest,
-    PeerLookupResponse, Ping, Pong, TimerKind,
+    PeerDiscoveryEvent, PeerDiscoveryMessage, PeerDiscoveryMetricsCommand,
+    PeerDiscoveryTimerCommand, PeerLookupRequest, PeerLookupResponse, Ping, Pong, TimerKind,
 };
 
 /// Maximum number of peers to be included in a PeerLookupResponse
@@ -737,6 +737,11 @@ where
 
         // reset timer to schedule for the next refresh
         cmds.extend(self.reset_refresh_timer());
+
+        // export metrics
+        cmds.push(PeerDiscoveryCommand::MetricsCommand(
+            PeerDiscoveryMetricsCommand(self.metrics.clone()),
+        ));
 
         cmds
     }

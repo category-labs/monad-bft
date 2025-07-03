@@ -157,12 +157,16 @@ pub enum PeerDiscoveryTimerCommand<E, ST: CertificateSignatureRecoverable> {
 }
 
 #[derive(Debug)]
+pub struct PeerDiscoveryMetricsCommand(ExecutorMetrics);
+
+#[derive(Debug)]
 pub enum PeerDiscoveryCommand<ST: CertificateSignatureRecoverable> {
     RouterCommand {
         target: NodeId<CertificateSignaturePubKey<ST>>,
         message: PeerDiscoveryMessage<ST>,
     },
     TimerCommand(PeerDiscoveryTimerCommand<PeerDiscoveryEvent<ST>, ST>),
+    MetricsCommand(PeerDiscoveryMetricsCommand),
 }
 
 pub trait PeerDiscoveryAlgo {

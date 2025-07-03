@@ -1,11 +1,10 @@
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{sync::Arc, time::Duration};
 
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_types::{NodeId, Round};
 
-#[derive(Clone)]
 pub struct RaptorCastConfig<ST>
 where
     ST: CertificateSignatureRecoverable,
@@ -15,9 +14,6 @@ where
     // to both primary and secondary instances, so we don't wan't to partially
     // move the Config when wrapping shared_key into an Arc during the ctor.
     pub shared_key: Arc<ST::KeyPairType>,
-
-    // IP addresses ov the entries in fullnode_dedicated and full_nodes_prioritized
-    pub known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
 
     // For splitting large app messages (e.g. block proposals) into chunks that
     // fit into UDP datagrams for the raptorcast protocol.
@@ -33,6 +29,20 @@ where
     // Validators and full-nodes who do not want to participate in validator-
     // to-full-node raptor-casting may opt out of this.
     pub secondary_instance: SecondaryRaptorCastModeConfig<ST>,
+}
+
+impl<ST> Clone for RaptorCastConfig<ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    fn clone(&self) -> Self {
+        RaptorCastConfig {
+            shared_key: self.shared_key.clone(),
+            mtu: self.mtu,
+            primary_instance: self.primary_instance.clone(),
+            secondary_instance: self.secondary_instance.clone(),
+        }
+    }
 }
 
 /// Configuration for the primary instance of RaptorCast (group of validators)
@@ -82,9 +92,13 @@ pub struct RaptorCastConfigSecondaryClient {
     pub bandwidth_cost_per_group_member: u64,
     pub bandwidth_capacity: u64,
     // When being invited to a raptorcast group, we will only accept the invite
-    // if the group is not too far or too soon in the future.
+    // if the group is not too far or too soon in the future, unless we haven't
+    // seen any proposals in `invite_accept_heartbeat`
     pub invite_future_dist_min: Round,
     pub invite_future_dist_max: Round,
+    pub invite_accept_heartbeat: Duration,
+    /// This applies when sending point-to-point group messages
+    pub raptor10_redundancy: u8,
 }
 
 impl Default for RaptorCastConfigSecondaryClient {
@@ -93,7 +107,9 @@ impl Default for RaptorCastConfigSecondaryClient {
             bandwidth_cost_per_group_member: 1,
             bandwidth_capacity: u64::MAX,
             invite_future_dist_min: Round(1),
-            invite_future_dist_max: Round(36000), // ~10 hours into the future, with default round length of 500ms
+            invite_future_dist_max: Round(600), // ~5 minutes into the future, with current round length of 500ms
+            invite_accept_heartbeat: Duration::from_secs(10),
+            raptor10_redundancy: 2,
         }
     }
 }

@@ -169,7 +169,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
 
             // Note: The check that parsed_message.author is valid is already
             // done in iterate_rebroadcast_peers(), but we want to drop invalid
-            // chunks ASAP, before changing `recently_decoded_state.
+            // chunks ASAP, before changing `recently_decoded_state`.
             if parsed_message.broadcast {
                 if !group_map.check_source(Epoch(parsed_message.epoch), &parsed_message.author) {
                     tracing::debug!(
@@ -194,6 +194,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
 
             tracing::trace!(
                 src_addr = ?message.src_addr,
+                app_message_len = ?parsed_message.app_message_len,
                 self_id =? self.self_id,
                 author =? parsed_message.author,
                 unix_ts_ms = parsed_message.unix_ts_ms,
@@ -436,8 +437,7 @@ where
 }
 
 /// Stuff to include:
-/// - 65 bytes => Signature of sender over hash(rest of message up to merkle proof, concatenated
-///               with merkle root)
+/// - 65 bytes => Signature of sender over hash(rest of message up to merkle proof, concatenated with merkle root)
 /// - 2 bytes => Version: bumped on protocol updates
 /// - 1 bit => broadcast or not
 /// - 7 bits => Merkle tree depth
@@ -540,6 +540,16 @@ pub fn build_messages_with_length<ST>(
 where
     ST: CertificateSignatureRecoverable,
 {
+    if app_message_len == 0 {
+        tracing::warn!("build_messages_with_length() called with app_message_len = 0");
+        return Vec::new();
+    }
+
+    if redundancy == 0 {
+        tracing::error!("build_messages_with_length() called with redundancy = 0");
+        return Vec::new();
+    }
+
     // body_size is the amount of space available for payload+proof in a single
     // UDP datagram. Our raptorcast encoding needs around 108 + 24 = 132 bytes
     // in each datagram. Typically:
@@ -636,7 +646,10 @@ where
     match build_target {
         BuildTarget::PointToPoint(to) => {
             let Some(addr) = known_addresses.get(to) else {
-                tracing::warn!(?to, "not sending message, address unknown");
+                tracing::warn!(
+                    ?to,
+                    "RaptorCast build_message PointToPoint not sending message, address unknown"
+                );
                 return Vec::new();
             };
             outbound_gso_idx.push((*addr, 0..segment_size as usize * num_packets));
@@ -650,6 +663,16 @@ where
             assert!(is_broadcast && !is_raptor_broadcast);
             let total_validators = epoch_validators.view().len();
             let mut running_validator_count = 0;
+            tracing::debug!(
+                ?self_id,
+                unix_ts_ms,
+                app_message_len,
+                redundancy,
+                data_size,
+                num_packets,
+                ?app_message_hash,
+                "RaptorCast Broadcast v2v message"
+            );
             for (node_id, _validator) in epoch_validators.view().iter() {
                 let start_idx: usize = num_packets * running_validator_count / total_validators;
                 running_validator_count += 1;
@@ -664,7 +687,10 @@ where
                         start_idx * segment_size as usize..end_idx * segment_size as usize,
                     ));
                 } else {
-                    tracing::warn!(?node_id, "not sending message, address unknown")
+                    tracing::warn!(
+                        ?node_id,
+                        "RaptorCast build_message Broadcast not sending message, address unknown"
+                    )
                 }
                 for (chunk_idx, (chunk_symbol_id, chunk_data)) in
                     chunk_datas[start_idx..end_idx].iter_mut().enumerate()
@@ -686,7 +712,7 @@ where
                 data_size,
                 num_packets,
                 ?app_message_hash,
-                "raptorcasting v2v message"
+                "RaptorCast v2v message"
             );
 
             assert!(!epoch_validators.view().is_empty() || !full_nodes_view.view().is_empty());
@@ -713,6 +739,8 @@ where
                 let mut running_stake = 0;
                 let mut chunk_idx = 0_u16;
                 let mut nodes: Vec<_> = epoch_validators.view().iter().collect();
+                // Group shuffling so chunks for small proposals aren't always assigned
+                // to the same nodes, until researchers come up with something better.
                 nodes.shuffle(&mut rand::thread_rng());
                 for (node_id, validator) in &nodes {
                     let start_idx: usize =
@@ -730,7 +758,7 @@ where
                             start_idx * segment_size as usize..end_idx * segment_size as usize,
                         ));
                     } else {
-                        tracing::warn!(?node_id, "not sending message, address unknown")
+                        tracing::warn!(?node_id, "RaptorCast build_message Raptorcast not sending message, address unknown")
                     }
                     for (chunk_symbol_id, chunk_data) in chunk_datas[start_idx..end_idx].iter_mut()
                     {
@@ -768,13 +796,13 @@ where
                 data_size,
                 num_packets,
                 ?app_message_hash,
-                "raptorcasting v2fn message"
+                "RaptorCast v2fn message"
             );
 
             let total_peers = group.size_excl_self();
             let mut pp = 0;
             // Group shuffling so chunks for small proposals aren't always assigned
-            // to the same nodes, before researchers come up with something better.
+            // to the same nodes, until researchers come up with something better.
             for node_id in group.iter_skip_self_and_author(&self_id, rand::random::<usize>()) {
                 let start_idx: usize = num_packets * pp / total_peers;
                 pp += 1;
@@ -960,8 +988,7 @@ pub enum MessageValidationError {
     InvalidMerkleProof,
 }
 
-/// - 65 bytes => Signature of sender over hash(rest of message up to merkle proof, concatenated
-///               with merkle root)
+/// - 65 bytes => Signature of sender over hash(rest of message up to merkle proof, concatenated with merkle root)
 /// - 2 bytes => Version: bumped on protocol updates
 /// - 1 bit => broadcast or not
 /// - 7 bits => Merkle tree depth

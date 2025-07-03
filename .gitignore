@@ -15,3 +15,5 @@ test-keys
 .cargo/config.toml
 /*.log
 .gdbinit
+/venv
+/logs

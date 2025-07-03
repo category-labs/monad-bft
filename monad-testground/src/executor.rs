@@ -1,4 +1,10 @@
-use std::{marker::PhantomData, time::Duration};
+use std::{
+    collections::HashMap,
+    marker::PhantomData,
+    net::{SocketAddr, SocketAddrV4},
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
 use monad_consensus_state::ConsensusConfig;
@@ -12,9 +18,13 @@ use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::certificate_signature::{
     CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_dataplane::DataplaneBuilder;
 use monad_executor_glue::{Command, MonadEvent, RouterCommand, StateRootHashCommand};
-use monad_peer_discovery::mock::{NopDiscovery, NopDiscoveryBuilder};
-use monad_raptorcast::{RaptorCast, RaptorCastConfig};
+use monad_peer_discovery::{
+    driver::PeerDiscoveryDriver,
+    mock::{NopDiscovery, NopDiscoveryBuilder},
+};
+use monad_raptorcast::{config::RaptorCastConfig, RaptorCast};
 use monad_state::{Forkpoint, MonadMessage, MonadState, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::InMemoryState;
 use monad_types::{ExecutionProtocol, NodeId, Round, SeqNum};
@@ -27,7 +37,7 @@ use monad_updaters::{
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use tracing_subscriber::EnvFilter;
 
-pub enum RouterConfig<ST, SCT, EPT, B>
+pub enum RouterConfig<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -37,7 +47,7 @@ where
         /// Must be passed ahead-of-time because they can't be instantiated individually
         LocalPeerRouter<ST, MonadMessage<ST, SCT, EPT>, VerifiedMonadMessage<ST, SCT, EPT>>,
     ),
-    RaptorCast(RaptorCastConfig<ST, B>),
+    RaptorCast(RaptorCastConfig<ST>),
 }
 
 pub enum LedgerConfig {
@@ -54,13 +64,15 @@ where
     },
 }
 
-pub struct ExecutorConfig<ST, SCT, EPT, B>
+pub struct ExecutorConfig<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    pub router_config: RouterConfig<ST, SCT, EPT, B>,
+    pub local_addr: SocketAddr,
+    pub known_addresses: HashMap<NodeId<SCT::NodeIdPubKey>, SocketAddrV4>,
+    pub router_config: RouterConfig<ST, SCT, EPT>,
     pub ledger_config: LedgerConfig,
     pub state_root_hash_config: StateRootHashConfig<SCT>,
     pub nodeid: NodeId<SCT::NodeIdPubKey>,
@@ -69,7 +81,7 @@ where
 pub fn make_monad_executor<ST, SCT>(
     index: usize,
     state_backend: InMemoryState,
-    config: ExecutorConfig<ST, SCT, MockExecutionProtocol, NopDiscoveryBuilder<ST>>,
+    config: ExecutorConfig<ST, SCT, MockExecutionProtocol>,
 ) -> ParentExecutor<
     BoxUpdater<
         'static,
@@ -94,17 +106,35 @@ where
     <SCT as SignatureCollection>::SignatureType: Unpin,
 {
     let (_, reload_handle) = tracing_subscriber::reload::Layer::new(EnvFilter::from_default_env());
+
+    let dataplane_builder =
+        DataplaneBuilder::new(&config.local_addr, 1_000).with_udp_buffer_size(62_500_000);
+
+    let peer_discovery_builder = NopDiscoveryBuilder {
+        known_addresses: config.known_addresses,
+        ..Default::default()
+    };
+
     ParentExecutor {
         router: match config.router_config {
             RouterConfig::Local(router) => Updater::boxed(router),
-            RouterConfig::RaptorCast(config) => Updater::boxed(RaptorCast::<
-                ST,
-                MonadMessage<ST, SCT, MockExecutionProtocol>,
-                VerifiedMonadMessage<ST, SCT, MockExecutionProtocol>,
-                MonadEvent<ST, SCT, MockExecutionProtocol>,
-                NopDiscovery<ST>,
-            >::new(config)),
+
+            RouterConfig::RaptorCast(cfg) => {
+                let pdd = PeerDiscoveryDriver::new(peer_discovery_builder);
+                let shared_peer_discovery_driver = Arc::new(Mutex::new(pdd));
+                let shared_dataplane = Arc::new(Mutex::new(dataplane_builder.build()));
+                Updater::boxed(RaptorCast::<
+                    ST,
+                    MonadMessage<ST, SCT, MockExecutionProtocol>,
+                    VerifiedMonadMessage<ST, SCT, MockExecutionProtocol>,
+                    MonadEvent<ST, SCT, MockExecutionProtocol>,
+                    NopDiscovery<ST>,
+                >::new(
+                    cfg, shared_dataplane, shared_peer_discovery_driver
+                ))
+            }
         },
+
         timer: TokioTimer::default(),
         ledger: match config.ledger_config {
             LedgerConfig::Mock => MockLedger::new(state_backend.clone()),

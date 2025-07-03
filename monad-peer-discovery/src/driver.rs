@@ -26,6 +26,7 @@ pub enum PeerDiscoveryEmit<ST: CertificateSignatureRecoverable> {
         target: NodeId<CertificateSignaturePubKey<ST>>,
         message: PeerDiscoveryMessage<ST>,
     },
+    MetricsCommand(ExecutorMetrics),
 }
 
 struct PeerDiscTimers<ST: CertificateSignatureRecoverable> {
@@ -130,6 +131,12 @@ where
     pending_emits: VecDeque<PeerDiscoveryEmit<PD::SignatureType>>,
 }
 
+impl<PD: PeerDiscoveryAlgo> std::fmt::Debug for PeerDiscoveryDriver<PD> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PeerDiscoveryDriver").finish()
+    }
+}
+
 impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
     pub fn new<B: PeerDiscoveryAlgoBuilder<PeerDiscoveryAlgoType = PD>>(builder: B) -> Self {
         let (peer_discovery, init_cmds) = builder.build();
@@ -192,6 +199,11 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
                 }
                 PeerDiscoveryCommand::TimerCommand(timer_cmd) => {
                     timer_cmds.push(timer_cmd);
+                }
+                PeerDiscoveryCommand::MetricsCommand(peer_discovery_metrics_command) => {
+                    emits.push(PeerDiscoveryEmit::MetricsCommand(
+                        peer_discovery_metrics_command.0,
+                    ));
                 }
             }
         }

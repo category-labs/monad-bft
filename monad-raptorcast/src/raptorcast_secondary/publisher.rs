@@ -6,7 +6,6 @@ use std::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-// use monad_peer_discovery::{MonadNameRecord, NameRecord};
 use monad_types::{NodeId, Round, RoundSpan};
 use rand::{seq::SliceRandom, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -70,13 +69,20 @@ where
 
         // Remove duplicate entries from always_ask_full_nodes, but making sure
         // we maintain the original order/
+        tracing::info!(
+            num_prio_full_nodes =? config.full_nodes_prioritized.len(),
+            "RaptorCastSecondary initializing Publisher",
+        );
         let mut always_ask_full_nodes: FullNodesST<ST> = FullNodes::default();
 
         {
             let mut seen = HashSet::new();
             for node in config.full_nodes_prioritized {
                 if seen.insert(node) {
+                    tracing::trace!(?node, "insert prioritized full node");
                     always_ask_full_nodes.list.push(node);
+                } else {
+                    tracing::info!(?node, "duplicate prioritized full node, ignoring");
                 }
             }
         }
@@ -109,6 +115,7 @@ where
         &mut self,
         round: Round,
     ) -> Option<(FullNodesGroupMessage<ST>, FullNodesST<ST>)> {
+        tracing::trace!(?round, "enter_round_and_step_until");
         // Just some sanity check
         {
             if round < self.curr_round {
@@ -137,6 +144,7 @@ where
     // Populate self.curr_group and clean up expired groups.
     // When we have a real timer, this can be called from UpdateCurrentRound
     fn enter_round(&mut self, round: Round) {
+        tracing::trace!(?round, "enter_round");
         assert_ne!(round, Round::MAX);
 
         if round < self.curr_group.get_round_span().end {
@@ -167,10 +175,10 @@ where
                 // The next group is not yet scheduled to start. This can happen
                 // when there gaps in the round sequence.
                 tracing::debug!(
-                    "No group scheduled for RaptorcastSecondary \
-                    round {:?}, next group is {:?}",
-                    round,
-                    group
+                    ?round,
+                    ?group,
+                    "No group scheduled for RaptorCastSecondary \
+                    round, next group is",
                 );
             }
             None => {
@@ -179,9 +187,9 @@ where
                 // We currently have an empty group for some rounds while we
                 // allow invites for a future group to complete.
                 tracing::debug!(
-                    "No group scheduled for RaptorcastSecondary \
-                    round {:?} nor any other future round yet.",
-                    round
+                    ?round,
+                    "No group scheduled for RaptorCastSecondary \
+                    round nor any other future round yet.",
                 );
             }
         }
@@ -201,11 +209,17 @@ where
             None => self.curr_group.get_round_span().end,
         };
 
+        tracing::trace!(?time_point, ?schedule_end, "RaptorCastSecondary step_until");
+
         // Check if scheduled groups need servicing: time-outs, invites, confirm
         for (_, group) in self.group_schedule.iter_mut() {
             if let Some(out_msg) =
                 group.advance_invites(time_point, &self.scheduling_cfg, self.validator_node_id)
             {
+                tracing::trace!(
+                    ?out_msg,
+                    "RaptorCastSecondary step_until advanced invites and will send",
+                );
                 return Some(out_msg);
             }
         }
@@ -221,6 +235,10 @@ where
             );
             let maybe_invites =
                 new_group.advance_invites(time_point, &self.scheduling_cfg, self.validator_node_id);
+            tracing::trace!(
+                ?maybe_invites,
+                "RaptorCastSecondary step_until new_randomized group, will send:",
+            );
             self.group_schedule.insert(new_group.start_round, new_group);
             return maybe_invites;
         }
@@ -230,10 +248,11 @@ where
     }
 
     // Process response from a full-node who we previously invited to join one
-    // of our Raptorcast group scheduled for a future round.
+    // of our RaptorCast group scheduled for a future round.
     // We've received a response from the candidate but won't send any message
     // back right away, but when we have enough responses to form a group.
     pub fn on_candidate_response(&mut self, msg: FullNodesGroupMessage<ST>) {
+        tracing::trace!(?msg, "RaptorCastSecondary received candidate response");
         match msg {
             FullNodesGroupMessage::PrepareGroupResponse(response) => {
                 let candidate = response.node_id;
@@ -242,18 +261,18 @@ where
                     group.on_candidate_response(candidate, response.accept);
                 } else {
                     tracing::warn!(
-                        "Ignoring response from FullNode {:?}, \
-                        as there is no group scheduled to start in round {:?}",
-                        candidate,
-                        start_round
+                        ?candidate,
+                        ?start_round,
+                        "Ignoring response from FullNode, \
+                        as there is no group scheduled to start in round",
                     );
                 }
             }
             _ => {
                 tracing::debug!(
+                    ?msg,
                     "RaptorCastSecondary publisher received \
-                    unexpected message: {:?}",
-                    msg
+                    unexpected message",
                 );
             }
         }
@@ -267,6 +286,8 @@ where
         }
     }
 
+    // TODO: implement a command to update the always-ask full nodes?
+    #[allow(dead_code)]
     pub fn update_always_ask_full_nodes(
         &mut self,
         replace_fn: FullNodes<CertificateSignaturePubKey<ST>>,
@@ -279,7 +300,6 @@ where
             .retain(|node| !self.always_ask_full_nodes.list.contains(node));
     }
 
-    #[allow(dead_code)] // Placeholder for peer discovery
     pub fn upsert_peer_disc_full_nodes(
         &mut self,
         additional_fn: FullNodes<CertificateSignaturePubKey<ST>>,
@@ -383,6 +403,7 @@ where
         validator_id: NodeId<CertificateSignaturePubKey<ST>>,
     ) -> Option<(FullNodesGroupMessage<ST>, FullNodesST<ST>)> {
         if curr_timestamp < self.next_invite_tp {
+            tracing::trace!("RaptorCastSecondary Publisher advance_invites: None");
             return None;
         }
 
@@ -410,6 +431,7 @@ where
             };
             // ConfirmGroup is sent to all accepted peers
             let grp_msg = FullNodesGroupMessage::ConfirmGroup(confirm_data);
+            tracing::trace!("RaptorCastSecondary Publisher advance_invites: send ConfirmGroup");
             return Some((grp_msg, self.full_nodes_accepted.clone()));
         }
 
@@ -428,6 +450,10 @@ where
         );
         let invite_msg = FullNodesGroupMessage::PrepareGroup(prep_grp_data);
         self.num_invites_sent += next_invitees.list.len();
+        tracing::trace!(?next_invitees.list,
+            "RaptorCastSecondary Publisher advance_invites: send Invites to peers",
+
+        );
         Some((invite_msg, next_invitees))
     }
 
@@ -436,43 +462,51 @@ where
         candidate: NodeId<CertificateSignaturePubKey<ST>>,
         accepted: bool,
     ) {
+        tracing::trace!(
+            ?candidate,
+            ?accepted,
+            "RaptorCastSecondary Publisher on_candidate_response",
+        );
         if self.is_locked() {
             // Already formed the group
+            tracing::trace!(
+                ?candidate,
+                ?accepted,
+                "RaptorCastSecondary Publisher on_candidate_response - Already formed the group"
+            );
             return;
         }
         if !self.full_nodes_candidates.list.contains(&candidate) {
             tracing::warn!(
-                "Ignoring response from FullNode {:?} who was \
-                never invited to RaptorcastSecondary group {:?}",
-                candidate,
-                self
+                ?candidate,
+                ?self,
+                "Ignoring response from FullNode who was \
+                never invited to RaptorCastSecondary group",
             );
             return;
         }
         if self.full_nodes_accepted.list.contains(&candidate) {
             tracing::warn!(
-                "Ignoring duplicate response from FullNode {:?} \
-                who was already accepted into RaptorcastSecondary group {:?}",
-                candidate,
-                self
+                ?candidate,
+                ?self,
+                "Ignoring duplicate response from FullNode \
+                who was already accepted into RaptorCastSecondary group",
             );
             return;
         }
         if accepted {
             self.full_nodes_accepted.list.push(candidate);
             tracing::debug!(
-                "RaptorcastSecondary group invite accepted by {:?} \
-                for group {:?}",
-                candidate,
-                self
+                ?candidate,
+                ?self,
+                "RaptorCastSecondary group invite accepted by, for group",
             );
         } else {
             self.num_invites_rejected += 1;
             tracing::debug!(
-                "RaptorcastSecondary group invite rejected by {:?} \
-                for group {:?}",
-                candidate,
-                self
+                ?candidate,
+                ?self,
+                "RaptorCastSecondary group invite rejected by, for group",
             );
         }
     }
@@ -499,6 +533,7 @@ mod tests {
             mpsc::{Receiver, Sender},
             Once,
         },
+        time::Duration,
     };
 
     use iset::{interval_map, IntervalMap};
@@ -1298,6 +1333,8 @@ mod tests {
                 bandwidth_capacity: 5,
                 invite_future_dist_min: Round(1),
                 invite_future_dist_max: Round(100),
+                invite_accept_heartbeat: Duration::from_secs(10),
+                raptor10_redundancy: 2,
             },
         );
         let mut group_map = MockGroupMap::new(nid(10), clt_rx);
@@ -1423,6 +1460,8 @@ mod tests {
                 bandwidth_capacity: 5,
                 invite_future_dist_min: Round(1),
                 invite_future_dist_max: Round(100),
+                invite_accept_heartbeat: Duration::from_secs(10),
+                raptor10_redundancy: 2,
             },
         );
         let mut group_map = MockGroupMap::new(nid(10), clt_rx);
@@ -1564,6 +1603,8 @@ mod tests {
                 bandwidth_capacity: 6,
                 invite_future_dist_min: Round(1),
                 invite_future_dist_max: Round(100),
+                invite_accept_heartbeat: Duration::from_secs(10),
+                raptor10_redundancy: 2,
             },
         );
         let mut group_map = MockGroupMap::new(nid(me), clt_rx);

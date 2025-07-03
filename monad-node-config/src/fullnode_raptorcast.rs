@@ -9,7 +9,7 @@ use super::fullnode::FullNodeConfig;
 pub enum SecondaryRaptorCastModeConfig {
     Client,
     Publisher,
-    // No "None" option, as FullNodeRaptorCastConfig is now wrapped in Option<>
+    None, // Disables secondary raptorcast
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -34,4 +34,5 @@ pub struct FullNodeRaptorCastConfig<P: PubKey> {
     pub bandwidth_capacity: u64,
     pub invite_future_dist_min: Round,
     pub invite_future_dist_max: Round,
+    pub invite_accept_heartbeat_ms: u64,
 }

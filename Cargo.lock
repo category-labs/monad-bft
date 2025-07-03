@@ -5135,6 +5135,7 @@ dependencies = [
  "monad-consensus-types",
  "monad-control-panel",
  "monad-crypto",
+ "monad-dataplane",
  "monad-eth-block-policy",
  "monad-eth-block-validator",
  "monad-eth-txpool-executor",
@@ -5147,6 +5148,7 @@ dependencies = [
  "monad-pprof",
  "monad-raptorcast",
  "monad-router-filter",
+ "monad-router-multi",
  "monad-secp",
  "monad-state",
  "monad-state-backend",
@@ -5319,6 +5321,21 @@ dependencies = [
  "monad-executor-glue",
  "monad-state",
  "monad-types",
+]
+
+[[package]]
+name = "monad-router-multi"
+version = "0.1.0"
+dependencies = [
+ "alloy-rlp",
+ "futures",
+ "monad-crypto",
+ "monad-dataplane",
+ "monad-executor",
+ "monad-executor-glue",
+ "monad-peer-discovery",
+ "monad-raptorcast",
+ "tracing",
 ]
 
 [[package]]
@@ -5518,6 +5535,7 @@ dependencies = [
  "rand 0.8.5",
  "tokio",
  "tracing",
+ "tracing-appender",
  "tracing-opentelemetry",
  "tracing-subscriber",
 ]
@@ -8546,6 +8564,18 @@ dependencies = [
  "pin-project",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "tracing-appender"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3566e8ce28cc0a3fe42519fc80e6b4c943cc4c8cef275620eb8dac2d3d4e06cf"
+dependencies = [
+ "crossbeam-channel",
+ "thiserror 1.0.69",
+ "time",
+ "tracing-subscriber",
 ]
 
 [[package]]

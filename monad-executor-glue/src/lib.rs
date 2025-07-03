@@ -37,7 +37,6 @@ use serde::{Deserialize, Serialize};
 
 const STATESYNC_NETWORK_MESSAGE_NAME: &str = "StateSyncNetworkMessage";
 
-#[derive(Debug)]
 pub enum RouterCommand<ST: CertificateSignatureRecoverable, OM> {
     // Publish should not be replayed
     Publish {
@@ -59,6 +58,37 @@ pub enum RouterCommand<ST: CertificateSignatureRecoverable, OM> {
     UpdateFullNodes(Vec<NodeId<CertificateSignaturePubKey<ST>>>),
 }
 
+impl<ST: CertificateSignatureRecoverable, OM> Debug for RouterCommand<ST, OM> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Publish { target, message: _ } => {
+                f.debug_struct("Publish").field("target", target).finish()
+            }
+            Self::PublishToFullNodes { epoch, message: _ } => f
+                .debug_struct("PublishToFullNodes")
+                .field("epoch", epoch)
+                .finish(),
+            Self::AddEpochValidatorSet {
+                epoch,
+                validator_set,
+            } => f
+                .debug_struct("AddEpochValidatorSet")
+                .field("epoch", epoch)
+                .field("validator_set", validator_set)
+                .finish(),
+            Self::UpdateCurrentRound(arg0, arg1) => f
+                .debug_tuple("UpdateCurrentRound")
+                .field(arg0)
+                .field(arg1)
+                .finish(),
+            Self::GetPeers => write!(f, "GetPeers"),
+            Self::UpdatePeers(arg0) => f.debug_tuple("UpdatePeers").field(arg0).finish(),
+            Self::GetFullNodes => write!(f, "GetFullNodes"),
+            Self::UpdateFullNodes(arg0) => f.debug_tuple("UpdateFullNodes").field(arg0).finish(),
+        }
+    }
+}
+
 pub trait Message: Clone + Send + Sync {
     type NodeIdPubKey: PubKey;
     type Event: Send + Sync;
@@ -77,7 +107,6 @@ pub enum TimeoutVariant {
     SendVote,
 }
 
-#[derive(Debug)]
 pub enum TimerCommand<E> {
     /// ScheduleReset should ALMOST ALWAYS be emitted by the state machine after handling E
     /// This is to prevent E from firing twice on replay
@@ -88,6 +117,23 @@ pub enum TimerCommand<E> {
         on_timeout: E,
     },
     ScheduleReset(TimeoutVariant),
+}
+
+impl<E> Debug for TimerCommand<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Schedule {
+                duration,
+                variant,
+                on_timeout: _,
+            } => f
+                .debug_struct("Schedule")
+                .field("duration", duration)
+                .field("variant", variant)
+                .finish(),
+            Self::ScheduleReset(arg0) => f.debug_tuple("ScheduleReset").field(arg0).finish(),
+        }
+    }
 }
 
 pub enum LedgerCommand<ST, SCT, EPT>
@@ -122,7 +168,7 @@ where
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct CheckpointCommand<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -133,6 +179,7 @@ where
     pub checkpoint: Checkpoint<ST, SCT, EPT>,
 }
 
+#[derive(Debug)]
 pub enum StateRootHashCommand {
     NotifyFinalized(SeqNum),
 }
@@ -327,9 +374,16 @@ pub enum ControlPanelCommand<ST: CertificateSignatureRecoverable> {
     Write(WriteCommand),
 }
 
-#[derive(Debug)]
 pub enum LoopbackCommand<E> {
     Forward(E),
+}
+
+impl<E> Debug for LoopbackCommand<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LoopbackCommand::Forward(_e) => f.debug_tuple("Forward").finish(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -337,6 +391,7 @@ pub enum TimestampCommand {
     AdjustDelta(TimestampAdjustment),
 }
 
+#[derive(Debug)]
 pub enum StateSyncCommand<ST, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -356,6 +411,7 @@ where
     StartExecution,
 }
 
+#[derive(Debug)]
 pub enum ConfigReloadCommand {
     ReloadConfig,
 }
@@ -406,6 +462,72 @@ where
     },
 }
 
+impl<ST, SCT, EPT, BPT, SBT> Debug for TxPoolCommand<ST, SCT, EPT, BPT, SBT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    SBT: StateBackend,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BlockCommit(arg0) => f.debug_tuple("BlockCommit").field(arg0).finish(),
+            Self::CreateProposal {
+                epoch,
+                round,
+                seq_num,
+                high_qc,
+                round_signature,
+                last_round_tc,
+                tx_limit,
+                proposal_gas_limit,
+                proposal_byte_limit,
+                beneficiary,
+                timestamp_ns,
+                extending_blocks,
+                delayed_execution_results,
+            } => f
+                .debug_struct("CreateProposal")
+                .field("epoch", epoch)
+                .field("round", round)
+                .field("seq_num", seq_num)
+                .field("high_qc", high_qc)
+                .field("round_signature", round_signature)
+                .field("last_round_tc", last_round_tc)
+                .field("tx_limit", tx_limit)
+                .field("proposal_gas_limit", proposal_gas_limit)
+                .field("proposal_byte_limit", proposal_byte_limit)
+                .field("beneficiary", beneficiary)
+                .field("timestamp_ns", timestamp_ns)
+                .field("extending_blocks", extending_blocks)
+                .field("delayed_execution_results", delayed_execution_results)
+                .finish(),
+            Self::InsertForwardedTxs { sender, txs } => f
+                .debug_struct("InsertForwardedTxs")
+                .field("sender", sender)
+                .field("txs", txs)
+                .finish(),
+            Self::EnterRound {
+                epoch,
+                round,
+                upcoming_leader_rounds,
+            } => f
+                .debug_struct("EnterRound")
+                .field("epoch", epoch)
+                .field("round", round)
+                .field("upcoming_leader_rounds", upcoming_leader_rounds)
+                .finish(),
+            Self::Reset {
+                last_delay_committed_blocks,
+            } => f
+                .debug_struct("Reset")
+                .field("last_delay_committed_blocks", last_delay_committed_blocks)
+                .finish(),
+        }
+    }
+}
+
 pub enum Command<E, OM, ST, SCT, EPT, BPT, SBT>
 where
     ST: CertificateSignatureRecoverable,
@@ -426,6 +548,39 @@ where
     LoopbackCommand(LoopbackCommand<E>),
     StateSyncCommand(StateSyncCommand<ST, EPT>),
     ConfigReloadCommand(ConfigReloadCommand),
+}
+
+impl<E, OM, ST, SCT, EPT, BPT, SBT> Debug for Command<E, OM, ST, SCT, EPT, BPT, SBT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    SBT: StateBackend,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RouterCommand(arg0) => f.debug_tuple("RouterCommand").field(arg0).finish(),
+            Self::TimerCommand(arg0) => f.debug_tuple("TimerCommand").field(arg0).finish(),
+            Self::LedgerCommand(arg0) => f.debug_tuple("LedgerCommand").field(arg0).finish(),
+            Self::CheckpointCommand(arg0) => {
+                f.debug_tuple("CheckpointCommand").field(arg0).finish()
+            }
+            Self::StateRootHashCommand(arg0) => {
+                f.debug_tuple("StateRootHashCommand").field(arg0).finish()
+            }
+            Self::TimestampCommand(arg0) => f.debug_tuple("TimestampCommand").field(arg0).finish(),
+            Self::TxPoolCommand(arg0) => f.debug_tuple("TxPoolCommand").field(arg0).finish(),
+            Self::ControlPanelCommand(arg0) => {
+                f.debug_tuple("ControlPanelCommand").field(arg0).finish()
+            }
+            Self::LoopbackCommand(arg0) => f.debug_tuple("LoopbackCommand").field(arg0).finish(),
+            Self::StateSyncCommand(arg0) => f.debug_tuple("StateSyncCommand").field(arg0).finish(),
+            Self::ConfigReloadCommand(arg0) => {
+                f.debug_tuple("ConfigReloadCommand").field(arg0).finish()
+            }
+        }
+    }
 }
 
 impl<E, OM, ST, SCT, EPT, BPT, SBT> Command<E, OM, ST, SCT, EPT, BPT, SBT>

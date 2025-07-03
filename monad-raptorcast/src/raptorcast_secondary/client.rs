@@ -1,27 +1,13 @@
-use std::{
-    collections::BTreeMap,
-    sync::mpsc::Sender,
-    // time::Duration,
-};
+use std::{collections::BTreeMap, sync::mpsc::Sender, time::Instant};
 
 use iset::IntervalMap;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-// use monad_peer_discovery::{MonadNameRecord, NameRecord};
-use monad_types::{
-    NodeId,
-    Round,
-    RoundSpan,
-    GENESIS_ROUND, // DropTimer
-};
+use monad_types::{NodeId, Round, RoundSpan, GENESIS_ROUND};
 
 use super::{
-    super::{
-        config::RaptorCastConfigSecondaryClient,
-        util::Group, // BuildTarget
-                     // udp,
-    },
+    super::{config::RaptorCastConfigSecondaryClient, util::Group},
     group_message::{FullNodesGroupMessage, PrepareGroup, PrepareGroupResponse},
 };
 
@@ -55,6 +41,11 @@ where
 
     // For avoiding accepting invites/confirms for rounds we've already started
     curr_round: Round,
+
+    // Helps bootstrap the full-node when it is not yet receiving proposals and
+    // cannot call enter_round() to advance state as it doesn't know what round
+    // we are at.
+    last_round_heartbeat: Instant,
 }
 
 impl<ST> Client<ST>
@@ -66,6 +57,9 @@ where
         group_sink_channel: Sender<GroupAsClient<ST>>,
         config: RaptorCastConfigSecondaryClient,
     ) -> Self {
+        // There's no Instant::zero(). Use a value such that we will accept the
+        // first invite, even though its far off `curr_round`.
+        let last_round_heartbeat = Instant::now() - config.invite_accept_heartbeat;
         Self {
             client_node_id,
             config,
@@ -73,6 +67,7 @@ where
             pending_confirms: BTreeMap::new(),
             group_sink_channel,
             curr_round: GENESIS_ROUND,
+            last_round_heartbeat,
         }
     }
 
@@ -81,7 +76,7 @@ where
         // Sanity check on curr_round
         if curr_round < self.curr_round {
             tracing::error!(
-                "RaptorcastSecondary ignoring backwards round \
+                "RaptorCastSecondary ignoring backwards round \
                 {:?} -> {:?}",
                 self.curr_round,
                 curr_round
@@ -89,22 +84,22 @@ where
             return;
         } else if curr_round > self.curr_round + Round(1) {
             tracing::debug!(
-                "RaptorcastSecondary detected round gap \
+                "RaptorCastSecondary detected round gap \
                 {:?} -> {:?}",
                 self.curr_round,
                 curr_round
             );
         }
+
         self.curr_round = curr_round;
+        self.last_round_heartbeat = Instant::now();
 
         // Clean up old invitations.
         self.pending_confirms.retain(|&key, _| key > curr_round);
 
-        // FIXME: for test, try refactor so that we wend groups immediately on
-        // confirm. The issue here is bootstrapping, i.e. when we're not actively
-        // receiving proposals and thus round won't increase
         // Send out group information to the Primary instance, so that it can
-        // re-broadcast raptorcast chunks.
+        // re-broadcast raptorcast chunks. This is the normal path when we are
+        // receiving proposals and thus the round increases.
         let consume_end = curr_round + Round(1);
         for group in self.confirmed_groups.values(curr_round..consume_end) {
             if let Err(error) = self.group_sink_channel.send(group.clone()) {
@@ -123,6 +118,12 @@ where
         for iv in keys_to_remove {
             self.confirmed_groups.remove(iv);
         }
+    }
+
+    // If we are not receiving proposals, then we don't know what the current
+    // round is, and should advance the state machine despite self.curr_round
+    fn is_receiving_proposals(&self) -> bool {
+        Instant::now() < self.last_round_heartbeat + self.config.invite_accept_heartbeat
     }
 
     // Called when group invite or group confirmation is received from validator
@@ -144,7 +145,7 @@ where
                 // Sanity check the message
                 if invite_msg.start_round >= invite_msg.end_round {
                     tracing::warn!(
-                        "RaptorcastSecondary rejecting invite message due to \
+                        "RaptorCastSecondary rejecting invite message due to \
                         failed sanity check: {:?}",
                         invite_msg
                     );
@@ -154,7 +155,7 @@ where
                 // Reject late round
                 if invite_msg.start_round <= self.curr_round {
                     tracing::warn!(
-                        "RaptorcastSecondary rejecting invite for round that \
+                        "RaptorCastSecondary rejecting invite for round that \
                         already started, curr_round {:?}, invite = {:?}",
                         self.curr_round,
                         invite_msg
@@ -162,15 +163,16 @@ where
                     accept = false;
                 }
 
-                // Reject invite outside config invitation bounds
-                // avoid the check during startup
+                // Reject invite outside config invitation bounds, unless we are
+                // not receiving any proposals ATM and should accept first group
+                // invite, even if far from what we believe is the current round.
                 if (invite_msg.start_round < self.curr_round + self.config.invite_future_dist_min
                     || invite_msg.start_round
                         > self.curr_round + self.config.invite_future_dist_max)
-                    && self.curr_round > GENESIS_ROUND
+                    && self.is_receiving_proposals()
                 {
                     tracing::warn!(
-                        "RaptorcastSecondary rejecting invite outside bounds \
+                        "RaptorCastSecondary rejecting invite outside bounds \
                         [{:?}, {:?}], curr_round {:?}, invite = {:?}",
                         self.config.invite_future_dist_min,
                         self.config.invite_future_dist_max,
@@ -195,7 +197,7 @@ where
                     // e.g. [30, 40)->validator3 + [25, 35)->validator4
                     if group.get_validator_id() == &invite_msg.validator_id {
                         tracing::warn!(
-                            "RaptorcastSecondary received self-overlapping \
+                            "RaptorCastSecondary received self-overlapping \
                             invite for rounds [{:?}, {:?}) from validator {:?}",
                             invite_msg.start_round,
                             invite_msg.end_round,
@@ -223,7 +225,7 @@ where
                 // Final bandwidth check
                 if future_bandwidth > self.config.bandwidth_capacity {
                     tracing::debug!(
-                        "RaptorcastSecondary rejected invite for rounds \
+                        "RaptorCastSecondary rejected invite for rounds \
                         [{:?}, {:?}) from validator {:?} due to low bandwidth",
                         invite_msg.start_round,
                         invite_msg.end_round,
@@ -261,13 +263,16 @@ where
                 // Drop the group if we've already entered the round
                 if start_round <= &self.curr_round {
                     tracing::warn!(
-                        "RaptorcastSecondary ignoring late confirm, curr_round \
+                        "RaptorCastSecondary ignoring late confirm, curr_round \
                         {:?}, confirm = {:?}",
                         self.curr_round,
                         confirm_msg
                     );
                     return None;
                 }
+
+                let is_receiving_proposals = self.is_receiving_proposals();
+
                 if let Some(invites) = self.pending_confirms.get_mut(start_round) {
                     let round_span = RoundSpan::new(
                         confirm_msg.prepare.start_round,
@@ -277,7 +282,7 @@ where
                     if let Some(old_invite) = maybe_entry {
                         if old_invite != &confirm_msg.prepare {
                             tracing::warn!(
-                                "RaptorcastSecondary ignoring ConfirmGroup that \
+                                "RaptorCastSecondary ignoring ConfirmGroup that \
                                 doesn't match the original invite. Expected: {:?}, got: {:?}",
                                 old_invite,
                                 confirm_msg.prepare
@@ -286,7 +291,7 @@ where
                         }
                         if confirm_msg.peers.len() > confirm_msg.prepare.max_group_size {
                             tracing::warn!(
-                                "RaptorcastSecondary ignoring ConfirmGroup that \
+                                "RaptorCastSecondary ignoring ConfirmGroup that \
                                 is larger ({}) than the promised max_group_size ({}). \
                                 Message details: {:?}",
                                 confirm_msg.peers.len(),
@@ -302,26 +307,44 @@ where
                                 confirm_msg.prepare.validator_id,
                                 round_span,
                             );
+
+                            // Send the group to primary instance right away.
+                            // Doing so helps resolve activation of groups for
+                            // bootstrapping full-nodes, as they aren't receiving
+                            // proposals and hence can't advance (enter) rounds.
+                            // The primary instance use the group for determining
+                            // which other full-nodes to re-broadcast raptorcast
+                            // chunks to.
+                            if !is_receiving_proposals {
+                                if let Err(error) = self.group_sink_channel.send(group.clone()) {
+                                    tracing::error!(
+                                        "RaptorCastSecondary failed to send group to primary \
+                                        Raptorcast instance: {}",
+                                        error
+                                    );
+                                }
+                            }
+
                             self.confirmed_groups
                                 .force_insert(round_span.start..round_span.end, group);
                             invites.remove(&confirm_msg.prepare.validator_id);
                         } else {
                             tracing::warn!(
-                                "RaptorcastSecondary ignoring ConfirmGroup \
+                                "RaptorCastSecondary ignoring ConfirmGroup \
                                 with a group that does not contain our node_id: {:?}",
                                 confirm_msg
                             );
                         }
                     } else {
                         tracing::warn!(
-                            "RaptorcastSecondary ignoring ConfirmGroup from \
+                            "RaptorCastSecondary ignoring ConfirmGroup from \
                             unrecognized validator id: {:?}",
                             confirm_msg
                         );
                     }
                 } else {
                     tracing::warn!(
-                        "RaptorcastSecondary Ignoring confirmation message \
+                        "RaptorCastSecondary Ignoring confirmation message \
                         for unrecognized start round: {:?}",
                         confirm_msg
                     );

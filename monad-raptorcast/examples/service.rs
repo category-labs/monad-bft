@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     net::{SocketAddr, SocketAddrV4},
     num::ParseIntError,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -13,11 +14,9 @@ use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
     CertificateSignatureRecoverable, PubKey,
 };
-use monad_dataplane::udp::DEFAULT_MTU;
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
-use monad_peer_discovery::mock::{NopDiscovery, NopDiscoveryBuilder};
-use monad_raptorcast::{RaptorCast, RaptorCastConfig, RaptorCastEvent};
+use monad_raptorcast::{new_defaulted_raptorcast_for_tests, RaptorCastEvent};
 use monad_secp::SecpSignature;
 use monad_types::{Deserializable, Epoch, NodeId, RouterTarget, Serializable, Stake};
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -46,7 +45,6 @@ pub fn main() {
 
 type SignatureType = SecpSignature;
 type PubKeyType = CertificateSignaturePubKey<SignatureType>;
-type PeerDiscoveryType = NopDiscovery<SignatureType>;
 
 fn service(
     num_rt: usize,
@@ -55,6 +53,7 @@ fn service(
     num_broadcast: u32,
     message_len: usize,
 ) {
+    // Configure peers (5 in the example)
     assert!(message_len >= 4);
     let num_peers = addresses.len() as u32;
     let keys: Vec<_> = (0..num_peers)
@@ -94,7 +93,7 @@ fn service(
         std::sync::mpsc::channel::<(NodeId<PubKeyType>, <MockMessage as Message>::Event)>();
 
     let rts: Vec<_> = std::iter::repeat_with(|| {
-        tokio::runtime::Builder::new_multi_thread()
+        tokio::runtime::Builder::new_multi_thread() // The MultiThread builder spawn a thread
             .enable_all()
             .worker_threads(threads_per_rt)
             .build()
@@ -102,7 +101,7 @@ fn service(
     })
     .take(num_rt)
     .collect();
-
+    // Iterate the 2 runtime cycles
     rts.iter()
         .cycle()
         .zip(keys.into_iter().zip(tx_reader))
@@ -114,33 +113,21 @@ fn service(
             let known_addresses = known_addresses.clone();
 
             rt.spawn(async move {
-                let service_config = RaptorCastConfig {
-                    key,
-                    full_nodes: Default::default(),
-                    peer_discovery_builder: NopDiscoveryBuilder {
-                        known_addresses,
-                        ..Default::default()
-                    },
-                    redundancy: 2,
-                    local_addr: server_address,
-                    up_bandwidth_mbps: 1_000,
-                    mtu: DEFAULT_MTU,
-                    buffer_size: None,
-                };
-
-                let mut service = RaptorCast::<
+                let mut service = new_defaulted_raptorcast_for_tests::<
                     SignatureType,
                     MockMessage,
                     MockMessage,
                     <MockMessage as Message>::Event,
-                    PeerDiscoveryType,
-                >::new(service_config);
+                >(server_address, known_addresses, Arc::new(key));
+
                 service.exec(vec![RouterCommand::AddEpochValidatorSet {
                     epoch: Epoch(0),
-                    validator_set: all_peers.iter().map(|peer| (*peer, Stake(0))).collect(),
+                    validator_set: all_peers.iter().map(|peer| (*peer, Stake(1))).collect(),
                 }]);
+
                 loop {
                     tokio::select! {
+                        // service.next() retrieves the next event from the RaptorCast service.
                         maybe_message = service.next() => {
                             let message = maybe_message.expect("never terminates");
                             rx_writer
@@ -158,18 +145,19 @@ fn service(
         });
 
     let (tx_peer, tx_router) = tx_writer.first_key_value().expect("at least 1 tx");
-
+    // Here: 1 `service` main thread + `9 `tokio-runtime-w` threads
     std::thread::sleep(Duration::from_secs(1));
 
     let start = Instant::now();
     let mut expected_message_ids = HashMap::new();
     for broadcast_id in 0..num_broadcast {
         let message = MockMessage::new(broadcast_id, message_len);
+        let command = RouterCommand::Publish {
+            target: RouterTarget::Raptorcast(Epoch(0)),
+            message,
+        };
         tx_router
-            .send(RouterCommand::Publish {
-                target: RouterTarget::Broadcast(Epoch(0)),
-                message,
-            })
+            .send(command)
             .expect("reader should never be dropped");
         expected_message_ids.insert(message.id, num_peers);
     }

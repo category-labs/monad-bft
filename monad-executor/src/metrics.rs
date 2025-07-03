@@ -3,7 +3,7 @@ use std::{
     ops::{Index, IndexMut},
 };
 
-#[derive(Default)]
+#[derive(Default, Debug, Clone)]
 pub struct ExecutorMetrics(HashMap<&'static str, u64>);
 
 impl Index<&'static str> for ExecutorMetrics {

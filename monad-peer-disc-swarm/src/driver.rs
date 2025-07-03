@@ -184,6 +184,9 @@ where
                 PeerDiscoveryCommand::TimerCommand(peer_discovery_timer_command) => {
                     self.timer.exec(vec![peer_discovery_timer_command]);
                 }
+                PeerDiscoveryCommand::MetricsCommand(_) => {
+                    // ignore metrics command in swarm
+                }
             }
         }
         router_cmds

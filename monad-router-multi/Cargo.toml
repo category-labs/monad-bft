@@ -1,0 +1,16 @@
+[package]
+name = "monad-router-multi"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+monad-crypto = { workspace = true }
+monad-dataplane = { workspace = true }
+monad-executor = { workspace = true }
+monad-executor-glue = { workspace = true }
+monad-peer-discovery = { workspace = true }
+monad-raptorcast = { workspace = true }
+
+alloy-rlp = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }

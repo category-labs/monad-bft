@@ -3,7 +3,7 @@ use std::{
     io::ErrorKind,
     net::{SocketAddr, SocketAddrV4, UdpSocket},
     num::ParseIntError,
-    sync::Once,
+    sync::{Arc, Once},
     time::Duration,
 };
 
@@ -14,15 +14,15 @@ use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
     CertificateSignatureRecoverable, PubKey,
 };
-use monad_dataplane::udp::{DEFAULT_MTU, DEFAULT_SEGMENT_SIZE};
+use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
-use monad_peer_discovery::mock::{NopDiscovery, NopDiscoveryBuilder};
 use monad_raptor::SOURCE_SYMBOLS_MAX;
 use monad_raptorcast::{
+    new_defaulted_raptorcast_for_tests,
     udp::{build_messages, build_messages_with_length, MAX_REDUNDANCY},
     util::{BuildTarget, EpochValidators, FullNodes, Validator},
-    RaptorCast, RaptorCastConfig, RaptorCastEvent,
+    RaptorCastEvent,
 };
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{Deserializable, Epoch, NodeId, Serializable, Stake};
@@ -30,7 +30,6 @@ use tracing_subscriber::fmt::format::FmtSpan;
 
 type SignatureType = SecpSignature;
 type PubKeyType = CertificateSignaturePubKey<SignatureType>;
-type PeerDiscoveryType = NopDiscovery<SignatureType>;
 
 // Try to crash the R10 managed decoder by feeding it encoded symbols of different sizes.
 // A previous version of the R10 managed decoder did not handle this correctly and would panic.
@@ -316,6 +315,7 @@ pub fn valid_rebroadcast() {
 
 static ONCE_SETUP: Once = Once::new();
 
+#[cfg(test)]
 pub fn set_up_test(
     tx_addr: &SocketAddr,
     rx_addr: &SocketAddr,
@@ -399,27 +399,12 @@ pub fn set_up_test(
         ));
 
         rt.spawn(async move {
-            let service_config = RaptorCastConfig {
-                key: rx_keypair,
-                full_nodes: Default::default(),
-                peer_discovery_builder: NopDiscoveryBuilder {
-                    known_addresses: peer_addresses,
-                    ..Default::default()
-                },
-                redundancy: 2,
-                local_addr: rx_addr,
-                up_bandwidth_mbps: 1_000,
-                mtu: DEFAULT_MTU,
-                buffer_size: None,
-            };
-
-            let mut service = RaptorCast::<
+            let mut service = new_defaulted_raptorcast_for_tests::<
                 SignatureType,
                 MockMessage,
                 MockMessage,
                 <MockMessage as Message>::Event,
-                PeerDiscoveryType,
-            >::new(service_config);
+            >(rx_addr, peer_addresses, Arc::new(rx_keypair));
 
             service.exec(vec![RouterCommand::AddEpochValidatorSet {
                 epoch: Epoch(0),

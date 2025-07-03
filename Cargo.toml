@@ -60,6 +60,7 @@ monad-pprof = { path = "./monad-pprof" }
 monad-raptor = { path = "./monad-raptor" }
 monad-raptorcast = { path = "./monad-raptorcast" }
 monad-router-filter = { path = "./monad-router-filter" }
+monad-router-multi = { path = "./monad-router-multi" }
 monad-router-scheduler = { path = "./monad-router-scheduler" }
 monad-rpc-docs = { path = "./monad-rpc/monad-rpc-docs" }
 monad-rpc-docs-derive = { path = "./monad-rpc/monad-rpc-docs/monad-rpc-docs-derive" }
@@ -192,6 +193,7 @@ tokio-util = "0.7"
 toml = "0.7"
 tracing = "0.1"
 tracing-actix-web = "0.7"
+tracing-appender = "0.2"
 tracing-opentelemetry = "0.30"
 tracing-subscriber = "0.3"
 tracing-test = "0.2"

@@ -382,6 +382,7 @@ where
 // This is an abstraction of a peer list that interfaces receive-side of RaptorCast
 // The send side, i.e. initiating a RaptorCast proposal, is represented with
 // struct `EpochValidators` instead.
+#[derive(Debug)]
 pub struct ReBroadcastGroupMap<ST>
 where
     ST: CertificateSignatureRecoverable,
@@ -479,18 +480,37 @@ where
     // As Full-node: When secondary RaptorCast instance (Client) sends us a Group<>
     pub fn push_group_fullnodes(&mut self, group: Group<ST>) {
         assert!(self.is_fullnode);
-        let replaced = self.fullnode_map.insert(*group.get_validator_id(), group);
-        assert!(replaced.is_none());
+        if let Some(old_grp) = self
+            .fullnode_map
+            .insert(*group.get_validator_id(), group.clone())
+        {
+            tracing::trace!(new_group=?group, old_group=?old_grp, "Group replace");
+        } else {
+            tracing::trace!(new_group=?group, "Group insert");
+        }
     }
 
     pub fn delete_expired_groups(&mut self, curr_epoch: Epoch, curr_round: Round) {
+        let old_count;
+        let new_count;
         if self.is_fullnode {
+            old_count = self.fullnode_map.len();
             self.fullnode_map
                 .retain(|_, group| group.round_span.contains(curr_round));
+            new_count = self.fullnode_map.len();
         } else {
+            old_count = self.validator_map.len();
             self.validator_map
                 .retain(|key, _| *key + Epoch(1) >= curr_epoch);
+            new_count = self.validator_map.len();
         }
+        tracing::trace!(
+            epoch=?curr_epoch,
+            round=?curr_round,
+            ?old_count,
+            ?new_count,
+            "RaptorCast delete_expired_groups",
+        );
     }
 
     #[cfg(test)]

@@ -1,4 +1,5 @@
 use std::{
+    fmt::Debug,
     ops::DerefMut,
     pin::Pin,
     task::{Context, Poll},
@@ -119,6 +120,7 @@ where
     LO: Stream<Item = E> + Unpin,
     SS: Stream<Item = E> + Unpin,
     CL: Stream<Item = E> + Unpin,
+    E: Debug,
 
     Self: Unpin,
 {
@@ -127,7 +129,7 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
-        futures::future::select_all(vec![
+        let item = futures::future::select_all(vec![
             this.timer.next().boxed_local(),
             this.control_panel.next().boxed_local(),
             this.ledger.next().boxed_local(),
@@ -140,7 +142,9 @@ where
             this.config_loader.next().boxed_local(),
         ])
         .map(|(event, _, _)| event)
-        .poll_unpin(cx)
+        .poll_unpin(cx);
+
+        item
     }
 }
 
