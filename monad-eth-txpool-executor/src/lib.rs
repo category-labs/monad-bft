@@ -459,29 +459,6 @@ where
             ))));
         }
 
-        while let Poll::Ready(forwarded_txs) = forwarding_manager.as_mut().poll_ingress(cx) {
-            let mut ipc_events = Vec::default();
-
-            let mut inserted_addresses = HashSet::<Address>::default();
-
-            pool.insert_txs(
-                &mut EthTxPoolEventTracker::new(&metrics.pool, &mut ipc_events),
-                block_policy,
-                state_backend,
-                forwarded_txs,
-                false,
-                |tx| {
-                    inserted_addresses.insert(tx.signer());
-                },
-            );
-
-            metrics.update(executor_metrics);
-            ipc.as_mut().broadcast_tx_events(&ipc_events);
-
-            preload_manager.add_requests(inserted_addresses.iter());
-            forwarding_manager.as_mut().complete_ingress();
-        }
-
         if let Poll::Ready(unvalidated_txs) = ipc.as_mut().poll_txs(cx, || pool.generate_snapshot())
         {
             let mut ipc_events = Vec::default();
@@ -524,6 +501,29 @@ where
             return Poll::Ready(Some(MonadEvent::MempoolEvent(MempoolEvent::ForwardTxs(
                 inserted_txs,
             ))));
+        }
+
+        while let Poll::Ready(forwarded_txs) = forwarding_manager.as_mut().poll_ingress(cx) {
+            let mut ipc_events = Vec::default();
+
+            let mut inserted_addresses = HashSet::<Address>::default();
+
+            pool.insert_txs(
+                &mut EthTxPoolEventTracker::new(&metrics.pool, &mut ipc_events),
+                block_policy,
+                state_backend,
+                forwarded_txs,
+                false,
+                |tx| {
+                    inserted_addresses.insert(tx.signer());
+                },
+            );
+
+            metrics.update(executor_metrics);
+            ipc.as_mut().broadcast_tx_events(&ipc_events);
+
+            preload_manager.add_requests(inserted_addresses.iter());
+            forwarding_manager.as_mut().complete_ingress();
         }
 
         while promote_pending_timer.poll_tick(cx).is_ready() {
