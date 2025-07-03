@@ -542,6 +542,7 @@ where
         dp_builder = dp_builder.with_udp_buffer_size(buffer_size);
     }
 
+    let self_id = NodeId::new(identity.pubkey());
     let self_record = NameRecord {
         address: self_address,
         seq: peer_discovery_config.self_record_seq_num,
@@ -558,6 +559,9 @@ where
         .iter()
         .filter_map(|peer| {
             let node_id = NodeId::new(peer.secp256k1_pubkey);
+            if node_id == self_id {
+                return None;
+            }
             let address = match resolve_domain_v4(&node_id, &peer.address) {
                 Some(SocketAddr::V4(addr)) => addr,
                 _ => {
@@ -670,7 +674,7 @@ where
     };
 
     let peer_discovery_builder = PeerDiscoveryBuilder {
-        self_id: NodeId::new(identity.pubkey()),
+        self_id,
         self_record,
         current_epoch,
         epoch_validators,

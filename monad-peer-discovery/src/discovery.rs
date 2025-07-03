@@ -220,6 +220,11 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
         node_id: NodeId<CertificateSignaturePubKey<ST>>,
         name_record: MonadNameRecord<ST>,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
+        // make sure self record is never inserted into peer info
+        if node_id == self.self_id {
+            return vec![];
+        }
+
         // insert name record
         if let Some(info) = self.peer_info.get_mut(&node_id) {
             if name_record.seq() > info.name_record.seq() {
@@ -552,12 +557,7 @@ where
         for name_record in response.name_records {
             // verify signature of name record
             let node_id = match name_record.recover_pubkey() {
-                Ok(node_id) => {
-                    if node_id == self.self_id {
-                        continue;
-                    }
-                    node_id
-                }
+                Ok(node_id) => node_id,
                 Err(e) => {
                     warn!(?e, "invalid name record signature, dropping record...");
                     continue;
