@@ -25,9 +25,9 @@ env:
   CARGO_TERM_COLOR: always
 
   ASMFLAGS: -march=haswell
-  CC: gcc-13
+  CC: gcc-14
   CFLAGS: -march=haswell
-  CXX: g++-13
+  CXX: g++-14
   CXXFLAGS: -march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL
   TRIEDB_TARGET: triedb_driver
 
