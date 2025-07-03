@@ -64,6 +64,7 @@ reqwest = { workspace = true }
 schemars = { workspace = true, features = ["preserve_order", "raw_value"] }
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true, features = ["raw_value"] }
+serde_cbor = { workspace = true }
 tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread", "fs"] }
 toml = { workspace = true }
 tracing = { workspace = true, features = ["log"] }

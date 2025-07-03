@@ -12,20 +12,22 @@ use alloy_consensus::{Header, SignableTransaction, TxEip1559, TxEnvelope, TxLega
 use alloy_primitives::{Address, PrimitiveSignature, TxKind, Uint, U256, U64, U8};
 use alloy_rpc_types::AccessList;
 use monad_chain_config::execution_revision::MonadExecutionRevision;
-use monad_ethcall::{eth_call, CallResult, EthCallExecutor, StateOverrideSet};
+use monad_ethcall::{eth_call, CallResult, EthCallExecutor, MonadTracer, StateOverrideSet};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{
     BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb, TriedbPath,
 };
 use monad_types::{Round, SeqNum};
 use serde::{Deserialize, Serialize};
+use serde_cbor;
+use serde_json::Value;
 use tokio::sync::Mutex;
-use tracing::trace;
+use tracing::{info, trace};
 
 use super::block::get_block_key_from_tag_or_hash;
 use crate::{
     eth_json_types::BlockTagOrHash,
-    handlers::debug::{decode_call_frame, MonadCallFrame, TracerObject},
+    handlers::debug::{decode_call_frame, Tracer, TracerObject},
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
     timing::RequestId,
@@ -484,7 +486,7 @@ pub struct MonadEthCallParams {
 #[derive(Deserialize, Debug, Default, schemars::JsonSchema, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct EnrichedTracerObject {
-    #[serde(default)]
+    #[serde(flatten)]
     tracer_params: TracerObject,
     #[schemars(skip)]
     #[serde(default)]
@@ -496,7 +498,7 @@ pub struct MonadDebugTraceCallParams {
     transaction: CallRequest,
     #[serde(default)]
     block: BlockTagOrHash,
-    tracer: EnrichedTracerObject,
+    enriched_tracer: EnrichedTracerObject,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -524,13 +526,23 @@ impl CallParams {
     fn state_overrides(&self) -> &StateOverrideSet {
         match self {
             CallParams::Call(p) => &p.state_overrides,
-            CallParams::Trace(p) => &p.tracer.state_overrides,
+            CallParams::Trace(p) => &p.enriched_tracer.state_overrides,
         }
     }
 
-    /// `true` only for the trace variant.
-    fn trace(&self) -> bool {
-        matches!(self, CallParams::Trace(_))
+    fn monad_tracer(&self) -> MonadTracer {
+        match self {
+            CallParams::Call(_) => MonadTracer::NoopTracer,
+            CallParams::Trace(p) => {
+                if p.enriched_tracer.tracer_params.tracer == Tracer::CallTracer {
+                    MonadTracer::CallTracer
+                } else if p.enriched_tracer.tracer_params.tracer_config.diff_mode {
+                    MonadTracer::StateDiffTracer
+                } else {
+                    MonadTracer::PreStateTracer
+                }
+            }
+        }
     }
 }
 
@@ -620,7 +632,7 @@ async fn prepare_eth_call<T: Triedb + TriedbPath>(
     };
 
     let state_overrides = params.state_overrides().clone();
-    let trace = params.trace();
+    let tracer = params.monad_tracer();
     let header_gas_limit = header.header.gas_limit;
     match eth_call(
         tx_chain_id,
@@ -631,7 +643,7 @@ async fn prepare_eth_call<T: Triedb + TriedbPath>(
         block_round,
         eth_call_executor,
         &state_overrides,
-        trace,
+        tracer,
         gas_specified,
     )
     .await
@@ -698,12 +710,13 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
     chain_id: u64,
     eth_call_gas_limit: u64,
     params: MonadDebugTraceCallParams,
-) -> JsonRpcResult<Option<MonadCallFrame>> {
-    trace!("monad_debug_traceCall: {params:?}");
+) -> JsonRpcResult<Value> {
+    info!("monad_debug_traceCall: {params:?}");
 
     let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block.clone()).await?;
+    let monad_tracer = CallParams::Trace(params.clone()).monad_tracer();
 
-    match prepare_eth_call(
+    let raw_payload: Vec<u8> = match prepare_eth_call(
         triedb_env,
         eth_call_executor,
         chain_id,
@@ -712,27 +725,35 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
     )
     .await?
     {
-        CallResult::Success(monad_ethcall::SuccessCallResult { output_data, .. }) => {
-            let rlp_call_frame = &mut output_data.as_slice();
-            return decode_call_frame(
-                triedb_env,
-                rlp_call_frame,
-                block_key,
-                &params.tracer.tracer_params,
-            )
-            .await;
+        CallResult::Success(monad_ethcall::SuccessCallResult { output_data, .. }) => output_data,
+        CallResult::Failure(error) => {
+            return Err(JsonRpcError::eth_call_error(error.message, error.data))
         }
-        CallResult::Failure(error) => Err(JsonRpcError::eth_call_error(error.message, error.data)),
-        CallResult::Revert(result) => {
-            let rlp_call_frame = &mut result.call_frame.as_slice();
-            return decode_call_frame(
+        CallResult::Revert(result) => result.trace,
+    };
+
+    match monad_tracer {
+        MonadTracer::CallTracer => {
+            let mut slice: &[u8] = raw_payload.as_slice();
+            let frame = decode_call_frame(
                 triedb_env,
-                rlp_call_frame,
+                &mut slice,
                 block_key,
-                &params.tracer.tracer_params,
+                &params.enriched_tracer.tracer_params,
             )
-            .await;
+            .await?;
+            serde_json::to_value(frame).map_err(|e| {
+                JsonRpcError::internal_error(format!("json serialization error: {}", e))
+            })
         }
+
+        MonadTracer::PreStateTracer | MonadTracer::StateDiffTracer => {
+            let v: Value = serde_cbor::from_slice(&raw_payload)
+                .map_err(|e| JsonRpcError::internal_error(format!("cbor decode error: {}", e)))?;
+            Ok(v)
+        }
+
+        MonadTracer::NoopTracer => Ok(Value::Null),
     }
 }
 
@@ -789,11 +810,14 @@ mod tests {
         triedb_env::{BlockKey, FinalizedBlockKey},
     };
     use monad_types::SeqNum;
-    use serde_json::json;
+    use serde_json::{from_str, json};
 
     use super::{fill_gas_params, CallRequest, GasPriceDetails};
     use crate::{
-        handlers::eth::call::{sender_gas_allowance, CallInput},
+        handlers::{
+            debug::Tracer,
+            eth::call::{sender_gas_allowance, CallInput, MonadDebugTraceCallParams},
+        },
         jsonrpc::JsonRpcError,
     };
 
@@ -841,6 +865,30 @@ mod tests {
         assert_eq!(
             result.max_fee_per_gas(),
             Some(U256::from_str_radix("9184e72a000", 16).unwrap())
+        );
+    }
+
+    #[test]
+    fn parse_call_request_with_tracer() {
+        let raw = r#"
+        [
+          {
+            "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+            "to": "0x0000000000a39bb272e79075ade125fd351887ac",
+            "gas": "0x1E9EF",
+            "gasPrice": "0xBD32B2ABC",
+            "data": "0xd0e30db0"
+          },
+          "latest",
+          { "tracer": "prestateTracer" }
+        ]
+        "#;
+
+        let params: MonadDebugTraceCallParams = from_str(raw).unwrap();
+
+        assert_eq!(
+            params.enriched_tracer.tracer_params.tracer,
+            Tracer::PreStateTracer
         );
     }
 
