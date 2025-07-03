@@ -1,8 +1,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     net::SocketAddr,
-    ops::DerefMut,
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
     time::Duration,
 };
 
@@ -105,6 +104,7 @@ impl<ST: CertificateSignatureRecoverable> Stream for PeerDiscTimers<ST> {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         let poll_expired = self.timers.poll_next_unpin(cx);
+
         match poll_expired {
             Poll::Ready(Some(expired)) => {
                 let event_key = expired.into_inner();
@@ -128,7 +128,9 @@ where
 {
     pd: PD,
     timer: PeerDiscTimers<PD::SignatureType>,
+
     pending_emits: VecDeque<PeerDiscoveryEmit<PD::SignatureType>>,
+    waker: Option<Waker>,
 }
 
 impl<PD: PeerDiscoveryAlgo> std::fmt::Debug for PeerDiscoveryDriver<PD> {
@@ -140,14 +142,18 @@ impl<PD: PeerDiscoveryAlgo> std::fmt::Debug for PeerDiscoveryDriver<PD> {
 impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
     pub fn new<B: PeerDiscoveryAlgoBuilder<PeerDiscoveryAlgoType = PD>>(builder: B) -> Self {
         let (peer_discovery, init_cmds) = builder.build();
-        let mut driver = Self {
+
+        let mut this = Self {
             pd: peer_discovery,
             timer: Default::default(),
+
             pending_emits: Default::default(),
+            waker: None,
         };
-        let emits = driver.exec_and_emit(init_cmds);
-        driver.pending_emits.extend(emits);
-        driver
+
+        this.exec(init_cmds);
+
+        this
     }
 
     pub fn update(&mut self, event: PeerDiscoveryEvent<PD::SignatureType>) {
@@ -182,34 +188,39 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
             PeerDiscoveryEvent::Refresh => self.pd.refresh(),
         };
 
-        let emits = self.exec_and_emit(cmds);
-        self.pending_emits.extend(emits);
+        self.exec(cmds);
     }
 
-    fn exec_and_emit(
-        &mut self,
-        cmds: Vec<PeerDiscoveryCommand<PD::SignatureType>>,
-    ) -> Vec<PeerDiscoveryEmit<PD::SignatureType>> {
-        let mut emits = Vec::new();
+    fn exec(&mut self, cmds: Vec<PeerDiscoveryCommand<PD::SignatureType>>) {
         let mut timer_cmds = Vec::new();
+
         for cmd in cmds {
             match cmd {
                 PeerDiscoveryCommand::RouterCommand { target, message } => {
-                    emits.push(PeerDiscoveryEmit::RouterCommand { target, message })
+                    self.pending_emits
+                        .push_back(PeerDiscoveryEmit::RouterCommand { target, message });
+
+                    if let Some(waker) = self.waker.take() {
+                        waker.wake();
+                    }
                 }
                 PeerDiscoveryCommand::TimerCommand(timer_cmd) => {
                     timer_cmds.push(timer_cmd);
                 }
                 PeerDiscoveryCommand::MetricsCommand(peer_discovery_metrics_command) => {
-                    emits.push(PeerDiscoveryEmit::MetricsCommand(
-                        peer_discovery_metrics_command.0,
-                    ));
+                    self.pending_emits
+                        .push_back(PeerDiscoveryEmit::MetricsCommand(
+                            peer_discovery_metrics_command.0,
+                        ));
+
+                    if let Some(waker) = self.waker.take() {
+                        waker.wake();
+                    }
                 }
             }
         }
-        self.timer.exec(timer_cmds);
 
-        emits
+        self.timer.exec(timer_cmds);
     }
 
     pub fn get_addr(
@@ -254,25 +265,28 @@ where
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        let this = self.deref_mut();
+        loop {
+            if let Some(emit) = self.pending_emits.pop_front() {
+                return Poll::Ready(Some(emit));
+            }
 
-        if let Some(emit) = this.pending_emits.pop_front() {
-            return Poll::Ready(Some(emit));
-        }
-
-        match this.timer.poll_next_unpin(cx) {
-            Poll::Ready(Some(event)) => {
-                this.update(event);
-                if let Some(emit) = this.pending_emits.pop_front() {
-                    return Poll::Ready(Some(emit));
+            let Poll::Ready(event) = self.timer.poll_next_unpin(cx) else {
+                if self
+                    .waker
+                    .as_ref()
+                    .is_none_or(|waker| !waker.will_wake(cx.waker()))
+                {
+                    self.waker = Some(cx.waker().clone());
                 }
-            }
-            Poll::Ready(None) => {
-                panic!("Timer stream is never exhausted")
-            }
-            Poll::Pending => {}
-        }
 
-        Poll::Pending
+                return Poll::Pending;
+            };
+
+            let Some(event) = event else {
+                panic!("Timer stream is never exhausted")
+            };
+
+            self.update(event);
+        }
     }
 }
