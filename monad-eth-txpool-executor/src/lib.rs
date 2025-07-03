@@ -503,9 +503,9 @@ where
             ))));
         }
 
-        while let Poll::Ready(forwarded_txs) = forwarding_manager.as_mut().poll_ingress(cx) {
-            let mut ipc_events = Vec::default();
+        let mut ipc_events = Vec::default();
 
+        while let Poll::Ready(forwarded_txs) = forwarding_manager.as_mut().poll_ingress(cx) {
             let mut inserted_addresses = HashSet::<Address>::default();
 
             pool.insert_txs(
@@ -519,24 +519,17 @@ where
                 },
             );
 
-            metrics.update(executor_metrics);
-            ipc.as_mut().broadcast_tx_events(&ipc_events);
-
             preload_manager.add_requests(inserted_addresses.iter());
+
             forwarding_manager.as_mut().complete_ingress();
         }
 
         while promote_pending_timer.poll_tick(cx).is_ready() {
-            let mut ipc_events = Vec::default();
-
             pool.promote_pending(
                 &mut EthTxPoolEventTracker::new(&metrics.pool, &mut ipc_events),
                 block_policy,
                 state_backend,
             );
-
-            metrics.update(executor_metrics);
-            ipc.as_mut().broadcast_tx_events(&ipc_events);
 
             promote_pending_timer.reset();
         }
@@ -571,11 +564,12 @@ where
                 .preload_backend_requests
                 .fetch_add(addresses.len() as u64, Ordering::SeqCst);
 
-            metrics.update(executor_metrics);
-
             preload_manager
                 .complete_polled_requests(predicted_proposal_seqnum, addresses.into_iter());
         }
+
+        metrics.update(executor_metrics);
+        ipc.as_mut().broadcast_tx_events(&ipc_events);
 
         Poll::Pending
     }

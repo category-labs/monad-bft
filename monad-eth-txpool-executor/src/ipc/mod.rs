@@ -60,6 +60,10 @@ impl EthTxPoolIpcServer {
     }
 
     pub fn broadcast_tx_events(self: Pin<&mut Self>, events: &Vec<EthTxPoolEvent>) {
+        if events.is_empty() {
+            return;
+        }
+
         self.project().connections.retain(|stream| {
             match stream.send_tx_events(events.to_owned()) {
                 Ok(()) => true,

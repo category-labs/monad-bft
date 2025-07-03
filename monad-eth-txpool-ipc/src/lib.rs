@@ -97,6 +97,10 @@ impl EthTxPoolIpcStream {
         &self,
         events: Vec<EthTxPoolEvent>,
     ) -> Result<(), mpsc::error::TrySendError<Vec<EthTxPoolEvent>>> {
+        if events.is_empty() {
+            return Ok(());
+        };
+
         self.tx.try_send(events)
     }
 }
