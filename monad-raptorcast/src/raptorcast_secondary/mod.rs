@@ -93,18 +93,15 @@ where
         channel_to_primary: Sender<Group<ST>>,
     ) -> Self {
         let node_id = NodeId::new(config.shared_key.pubkey());
-        let sec_config = config.secondary_instance.clone();
-        let raptor10_redundancy;
+        let sec_config = config.secondary_instance.mode.clone();
 
         // Instantiate either publisher or client state machine
         let role = match sec_config {
             super::config::SecondaryRaptorCastModeConfig::Publisher(publisher_cfg) => {
-                raptor10_redundancy = publisher_cfg.raptor10_redundancy;
                 let publisher = Publisher::new(node_id, publisher_cfg);
                 Role::Publisher(publisher)
             }
             super::config::SecondaryRaptorCastModeConfig::Client(client_cfg) => {
-                raptor10_redundancy = client_cfg.raptor10_redundancy;
                 let client = Client::new(node_id, channel_to_primary, client_cfg);
                 Role::Client(client)
             }
@@ -114,11 +111,10 @@ where
             ),
         };
 
+        let raptor10_redundancy = config.secondary_instance.raptor10_redundancy;
         tracing::trace!(
-            "RaptorCastSecondary::new() - self_id: {:?}, mtu: {}, raptor10_redundancy: {}",
-            node_id,
-            config.mtu,
-            raptor10_redundancy
+            self_id =? node_id, mtu =? config.mtu, ?raptor10_redundancy,
+            "RaptorCastSecondary::new()",
         );
 
         if raptor10_redundancy < 1 {
@@ -268,9 +264,8 @@ where
                 } else {
                     // Maybe can happen if peer discovery gets pruned just
                     // before sending a ConfirmGroup message.
-                    tracing::warn!(
-                        "RaptorCastSecondary: No name record found for node_id {:?} when sending out ConfirmGroup message: {:?}",
-                        node_id, group_msg
+                    tracing::warn!( ?node_id, ?group_msg,
+                        "RaptorCastSecondary: No name record found for node_id when sending out ConfirmGroup message",
                     );
                 }
             }
@@ -313,11 +308,19 @@ where
 
                 Self::Command::UpdateCurrentRound(epoch, round) => match &mut self.role {
                     Role::Client(client) => {
-                        tracing::trace!("RaptorCastSecondary UpdateCurrentRound (Client): epoch: {:?}, round: {:?}", epoch, round);
+                        tracing::trace!(
+                            ?epoch,
+                            ?round,
+                            "RaptorCastSecondary UpdateCurrentRound (Client)"
+                        );
                         client.enter_round(round);
                     }
                     Role::Publisher(publisher) => {
-                        tracing::trace!("RaptorCastSecondary UpdateCurrentRound (Publisher): epoch: {:?}, round: {:?}", epoch, round);
+                        tracing::trace!(
+                            ?epoch,
+                            ?round,
+                            "RaptorCastSecondary UpdateCurrentRound (Publisher)"
+                        );
                         self.curr_epoch = epoch;
                         // The publisher needs to be periodically informed about new nodes out there,
                         // so that it can randomize when creating new groups.
@@ -362,8 +365,8 @@ where
                         Role::Publisher(publisher) => {
                             match publisher.get_current_raptorcast_group() {
                                 Some(group) => {
-                                    tracing::trace!("RaptorCastSecondary PublishToFullNodes; group: {:?}, size_excl_self: {}",
-                                        group, group.size_excl_self());
+                                    tracing::trace!(?group, size_excl_self =? group.size_excl_self(),
+                                        "RaptorCastSecondary PublishToFullNodes");
                                     group
                                 }
                                 None => {
@@ -459,32 +462,29 @@ where
                     // Received group message from validator
                     if let FullNodesGroupMessage::ConfirmGroup(confirm_msg) = &inbound_grp_msg {
                         let num_mappings = confirm_msg.name_records.len();
-                        if num_mappings > 0 {
-                            if num_mappings == confirm_msg.peers.len() {
-                                let mut peers: Vec<PeerEntry<ST>> = Vec::new();
-                                // FIXME: bind name records with peers and ask peer discovery to verify
-                                for ii in 0..num_mappings {
-                                    let rec = &confirm_msg.name_records[ii];
-                                    let peer_entry = PeerEntry {
-                                        pubkey: confirm_msg.peers[ii].pubkey(),
-                                        addr: rec.name_record.address,
-                                        signature: rec.signature,
-                                        record_seq_num: rec.name_record.seq,
-                                    };
-                                    peers.push(peer_entry);
-                                }
-                                let mut pd = this.peer_discovery_driver.lock().unwrap();
-                                pd.update(PeerDiscoveryEvent::UpdatePeers { peers });
-                            } else {
-                                tracing::warn!(
-                                    "Number of peers {} does not match the number \
-                                    of name records {} in ConfirmGroup message: {:?}. \
-                                    Skipping PeerDiscovery update",
-                                    confirm_msg.peers.len(),
-                                    confirm_msg.name_records.len(),
-                                    confirm_msg
-                                );
+                        if num_mappings > 0 && num_mappings == confirm_msg.peers.len() {
+                            let mut peers: Vec<PeerEntry<ST>> = Vec::new();
+                            // FIXME: bind name records with peers and ask peer discovery to verify
+                            for ii in 0..num_mappings {
+                                let rec = &confirm_msg.name_records[ii];
+                                let peer_entry = PeerEntry {
+                                    pubkey: confirm_msg.peers[ii].pubkey(),
+                                    addr: rec.name_record.address,
+                                    signature: rec.signature,
+                                    record_seq_num: rec.name_record.seq,
+                                };
+                                peers.push(peer_entry);
                             }
+                            this.peer_discovery_driver
+                                .lock()
+                                .unwrap()
+                                .update(PeerDiscoveryEvent::UpdatePeers { peers });
+                        } else if num_mappings > 0 {
+                            tracing::warn!( ?confirm_msg, num_peers =? confirm_msg.peers.len(), num_name_recs =? confirm_msg.name_records.len(),
+                                "Number of peers does not match the number \
+                                of name records in ConfirmGroup message. \
+                                Skipping PeerDiscovery update"
+                            );
                         }
                     }
                     if let Some((response_msg, validator_id)) =

@@ -1034,7 +1034,6 @@ mod tests {
             RaptorCastConfigSecondaryPublisher {
                 full_nodes_prioritized: vec![nid(10), nid(11)],
                 group_scheduling: sched_cfg,
-                raptor10_redundancy: 2,
             },
         );
 
@@ -1334,7 +1333,6 @@ mod tests {
                 invite_future_dist_min: Round(1),
                 invite_future_dist_max: Round(100),
                 invite_accept_heartbeat: Duration::from_secs(10),
-                raptor10_redundancy: 2,
             },
         );
         let mut group_map = MockGroupMap::new(nid(10), clt_rx);
@@ -1461,7 +1459,6 @@ mod tests {
                 invite_future_dist_min: Round(1),
                 invite_future_dist_max: Round(100),
                 invite_accept_heartbeat: Duration::from_secs(10),
-                raptor10_redundancy: 2,
             },
         );
         let mut group_map = MockGroupMap::new(nid(10), clt_rx);
@@ -1604,7 +1601,6 @@ mod tests {
                 invite_future_dist_min: Round(1),
                 invite_future_dist_max: Round(100),
                 invite_accept_heartbeat: Duration::from_secs(10),
-                raptor10_redundancy: 2,
             },
         );
         let mut group_map = MockGroupMap::new(nid(me), clt_rx);

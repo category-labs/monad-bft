@@ -28,7 +28,7 @@ where
     // running as full-node.
     // Validators and full-nodes who do not want to participate in validator-
     // to-full-node raptor-casting may opt out of this.
-    pub secondary_instance: SecondaryRaptorCastModeConfig<ST>,
+    pub secondary_instance: RaptorCastConfigSecondary<ST>,
 }
 
 impl<ST> Clone for RaptorCastConfig<ST>
@@ -74,6 +74,35 @@ where
     }
 }
 
+/// Configuration for the secondary instance of RaptorCast
+#[derive(Clone)]
+pub struct RaptorCastConfigSecondary<ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    /// Amount of redundancy (in Raptor10 encoding) to send.
+    /// A value of 2 == send 2x total payload size.
+    /// Higher values make the broadcasting more tolerant to UDP packet drops.
+    /// This applies to raptor-casting across full-nodes
+    pub raptor10_redundancy: u8,
+
+    /// Client mode if we are a full-node, publisher mode if we are a validator.
+    /// None if we are not participating in any raptor-casting to full-nodes.
+    pub mode: SecondaryRaptorCastModeConfig<ST>,
+}
+
+impl<ST> Default for RaptorCastConfigSecondary<ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    fn default() -> RaptorCastConfigSecondary<ST> {
+        RaptorCastConfigSecondary {
+            raptor10_redundancy: 2,                    // for full-nodes
+            mode: SecondaryRaptorCastModeConfig::None, // no raptorcasting to full-nodes
+        }
+    }
+}
+
 /// Configuration for the secondary instance of RaptorCast (group of full-nodes)
 #[derive(Clone)]
 pub enum SecondaryRaptorCastModeConfig<ST>
@@ -97,8 +126,6 @@ pub struct RaptorCastConfigSecondaryClient {
     pub invite_future_dist_min: Round,
     pub invite_future_dist_max: Round,
     pub invite_accept_heartbeat: Duration,
-    /// This applies when sending point-to-point group messages
-    pub raptor10_redundancy: u8,
 }
 
 impl Default for RaptorCastConfigSecondaryClient {
@@ -109,7 +136,6 @@ impl Default for RaptorCastConfigSecondaryClient {
             invite_future_dist_min: Round(1),
             invite_future_dist_max: Round(600), // ~5 minutes into the future, with current round length of 500ms
             invite_accept_heartbeat: Duration::from_secs(10),
-            raptor10_redundancy: 2,
         }
     }
 }
@@ -127,9 +153,6 @@ where
     /// Group here means a temporary raptorcast group consisting of random
     /// full-nodes and which only lasts for a few rounds.
     pub group_scheduling: GroupSchedulingConfig,
-
-    /// This applies to raptor-casting across full-nodes
-    pub raptor10_redundancy: u8,
 }
 
 impl<ST> Default for RaptorCastConfigSecondaryPublisher<ST>
@@ -140,7 +163,6 @@ where
         RaptorCastConfigSecondaryPublisher {
             full_nodes_prioritized: Vec::new(),
             group_scheduling: Default::default(),
-            raptor10_redundancy: 2, // for full-nodes
         }
     }
 }

@@ -22,7 +22,7 @@ use monad_crypto::certificate_signature::{
 use monad_dataplane::udp::DEFAULT_MTU;
 use monad_eth_types::Balance;
 use monad_executor::Executor;
-use monad_raptorcast::config::{RaptorCastConfig, SecondaryRaptorCastModeConfig};
+use monad_raptorcast::config::{RaptorCastConfig, RaptorCastConfigSecondary};
 use monad_secp::SecpSignature;
 use monad_state_backend::InMemoryStateInner;
 use monad_types::{NodeId, Round, SeqNum, Stake};
@@ -319,7 +319,7 @@ where
                             shared_key,
                             mtu: DEFAULT_MTU,
                             primary_instance: Default::default(),
-                            secondary_instance: SecondaryRaptorCastModeConfig::None,
+                            secondary_instance: RaptorCastConfigSecondary::default(),
                         }),
                     },
 

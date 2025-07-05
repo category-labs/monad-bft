@@ -39,7 +39,7 @@ use monad_peer_discovery::{
 };
 use monad_pprof::start_pprof_server;
 use monad_raptorcast::config::{
-    GroupSchedulingConfig, RaptorCastConfig, RaptorCastConfigPrimary,
+    GroupSchedulingConfig, RaptorCastConfig, RaptorCastConfigPrimary, RaptorCastConfigSecondary,
     RaptorCastConfigSecondaryClient, RaptorCastConfigSecondaryPublisher,
     SecondaryRaptorCastModeConfig,
 };
@@ -629,24 +629,26 @@ where
         rng_seed: 123456,
     };
 
-    let secondary_instance = {
+    let secondary_instance: RaptorCastConfigSecondary<ST> = {
         if let Some(cfg_2nd) = node_config.fullnode_raptorcast {
             match cfg_2nd.mode {
                 monad_node_config::fullnode_raptorcast::SecondaryRaptorCastModeConfig::None => {
                     debug!("Configured with Secondary RaptorCast instance: None");
-                    SecondaryRaptorCastModeConfig::None
+                    RaptorCastConfigSecondary::default()
                 }
 
                 monad_node_config::fullnode_raptorcast::SecondaryRaptorCastModeConfig::Client => {
                     debug!("Configured with Secondary RaptorCast instance: Client");
-                    SecondaryRaptorCastModeConfig::Client(RaptorCastConfigSecondaryClient {
-                        bandwidth_cost_per_group_member: cfg_2nd.bandwidth_cost_per_group_member,
-                        bandwidth_capacity: cfg_2nd.bandwidth_capacity,
-                        invite_future_dist_min: cfg_2nd.invite_future_dist_min,
-                        invite_future_dist_max: cfg_2nd.invite_future_dist_max,
-                        invite_accept_heartbeat: Duration::from_millis(cfg_2nd.invite_accept_heartbeat_ms),
+                    RaptorCastConfigSecondary {
                         raptor10_redundancy: cfg_2nd.raptor10_fullnode_redundancy_factor,
-                    })
+                        mode: SecondaryRaptorCastModeConfig::Client(RaptorCastConfigSecondaryClient {
+                            bandwidth_cost_per_group_member: cfg_2nd.bandwidth_cost_per_group_member,
+                            bandwidth_capacity: cfg_2nd.bandwidth_capacity,
+                            invite_future_dist_min: cfg_2nd.invite_future_dist_min,
+                            invite_future_dist_max: cfg_2nd.invite_future_dist_max,
+                            invite_accept_heartbeat: Duration::from_millis(cfg_2nd.invite_accept_heartbeat_ms),
+                        })
+                    }
                 }
 
                 monad_node_config::fullnode_raptorcast::SecondaryRaptorCastModeConfig::Publisher => {
@@ -657,22 +659,24 @@ where
                         .iter()
                         .map(|id| NodeId::new(id.secp256k1_pubkey))
                         .collect();
-                    SecondaryRaptorCastModeConfig::Publisher(RaptorCastConfigSecondaryPublisher {
-                        full_nodes_prioritized,
-                        group_scheduling: GroupSchedulingConfig {
-                            max_group_size: cfg_2nd.max_group_size,
-                            round_span: cfg_2nd.round_span,
-                            invite_lookahead: cfg_2nd.invite_lookahead,
-                            max_invite_wait: cfg_2nd.max_invite_wait,
-                            deadline_round_dist: cfg_2nd.deadline_round_dist,
-                            init_empty_round_span: cfg_2nd.init_empty_round_span,
-                        },
+                    RaptorCastConfigSecondary {
                         raptor10_redundancy: cfg_2nd.raptor10_fullnode_redundancy_factor,
-                    })
+                        mode: SecondaryRaptorCastModeConfig::Publisher(RaptorCastConfigSecondaryPublisher {
+                            full_nodes_prioritized,
+                            group_scheduling: GroupSchedulingConfig {
+                                max_group_size: cfg_2nd.max_group_size,
+                                round_span: cfg_2nd.round_span,
+                                invite_lookahead: cfg_2nd.invite_lookahead,
+                                max_invite_wait: cfg_2nd.max_invite_wait,
+                                deadline_round_dist: cfg_2nd.deadline_round_dist,
+                                init_empty_round_span: cfg_2nd.init_empty_round_span,
+                            }
+                        })
+                    }
                 }
             }
         } else {
-            SecondaryRaptorCastModeConfig::None
+            RaptorCastConfigSecondary::default()
         }
     };
 

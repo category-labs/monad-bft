@@ -66,7 +66,7 @@ where
             std::sync::mpsc::channel::<FullNodesGroupMessage<ST>>();
         let (send_group_infos, recv_group_infos) = std::sync::mpsc::channel::<Group<ST>>();
 
-        let rc_secondary = match &cfg.secondary_instance {
+        let rc_secondary = match &cfg.secondary_instance.mode {
             SecondaryRaptorCastModeConfig::None => None,
             _ => Some(RaptorCastSecondary::new(
                 cfg.clone(),

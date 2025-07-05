@@ -114,14 +114,11 @@ where
         }
         let self_id = NodeId::new(config.shared_key.pubkey());
         let is_fullnode = matches!(
-            config.secondary_instance,
+            config.secondary_instance.mode,
             config::SecondaryRaptorCastModeConfig::Client(_)
         );
         tracing::trace!(
-            "RaptorCast - is_fullnode: {}, self_id: {:?}, mtu: {}",
-            is_fullnode,
-            self_id,
-            config.mtu
+            ?is_fullnode, ?self_id, ?config.mtu, "RaptorCast::new",
         );
         Self {
             is_fullnode,
@@ -272,7 +269,10 @@ where
         shared_key,
         mtu: DEFAULT_MTU,
         primary_instance: Default::default(),
-        secondary_instance: config::SecondaryRaptorCastModeConfig::None,
+        secondary_instance: config::RaptorCastConfigSecondary {
+            raptor10_redundancy: 2,
+            mode: config::SecondaryRaptorCastModeConfig::None,
+        },
     };
     let pd = PeerDiscoveryDriver::new(peer_discovery_builder);
     let shared_pd = Arc::new(Mutex::new(pd));
