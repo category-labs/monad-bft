@@ -37,12 +37,14 @@ pub use self::ipc::EthTxPoolIpcConfig;
 use self::{
     forward::EthTxPoolForwardingManager, ipc::EthTxPoolIpcServer,
     metrics::EthTxPoolExecutorMetrics, preload::EthTxPoolPreloadManager,
+    reset::EthTxPoolResetTrigger,
 };
 
 mod forward;
 mod ipc;
 mod metrics;
 mod preload;
+mod reset;
 
 const PROMOTE_PENDING_INTERVAL_MS: u64 = 2;
 
@@ -56,9 +58,8 @@ where
 {
     pool: EthTxPool<ST, SCT, SBT>,
     ipc: Pin<Box<EthTxPoolIpcServer>>,
-    // Flag used to skip polling the ipc socket until EthTxPool has been reset after state syncing.
-    // TODO(phil): Remove this once RPC uses execution events to decide if state syncing is done.
-    has_been_reset: bool,
+
+    reset: EthTxPoolResetTrigger,
     block_policy: EthBlockPolicy<ST, SCT>,
     state_backend: SBT,
     chain_config: CCT,
@@ -128,7 +129,7 @@ where
                         pool,
                         ipc,
                         block_policy,
-                        has_been_reset: false,
+                        reset: EthTxPoolResetTrigger::default(),
                         state_backend,
                         chain_config,
 
@@ -386,7 +387,7 @@ where
                     self.pool
                         .reset(&mut event_tracker, last_delay_committed_blocks);
 
-                    self.has_been_reset = true;
+                    self.reset.set_reset();
                 }
             }
         }
@@ -425,7 +426,7 @@ where
             pool,
             ipc,
 
-            has_been_reset,
+            reset,
             block_policy,
             state_backend,
             chain_config: _,
@@ -449,7 +450,7 @@ where
             return Poll::Ready(Some(MonadEvent::MempoolEvent(event)));
         };
 
-        if !*has_been_reset {
+        if !reset.poll_is_ready(cx) {
             return Poll::Pending;
         }
 
