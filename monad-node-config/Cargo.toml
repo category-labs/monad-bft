@@ -19,5 +19,17 @@ monad-types = { workspace = true }
 alloy-primitives = { workspace = true }
 serde = { workspace = true }
 
+[dev-dependencies]
+monad-chain-config = { workspace = true }
+
+clap = { workspace = true }
+codespan-reporting = { workspace = true }
+strum = { workspace = true, features = ["derive"] }
+toml = { workspace = true }
+
 [features]
 crypto = ["dep:monad-bls"]
+
+[[example]]
+name = "monad-node-config-linter"
+path = "examples/linter.rs"

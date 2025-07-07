@@ -51,6 +51,12 @@ pub struct ValidatorsConfig<SCT: SignatureCollection> {
 
 impl<SCT: SignatureCollection> ValidatorsConfig<SCT> {
     pub fn read_from_path(validators_path: impl AsRef<Path>) -> Result<Self, Box<dyn Error>> {
+        let contents = std::fs::read_to_string(validators_path)?;
+
+        Ok(Self::read_from_str(&contents)?)
+    }
+
+    pub fn read_from_str(str: &str) -> Result<Self, toml::de::Error> {
         /// Top-level lists aren't supported in toml, so create this
         #[derive(Deserialize)]
         struct ValidatorsConfigFile<SCT: SignatureCollection> {
@@ -61,8 +67,7 @@ impl<SCT: SignatureCollection> ValidatorsConfig<SCT> {
             validator_sets: Vec<ValidatorSetDataWithEpoch<SCT>>,
         }
 
-        let validators_config: ValidatorsConfigFile<SCT> =
-            toml::from_str(&std::fs::read_to_string(validators_path)?)?;
+        let validators_config: ValidatorsConfigFile<SCT> = toml::from_str(str)?;
         assert!(!validators_config.validator_sets.is_empty());
         Ok(Self {
             validators: validators_config
