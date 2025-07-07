@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, ops::Deref};
 
-use alloy_rlp::{RlpDecodable, RlpEncodable};
+use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use monad_consensus_types::{
     no_endorsement::{FreshProposalCertificate, NoEndorsementCertificate},
     quorum_certificate::QuorumCertificate,
@@ -15,7 +15,7 @@ use monad_crypto::{
         CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
         CertificateSignatureRecoverable, PubKey,
     },
-    hasher::{Hash, Hashable, Hasher, HasherType},
+    signing_domain,
 };
 use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, Stake, GENESIS_ROUND};
 use monad_validator::{
@@ -59,10 +59,10 @@ impl<S: CertificateSignatureRecoverable, M> Verified<S, M> {
     }
 }
 
-impl<S: CertificateSignatureRecoverable, M: Hashable> Verified<S, M> {
+impl<S: CertificateSignatureRecoverable, M: Encodable> Verified<S, M> {
     pub fn new(msg: M, keypair: &S::KeyPairType) -> Self {
-        let hash = HasherType::hash_object(&msg);
-        let signature = S::sign(hash.as_ref(), keypair);
+        let rlp_msg = alloy_rlp::encode(&msg);
+        let signature = S::sign::<signing_domain::ConsensusMessage>(&rlp_msg, keypair);
         Self {
             author: NodeId::new(keypair.pubkey()),
             message: Unverified::new(msg, signature),
@@ -186,8 +186,6 @@ where
         VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
-        let msg = HasherType::hash_object(&self.obj);
-
         // If the node is lagging too far behind, it wouldn't know when the
         // next epoch is starting. The epoch retrieved here may be incorrect.
         // TODO: Need to check that case. Should trigger statesync.
@@ -198,7 +196,12 @@ where
             .get_val_set(&epoch)
             .ok_or(Error::ValidatorSetDataUnavailable)?;
 
-        let author = verify_author(validator_set.get_members(), &msg, &self.author_signature)?;
+        let msg = alloy_rlp::encode(&self.obj.obj);
+        let author = self
+            .author_signature
+            .recover_pubkey::<signing_domain::ConsensusMessage>(&msg)
+            .map_err(|_| Error::InvalidSignature)?
+            .valid_pubkey(validator_set.get_members())?;
 
         let result = Verified {
             author: NodeId::new(author),
@@ -241,19 +244,20 @@ impl<M> AsRef<Unvalidated<M>> for Validated<M> {
     }
 }
 
-impl<ST, SCT, EPT> Hashable for Validated<ConsensusMessage<ST, SCT, EPT>>
+impl<M> Encodable for Validated<M>
 where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    EPT: ExecutionProtocol,
+    M: Encodable,
 {
-    fn hash(&self, state: &mut impl Hasher) {
-        self.as_ref().hash(state)
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        self.message.encode(out)
+    }
+
+    fn length(&self) -> usize {
+        self.message.length()
     }
 }
 
-// TODO RlpEncodableWrapper?
-#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Unvalidated<M> {
     obj: M,
 }
@@ -264,20 +268,26 @@ impl<M> Unvalidated<M> {
     }
 }
 
-impl<M> From<Validated<M>> for Unvalidated<M> {
-    fn from(value: Validated<M>) -> Self {
-        value.message
+impl<M: Encodable> Encodable for Unvalidated<M> {
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        self.obj.encode(out)
+    }
+
+    fn length(&self) -> usize {
+        self.obj.length()
     }
 }
 
-impl<ST, SCT, EPT> Hashable for Unvalidated<ConsensusMessage<ST, SCT, EPT>>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    EPT: ExecutionProtocol,
-{
-    fn hash(&self, state: &mut impl Hasher) {
-        self.obj.hash(state)
+impl<M: Decodable> Decodable for Unvalidated<M> {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let obj = M::decode(buf)?;
+        Ok(Self { obj })
+    }
+}
+
+impl<M> From<Validated<M>> for Unvalidated<M> {
+    fn from(value: Validated<M>) -> Self {
+        value.message
     }
 }
 
@@ -743,7 +753,7 @@ where
         // TODO-3: evidence collection
         let signers = t
             .sigs
-            .verify(validator_mapping, msg.as_ref())
+            .verify::<signing_domain::Timeout>(validator_mapping, msg.as_ref())
             .map_err(|_| Error::InvalidSignature)?;
 
         node_ids.extend(signers);
@@ -812,7 +822,7 @@ where
     let qc_msg = alloy_rlp::encode(qc.info);
     let node_ids = qc
         .signatures
-        .verify(validator_mapping, qc_msg.as_ref())
+        .verify::<signing_domain::Vote>(validator_mapping, qc_msg.as_ref())
         .map_err(|_| Error::InvalidSignature)?;
 
     if !validators.has_super_majority_votes(&node_ids) {
@@ -968,7 +978,7 @@ where
     let nec_msg = alloy_rlp::encode(&nec.msg);
     let node_ids = nec
         .signatures
-        .verify(validator_mapping, nec_msg.as_ref())
+        .verify::<signing_domain::NoEndorsement>(validator_mapping, nec_msg.as_ref())
         .map_err(|_| Error::InvalidSignature)?;
 
     if !validators.has_super_majority_votes(&node_ids) {
@@ -976,23 +986,6 @@ where
     }
 
     Ok(())
-}
-
-/// Verify that the author is a staked validator
-fn verify_author<ST: CertificateSignatureRecoverable>(
-    validators: &BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Stake>,
-    msg: &Hash,
-    sig: &ST,
-) -> Result<CertificateSignaturePubKey<ST>, Error> {
-    get_pubkey(msg.as_ref(), sig)?.valid_pubkey(validators)
-}
-
-/// Extract the PubKey from the secp recoverable signature
-fn get_pubkey<ST: CertificateSignatureRecoverable>(
-    msg: &[u8],
-    sig: &ST,
-) -> Result<CertificateSignaturePubKey<ST>, Error> {
-    sig.recover_pubkey(msg).map_err(|_| Error::InvalidSignature)
 }
 
 trait ValidatorPubKey {
@@ -1042,8 +1035,8 @@ mod test {
             CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
             CertificateSignatureRecoverable,
         },
-        hasher::{Hash, Hasher, HasherType},
-        NopSignature,
+        hasher::Hash,
+        signing_domain, NopSignature,
     };
     use monad_multi_sig::MultiSig;
     use monad_testutil::{
@@ -1102,9 +1095,9 @@ mod test {
             };
             let msg = alloy_rlp::encode(td);
 
-            let sigs = vec![(NodeId::new(keypairs[i].pubkey()), <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg.as_ref(), &certkeys[i]))];
+            let sigs = vec![(NodeId::new(keypairs[i].pubkey()), <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign::<signing_domain::Timeout>(msg.as_ref(), &certkeys[i]))];
 
-            let sigcol = <SignatureCollectionType as SignatureCollection>::new(sigs, &vmap, msg.as_ref()).unwrap();
+            let sigcol = <SignatureCollectionType as SignatureCollection>::new::<signing_domain::Timeout>(sigs, &vmap, msg.as_ref()).unwrap();
 
             HighTipRoundSigColTuple {
                 high_qc_round: *x,
@@ -1124,11 +1117,12 @@ mod test {
                 |(keypair, cert_keypair)|
                 (
                     NodeId::new(keypair.pubkey()),
-                    <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg.as_ref(), cert_keypair)
+                    <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign::<signing_domain::Vote>(msg.as_ref(), cert_keypair)
                 )).collect();
-            let qc_sigcol =
-                <SignatureCollectionType as SignatureCollection>::new(qc_sigs, &vmap, msg.as_ref())
-                    .unwrap();
+            let qc_sigcol = <SignatureCollectionType as SignatureCollection>::new::<
+                signing_domain::Vote,
+            >(qc_sigs, &vmap, msg.as_ref())
+            .unwrap();
             QuorumCertificate::new(
                 Vote {
                     round: Round(3),
@@ -1169,14 +1163,16 @@ mod test {
         let val_mapping = ValidatorMapping::new(voting_identity);
 
         let msg = alloy_rlp::encode(vote);
-        let s =< <SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg.as_ref(), &cert_keypair);
+        let s = <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign::<signing_domain::Vote>(msg.as_ref(), &cert_keypair);
 
         let vote2 = Vote {
             round: Round(1),
             ..DontCare::dont_care()
         };
         let sigs = vec![(NodeId::new(keypair.pubkey()), s)];
-        let sigs = MultiSig::new(sigs, &val_mapping, msg.as_ref()).unwrap();
+        let sigs =
+            SignatureCollectionType::new::<signing_domain::Vote>(sigs, &val_mapping, msg.as_ref())
+                .unwrap();
 
         let qc = QuorumCertificate::new(vote2, sigs);
 
@@ -1214,11 +1210,13 @@ mod test {
         let vmap = ValidatorMapping::new(voting_identity);
 
         let msg = alloy_rlp::encode(vote);
-        let s =< <SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg.as_ref(), &cert_keys[0]);
+        let s =< <SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign::<signing_domain::Vote>(msg.as_ref(), &cert_keys[0]);
 
         let sigs = vec![(NodeId::new(keypairs[0].pubkey()), s)];
 
-        let sig_col = MultiSig::new(sigs, &vmap, msg.as_ref()).unwrap();
+        let sig_col =
+            SignatureCollectionType::new::<signing_domain::Vote>(sigs, &vmap, msg.as_ref())
+                .unwrap();
 
         let qc = QuorumCertificate::new(vote, sig_col);
 
@@ -1258,9 +1256,9 @@ mod test {
             };
             let msg = alloy_rlp::encode(td);
 
-            let sigs = vec![(NodeId::new(keypair.pubkey()), < <SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg.as_ref(), certkey))];
+            let sigs = vec![(NodeId::new(keypair.pubkey()), <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign::<signing_domain::Timeout>(msg.as_ref(), certkey))];
 
-            let sigcol = <SignatureCollectionType as SignatureCollection>::new(sigs, &vmap, msg.as_ref()).unwrap();
+            let sigcol = <SignatureCollectionType as SignatureCollection>::new::<signing_domain::Timeout>(sigs, &vmap, msg.as_ref()).unwrap();
 
             HighTipRoundSigColTuple {
                 high_qc_round: *x,
@@ -1280,11 +1278,12 @@ mod test {
                 |(keypair, cert_keypair)|
                 (
                     NodeId::new(keypair.pubkey()),
-                    <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg.as_ref(), cert_keypair)
+                    <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign::<signing_domain::Vote>(msg.as_ref(), cert_keypair)
                 )).collect();
-            let qc_sigcol =
-                <SignatureCollectionType as SignatureCollection>::new(qc_sigs, &vmap, msg.as_ref())
-                    .unwrap();
+            let qc_sigcol = <SignatureCollectionType as SignatureCollection>::new::<
+                signing_domain::Vote,
+            >(qc_sigs, &vmap, msg.as_ref())
+            .unwrap();
             QuorumCertificate::new(
                 Vote {
                     round: Round(2),
@@ -1332,10 +1331,15 @@ mod test {
         let vset = ValidatorSetFactory::default().create(stake_list).unwrap();
         let val_mapping = ValidatorMapping::new(voting_identity);
 
-        let s =< <SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(tmo_digest.as_ref(), &cert_keypair);
+        let s = <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign::<signing_domain::Timeout>(tmo_digest.as_ref(), &cert_keypair);
 
         let sigs = vec![(NodeId::new(keypair.pubkey()), s)];
-        let sigcol = MultiSig::new(sigs, &val_mapping, tmo_digest.as_ref()).unwrap();
+        let sigcol = SignatureCollectionType::new::<signing_domain::Timeout>(
+            sigs,
+            &val_mapping,
+            tmo_digest.as_ref(),
+        )
+        .unwrap();
 
         let tc: TimeoutCertificate<SignatureType, SignatureCollectionType, ExecutionProtocolType> =
             TimeoutCertificate {
@@ -1389,11 +1393,13 @@ mod test {
         let mut sigs = Vec::new();
 
         for (key, certkey) in keypairs.iter().zip(certkeys.iter()) {
-            let s =< <SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg.as_ref(), certkey);
+            let s = <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign::<signing_domain::Vote>(msg.as_ref(), certkey);
             sigs.push((NodeId::new(key.pubkey()), s));
         }
 
-        let sig_col = MultiSig::new(sigs, &vmap, msg.as_ref()).unwrap();
+        let sig_col =
+            SignatureCollectionType::new::<signing_domain::Vote>(sigs, &vmap, msg.as_ref())
+                .unwrap();
 
         let qc = QuorumCertificate::new(vote, sig_col);
 
@@ -1450,11 +1456,13 @@ mod test {
         let mut sigs = Vec::new();
 
         for (key, certkey) in keypairs.iter().zip(certkeys.iter()) {
-            let s =< <SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg.as_ref(), certkey);
+            let s = <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign::<signing_domain::Vote>(msg.as_ref(), certkey);
             sigs.push((NodeId::new(key.pubkey()), s));
         }
 
-        let sig_col = MultiSig::new(sigs, &vmap, msg.as_ref()).unwrap();
+        let sig_col =
+            SignatureCollectionType::new::<signing_domain::Vote>(sigs, &vmap, msg.as_ref())
+                .unwrap();
 
         let qc = QuorumCertificate::new(vote, sig_col);
 
@@ -1500,10 +1508,12 @@ mod test {
         let vm = VoteMessage::<SignatureCollectionType>::new(vote, &certkeypair);
 
         let svm = Verified::<SignatureType, _>::new(vm, &keypair);
-        let (author, signature, _) = svm.destructure();
-        let msg = HasherType::hash_object(&vm);
+        let (author, signature, message) = svm.destructure();
+        let msg = alloy_rlp::encode(message);
         assert_eq!(
-            signature.recover_pubkey(msg.as_ref()).unwrap(),
+            signature
+                .recover_pubkey::<signing_domain::ConsensusMessage>(msg.as_ref())
+                .unwrap(),
             keypair.pubkey()
         );
         assert_eq!(author, NodeId::new(keypair.pubkey()));
@@ -1737,7 +1747,7 @@ mod test {
         let msg = alloy_rlp::encode(vote);
         let mut sigs = Vec::new();
         for ck in cert_keys.iter() {
-            let sig = <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg.as_ref(), ck);
+            let sig = <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign::<signing_domain::Vote>(msg.as_ref(), ck);
 
             for (node_id, pubkey) in valmap.map.iter() {
                 if *pubkey == ck.pubkey() {
@@ -1746,7 +1756,9 @@ mod test {
             }
         }
 
-        let sigcol = SignatureCollectionType::new(sigs, &valmap, msg.as_ref()).unwrap();
+        let sigcol =
+            SignatureCollectionType::new::<signing_domain::Vote>(sigs, &valmap, msg.as_ref())
+                .unwrap();
 
         // moved here because of valmap ownership
         let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
@@ -1784,7 +1796,7 @@ mod test {
         let msg = alloy_rlp::encode(vote);
         let mut sigs = Vec::new();
         for ck in cert_keys.iter() {
-            let sig = <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg.as_ref(), ck);
+            let sig = <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign::<signing_domain::Vote>(msg.as_ref(), ck);
 
             for (node_id, pubkey) in valmap.map.iter() {
                 if *pubkey == ck.pubkey() {
@@ -1793,7 +1805,9 @@ mod test {
             }
         }
 
-        let sigcol = SignatureCollectionType::new(sigs, &valmap, msg.as_ref()).unwrap();
+        let sigcol =
+            SignatureCollectionType::new::<signing_domain::Vote>(sigs, &valmap, msg.as_ref())
+                .unwrap();
         let qc = QuorumCertificate::new(vote, sigcol);
 
         // create invalid TC
@@ -1809,11 +1823,15 @@ mod test {
         for (key, certkey) in keys.iter().zip(cert_keys.iter()) {
             let node_id = NodeId::new(key.pubkey());
             let sig =
-                <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(tmo_digest.as_ref(), certkey);
+                <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign::<signing_domain::Timeout>(tmo_digest.as_ref(), certkey);
             tc_sigs.push((node_id, sig));
         }
-        let tmo_sig_col =
-            SignatureCollectionType::new(tc_sigs, &valmap, tmo_digest.as_ref()).unwrap();
+        let tmo_sig_col = SignatureCollectionType::new::<signing_domain::Timeout>(
+            tc_sigs,
+            &valmap,
+            tmo_digest.as_ref(),
+        )
+        .unwrap();
 
         let high_qc_sig_tuple = HighTipRoundSigColTuple {
             high_tip_round: GENESIS_ROUND,

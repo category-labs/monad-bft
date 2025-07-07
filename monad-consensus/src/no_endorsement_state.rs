@@ -7,6 +7,7 @@ use monad_consensus_types::{
     },
     voting::ValidatorMapping,
 };
+use monad_crypto::signing_domain;
 use monad_types::{NodeId, Round};
 use monad_validator::validator_set::ValidatorSetType;
 use tracing::{debug, error, info, warn};
@@ -116,7 +117,7 @@ where
         ) {
             assert!(round >= self.earliest_round);
             let no_endorsement_enc = alloy_rlp::encode(&no_endorsement);
-            match SCT::new(
+            match SCT::new::<signing_domain::NoEndorsement>(
                 round_pending_no_endorsements
                     .iter()
                     .map(|(node, signature)| (*node, *signature)),

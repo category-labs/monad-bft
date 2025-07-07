@@ -1,5 +1,8 @@
 use alloy_rlp::{Decodable, Encodable};
-use monad_crypto::hasher::{Hasher, HasherType};
+use monad_crypto::{
+    hasher::{Hasher, HasherType},
+    signing_domain::SigningDomain,
+};
 use secp256k1::Secp256k1;
 use zeroize::Zeroize;
 
@@ -58,8 +61,9 @@ impl std::hash::Hash for PubKey {
     }
 }
 
-fn msg_hash(msg: &[u8]) -> secp256k1::Message {
+fn msg_hash<SD: SigningDomain>(msg: &[u8]) -> secp256k1::Message {
     let mut hasher = HasherType::new();
+    hasher.update(SD::PREFIX);
     hasher.update(msg);
     let hash = hasher.hash();
 
@@ -78,10 +82,10 @@ impl KeyPair {
     }
 
     /// Create a SecpSignature over Hash(msg)
-    pub fn sign(&self, msg: &[u8]) -> SecpSignature {
+    pub fn sign<SD: SigningDomain>(&self, msg: &[u8]) -> SecpSignature {
         SecpSignature(Secp256k1::sign_ecdsa_recoverable(
             secp256k1::SECP256K1,
-            &msg_hash(msg),
+            &msg_hash::<SD>(msg),
             &self.0.secret_key(),
         ))
     }
@@ -111,10 +115,14 @@ impl PubKey {
     }
 
     /// Verify that the message is correctly signed
-    pub fn verify(&self, msg: &[u8], signature: &SecpSignature) -> Result<(), Error> {
+    pub fn verify<SD: SigningDomain>(
+        &self,
+        msg: &[u8],
+        signature: &SecpSignature,
+    ) -> Result<(), Error> {
         Secp256k1::verify_ecdsa(
             secp256k1::SECP256K1,
-            &msg_hash(msg),
+            &msg_hash::<SD>(msg),
             &signature.0.to_standard(),
             &self.0,
         )
@@ -124,8 +132,8 @@ impl PubKey {
 
 impl SecpSignature {
     /// Recover the pubkey from signature given the message
-    pub fn recover_pubkey(&self, msg: &[u8]) -> Result<PubKey, Error> {
-        Secp256k1::recover_ecdsa(secp256k1::SECP256K1, &msg_hash(msg), &self.0)
+    pub fn recover_pubkey<SD: SigningDomain>(&self, msg: &[u8]) -> Result<PubKey, Error> {
+        Secp256k1::recover_ecdsa(secp256k1::SECP256K1, &msg_hash::<SD>(msg), &self.0)
             .map(PubKey)
             .map_err(Error)
     }
@@ -176,9 +184,12 @@ impl Decodable for SecpSignature {
 
 #[cfg(test)]
 mod tests {
+    use monad_crypto::signing_domain;
     use tiny_keccak::Hasher;
 
     use super::{KeyPair, PubKey, SecpSignature};
+
+    type SigningDomainType = signing_domain::Vote;
 
     #[test]
     fn test_pubkey_roundtrip() {
@@ -224,10 +235,16 @@ mod tests {
         let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
 
         let msg = b"hello world";
-        let signature = keypair.sign(msg);
+        let signature = keypair.sign::<SigningDomainType>(msg);
 
-        assert!(keypair.pubkey().verify(msg, &signature).is_ok());
-        assert!(keypair.pubkey().verify(b"bye world", &signature).is_err());
+        assert!(keypair
+            .pubkey()
+            .verify::<SigningDomainType>(msg, &signature)
+            .is_ok());
+        assert!(keypair
+            .pubkey()
+            .verify::<SigningDomainType>(b"bye world", &signature)
+            .is_err());
     }
 
     #[test]
@@ -236,9 +253,9 @@ mod tests {
         let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
 
         let msg = b"hello world";
-        let signature = keypair.sign(msg);
+        let signature = keypair.sign::<SigningDomainType>(msg);
 
-        let recovered_key = signature.recover_pubkey(msg).unwrap();
+        let recovered_key = signature.recover_pubkey::<SigningDomainType>(msg).unwrap();
 
         assert!(keypair.pubkey().bytes() == recovered_key.bytes());
     }
@@ -249,7 +266,7 @@ mod tests {
         let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
 
         let msg = b"hello world";
-        let signature = keypair.sign(msg);
+        let signature = keypair.sign::<SigningDomainType>(msg);
 
         let ser = signature.serialize();
         let deser = SecpSignature::deserialize(&ser);
@@ -262,7 +279,7 @@ mod tests {
         let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
 
         let msg = b"hello world";
-        let signature = keypair.sign(msg);
+        let signature = keypair.sign::<SigningDomainType>(msg);
 
         let rlp = alloy_rlp::encode(signature);
         let x: SecpSignature = alloy_rlp::decode_exact(rlp).unwrap();

@@ -1,6 +1,7 @@
 use alloy_rlp::{RlpDecodable, RlpEncodable};
-use monad_crypto::certificate_signature::{
-    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+use monad_crypto::{
+    certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
+    signing_domain,
 };
 use monad_types::*;
 use serde::{Deserialize, Serialize};
@@ -72,8 +73,12 @@ impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
             round: GENESIS_ROUND,
         };
 
-        let sigs = SCT::new(Vec::new(), &ValidatorMapping::new(std::iter::empty()), &[])
-            .expect("genesis qc sigs");
+        let sigs = SCT::new::<signing_domain::Vote>(
+            Vec::new(),
+            &ValidatorMapping::new(std::iter::empty()),
+            &[],
+        )
+        .expect("genesis qc sigs");
 
         QuorumCertificate {
             info: vote,

@@ -3,11 +3,15 @@ use alloy_primitives::{Address, Bytes, PrimitiveSignature, U256};
 use alloy_signer::{k256::ecdsa::SigningKey, SignerSync};
 use alloy_signer_local::PrivateKeySigner;
 use criterion::{criterion_group, criterion_main, Criterion};
-use monad_crypto::hasher::{Hasher, HasherType};
+use monad_crypto::{
+    hasher::{Hasher, HasherType},
+    signing_domain,
+};
 use monad_secp::{KeyPair, RecoverableAddress, SecpSignature};
 use monad_testutil::signing::get_key;
 use rand::{thread_rng, RngCore};
 
+type SigningDomainType = signing_domain::ConsensusMessage;
 type SignatureType = SecpSignature;
 
 fn criterion_benchmark(c: &mut Criterion) {
@@ -32,13 +36,15 @@ fn criterion_benchmark(c: &mut Criterion) {
     });
 
     // sign
-    c.bench_function("secp_sign", |b| b.iter(|| key.sign(data.as_ref())));
+    c.bench_function("secp_sign", |b| {
+        b.iter(|| key.sign::<SigningDomainType>(data.as_ref()))
+    });
 
     // recover pubkey
     c.bench_function("secp_recover", |b| {
         b.iter_batched(
-            || key.sign(data.as_ref()),
-            |sig| sig.recover_pubkey(data.as_ref()),
+            || key.sign::<SigningDomainType>(data.as_ref()),
+            |sig| sig.recover_pubkey::<SigningDomainType>(data.as_ref()),
             criterion::BatchSize::SmallInput,
         )
     });
@@ -47,12 +53,14 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("secp_verify", |b| {
         b.iter_batched(
             || {
-                let sig = key.sign(data.as_ref());
-                let pubkey = sig.recover_pubkey(data.as_ref()).unwrap();
+                let sig = key.sign::<SigningDomainType>(data.as_ref());
+                let pubkey = sig
+                    .recover_pubkey::<SigningDomainType>(data.as_ref())
+                    .unwrap();
                 assert_eq!(pubkey, key.pubkey());
                 (sig, pubkey)
             },
-            |(sig, pubkey)| pubkey.verify(data.as_ref(), &sig),
+            |(sig, pubkey)| pubkey.verify::<SigningDomainType>(data.as_ref(), &sig),
             criterion::BatchSize::SmallInput,
         )
     });

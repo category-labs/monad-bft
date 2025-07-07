@@ -13,7 +13,7 @@ use monad_crypto::{
     certificate_signature::{
         CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
     },
-    hasher::{Hashable, Hasher},
+    signing_domain,
 };
 use monad_types::{Epoch, ExecutionProtocol, Round};
 
@@ -40,17 +40,13 @@ impl<SCT: SignatureCollection> std::fmt::Debug for VoteMessage<SCT> {
     }
 }
 
-/// An integrity hash over all the fields
-impl<SCT: SignatureCollection> Hashable for VoteMessage<SCT> {
-    fn hash(&self, state: &mut impl Hasher) {
-        state.update(alloy_rlp::encode(self));
-    }
-}
-
 impl<SCT: SignatureCollection> VoteMessage<SCT> {
     pub fn new(vote: Vote, key: &SignatureCollectionKeyPairType<SCT>) -> Self {
         let vote_enc = alloy_rlp::encode(vote);
-        let sig = <SCT::SignatureType as CertificateSignature>::sign(vote_enc.as_ref(), key);
+        let sig = <SCT::SignatureType as CertificateSignature>::sign::<signing_domain::Vote>(
+            vote_enc.as_ref(),
+            key,
+        );
 
         Self { vote, sig }
     }
@@ -63,18 +59,6 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol;
-
-/// An integrity hash over all the fields
-impl<ST, SCT, EPT> Hashable for TimeoutMessage<ST, SCT, EPT>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    EPT: ExecutionProtocol,
-{
-    fn hash(&self, state: &mut impl Hasher) {
-        state.update(alloy_rlp::encode(self));
-    }
-}
 
 impl<ST, SCT, EPT> TimeoutMessage<ST, SCT, EPT>
 where
@@ -150,19 +134,6 @@ where
     pub last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
 }
 
-/// The last_round_tc can be independently verified. The message hash is over
-/// the block only
-impl<ST, SCT, EPT> Hashable for ProposalMessage<ST, SCT, EPT>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    EPT: ExecutionProtocol,
-{
-    fn hash(&self, state: &mut impl Hasher) {
-        state.update(alloy_rlp::encode(self));
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct RoundRecoveryMessage<ST, SCT, EPT>
 where
@@ -175,17 +146,6 @@ where
     pub tc: TimeoutCertificate<ST, SCT, EPT>,
 }
 
-impl<ST, SCT, EPT> Hashable for RoundRecoveryMessage<ST, SCT, EPT>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    EPT: ExecutionProtocol,
-{
-    fn hash(&self, state: &mut impl Hasher) {
-        state.update(alloy_rlp::encode(self));
-    }
-}
-
 #[derive(PartialEq, Eq, Clone, Debug, RlpEncodable, RlpDecodable)]
 pub struct NoEndorsementMessage<SCT: SignatureCollection> {
     pub msg: NoEndorsement,
@@ -196,8 +156,9 @@ pub struct NoEndorsementMessage<SCT: SignatureCollection> {
 impl<SCT: SignatureCollection> NoEndorsementMessage<SCT> {
     pub fn new(no_endorsement: NoEndorsement, key: &SignatureCollectionKeyPairType<SCT>) -> Self {
         let no_endorsement_enc = alloy_rlp::encode(&no_endorsement);
-        let signature =
-            <SCT::SignatureType as CertificateSignature>::sign(no_endorsement_enc.as_ref(), key);
+        let signature = <SCT::SignatureType as CertificateSignature>::sign::<
+            signing_domain::NoEndorsement,
+        >(no_endorsement_enc.as_ref(), key);
 
         Self {
             msg: no_endorsement,

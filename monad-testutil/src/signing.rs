@@ -12,7 +12,8 @@ use monad_crypto::{
     certificate_signature::{
         CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
     },
-    hasher::{Hashable, Hasher, HasherType},
+    hasher::{Hasher, HasherType},
+    signing_domain::{self, SigningDomain},
 };
 use monad_types::NodeId;
 
@@ -33,7 +34,7 @@ impl<ST: CertificateSignatureRecoverable> SignatureCollection for MockSignatures
     type NodeIdPubKey = CertificateSignaturePubKey<ST>;
     type SignatureType = ST;
 
-    fn new(
+    fn new<SD: SigningDomain>(
         _sigs: impl IntoIterator<Item = (NodeId<Self::NodeIdPubKey>, Self::SignatureType)>,
         _validator_mapping: &ValidatorMapping<
             Self::NodeIdPubKey,
@@ -44,7 +45,7 @@ impl<ST: CertificateSignatureRecoverable> SignatureCollection for MockSignatures
         Ok(Self { pubkey: Vec::new() })
     }
 
-    fn verify(
+    fn verify<SD: SigningDomain>(
         &self,
         _validator_mapping: &ValidatorMapping<
             Self::NodeIdPubKey,
@@ -115,22 +116,25 @@ pub struct TestSigner<S> {
 }
 
 impl<ST: CertificateSignatureRecoverable> TestSigner<ST> {
-    pub fn sign_object<T: Hashable>(o: T, key: &ST::KeyPairType) -> Unverified<ST, Unvalidated<T>> {
-        let msg = HasherType::hash_object(&o);
-        let sig = ST::sign(msg.as_ref(), key);
+    pub fn sign_object<T: alloy_rlp::Encodable>(
+        o: T,
+        key: &ST::KeyPairType,
+    ) -> Unverified<ST, Unvalidated<T>> {
+        let msg = alloy_rlp::encode(&o);
+        let sig = ST::sign::<signing_domain::ConsensusMessage>(msg.as_ref(), key);
 
         Unverified::new(Unvalidated::new(o), sig)
     }
 }
 
 impl<ST: CertificateSignatureRecoverable> TestSigner<ST> {
-    pub fn sign_incorrect_object<T: Hashable>(
+    pub fn sign_incorrect_object<T: alloy_rlp::Encodable>(
         signed_object: T,
         unsigned_object: T,
         key: &ST::KeyPairType,
     ) -> Unverified<ST, Unvalidated<T>> {
-        let msg = HasherType::hash_object(&signed_object);
-        let sig = ST::sign(msg.as_ref(), key);
+        let msg = alloy_rlp::encode(&signed_object);
+        let sig = ST::sign::<signing_domain::ConsensusMessage>(msg.as_ref(), key);
 
         Unverified::new(Unvalidated::new(unsigned_object), sig)
     }

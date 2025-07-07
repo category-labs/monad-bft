@@ -6,8 +6,11 @@ use std::{
 
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable, encode_list};
 use message::{PeerLookupRequest, PeerLookupResponse, Ping, Pong};
-use monad_crypto::certificate_signature::{
-    CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
+use monad_crypto::{
+    certificate_signature::{
+        CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
+    },
+    signing_domain,
 };
 use monad_executor::ExecutorMetrics;
 use monad_executor_glue::PeerEntry;
@@ -61,7 +64,7 @@ impl<ST: CertificateSignatureRecoverable> MonadNameRecord<ST> {
     pub fn new(name_record: NameRecord, key: &ST::KeyPairType) -> Self {
         let mut encoded = Vec::new();
         name_record.encode(&mut encoded);
-        let signature = ST::sign(&encoded, key);
+        let signature = ST::sign::<signing_domain::NameRecord>(&encoded, key);
         Self {
             name_record,
             signature,
@@ -73,7 +76,9 @@ impl<ST: CertificateSignatureRecoverable> MonadNameRecord<ST> {
     ) -> Result<NodeId<CertificateSignaturePubKey<ST>>, <ST as CertificateSignature>::Error> {
         let mut encoded = Vec::new();
         self.name_record.encode(&mut encoded);
-        let pubkey = self.signature.recover_pubkey(&encoded)?;
+        let pubkey = self
+            .signature
+            .recover_pubkey::<signing_domain::NameRecord>(&encoded)?;
         Ok(NodeId::new(pubkey))
     }
 

@@ -7,7 +7,10 @@ use monad_consensus_types::{
     },
     voting::{ValidatorMapping, Vote},
 };
-use monad_crypto::certificate_signature::{CertificateSignature, PubKey};
+use monad_crypto::{
+    certificate_signature::{CertificateSignature, PubKey},
+    signing_domain,
+};
 use monad_types::{NodeId, Round};
 use monad_validator::validator_set::ValidatorSetType;
 use tracing::{debug, error, info, warn};
@@ -115,7 +118,7 @@ where
         {
             assert!(round >= self.earliest_round);
             let vote_enc = alloy_rlp::encode(vote);
-            match SCT::new(
+            match SCT::new::<signing_domain::Vote>(
                 round_pending_votes
                     .iter()
                     .map(|(node, signature)| (*node, *signature)),
@@ -191,7 +194,7 @@ mod test {
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignature},
         hasher::Hash,
-        NopSignature,
+        signing_domain, NopSignature,
     };
     use monad_multi_sig::MultiSig;
     use monad_testutil::{signing::*, validators::create_keys_w_validators};
@@ -201,6 +204,7 @@ mod test {
     use super::VoteState;
     use crate::messages::message::VoteMessage;
 
+    type SigningDomainType = signing_domain::Vote;
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<SignatureType>;
 
@@ -218,7 +222,7 @@ mod test {
         let mut vm = VoteMessage::new(v, certkeypair);
         if !valid {
             let invalid_msg = b"invalid";
-            vm.sig = <SCT::SignatureType as CertificateSignature>::sign(
+            vm.sig = <SCT::SignatureType as CertificateSignature>::sign::<SigningDomainType>(
                 invalid_msg.as_ref(),
                 certkeypair,
             );
@@ -476,7 +480,7 @@ mod test {
         assert_eq!(
             qc.unwrap()
                 .signatures
-                .verify(&vmap, &alloy_rlp::encode(vote))
+                .verify::<SigningDomainType>(&vmap, &alloy_rlp::encode(vote))
                 .unwrap()
                 .into_iter()
                 .collect::<HashSet<_>>(),

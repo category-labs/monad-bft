@@ -16,8 +16,11 @@ use futures::{channel::oneshot, FutureExt, Stream, StreamExt};
 use itertools::Itertools;
 use message::{InboundRouterMessage, OutboundRouterMessage};
 use monad_consensus_types::signature_collection::SignatureCollection;
-use monad_crypto::certificate_signature::{
-    CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
+use monad_crypto::{
+    certificate_signature::{
+        CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
+    },
+    signing_domain,
 };
 use monad_dataplane::{
     udp::{segment_size_for_mtu, DEFAULT_MTU},
@@ -199,7 +202,11 @@ where
                 // TODO make this more sophisticated
                 // include timestamp, etc
                 let mut signed_message = BytesMut::zeroed(SIGNATURE_SIZE + app_message.len());
-                let signature = ST::sign(&app_message, &self.signing_key).serialize();
+                let signature = ST::sign::<signing_domain::RaptorcastAppMessage>(
+                    &app_message,
+                    &self.signing_key,
+                )
+                .serialize();
                 assert_eq!(signature.len(), SIGNATURE_SIZE);
                 signed_message[..SIGNATURE_SIZE].copy_from_slice(&signature);
                 signed_message[SIGNATURE_SIZE..].copy_from_slice(&app_message);
@@ -729,7 +736,9 @@ where
                         continue;
                     }
                 };
-            let from = match signature.recover_pubkey(app_message_bytes.as_ref()) {
+            let from = match signature
+                .recover_pubkey::<signing_domain::RaptorcastAppMessage>(app_message_bytes.as_ref())
+            {
                 Ok(from) => from,
                 Err(err) => {
                     warn!(?err, ?src_addr, "failed to recover pubkey");

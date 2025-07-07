@@ -1,6 +1,9 @@
 use alloy_rlp::{Decodable, Encodable, Header};
-use monad_crypto::certificate_signature::{
-    CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey, PubKey,
+use monad_crypto::{
+    certificate_signature::{
+        CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey, PubKey,
+    },
+    signing_domain::SigningDomain,
 };
 
 mod aggregation_tree;
@@ -68,16 +71,16 @@ impl CertificateSignature for BlsSignature {
     type KeyPairType = BlsKeyPair;
     type Error = BlsError;
 
-    fn sign(msg: &[u8], keypair: &Self::KeyPairType) -> Self {
-        keypair.sign(msg)
+    fn sign<SD: SigningDomain>(msg: &[u8], keypair: &Self::KeyPairType) -> Self {
+        keypair.sign::<SD>(msg)
     }
 
-    fn verify(
+    fn verify<SD: SigningDomain>(
         &self,
         msg: &[u8],
         pubkey: &CertificateSignaturePubKey<Self>,
     ) -> Result<(), Self::Error> {
-        self.verify(msg, pubkey)
+        self.verify::<SD>(msg, pubkey)
     }
 
     fn validate(&self) -> Result<(), Self::Error> {
@@ -96,10 +99,11 @@ impl CertificateSignature for BlsSignature {
 #[cfg(test)]
 mod test {
     // valid certificate signature tests
-    use monad_crypto::certificate_signature::CertificateSignature;
+    use monad_crypto::{certificate_signature::CertificateSignature, signing_domain};
 
     use crate::BlsSignature;
 
+    type SigningDomainType = signing_domain::Vote;
     type SignatureType = BlsSignature;
     type KeyPairType = <SignatureType as CertificateSignature>::KeyPairType;
 
@@ -122,7 +126,7 @@ mod test {
         let certkey = KeyPairType::from_bytes(s.as_mut_slice()).unwrap();
 
         let msg = b"hello world";
-        let sig = SignatureType::sign(msg, &certkey);
+        let sig = SignatureType::sign::<SigningDomainType>(msg, &certkey);
 
         let sig_bytes = sig.serialize();
         let sig_de = SignatureType::deserialize(sig_bytes.as_ref()).unwrap();
@@ -136,9 +140,11 @@ mod test {
         let certkey = KeyPairType::from_bytes(s.as_mut_slice()).unwrap();
 
         let msg = b"hello world";
-        let sig = SignatureType::sign(msg, &certkey);
+        let sig = SignatureType::sign::<SigningDomainType>(msg, &certkey);
 
-        assert!(sig.verify(msg, &certkey.pubkey()).is_ok());
+        assert!(sig
+            .verify::<SigningDomainType>(msg, &certkey.pubkey())
+            .is_ok());
     }
 
     // invalid certificate signature tests
@@ -149,8 +155,11 @@ mod test {
 
         let msg = b"hello world";
         let invalid_msg = b"bye world";
-        let sig = SignatureType::sign(msg, &certkey);
+        let sig = SignatureType::sign::<SigningDomainType>(msg, &certkey);
 
-        assert!(SignatureType::verify(&sig, invalid_msg, &certkey.pubkey()).is_err());
+        assert!(
+            SignatureType::verify::<SigningDomainType>(&sig, invalid_msg, &certkey.pubkey())
+                .is_err()
+        );
     }
 }

@@ -4,7 +4,7 @@ use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey},
     hasher::{Hasher, HasherType},
-    NopSignature,
+    signing_domain, NopSignature,
 };
 use monad_testutil::validators::create_keys_w_validators;
 use monad_types::NodeId;
@@ -12,6 +12,7 @@ use monad_validator::validator_set::ValidatorSetFactory;
 
 const N: u32 = 1000;
 
+type SigningDomainType = signing_domain::Vote;
 type SignatureType = NopSignature;
 type SignatureCollectionType = BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>;
 
@@ -26,7 +27,9 @@ fn criterion_benchmark(c: &mut Criterion) {
     let data = hasher.hash();
 
     // sign
-    c.bench_function("bls_sign", |b| b.iter(|| certkeys[0].sign(data.as_ref())));
+    c.bench_function("bls_sign", |b| {
+        b.iter(|| certkeys[0].sign::<SigningDomainType>(data.as_ref()))
+    });
 
     let mut sigs = Vec::new();
     for (node_id, certkey) in keys
@@ -34,14 +37,21 @@ fn criterion_benchmark(c: &mut Criterion) {
         .map(|k| NodeId::new(k.pubkey()))
         .zip(certkeys.iter())
     {
-        sigs.push((node_id, certkey.sign(data.as_ref())));
+        sigs.push((node_id, certkey.sign::<SigningDomainType>(data.as_ref())));
     }
 
     // aggregate N signatures
     c.bench_function("bls_aggregate_1000", |b| {
         b.iter_batched(
             || sigs.clone(),
-            |sigs| SignatureCollectionType::new(sigs, &validator_mapping, data.as_ref()).unwrap(),
+            |sigs| {
+                SignatureCollectionType::new::<SigningDomainType>(
+                    sigs,
+                    &validator_mapping,
+                    data.as_ref(),
+                )
+                .unwrap()
+            },
             criterion::BatchSize::SmallInput,
         )
     });
@@ -49,7 +59,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     // validate valid signature
     c.bench_function("bls_validate_valid_sig", |b| {
         b.iter_batched(
-            || certkeys[0].sign(data.as_ref()),
+            || certkeys[0].sign::<SigningDomainType>(data.as_ref()),
             |sig| <BlsSignature as CertificateSignature>::validate(&sig),
             criterion::BatchSize::SmallInput,
         );
@@ -80,10 +90,18 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("bls_verify", |b| {
         b.iter_batched(
             || {
-                SignatureCollectionType::new(sigs.clone(), &validator_mapping, data.as_ref())
+                SignatureCollectionType::new::<SigningDomainType>(
+                    sigs.clone(),
+                    &validator_mapping,
+                    data.as_ref(),
+                )
+                .unwrap()
+            },
+            |sig_col| {
+                sig_col
+                    .verify::<SigningDomainType>(&validator_mapping, data.as_ref())
                     .unwrap()
             },
-            |sig_col| sig_col.verify(&validator_mapping, data.as_ref()).unwrap(),
             criterion::BatchSize::SmallInput,
         )
     });

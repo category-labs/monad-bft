@@ -2,9 +2,9 @@ use std::fmt::{Debug, Display};
 
 use alloy_rlp::{RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
 
-pub mod hasher;
-
 pub mod certificate_signature;
+pub mod hasher;
+pub mod signing_domain;
 
 #[derive(Clone)]
 pub struct NopKeyPair {

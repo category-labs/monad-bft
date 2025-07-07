@@ -5,7 +5,7 @@ use monad_crypto::{
     certificate_signature::{
         CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
     },
-    hasher::{Hashable, Hasher},
+    signing_domain,
 };
 use monad_types::*;
 use serde::{Deserialize, Serialize};
@@ -39,18 +39,6 @@ where
     pub last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
 }
 
-/// An integrity hash over all the fields
-impl<ST, SCT, EPT> Hashable for Timeout<ST, SCT, EPT>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    EPT: ExecutionProtocol,
-{
-    fn hash(&self, state: &mut impl Hasher) {
-        state.update(alloy_rlp::encode(self));
-    }
-}
-
 impl<ST, SCT, EPT> Timeout<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -64,8 +52,9 @@ where
         last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
     ) -> Self {
         let timeout_digest = alloy_rlp::encode(&timeout);
-        let timeout_signature =
-            <SCT::SignatureType as CertificateSignature>::sign(&timeout_digest, cert_keypair);
+        let timeout_signature = <SCT::SignatureType as CertificateSignature>::sign::<
+            signing_domain::Timeout,
+        >(&timeout_digest, cert_keypair);
 
         let high_extend = match high_extend {
             HighExtend::Qc(qc) => HighExtendVote::Qc(qc),
@@ -75,8 +64,9 @@ where
                     epoch: timeout.epoch,
                     id: tip.block_header.get_id(),
                 });
-                let vote_signature =
-                    <SCT::SignatureType as CertificateSignature>::sign(&vote_digest, cert_keypair);
+                let vote_signature = <SCT::SignatureType as CertificateSignature>::sign::<
+                    signing_domain::Vote,
+                >(&vote_digest, cert_keypair);
                 HighExtendVote::Tip(tip, vote_signature)
             }
         };
@@ -375,7 +365,11 @@ where
         let mut tip_rounds = Vec::new();
         for (timeout_info, sigs) in sigs.into_iter() {
             let tminfo_digest_enc = alloy_rlp::encode(&timeout_info);
-            let sct = SCT::new(sigs, validator_mapping, tminfo_digest_enc.as_ref())?;
+            let sct = SCT::new::<signing_domain::Timeout>(
+                sigs,
+                validator_mapping,
+                tminfo_digest_enc.as_ref(),
+            )?;
             tip_rounds.push(HighTipRoundSigColTuple {
                 high_qc_round: timeout_info.high_qc_round,
                 high_tip_round: timeout_info.high_tip_round,

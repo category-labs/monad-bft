@@ -13,9 +13,12 @@ use monad_consensus_types::{
     tip::ConsensusTip,
     voting::{ValidatorMapping, Vote},
 };
-use monad_crypto::certificate_signature::{
-    CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
-    CertificateSignatureRecoverable,
+use monad_crypto::{
+    certificate_signature::{
+        CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
+        CertificateSignatureRecoverable,
+    },
+    signing_domain,
 };
 use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, SeqNum, GENESIS_ROUND};
 use monad_validator::{
@@ -201,11 +204,15 @@ where
         // for tests
         let mut tc_sigs = Vec::new();
         for (node_id, certkey) in node_ids.iter().zip(certkeys.iter()) {
-            let sig =
-                <SCT::SignatureType as CertificateSignature>::sign(tmo_digest.as_ref(), certkey);
+            let sig = <SCT::SignatureType as CertificateSignature>::sign::<signing_domain::Timeout>(
+                tmo_digest.as_ref(),
+                certkey,
+            );
             tc_sigs.push((*node_id, sig));
         }
-        let tmo_sig_col = SCT::new(tc_sigs, validator_mapping, tmo_digest.as_ref()).unwrap();
+        let tmo_sig_col =
+            SCT::new::<signing_domain::Timeout>(tc_sigs, validator_mapping, tmo_digest.as_ref())
+                .unwrap();
         let tc = TimeoutCertificate::<ST, SCT, EPT> {
             epoch: self.epoch,
             round: self.round,
@@ -254,7 +261,10 @@ where
 
         let mut sigs = Vec::new();
         for ck in certkeys {
-            let sig = <SCT::SignatureType as CertificateSignature>::sign(msg.as_ref(), ck);
+            let sig = <SCT::SignatureType as CertificateSignature>::sign::<signing_domain::Vote>(
+                msg.as_ref(),
+                ck,
+            );
 
             for (node_id, pubkey) in validator_mapping.map.iter() {
                 if *pubkey == ck.pubkey() {
@@ -263,7 +273,8 @@ where
             }
         }
 
-        let sigcol = SCT::new(sigs, validator_mapping, msg.as_ref()).unwrap();
+        let sigcol =
+            SCT::new::<signing_domain::Vote>(sigs, validator_mapping, msg.as_ref()).unwrap();
 
         QuorumCertificate::new(vote, sigcol)
     }
