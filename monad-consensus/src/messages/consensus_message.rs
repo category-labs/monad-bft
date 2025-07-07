@@ -4,9 +4,8 @@ use alloy_rlp::{encode_list, Decodable, Encodable, Header, RlpDecodable, RlpEnco
 use monad_consensus_types::{
     no_endorsement::NoEndorsementMessage, signature_collection::SignatureCollection,
 };
-use monad_crypto::{
-    certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
-    hasher::{Hashable, Hasher},
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_types::{ExecutionProtocol, Round};
 
@@ -52,18 +51,6 @@ where
             ProtocolMessage::RoundRecovery(r) => f.debug_tuple("").field(&r).finish(),
             ProtocolMessage::NoEndorsement(n) => f.debug_tuple("").field(&n).finish(),
         }
-    }
-}
-
-/// Integrity hash
-impl<ST, SCT, EPT> Hashable for ProtocolMessage<ST, SCT, EPT>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    EPT: ExecutionProtocol,
-{
-    fn hash(&self, state: &mut impl Hasher) {
-        state.update(alloy_rlp::encode(self));
     }
 }
 
@@ -150,17 +137,6 @@ where
 {
     pub version: u32,
     pub message: ProtocolMessage<ST, SCT, EPT>,
-}
-
-impl<ST, SCT, EPT> Hashable for ConsensusMessage<ST, SCT, EPT>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    EPT: ExecutionProtocol,
-{
-    fn hash(&self, state: &mut impl Hasher) {
-        state.update(alloy_rlp::encode(self));
-    }
 }
 
 impl<ST, SCT, EPT> ConsensusMessage<ST, SCT, EPT>

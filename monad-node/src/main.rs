@@ -19,8 +19,11 @@ use monad_consensus_types::{
     validator_data::{ValidatorSetDataWithEpoch, ValidatorsConfig},
 };
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
-use monad_crypto::certificate_signature::{
-    CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
+use monad_crypto::{
+    certificate_signature::{
+        CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
+    },
+    signing_domain,
 };
 use monad_dataplane::DataplaneBuilder;
 use monad_eth_block_policy::EthBlockPolicy;
@@ -584,7 +587,7 @@ where
             name_record.encode(&mut encoded);
             match peer
                 .name_record_sig
-                .verify(&encoded, &peer.secp256k1_pubkey)
+                .verify::<signing_domain::NameRecord>(&encoded, &peer.secp256k1_pubkey)
             {
                 Ok(_) => Some((
                     node_id,

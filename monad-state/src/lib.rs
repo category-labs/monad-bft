@@ -1315,7 +1315,7 @@ mod test {
         validator_data::{ValidatorData, ValidatorSetData, ValidatorsConfig},
         voting::Vote,
     };
-    use monad_crypto::certificate_signature::CertificateSignaturePubKey;
+    use monad_crypto::{certificate_signature::CertificateSignaturePubKey, signing_domain};
     use monad_eth_types::EthExecutionProtocol;
     use monad_secp::SecpSignature;
     use monad_testutil::validators::create_keys_w_validators;
@@ -1359,12 +1359,17 @@ mod test {
 
         for (key, cert_key) in keys.iter().zip(cert_keys.iter()) {
             let node_id = NodeId::new(key.pubkey());
-            let sig = cert_key.sign(encoded_vote.as_ref());
+            let sig = cert_key.sign::<signing_domain::Vote>(encoded_vote.as_ref());
             sigs.push((node_id, sig));
         }
 
         let sigcol: BlsSignatureCollection<monad_secp::PubKey> =
-            SignatureCollectionType::new(sigs, &valmap, encoded_vote.as_ref()).unwrap();
+            SignatureCollectionType::new::<signing_domain::Vote>(
+                sigs,
+                &valmap,
+                encoded_vote.as_ref(),
+            )
+            .unwrap();
 
         let qc = QuorumCertificate::new(vote, sigcol);
 

@@ -6,7 +6,7 @@ use std::{
 
 use alloy_rlp::{Decodable, Encodable};
 
-use crate::{NopKeyPair, NopPubKey, NopSignature};
+use crate::{signing_domain::SigningDomain, NopKeyPair, NopPubKey, NopSignature};
 
 pub trait PubKey:
     Debug
@@ -45,8 +45,8 @@ pub trait CertificateSignature:
     type KeyPairType: CertificateKeyPair;
     type Error: Display + Debug + Send + Sync;
 
-    fn sign(msg: &[u8], keypair: &Self::KeyPairType) -> Self;
-    fn verify(
+    fn sign<SD: SigningDomain>(msg: &[u8], keypair: &Self::KeyPairType) -> Self;
+    fn verify<SD: SigningDomain>(
         &self,
         msg: &[u8],
         pubkey: &CertificateSignaturePubKey<Self>,
@@ -57,7 +57,7 @@ pub trait CertificateSignature:
 }
 
 pub trait CertificateSignatureRecoverable: CertificateSignature {
-    fn recover_pubkey(
+    fn recover_pubkey<SD: SigningDomain>(
         &self,
         msg: &[u8],
     ) -> Result<CertificateSignaturePubKey<Self>, <Self as CertificateSignature>::Error>;
@@ -98,8 +98,9 @@ impl CertificateSignature for NopSignature {
     type KeyPairType = NopKeyPair;
     type Error = &'static str;
 
-    fn sign(msg: &[u8], keypair: &Self::KeyPairType) -> Self {
+    fn sign<SD: SigningDomain>(msg: &[u8], keypair: &Self::KeyPairType) -> Self {
         let mut hasher = DefaultHasher::new();
+        hasher.write(SD::PREFIX);
         hasher.write(msg);
 
         NopSignature {
@@ -108,7 +109,7 @@ impl CertificateSignature for NopSignature {
         }
     }
 
-    fn verify(
+    fn verify<SD: SigningDomain>(
         &self,
         msg: &[u8],
         pubkey: &CertificateSignaturePubKey<Self>,
@@ -116,6 +117,7 @@ impl CertificateSignature for NopSignature {
         if &self.pubkey == pubkey {
             let id = {
                 let mut hasher = DefaultHasher::new();
+                hasher.write(SD::PREFIX);
                 hasher.write(msg);
                 hasher.finish()
             };
@@ -145,11 +147,21 @@ impl CertificateSignature for NopSignature {
 }
 
 impl CertificateSignatureRecoverable for NopSignature {
-    fn recover_pubkey(
+    fn recover_pubkey<SD: SigningDomain>(
         &self,
-        _msg: &[u8],
+        msg: &[u8],
     ) -> Result<CertificateSignaturePubKey<Self>, <Self as CertificateSignature>::Error> {
-        Ok(self.pubkey)
+        let id = {
+            let mut hasher = DefaultHasher::new();
+            hasher.write(SD::PREFIX);
+            hasher.write(msg);
+            hasher.finish()
+        };
+        if self.id == id {
+            Ok(self.pubkey)
+        } else {
+            Err("unexpected message")
+        }
     }
 }
 
@@ -160,9 +172,10 @@ mod test {
         certificate_signature::{
             CertificateKeyPair, CertificateSignature, CertificateSignatureRecoverable,
         },
-        NopSignature,
+        signing_domain, NopSignature,
     };
 
+    type SigningDomainType = signing_domain::Vote;
     type SignatureType = NopSignature;
     type KeyPairType = <SignatureType as CertificateSignature>::KeyPairType;
 
@@ -185,7 +198,7 @@ mod test {
         let certkey = KeyPairType::from_bytes(s.as_mut_slice()).unwrap();
 
         let msg = b"hello world";
-        let sig = SignatureType::sign(msg, &certkey);
+        let sig = SignatureType::sign::<SigningDomainType>(msg, &certkey);
 
         let sig_bytes = sig.serialize();
         let sig_de = SignatureType::deserialize(sig_bytes.as_ref()).unwrap();
@@ -199,9 +212,11 @@ mod test {
         let certkey = KeyPairType::from_bytes(s.as_mut_slice()).unwrap();
 
         let msg = b"hello world";
-        let sig = SignatureType::sign(msg, &certkey);
+        let sig = SignatureType::sign::<SigningDomainType>(msg, &certkey);
 
-        assert!(sig.verify(msg, &certkey.pubkey()).is_ok());
+        assert!(sig
+            .verify::<SigningDomainType>(msg, &certkey.pubkey())
+            .is_ok());
     }
 
     #[test]
@@ -210,9 +225,12 @@ mod test {
         let certkey = KeyPairType::from_bytes(s.as_mut_slice()).unwrap();
 
         let msg = b"hello world";
-        let sig = SignatureType::sign(msg, &certkey);
+        let sig = SignatureType::sign::<SigningDomainType>(msg, &certkey);
 
-        assert_eq!(sig.recover_pubkey(msg).unwrap(), certkey.pubkey());
+        assert_eq!(
+            sig.recover_pubkey::<SigningDomainType>(msg).unwrap(),
+            certkey.pubkey()
+        );
     }
 
     // invalid certificate signature tests
@@ -223,8 +241,11 @@ mod test {
 
         let msg = b"hello world";
         let invalid_msg = b"bye world";
-        let sig = SignatureType::sign(msg, &certkey);
+        let sig = SignatureType::sign::<SigningDomainType>(msg, &certkey);
 
-        assert!(SignatureType::verify(&sig, invalid_msg, &certkey.pubkey()).is_err());
+        assert!(
+            SignatureType::verify::<SigningDomainType>(&sig, invalid_msg, &certkey.pubkey())
+                .is_err()
+        );
     }
 }

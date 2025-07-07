@@ -85,20 +85,10 @@ where
     })
 }
 
-pub trait Hashable {
-    fn hash(&self, state: &mut impl Hasher);
-}
-
 pub trait Hasher: Sized {
     fn new() -> Self;
     fn update(&mut self, data: impl AsRef<[u8]>);
     fn hash(self) -> Hash;
-
-    fn hash_object(obj: &impl Hashable) -> Hash {
-        let mut hasher = Self::new();
-        obj.hash(&mut hasher);
-        hasher.hash()
-    }
 }
 
 /// The global hasher type

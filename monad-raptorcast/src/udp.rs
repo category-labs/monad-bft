@@ -14,6 +14,7 @@ use monad_crypto::{
         CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
     },
     hasher::{Hasher, HasherType},
+    signing_domain,
 };
 use monad_dataplane::RecvMsg;
 use monad_merkle::{MerkleHash, MerkleProof, MerkleTree};
@@ -925,7 +926,11 @@ where
 
                 data
             };
-            let signature = ST::sign(&header_with_root[SIGNATURE_SIZE..], key).serialize();
+            let signature = ST::sign::<signing_domain::RaptorcastChunk>(
+                &header_with_root[SIGNATURE_SIZE..],
+                key,
+            )
+            .serialize();
             assert_eq!(signature.len(), SIGNATURE_SIZE);
             header_with_root[..SIGNATURE_SIZE].copy_from_slice(&signature);
             let header = &header_with_root[..HEADER_LEN as usize];
@@ -1126,7 +1131,7 @@ where
 
     let author = *signature_cache.try_get_or_insert(signed_over, || {
         let author = signature
-            .recover_pubkey(&signed_over[SIGNATURE_SIZE..])
+            .recover_pubkey::<signing_domain::RaptorcastChunk>(&signed_over[SIGNATURE_SIZE..])
             .map_err(|_| MessageValidationError::InvalidSignature)?;
         Ok(NodeId::new(author))
     })?;

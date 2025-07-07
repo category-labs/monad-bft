@@ -12,6 +12,7 @@ use monad_crypto::{
         CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey, PubKey,
     },
     hasher::{Hasher, HasherType},
+    signing_domain,
 };
 use monad_peer_disc_swarm::{
     NodeBuilder, PeerDiscSwarmRelation, SwarmPubKeyType, SwarmSignatureType,
@@ -113,7 +114,7 @@ fn generate_name_record(keypair: &KeyPairType) -> MonadNameRecord<SignatureType>
     };
     let mut encoded = Vec::new();
     name_record.encode(&mut encoded);
-    let signature = SignatureType::sign(&encoded, keypair);
+    let signature = SignatureType::sign::<signing_domain::NameRecord>(&encoded, keypair);
     MonadNameRecord {
         name_record,
         signature,
@@ -317,7 +318,7 @@ fn test_update_name_record() {
     };
     let mut encoded = Vec::new();
     new_name_record.encode(&mut encoded);
-    let signature = SignatureType::sign(&encoded, node_0_key);
+    let signature = SignatureType::sign::<signing_domain::NameRecord>(&encoded, node_0_key);
     let new_name_record = MonadNameRecord {
         name_record: new_name_record,
         signature,

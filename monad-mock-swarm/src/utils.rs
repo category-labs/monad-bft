@@ -27,7 +27,7 @@ pub mod test_tool {
             CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
         },
         hasher::Hash,
-        NopKeyPair, NopSignature,
+        signing_domain, NopKeyPair, NopSignature,
     };
     use monad_multi_sig::MultiSig;
     use monad_state::VerifiedMonadMessage;
@@ -119,7 +119,7 @@ pub mod test_tool {
         };
         let internal_msg = VoteMessage {
             vote,
-            sig: NopSignature::sign(&[0x00_u8, 32], kp),
+            sig: NopSignature::sign::<signing_domain::Vote>(&[0x00_u8, 32], kp),
         };
         ConsensusMessage {
             version: 1,
@@ -140,7 +140,7 @@ pub mod test_tool {
             tminfo: timeout_info,
             high_extend: HighExtendVote::Qc(QuorumCertificate::genesis_qc()),
             last_round_tc: None,
-            timeout_signature: NopSignature::sign(&[0x00_u8, 32], kp),
+            timeout_signature: NopSignature::sign::<signing_domain::Timeout>(&[0x00_u8, 32], kp),
         };
         ConsensusMessage {
             version: 1,

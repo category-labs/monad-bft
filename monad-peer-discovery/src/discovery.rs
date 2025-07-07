@@ -840,6 +840,7 @@ mod tests {
     use monad_crypto::{
         NopKeyPair, NopSignature,
         certificate_signature::{CertificateKeyPair, CertificateSignature},
+        signing_domain,
     };
     use monad_testutil::signing::create_keys;
     use monad_types::NodeId;
@@ -861,7 +862,7 @@ mod tests {
         };
         let mut encoded = Vec::new();
         name_record.encode(&mut encoded);
-        let signature = SignatureType::sign(&encoded, keypair);
+        let signature = SignatureType::sign::<signing_domain::NameRecord>(&encoded, keypair);
         MonadNameRecord {
             name_record,
             signature,

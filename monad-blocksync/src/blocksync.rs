@@ -1024,7 +1024,7 @@ mod test {
             CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
             CertificateSignatureRecoverable,
         },
-        NopPubKey, NopSignature,
+        signing_domain, NopPubKey, NopSignature,
     };
     use monad_multi_sig::MultiSig;
     use monad_state_backend::{InMemoryState, StateBackend};
@@ -1280,7 +1280,7 @@ mod test {
 
             let mut sigs = Vec::new();
             for ck in certkeys {
-                let sig = NopSignature::sign(msg.as_ref(), ck);
+                let sig = NopSignature::sign::<signing_domain::Vote>(msg.as_ref(), ck);
 
                 for (node_id, pubkey) in validator_mapping.map.iter() {
                     if *pubkey == ck.pubkey() {
@@ -1289,8 +1289,12 @@ mod test {
                 }
             }
 
-            let sigcol =
-                SignatureCollectionType::new(sigs, validator_mapping, msg.as_ref()).unwrap();
+            let sigcol = SignatureCollectionType::new::<signing_domain::Vote>(
+                sigs,
+                validator_mapping,
+                msg.as_ref(),
+            )
+            .unwrap();
 
             QuorumCertificate::new(vote, sigcol)
         }

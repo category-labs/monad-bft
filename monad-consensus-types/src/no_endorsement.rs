@@ -1,5 +1,5 @@
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
-use monad_crypto::certificate_signature::CertificateSignature;
+use monad_crypto::{certificate_signature::CertificateSignature, signing_domain};
 use monad_types::{BlockId, Epoch, Round};
 
 use crate::{
@@ -29,8 +29,9 @@ pub struct NoEndorsementMessage<SCT: SignatureCollection> {
 impl<SCT: SignatureCollection> NoEndorsementMessage<SCT> {
     pub fn new(no_endorsement: NoEndorsement, key: &SignatureCollectionKeyPairType<SCT>) -> Self {
         let no_endorsement_enc = alloy_rlp::encode(&no_endorsement);
-        let signature =
-            <SCT::SignatureType as CertificateSignature>::sign(no_endorsement_enc.as_ref(), key);
+        let signature = <SCT::SignatureType as CertificateSignature>::sign::<
+            signing_domain::NoEndorsement,
+        >(no_endorsement_enc.as_ref(), key);
 
         Self {
             msg: no_endorsement,

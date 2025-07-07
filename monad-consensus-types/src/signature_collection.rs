@@ -1,7 +1,10 @@
 use std::fmt::Debug;
 
 use alloy_rlp::{Decodable, Encodable};
-use monad_crypto::certificate_signature::{CertificateKeyPair, CertificateSignature, PubKey};
+use monad_crypto::{
+    certificate_signature::{CertificateKeyPair, CertificateSignature, PubKey},
+    signing_domain::SigningDomain,
+};
 use monad_types::NodeId;
 use serde::{Deserialize, Deserializer, Serializer};
 
@@ -55,7 +58,7 @@ pub trait SignatureCollection:
     type NodeIdPubKey: PubKey;
     type SignatureType: CertificateSignature + Unpin;
 
-    fn new(
+    fn new<SD: SigningDomain>(
         sigs: impl IntoIterator<Item = (NodeId<Self::NodeIdPubKey>, Self::SignatureType)>,
         validator_mapping: &ValidatorMapping<
             Self::NodeIdPubKey,
@@ -64,7 +67,7 @@ pub trait SignatureCollection:
         msg: &[u8],
     ) -> Result<Self, SignatureCollectionError<Self::NodeIdPubKey, Self::SignatureType>>;
 
-    fn verify(
+    fn verify<SD: SigningDomain>(
         &self,
         validator_mapping: &ValidatorMapping<
             Self::NodeIdPubKey,

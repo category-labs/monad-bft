@@ -8,7 +8,9 @@ use monad_consensus_types::{
     },
     voting::ValidatorMapping,
 };
-use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
+use monad_crypto::{
+    certificate_signature::CertificateSignatureRecoverable, signing_domain::SigningDomain,
+};
 use monad_types::NodeId;
 use tracing::{error, warn};
 
@@ -27,7 +29,7 @@ impl<S: CertificateSignatureRecoverable> SignatureCollection for MultiSig<S> {
     type NodeIdPubKey = SignatureCollectionPubKeyType<Self>;
     type SignatureType = S;
 
-    fn new(
+    fn new<SD: SigningDomain>(
         sigs: impl IntoIterator<Item = (NodeId<Self::NodeIdPubKey>, Self::SignatureType)>,
         validator_mapping: &ValidatorMapping<
             Self::NodeIdPubKey,
@@ -44,7 +46,7 @@ impl<S: CertificateSignatureRecoverable> SignatureCollection for MultiSig<S> {
         for (node_id, sig) in sigs {
             // check if node_id is in validator_mapping
             if let Some(pubkey) = validator_mapping.map.get(&node_id) {
-                if let Ok(pubkey_recovered) = sig.recover_pubkey(msg) {
+                if let Ok(pubkey_recovered) = sig.recover_pubkey::<SD>(msg) {
                     if pubkey_recovered != *pubkey {
                         warn!(
                             "Pubkey mismatch NodeId={:?} sig={:?} expected={:?} recovered={:?}",
@@ -54,7 +56,7 @@ impl<S: CertificateSignatureRecoverable> SignatureCollection for MultiSig<S> {
                         continue;
                     }
 
-                    if sig.verify(msg, pubkey).is_err() {
+                    if sig.verify::<SD>(msg, pubkey).is_err() {
                         warn!("Invalid sig NodeId={:?} sig={:?} ", node_id, sig);
                         invalid_sigs.push((node_id, sig));
                         continue;
@@ -103,7 +105,7 @@ impl<S: CertificateSignatureRecoverable> SignatureCollection for MultiSig<S> {
         self.sigs.len()
     }
 
-    fn verify(
+    fn verify<SD: SigningDomain>(
         &self,
         validator_mapping: &ValidatorMapping<
             Self::NodeIdPubKey,
@@ -119,8 +121,8 @@ impl<S: CertificateSignatureRecoverable> SignatureCollection for MultiSig<S> {
         let mut invalid_sigs = Vec::new();
 
         for sig in self.sigs.iter() {
-            if let Ok(pubkey) = sig.recover_pubkey(msg) {
-                if sig.verify(msg, &pubkey).is_err() {
+            if let Ok(pubkey) = sig.recover_pubkey::<SD>(msg) {
+                if sig.verify::<SD>(msg, &pubkey).is_err() {
                     warn!("Invalid sig sig={:?}", sig);
                     invalid_sigs.push(sig);
                     continue;
@@ -175,7 +177,7 @@ mod test {
             CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
         },
         hasher::Hash,
-        NopSignature,
+        signing_domain, NopSignature,
     };
     use monad_testutil::{
         signing::{get_certificate_key, get_key},
@@ -189,6 +191,7 @@ mod test {
 
     use super::MultiSig;
 
+    type SigningDomainType = signing_domain::Vote;
     type SignatureType = NopSignature;
     type PubKeyType = CertificateSignaturePubKey<SignatureType>;
     type SignatureCollectionType = MultiSig<SignatureType>;
@@ -208,7 +211,7 @@ mod test {
         let mut sigs = Vec::new();
         for (node_id, key) in iter {
             let sig =
-                <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg, key);
+                <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign::<SigningDomainType>(msg, key);
             sigs.push((*node_id, sig));
         }
         sigs
@@ -236,7 +239,8 @@ mod test {
 
         let sigs = get_sigs(msg_hash.as_ref(), voting_keys.iter());
 
-        let sigcol = SignatureCollectionType::new(sigs, &valmap, msg_hash.as_ref());
+        let sigcol =
+            SignatureCollectionType::new::<SigningDomainType>(sigs, &valmap, msg_hash.as_ref());
         assert!(sigcol.is_ok());
     }
 
@@ -269,7 +273,8 @@ mod test {
         let invalid_sig = sigs.first().unwrap().1;
         sigs.push((first_voter_node_id, invalid_sig));
 
-        let sigcol_err = SignatureCollectionType::new(sigs, &valmap, msg_hash.as_ref());
+        let sigcol_err =
+            SignatureCollectionType::new::<SigningDomainType>(sigs, &valmap, msg_hash.as_ref());
         assert!(matches!(
             sigcol_err,
             Err(SignatureCollectionError::InvalidSignaturesCreate(_))
@@ -308,7 +313,9 @@ mod test {
 
         let sigs = get_sigs(msg_hash.as_ref(), voting_keys.iter());
 
-        let sig_col = SignatureCollectionType::new(sigs, &valmap, msg_hash.as_ref()).unwrap();
+        let sig_col =
+            SignatureCollectionType::new::<SigningDomainType>(sigs, &valmap, msg_hash.as_ref())
+                .unwrap();
         assert_eq!(sig_col.num_signatures(), num_keys as usize);
     }
 
@@ -339,14 +346,15 @@ mod test {
         let mut sigs = get_sigs(msg_hash.as_ref(), voting_keys.iter());
 
         let non_validator_sig =
-            <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(
+            <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign::<SigningDomainType>(
                 msg_hash.as_ref(),
                 &non_validator_cert_key,
             );
         sigs.push((non_validator_node_id, non_validator_sig));
 
         assert_eq!(
-            SignatureCollectionType::new(sigs, &valmap, msg_hash.as_ref()).unwrap_err(),
+            SignatureCollectionType::new::<SigningDomainType>(sigs, &valmap, msg_hash.as_ref())
+                .unwrap_err(),
             SignatureCollectionError::NodeIdNotInMapping(vec![(
                 non_validator_node_id,
                 non_validator_sig
@@ -377,7 +385,9 @@ mod test {
         // duplicate the last signature
         sigs.push(*sigs.last().unwrap());
         assert_eq!(sigs[sigs.len() - 1], sigs[sigs.len() - 2]);
-        let sigcol = SignatureCollectionType::new(sigs, &valmap, msg_hash.as_ref()).unwrap();
+        let sigcol =
+            SignatureCollectionType::new::<SigningDomainType>(sigs, &valmap, msg_hash.as_ref())
+                .unwrap();
 
         // duplicate signature is removed
         assert_eq!(sigcol.num_signatures(), voting_keys.len());
@@ -402,9 +412,13 @@ mod test {
         let msg_hash = Hash([129_u8; 32]);
 
         let sigs = get_sigs(msg_hash.as_ref(), voting_keys.iter());
-        let sigcol = SignatureCollectionType::new(sigs, &valmap, msg_hash.as_ref()).unwrap();
+        let sigcol =
+            SignatureCollectionType::new::<SigningDomainType>(sigs, &valmap, msg_hash.as_ref())
+                .unwrap();
 
-        let signers = sigcol.verify(&valmap, msg_hash.as_ref()).unwrap();
+        let signers = sigcol
+            .verify::<SigningDomainType>(&valmap, msg_hash.as_ref())
+            .unwrap();
 
         let signers_set = signers.iter().collect::<HashSet<_>>();
         let expected_set = valmap.map.keys().collect::<HashSet<_>>();
@@ -430,7 +444,9 @@ mod test {
         let msg_hash = Hash([129_u8; 32]);
 
         let sigs = get_sigs(msg_hash.as_ref(), voting_keys.iter());
-        let sigcol = SignatureCollectionType::new(sigs, &valmap, msg_hash.as_ref()).unwrap();
+        let sigcol =
+            SignatureCollectionType::new::<SigningDomainType>(sigs, &valmap, msg_hash.as_ref())
+                .unwrap();
 
         let sigcol_bytes = sigcol.serialize();
         assert_eq!(
@@ -488,7 +504,8 @@ mod test {
         sigs.shuffle(&mut ChaChaRng::seed_from_u64(seed));
 
         let sigcol_err =
-            SignatureCollectionType::new(sigs, &valmap, msg_hash.as_ref()).unwrap_err();
+            SignatureCollectionType::new::<SigningDomainType>(sigs, &valmap, msg_hash.as_ref())
+                .unwrap_err();
 
         assert!(matches!(
             sigcol_err,
@@ -525,14 +542,18 @@ mod test {
 
         let sigs = get_sigs(msg_hash.as_ref(), cert_keys.iter());
 
-        let mut sig_col = SignatureCollectionType::new(sigs, &valmap, msg_hash.as_ref()).unwrap();
+        let mut sig_col =
+            SignatureCollectionType::new::<SigningDomainType>(sigs, &valmap, msg_hash.as_ref())
+                .unwrap();
 
         // replace last one with an invalid signature
         let _ = sig_col.sigs.pop().unwrap();
-        let invalid_sig = <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(invalid_msg_hash.as_ref(), &cert_keys[0].1);
+        let invalid_sig = <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign::<SigningDomainType>(invalid_msg_hash.as_ref(), &cert_keys[0].1);
         sig_col.sigs.push(invalid_sig);
 
-        let err = sig_col.verify(&valmap, msg_hash.as_ref()).unwrap_err();
+        let err = sig_col
+            .verify::<SigningDomainType>(&valmap, msg_hash.as_ref())
+            .unwrap_err();
 
         assert_eq!(err, SignatureCollectionError::InvalidSignaturesVerify);
     }
@@ -564,13 +585,17 @@ mod test {
 
         let sigs = get_sigs(msg_hash.as_ref(), cert_keys.iter());
 
-        let mut sig_col = SignatureCollectionType::new(sigs, &valmap, msg_hash.as_ref()).unwrap();
+        let mut sig_col =
+            SignatureCollectionType::new::<SigningDomainType>(sigs, &valmap, msg_hash.as_ref())
+                .unwrap();
         // add a signature from a non-validator signer
-        let sig = << SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg_hash.as_ref(), &non_validator_cert_key);
+        let sig = <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign::<SigningDomainType>(msg_hash.as_ref(), &non_validator_cert_key);
         sig_col.sigs.push(sig);
 
         assert_eq!(
-            sig_col.verify(&valmap, msg_hash.as_ref()).unwrap_err(),
+            sig_col
+                .verify::<SigningDomainType>(&valmap, msg_hash.as_ref())
+                .unwrap_err(),
             SignatureCollectionError::InvalidSignaturesVerify
         );
     }

@@ -4,19 +4,23 @@ use alloy_rlp::{RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWra
 use monad_crypto::{
     certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
     hasher::{Hash, Hasher, HasherType},
+    signing_domain,
 };
 use monad_types::{ExecutionProtocol, Round};
 use serde::{Deserialize, Serialize};
 
 /// randao_reveal uses a proposer's public key to contribute randomness
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodableWrapper, RlpDecodableWrapper)]
-pub struct RoundSignature<CST: CertificateSignature>(pub CST);
+pub struct RoundSignature<CST: CertificateSignature>(CST);
 
 impl<CST: CertificateSignature> RoundSignature<CST> {
     /// TODO should this incorporate parent_block_id to increase "randomness"?
     pub fn new(round: Round, keypair: &CST::KeyPairType) -> Self {
         let encoded_round = alloy_rlp::encode(round);
-        Self(CST::sign(&encoded_round, keypair))
+        Self(CST::sign::<signing_domain::RoundSignature>(
+            &encoded_round,
+            keypair,
+        ))
     }
 
     pub fn verify(
@@ -25,7 +29,8 @@ impl<CST: CertificateSignature> RoundSignature<CST> {
         pubkey: &CertificateSignaturePubKey<CST>,
     ) -> Result<(), CST::Error> {
         let encoded_round = alloy_rlp::encode(round);
-        self.0.verify(&encoded_round, pubkey)
+        self.0
+            .verify::<signing_domain::RoundSignature>(&encoded_round, pubkey)
     }
 
     pub fn get_hash(&self) -> Hash {

@@ -25,6 +25,7 @@ use monad_crypto::{
         CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey, PubKey,
     },
     hasher::Hash,
+    signing_domain::{self},
     NopKeyPair, NopPubKey, NopSignature,
 };
 use monad_multi_sig::MultiSig;
@@ -530,9 +531,11 @@ fn test_verify_proposal_happy() {
     };
     let sp = TestSigner::<SignatureType>::sign_object(conmsg, &keypairs[0]);
 
-    assert!(sp
-        .verify(&epoch_manager, &val_epoch_map, &keypairs[0].pubkey())
-        .is_ok());
+    assert_eq!(
+        sp.verify(&epoch_manager, &val_epoch_map, &keypairs[0].pubkey())
+            .map(|_| ()),
+        Ok(())
+    );
 }
 
 // The test_validate set hits all error messages in order appearence
@@ -1176,14 +1179,16 @@ fn test_validate_tc_invalid_tc_signature() {
     let mut sigs = Vec::new();
 
     for (keypair, certkey) in keys.iter().zip(certkeys.iter()) {
-        let s = <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(
+        let s = <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign::<signing_domain::Timeout>(
            tmo_digest.as_ref(),
            certkey,
        );
         sigs.push((NodeId::new(keypair.pubkey()), s));
     }
 
-    let sigcol = SignatureCollectionType::new(sigs, val_map, tmo_digest.as_ref()).unwrap();
+    let sigcol =
+        SignatureCollectionType::new::<signing_domain::Timeout>(sigs, val_map, tmo_digest.as_ref())
+            .unwrap();
 
     let tc = TimeoutCertificate {
         epoch: tc_epoch,

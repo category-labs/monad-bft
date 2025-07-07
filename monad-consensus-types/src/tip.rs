@@ -1,6 +1,7 @@
 use alloy_rlp::{RlpDecodable, RlpEncodable};
-use monad_crypto::certificate_signature::{
-    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+use monad_crypto::{
+    certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
+    signing_domain,
 };
 use monad_types::ExecutionProtocol;
 use serde::{Deserialize, Serialize};
@@ -37,7 +38,7 @@ where
         fresh_certificate: Option<FreshProposalCertificate<SCT>>,
     ) -> Self {
         let rlp_block_header = alloy_rlp::encode(&block_header);
-        let signature = ST::sign(&rlp_block_header, keypair);
+        let signature = ST::sign::<signing_domain::Tip>(&rlp_block_header, keypair);
         Self {
             block_header,
             signature,
@@ -47,7 +48,8 @@ where
 
     pub fn signature_author(&self) -> Result<CertificateSignaturePubKey<ST>, ST::Error> {
         let rlp_block_header = alloy_rlp::encode(&self.block_header);
-        self.signature.recover_pubkey(&rlp_block_header)
+        self.signature
+            .recover_pubkey::<signing_domain::Tip>(&rlp_block_header)
     }
 }
 

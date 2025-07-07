@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 
 use alloy_rlp::{Decodable, Encodable};
 use blst::BLST_ERROR::BLST_BAD_ENCODING;
+use monad_crypto::signing_domain::SigningDomain;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// The cipher suite
@@ -292,8 +293,9 @@ impl BlsKeyPair {
         Ok(keypair)
     }
 
-    pub fn sign(&self, msg: &[u8]) -> BlsSignature {
-        self.secretkey.0.sign(msg, DST, &[]).into()
+    pub fn sign<SD: SigningDomain>(&self, msg: &[u8]) -> BlsSignature {
+        let msg = [SD::PREFIX, msg].concat();
+        self.secretkey.0.sign(&msg, DST, &[]).into()
     }
 
     pub fn pubkey(&self) -> BlsPubKey {
@@ -353,13 +355,18 @@ impl Eq for BlsSignature {}
 impl BlsSignature {
     /// Sign the message with `keypair`. `msg` is first hashed to a point on the
     /// curve then signed
-    pub fn sign(msg: &[u8], keypair: &BlsKeyPair) -> Self {
-        keypair.sign(msg)
+    pub fn sign<SD: SigningDomain>(msg: &[u8], keypair: &BlsKeyPair) -> Self {
+        keypair.sign::<SD>(msg)
     }
 
     /// Validate the signature and verify
-    pub fn verify(&self, msg: &[u8], pubkey: &BlsPubKey) -> Result<(), BlsError> {
-        let err = self.0.verify(true, msg, DST, &[], &pubkey.0, false);
+    pub fn verify<SD: SigningDomain>(
+        &self,
+        msg: &[u8],
+        pubkey: &BlsPubKey,
+    ) -> Result<(), BlsError> {
+        let msg = [SD::PREFIX, msg].concat();
+        let err = self.0.verify(true, &msg, DST, &[], &pubkey.0, false);
         map_err_to_result(err)
     }
 
@@ -467,10 +474,15 @@ impl BlsAggregateSignature {
     }
 
     /// Verify the aggregate signature created over the same message. It only requires 2 pairing function calls, hence the name fast
-    pub fn fast_verify(&self, msg: &[u8], pubkey: &BlsAggregatePubKey) -> Result<(), BlsError> {
+    pub fn fast_verify<SD: SigningDomain>(
+        &self,
+        msg: &[u8],
+        pubkey: &BlsAggregatePubKey,
+    ) -> Result<(), BlsError> {
+        let msg = [SD::PREFIX, msg].concat();
         let err = self
             .as_signature()
-            .fast_aggregate_verify_pre_aggregated(false, msg, DST, pubkey);
+            .fast_aggregate_verify_pre_aggregated(false, &msg, DST, pubkey);
         map_err_to_result(err)
     }
 
@@ -478,13 +490,20 @@ impl BlsAggregateSignature {
     /// requires `n+1`` pairing function calls. It is better than verifying the
     /// `n` signatures independently as it would otherwise incur `2n` pairing
     /// calls. (`n == msgs.len() == pubkeys.len()`)
-    pub fn verify(&self, msgs: &[&[u8]], pubkeys: &[&BlsAggregatePubKey]) -> Result<(), BlsError> {
+    pub fn verify<SD: SigningDomain>(
+        &self,
+        msgs: &[&[u8]],
+        pubkeys: &[&BlsAggregatePubKey],
+    ) -> Result<(), BlsError> {
+        let msgs_prefixed: Vec<Vec<u8>> =
+            msgs.iter().map(|msg| [SD::PREFIX, msg].concat()).collect();
+        let msgs: Vec<&[u8]> = msgs_prefixed.iter().map(|msg| msg.as_slice()).collect();
         let pks = pubkeys.iter().map(|pk| pk.as_pubkey()).collect::<Vec<_>>();
         let pks: Vec<&BlsPubKey> = pks.iter().collect();
 
         let err = self
             .as_signature()
-            .aggregate_verify(false, msgs, DST, pks.as_ref(), false);
+            .aggregate_verify(false, &msgs, DST, pks.as_ref(), false);
         map_err_to_result(err)
     }
 
@@ -554,10 +573,14 @@ impl Decodable for BlsAggregateSignature {
 mod test {
     use std::collections::HashSet;
 
+    use monad_crypto::signing_domain;
+
     use super::{
         blst_core, BlsAggregatePubKey, BlsAggregateSignature, BlsError, BlsKeyPair, BlsPubKey,
         BlsSignature, BLST_BAD_ENCODING, INFINITY_PUBKEY,
     };
+
+    type SigningDomainType = signing_domain::Vote;
 
     fn keygen(secret: u8) -> BlsKeyPair {
         let mut secret = [secret; 32];
@@ -680,7 +703,7 @@ mod test {
     fn test_signature_serdes_roundtrip() {
         let keypair = keygen(7);
         let msg = keypair.pubkey().serialize();
-        let sig = BlsSignature::sign(msg.as_ref(), &keypair);
+        let sig = BlsSignature::sign::<SigningDomainType>(msg.as_ref(), &keypair);
 
         let sig_rlp = alloy_rlp::encode(sig);
         let x: BlsSignature = alloy_rlp::decode_exact(sig_rlp).unwrap();
@@ -742,7 +765,7 @@ mod test {
         let keypair = keygen(7);
         let msg = keypair.pubkey().serialize();
 
-        let sig = BlsSignature::sign(msg.as_ref(), &keypair);
+        let sig = BlsSignature::sign::<SigningDomainType>(msg.as_ref(), &keypair);
 
         let sig_bytes = sig.serialize();
         assert_eq!(
@@ -758,7 +781,7 @@ mod test {
         let keypair = keygen(7);
         let msg = keypair.pubkey().serialize();
 
-        let sig = BlsSignature::sign(msg.as_ref(), &keypair);
+        let sig = BlsSignature::sign::<SigningDomainType>(msg.as_ref(), &keypair);
 
         let sig_bytes = sig.compress();
         assert_eq!(
@@ -775,7 +798,9 @@ mod test {
         let msg = b"hello world";
         let mut aggsig = BlsAggregateSignature::infinity();
         for kp in keypairs.iter() {
-            aggsig.add_assign(&kp.sign(msg)).unwrap();
+            aggsig
+                .add_assign(&kp.sign::<SigningDomainType>(msg))
+                .unwrap();
         }
 
         let aggsig_bytes = aggsig.serialize();
@@ -794,7 +819,9 @@ mod test {
         let msg = b"hello world";
         let mut aggsig = BlsAggregateSignature::infinity();
         for kp in keypairs.iter() {
-            aggsig.add_assign(&kp.sign(msg)).unwrap();
+            aggsig
+                .add_assign(&kp.sign::<SigningDomainType>(msg))
+                .unwrap();
         }
 
         let aggsig_rlp = alloy_rlp::encode(aggsig);
@@ -809,7 +836,9 @@ mod test {
         let msg = b"hello world";
         let mut aggsig = BlsAggregateSignature::infinity();
         for kp in keypairs.iter() {
-            aggsig.add_assign(&kp.sign(msg)).unwrap();
+            aggsig
+                .add_assign(&kp.sign::<SigningDomainType>(msg))
+                .unwrap();
         }
 
         let aggsig_bytes = aggsig.compress();
@@ -836,7 +865,7 @@ mod test {
 
         let sigs = keypair
             .iter()
-            .map(|kp| kp.sign(&kp.pubkey().serialize()))
+            .map(|kp| kp.sign::<SigningDomainType>(&kp.pubkey().serialize()))
             .collect::<Vec<_>>();
         let mut aggsig = BlsAggregateSignature::infinity();
         for sig in sigs.iter() {
@@ -945,8 +974,8 @@ mod test {
 
         let msg = b"hello world";
 
-        let sig = keypair.sign(msg);
-        assert!(sig.verify(msg, &pubkey).is_ok());
+        let sig = keypair.sign::<SigningDomainType>(msg);
+        assert!(sig.verify::<SigningDomainType>(msg, &pubkey).is_ok());
     }
 
     #[test]
@@ -972,10 +1001,10 @@ mod test {
         let mut sig = BlsAggregateSignature::infinity();
 
         for kp in keypairs.iter() {
-            sig.add_assign(&kp.sign(msg)).unwrap();
+            sig.add_assign(&kp.sign::<SigningDomainType>(msg)).unwrap();
         }
 
-        assert!(sig.fast_verify(msg, &agg_pk).is_ok())
+        assert!(sig.fast_verify::<SigningDomainType>(msg, &agg_pk).is_ok())
     }
 
     #[test]
@@ -990,14 +1019,15 @@ mod test {
         let mut sig = BlsAggregateSignature::infinity();
 
         for kp in keypairs[0..=1].iter() {
-            sig.add_assign(&kp.sign(msg)).unwrap();
+            sig.add_assign(&kp.sign::<SigningDomainType>(msg)).unwrap();
         }
 
         let msg2 = b"bye world";
-        sig.add_assign(&keypairs[2].sign(msg2)).unwrap();
+        sig.add_assign(&keypairs[2].sign::<SigningDomainType>(msg2))
+            .unwrap();
 
         assert_eq!(
-            sig.fast_verify(msg, &agg_pk),
+            sig.fast_verify::<SigningDomainType>(msg, &agg_pk),
             Err(BlsError(blst::BLST_ERROR::BLST_VERIFY_FAIL))
         )
     }
@@ -1017,11 +1047,13 @@ mod test {
         let mut aggsig = BlsAggregateSignature::infinity();
         for kp in keypairs.iter() {
             let msg = kp.pubkey().serialize();
-            let sig = kp.sign(&msg);
+            let sig = kp.sign::<SigningDomainType>(&msg);
             aggsig.add_assign(&sig).unwrap();
         }
 
-        assert!(aggsig.verify(&msgs_ref, &pks_ref).is_ok());
+        assert!(aggsig
+            .verify::<SigningDomainType>(&msgs_ref, &pks_ref)
+            .is_ok());
     }
 
     #[test]
@@ -1041,12 +1073,12 @@ mod test {
             let mut msg = kp.pubkey().serialize();
             // change msg to sign
             msg[0] = 0xff;
-            let sig = kp.sign(&msg);
+            let sig = kp.sign::<SigningDomainType>(&msg);
             aggsig.add_assign(&sig).unwrap();
         }
 
         assert_eq!(
-            aggsig.verify(&msgs_ref, &pks_ref),
+            aggsig.verify::<SigningDomainType>(&msgs_ref, &pks_ref),
             Err(BlsError(blst::BLST_ERROR::BLST_VERIFY_FAIL))
         );
     }
@@ -1061,16 +1093,16 @@ mod test {
         let msg = b"hello world";
         let mut sig1 = BlsAggregateSignature::infinity();
         for kp in keypairs.iter() {
-            sig1.add_assign(&kp.sign(msg)).unwrap();
+            sig1.add_assign(&kp.sign::<SigningDomainType>(msg)).unwrap();
         }
 
         let mut sig2 = BlsAggregateSignature::infinity();
         for kp in keypairs.iter().rev() {
-            sig2.add_assign(&kp.sign(msg)).unwrap();
+            sig2.add_assign(&kp.sign::<SigningDomainType>(msg)).unwrap();
         }
 
-        assert!(sig1.fast_verify(msg, &agg_pk).is_ok());
-        assert!(sig2.fast_verify(msg, &agg_pk).is_ok());
+        assert!(sig1.fast_verify::<SigningDomainType>(msg, &agg_pk).is_ok());
+        assert!(sig2.fast_verify::<SigningDomainType>(msg, &agg_pk).is_ok());
         assert_eq!(sig1, sig2);
     }
 
@@ -1087,7 +1119,7 @@ mod test {
         let mut sigs = Vec::new();
 
         for kp in keypairs.iter() {
-            sigs.push(kp.sign(msg));
+            sigs.push(kp.sign::<SigningDomainType>(msg));
         }
 
         let aggsigv1 = aggregate_signature_by_2(sigs.iter());
@@ -1100,8 +1132,8 @@ mod test {
             sig2.add_assign_aggregate(aggsig);
         }
 
-        assert!(sig1.fast_verify(msg, &agg_pk).is_ok());
-        assert!(sig2.fast_verify(msg, &agg_pk).is_ok());
+        assert!(sig1.fast_verify::<SigningDomainType>(msg, &agg_pk).is_ok());
+        assert!(sig2.fast_verify::<SigningDomainType>(msg, &agg_pk).is_ok());
         assert_eq!(sig1, sig2);
     }
 
@@ -1118,7 +1150,7 @@ mod test {
         let mut sigs = Vec::new();
 
         for kp in keypairs.iter() {
-            sigs.push(kp.sign(msg));
+            sigs.push(kp.sign::<SigningDomainType>(msg));
         }
 
         for sig in sigs.iter() {
@@ -1130,8 +1162,8 @@ mod test {
             sig2.add_assign_aggregate(aggsig);
         }
 
-        assert!(sig1.fast_verify(msg, &agg_pk).is_ok());
-        assert!(sig2.fast_verify(msg, &agg_pk).is_ok());
+        assert!(sig1.fast_verify::<SigningDomainType>(msg, &agg_pk).is_ok());
+        assert!(sig2.fast_verify::<SigningDomainType>(msg, &agg_pk).is_ok());
         assert_eq!(sig1, sig2);
     }
 }

@@ -373,7 +373,7 @@ mod test {
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignature},
         hasher::Hash,
-        NopSignature,
+        signing_domain, NopSignature,
     };
     use monad_multi_sig::MultiSig;
     use monad_testutil::{
@@ -417,12 +417,15 @@ mod test {
         let mut sigs = Vec::new();
         for (key, certkey) in keys.iter().zip(certkeys.iter()) {
             let node_id = NodeId::new(*key);
-            let sig =
-                <SCT::SignatureType as CertificateSignature>::sign(vote_hash.as_ref(), certkey);
+            let sig = <SCT::SignatureType as CertificateSignature>::sign::<signing_domain::Vote>(
+                vote_hash.as_ref(),
+                certkey,
+            );
             sigs.push((node_id, sig));
         }
 
-        let sigcol = SCT::new(sigs, valmap, vote_hash.as_ref()).expect("success");
+        let sigcol =
+            SCT::new::<signing_domain::Vote>(sigs, valmap, vote_hash.as_ref()).expect("success");
 
         QuorumCertificate::<SCT>::new(vote, sigcol)
     }
@@ -456,11 +459,13 @@ mod test {
         );
         if !valid {
             if let HighExtendVote::Tip(_, vote_signature) = &mut tmo_msg.high_extend {
-                *vote_signature =
-                    <SCT::SignatureType as CertificateSignature>::sign(invalid_msg, certkeypair);
+                *vote_signature = <SCT::SignatureType as CertificateSignature>::sign::<
+                    signing_domain::Vote,
+                >(invalid_msg, certkeypair);
             }
-            tmo_msg.timeout_signature =
-                <SCT::SignatureType as CertificateSignature>::sign(invalid_msg, certkeypair);
+            tmo_msg.timeout_signature = <SCT::SignatureType as CertificateSignature>::sign::<
+                signing_domain::Timeout,
+            >(invalid_msg, certkeypair);
         }
         tmo_msg
     }
@@ -810,7 +815,7 @@ mod test {
         assert_eq!(tc.tip_rounds.len(), 1);
         let sc = tc.tip_rounds.first().unwrap().sigs.clone();
         assert_eq!(
-            sc.verify(&vmap, timeout_hash.as_ref())
+            sc.verify::<signing_domain::Timeout>(&vmap, timeout_hash.as_ref())
                 .unwrap()
                 .into_iter()
                 .collect::<HashSet<_>>(),
