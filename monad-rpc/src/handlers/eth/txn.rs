@@ -5,7 +5,7 @@ use alloy_primitives::{Address, FixedBytes, TxKind};
 use alloy_rlp::Decodable;
 use alloy_rpc_types::{Filter, Log, Receipt, TransactionReceipt};
 use monad_rpc_docs::rpc;
-use monad_triedb_utils::triedb_env::{BlockKey, ReceiptWithLogIndex, Triedb, TxEnvelopeWithSender};
+use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, Triedb, TxEnvelopeWithSender};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, trace, warn};
@@ -368,49 +368,6 @@ pub async fn monad_eth_getTransactionByBlockNumberAndIndex<T: Triedb>(
         Err(ChainStateError::ResourceNotFound) => Ok(None),
         Err(ChainStateError::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
     }
-}
-
-#[tracing::instrument(level = "debug")]
-async fn get_transaction_from_triedb<T: Triedb>(
-    triedb_env: &T,
-    block_key: BlockKey,
-    tx_index: u64,
-) -> JsonRpcResult<Option<MonadTransaction>> {
-    let header = match triedb_env
-        .get_block_header(block_key)
-        .await
-        .map_err(JsonRpcError::internal_error)?
-    {
-        Some(header) => header,
-        None => return Ok(None),
-    };
-
-    match triedb_env
-        .get_transaction(block_key, tx_index)
-        .await
-        .map_err(JsonRpcError::internal_error)?
-    {
-        Some(tx) => Ok(Some(MonadTransaction(crate::chainstate::parse_tx_content(
-            header.hash,
-            header.header.number,
-            header.header.base_fee_per_gas,
-            tx,
-            tx_index,
-        )))),
-        None => Ok(None),
-    }
-}
-
-async fn spawn_rayon_async<F, R>(func: F) -> Result<R, tokio::sync::oneshot::error::RecvError>
-where
-    F: FnOnce() -> R + Send + 'static,
-    R: Send + 'static,
-{
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    rayon::spawn(|| {
-        let _ = tx.send(func());
-    });
-    rx.await
 }
 
 #[cfg(test)]
