@@ -4,7 +4,7 @@ use std::{
     path::Path,
 };
 
-use rand::{RngCore, SeedableRng};
+use rand::{rngs::OsRng, CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -101,9 +101,7 @@ impl CryptoModules {
     }
 
     // Default parameters if cryptographic modules not provided
-    pub fn create_default(seed: u64) -> Self {
-        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
-
+    pub fn create_default<R: RngCore + CryptoRng>(rng: &mut R) -> Self {
         // create parameters
         let mut iv = vec![0u8; 16];
         rng.fill_bytes(&mut iv);
@@ -199,7 +197,7 @@ impl Keystore {
         password: &str,
         path: &Path,
     ) -> Result<(), KeystoreError> {
-        let crypto_modules = CryptoModules::create_default(rand::random());
+        let crypto_modules = CryptoModules::create_default(&mut OsRng);
         let (ciphertext, checksum) = crypto_modules.encrypt(private_key, password)?;
 
         let keystore = Keystore {
