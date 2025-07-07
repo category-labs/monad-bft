@@ -110,6 +110,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
 
         let example_chunk = parse_message::<SecpSignature>(
             &mut LruCache::new(SIGNATURE_CACHE_SIZE),
+            0, // min_unix_ts_ms
             messages[0].clone().split_to(DEFAULT_SEGMENT_SIZE.into()),
         )
         .expect("valid chunk");
@@ -133,6 +134,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                     while !message.is_empty() {
                         let parsed_message = parse_message::<SecpSignature>(
                             &mut signature_cache,
+                            0, // min_unix_ts_ms
                             message.split_to(DEFAULT_SEGMENT_SIZE.into()),
                         )
                         .expect("valid message");

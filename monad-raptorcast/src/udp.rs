@@ -3,6 +3,7 @@ use std::{
     net::SocketAddr,
     num::NonZero,
     ops::Range,
+    time::Duration,
 };
 
 use bitvec::prelude::*;
@@ -60,6 +61,10 @@ pub const MAX_REDUNDANCY: usize = 7;
 const MIN_MERKLE_TREE_DEPTH: u8 = 1;
 const MAX_MERKLE_TREE_DEPTH: u8 = 9;
 
+// The max current_time - packet.unix_ts_ms delta to tolerate
+// This must be large enough to tolerate 2*delta (rebroadcast step)
+const MAX_PACKET_DELAY: Duration = Duration::from_secs(2);
+
 struct DecoderState {
     decoder: ManagedDecoder,
     recipient_chunks: BTreeMap<NodeIdHash, usize>,
@@ -89,6 +94,26 @@ pub(crate) struct UdpState<ST: CertificateSignatureRecoverable> {
     /// Value in this map represents the # of excess chunks received for a successfully decoded msg
     recently_decoded_cache:
         LruCache<MessageCacheKey<CertificateSignaturePubKey<ST>>, RecentlyDecodedState>,
+
+    // recent_rebroadcast: BTreeMap<
+    //     // evict everything with timestamp < now - MAX_PACKET_DELAY
+    //     u64, // timestamp
+    //     HashMap<
+    //         [u8; HEADER_LEN as usize + 20], // header + merkle root
+    //         // count_ones
+    //         BitVec<usize, Lsb0>, // rebroadcasted ESIs
+    //     >,
+
+    //     // maintain # of AppMessages rebroadcasted in last 3s by node_id, 
+    //     // maintain # of chunks rebroadcasted in last 3s by node_id, 
+    //     // maintain # of signatures rebroadcasted in last 3s by node_id
+    //     // don't rebroadcast same ESI twice
+    //     // don't accept unix_ts_ms from future
+    //     // check author is a leader from nowish before rebroadcasting
+    //     //
+    //     // should this get metered down by self stake?
+    //     // eg max the # of chunks self is willing to rebroadcast per app_message_id by self stake
+    // >,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -132,6 +157,14 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
 
         let mut messages = Vec::new(); // The return result; decoded messages
 
+        let min_unix_ts_ms = std::time::UNIX_EPOCH
+            .elapsed()
+            .expect("time went backwards")
+            .saturating_sub(MAX_PACKET_DELAY)
+            .as_millis()
+            .try_into()
+            .expect("unix epoch doesn't fit in u64");
+
         for payload_start_idx in (0..message.payload.len()).step_by(message.stride.into()) {
             // scoped variables are dropped in reverse order of declaration.
             // when *batch_guard is dropped, packets can get flushed
@@ -145,7 +178,11 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 (payload_start_idx + usize::from(message.stride)).min(message.payload.len());
             let payload = message.payload.slice(payload_start_idx..payload_end_idx);
             // "message" here means a raptor-casted chunk (AKA r10 symbol), not the whole final message (proposal)
-            let parsed_message = match parse_message::<ST>(&mut self.signature_cache, payload) {
+            let parsed_message = match parse_message::<ST>(
+                &mut self.signature_cache,
+                min_unix_ts_ms,
+                payload,
+            ) {
                 Ok(message) => message,
                 Err(err) => {
                     tracing::debug!(src_addr = ?message.src_addr, ?err, "unable to parse message");
@@ -983,6 +1020,7 @@ where
 pub enum MessageValidationError {
     UnknownVersion,
     TooShort,
+    TooOld,
     InvalidSignature,
     InvalidTreeDepth,
     InvalidMerkleProof,
@@ -1013,6 +1051,7 @@ pub fn parse_message<ST>(
         [u8; HEADER_LEN as usize + 20],
         NodeId<CertificateSignaturePubKey<ST>>,
     >,
+    min_unix_ts_ms: u64,
     message: Bytes,
 ) -> Result<ValidatedMessage<CertificateSignaturePubKey<ST>>, MessageValidationError>
 where
@@ -1054,6 +1093,10 @@ where
             .try_into()
             .expect("u64 is 8 bytes"),
     );
+
+    if unix_ts_ms < min_unix_ts_ms {
+        return Err(MessageValidationError::TooOld);
+    }
 
     let cursor_app_message_hash = split_off(20)?;
     let app_message_hash: AppMessageHash = HexBytes(
@@ -1477,9 +1520,12 @@ mod tests {
         for (_to, mut aggregate_message) in messages {
             while !aggregate_message.is_empty() {
                 let message = aggregate_message.split_to(DEFAULT_SEGMENT_SIZE.into());
-                let parsed_message =
-                    parse_message::<SignatureType>(&mut signature_cache, message.clone())
-                        .expect("valid message");
+                let parsed_message = parse_message::<SignatureType>(
+                    &mut signature_cache,
+                    0, // min_unix_ts_ms
+                    message.clone(),
+                )
+                .expect("valid message");
                 assert_eq!(parsed_message.message, message);
                 assert_eq!(parsed_message.app_message_hash.0, app_message_hash.0[..20]);
                 assert_eq!(parsed_message.unix_ts_ms, UNIX_TS_MS);
@@ -1524,6 +1570,7 @@ mod tests {
                     message[bit_idx / 8] = old_byte ^ (1 << (bit_idx % 8));
                     let maybe_parsed = parse_message::<SignatureType>(
                         &mut signature_cache,
+                        0, // min_unix_ts_ms
                         message.clone().into(),
                     );
 
@@ -1566,9 +1613,12 @@ mod tests {
         for (_to, mut aggregate_message) in messages {
             while !aggregate_message.is_empty() {
                 let message = aggregate_message.split_to(DEFAULT_SEGMENT_SIZE.into());
-                let parsed_message =
-                    parse_message::<SignatureType>(&mut signature_cache, message.clone())
-                        .expect("valid message");
+                let parsed_message = parse_message::<SignatureType>(
+                    &mut signature_cache,
+                    0, // min_unix_ts_ms
+                    message.clone(),
+                )
+                .expect("valid message");
                 let newly_inserted = used_ids.insert(parsed_message.chunk_id);
                 assert!(newly_inserted);
             }
@@ -1602,7 +1652,7 @@ mod tests {
             while !aggregate_message.is_empty() {
                 let message = aggregate_message.split_to(DEFAULT_SEGMENT_SIZE.into());
                 let parsed_message =
-                    parse_message::<SignatureType>(&mut signature_cache, message.clone())
+                    parse_message::<SignatureType>(&mut signature_cache, 0, message.clone())
                         .expect("valid message");
                 let newly_inserted = used_ids
                     .entry(to)
