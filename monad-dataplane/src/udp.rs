@@ -11,7 +11,8 @@ use monoio::{net::udp::UdpSocket, spawn, time};
 use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
 
-use super::RecvMsg;
+use super::{RecvUdpMsg, UdpMsg};
+
 use crate::buffer_ext::SocketBufferExt;
 
 // When running in docker with vpnkit, the maximum safe MTU is 1480, as per:
@@ -31,8 +32,8 @@ const ETHERNET_SEGMENT_SIZE: u16 = segment_size_for_mtu(ETHERNET_MTU);
 
 pub fn spawn_tasks(
     local_addr: SocketAddr,
-    udp_ingress_tx: mpsc::Sender<RecvMsg>,
-    udp_egress_rx: mpsc::Receiver<(SocketAddr, Bytes, u16)>,
+    udp_ingress_tx: mpsc::Sender<RecvUdpMsg>,
+    udp_egress_rx: mpsc::Receiver<(SocketAddr, UdpMsg)>,
     up_bandwidth_mbps: u64,
     buffer_size: Option<usize>,
 ) {
@@ -90,7 +91,7 @@ pub fn spawn_tasks(
     spawn(tx(udp_socket_tx, udp_egress_rx, up_bandwidth_mbps));
 }
 
-async fn rx(udp_socket_rx: UdpSocket, udp_ingress_tx: mpsc::Sender<RecvMsg>) {
+async fn rx(udp_socket_rx: UdpSocket, udp_ingress_tx: mpsc::Sender<RecvUdpMsg>) {
     loop {
         let buf = BytesMut::with_capacity(ETHERNET_SEGMENT_SIZE.into());
 
@@ -98,7 +99,7 @@ async fn rx(udp_socket_rx: UdpSocket, udp_ingress_tx: mpsc::Sender<RecvMsg>) {
             (Ok((len, src_addr)), buf) => {
                 let payload = buf.freeze();
 
-                let msg = RecvMsg {
+                let msg = RecvUdpMsg {
                     src_addr,
                     payload,
                     stride: len.max(1).try_into().unwrap(),
@@ -120,7 +121,7 @@ const PACING_SLEEP_OVERSHOOT_DETECTION_WINDOW: Duration = Duration::from_millis(
 
 async fn tx(
     socket_tx: UdpSocket,
-    mut udp_egress_rx: mpsc::Receiver<(SocketAddr, Bytes, u16)>,
+    mut udp_egress_rx: mpsc::Receiver<(SocketAddr, UdpMsg)>,
     up_bandwidth_mbps: u64,
 ) {
     let mut udp_segment_size: u16 = DEFAULT_SEGMENT_SIZE;
@@ -133,11 +134,11 @@ async fn tx(
 
     loop {
         while messages_to_send.is_empty() || !udp_egress_rx.is_empty() {
-            let Some((addr, payload, stride)) = udp_egress_rx.recv().await else {
+            let Some((addr, udp_msg)) = udp_egress_rx.recv().await else {
                 return;
             };
 
-            messages_to_send.push_back((addr, payload, stride));
+            messages_to_send.push_back((addr, udp_msg.payload, udp_msg.stride));
         }
 
         let (addr, mut payload, stride) = messages_to_send.pop_front().unwrap();
