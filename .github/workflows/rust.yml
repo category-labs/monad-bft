@@ -25,15 +25,19 @@ env:
   CARGO_TERM_COLOR: always
 
   ASMFLAGS: -march=haswell
-  CC: gcc-13
+  CC: gcc-15
   CFLAGS: -march=haswell
-  CXX: g++-13
+  CXX: g++-15
   CXXFLAGS: -march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL
   TRIEDB_TARGET: triedb_driver
 
 jobs:
   build:
-    runs-on: ubuntu-24.04-32
+    runs-on: self-hosted
+
+    container:
+      image: peach10.devcore4.com/category-labs/builder
+      options: --privileged
 
     steps:
       - name: Generate a token
@@ -49,30 +53,6 @@ jobs:
         with:
           submodules: recursive
           token: ${{ steps.generate_token.outputs.token }}
-      - name: Install dependencies
-        run: |
-          sudo apt-get update && sudo apt-get install -y \
-            libboost-fiber1.83.0 \
-            libboost-json1.83.0 \
-            libboost-stacktrace1.83.0 \
-            libboost-fiber1.83-dev \
-            libboost-json1.83-dev \
-            libboost-stacktrace1.83-dev \
-            libboost1.83-dev \
-            libbenchmark-dev \
-            libcgroup-dev \
-            libgmock-dev \
-            libgtest-dev \
-            libtbb-dev \
-            liburing-dev \
-            libarchive-dev \
-            libbrotli-dev \
-            libcap-dev \
-            libcli11-dev \
-            libgmp-dev \
-            libzstd-dev  \
-            clang-19 \
-            libclang-19-dev
       - run: rustup toolchain install nightly-2024-12-10 --profile minimal --component rustfmt
       - run: rustup toolchain install 1.85.0-x86_64-unknown-linux-gnu --profile minimal --component clippy
       - name: Install cargo-binstall
