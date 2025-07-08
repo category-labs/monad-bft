@@ -13,12 +13,12 @@ monad-consensus-types = { workspace = true }
 monad-crypto = { workspace = true }
 monad-types = { workspace = true }
 
+alloy-primitives = { workspace = true, features = ["rand"] }
 as-any = { workspace = true }
 auto_impl = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 tracing = { workspace = true }
-alloy-primitives = { workspace = true, features = ["rand"] }
 
 [dev-dependencies]
 monad-testutil = { workspace = true }
