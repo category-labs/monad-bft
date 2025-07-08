@@ -59,7 +59,7 @@ where
         let dp = dataplane_builder.build();
         let shared_dataplane = Arc::new(Mutex::new(dp));
 
-        // Create a Channels between primary and secondary raptorcast instances.
+        // Create a channel between primary and secondary raptorcast instances.
         // Fundamentally this is needed because, while both can send, only the
         // primary can receive data from the network.
         let (send_net_messages, recv_net_messages) =

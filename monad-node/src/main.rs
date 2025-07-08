@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     marker::PhantomData,
     net::{SocketAddr, ToSocketAddrs},
     process,
@@ -610,25 +610,10 @@ where
             )
         })
         .collect();
-    let dedicated_full_nodes = full_nodes
+    let mut pinned_full_nodes: BTreeSet<_> = full_nodes
         .iter()
         .map(|full_node| NodeId::new(full_node.secp256k1_pubkey))
         .collect();
-    let peer_discovery_builder = PeerDiscoveryBuilder {
-        self_id: NodeId::new(identity.pubkey()),
-        self_record,
-        current_epoch,
-        epoch_validators,
-        dedicated_full_nodes,
-        peer_info,
-        ping_period: Duration::from_secs(peer_discovery_config.ping_period),
-        refresh_period: Duration::from_secs(peer_discovery_config.refresh_period),
-        request_timeout: Duration::from_secs(peer_discovery_config.request_timeout),
-        prune_threshold: peer_discovery_config.prune_threshold,
-        min_active_connections: peer_discovery_config.min_active_connections,
-        max_active_connections: peer_discovery_config.max_active_connections,
-        rng: ChaCha8Rng::from_entropy(),
-    };
 
     let secondary_instance: RaptorCastConfigSecondary<ST> = {
         if let Some(cfg_2nd) = node_config.fullnode_raptorcast {
@@ -660,6 +645,9 @@ where
                         .iter()
                         .map(|id| NodeId::new(id.secp256k1_pubkey))
                         .collect();
+                    // also pin these full nodes in peer discovery
+                    pinned_full_nodes.extend(full_nodes_prioritized.iter());
+
                     RaptorCastConfigSecondary {
                         raptor10_redundancy: cfg_2nd.raptor10_fullnode_redundancy_factor,
                         mode: SecondaryRaptorCastModeConfig::Publisher(RaptorCastConfigSecondaryPublisher {
@@ -679,6 +667,22 @@ where
         } else {
             RaptorCastConfigSecondary::default()
         }
+    };
+
+    let peer_discovery_builder = PeerDiscoveryBuilder {
+        self_id: NodeId::new(identity.pubkey()),
+        self_record,
+        current_epoch,
+        epoch_validators,
+        pinned_full_nodes,
+        peer_info,
+        ping_period: Duration::from_secs(peer_discovery_config.ping_period),
+        refresh_period: Duration::from_secs(peer_discovery_config.refresh_period),
+        request_timeout: Duration::from_secs(peer_discovery_config.request_timeout),
+        prune_threshold: peer_discovery_config.prune_threshold,
+        min_active_connections: peer_discovery_config.min_active_connections,
+        max_active_connections: peer_discovery_config.max_active_connections,
+        rng: ChaCha8Rng::from_entropy(),
     };
 
     MultiRouter::new(

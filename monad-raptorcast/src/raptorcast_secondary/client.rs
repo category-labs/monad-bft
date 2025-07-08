@@ -366,10 +366,10 @@ where
         group_size as u64 * self.config.bandwidth_cost_per_group_member
     }
 
-    fn overlaps(bgn: Round, end: Round, group: &PrepareGroup<ST>) -> bool {
-        assert!(bgn <= end);
+    fn overlaps(begin: Round, end: Round, group: &PrepareGroup<ST>) -> bool {
+        assert!(begin <= end);
         assert!(group.start_round <= group.end_round);
-        group.start_round < end && group.end_round > bgn
+        group.start_round < end && group.end_round > begin
     }
 
     #[cfg(test)]

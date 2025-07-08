@@ -60,7 +60,7 @@ type PubKeyType = NopPubKey;
 type SignatureType = NopSignature;
 type KeyPairType = <SignatureType as CertificateSignature>::KeyPairType;
 
-/// TestConfig can be used to configure different peer_info and dedicated_full_nodes for each node
+/// TestConfig can be used to configure different peer_info and pinned_full_nodes for each node
 /// E.g. a peer_info of {0: {1,2}, 1: {0}, 2: {0,1}} means that
 /// node0 has node1 and node2 in its peer_info
 /// node1 has node0 in its peer_info
@@ -71,7 +71,7 @@ struct TestConfig {
     pub num_nodes: u32,
     pub current_epoch: Epoch,
     pub epoch_validators: BTreeMap<Epoch, BTreeSet<usize>>,
-    pub dedicated_full_nodes: BTreeMap<usize, BTreeSet<usize>>,
+    pub pinned_full_nodes: BTreeMap<usize, BTreeSet<usize>>,
     pub peer_info: BTreeMap<usize, BTreeSet<usize>>,
     pub ping_period: Duration,
     pub refresh_period: Duration,
@@ -89,7 +89,7 @@ impl Default for TestConfig {
             num_nodes: 2,
             current_epoch: Epoch(1),
             epoch_validators: BTreeMap::from([(Epoch(1), BTreeSet::from([0, 1]))]),
-            dedicated_full_nodes: BTreeMap::default(),
+            pinned_full_nodes: BTreeMap::default(),
             peer_info: BTreeMap::from([(0, BTreeSet::from([1])), (1, BTreeSet::from([0]))]),
             ping_period: Duration::from_secs(5),
             refresh_period: Duration::from_secs(30),
@@ -173,8 +173,8 @@ fn setup_keys_and_swarm_builder(
                         })
                     })
                     .collect::<BTreeMap<_, _>>();
-                let dedicated_full_nodes = config
-                    .dedicated_full_nodes
+                let pinned_full_nodes = config
+                    .pinned_full_nodes
                     .get(&i)
                     .cloned()
                     .unwrap_or_default()
@@ -189,7 +189,7 @@ fn setup_keys_and_swarm_builder(
                         self_record: generate_name_record(key),
                         current_epoch: config.current_epoch,
                         epoch_validators: epoch_validators.clone(),
-                        dedicated_full_nodes,
+                        pinned_full_nodes,
                         peer_info,
                         ping_period: config.ping_period,
                         refresh_period: config.refresh_period,
@@ -333,7 +333,7 @@ fn test_update_name_record() {
             self_record: new_name_record,
             current_epoch: config.current_epoch,
             epoch_validators: BTreeMap::new(),
-            dedicated_full_nodes: BTreeSet::new(),
+            pinned_full_nodes: BTreeSet::new(),
             peer_info: BTreeMap::from([(node_1, PeerInfo {
                 last_ping: None,
                 unresponsive_pings: 0,
@@ -652,7 +652,7 @@ fn test_max_watermark() {
     let config = TestConfig {
         num_nodes: 5,
         epoch_validators: BTreeMap::from([(Epoch(1), BTreeSet::from([0]))]),
-        dedicated_full_nodes: BTreeMap::from([(0, BTreeSet::from([4]))]),
+        pinned_full_nodes: BTreeMap::from([(0, BTreeSet::from([4]))]),
         peer_info: BTreeMap::from([
             (0, BTreeSet::from([1, 2, 3, 4])),
             (1, BTreeSet::from([0, 2, 3, 4])),
@@ -680,7 +680,7 @@ fn test_max_watermark() {
     for (node_id, state) in nodes.states() {
         let state = state.peer_disc_driver.get_peer_disc_state();
 
-        // Node4 is inactive, should be pruned by Node1, Node2 and Node3, but should not be pruned by Node0 (due to dedicated full node)
+        // Node4 is inactive, should be pruned by Node1, Node2 and Node3, but should not be pruned by Node0 (due to pinned full node)
         if node_id == &node_ids[0] {
             assert!(state.peer_info.contains_key(&node_ids[4]));
         } else {

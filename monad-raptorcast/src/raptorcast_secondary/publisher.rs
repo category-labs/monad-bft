@@ -288,12 +288,13 @@ where
     }
 
     // TODO: implement a command to update the always-ask full nodes?
+    // TODO: if we do, to also update pinned_full_nodes in peer discovery
     #[allow(dead_code)]
     pub fn update_always_ask_full_nodes(
         &mut self,
-        replace_fn: FullNodes<CertificateSignaturePubKey<ST>>,
+        prioritized_full_nodes: FullNodes<CertificateSignaturePubKey<ST>>,
     ) {
-        self.always_ask_full_nodes = replace_fn;
+        self.always_ask_full_nodes = prioritized_full_nodes;
         // Remove the nodes from always_ask, otherwise we might send two
         // invites to the same node.
         self.peer_disc_full_nodes

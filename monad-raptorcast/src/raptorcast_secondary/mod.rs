@@ -342,7 +342,7 @@ where
                             publisher.upsert_peer_disc_full_nodes(FullNodes::new(nodes));
                         }
 
-                        if let Some((group_msg, fn_set)) =
+                        if let Some((group_msg, full_nodes_set)) =
                             publisher.enter_round_and_step_until(round)
                         {
                             let known_addresses = {
@@ -351,7 +351,7 @@ where
                                     .unwrap()
                                     .get_known_addresses()
                             };
-                            self.send_group_msg(group_msg, fn_set, &known_addresses);
+                            self.send_group_msg(group_msg, full_nodes_set, &known_addresses);
                         }
                     }
                 },

@@ -793,7 +793,7 @@ where
         }
 
         // The secondary Raptorcast instance (Client) will be periodically sending us
-        // updates about new rc groups that we should use when re-broadcasting
+        // updates about new raptorcast groups that we should use when re-broadcasting
         if let Some(channel_from_secondary) = &this.channel_from_secondary {
             loop {
                 match channel_from_secondary.try_recv() {

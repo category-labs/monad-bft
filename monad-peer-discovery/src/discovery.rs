@@ -68,8 +68,8 @@ pub struct PeerDiscovery<ST: CertificateSignatureRecoverable> {
     pub self_record: MonadNameRecord<ST>,
     pub current_epoch: Epoch,
     pub epoch_validators: BTreeMap<Epoch, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
-    // dedicated full nodes passed in from config which will not be pruned
-    pub dedicated_full_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
+    // pinned full nodes are dedicated and prioritized full nodes passed in from config that will not be pruned
+    pub pinned_full_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
     // mapping of node IDs to their corresponding name records
     pub peer_info: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, PeerInfo<ST>>,
     pub outstanding_lookup_requests: HashMap<u32, LookupInfo<ST>>,
@@ -94,7 +94,7 @@ pub struct PeerDiscoveryBuilder<ST: CertificateSignatureRecoverable> {
     pub self_record: MonadNameRecord<ST>,
     pub current_epoch: Epoch,
     pub epoch_validators: BTreeMap<Epoch, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
-    pub dedicated_full_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
+    pub pinned_full_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
     pub peer_info: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, PeerInfo<ST>>,
     pub ping_period: Duration,
     pub refresh_period: Duration,
@@ -125,7 +125,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
             self_record: self.self_record,
             current_epoch: self.current_epoch,
             epoch_validators: self.epoch_validators,
-            dedicated_full_nodes: self.dedicated_full_nodes,
+            pinned_full_nodes: self.pinned_full_nodes,
             peer_info: self.peer_info.clone(),
             outstanding_lookup_requests: Default::default(),
             metrics: Default::default(),
@@ -661,16 +661,16 @@ where
             current_epoch_validators.is_some_and(|validators| validators.contains(node_id))
                 || next_epoch_validators.is_some_and(|validators| validators.contains(node_id))
         };
-        let is_dedicated_full_node = |node_id: &NodeId<CertificateSignaturePubKey<ST>>| {
-            self.dedicated_full_nodes.contains(node_id)
+        let is_pinned_full_node = |node_id: &NodeId<CertificateSignaturePubKey<ST>>| {
+            self.pinned_full_nodes.contains(node_id)
         };
 
         // prune unresponsive nodes
-        // we currently do not prune validators in current and next epoch, and also dedicated full nodes
+        // we currently do not prune validators in current and next epoch, and also pinned full nodes
         self.peer_info.retain(|node_id, info| {
             info.unresponsive_pings < self.prune_threshold
                 || is_validator(node_id)
-                || is_dedicated_full_node(node_id)
+                || is_pinned_full_node(node_id)
         });
 
         // if still above max active peers, randomly choose a few full nodes and prune them
@@ -681,7 +681,7 @@ where
                 .peer_info
                 .keys()
                 .filter_map(|node| {
-                    (!is_validator(node) && !is_dedicated_full_node(node)).then_some(node)
+                    (!is_validator(node) && !is_pinned_full_node(node)).then_some(node)
                 })
                 .cloned()
                 .choose_multiple(&mut self.rng, num_to_prune);
@@ -798,7 +798,7 @@ where
             if verified {
                 cmds.extend(self.insert_peer(node_id, name_record));
             } else {
-                warn!(?node_id, "invalid name record signature in config file");
+                warn!(?node_id, "invalid name record signature");
             }
         }
 
@@ -890,7 +890,7 @@ mod tests {
             self_record: generate_name_record(self_key, 0),
             current_epoch: Epoch(1),
             epoch_validators: BTreeMap::new(),
-            dedicated_full_nodes: BTreeSet::new(),
+            pinned_full_nodes: BTreeSet::new(),
             peer_info,
             outstanding_lookup_requests: HashMap::new(),
             metrics: ExecutorMetrics::default(),
@@ -1291,7 +1291,7 @@ mod tests {
         state
             .epoch_validators
             .insert(Epoch(1), BTreeSet::from([peer1_pubkey]));
-        state.dedicated_full_nodes.insert(peer2_pubkey);
+        state.pinned_full_nodes.insert(peer2_pubkey);
 
         // prune nodes, but validators and dedicated full nodes are not pruned even if above max active connections
         state.refresh();
