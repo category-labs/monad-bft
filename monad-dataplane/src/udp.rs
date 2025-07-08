@@ -12,7 +12,6 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
 
 use super::{RecvUdpMsg, UdpMsg};
-
 use crate::buffer_ext::SocketBufferExt;
 
 // When running in docker with vpnkit, the maximum safe MTU is 1480, as per:

@@ -7,7 +7,6 @@ use zerocopy::{
     AsBytes, FromBytes,
 };
 
-
 use super::{RecvTcpMsg, TcpMsg};
 
 pub mod rx;
