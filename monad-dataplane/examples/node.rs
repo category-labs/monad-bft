@@ -10,7 +10,7 @@ use bytes::{Bytes, BytesMut};
 use futures::{executor, Stream};
 use futures_util::FutureExt;
 use monad_dataplane::{
-    udp::DEFAULT_SEGMENT_SIZE, BroadcastMsg, Dataplane, DataplaneBuilder, RecvMsg, TcpMsg,
+    udp::DEFAULT_SEGMENT_SIZE, BroadcastMsg, Dataplane, DataplaneBuilder, RecvUdpMsg, TcpMsg,
 };
 use rand::Rng;
 
@@ -106,7 +106,7 @@ impl Node {
 }
 
 impl Stream for Node {
-    type Item = RecvMsg;
+    type Item = RecvUdpMsg;
 
     fn poll_next(
         mut self: Pin<&mut Self>,
