@@ -10,7 +10,7 @@ use monad_crypto::certificate_signature::{
 use monad_executor::ExecutorMetrics;
 use monad_executor_glue::PeerEntry;
 use monad_types::{Epoch, NodeId};
-use rand::{RngCore, SeedableRng, seq::IteratorRandom};
+use rand::{RngCore, seq::IteratorRandom};
 use rand_chacha::ChaCha8Rng;
 use tracing::{debug, info, trace, warn};
 
@@ -102,7 +102,7 @@ pub struct PeerDiscoveryBuilder<ST: CertificateSignatureRecoverable> {
     pub prune_threshold: u32,
     pub min_active_connections: usize,
     pub max_active_connections: usize,
-    pub rng_seed: u64,
+    pub rng: ChaCha8Rng,
 }
 
 impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDiscoveryBuilder<ST> {
@@ -135,7 +135,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
             prune_threshold: self.prune_threshold,
             min_active_connections: self.min_active_connections,
             max_active_connections: self.max_active_connections,
-            rng: ChaCha8Rng::seed_from_u64(self.rng_seed),
+            rng: self.rng,
         };
 
         let mut cmds = self

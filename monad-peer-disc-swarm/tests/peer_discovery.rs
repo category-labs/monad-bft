@@ -32,6 +32,8 @@ use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSche
 use monad_testutil::signing::create_keys;
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer};
 use monad_types::{Epoch, NodeId};
+use rand::SeedableRng;
+use rand_chacha::ChaCha8Rng;
 use tracing_test::traced_test;
 struct PeerDiscSwarm {}
 
@@ -195,7 +197,7 @@ fn setup_keys_and_swarm_builder(
                         prune_threshold: config.prune_threshold,
                         min_active_connections: config.min_active_connections,
                         max_active_connections: config.max_active_connections,
-                        rng_seed: 123456,
+                        rng: ChaCha8Rng::seed_from_u64(123456), // fixed seed for reproducibility
                     },
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
                         .build(),
@@ -343,7 +345,7 @@ fn test_update_name_record() {
             prune_threshold: config.prune_threshold,
             min_active_connections: config.min_active_connections,
             max_active_connections: config.max_active_connections,
-            rng_seed: 123456,
+            rng: ChaCha8Rng::seed_from_u64(123456),
         },
         router_scheduler: NoSerRouterConfig::new(node_ids.iter().cloned().collect()).build(),
         seed: 1,

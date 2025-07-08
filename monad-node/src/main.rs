@@ -61,6 +61,7 @@ use monad_validator::{
 use monad_wal::{wal::WALoggerConfig, PersistenceLoggerBuilder};
 use opentelemetry::metrics::MeterProvider;
 use opentelemetry_otlp::{MetricExporter, WithExportConfig};
+use rand_chacha::{rand_core::SeedableRng, ChaCha8Rng};
 use tokio::signal::unix::{signal, SignalKind};
 use tracing::{debug, error, event, info, warn, Instrument, Level};
 use tracing_subscriber::{
@@ -626,7 +627,7 @@ where
         prune_threshold: peer_discovery_config.prune_threshold,
         min_active_connections: peer_discovery_config.min_active_connections,
         max_active_connections: peer_discovery_config.max_active_connections,
-        rng_seed: 123456,
+        rng: ChaCha8Rng::from_entropy(),
     };
 
     let secondary_instance: RaptorCastConfigSecondary<ST> = {

@@ -7,7 +7,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_types::{NodeId, Round, RoundSpan};
-use rand::{seq::SliceRandom, SeedableRng};
+use rand::seq::SliceRandom;
 use rand_chacha::ChaCha8Rng;
 
 use super::{
@@ -55,6 +55,7 @@ where
     pub fn new(
         validator_node_id: NodeId<CertificateSignaturePubKey<ST>>,
         config: RaptorCastConfigSecondaryPublisher<ST>,
+        rng: ChaCha8Rng,
     ) -> Self {
         let scheduling_cfg = config.group_scheduling;
         let min_allowed_init_span = // Allow for at least 1 invite timer tick
@@ -93,7 +94,7 @@ where
             group_schedule: BTreeMap::new(),
             always_ask_full_nodes,
             peer_disc_full_nodes: FullNodes::new(Vec::new()),
-            rng: ChaCha8Rng::seed_from_u64(42), // useful for tests
+            rng,
             curr_round: Round::MIN,
             curr_group: Group::default(),
         }
@@ -540,6 +541,7 @@ mod tests {
     use monad_secp::SecpSignature;
     use monad_testutil::signing::get_key;
     use monad_types::{Epoch, Round};
+    use rand::SeedableRng;
     use tracing_subscriber::fmt::format::FmtSpan;
 
     use super::{
@@ -1035,6 +1037,7 @@ mod tests {
                 full_nodes_prioritized: vec![nid(10), nid(11)],
                 group_scheduling: sched_cfg,
             },
+            ChaCha8Rng::seed_from_u64(42),
         );
 
         // We should be able to call this during the initial state.
