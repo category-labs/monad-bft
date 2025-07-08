@@ -1,13 +1,10 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     marker::PhantomData,
     net::SocketAddr,
-    pin::Pin,
-    sync::{
-        mpsc::{Receiver, Sender},
-        Arc, Mutex,
-    },
-    task::{Context, Poll, Waker},
+    pin::{pin, Pin},
+    sync::{Arc, Mutex},
+    task::{Context, Poll},
     time::Duration,
 };
 
@@ -73,10 +70,9 @@ where
     dataplane: Arc<Mutex<Dataplane>>,
     peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
 
-    pending_events: VecDeque<RaptorCastEvent<M::Event, ST>>,
-    channel_from_primary: Receiver<FullNodesGroupMessage<ST>>,
-    waker: Option<Waker>,
-    _phantom: PhantomData<(OM, SE)>,
+    channel_from_primary: UnboundedReceiver<FullNodesGroupMessage<ST>>,
+    metrics: ExecutorMetrics,
+    _phantom: PhantomData<(OM, SE, M)>,
 }
 
 impl<ST, M, OM, SE, PD> RaptorCastSecondary<ST, M, OM, SE, PD>
@@ -135,9 +131,8 @@ where
             mtu: config.mtu,
             dataplane,
             peer_discovery_driver,
-            pending_events: Default::default(),
             channel_from_primary,
-            waker: None,
+            metrics: Default::default(),
             _phantom: PhantomData,
         }
     }
@@ -443,16 +438,8 @@ where
 
     // Since we are sending to full-nodes only, and not receiving anything from them,
     // we don't need to handle any receive here and this is just to satisfy traits
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
-
-        if this.waker.is_none() {
-            this.waker = Some(cx.waker().clone());
-        }
-
-        if let Some(event) = this.pending_events.pop_front() {
-            return Poll::Ready(Some(event.into()));
-        }
 
         match this.channel_from_primary.try_recv() {
             Ok(inbound_grp_msg) => match &mut this.role {

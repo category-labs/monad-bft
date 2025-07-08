@@ -510,6 +510,9 @@ where
                         .push_back(RaptorCastEvent::PeerManagerResponse(
                             PeerManagerResponse::PeerList(peer_list),
                         ));
+                    if let Some(waker) = self.waker.take() {
+                        waker.wake();
+                    }
                 }
                 RouterCommand::UpdatePeers(peers) => {
                     self.peer_discovery_driver
@@ -523,6 +526,9 @@ where
                         .push_back(RaptorCastEvent::PeerManagerResponse(
                             PeerManagerResponse::FullNodes(full_nodes),
                         ));
+                    if let Some(waker) = self.waker.take() {
+                        waker.wake();
+                    }
                 }
                 RouterCommand::UpdateFullNodes(new_full_nodes) => {
                     self.dedicated_full_nodes.list = new_full_nodes;
@@ -554,7 +560,9 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
-        if this.waker.is_none() {
+        if let Some(waker) = this.waker.as_mut() {
+            waker.clone_from(cx.waker());
+        } else {
             this.waker = Some(cx.waker().clone());
         }
 
@@ -637,61 +645,62 @@ where
                     .collect_vec()
             );
 
-            let deserialized_app_messages =
-                decoded_app_messages
-                    .into_iter()
-                    .filter_map(|(from, decoded)| {
-                        match InboundRouterMessage::<M, ST>::try_deserialize(&decoded) {
-                            Ok(inbound) => match inbound {
-                                InboundRouterMessage::AppMessage(app_message) => {
-                                    tracing::trace!("RaptorCastPrimary rx deserialized AppMessage");
-                                    Some(app_message.event(from))
-                                }
-                                InboundRouterMessage::PeerDiscoveryMessage(peer_disc_message) => {
-                                    tracing::trace!("RaptorCastPrimary rx deserialized PeerDiscoveryMessage: {:?}", peer_disc_message);
-                                    // handle peer discovery message in driver
-                                    this.peer_discovery_driver.lock().unwrap()
-                                        .update(peer_disc_message.event(from));
-                                    None
-                                }
-                                InboundRouterMessage::FullNodesGroup(full_nodes_group_message) => {
-                                    tracing::trace!("RaptorCastPrimary rx deserialized {:?}", full_nodes_group_message);
-                                    match &this.channel_to_secondary {
-                                        Some(channel) => {
-                                            if let Err(err) = channel.send(full_nodes_group_message)
-                                            {
-                                                tracing::error!(
-                                                    "Could not send InboundRouterMessage to \
+            for (from, decoded) in decoded_app_messages {
+                match InboundRouterMessage::<M, ST>::try_deserialize(&decoded) {
+                    Ok(inbound) => match inbound {
+                        InboundRouterMessage::AppMessage(app_message) => {
+                            tracing::trace!("RaptorCastPrimary rx deserialized AppMessage");
+                            this.pending_events
+                                .push_back(RaptorCastEvent::Message(app_message.event(from)));
+                        }
+                        InboundRouterMessage::PeerDiscoveryMessage(peer_disc_message) => {
+                            tracing::trace!(
+                                "RaptorCastPrimary rx deserialized PeerDiscoveryMessage: {:?}",
+                                peer_disc_message
+                            );
+                            // handle peer discovery message in driver
+                            this.peer_discovery_driver
+                                .lock()
+                                .unwrap()
+                                .update(peer_disc_message.event(from));
+                        }
+                        InboundRouterMessage::FullNodesGroup(full_nodes_group_message) => {
+                            tracing::trace!(
+                                "RaptorCastPrimary rx deserialized {:?}",
+                                full_nodes_group_message
+                            );
+                            match &this.channel_to_secondary {
+                                Some(channel) => {
+                                    if let Err(err) = channel.send(full_nodes_group_message) {
+                                        tracing::error!(
+                                            "Could not send InboundRouterMessage to \
                                     secondary Raptorcast instance: {}",
-                                                    err
-                                                );
-                                            }
-                                        }
-                                        None => {
-                                            tracing::debug!(
-                                                ?from,
-                                                "Received FullNodesGroup message but the primary \
+                                            err
+                                        );
+                                    }
+                                }
+                                None => {
+                                    tracing::debug!(
+                                        ?from,
+                                        "Received FullNodesGroup message but the primary \
                                 Raptorcast instance is not setup to forward messages \
                                 to a secondary instance."
-                                            );
-                                        }
-                                    }
-                                    None
+                                    );
                                 }
-                            },
-                            Err(err) => {
-                                warn!(
-                                    ?from,
-                                    ?err,
-                                    decoded = hex::encode(&decoded),
-                                    "failed to deserialize message"
-                                );
-                                None
                             }
                         }
-                    });
-            this.pending_events
-                .extend(deserialized_app_messages.map(RaptorCastEvent::Message));
+                    },
+                    Err(err) => {
+                        warn!(
+                            ?from,
+                            ?err,
+                            decoded = hex::encode(&decoded),
+                            "failed to deserialize message"
+                        );
+                    }
+                }
+            }
+
             if let Some(event) = this.pending_events.pop_front() {
                 return Poll::Ready(Some(event.into()));
             }
