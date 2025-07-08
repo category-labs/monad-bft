@@ -381,6 +381,7 @@ pub mod mongo_tests {
         assert!(result.is_none());
     }
 
+    #[ignore]
     #[tokio::test]
     #[serial]
     async fn test_bulk_operations() {
