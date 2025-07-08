@@ -5409,6 +5409,7 @@ dependencies = [
  "monad-executor-glue",
  "monad-peer-discovery",
  "monad-raptorcast",
+ "tokio",
  "tracing",
 ]
 

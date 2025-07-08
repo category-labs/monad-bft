@@ -1,13 +1,11 @@
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
+    future::Future as _,
     marker::PhantomData,
     net::{SocketAddr, SocketAddrV4},
     ops::DerefMut,
     pin::{pin, Pin},
-    sync::{
-        mpsc::{Receiver, Sender},
-        Arc, Mutex,
-    },
+    sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
     time::Duration,
 };
@@ -36,6 +34,7 @@ use monad_peer_discovery::{
 };
 use monad_types::{DropTimer, Epoch, ExecutionProtocol, NodeId, RouterTarget};
 use raptorcast_secondary::group_message::FullNodesGroupMessage;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, error, warn};
 use util::{
     BuildTarget, EpochValidators, FullNodes, Group, ReBroadcastGroupMap, Redundancy, Validator,
@@ -75,8 +74,8 @@ where
     dataplane: Arc<Mutex<Dataplane>>,
     pending_events: VecDeque<RaptorCastEvent<M::Event, ST>>,
 
-    channel_to_secondary: Option<Sender<FullNodesGroupMessage<ST>>>,
-    channel_from_secondary: Option<Receiver<Group<ST>>>,
+    channel_to_secondary: Option<UnboundedSender<FullNodesGroupMessage<ST>>>,
+    channel_from_secondary: Option<UnboundedReceiver<Group<ST>>>,
 
     waker: Option<Waker>,
     metrics: ExecutorMetrics,
@@ -155,8 +154,8 @@ where
     // If we are a full-node, then we need both channels.
     pub fn bind_channel_to_secondary_raptorcast(
         mut self,
-        channel_to_secondary: Sender<FullNodesGroupMessage<ST>>,
-        channel_from_secondary: Receiver<Group<ST>>,
+        channel_to_secondary: UnboundedSender<FullNodesGroupMessage<ST>>,
+        channel_from_secondary: UnboundedReceiver<Group<ST>>,
     ) -> Self {
         self.channel_to_secondary = Some(channel_to_secondary);
         if self.is_fullnode {
@@ -671,11 +670,10 @@ where
                             );
                             match &this.channel_to_secondary {
                                 Some(channel) => {
-                                    if let Err(err) = channel.send(full_nodes_group_message) {
+                                    if channel.send(full_nodes_group_message).is_err() {
                                         tracing::error!(
                                             "Could not send InboundRouterMessage to \
-                                    secondary Raptorcast instance: {}",
-                                            err
+                                    secondary Raptorcast instance: channel closed",
                                         );
                                     }
                                 }
@@ -805,17 +803,17 @@ where
 
         // The secondary Raptorcast instance (Client) will be periodically sending us
         // updates about new raptorcast groups that we should use when re-broadcasting
-        if let Some(channel_from_secondary) = &this.channel_from_secondary {
+        if let Some(channel_from_secondary) = this.channel_from_secondary.as_mut() {
             loop {
-                match channel_from_secondary.try_recv() {
-                    Ok(group) => {
+                match pin!(channel_from_secondary.recv()).poll(cx) {
+                    Poll::Ready(Some(group)) => {
                         this.rebroadcast_map.push_group_fullnodes(group);
                     }
-                    Err(err) => {
-                        // Error may also be TryRecvError::Empty
-                        if let std::sync::mpsc::TryRecvError::Disconnected = err {
-                            tracing::error!("RaptorCast secondary->primary channel disconnected.");
-                        }
+                    Poll::Ready(None) => {
+                        tracing::error!("RaptorCast secondary->primary channel disconnected.");
+                        break;
+                    }
+                    Poll::Pending => {
                         break;
                     }
                 }

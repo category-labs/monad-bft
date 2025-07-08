@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::mpsc::Sender, time::Instant};
+use std::{collections::BTreeMap, time::Instant};
 
 use iset::IntervalMap;
 use monad_crypto::certificate_signature::{
@@ -6,6 +6,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::ExecutorMetrics;
 use monad_types::{NodeId, Round, RoundSpan, GENESIS_ROUND};
+use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, error, warn};
 
 use super::{
@@ -46,7 +47,7 @@ where
         BTreeMap<Round, BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, PrepareGroup<ST>>>,
 
     // Once a group is confirmed, it is sent to this channel
-    group_sink_channel: Sender<GroupAsClient<ST>>,
+    group_sink_channel: UnboundedSender<GroupAsClient<ST>>,
 
     // For avoiding accepting invites/confirms for rounds we've already started
     curr_round: Round,
@@ -66,7 +67,7 @@ where
 {
     pub fn new(
         client_node_id: NodeId<CertificateSignaturePubKey<ST>>,
-        group_sink_channel: Sender<GroupAsClient<ST>>,
+        group_sink_channel: UnboundedSender<GroupAsClient<ST>>,
         config: RaptorCastConfigSecondaryClient,
     ) -> Self {
         // There's no Instant::zero(). Use a value such that we will accept the

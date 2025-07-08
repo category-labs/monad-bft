@@ -560,21 +560,14 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        cmp::min,
-        io,
-        sync::{
-            mpsc::{Receiver, Sender},
-            Once,
-        },
-        time::Duration,
-    };
+    use std::{cmp::min, io, sync::Once, time::Duration};
 
     use iset::{interval_map, IntervalMap};
     use monad_secp::SecpSignature;
     use monad_testutil::signing::get_key;
     use monad_types::{Epoch, Round};
     use rand::SeedableRng;
+    use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
     use tracing_subscriber::fmt::format::FmtSpan;
 
     use super::{
@@ -591,7 +584,7 @@ mod tests {
 
     type ST = SecpSignature;
     type PubKeyType = CertificateSignaturePubKey<ST>;
-    type RcToRcChannelGrp<ST> = (Sender<Group<ST>>, Receiver<Group<ST>>);
+    type RcToRcChannelGrp<ST> = (UnboundedSender<Group<ST>>, UnboundedReceiver<Group<ST>>);
     type NodeIdST<ST> = NodeId<CertificateSignaturePubKey<ST>>;
 
     // Creates a node id that we can refer to just from its seed
@@ -951,13 +944,13 @@ mod tests {
     // This is a mock of how the primary raptorcast instance would represent
     // the rebroadcast group map.
     struct MockGroupMap {
-        rx_from_client: Receiver<Group<ST>>,
+        rx_from_client: UnboundedReceiver<Group<ST>>,
         group_map: ReBroadcastGroupMap<ST>,
     }
     impl MockGroupMap {
         fn new(
             clt_node_id: NodeId<CertificateSignaturePubKey<ST>>,
-            rx_from_client: Receiver<Group<ST>>,
+            rx_from_client: UnboundedReceiver<Group<ST>>,
         ) -> Self {
             Self {
                 group_map: ReBroadcastGroupMap::new(clt_node_id, true),
@@ -1359,7 +1352,7 @@ mod tests {
     #[test]
     fn standalone_client_single_group() {
         enable_tracer();
-        let (clt_tx, clt_rx): RcToRcChannelGrp<ST> = std::sync::mpsc::channel();
+        let (clt_tx, clt_rx): RcToRcChannelGrp<ST> = unbounded_channel();
         let mut clt = Client::<ST>::new(
             nid(10),
             clt_tx,
@@ -1485,7 +1478,7 @@ mod tests {
     #[test]
     fn mid_round_client_start() {
         enable_tracer();
-        let (clt_tx, clt_rx): RcToRcChannelGrp<ST> = std::sync::mpsc::channel();
+        let (clt_tx, clt_rx): RcToRcChannelGrp<ST> = unbounded_channel();
         let mut clt = Client::<ST>::new(
             nid(10),
             clt_tx,
@@ -1627,7 +1620,7 @@ mod tests {
         // 16       | v0.2  v1.1  v2.1
 
         let me = 10;
-        let (clt_tx, clt_rx): RcToRcChannelGrp<ST> = std::sync::mpsc::channel();
+        let (clt_tx, clt_rx): RcToRcChannelGrp<ST> = unbounded_channel();
         let mut clt = Client::<ST>::new(
             nid(me),
             clt_tx,

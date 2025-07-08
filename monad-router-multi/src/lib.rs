@@ -22,6 +22,7 @@ use monad_raptorcast::{
     util::Group,
     RaptorCast, RaptorCastEvent,
 };
+use tokio::sync::mpsc::unbounded_channel;
 pub use tracing::{debug, error, info, warn, Level};
 
 //==============================================================================
@@ -63,8 +64,8 @@ where
         // Fundamentally this is needed because, while both can send, only the
         // primary can receive data from the network.
         let (send_net_messages, recv_net_messages) =
-            std::sync::mpsc::channel::<FullNodesGroupMessage<ST>>();
-        let (send_group_infos, recv_group_infos) = std::sync::mpsc::channel::<Group<ST>>();
+            unbounded_channel::<FullNodesGroupMessage<ST>>();
+        let (send_group_infos, recv_group_infos) = unbounded_channel::<Group<ST>>();
 
         let rc_secondary = match &cfg.secondary_instance.mode {
             SecondaryRaptorCastModeConfig::None => None,

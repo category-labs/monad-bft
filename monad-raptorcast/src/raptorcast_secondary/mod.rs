@@ -15,19 +15,20 @@ mod publisher;
 use alloy_rlp::{Decodable, Encodable};
 use bytes::Bytes;
 use client::Client;
-use futures::Stream;
+use futures::{Future, Stream};
 use group_message::FullNodesGroupMessage;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_dataplane::{udp::segment_size_for_mtu, Dataplane, UnicastMsg};
-use monad_executor::{Executor, ExecutorMetricsChain};
+use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, PeerEntry, RouterCommand};
 use monad_peer_discovery::{driver::PeerDiscoveryDriver, PeerDiscoveryAlgo, PeerDiscoveryEvent};
 use monad_types::{DropTimer, Epoch, NodeId};
 use publisher::Publisher;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{error, trace, warn};
 
 use super::{
@@ -86,8 +87,8 @@ where
         config: RaptorCastConfig<ST>,
         dataplane: Arc<Mutex<Dataplane>>,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
-        channel_from_primary: Receiver<FullNodesGroupMessage<ST>>,
-        channel_to_primary: Sender<Group<ST>>,
+        channel_from_primary: UnboundedReceiver<FullNodesGroupMessage<ST>>,
+        channel_to_primary: UnboundedSender<Group<ST>>,
     ) -> Self {
         let node_id = NodeId::new(config.shared_key.pubkey());
         let sec_config = config.secondary_instance.mode.clone();
@@ -438,66 +439,71 @@ where
 
     // Since we are sending to full-nodes only, and not receiving anything from them,
     // we don't need to handle any receive here and this is just to satisfy traits
-    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
 
-        match this.channel_from_primary.try_recv() {
-            Ok(inbound_grp_msg) => match &mut this.role {
-                Role::Publisher(publisher) => {
-                    publisher.on_candidate_response(inbound_grp_msg);
-                }
+        let inbound_grp_msg = match pin!(this.channel_from_primary.recv()).poll(cx) {
+            Poll::Ready(Some(inbound_grp_msg)) => inbound_grp_msg,
+            Poll::Ready(None) => {
+                tracing::error!("RaptorCastSecondary channel disconnected.");
+                // TODO: should we return Poll::Ready(None) here?
+                return Poll::Pending;
+            }
+            Poll::Pending => {
+                // No group message received, so we are not ready to process anything
+                return Poll::Pending;
+            }
+        };
 
-                Role::Client(client) => {
-                    trace!("RaptorCastSecondary received group message");
-                    // Received group message from validator
-                    if let FullNodesGroupMessage::ConfirmGroup(confirm_msg) = &inbound_grp_msg {
-                        let num_mappings = confirm_msg.name_records.len();
-                        if num_mappings > 0 && num_mappings == confirm_msg.peers.len() {
-                            let mut peers: Vec<PeerEntry<ST>> = Vec::new();
-                            // FIXME: bind name records with peers and ask peer discovery to verify
-                            for ii in 0..num_mappings {
-                                let rec = &confirm_msg.name_records[ii];
-                                let peer_entry = PeerEntry {
-                                    pubkey: confirm_msg.peers[ii].pubkey(),
-                                    addr: rec.name_record.address,
-                                    signature: rec.signature,
-                                    record_seq_num: rec.name_record.seq,
-                                };
-                                peers.push(peer_entry);
-                            }
-                            this.peer_discovery_driver
-                                .lock()
-                                .unwrap()
-                                .update(PeerDiscoveryEvent::UpdatePeers { peers });
-                        } else if num_mappings > 0 {
-                            warn!( ?confirm_msg, num_peers =? confirm_msg.peers.len(), num_name_recs =? confirm_msg.name_records.len(),
-                                "Number of peers does not match the number \
-                                of name records in ConfirmGroup message. \
-                                Skipping PeerDiscovery update"
-                            );
+        match &mut this.role {
+            Role::Publisher(publisher) => {
+                publisher.on_candidate_response(inbound_grp_msg);
+            }
+
+            Role::Client(client) => {
+                trace!("RaptorCastSecondary received group message");
+                // Received group message from validator
+                if let FullNodesGroupMessage::ConfirmGroup(confirm_msg) = &inbound_grp_msg {
+                    let num_mappings = confirm_msg.name_records.len();
+                    if num_mappings > 0 && num_mappings == confirm_msg.peers.len() {
+                        let mut peers: Vec<PeerEntry<ST>> = Vec::new();
+                        // FIXME: bind name records with peers and ask peer discovery to verify
+                        for ii in 0..num_mappings {
+                            let rec = &confirm_msg.name_records[ii];
+                            let peer_entry = PeerEntry {
+                                pubkey: confirm_msg.peers[ii].pubkey(),
+                                addr: rec.name_record.address,
+                                signature: rec.signature,
+                                record_seq_num: rec.name_record.seq,
+                            };
+                            peers.push(peer_entry);
                         }
-                    }
-                    if let Some((response_msg, validator_id)) =
-                        client.on_receive_group_message(inbound_grp_msg)
-                    {
-                        // Send back a response to the validator
-                        trace!("RaptorCastSecondary sending back response for group message");
-
-                        let known_addresses = {
-                            this.peer_discovery_driver
-                                .lock()
-                                .unwrap()
-                                .get_known_addresses()
-                        };
-
-                        this.send_single_msg(response_msg, &validator_id, &known_addresses);
+                        this.peer_discovery_driver
+                            .lock()
+                            .unwrap()
+                            .update(PeerDiscoveryEvent::UpdatePeers { peers });
+                    } else if num_mappings > 0 {
+                        warn!( ?confirm_msg, num_peers =? confirm_msg.peers.len(), num_name_recs =? confirm_msg.name_records.len(),
+                            "Number of peers does not match the number \
+                            of name records in ConfirmGroup message. \
+                            Skipping PeerDiscovery update"
+                        );
                     }
                 }
-            },
+                if let Some((response_msg, validator_id)) =
+                    client.on_receive_group_message(inbound_grp_msg)
+                {
+                    // Send back a response to the validator
+                    trace!("RaptorCastSecondary sending back response for group message");
 
-            Err(err) => {
-                if let std::sync::mpsc::TryRecvError::Disconnected = err {
-                    error!("RaptorCastSecondary channel disconnected.");
+                    let known_addresses = {
+                        this.peer_discovery_driver
+                            .lock()
+                            .unwrap()
+                            .get_known_addresses()
+                    };
+
+                    this.send_single_msg(response_msg, &validator_id, &known_addresses);
                 }
             }
         }

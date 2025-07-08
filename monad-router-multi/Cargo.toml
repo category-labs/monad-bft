@@ -14,3 +14,4 @@ monad-raptorcast = { workspace = true }
 alloy-rlp = { workspace = true }
 futures = { workspace = true }
 tracing = { workspace = true }
+tokio = { workspace = true }
