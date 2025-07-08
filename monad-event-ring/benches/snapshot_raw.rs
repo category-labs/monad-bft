@@ -21,7 +21,7 @@ fn bench_snapshot(c: &mut Criterion) {
         let mut items = 0;
 
         loop {
-            match event_reader.next() {
+            match event_reader.next_descriptor() {
                 EventNextResult::Ready(_) => {
                     items += 1;
                 }
@@ -50,7 +50,7 @@ fn bench_snapshot(c: &mut Criterion) {
         b.iter_batched_ref(
             || snapshot.create_reader(),
             |event_reader| loop {
-                match event_reader.next() {
+                match event_reader.next_descriptor() {
                     EventNextResult::Ready(event_descriptor) => {
                         let actual_payload: EventDescriptorPayload<Option<u8>> = event_descriptor
                             .try_filter_map_raw(|_, bytes| {

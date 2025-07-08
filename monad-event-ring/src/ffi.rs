@@ -115,12 +115,12 @@ pub(crate) fn monad_event_iterator_reset(c_event_iterator: &mut monad_event_iter
 }
 
 #[inline]
-pub(crate) fn monad_event_payload_peek<'ring>(
-    c_event_iterator: &'ring monad_event_iterator,
+pub(crate) fn monad_event_ring_payload_peek<'ring>(
+    c_event_ring: &'ring monad_event_ring,
     c_event_descriptor: &monad_event_descriptor,
 ) -> Option<&'ring [u8]> {
     let payload_ptr = unsafe {
-        self::bindings::monad_event_payload_peek(c_event_iterator, c_event_descriptor) as *const u8
+        self::bindings::monad_event_ring_payload_peek(c_event_ring, c_event_descriptor) as *const u8
     };
 
     if payload_ptr.is_null() {
@@ -133,11 +133,11 @@ pub(crate) fn monad_event_payload_peek<'ring>(
 }
 
 #[inline]
-pub(crate) fn monad_event_payload_check(
-    c_event_iterator: &monad_event_iterator,
+pub(crate) fn monad_event_ring_payload_check(
+    c_event_ring: &monad_event_ring,
     c_event_descriptor: &monad_event_descriptor,
 ) -> bool {
-    unsafe { self::bindings::monad_event_payload_check(c_event_iterator, c_event_descriptor) }
+    unsafe { self::bindings::monad_event_ring_payload_check(c_event_ring, c_event_descriptor) }
 }
 
 pub(crate) fn monad_check_path_supports_map_hugetlb(

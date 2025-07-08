@@ -27,7 +27,7 @@ fn main() {
     let mut event_reader = event_ring.create_reader();
 
     loop {
-        let event_descriptor = match event_reader.next() {
+        let event_descriptor = match event_reader.next_descriptor() {
             EventNextResult::Gap => panic!("event ring gapped"),
             EventNextResult::NotReady => {
                 std::thread::sleep(Duration::from_millis(1));

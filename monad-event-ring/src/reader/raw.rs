@@ -7,9 +7,7 @@ use crate::{
 #[derive(Debug)]
 pub(crate) struct RawEventReader<'ring> {
     pub(crate) inner: monad_event_iterator,
-
-    #[allow(unused)]
-    event_ring: &'ring RawEventRing,
+    pub(crate) event_ring: &'ring RawEventRing,
 }
 
 impl<'ring> RawEventReader<'ring> {
@@ -19,9 +17,7 @@ impl<'ring> RawEventReader<'ring> {
         Ok(Self { inner, event_ring })
     }
 
-    pub(crate) fn next<'reader>(
-        &'reader mut self,
-    ) -> EventNextResult<RawEventDescriptor<'ring, 'reader>> {
+    pub(crate) fn next_descriptor(&mut self) -> EventNextResult<RawEventDescriptor<'ring>> {
         EventNextResult::new_from_raw(self)
     }
 }

@@ -58,20 +58,20 @@ pub trait EventRingType: 'static {
     /// The rust-native type of the elements produced by an event ring.
     type Event;
     /// A zero-copy view of the elements produced by an event ring.
-    type EventRef<'reader>;
+    type EventRef<'ring>;
 
-    /// Provides the zero-copy view [`Self::EventRef<'reader>`](EventRingType::EventRef) from an
+    /// Provides the zero-copy view [`Self::EventRef<'ring>`](EventRingType::EventRef) from an
     /// event ring payload byte slice.
-    fn raw_to_event_ref<'reader>(
+    fn raw_to_event_ref<'ring>(
         info: EventDescriptorInfo<Self>,
-        bytes: &'reader [u8],
-    ) -> Self::EventRef<'reader>
+        bytes: &'ring [u8],
+    ) -> Self::EventRef<'ring>
     where
         Self: Sized;
 
-    /// Defines how to convert the zero-copy [`Self::EventRef<'reader>`](EventRingType::EventRef) to
+    /// Defines how to convert the zero-copy [`Self::EventRef<'ring>`](EventRingType::EventRef) to
     /// the owned variant [`Self::Event`](EventRingType::Event).
-    fn event_ref_to_event<'reader>(event_ref: Self::EventRef<'reader>) -> Self::Event;
+    fn event_ref_to_event<'ring>(event_ref: Self::EventRef<'ring>) -> Self::Event;
 }
 
 /// Event ring type used for ingesting events as raw byte data.
@@ -99,18 +99,16 @@ impl EventRingType for RawEventRingType {
     fn transmute_flow_info(_: [u64; 4]) -> Self::FlowInfo {}
 
     type Event = (u16, Vec<u8>);
-    type EventRef<'reader> = (u16, &'reader [u8]);
+    type EventRef<'ring> = (u16, &'ring [u8]);
 
-    fn raw_to_event_ref<'reader>(
+    fn raw_to_event_ref<'ring>(
         info: EventDescriptorInfo<Self>,
-        bytes: &'reader [u8],
-    ) -> Self::EventRef<'reader> {
+        bytes: &'ring [u8],
+    ) -> Self::EventRef<'ring> {
         (info.event_type, bytes)
     }
 
-    fn event_ref_to_event<'reader>(
-        (event_type, event_ref): Self::EventRef<'reader>,
-    ) -> Self::Event {
+    fn event_ref_to_event<'ring>((event_type, event_ref): Self::EventRef<'ring>) -> Self::Event {
         (event_type, event_ref.to_vec())
     }
 }

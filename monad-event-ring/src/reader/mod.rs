@@ -35,7 +35,7 @@ where
     }
 
     /// Produces the next event in the ring.
-    pub fn next<'reader>(&'reader mut self) -> EventNextResult<EventDescriptor<'ring, 'reader, T>> {
-        self.raw.next().map(EventDescriptor::new)
+    pub fn next_descriptor(&mut self) -> EventNextResult<EventDescriptor<'ring, T>> {
+        self.raw.next_descriptor().map(EventDescriptor::new)
     }
 }
