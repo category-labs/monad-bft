@@ -1,0 +1,27 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+  remove)
+    echo "Removing monad..."
+    SERVICE_DIR="/etc/systemd/system"
+    if command -v systemctl >/dev/null 2>&1 && [ "$(ps -p 1 -o comm=)" = "systemd" ]; then
+      systemctl daemon-reload
+      for service_file in "$SERVICE_DIR"/monad-*.service; do
+        [ -e "$service_file" ] || continue
+
+        service_name=$(basename "$service_file")
+        systemctl stop "$service_name" || true
+      done
+      systemctl stop set-hugepages.service && systemctl disable set-hugepages.service || true
+      rm -f /etc/systemd/system/set-hugepages.service
+    fi
+    ;;
+  upgrade)
+    echo "Preparing to upgrade monad..."
+    ;;
+  *)
+    echo "prerm called with unknown argument '$1'" >&2
+    exit 1
+    ;;
+esac

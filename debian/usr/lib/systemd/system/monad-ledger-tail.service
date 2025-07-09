@@ -1,0 +1,20 @@
+[Unit]
+Description="Service file for Monad ledger-tail"
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/monad-ledger-tail 
+EnvironmentFile=-/home/monad/.env
+User=monad
+Restart=no
+Group=monad
+LimitNOFILE=1048576
+# Hugemem configs below
+LimitMEMLOCK=infinity
+MemoryDenyWriteExecute=false
+ProtectKernelModules=no
+ProtectKernelLogs=no
+
+[Install]
+WantedBy=multi-user.target

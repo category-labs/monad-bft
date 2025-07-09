@@ -1,0 +1,11 @@
+[Unit]
+After=network.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/opt/monad/scripts/clear-old-artifacts.sh
+
+[Install]
+WantedBy=multi-user.target

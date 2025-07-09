@@ -1,0 +1,32 @@
+[Unit]
+Description="Service file for Monad txgen"
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/monad-txgen \
+      --rpc-url $RPC_URL \
+      --otel-endpoint $OTEL_ENDPOINT \
+      few-to-many \
+      --tx-type erc20 \
+      --recipients 300000000 \
+      --recipient-seed 1001 \
+      --sender-seed 100 \
+      --tps 2000 \
+      --erc20-balance-of
+EnvironmentFile=-/home/monad/.env
+Environment="RUST_LOG=info"
+Restart=no
+User=monad
+Group=monad
+AllowedCPUs=15
+LimitNOFILE=1048576
+# Hugemem configs below
+LimitMEMLOCK=infinity
+MemoryDenyWriteExecute=false
+#SystemCallFilter=~@memlock
+ProtectKernelModules=no
+ProtectKernelLogs=no
+
+[Install]
+WantedBy=multi-user.target
