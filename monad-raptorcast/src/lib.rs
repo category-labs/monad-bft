@@ -309,7 +309,7 @@ where
                         self.peer_discovery_driver
                             .lock()
                             .unwrap()
-                            .update(PeerDiscoveryEvent::UpdateCurrentEpoch { epoch });
+                            .update(PeerDiscoveryEvent::UpdateCurrentRound { round, epoch });
                     }
                 }
                 RouterCommand::AddEpochValidatorSet {

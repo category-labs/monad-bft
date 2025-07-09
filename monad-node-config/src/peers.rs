@@ -1,5 +1,5 @@
 use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
-use monad_types::{deserialize_certificate_signature, serialize_certificate_signature};
+use monad_types::{deserialize_certificate_signature, serialize_certificate_signature, Round};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -16,7 +16,8 @@ pub struct PeerDiscoveryConfig<ST: CertificateSignatureRecoverable> {
     pub ping_period: u64,
     pub refresh_period: u64,
     pub request_timeout: u64,
-    pub prune_threshold: u32,
+    pub unresponsive_prune_threshold: u32,
+    pub last_participation_prune_threshold: Round,
     pub min_num_peers: usize,
     pub max_num_peers: usize,
 }

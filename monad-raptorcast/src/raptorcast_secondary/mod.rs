@@ -345,6 +345,17 @@ where
                                     .unwrap()
                                     .get_known_addresses()
                             };
+
+                            // if group_msg is a ConfirmGroup message, update peer discovery with the group information
+                            if let FullNodesGroupMessage::ConfirmGroup(confirm_msg) = &group_msg {
+                                self.peer_discovery_driver.lock().unwrap().update(
+                                    PeerDiscoveryEvent::UpdateConfirmGroup {
+                                        end_round: confirm_msg.prepare.end_round,
+                                        peers: confirm_msg.peers.clone().into_iter().collect(),
+                                    },
+                                );
+                            }
+
                             self.send_group_msg(group_msg, full_nodes_set, &known_addresses);
                         }
                     }
@@ -482,6 +493,13 @@ where
                             .lock()
                             .unwrap()
                             .update(PeerDiscoveryEvent::UpdatePeers { peers });
+
+                        this.peer_discovery_driver.lock().unwrap().update(
+                            PeerDiscoveryEvent::UpdateConfirmGroup {
+                                end_round: confirm_msg.prepare.end_round,
+                                peers: confirm_msg.peers.clone().into_iter().collect(),
+                            },
+                        );
                     } else if num_mappings > 0 {
                         warn!( ?confirm_msg, num_peers =? confirm_msg.peers.len(), num_name_recs =? confirm_msg.name_records.len(),
                             "Number of peers does not match the number \

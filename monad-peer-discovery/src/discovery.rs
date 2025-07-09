@@ -9,7 +9,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::ExecutorMetrics;
 use monad_executor_glue::PeerEntry;
-use monad_types::{Epoch, NodeId};
+use monad_types::{Epoch, NodeId, Round};
 use rand::{RngCore, seq::IteratorRandom};
 use rand_chacha::ChaCha8Rng;
 use tracing::{debug, info, trace, warn};
@@ -48,6 +48,7 @@ pub const GAUGE_PEER_DISC_RECV_LOOKUP_RESPONSE: &str = "monad.peer_disc.recv_loo
 pub const GAUGE_PEER_DISC_DROP_LOOKUP_RESPONSE: &str = "monad.peer_disc.drop_lookup_response";
 pub const GAUGE_PEER_DISC_LOOKUP_TIMEOUT: &str = "monad.peer_disc.lookup_timeout";
 pub const GAUGE_PEER_DISC_REFRESH: &str = "monad.peer_disc.refresh";
+pub const GAUGE_PEER_DISC_NUM_PEERS: &str = "monad.peer_disc.num_peers";
 pub const GAUGE_PEER_DISC_NUM_CONNECTED_PEERS: &str = "monad.peer_disc.num_connected_peers";
 
 /// validator role is given if the node is a validator in the current or next epoch.
@@ -63,11 +64,14 @@ enum Role {
 pub struct ConnectionInfo<ST: CertificateSignatureRecoverable> {
     pub last_ping: Option<Ping<ST>>,
     pub unresponsive_pings: u32,
+    // used to track the last time a peer participated in secondary raptorcast
+    // if never participated, set to the Round when it first establish a connection
+    pub last_participation: Round,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct LookupInfo<ST: CertificateSignatureRecoverable> {
-    // current number of retries, once above prune_threshold, drop this request
+    // current number of retries, once above unresponsive_prune_threshold, drop this request
     pub num_retries: u32,
     // receiver of the peer lookup request
     pub receiver: NodeId<CertificateSignaturePubKey<ST>>,
@@ -80,6 +84,7 @@ pub struct PeerDiscovery<ST: CertificateSignatureRecoverable> {
     pub self_record: MonadNameRecord<ST>,
     // role of the node in the current epoch
     self_role: Role,
+    pub current_round: Round,
     pub current_epoch: Epoch,
     // mapping of epoch to validators in that epoch
     pub epoch_validators: BTreeMap<Epoch, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
@@ -100,8 +105,10 @@ pub struct PeerDiscovery<ST: CertificateSignatureRecoverable> {
     pub refresh_period: Duration,
     // duration before outstanding pings and lookup requests are dropped
     pub request_timeout: Duration,
-    // number of unresponsive pings allowed before being pruned
-    pub prune_threshold: u32,
+    // number of unresponsive pings allowed before dropping connection
+    pub unresponsive_prune_threshold: u32,
+    // number of rounds since last participation before pruning a full node
+    pub last_participation_prune_threshold: Round,
     // minimum number of peers before actively sending peer lookup requests
     pub min_num_peers: usize,
     // maximum number of peers before pruning
@@ -112,6 +119,7 @@ pub struct PeerDiscovery<ST: CertificateSignatureRecoverable> {
 pub struct PeerDiscoveryBuilder<ST: CertificateSignatureRecoverable> {
     pub self_id: NodeId<CertificateSignaturePubKey<ST>>,
     pub self_record: MonadNameRecord<ST>,
+    pub current_round: Round,
     pub current_epoch: Epoch,
     pub epoch_validators: BTreeMap<Epoch, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
     pub pinned_full_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
@@ -119,7 +127,8 @@ pub struct PeerDiscoveryBuilder<ST: CertificateSignatureRecoverable> {
     pub ping_period: Duration,
     pub refresh_period: Duration,
     pub request_timeout: Duration,
-    pub prune_threshold: u32,
+    pub unresponsive_prune_threshold: u32,
+    pub last_participation_prune_threshold: Round,
     pub min_num_peers: usize,
     pub max_num_peers: usize,
     pub rng: ChaCha8Rng,
@@ -145,6 +154,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
             self_id: self.self_id,
             self_record: self.self_record,
             self_role,
+            current_round: self.current_round,
             current_epoch: self.current_epoch,
             epoch_validators: self.epoch_validators,
             pinned_full_nodes: self.pinned_full_nodes,
@@ -155,7 +165,8 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
             ping_period: self.ping_period,
             refresh_period: self.refresh_period,
             request_timeout: self.request_timeout,
-            prune_threshold: self.prune_threshold,
+            unresponsive_prune_threshold: self.unresponsive_prune_threshold,
+            last_participation_prune_threshold: self.last_participation_prune_threshold,
             min_num_peers: self.min_num_peers,
             max_num_peers: self.max_num_peers,
             rng: self.rng,
@@ -287,15 +298,39 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
             self.routing_info.insert(peer_id, name_record);
         }
 
-        self.metrics[GAUGE_PEER_DISC_NUM_CONNECTED_PEERS] = self.routing_info.len() as u64;
+        self.metrics[GAUGE_PEER_DISC_NUM_PEERS] = self.routing_info.len() as u64;
 
         // send pings to newly modified/added peers
-        // full nodes only need to connect to a few validators so they don't need to immediately connect if incoming node is a validator
-        if self.self_role == Role::FullNode && self.is_validator(&peer_id) {
-            return self.look_for_upstream_validators();
+        // full nodes only need to connect to a few validators so they don't need to connect to other full nodes
+        if self.self_role == Role::FullNode {
+            if self.is_validator(&peer_id) {
+                return self.look_for_upstream_validators();
+            } else {
+                return vec![];
+            }
+        }
+        self.send_ping(peer_id)
+    }
+
+    fn remove_peer(
+        &mut self,
+        node_id: NodeId<CertificateSignaturePubKey<ST>>,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
+        let mut cmds = Vec::new();
+
+        // remove from connection info
+        self.connection_info.remove(&node_id);
+        cmds.extend(self.clear_ping_timer(node_id));
+
+        // if it's not a pinned node, also remove from routing info
+        if !self.is_pinned_node(&node_id) {
+            self.routing_info.remove(&node_id);
         }
 
-        self.send_ping(peer_id)
+        self.metrics[GAUGE_PEER_DISC_NUM_PEERS] = self.routing_info.len() as u64;
+        self.metrics[GAUGE_PEER_DISC_NUM_CONNECTED_PEERS] = self.connection_info.len() as u64;
+
+        cmds
     }
 
     fn look_for_upstream_validators(&mut self) -> Vec<PeerDiscoveryCommand<ST>> {
@@ -349,6 +384,11 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
         current_epoch_validators.is_some_and(|validators| validators.contains(node_id))
             || next_epoch_validators.is_some_and(|validators| validators.contains(node_id))
     }
+
+    // a helper function to check if a node is a validator or a pinned full node
+    fn is_pinned_node(&self, node_id: &NodeId<CertificateSignaturePubKey<ST>>) -> bool {
+        self.is_validator(node_id) || self.pinned_full_nodes.contains(node_id)
+    }
 }
 
 impl<ST> PeerDiscoveryAlgo for PeerDiscovery<ST>
@@ -389,6 +429,7 @@ where
             .or_insert_with(|| ConnectionInfo {
                 last_ping: Some(ping_msg),
                 unresponsive_pings: 0,
+                last_participation: self.current_round,
             });
 
         // reset timer to schedule for the next ping
@@ -517,7 +558,7 @@ where
         ping_id: u32,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         trace!(?to, "ping timeout");
-        let cmds = Vec::new();
+        let mut cmds = Vec::new();
 
         let Some(info) = self.connection_info.get_mut(&to) else {
             debug!(
@@ -534,6 +575,20 @@ where
                 self.metrics[GAUGE_PEER_DISC_PING_TIMEOUT] += 1;
                 info.unresponsive_pings += 1;
                 info.last_ping = None;
+
+                // if unresponsive pings exceeds threshold, stop sending pings to this peer
+                if info.unresponsive_pings >= self.unresponsive_prune_threshold {
+                    debug!(
+                        ?to,
+                        "unresponsive pings exceeded threshold, dropping connection"
+                    );
+                    cmds.extend(self.remove_peer(to));
+
+                    // if self is a full node, look for new upstream validators
+                    if self.self_role == Role::FullNode {
+                        cmds.extend(self.look_for_upstream_validators());
+                    }
+                }
             }
         }
 
@@ -712,7 +767,7 @@ where
             "handling peer lookup request timeout"
         );
         self.metrics[GAUGE_PEER_DISC_LOOKUP_TIMEOUT] += 1;
-        if lookup_info.num_retries >= self.prune_threshold {
+        if lookup_info.num_retries >= self.unresponsive_prune_threshold {
             debug!(
                 ?lookup_id,
                 ?to,
@@ -772,45 +827,36 @@ where
         self.metrics[GAUGE_PEER_DISC_REFRESH] += 1;
         let mut cmds = Vec::new();
 
-        // check whether a node id is a validator in the current and next epoch
-        let current_epoch_validators = self.epoch_validators.get(&self.current_epoch);
-        let next_epoch_validators = self.epoch_validators.get(&(self.current_epoch + Epoch(1)));
-        let is_validator = |node_id: &NodeId<CertificateSignaturePubKey<ST>>| {
-            current_epoch_validators.is_some_and(|validators| validators.contains(node_id))
-                || next_epoch_validators.is_some_and(|validators| validators.contains(node_id))
-        };
-        let is_pinned_full_node = |node_id: &NodeId<CertificateSignaturePubKey<ST>>| {
-            self.pinned_full_nodes.contains(node_id)
-        };
+        // remove nodes that have not participated in secondary raptorcast beyond last_participation_prune_threshold
+        let non_participating_nodes: Vec<_> = self
+            .connection_info
+            .iter()
+            .filter(|(node_id, info)| {
+                self.current_round.max(info.last_participation) - info.last_participation
+                    >= self.last_participation_prune_threshold
+                    && !self.is_pinned_node(node_id)
+            })
+            .map(|(node_id, _)| *node_id)
+            .collect();
 
-        // stop sending pings to nodes that have not responded beyond the prune threshold
-        let mut retained = BTreeMap::new();
-        for (node_id, info) in self.connection_info.iter() {
-            if info.unresponsive_pings < self.prune_threshold {
-                retained.insert(*node_id, *info);
-            } else {
-                debug!(?node_id, "stop sending ping to unresponsive peer");
-                cmds.extend(self.clear_ping_timer(*node_id));
-                if !self.is_validator(node_id) && !self.pinned_full_nodes.contains(node_id) {
-                    // if it's a full node, also remove it from routing info
-                    self.routing_info.remove(node_id);
-                }
-            }
+        for node_id in non_participating_nodes {
+            debug!(?node_id, "stop sending ping to non-participating peer");
+            cmds.extend(self.remove_peer(node_id));
         }
-        self.connection_info = retained;
 
         // if number of peers above max number of peers, randomly choose a few full nodes and prune them from routing_info
         // validators and pinned full nodes will not be pruned
-        // TODO: do not prune full nodes in ConfirmGroup
         if self.routing_info.len() > self.max_num_peers {
             let num_to_prune = self.routing_info.len() - self.max_num_peers;
-            let nodes_to_prune = self
+            let excessive_full_nodes: Vec<_> = self
                 .routing_info
                 .keys()
-                .filter_map(|node| {
-                    (!is_validator(node) && !is_pinned_full_node(node)).then_some(node)
-                })
+                .filter(|node| !self.is_pinned_node(node))
                 .cloned()
+                .collect();
+
+            let nodes_to_prune: Vec<_> = excessive_full_nodes
+                .into_iter()
                 .choose_multiple(&mut self.rng, num_to_prune);
 
             if nodes_to_prune.is_empty() {
@@ -818,19 +864,25 @@ where
             } else {
                 for node_id in nodes_to_prune {
                     debug!(?node_id, "pruning excessive full nodes");
-                    self.routing_info.remove(&node_id);
-                    self.connection_info.remove(&node_id);
-                    cmds.extend(self.clear_ping_timer(node_id));
+                    cmds.extend(self.remove_peer(node_id));
                 }
             }
         }
         trace!("Current routing info: {:?}", self.routing_info);
         trace!("Current connection info: {:?}", self.connection_info);
 
-        let missing_validators = current_epoch_validators
+        // get missing validators in the current and next epoch
+        let missing_validators = self
+            .epoch_validators
+            .get(&self.current_epoch)
             .into_iter()
             .flatten()
-            .chain(next_epoch_validators.into_iter().flatten())
+            .chain(
+                self.epoch_validators
+                    .get(&(self.current_epoch + Epoch(1)))
+                    .into_iter()
+                    .flatten(),
+            )
             .filter(|validator| {
                 !self.routing_info.contains_key(validator) && *validator != &self.self_id
             })
@@ -868,7 +920,8 @@ where
             cmds.extend(self.look_for_upstream_validators());
         }
 
-        self.metrics[GAUGE_PEER_DISC_NUM_CONNECTED_PEERS] = self.routing_info.len() as u64;
+        self.metrics[GAUGE_PEER_DISC_NUM_PEERS] = self.routing_info.len() as u64;
+        self.metrics[GAUGE_PEER_DISC_NUM_CONNECTED_PEERS] = self.connection_info.len() as u64;
 
         // reset timer to schedule for the next refresh
         cmds.extend(self.reset_refresh_timer());
@@ -881,8 +934,17 @@ where
         cmds
     }
 
-    fn update_current_epoch(&mut self, epoch: Epoch) -> Vec<PeerDiscoveryCommand<ST>> {
+    fn update_current_round(
+        &mut self,
+        round: Round,
+        epoch: Epoch,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
         let mut cmds = Vec::new();
+
+        if round > self.current_round {
+            trace!(?round, "updating current round in peer discovery");
+            self.current_round = round;
+        }
 
         if epoch > self.current_epoch {
             debug!(?epoch, "updating current epoch in peer discovery");
@@ -982,6 +1044,37 @@ where
         cmds
     }
 
+    fn update_peer_participation(
+        &mut self,
+        round: Round,
+        peers: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
+        debug!(?round, ?peers, "updating peer participation");
+
+        let cmds = Vec::new();
+
+        // we don't need to send ping here, that is done when the name record is inserted
+        for peer in peers {
+            if peer == self.self_id {
+                continue; // skip self
+            }
+            self.connection_info
+                .entry(peer)
+                .and_modify(|connection_entry| {
+                    if connection_entry.last_participation < round {
+                        connection_entry.last_participation = round;
+                    }
+                })
+                .or_insert_with(|| ConnectionInfo {
+                    last_ping: None,
+                    unresponsive_pings: 0,
+                    last_participation: round,
+                });
+        }
+
+        cmds
+    }
+
     fn metrics(&self) -> &ExecutorMetrics {
         &self.metrics
     }
@@ -1062,6 +1155,7 @@ mod tests {
             self_id: NodeId::new(self_key.pubkey()),
             self_record: generate_name_record(self_key, 0),
             self_role: Role::FullNode,
+            current_round: Round(1),
             current_epoch: Epoch(1),
             epoch_validators: BTreeMap::new(),
             pinned_full_nodes: BTreeSet::new(),
@@ -1072,7 +1166,8 @@ mod tests {
             ping_period: Duration::from_secs(60),
             refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),
-            prune_threshold: 10,
+            unresponsive_prune_threshold: 10,
+            last_participation_prune_threshold: Round(5000),
             min_num_peers: 5,
             max_num_peers: 50,
             rng: ChaCha8Rng::seed_from_u64(123456),
@@ -1190,6 +1285,7 @@ mod tests {
         state.connection_info.insert(peer1_pubkey, ConnectionInfo {
             last_ping: Some(last_ping),
             unresponsive_pings: 3,
+            last_participation: Round(1),
         });
 
         // should not record pong when ping_id doesn't match
@@ -1398,8 +1494,9 @@ mod tests {
         let connection_info = BTreeMap::from([(peer1_pubkey, ConnectionInfo {
             last_ping: None,
             unresponsive_pings: 5,
+            last_participation: Round(1),
         })]);
-        state.prune_threshold = 3;
+        state.unresponsive_prune_threshold = 3;
         state.connection_info = connection_info;
         state
             .outstanding_lookup_requests
@@ -1414,6 +1511,48 @@ mod tests {
 
         state.handle_peer_lookup_timeout(peer1_pubkey, peer1_pubkey, lookup_id);
         assert!(state.outstanding_lookup_requests.is_empty());
+    }
+
+    #[test_case(Role::FullNode; "peer full node")]
+    #[test_case(Role::Validator; "peer validator")]
+    fn test_non_participating_full_node(role: Role) {
+        let keys = create_keys::<SignatureType>(2);
+        let peer0 = &keys[0];
+        let peer1 = &keys[1];
+        let peer1_pubkey = NodeId::new(peer1.pubkey());
+
+        let mut state = generate_test_state(peer0, vec![peer1]);
+        state.last_participation_prune_threshold = Round(10);
+        if role == Role::Validator {
+            state
+                .epoch_validators
+                .insert(Epoch(1), BTreeSet::from([peer1_pubkey]));
+        }
+        state.connection_info.insert(peer1_pubkey, ConnectionInfo {
+            last_ping: None,
+            unresponsive_pings: 0,
+            last_participation: Round(1),
+        });
+
+        state.refresh();
+        assert!(state.routing_info.contains_key(&peer1_pubkey));
+        assert!(state.connection_info.contains_key(&peer1_pubkey));
+
+        // round advances beyond last participation prune threshold
+        state.update_current_round(Round(15), Epoch(1));
+        state.refresh();
+        match role {
+            Role::FullNode => {
+                // full node should be pruned
+                assert!(!state.routing_info.contains_key(&peer1_pubkey));
+                assert!(!state.connection_info.contains_key(&peer1_pubkey));
+            }
+            Role::Validator => {
+                // validator should not be pruned
+                assert!(state.routing_info.contains_key(&peer1_pubkey));
+                assert!(state.connection_info.contains_key(&peer1_pubkey));
+            }
+        }
     }
 
     #[test]
@@ -1488,7 +1627,7 @@ mod tests {
         let mut state = generate_test_state(peer0, vec![peer1]);
         state.min_num_peers = 0;
         state.max_num_peers = 1;
-        state.self_role = role;
+        state.self_role = role.clone();
         state
             .epoch_validators
             .insert(Epoch(1), BTreeSet::from([peer2_pubkey]));
@@ -1514,11 +1653,20 @@ mod tests {
         });
         assert!(state.routing_info.contains_key(&peer3_pubkey));
         assert_eq!(state.routing_info.len(), 3);
-        // both full node and validator should add peer3 to connection info and send ping
-        assert!(state.connection_info.contains_key(&peer3_pubkey));
-        let cmds = extract_ping(cmds);
-        assert_eq!(cmds.len(), 1);
-        assert_eq!(cmds[0].0, peer3_pubkey);
+        match role {
+            Role::FullNode => {
+                // full node should not add peer3 to connection info and should not send ping
+                assert!(!state.connection_info.contains_key(&peer3_pubkey));
+                assert!(extract_ping(cmds).is_empty());
+            }
+            Role::Validator => {
+                // validator should add peer3 to connection info and send ping
+                assert!(state.connection_info.contains_key(&peer3_pubkey));
+                let ping_cmds = extract_ping(cmds);
+                assert_eq!(ping_cmds.len(), 1);
+                assert_eq!(ping_cmds[0].0, peer3_pubkey);
+            }
+        }
 
         // peer4 is a full node, it is not added to the routing info
         let cmds = state.handle_ping(peer4_pubkey, Ping {

@@ -11,7 +11,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::ExecutorMetrics;
 use monad_executor_glue::PeerEntry;
-use monad_types::{Epoch, NodeId};
+use monad_types::{Epoch, NodeId, Round};
 use tracing::warn;
 
 pub mod discovery;
@@ -86,7 +86,7 @@ impl<ST: CertificateSignatureRecoverable> MonadNameRecord<ST> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PeerDiscoveryEvent<ST: CertificateSignatureRecoverable> {
     SendPing {
         to: NodeId<CertificateSignaturePubKey<ST>>,
@@ -121,7 +121,8 @@ pub enum PeerDiscoveryEvent<ST: CertificateSignatureRecoverable> {
         target: NodeId<CertificateSignaturePubKey<ST>>,
         lookup_id: u32,
     },
-    UpdateCurrentEpoch {
+    UpdateCurrentRound {
+        round: Round,
         epoch: Epoch,
     },
     UpdateValidatorSet {
@@ -130,6 +131,10 @@ pub enum PeerDiscoveryEvent<ST: CertificateSignatureRecoverable> {
     },
     UpdatePeers {
         peers: Vec<PeerEntry<ST>>,
+    },
+    UpdateConfirmGroup {
+        end_round: Round,
+        peers: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
     },
     Refresh,
 }
@@ -223,8 +228,9 @@ pub trait PeerDiscoveryAlgo {
 
     fn refresh(&mut self) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
-    fn update_current_epoch(
+    fn update_current_round(
         &mut self,
+        round: Round,
         epoch: Epoch,
     ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
@@ -237,6 +243,12 @@ pub trait PeerDiscoveryAlgo {
     fn update_peers(
         &mut self,
         peers: Vec<PeerEntry<Self::SignatureType>>,
+    ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
+
+    fn update_peer_participation(
+        &mut self,
+        round: Round,
+        peers: BTreeSet<NodeId<CertificateSignaturePubKey<Self::SignatureType>>>,
     ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
     fn metrics(&self) -> &ExecutorMetrics;

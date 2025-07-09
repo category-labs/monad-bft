@@ -44,7 +44,8 @@ self_name_record_sig = "7911fbf0df1307723c51658349ed396dd6ee28fde925277bae53fcd7
 ping_period = 30
 refresh_period = 120
 request_timeout = 5
-prune_threshold = 5
+unresponsive_prune_threshold = 5
+last_participation_prune_threshold = 5000
 min_num_peers = 0
 max_num_peers = 200
 

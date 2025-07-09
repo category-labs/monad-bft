@@ -109,5 +109,6 @@ struct PeerLookupResponse {
 
 - Peer pruning is performed periodically/triggered by high watermark to keep peers manageable
 - Nodes that do not respond to consecutive pings beyond a threshold are pruned
+- Nodes that have not participated in secondary raptorcast beyond a threshold are pruned
 - Random full nodes are pruned if we're still above high watermark
 - Currently validators for the current and next epoch, and dedicated full nodes are not pruned even if unresponsive or total number of peers is above high watermark

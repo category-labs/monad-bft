@@ -9,7 +9,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::ExecutorMetrics;
 use monad_executor_glue::PeerEntry;
-use monad_types::{Epoch, NodeId};
+use monad_types::{Epoch, NodeId, Round};
 use tracing::debug;
 
 use crate::{
@@ -152,8 +152,12 @@ where
         Vec::new()
     }
 
-    fn update_current_epoch(&mut self, epoch: Epoch) -> Vec<PeerDiscoveryCommand<ST>> {
-        debug!(?epoch, "updating current epoch");
+    fn update_current_round(
+        &mut self,
+        round: Round,
+        epoch: Epoch,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
+        debug!(?round, ?epoch, "updating current round");
 
         Vec::new()
     }
@@ -175,6 +179,16 @@ where
             let node_id = NodeId::new(peer.pubkey);
             self.known_addresses.insert(node_id, peer.addr);
         }
+
+        Vec::new()
+    }
+
+    fn update_peer_participation(
+        &mut self,
+        round: Round,
+        peers: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
+        debug!(?round, ?peers, "updating peer participation");
 
         Vec::new()
     }

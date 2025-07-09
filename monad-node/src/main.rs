@@ -170,6 +170,12 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         .high_certificate
         .qc()
         .get_epoch();
+    let current_round = node_state
+        .forkpoint_config
+        .high_certificate
+        .qc()
+        .get_round()
+        + Round(1);
     let router: BoxUpdater<_, _> = {
         let raptor_router = build_raptorcast_router::<
             SignatureType,
@@ -184,6 +190,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
             &node_state.node_config.fullnode_dedicated.identities,
             locked_epoch_validators.clone(),
             current_epoch,
+            current_round,
         )
         .await;
 
@@ -509,6 +516,7 @@ async fn build_raptorcast_router<ST, SCT, M, OM>(
     full_nodes: &[FullNodeIdentityConfig<CertificateSignaturePubKey<ST>>],
     locked_epoch_validators: Vec<ValidatorSetDataWithEpoch<SCT>>,
     current_epoch: Epoch,
+    current_round: Round,
 ) -> MultiRouter<ST, M, OM, MonadEvent<ST, SCT, ExecutionProtocolType>, PeerDiscovery<ST>>
 where
     ST: CertificateSignatureRecoverable,
@@ -682,6 +690,7 @@ where
     let peer_discovery_builder = PeerDiscoveryBuilder {
         self_id,
         self_record,
+        current_round,
         current_epoch,
         epoch_validators,
         pinned_full_nodes,
@@ -689,7 +698,9 @@ where
         ping_period: Duration::from_secs(peer_discovery_config.ping_period),
         refresh_period: Duration::from_secs(peer_discovery_config.refresh_period),
         request_timeout: Duration::from_secs(peer_discovery_config.request_timeout),
-        prune_threshold: peer_discovery_config.prune_threshold,
+        unresponsive_prune_threshold: peer_discovery_config.unresponsive_prune_threshold,
+        last_participation_prune_threshold: peer_discovery_config
+            .last_participation_prune_threshold,
         min_num_peers: peer_discovery_config.min_num_peers,
         max_num_peers: peer_discovery_config.max_num_peers,
         rng: ChaCha8Rng::from_entropy(),

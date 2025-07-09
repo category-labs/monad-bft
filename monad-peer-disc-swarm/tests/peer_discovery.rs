@@ -31,7 +31,7 @@ use monad_peer_discovery::{
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
 use monad_testutil::signing::create_keys;
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer};
-use monad_types::{Epoch, NodeId};
+use monad_types::{Epoch, NodeId, Round};
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use tracing_test::traced_test;
@@ -69,6 +69,7 @@ type KeyPairType = <SignatureType as CertificateSignature>::KeyPairType;
 #[derive(Clone)]
 struct TestConfig {
     pub num_nodes: u32,
+    pub current_round: Round,
     pub current_epoch: Epoch,
     pub epoch_validators: BTreeMap<Epoch, BTreeSet<usize>>,
     pub pinned_full_nodes: BTreeMap<usize, BTreeSet<usize>>,
@@ -76,7 +77,8 @@ struct TestConfig {
     pub ping_period: Duration,
     pub refresh_period: Duration,
     pub request_timeout: Duration,
-    pub prune_threshold: u32,
+    pub unresponsive_prune_threshold: u32,
+    pub last_participation_prune_threshold: Round,
     pub min_num_peers: usize,
     pub max_num_peers: usize,
     pub outbound_pipeline: Vec<GenericTransformer<PubKeyType, PeerDiscoveryMessage<SignatureType>>>,
@@ -87,6 +89,7 @@ impl Default for TestConfig {
     fn default() -> Self {
         Self {
             num_nodes: 2,
+            current_round: Round(1),
             current_epoch: Epoch(1),
             epoch_validators: BTreeMap::from([(Epoch(1), BTreeSet::from([0, 1]))]),
             pinned_full_nodes: BTreeMap::default(),
@@ -94,7 +97,8 @@ impl Default for TestConfig {
             ping_period: Duration::from_secs(5),
             refresh_period: Duration::from_secs(30),
             request_timeout: Duration::from_secs(1),
-            prune_threshold: 3,
+            unresponsive_prune_threshold: 3,
+            last_participation_prune_threshold: Round(5000),
             min_num_peers: 5,
             max_num_peers: 50,
             outbound_pipeline: vec![],
@@ -180,6 +184,7 @@ fn setup_keys_and_swarm_builder(
                     algo_builder: PeerDiscoveryBuilder {
                         self_id,
                         self_record: generate_name_record(key),
+                        current_round: config.current_round,
                         current_epoch: config.current_epoch,
                         epoch_validators: epoch_validators.clone(),
                         pinned_full_nodes,
@@ -187,7 +192,9 @@ fn setup_keys_and_swarm_builder(
                         ping_period: config.ping_period,
                         refresh_period: config.refresh_period,
                         request_timeout: config.request_timeout,
-                        prune_threshold: config.prune_threshold,
+                        unresponsive_prune_threshold: config.unresponsive_prune_threshold,
+                        last_participation_prune_threshold: config
+                            .last_participation_prune_threshold,
                         min_num_peers: config.min_num_peers,
                         max_num_peers: config.max_num_peers,
                         rng: ChaCha8Rng::seed_from_u64(123456), // fixed seed for reproducibility
@@ -208,6 +215,7 @@ fn setup_keys_and_swarm_builder(
 fn test_ping_pong() {
     // 2 nodes: Node0, Node1
     let config = TestConfig {
+        request_timeout: Duration::from_secs(3),
         outbound_pipeline: vec![GenericTransformer::Latency(LatencyTransformer::new(
             Duration::from_secs(1),
         ))],
@@ -324,6 +332,7 @@ fn test_update_name_record() {
         algo_builder: PeerDiscoveryBuilder {
             self_id: node_0,
             self_record: new_name_record,
+            current_round: config.current_round,
             current_epoch: config.current_epoch,
             epoch_validators: BTreeMap::new(),
             pinned_full_nodes: BTreeSet::new(),
@@ -331,7 +340,8 @@ fn test_update_name_record() {
             ping_period: config.ping_period,
             refresh_period: config.refresh_period,
             request_timeout: config.request_timeout,
-            prune_threshold: config.prune_threshold,
+            unresponsive_prune_threshold: config.unresponsive_prune_threshold,
+            last_participation_prune_threshold: config.last_participation_prune_threshold,
             min_num_peers: config.min_num_peers,
             max_num_peers: config.max_num_peers,
             rng: ChaCha8Rng::seed_from_u64(123456),
@@ -582,14 +592,15 @@ fn test_ping_timeout() {
     // message latency of 2 seconds
     // ping timeout of 1 second
     // verify that ping timeout event is recorded correctly and subsequent pong is dropped
-    // unresponsive_pings accumulate until being pruned
+    // unresponsive_pings accumulate until being pruned when threshold is reached
     for state in nodes.states().values() {
         let state = state.peer_disc_driver.get_peer_disc_state();
         let metrics = state.metrics();
-        assert_eq!(metrics[GAUGE_PEER_DISC_SEND_PING], 5);
-        assert_eq!(metrics[GAUGE_PEER_DISC_PING_TIMEOUT], 4);
-        assert_eq!(metrics[GAUGE_PEER_DISC_RECV_PONG], 4);
-        assert_eq!(metrics[GAUGE_PEER_DISC_DROP_PONG], 4);
+        // prune threshold is three, so it's pruned after 3 unresponsive pings
+        assert_eq!(metrics[GAUGE_PEER_DISC_SEND_PING], 3);
+        assert_eq!(metrics[GAUGE_PEER_DISC_PING_TIMEOUT], 3);
+        assert_eq!(metrics[GAUGE_PEER_DISC_RECV_PONG], 3);
+        assert_eq!(metrics[GAUGE_PEER_DISC_DROP_PONG], 3);
 
         assert!(state.connection_info.is_empty());
     }
@@ -599,7 +610,7 @@ fn test_ping_timeout() {
     for state in nodes.states().values() {
         let state = state.peer_disc_driver.get_peer_disc_state();
         let metrics = state.metrics();
-        assert_eq!(metrics[GAUGE_PEER_DISC_SEND_PING], 5);
+        assert_eq!(metrics[GAUGE_PEER_DISC_SEND_PING], 3);
     }
 }
 
@@ -670,7 +681,7 @@ fn test_max_watermark() {
         ]),
         ping_period: Duration::from_secs(2),
         refresh_period: Duration::from_secs(5),
-        prune_threshold: 1,
+        unresponsive_prune_threshold: 1,
         min_num_peers: 1,
         max_num_peers: 2,
         ..Default::default()
@@ -770,6 +781,7 @@ fn test_full_nodes_connection() {
         algo_builder: PeerDiscoveryBuilder {
             self_id: node_ids[5],
             self_record: generate_name_record(&keys[5]),
+            current_round: config.current_round,
             current_epoch: config.current_epoch,
             epoch_validators: BTreeMap::from([(
                 Epoch(1),
@@ -785,7 +797,8 @@ fn test_full_nodes_connection() {
             ping_period: config.ping_period,
             refresh_period: config.refresh_period,
             request_timeout: config.request_timeout,
-            prune_threshold: config.prune_threshold,
+            unresponsive_prune_threshold: config.unresponsive_prune_threshold,
+            last_participation_prune_threshold: config.last_participation_prune_threshold,
             min_num_peers: config.min_num_peers,
             max_num_peers: config.max_num_peers,
             rng: ChaCha8Rng::seed_from_u64(123456),
@@ -869,7 +882,10 @@ fn test_full_node_promoted_to_validator() {
     }
 
     // Node5 is promoted to validator
-    let epoch_change_event = PeerDiscoveryEvent::UpdateCurrentEpoch { epoch: Epoch(2) };
+    let epoch_change_event = PeerDiscoveryEvent::UpdateCurrentRound {
+        round: Round(2),
+        epoch: Epoch(2),
+    };
     nodes.insert_test_event(&node_ids[5], Duration::from_secs(0), epoch_change_event);
 
     while nodes.step_until(Duration::from_secs(0)) {}
@@ -939,7 +955,10 @@ fn test_validator_demoted_to_full_node() {
     }
 
     // Node4 is demoted to a full node
-    let epoch_change_event = PeerDiscoveryEvent::UpdateCurrentEpoch { epoch: Epoch(2) };
+    let epoch_change_event = PeerDiscoveryEvent::UpdateCurrentRound {
+        round: Round(2),
+        epoch: Epoch(2),
+    };
     nodes.insert_test_event(&node_ids[4], Duration::from_secs(0), epoch_change_event);
 
     while nodes.step_until(Duration::from_secs(10)) {}
@@ -961,6 +980,98 @@ fn test_validator_demoted_to_full_node() {
             }
             assert!(state.connection_info.contains_key(peer_id));
             assert!(state.routing_info.contains_key(peer_id));
+        }
+    }
+}
+
+#[traced_test]
+#[test]
+fn test_prune_non_participating_full_node() {
+    // 3 nodes: Node0, Node1, Node2
+    // Node0 is a validator, Node1 and Node2 are full nodes
+    let config = TestConfig {
+        num_nodes: 3,
+        routing_info: BTreeMap::from([
+            (0, BTreeSet::from([1, 2])),
+            (1, BTreeSet::from([0, 2])),
+            (2, BTreeSet::from([0, 1])),
+        ]),
+        epoch_validators: BTreeMap::from([(Epoch(1), BTreeSet::from([0]))]),
+        last_participation_prune_threshold: Round(5),
+        ping_period: Duration::from_secs(2),
+        refresh_period: Duration::from_secs(5),
+        min_num_peers: 1,
+        ..Default::default()
+    };
+    let (keys, swarm_builder) = setup_keys_and_swarm_builder(config.clone());
+    let node_ids = keys
+        .iter()
+        .map(|k| NodeId::new(k.pubkey()))
+        .collect::<Vec<_>>();
+    let mut nodes = swarm_builder.build();
+
+    while nodes.step_until(Duration::from_secs(0)) {}
+
+    for state in nodes.states().values() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
+        for node_id in node_ids.iter() {
+            if node_id == &state.self_id {
+                continue;
+            }
+            assert!(state.routing_info.contains_key(node_id));
+        }
+    }
+
+    // node1 participated in secondary raptorcast
+    let participation_event = PeerDiscoveryEvent::UpdateConfirmGroup {
+        end_round: Round(20),
+        peers: BTreeSet::from([node_ids[1]]),
+    };
+    nodes.insert_test_event(
+        &node_ids[0],
+        Duration::from_secs(0),
+        participation_event.clone(),
+    );
+    nodes.insert_test_event(&node_ids[1], Duration::from_secs(0), participation_event);
+    while nodes.step_until(Duration::from_secs(0)) {}
+
+    // round update event
+    let round_change_event = PeerDiscoveryEvent::UpdateCurrentRound {
+        round: Round(10),
+        epoch: Epoch(1),
+    };
+    for node_id in &node_ids {
+        nodes.insert_test_event(node_id, Duration::from_secs(0), round_change_event.clone());
+    }
+
+    while nodes.step_until(config.refresh_period) {}
+    for state in nodes.states().values() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
+
+        // Node0 (validator) should have connection to Node1 (participating full node)
+        // Node2 (non-participating full node) should be pruned
+        if node_ids[0] == state.self_id {
+            assert!(state.connection_info.contains_key(&node_ids[1]));
+            assert!(state.routing_info.contains_key(&node_ids[1]));
+            assert!(!state.connection_info.contains_key(&node_ids[2]));
+            assert!(!state.routing_info.contains_key(&node_ids[2]));
+        }
+
+        // Node1 (participating full node) should have connection to Node0 (validator)
+        // Node2 (non-participating full node) should be pruned
+        if node_ids[1] == state.self_id {
+            assert!(state.connection_info.contains_key(&node_ids[0]));
+            assert!(state.routing_info.contains_key(&node_ids[0]));
+            assert!(!state.connection_info.contains_key(&node_ids[2]));
+            assert!(!state.routing_info.contains_key(&node_ids[2]));
+        }
+
+        // Node2 (non-participating full node) should have connection to Node0 (validator)
+        if node_ids[2] == state.self_id {
+            assert!(state.connection_info.contains_key(&node_ids[0]));
+            assert!(state.routing_info.contains_key(&node_ids[0]));
+            assert!(!state.connection_info.contains_key(&node_ids[1]));
+            assert!(!state.routing_info.contains_key(&node_ids[1]));
         }
     }
 }

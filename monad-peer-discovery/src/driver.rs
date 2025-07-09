@@ -180,11 +180,16 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
                 target,
                 lookup_id,
             } => self.pd.handle_peer_lookup_timeout(to, target, lookup_id),
-            PeerDiscoveryEvent::UpdateCurrentEpoch { epoch } => self.pd.update_current_epoch(epoch),
+            PeerDiscoveryEvent::UpdateCurrentRound { round, epoch } => {
+                self.pd.update_current_round(round, epoch)
+            }
             PeerDiscoveryEvent::UpdateValidatorSet { epoch, validators } => {
                 self.pd.update_validator_set(epoch, validators)
             }
             PeerDiscoveryEvent::UpdatePeers { peers } => self.pd.update_peers(peers),
+            PeerDiscoveryEvent::UpdateConfirmGroup { end_round, peers } => {
+                self.pd.update_peer_participation(end_round, peers)
+            }
             PeerDiscoveryEvent::Refresh => self.pd.refresh(),
         };
 
