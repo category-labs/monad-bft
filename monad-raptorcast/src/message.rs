@@ -8,7 +8,7 @@ use thiserror::Error;
 use super::raptorcast_secondary::group_message::FullNodesGroupMessage;
 
 const SERIALIZE_VERSION: u32 = 1;
-const MAX_MESSAGE_SIZE: usize = u32::MAX as usize;
+const MAX_MESSAGE_SIZE: usize = 3 * 1024 * 1024;
 
 enum CompressionVersion {
     UncompressedVersion,
@@ -42,7 +42,6 @@ impl Decodable for CompressionVersion {
 struct NetworkMessageVersion {
     pub serialize_version: u32,
     pub compression_version: CompressionVersion,
-    pub max_message: usize,
 }
 
 impl NetworkMessageVersion {
@@ -50,7 +49,6 @@ impl NetworkMessageVersion {
         Self {
             serialize_version: SERIALIZE_VERSION,
             compression_version: CompressionVersion::UncompressedVersion,
-            max_message: MAX_MESSAGE_SIZE,
         }
     }
 }
@@ -75,13 +73,13 @@ pub enum SerializeError {
 
 impl<OM: Encodable, ST: CertificateSignatureRecoverable> OutboundRouterMessage<OM, ST> {
     pub fn try_serialize(self) -> Result<Bytes, SerializeError> {
-        let version = NetworkMessageVersion::version();
-        self.try_serialize_with_version(version)
+        self.try_serialize_with_config(NetworkMessageVersion::version(), MAX_MESSAGE_SIZE)
     }
 
-    fn try_serialize_with_version(
+    fn try_serialize_with_config(
         &self,
         version: NetworkMessageVersion,
+        max_message_size: usize,
     ) -> Result<Bytes, SerializeError> {
         let mut buf = BytesMut::new();
         match self {
@@ -95,16 +93,16 @@ impl<OM: Encodable, ST: CertificateSignatureRecoverable> OutboundRouterMessage<O
                     CompressionVersion::DefaultZSTDVersion => {
                         let mut rlp_encoded_msg = BytesMut::new();
                         app_message.encode(&mut rlp_encoded_msg);
-                        if rlp_encoded_msg.len() > version.max_message {
+                        if rlp_encoded_msg.len() > max_message_size {
                             return Err(SerializeError::InnerMsgTooLarge(
                                 rlp_encoded_msg.len(),
-                                version.max_message,
+                                max_message_size,
                             ));
                         };
                         let message_len = u32::try_from(rlp_encoded_msg.len()).map_err(|_| {
                             SerializeError::InnerMsgTooLarge(
                                 rlp_encoded_msg.len(),
-                                version.max_message,
+                                max_message_size,
                             )
                         })?;
 
@@ -130,7 +128,6 @@ impl<OM: Encodable, ST: CertificateSignatureRecoverable> OutboundRouterMessage<O
                                 let uncompressed_version = NetworkMessageVersion {
                                     serialize_version: version.serialize_version,
                                     compression_version: CompressionVersion::UncompressedVersion,
-                                    max_message: version.max_message,
                                 };
                                 let enc: [&dyn Encodable; 3] =
                                     [&uncompressed_version, &MESSAGE_TYPE_APP, &app_message];
@@ -152,10 +149,10 @@ impl<OM: Encodable, ST: CertificateSignatureRecoverable> OutboundRouterMessage<O
                 encode_list::<_, dyn Encodable>(&enc, &mut buf);
             }
         };
-        if buf.len() > version.max_message {
+        if buf.len() > max_message_size {
             return Err(SerializeError::FinalMsgTooLarge(
                 buf.len(),
-                version.max_message,
+                max_message_size,
             ));
         }
         Ok(buf.into())
@@ -168,84 +165,88 @@ pub enum InboundRouterMessage<M, ST: CertificateSignatureRecoverable> {
     FullNodesGroup(FullNodesGroupMessage<ST>),
 }
 
-#[derive(Debug)]
-pub struct DeserializeError(pub String);
-
-impl From<alloy_rlp::Error> for DeserializeError {
-    fn from(err: alloy_rlp::Error) -> Self {
-        DeserializeError(format!("rlp decode error: {:?}", err))
-    }
+#[derive(Debug, Error, PartialEq)]
+pub enum DeserializeError {
+    #[error("rlp decode error: {0}")]
+    RlpDecode(#[from] alloy_rlp::Error),
+    #[error("extra data after header")]
+    ExtraDataAfterHeader,
+    #[error("extra data in payload")]
+    ExtraDataInPayload,
+    #[error("message size {size} exceeds maximum allowed size {max}")]
+    MessageTooLarge { size: usize, max: usize },
+    #[error("decompression error: {0}")]
+    DecompressionError(String),
+    #[error("unexpected decompressed message length. expected: {expected}, actual: {actual}")]
+    UnexpectedDecompressedLength { expected: usize, actual: usize },
+    #[error("unknown message type")]
+    UnknownMessageType,
 }
 
 impl<M: Decodable, ST: CertificateSignatureRecoverable> InboundRouterMessage<M, ST> {
     pub fn try_deserialize(data: &Bytes) -> Result<Self, DeserializeError> {
-        let mut data_ref = data.as_ref();
-        let mut payload =
-            Header::decode_bytes(&mut data_ref, true).map_err(DeserializeError::from)?;
-        if !data_ref.is_empty() {
-            return Err(DeserializeError("extra data after header".into()));
+        if data.len() > MAX_MESSAGE_SIZE {
+            return Err(DeserializeError::MessageTooLarge {
+                size: data.len(),
+                max: MAX_MESSAGE_SIZE,
+            });
         }
-        let version =
-            NetworkMessageVersion::decode(&mut payload).map_err(DeserializeError::from)?;
-        let message_type = u8::decode(&mut payload).map_err(DeserializeError::from)?;
+        let mut data_ref = data.as_ref();
+        let mut payload = Header::decode_bytes(&mut data_ref, true)?;
+        if !data_ref.is_empty() {
+            return Err(DeserializeError::ExtraDataAfterHeader);
+        }
+        let version = NetworkMessageVersion::decode(&mut payload)?;
+        let message_type = u8::decode(&mut payload)?;
         let result = match message_type {
             MESSAGE_TYPE_APP => {
                 match version.compression_version {
                     CompressionVersion::UncompressedVersion => {
                         // decode as uncompressed message
-                        let app_message =
-                            M::decode(&mut payload).map_err(DeserializeError::from)?;
+                        let app_message = M::decode(&mut payload)?;
                         Ok(Self::AppMessage(app_message))
                     }
                     CompressionVersion::DefaultZSTDVersion => {
-                        let decompressed_message_len =
-                            u32::decode(&mut payload).map_err(DeserializeError::from)?;
-                        if decompressed_message_len as usize > version.max_message {
-                            return Err(DeserializeError(format!(
-                                "message size {} exceeds maximum allowed size {}",
-                                decompressed_message_len, version.max_message
-                            )));
+                        let decompressed_message_len = u32::decode(&mut payload)?;
+                        if decompressed_message_len as usize > MAX_MESSAGE_SIZE {
+                            return Err(DeserializeError::MessageTooLarge {
+                                size: decompressed_message_len as usize,
+                                max: MAX_MESSAGE_SIZE,
+                            });
                         }
-                        let compressed_app_message =
-                            Bytes::decode(&mut payload).map_err(DeserializeError::from)?;
+                        let compressed_app_message = Bytes::decode(&mut payload)?;
 
                         // decompress message
                         let mut decompressed_writer = BoundedWriter::new(decompressed_message_len);
                         ZstdCompression::default()
                             .decompress(&compressed_app_message, &mut decompressed_writer)
-                            .map_err(|err| {
-                                DeserializeError(format!("decompression error: {:?}", err))
-                            })?;
+                            .map_err(|e| DeserializeError::DecompressionError(e.to_string()))?;
                         let decompressed_app_message: Bytes = decompressed_writer.into();
 
                         if decompressed_app_message.len() < decompressed_message_len as usize {
-                            return Err(DeserializeError(format!(
-                                "unexpected decompressed message length. expected: {}, actual: {}",
-                                decompressed_message_len,
-                                decompressed_app_message.len()
-                            )));
+                            return Err(DeserializeError::UnexpectedDecompressedLength {
+                                expected: decompressed_message_len as usize,
+                                actual: decompressed_app_message.len(),
+                            });
                         }
 
-                        let app_message = M::decode(&mut decompressed_app_message.as_ref())
-                            .map_err(DeserializeError::from)?;
+                        let app_message = M::decode(&mut decompressed_app_message.as_ref())?;
                         Ok(Self::AppMessage(app_message))
                     }
                 }
             }
             MESSAGE_TYPE_PEER_DISC => {
-                let peer_disc_message =
-                    PeerDiscoveryMessage::decode(&mut payload).map_err(DeserializeError::from)?;
+                let peer_disc_message = PeerDiscoveryMessage::decode(&mut payload)?;
                 Ok(Self::PeerDiscoveryMessage(peer_disc_message))
             }
             MESSAGE_TYPE_GROUP => {
-                let group_message =
-                    FullNodesGroupMessage::decode(&mut payload).map_err(DeserializeError::from)?;
+                let group_message = FullNodesGroupMessage::decode(&mut payload)?;
                 Ok(Self::FullNodesGroup(group_message))
             }
-            _ => Err(DeserializeError("unknown message type".into())),
+            _ => Err(DeserializeError::UnknownMessageType),
         };
         if !payload.is_empty() {
-            return Err(DeserializeError("extra data in payload".into()));
+            return Err(DeserializeError::ExtraDataInPayload);
         }
         result
     }
@@ -269,7 +270,7 @@ mod tests {
         data: Vec<u8>,
     }
 
-    fn prepare_data_with_extra_after_header() -> Bytes {
+    fn prepare_data_with_extra_after_header() -> (Bytes, DeserializeError) {
         let msg = TestMessage { value: 42 };
         let outbound_msg = OutboundRouterMessage::<TestMessage, SecpSignature>::AppMessage(msg);
 
@@ -278,10 +279,10 @@ mod tests {
         let mut buf = BytesMut::from(data_bytes.as_slice());
         buf.extend_from_slice(b"extra_data");
 
-        buf.freeze()
+        (buf.freeze(), DeserializeError::ExtraDataAfterHeader)
     }
 
-    fn prepare_data_with_extra_in_payload() -> Bytes {
+    fn prepare_data_with_extra_in_payload() -> (Bytes, DeserializeError) {
         let msg = TestMessage { value: 42 };
         let version = NetworkMessageVersion::version();
 
@@ -299,7 +300,7 @@ mod tests {
         .encode(&mut buf);
         buf.extend_from_slice(&inner_buf);
 
-        buf.freeze()
+        (buf.freeze(), DeserializeError::ExtraDataInPayload)
     }
 
     fn prepare_valid_data() -> Bytes {
@@ -308,40 +309,58 @@ mod tests {
         outbound_msg.try_serialize().unwrap()
     }
 
-    enum Expected {
-        Error(&'static str),
-        Success { value: u64 },
+    fn prepare_oversized_message() -> (Bytes, DeserializeError) {
+        let oversized_data = vec![0u8; MAX_MESSAGE_SIZE + 1];
+        (
+            Bytes::from(oversized_data),
+            DeserializeError::MessageTooLarge {
+                size: MAX_MESSAGE_SIZE + 1,
+                max: MAX_MESSAGE_SIZE,
+            },
+        )
+    }
+
+    fn prepare_unknown_message_type() -> (Bytes, DeserializeError) {
+        let version = NetworkMessageVersion::version();
+
+        let mut inner_buf = BytesMut::new();
+        version.encode(&mut inner_buf);
+        99u8.encode(&mut inner_buf);
+
+        let mut buf = BytesMut::new();
+        Header {
+            list: true,
+            payload_length: inner_buf.len(),
+        }
+        .encode(&mut buf);
+        buf.extend_from_slice(&inner_buf);
+
+        (buf.freeze(), DeserializeError::UnknownMessageType)
     }
 
     #[rstest]
-    #[case::extra_after_header(
-        prepare_data_with_extra_after_header(),
-        Expected::Error("extra data after header")
-    )]
-    #[case::extra_in_payload(
-        prepare_data_with_extra_in_payload(),
-        Expected::Error("extra data in payload")
-    )]
-    #[case::valid_message(prepare_valid_data(), Expected::Success { value: 42 })]
-    fn test_deserialize_validation(#[case] data: Bytes, #[case] expected: Expected) {
+    #[case::extra_after_header(prepare_data_with_extra_after_header())]
+    #[case::extra_in_payload(prepare_data_with_extra_in_payload())]
+    #[case::oversized_message(prepare_oversized_message())]
+    #[case::unknown_message_type(prepare_unknown_message_type())]
+    fn test_deserialize_validation_errors(#[case] test_case: (Bytes, DeserializeError)) {
+        let (data, expected_err) = test_case;
         let result = InboundRouterMessage::<TestMessage, SecpSignature>::try_deserialize(&data);
-        match (result, expected) {
-            (Err(DeserializeError(msg)), Expected::Error(expected_msg)) => {
-                assert!(
-                    msg.contains(expected_msg),
-                    "error message '{}' should contain '{}'",
-                    msg,
-                    expected_msg
-                );
+        match result {
+            Err(actual_err) => assert_eq!(actual_err, expected_err),
+            Ok(_) => panic!("expected error {:?} but got success", expected_err),
+        }
+    }
+
+    #[test]
+    fn test_deserialize_validation_success() {
+        let data = prepare_valid_data();
+        let result = InboundRouterMessage::<TestMessage, SecpSignature>::try_deserialize(&data);
+        match result.unwrap() {
+            InboundRouterMessage::AppMessage(decoded_msg) => {
+                assert_eq!(decoded_msg.value, 42);
             }
-            (Ok(InboundRouterMessage::AppMessage(decoded_msg)), Expected::Success { value }) => {
-                assert_eq!(decoded_msg.value, value);
-            }
-            (Ok(_), Expected::Success { .. }) => panic!("expected AppMessage variant"),
-            (Err(_), Expected::Success { .. }) => panic!("expected successful deserialization"),
-            (Ok(_), Expected::Error(expected_msg)) => {
-                panic!("expected error containing '{}'", expected_msg)
-            }
+            _ => panic!("expected AppMessage variant"),
         }
     }
 
@@ -351,10 +370,12 @@ mod tests {
             data: vec![0x42, 0x73, 0x19, 0xAB, 0xCD, 0xEF],
         };
         let msg = OutboundRouterMessage::<_, SecpSignature>::AppMessage(random_bytes.clone());
-        let mut compressed_version = NetworkMessageVersion::version();
-        compressed_version.compression_version = CompressionVersion::DefaultZSTDVersion;
+        let mut version = NetworkMessageVersion::version();
+        version.compression_version = CompressionVersion::DefaultZSTDVersion;
 
-        let serialized = msg.try_serialize_with_version(compressed_version).unwrap();
+        let serialized = msg
+            .try_serialize_with_config(version, MAX_MESSAGE_SIZE)
+            .unwrap();
         let deserialized =
             InboundRouterMessage::<SliceMessage, SecpSignature>::try_deserialize(&serialized);
         assert!(deserialized.is_ok());
@@ -368,20 +389,17 @@ mod tests {
     }
 
     #[test]
-    fn test_message_too_large() {
-        let mut version = NetworkMessageVersion::version();
-        version.max_message = 100;
-
-        let large_data = vec![0u8; 200];
+    fn test_serialize_exceeds_3mb_limit() {
+        let large_data = vec![0u8; MAX_MESSAGE_SIZE];
         let large_msg = SliceMessage { data: large_data };
         let msg = OutboundRouterMessage::<_, SecpSignature>::AppMessage(large_msg);
 
-        let result = msg.try_serialize_with_version(version);
+        let result = msg.try_serialize();
         assert!(result.is_err());
 
         if let Err(SerializeError::FinalMsgTooLarge(size, max)) = result {
             assert!(size > max);
-            assert_eq!(max, 100);
+            assert_eq!(max, MAX_MESSAGE_SIZE);
         } else {
             panic!("expected FinalMsgTooLarge error");
         }

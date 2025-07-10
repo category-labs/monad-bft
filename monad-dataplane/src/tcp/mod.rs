@@ -12,7 +12,7 @@ use super::{RecvTcpMsg, TcpMsg};
 pub mod rx;
 pub mod tx;
 
-const TCP_MESSAGE_LENGTH_LIMIT: usize = 1024 * 1024 * 1024;
+const TCP_MESSAGE_LENGTH_LIMIT: usize = 3 * 1024 * 1024;
 
 const HEADER_MAGIC: u32 = 0x434e5353; // "SSNC"
 const HEADER_VERSION: u32 = 1;

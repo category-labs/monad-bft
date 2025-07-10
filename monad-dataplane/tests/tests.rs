@@ -1,6 +1,8 @@
-use std::{collections::VecDeque, sync::Once, thread::sleep, time::Duration};
+use std::{
+    collections::VecDeque, io::Write, net::TcpStream, sync::Once, thread::sleep, time::Duration,
+};
 
-use futures::{channel::oneshot, executor};
+use futures::{channel::oneshot, executor, FutureExt};
 use monad_dataplane::{
     tcp::tx::{MSG_WAIT_TIMEOUT, QUEUED_MESSAGE_LIMIT},
     udp::DEFAULT_SEGMENT_SIZE,
@@ -313,6 +315,103 @@ fn tcp_exceed_queue_limits() {
 }
 
 const MINIMUM_SEGMENT_SIZE: u16 = 256;
+
+#[test]
+#[timeout(1000)]
+fn tcp_reject_oversized_message() {
+    once_setup();
+
+    let rx_addr = "127.0.0.1:9018".parse().unwrap();
+    let tx_addr = "127.0.0.1:9019".parse().unwrap();
+
+    let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS).build();
+    let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
+
+    // Allow Dataplane threads to set themselves up.
+    sleep(Duration::from_millis(10));
+
+    let oversized_payload = vec![0u8; 3 * 1024 * 1024 + 1];
+
+    tx.tcp_write(
+        rx_addr,
+        TcpMsg {
+            msg: oversized_payload.into(),
+            completion: None,
+        },
+    );
+
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_millis(100) {
+        if rx.tcp_read().now_or_never().is_some() {
+            panic!("expected no message but received one");
+        }
+    }
+}
+
+#[test]
+#[timeout(5000)]
+fn tcp_accept_max_size_message() {
+    once_setup();
+
+    let rx_addr = "127.0.0.1:9020".parse().unwrap();
+    let tx_addr = "127.0.0.1:9021".parse().unwrap();
+
+    let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS).build();
+    let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
+
+    // Allow Dataplane threads to set themselves up.
+    sleep(Duration::from_millis(10));
+
+    let max_size_payload = vec![0u8; 3 * 1024 * 1024];
+
+    let (sender, receiver) = oneshot::channel::<()>();
+
+    tx.tcp_write(
+        rx_addr,
+        TcpMsg {
+            msg: max_size_payload.clone().into(),
+            completion: Some(sender),
+        },
+    );
+
+    assert!(executor::block_on(receiver).is_ok());
+
+    let recv_msg = executor::block_on(rx.tcp_read());
+    assert_eq!(recv_msg.payload, max_size_payload);
+}
+
+#[test]
+#[timeout(1000)]
+fn tcp_rx_reject_oversized_header() {
+    once_setup();
+
+    let rx_addr = "127.0.0.1:9022".parse().unwrap();
+
+    let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS).build();
+
+    sleep(Duration::from_millis(100));
+
+    let mut tcp_stream = TcpStream::connect(rx_addr).unwrap();
+
+    let header_magic: u32 = 0x434e5353;
+    let header_version: u32 = 1;
+    let oversized_length: u64 = (3 * 1024 * 1024 + 1) as u64;
+
+    tcp_stream.write_all(&header_magic.to_le_bytes()).unwrap();
+    tcp_stream.write_all(&header_version.to_le_bytes()).unwrap();
+    tcp_stream
+        .write_all(&oversized_length.to_le_bytes())
+        .unwrap();
+    tcp_stream.flush().unwrap();
+
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_millis(100) {
+        if rx.tcp_read().now_or_never().is_some() {
+            panic!("Expected no message but received one");
+        }
+        sleep(Duration::from_millis(10));
+    }
+}
 
 #[test]
 #[timeout(30000)]

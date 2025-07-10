@@ -21,7 +21,7 @@ use tokio::sync::mpsc::{
 use tracing::{debug, enabled, trace, warn, Level};
 use zerocopy::AsBytes;
 
-use super::{message_timeout, TcpMsg, TcpMsgHdr};
+use super::{message_timeout, TcpMsg, TcpMsgHdr, TCP_MESSAGE_LENGTH_LIMIT};
 
 // These are per-peer limits.
 pub const QUEUED_MESSAGE_WARN_LIMIT: usize = 100;
@@ -230,6 +230,19 @@ async fn connect_and_send_messages(
         }
 
         let len = msg.msg.len();
+
+        if len > TCP_MESSAGE_LENGTH_LIMIT {
+            warn!(
+                conn_id,
+                ?addr,
+                message_id,
+                message_len = len,
+                limit = TCP_MESSAGE_LENGTH_LIMIT,
+                "message exceeds size limit, skipping"
+            );
+            message_id += 1;
+            continue;
+        }
 
         timeout(
             message_timeout(len),
