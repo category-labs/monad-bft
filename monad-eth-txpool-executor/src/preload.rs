@@ -190,7 +190,8 @@ impl EthTxPoolPreloadManager {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<(SeqNum, IndexSet<Address>)> {
-        if self.waker.is_some() {
+        if let Some(waker) = self.waker.as_mut() {
+            waker.clone_from(cx.waker());
             return Poll::Pending;
         }
 
@@ -215,7 +216,7 @@ impl EthTxPoolPreloadManager {
             ));
         }
 
-        self.waker = Some(cx.waker().to_owned());
+        self.waker = Some(cx.waker().clone());
         Poll::Pending
     }
 

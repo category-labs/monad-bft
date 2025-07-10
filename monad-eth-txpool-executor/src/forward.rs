@@ -62,7 +62,10 @@ impl EthTxPoolForwardingManager {
         } = self.project();
 
         if ingress.is_empty() {
-            ingress_waker.get_or_insert_with(|| cx.waker().to_owned());
+            match ingress_waker.as_mut() {
+                Some(waker) => waker.clone_from(cx.waker()),
+                None => *ingress_waker = Some(cx.waker().clone()),
+            }
             return Poll::Pending;
         }
 
@@ -85,7 +88,10 @@ impl EthTxPoolForwardingManager {
         } = self.project();
 
         if egress.is_empty() {
-            egress_waker.get_or_insert_with(|| cx.waker().to_owned());
+            match egress_waker.as_mut() {
+                Some(waker) => waker.clone_from(cx.waker()),
+                None => *egress_waker = Some(cx.waker().clone()),
+            }
             return Poll::Pending;
         }
 
