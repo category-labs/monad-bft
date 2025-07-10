@@ -21,7 +21,7 @@ use monad_consensus_state::{
     command::ConsensusCommand, timestamp::BlockTimestamp, ConsensusConfig, ConsensusState,
 };
 use monad_consensus_types::{
-    block::{BlockPolicy, OptimisticCommit},
+    block::{BlockPolicy, OptimisticCommit, OptimisticPolicyCommit},
     block_validator::BlockValidator,
     checkpoint::{Checkpoint, LockedEpoch},
     metrics::Metrics,
@@ -863,7 +863,15 @@ where
 
                 let take_checkpoint = consensus_cmds
                     .iter()
-                    .find(|cmd| matches!(cmd.command, ConsensusCommand::EnterRound(_, _)))
+                    .find(|cmd| {
+                        matches!(
+                            cmd.command,
+                            ConsensusCommand::EnterRound(_, _)
+                                | ConsensusCommand::CommitBlocks(
+                                    OptimisticPolicyCommit::Finalized(_)
+                                )
+                        )
+                    })
                     .is_some();
 
                 let mut cmds = consensus_cmds
