@@ -481,7 +481,7 @@ where
         };
 
         (mode.get_current_round().0 + (if INCLUDE_CURRENT_ROUND { 0 } else { 1 })..)
-            .take(NUM_LEADERS_FORWARD_TXS)
+            .take(NUM)
             .map(Round)
             .filter_map(|round| {
                 let epoch = self.epoch_manager.get_epoch(round).expect("epoch exists");

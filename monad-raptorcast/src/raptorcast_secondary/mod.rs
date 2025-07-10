@@ -29,6 +29,8 @@ use monad_executor_glue::{Message, PeerEntry, RouterCommand};
 use monad_peer_discovery::{driver::PeerDiscoveryDriver, PeerDiscoveryAlgo, PeerDiscoveryEvent};
 use monad_types::{DropTimer, Epoch, NodeId};
 use publisher::Publisher;
+use rand::SeedableRng;
+use rand_chacha::ChaCha8Rng;
 use tracing::error;
 
 use super::{
@@ -98,7 +100,8 @@ where
         // Instantiate either publisher or client state machine
         let role = match sec_config {
             super::config::SecondaryRaptorCastModeConfig::Publisher(publisher_cfg) => {
-                let publisher = Publisher::new(node_id, publisher_cfg);
+                let rng = ChaCha8Rng::from_entropy();
+                let publisher = Publisher::new(node_id, publisher_cfg, rng);
                 Role::Publisher(publisher)
             }
             super::config::SecondaryRaptorCastModeConfig::Client(client_cfg) => {

@@ -8,19 +8,19 @@ mod raw;
 
 /// The metadata for an event in an [`EventRing`](crate::EventRing).
 #[derive(Debug)]
-pub struct EventDescriptor<'ring, 'reader, T>
+pub struct EventDescriptor<'ring, T>
 where
     T: EventRingType,
 {
-    raw: RawEventDescriptor<'ring, 'reader>,
+    raw: RawEventDescriptor<'ring>,
     _phantom: PhantomData<T>,
 }
 
-impl<'ring, 'reader, T> EventDescriptor<'ring, 'reader, T>
+impl<'ring, T> EventDescriptor<'ring, T>
 where
     T: EventRingType,
 {
-    pub(crate) fn new(raw: RawEventDescriptor<'ring, 'reader>) -> Self {
+    pub(crate) fn new(raw: RawEventDescriptor<'ring>) -> Self {
         Self {
             raw,
             _phantom: PhantomData,

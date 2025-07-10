@@ -4,7 +4,7 @@ use futures::{channel::oneshot, executor};
 use monad_dataplane::{
     tcp::tx::{MSG_WAIT_TIMEOUT, QUEUED_MESSAGE_LIMIT},
     udp::DEFAULT_SEGMENT_SIZE,
-    BroadcastMsg, DataplaneBuilder, RecvMsg, TcpMsg, UnicastMsg,
+    BroadcastMsg, DataplaneBuilder, RecvUdpMsg, TcpMsg, UnicastMsg,
 };
 use ntest::timeout;
 use rand::Rng;
@@ -34,7 +34,7 @@ fn udp_broadcast() {
     let num_msgs = 10;
 
     let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS).build();
-    let mut tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
+    let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 
     // Allow Dataplane threads to set themselves up.
     sleep(Duration::from_millis(10));
@@ -50,7 +50,7 @@ fn udp_broadcast() {
     });
 
     for _ in 0..num_msgs {
-        let msg: RecvMsg = executor::block_on(rx.udp_read());
+        let msg: RecvUdpMsg = executor::block_on(rx.udp_read());
 
         assert_eq!(msg.src_addr, tx_addr);
         assert_eq!(msg.payload, payload);
@@ -67,7 +67,7 @@ fn udp_unicast() {
     let num_msgs = 10;
 
     let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS).build();
-    let mut tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
+    let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 
     // Allow Dataplane threads to set themselves up.
     sleep(Duration::from_millis(10));
@@ -82,7 +82,7 @@ fn udp_unicast() {
     });
 
     for _ in 0..num_msgs {
-        let msg: RecvMsg = executor::block_on(rx.udp_read());
+        let msg: RecvUdpMsg = executor::block_on(rx.udp_read());
 
         assert_eq!(msg.src_addr, tx_addr);
         assert_eq!(msg.payload, payload);
@@ -101,7 +101,7 @@ fn tcp_very_slow() {
     let num_msgs = 2;
 
     let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS).build();
-    let mut tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
+    let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 
     // Allow Dataplane threads to set themselves up.
     sleep(Duration::from_millis(10));
@@ -127,9 +127,9 @@ fn tcp_very_slow() {
     }
 
     for _ in 0..num_msgs {
-        let (_src_addr, received_payload) = executor::block_on(rx.tcp_read());
+        let recv_msg = executor::block_on(rx.tcp_read());
 
-        assert_eq!(received_payload, payload);
+        assert_eq!(recv_msg.payload, payload);
     }
 }
 
@@ -144,7 +144,7 @@ fn tcp_slow() {
     let num_msgs = 10;
 
     let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS).build();
-    let mut tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
+    let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 
     // Allow Dataplane threads to set themselves up.
     sleep(Duration::from_millis(10));
@@ -168,9 +168,9 @@ fn tcp_slow() {
     }
 
     for _ in 0..num_msgs {
-        let (_src_addr, received_payload) = executor::block_on(rx.tcp_read());
+        let recv_msg = executor::block_on(rx.tcp_read());
 
-        assert_eq!(received_payload, payload);
+        assert_eq!(recv_msg.payload, payload);
     }
 }
 
@@ -184,7 +184,7 @@ fn tcp_rapid() {
     let num_msgs = 1024;
 
     let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS).build();
-    let mut tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
+    let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 
     // Allow Dataplane threads to set themselves up.
     sleep(Duration::from_millis(10));
@@ -218,9 +218,9 @@ fn tcp_rapid() {
     }
 
     for _ in 0..num_msgs {
-        let (_src_addr, received_payload) = executor::block_on(rx.tcp_read());
+        let recv_msg = executor::block_on(rx.tcp_read());
 
-        assert_eq!(received_payload, payload);
+        assert_eq!(recv_msg.payload, payload);
     }
 }
 
@@ -233,7 +233,7 @@ fn tcp_connect_fail() {
     let tx_addr = "127.0.0.1:9011".parse().unwrap();
 
     // let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS).build();
-    let mut tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
+    let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 
     // Allow Dataplane threads to set themselves up.
     sleep(Duration::from_millis(10));
@@ -265,7 +265,7 @@ fn tcp_exceed_queue_limits() {
     let num_msgs = 100 * QUEUED_MESSAGE_LIMIT;
 
     let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS).build();
-    let mut tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
+    let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 
     // Allow Dataplane threads to set themselves up.
     sleep(Duration::from_millis(10));
@@ -292,9 +292,9 @@ fn tcp_exceed_queue_limits() {
 
     // At least QUEUED_MESSAGE_LIMIT messages should be delivered successfully.
     for _ in 0..QUEUED_MESSAGE_LIMIT {
-        let (_src_addr, received_payload) = executor::block_on(rx.tcp_read());
+        let recv_msg = executor::block_on(rx.tcp_read());
 
-        assert_eq!(received_payload, payload);
+        assert_eq!(recv_msg.payload, payload);
     }
 
     let failures: usize = completions
@@ -325,7 +325,7 @@ fn broadcast_all_strides() {
     let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS)
         .with_udp_buffer_size(400 << 10)
         .build();
-    let mut tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
+    let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 
     // Allow Dataplane threads to set themselves up.
     sleep(Duration::from_millis(10));
@@ -348,7 +348,7 @@ fn broadcast_all_strides() {
         let num_msgs = total_length.div_ceil(stride);
 
         for i in 0..num_msgs {
-            let msg: RecvMsg = executor::block_on(rx.udp_read());
+            let msg: RecvUdpMsg = executor::block_on(rx.udp_read());
 
             assert_eq!(msg.src_addr, tx_addr);
             assert_eq!(
@@ -370,7 +370,7 @@ fn unicast_all_strides() {
     let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS)
         .with_udp_buffer_size(400 << 10)
         .build();
-    let mut tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
+    let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 
     // Allow Dataplane threads to set themselves up.
     sleep(Duration::from_millis(10));
@@ -392,7 +392,7 @@ fn unicast_all_strides() {
         let num_msgs = total_length.div_ceil(stride);
 
         for i in 0..num_msgs {
-            let msg: RecvMsg = executor::block_on(rx.udp_read());
+            let msg: RecvUdpMsg = executor::block_on(rx.udp_read());
 
             assert_eq!(msg.src_addr, tx_addr);
             assert_eq!(

@@ -23,15 +23,15 @@ pub enum EventNextResult<T> {
     Gap,
 }
 
-impl<'ring, 'reader> EventNextResult<RawEventDescriptor<'ring, 'reader>> {
-    pub(crate) fn new_from_raw(reader: &'reader mut RawEventReader<'ring>) -> Self {
+impl<'ring> EventNextResult<RawEventDescriptor<'ring>> {
+    pub(crate) fn new_from_raw(reader: &mut RawEventReader<'ring>) -> Self {
         let (c_next_result, c_event_descriptor): (monad_event_next_result, monad_event_descriptor) =
             monad_event_iterator_try_next(&mut reader.inner);
 
         match c_next_result {
-            ffi::monad_event_next_result_MONAD_EVENT_SUCCESS => {
-                Self::Ready(RawEventDescriptor::new(reader, c_event_descriptor))
-            }
+            ffi::monad_event_next_result_MONAD_EVENT_SUCCESS => Self::Ready(
+                RawEventDescriptor::new(reader.event_ring, c_event_descriptor),
+            ),
             ffi::monad_event_next_result_MONAD_EVENT_NOT_READY => Self::NotReady,
             ffi::monad_event_next_result_MONAD_EVENT_GAP => {
                 monad_event_iterator_reset(&mut reader.inner);
@@ -43,7 +43,7 @@ impl<'ring, 'reader> EventNextResult<RawEventDescriptor<'ring, 'reader>> {
 
     pub(crate) fn map<T>(
         self,
-        f: impl FnOnce(RawEventDescriptor<'ring, 'reader>) -> T,
+        f: impl FnOnce(RawEventDescriptor<'ring>) -> T,
     ) -> EventNextResult<T> {
         match self {
             EventNextResult::Ready(descriptor) => EventNextResult::Ready(f(descriptor)),

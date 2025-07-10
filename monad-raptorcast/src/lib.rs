@@ -23,7 +23,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_dataplane::{
     udp::{segment_size_for_mtu, DEFAULT_MTU},
-    BroadcastMsg, Dataplane, DataplaneBuilder, RecvMsg, TcpMsg, UnicastMsg,
+    BroadcastMsg, Dataplane, DataplaneBuilder, RecvTcpMsg, RecvUdpMsg, TcpMsg, UnicastMsg,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
@@ -568,7 +568,7 @@ where
             .collect::<Vec<_>>();
 
         loop {
-            let message: RecvMsg;
+            let message: RecvUdpMsg;
             {
                 let mut dataplane = this.dataplane.lock().unwrap();
                 let Poll::Ready(msg) = pin!(dataplane.udp_read()).poll_unpin(cx) else {
@@ -695,38 +695,39 @@ where
             }
         }
 
-        while let Poll::Ready((from_addr, message)) =
+        while let Poll::Ready(recv_msg) =
             pin!(this.dataplane.lock().unwrap().tcp_read()).poll_unpin(cx)
         {
+            let RecvTcpMsg { payload, src_addr } = recv_msg;
             // check message length to prevent panic during message slicing
-            if message.len() < SIGNATURE_SIZE {
+            if payload.len() < SIGNATURE_SIZE {
                 warn!(
-                    ?from_addr,
+                    ?src_addr,
                     "invalid message, message length less than signature size"
                 );
                 continue;
             }
-            let signature_bytes = &message[..SIGNATURE_SIZE];
+            let signature_bytes = &payload[..SIGNATURE_SIZE];
             let signature = match ST::deserialize(signature_bytes) {
                 Ok(signature) => signature,
                 Err(err) => {
-                    warn!(?err, ?from_addr, "invalid signature");
+                    warn!(?err, ?src_addr, "invalid signature");
                     continue;
                 }
             };
-            let app_message_bytes = message.slice(SIGNATURE_SIZE..);
+            let app_message_bytes = payload.slice(SIGNATURE_SIZE..);
             let deserialized_message =
                 match InboundRouterMessage::<M, ST>::try_deserialize(&app_message_bytes) {
                     Ok(message) => message,
                     Err(err) => {
-                        warn!(?err, ?from_addr, "failed to deserialize message");
+                        warn!(?err, ?src_addr, "failed to deserialize message");
                         continue;
                     }
                 };
             let from = match signature.recover_pubkey(app_message_bytes.as_ref()) {
                 Ok(from) => from,
                 Err(err) => {
-                    warn!(?err, ?from_addr, "failed to recover pubkey");
+                    warn!(?err, ?src_addr, "failed to recover pubkey");
                     continue;
                 }
             };

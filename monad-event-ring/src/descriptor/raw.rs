@@ -1,22 +1,22 @@
 use crate::{
-    ffi::{monad_event_descriptor, monad_event_payload_check, monad_event_payload_peek},
-    EventDescriptorPayload, RawEventReader,
+    ffi::{monad_event_descriptor, monad_event_ring_payload_check, monad_event_ring_payload_peek},
+    EventDescriptorPayload, RawEventRing,
 };
 
 #[derive(Debug)]
-pub(crate) struct RawEventDescriptor<'ring, 'reader> {
+pub(crate) struct RawEventDescriptor<'ring> {
     inner: monad_event_descriptor,
-    reader: &'reader mut RawEventReader<'ring>,
+    ring: &'ring RawEventRing,
 }
 
-impl<'ring, 'reader> RawEventDescriptor<'ring, 'reader> {
+impl<'ring> RawEventDescriptor<'ring> {
     pub(crate) fn new(
-        reader: &'reader mut RawEventReader<'ring>,
+        ring: &'ring RawEventRing,
         c_event_descriptor: monad_event_descriptor,
     ) -> Self {
         Self {
             inner: c_event_descriptor,
-            reader,
+            ring,
         }
     }
 
@@ -24,7 +24,7 @@ impl<'ring, 'reader> RawEventDescriptor<'ring, 'reader> {
         &self,
         f: impl FnOnce(RawEventDescriptorInfo, &[u8]) -> T,
     ) -> EventDescriptorPayload<T> {
-        let Some(bytes) = monad_event_payload_peek(&self.reader.inner, &self.inner) else {
+        let Some(bytes) = monad_event_ring_payload_peek(&self.ring.inner, &self.inner) else {
             return EventDescriptorPayload::Expired;
         };
 
@@ -37,7 +37,7 @@ impl<'ring, 'reader> RawEventDescriptor<'ring, 'reader> {
             bytes,
         );
 
-        if monad_event_payload_check(&self.reader.inner, &self.inner) {
+        if monad_event_ring_payload_check(&self.ring.inner, &self.inner) {
             EventDescriptorPayload::Payload(value)
         } else {
             EventDescriptorPayload::Expired

@@ -18,7 +18,9 @@ use tokio::sync::mpsc;
 use tracing::{debug, enabled, trace, warn, Level};
 use zerocopy::FromBytes;
 
-use super::{message_timeout, TcpMsgHdr, HEADER_MAGIC, HEADER_VERSION, TCP_MESSAGE_LENGTH_LIMIT};
+use super::{
+    message_timeout, RecvTcpMsg, TcpMsgHdr, HEADER_MAGIC, HEADER_VERSION, TCP_MESSAGE_LENGTH_LIMIT,
+};
 
 const PER_PEER_CONNECTION_LIMIT: usize = 100;
 
@@ -69,7 +71,7 @@ struct RxStateInner {
     num_connections: BTreeMap<IpAddr, usize>,
 }
 
-pub async fn task(local_addr: SocketAddr, tcp_ingress_tx: mpsc::Sender<(SocketAddr, Bytes)>) {
+pub async fn task(local_addr: SocketAddr, tcp_ingress_tx: mpsc::Sender<RecvTcpMsg>) {
     let opts = ListenerOpts::new().reuse_addr(true);
     let tcp_listener = TcpListener::bind_with_config(local_addr, &opts).unwrap();
     let rx_state = RxState::new();
@@ -112,12 +114,16 @@ async fn task_connection(
     conn_id: u64,
     addr: SocketAddr,
     mut tcp_stream: TcpStream,
-    tcp_ingress_tx: mpsc::Sender<(SocketAddr, Bytes)>,
+    tcp_ingress_tx: mpsc::Sender<RecvTcpMsg>,
 ) {
     let mut message_id: u64 = 0;
 
     while let Some(message) = read_message(conn_id, addr, message_id, &mut tcp_stream).await {
-        if let Err(err) = tcp_ingress_tx.send((addr, message)).await {
+        let recv_msg = RecvTcpMsg {
+            src_addr: addr,
+            payload: message,
+        };
+        if let Err(err) = tcp_ingress_tx.send(recv_msg).await {
             warn!(
                 conn_id,
                 ?addr,
