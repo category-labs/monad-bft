@@ -1,6 +1,7 @@
 use alloy_primitives::Address;
 use indexmap::IndexMap;
 use monad_eth_txpool_types::EthTxPoolDropReason;
+use tracing::warn;
 
 pub use self::list::PendingTxList;
 use super::transaction::ValidEthTransaction;
@@ -62,9 +63,12 @@ impl PendingTxMap {
 
         match self.txs.entry(tx.signer()) {
             indexmap::map::Entry::Occupied(tx_list) => {
-                let tx = tx_list.into_mut().try_insert_tx(event_tracker, tx)?;
+                let (tx, new_tx) = tx_list.into_mut().try_insert_tx(event_tracker, tx)?;
 
-                self.num_txs += 1;
+                if new_tx {
+                    self.num_txs += 1;
+                }
+
                 Some(tx)
             }
             indexmap::map::Entry::Vacant(v) => {
@@ -74,21 +78,25 @@ impl PendingTxMap {
                 }
 
                 let tx = PendingTxList::insert_entry(event_tracker, v, tx);
-
                 self.num_txs += 1;
+
                 Some(tx)
             }
         }
     }
 
     pub fn remove(&mut self, address: &Address) -> Option<PendingTxList> {
-        if let Some(tx) = self.txs.swap_remove(address) {
+        if let Some(tx_list) = self.txs.swap_remove(address) {
             self.num_txs = self
                 .num_txs
-                .checked_sub(1)
-                .expect("num txs does not underflow");
+                .checked_sub(tx_list.num_txs())
+                .unwrap_or_else(|| {
+                    warn!("txpool pending tx map underflowed on remove");
 
-            return Some(tx);
+                    0
+                });
+
+            return Some(tx_list);
         }
 
         None

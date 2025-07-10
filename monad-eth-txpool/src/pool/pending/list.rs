@@ -44,16 +44,17 @@ impl PendingTxList {
     }
 
     /// Produces a reference to the tx if it is present in the tx list after attempting to insert
-    /// it.
+    /// it along with a boolean indicating if it was newly added, ie. does not replace an existing
+    /// tx.
     pub fn try_insert_tx(
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         tx: ValidEthTransaction,
-    ) -> Option<&ValidEthTransaction> {
+    ) -> Option<(&ValidEthTransaction, bool)> {
         match self.nonce_map.entry(tx.nonce()) {
             Entry::Vacant(v) => {
                 event_tracker.insert_pending(tx.raw(), tx.is_owned());
-                Some(v.insert(tx))
+                Some((v.insert(tx), true))
             }
             Entry::Occupied(mut entry) => {
                 let existing_tx = entry.get();
@@ -65,7 +66,7 @@ impl PendingTxList {
 
                 event_tracker.replace_pending(existing_tx.hash(), tx.hash(), tx.is_owned());
                 entry.insert(tx);
-                Some(entry.into_mut())
+                Some((entry.into_mut(), false))
             }
         }
     }
