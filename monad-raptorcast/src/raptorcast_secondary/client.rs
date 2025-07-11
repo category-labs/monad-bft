@@ -5,6 +5,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_types::{NodeId, Round, RoundSpan, GENESIS_ROUND};
+use tracing::{debug, error, warn};
 
 use super::{
     super::{config::RaptorCastConfigSecondaryClient, util::Group},
@@ -75,19 +76,17 @@ where
     pub fn enter_round(&mut self, curr_round: Round) {
         // Sanity check on curr_round
         if curr_round < self.curr_round {
-            tracing::error!(
+            error!(
                 "RaptorCastSecondary ignoring backwards round \
                 {:?} -> {:?}",
-                self.curr_round,
-                curr_round
+                self.curr_round, curr_round
             );
             return;
         } else if curr_round > self.curr_round + Round(1) {
-            tracing::debug!(
+            debug!(
                 "RaptorCastSecondary detected round gap \
                 {:?} -> {:?}",
-                self.curr_round,
-                curr_round
+                self.curr_round, curr_round
             );
         }
 
@@ -103,7 +102,7 @@ where
         let consume_end = curr_round + Round(1);
         for group in self.confirmed_groups.values(curr_round..consume_end) {
             if let Err(error) = self.group_sink_channel.send(group.clone()) {
-                tracing::error!(
+                error!(
                     "Failed to send group to secondary Raptorcast instance: {}",
                     error
                 );
@@ -139,12 +138,17 @@ where
             // INVITE from validator
             //-----------------------------
             FullNodesGroupMessage::PrepareGroup(invite_msg) => {
+                debug!(
+                    ?invite_msg,
+                    "RaptorCastSecondary Client received group invite"
+                );
+
                 // Check the invite for duplicates & bandwidth requirements
                 let mut accept = true;
 
                 // Sanity check the message
                 if invite_msg.start_round >= invite_msg.end_round {
-                    tracing::warn!(
+                    warn!(
                         "RaptorCastSecondary rejecting invite message due to \
                         failed sanity check: {:?}",
                         invite_msg
@@ -154,11 +158,10 @@ where
 
                 // Reject late round
                 if invite_msg.start_round <= self.curr_round {
-                    tracing::warn!(
+                    warn!(
                         "RaptorCastSecondary rejecting invite for round that \
                         already started, curr_round {:?}, invite = {:?}",
-                        self.curr_round,
-                        invite_msg
+                        self.curr_round, invite_msg
                     );
                     accept = false;
                 }
@@ -171,7 +174,7 @@ where
                         > self.curr_round + self.config.invite_future_dist_max)
                     && self.is_receiving_proposals()
                 {
-                    tracing::warn!(
+                    warn!(
                         "RaptorCastSecondary rejecting invite outside bounds \
                         [{:?}, {:?}], curr_round {:?}, invite = {:?}",
                         self.config.invite_future_dist_min,
@@ -196,12 +199,10 @@ where
                     // Note that we accept overlaps across different validators,
                     // e.g. [30, 40)->validator3 + [25, 35)->validator4
                     if group.get_validator_id() == &invite_msg.validator_id {
-                        tracing::warn!(
+                        warn!(
                             "RaptorCastSecondary received self-overlapping \
                             invite for rounds [{:?}, {:?}) from validator {:?}",
-                            invite_msg.start_round,
-                            invite_msg.end_round,
-                            invite_msg.validator_id
+                            invite_msg.start_round, invite_msg.end_round, invite_msg.validator_id
                         );
                         accept = false;
                         break;
@@ -224,12 +225,10 @@ where
                 }
                 // Final bandwidth check
                 if future_bandwidth > self.config.bandwidth_capacity {
-                    tracing::debug!(
+                    debug!(
                         "RaptorCastSecondary rejected invite for rounds \
                         [{:?}, {:?}) from validator {:?} due to low bandwidth",
-                        invite_msg.start_round,
-                        invite_msg.end_round,
-                        invite_msg.validator_id
+                        invite_msg.start_round, invite_msg.end_round, invite_msg.validator_id
                     );
                     accept = false;
                 }
@@ -262,11 +261,10 @@ where
 
                 // Drop the group if we've already entered the round
                 if start_round <= &self.curr_round {
-                    tracing::warn!(
+                    warn!(
                         "RaptorCastSecondary ignoring late confirm, curr_round \
                         {:?}, confirm = {:?}",
-                        self.curr_round,
-                        confirm_msg
+                        self.curr_round, confirm_msg
                     );
                     return None;
                 }
@@ -281,16 +279,15 @@ where
                     let maybe_entry = invites.get(&confirm_msg.prepare.validator_id);
                     if let Some(old_invite) = maybe_entry {
                         if old_invite != &confirm_msg.prepare {
-                            tracing::warn!(
+                            warn!(
                                 "RaptorCastSecondary ignoring ConfirmGroup that \
                                 doesn't match the original invite. Expected: {:?}, got: {:?}",
-                                old_invite,
-                                confirm_msg.prepare
+                                old_invite, confirm_msg.prepare
                             );
                             return None;
                         }
                         if confirm_msg.peers.len() > confirm_msg.prepare.max_group_size {
-                            tracing::warn!(
+                            warn!(
                                 "RaptorCastSecondary ignoring ConfirmGroup that \
                                 is larger ({}) than the promised max_group_size ({}). \
                                 Message details: {:?}",
@@ -317,7 +314,7 @@ where
                             // chunks to.
                             if !is_receiving_proposals {
                                 if let Err(error) = self.group_sink_channel.send(group.clone()) {
-                                    tracing::error!(
+                                    error!(
                                         "RaptorCastSecondary failed to send group to primary \
                                         Raptorcast instance: {}",
                                         error
@@ -325,25 +322,33 @@ where
                                 }
                             }
 
+                            debug!(
+                                "RaptorCastSecondary Client confirmed group for \
+                                rounds [{:?}, {:?}) from validator {:?}",
+                                confirm_msg.prepare.start_round,
+                                confirm_msg.prepare.end_round,
+                                confirm_msg.prepare.validator_id,
+                            );
+
                             self.confirmed_groups
                                 .force_insert(round_span.start..round_span.end, group);
                             invites.remove(&confirm_msg.prepare.validator_id);
                         } else {
-                            tracing::warn!(
+                            warn!(
                                 "RaptorCastSecondary ignoring ConfirmGroup \
                                 with a group that does not contain our node_id: {:?}",
                                 confirm_msg
                             );
                         }
                     } else {
-                        tracing::warn!(
+                        warn!(
                             "RaptorCastSecondary ignoring ConfirmGroup from \
                             unrecognized validator id: {:?}",
                             confirm_msg
                         );
                     }
                 } else {
-                    tracing::warn!(
+                    warn!(
                         "RaptorCastSecondary Ignoring confirmation message \
                         for unrecognized start round: {:?}",
                         confirm_msg
@@ -353,7 +358,7 @@ where
             }
 
             FullNodesGroupMessage::PrepareGroupResponse(_) => {
-                tracing::error!(
+                error!(
                     "RaptorCastSecondary client received a \
                                 PrepareGroupResponse message"
                 );

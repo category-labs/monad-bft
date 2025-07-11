@@ -31,7 +31,7 @@ use monad_types::{DropTimer, Epoch, NodeId};
 use publisher::Publisher;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
-use tracing::error;
+use tracing::{error, trace, warn};
 
 use super::{
     config::RaptorCastConfig,
@@ -115,7 +115,7 @@ where
         };
 
         let raptor10_redundancy = config.secondary_instance.raptor10_redundancy;
-        tracing::trace!(
+        trace!(
             self_id =? node_id, mtu =? config.mtu, ?raptor10_redundancy,
             "RaptorCastSecondary::new()",
         );
@@ -155,7 +155,7 @@ where
     ) -> UnicastMsg {
         let outbound_message_len = outbound_message.len();
         let _timer = DropTimer::start(Duration::from_millis(10), |elapsed| {
-            tracing::warn!(?elapsed, outbound_message_len, "long time to udp_build")
+            warn!(?elapsed, outbound_message_len, "long time to udp_build")
         });
         let segment_size = segment_size_for_mtu(mtu);
 
@@ -166,7 +166,7 @@ where
             .try_into()
             .expect("unix epoch doesn't fit in u64");
 
-        tracing::trace!(
+        trace!(
             ?mtu,
             ?outbound_message_len,
             ?redundancy,
@@ -197,7 +197,7 @@ where
         dest_node: &NodeId<CertificateSignaturePubKey<ST>>,
         known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
     ) {
-        tracing::trace!(
+        trace!(
             ?dest_node,
             ?group_msg,
             "RaptorCastSecondary send_single_msg"
@@ -232,13 +232,13 @@ where
         dest_node_ids: FullNodes<CertificateSignaturePubKey<ST>>,
         known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
     ) {
-        tracing::trace!(
+        trace!(
             ?dest_node_ids,
             ?group_msg,
             "RaptorCastSecondary send_group_msg"
         );
         let _timer = DropTimer::start(Duration::from_millis(100), |elapsed| {
-            tracing::warn!(?elapsed, "long time to send_group_msg")
+            warn!(?elapsed, "long time to send_group_msg")
         });
         let group_msg = self.try_fill_name_records(group_msg, &dest_node_ids);
         // Can udp_write_broadcast() be used? Optimize later
@@ -267,7 +267,7 @@ where
                 } else {
                     // Maybe can happen if peer discovery gets pruned just
                     // before sending a ConfirmGroup message.
-                    tracing::warn!( ?node_id, ?group_msg,
+                    warn!( ?node_id, ?group_msg,
                         "RaptorCastSecondary: No name record found for node_id when sending out ConfirmGroup message",
                     );
                 }
@@ -311,7 +311,7 @@ where
 
                 Self::Command::UpdateCurrentRound(epoch, round) => match &mut self.role {
                     Role::Client(client) => {
-                        tracing::trace!(
+                        trace!(
                             ?epoch,
                             ?round,
                             "RaptorCastSecondary UpdateCurrentRound (Client)"
@@ -319,7 +319,7 @@ where
                         client.enter_round(round);
                     }
                     Role::Publisher(publisher) => {
-                        tracing::trace!(
+                        trace!(
                             ?epoch,
                             ?round,
                             "RaptorCastSecondary UpdateCurrentRound (Publisher)"
@@ -335,7 +335,7 @@ where
                                     .get_known_addresses()
                             };
                             let nodes: Vec<_> = known_addresses.keys().copied().collect();
-                            tracing::trace!(
+                            trace!(
                                 "RaptorCastSecondary updating {} full nodes from PeerDiscovery",
                                 nodes.len()
                             );
@@ -358,7 +358,7 @@ where
 
                 Self::Command::PublishToFullNodes { epoch, message } => {
                     let _timer = DropTimer::start(Duration::from_millis(20), |elapsed| {
-                        tracing::warn!(?elapsed, "long time to publish message")
+                        warn!(?elapsed, "long time to publish message")
                     });
 
                     let curr_group: &Group<ST> = match &mut self.role {
@@ -368,14 +368,12 @@ where
                         Role::Publisher(publisher) => {
                             match publisher.get_current_raptorcast_group() {
                                 Some(group) => {
-                                    tracing::trace!(?group, size_excl_self =? group.size_excl_self(),
+                                    trace!(?group, size_excl_self =? group.size_excl_self(),
                                         "RaptorCastSecondary PublishToFullNodes");
                                     group
                                 }
                                 None => {
-                                    tracing::trace!(
-                                        "RaptorCastSecondary PublishToFullNodes; group: NONE"
-                                    );
+                                    trace!("RaptorCastSecondary PublishToFullNodes; group: NONE");
                                     continue;
                                 }
                             }
@@ -383,7 +381,7 @@ where
                     };
 
                     if curr_group.size_excl_self() < 1 {
-                        tracing::trace!("RaptorCastSecondary PublishToFullNodes; Not sending anything because size_excl_self = 0");
+                        trace!("RaptorCastSecondary PublishToFullNodes; Not sending anything because size_excl_self = 0");
                         continue;
                     }
 
@@ -461,7 +459,7 @@ where
                 }
 
                 Role::Client(client) => {
-                    tracing::trace!("RaptorCastSecondary received group message");
+                    trace!("RaptorCastSecondary received group message");
                     // Received group message from validator
                     if let FullNodesGroupMessage::ConfirmGroup(confirm_msg) = &inbound_grp_msg {
                         let num_mappings = confirm_msg.name_records.len();
@@ -483,7 +481,7 @@ where
                                 .unwrap()
                                 .update(PeerDiscoveryEvent::UpdatePeers { peers });
                         } else if num_mappings > 0 {
-                            tracing::warn!( ?confirm_msg, num_peers =? confirm_msg.peers.len(), num_name_recs =? confirm_msg.name_records.len(),
+                            warn!( ?confirm_msg, num_peers =? confirm_msg.peers.len(), num_name_recs =? confirm_msg.name_records.len(),
                                 "Number of peers does not match the number \
                                 of name records in ConfirmGroup message. \
                                 Skipping PeerDiscovery update"
@@ -494,9 +492,7 @@ where
                         client.on_receive_group_message(inbound_grp_msg)
                     {
                         // Send back a response to the validator
-                        tracing::trace!(
-                            "RaptorCastSecondary sending back response for group message"
-                        );
+                        trace!("RaptorCastSecondary sending back response for group message");
 
                         let known_addresses = {
                             this.peer_discovery_driver
@@ -512,7 +508,7 @@ where
 
             Err(err) => {
                 if let std::sync::mpsc::TryRecvError::Disconnected = err {
-                    tracing::error!("RaptorCastSecondary channel disconnected.");
+                    error!("RaptorCastSecondary channel disconnected.");
                 }
             }
         }
