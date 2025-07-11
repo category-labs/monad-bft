@@ -26,6 +26,7 @@ use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolEvent};
 use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
+use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
 use monad_types::DropTimer;
 use monad_updaters::TokioTaskUpdater;
@@ -307,7 +308,7 @@ where
                                 return None;
                             };
 
-                            let Ok(signer) = tx.recover_signer() else {
+                            let Ok(signer) = tx.secp256k1_recover() else {
                                 num_invalid_signer
                                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                                 return None;
@@ -469,7 +470,7 @@ where
             let recovered_txs = {
                 let (recovered_txs, dropped_txs): (Vec<_>, Vec<_>) = unvalidated_txs
                     .into_par_iter()
-                    .partition_map(|tx| match tx.recover_signer() {
+                    .partition_map(|tx| match tx.secp256k1_recover() {
                         Ok(signer) => {
                             rayon::iter::Either::Left(Recovered::new_unchecked(tx, signer))
                         }

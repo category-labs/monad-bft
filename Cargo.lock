@@ -4825,6 +4825,7 @@ dependencies = [
  "monad-eth-block-policy",
  "monad-eth-testutil",
  "monad-eth-types",
+ "monad-secp",
  "monad-state-backend",
  "monad-testutil",
  "rayon",
@@ -4947,6 +4948,7 @@ dependencies = [
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
+ "monad-secp",
  "monad-state-backend",
  "monad-types",
  "monad-updaters",
@@ -5482,12 +5484,17 @@ dependencies = [
 name = "monad-secp"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus",
+ "alloy-primitives",
  "alloy-rlp",
+ "alloy-signer",
+ "alloy-signer-local",
  "criterion",
  "hex",
  "monad-crypto",
  "monad-testutil",
  "rand 0.8.5",
+ "rstest",
  "secp256k1 0.26.0",
  "tiny-keccak",
  "zeroize",

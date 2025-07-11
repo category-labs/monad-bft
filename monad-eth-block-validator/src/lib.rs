@@ -23,6 +23,7 @@ use monad_eth_block_policy::{
 use monad_eth_types::{
     EthBlockBody, EthExecutionProtocol, Nonce, ProposedEthHeader, BASE_FEE_PER_GAS,
 };
+use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing::warn;
@@ -91,10 +92,10 @@ where
         let eth_txns: Vec<Recovered<TxEnvelope>> = transactions
             .into_par_iter()
             .map(|tx| {
-                let signer = tx.recover_signer()?;
+                let signer = tx.secp256k1_recover()?;
                 Ok(Recovered::new_unchecked(tx.clone(), signer))
             })
-            .collect::<Result<_, alloy_primitives::SignatureError>>()
+            .collect::<Result<_, monad_secp::Error>>()
             .map_err(|_err| BlockValidationError::TxnError)?;
 
         // recover the account nonces and txn fee usage in this block

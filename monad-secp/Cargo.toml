@@ -11,6 +11,8 @@ bench = false
 [dependencies]
 monad-crypto = { workspace = true }
 
+alloy-consensus = { workspace = true }
+alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 secp256k1 = { workspace = true, features = ["global-context", "recovery"] }
 zeroize = { workspace = true }
@@ -18,9 +20,13 @@ zeroize = { workspace = true }
 [dev-dependencies]
 monad-testutil = { workspace = true }
 
+alloy-consensus = { workspace = true }
+alloy-signer = { workspace = true }
+alloy-signer-local = { workspace = true }
 criterion = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
+rstest = { workspace = true }
 tiny-keccak = { workspace = true, features = ["keccak"] }
 
 [[bench]]

@@ -16,6 +16,12 @@ pub struct SecpSignature(secp256k1::ecdsa::RecoverableSignature);
 #[derive(Debug, Clone)]
 pub struct Error(secp256k1::Error);
 
+impl From<secp256k1::Error> for Error {
+    fn from(value: secp256k1::Error) -> Self {
+        Error(value)
+    }
+}
+
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)

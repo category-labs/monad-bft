@@ -1,9 +1,12 @@
+mod recoverable_address;
 mod secp;
+
 use alloy_rlp::{Decodable, Encodable};
 use monad_crypto::certificate_signature::{
     self, CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
     CertificateSignatureRecoverable,
 };
+pub use recoverable_address::RecoverableAddress;
 pub use secp::{Error, KeyPair, PubKey, SecpSignature};
 
 impl std::fmt::Display for PubKey {
