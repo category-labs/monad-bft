@@ -21,7 +21,7 @@ use monad_raptor::SOURCE_SYMBOLS_MAX;
 use monad_raptorcast::{
     new_defaulted_raptorcast_for_tests,
     udp::{build_messages, build_messages_with_length, MAX_REDUNDANCY},
-    util::{BuildTarget, EpochValidators, FullNodes, Validator, Redundancy},
+    util::{BuildTarget, EpochValidators, FullNodes, Redundancy, Validator},
     RaptorCastEvent,
 };
 use monad_secp::{KeyPair, SecpSignature};

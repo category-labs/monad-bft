@@ -24,6 +24,7 @@ monad-types = { workspace = true }
 alloy-rlp = { workspace = true }
 bitvec = { workspace = true }
 bytes = { workspace = true }
+fixed = { workspace = true}
 futures = { workspace = true }
 hex = { workspace = true }
 iset = { workspace = true }

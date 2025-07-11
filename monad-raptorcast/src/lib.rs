@@ -35,9 +35,11 @@ use monad_peer_discovery::{
     PeerDiscoveryAlgo, PeerDiscoveryEvent,
 };
 use monad_types::{DropTimer, Epoch, ExecutionProtocol, NodeId, RouterTarget};
-use tracing::{debug, error, warn};
-use util::{BuildTarget, EpochValidators, FullNodes, Group, ReBroadcastGroupMap, Validator, Redundancy};
 use raptorcast_secondary::group_message::FullNodesGroupMessage;
+use tracing::{debug, error, warn};
+use util::{
+    BuildTarget, EpochValidators, FullNodes, Group, ReBroadcastGroupMap, Redundancy, Validator,
+};
 
 pub mod config;
 pub mod message;

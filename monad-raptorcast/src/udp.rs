@@ -266,7 +266,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                         app_message_len.div_ceil(symbol_len).max(SOURCE_SYMBOLS_MIN);
                     let encoded_symbol_capacity = MAX_REDUNDANCY
                         .scale(num_source_symbols)
-                        .expect("num_source_symbols doesn't fit in usize");
+                        .expect("redundancy-scaled num_source_symbols doesn't fit in usize");
 
                     ManagedDecoder::new(num_source_symbols, encoded_symbol_capacity, symbol_len)
                         .map(|decoder| DecoderState {

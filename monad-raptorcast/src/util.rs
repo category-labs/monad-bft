@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, fmt};
 
+use fixed::{types::extra::U11, FixedU16};
 use itertools::Itertools;
 use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey},
@@ -520,55 +521,42 @@ where
 }
 
 // Represented as a fixed-point number with 11 fractional bits.
-//
-// +-------------------------------------+
-// | Bit 15 ...................... Bit 0 |
-// | [ I I I I I F F F F F F F F F F F ] |
-// |   (5 bits)  (11 bits)               |
-// +-------------------------------------+
-//
-// I = Integer part (bits 15..11)
-// F = Fractional part (bits 10..0)
-// Value = Integer + Fraction / 2^11
 // Range: 0 to ~31.9995, Increments: ~0.000488
 #[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash)]
-pub struct Redundancy(u16);
+pub struct Redundancy(FixedU16<U11>);
 
 impl Redundancy {
-    pub const ZERO: Self = Self(0);
-    pub const BITS: u32 = 16;
-    pub const FRAC_BITS: u32 = 11;
-    pub const MIN: Self = Self(u16::MIN);
-    pub const MAX: Self = Self(u16::MAX);
-    pub const DELTA: Self = Self(1);
-    pub const MAX_MULTIPLIER: usize = usize::MAX / (u16::MAX as usize);
+    pub const ZERO: Self = Self(FixedU16::ZERO);
+    pub const MIN: Self = Self(FixedU16::MIN);
+    pub const MAX: Self = Self(FixedU16::MAX);
+
+    #[allow(unused)]
+    const BITS: u32 = 16;
+    const FRAC_BITS: u32 = 11;
+    #[allow(unused)]
+    const DELTA: Self = Self(FixedU16::DELTA);
+    const MAX_MULTIPLIER: usize = usize::MAX / (u16::MAX as usize);
 
     // guaranteed to be lossless for num in [0,32).
     pub const fn from_u8(num: u8) -> Self {
         assert!((num as u16) <= u16::MAX >> Self::FRAC_BITS);
-        Redundancy((num as u16) << Self::FRAC_BITS)
+        Redundancy(FixedU16::from_bits((num as u16) << Self::FRAC_BITS))
     }
 
     // may round to the nearest representable number when needed
     pub fn from_f32(num: f32) -> Option<Self> {
-        let scaled = (num * (1u32 << Self::FRAC_BITS) as f32).round() as u32;
-
-        if scaled > u16::MAX as u32 {
-            None
-        } else {
-            Some(Redundancy(scaled as u16))
-        }
+        FixedU16::checked_from_num(num).map(Redundancy)
     }
 
     pub fn to_f32(&self) -> f32 {
-        self.0 as f32 / (1u32 << Self::FRAC_BITS) as f32
+        self.0.to_num()
     }
 
     pub fn scale(&self, base: usize) -> Option<usize> {
         if base > Self::MAX_MULTIPLIER {
             return None;
         }
-        let scaled = (self.0 as usize).checked_mul(base)?;
+        let scaled = (self.0.to_bits() as usize).checked_mul(base)?;
         Some(scaled.div_ceil(1 << Self::FRAC_BITS))
     }
 }
@@ -764,6 +752,7 @@ mod tests {
         assert_eq!(Redundancy::MIN.to_f32(), 0.0);
         assert_eq!(Redundancy::MAX.to_f32(), 31.999512);
         assert_eq!(Redundancy::DELTA.to_f32(), 0.00048828125);
+        assert_eq!(Redundancy::BITS, 16);
 
         assert_eq!(Redundancy::from_f32(2.5).map(|r| r.to_f32()), Some(2.5));
         assert_eq!(
