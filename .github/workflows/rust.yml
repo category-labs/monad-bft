@@ -8,6 +8,8 @@ on:
   pull_request:
     branches: ["master"]
     types: [ opened, synchronize, reopened, edited ]
+    paths-ignore:
+      - 'debian/**'
 
 concurrency:
   group: >
