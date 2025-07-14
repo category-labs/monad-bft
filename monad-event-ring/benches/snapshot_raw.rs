@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
 use monad_event_ring::{
-    EventDescriptorPayload, EventNextResult, RawEventRingType, SnapshotEventRing, TypedEventRing,
+    BytesDecoder, DecodedEventRing, EventDescriptorPayload, EventNextResult, SnapshotEventRing,
 };
 
 fn bench_snapshot(c: &mut Criterion) {
@@ -9,11 +9,9 @@ fn bench_snapshot(c: &mut Criterion) {
 
     let mut g = c.benchmark_group("snapshot_raw");
 
-    let snapshot = SnapshotEventRing::<RawEventRingType>::new_from_zstd_bytes(
-        SNAPSHOT_ZSTD_BYTES,
-        SNAPSHOT_NAME,
-    )
-    .unwrap();
+    let snapshot =
+        SnapshotEventRing::<BytesDecoder>::new_from_zstd_bytes(SNAPSHOT_ZSTD_BYTES, SNAPSHOT_NAME)
+            .unwrap();
 
     let items = {
         let mut event_reader = snapshot.create_reader();
@@ -41,12 +39,6 @@ fn bench_snapshot(c: &mut Criterion) {
 
     g.throughput(criterion::Throughput::Elements(items));
     g.bench_function("iter", |b| {
-        let snapshot = SnapshotEventRing::<RawEventRingType>::new_from_zstd_bytes(
-            SNAPSHOT_ZSTD_BYTES,
-            SNAPSHOT_NAME,
-        )
-        .unwrap();
-
         b.iter_batched_ref(
             || snapshot.create_reader(),
             |event_reader| loop {

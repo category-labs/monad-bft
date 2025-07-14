@@ -3,45 +3,45 @@ use std::{fs::File, marker::PhantomData, os::fd::AsRawFd, path::Path};
 pub(crate) use self::raw::RawEventRing;
 pub use self::snapshot::SnapshotEventRing;
 use crate::{
-    ffi::monad_check_path_supports_map_hugetlb, EventReader, EventRingType, RawEventReader,
+    ffi::monad_check_path_supports_map_hugetlb, EventDecoder, EventReader, RawEventReader,
 };
 
 mod raw;
 mod snapshot;
 
 /// A unified interface for event rings.
-pub trait TypedEventRing {
-    /// The underlying type of this event ring.
-    type Type: EventRingType;
+pub trait DecodedEventRing {
+    /// The decoder used to read events from this event ring.
+    type Decoder: EventDecoder;
 
     /// Produces a reader that produces events from this ring.
-    fn create_reader<'ring>(&'ring self) -> EventReader<'ring, Self::Type>;
+    fn create_reader<'ring>(&'ring self) -> EventReader<'ring, Self::Decoder>;
 }
 
 /// An event ring created from a file.
-pub struct EventRing<T>
+pub struct EventRing<D>
 where
-    T: EventRingType,
+    D: EventDecoder,
 {
     raw: RawEventRing,
-    _phantom: PhantomData<T>,
+    _phantom: PhantomData<D>,
 }
 
-impl<T> std::fmt::Debug for EventRing<T>
+impl<D> std::fmt::Debug for EventRing<D>
 where
-    T: EventRingType,
+    D: EventDecoder,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EventRing")
             .field("raw", &self.raw)
-            .field("type", &T::ring_ctype())
+            .field("type", &D::ring_ctype())
             .finish()
     }
 }
 
-impl<T> EventRing<T>
+impl<D> EventRing<D>
 where
-    T: EventRingType,
+    D: EventDecoder,
 {
     /// Synchronously creates a new event ring from the provided path.
     pub fn new_from_path(path: impl AsRef<Path>) -> Result<Self, String> {
@@ -84,7 +84,7 @@ where
     }
 
     pub(crate) fn new(raw: RawEventRing) -> Result<Self, String> {
-        raw.check_type::<T>()?;
+        raw.check_type::<D>()?;
 
         Ok(Self {
             raw,
@@ -93,13 +93,13 @@ where
     }
 }
 
-impl<T> TypedEventRing for EventRing<T>
+impl<D> DecodedEventRing for EventRing<D>
 where
-    T: EventRingType,
+    D: EventDecoder,
 {
-    type Type = T;
+    type Decoder = D;
 
-    fn create_reader<'ring>(&'ring self) -> EventReader<'ring, Self::Type> {
+    fn create_reader<'ring>(&'ring self) -> EventReader<'ring, Self::Decoder> {
         let raw = RawEventReader::new(&self.raw).unwrap();
 
         EventReader::new(raw)

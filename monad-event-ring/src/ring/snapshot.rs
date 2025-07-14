@@ -1,24 +1,24 @@
 use std::ffi::CString;
 
-use super::{raw::RawEventRing, EventRing, RawEventReader, TypedEventRing};
-use crate::{EventReader, EventRingType};
+use super::{raw::RawEventRing, DecodedEventRing, EventRing, RawEventReader};
+use crate::{EventDecoder, EventReader};
 
 /// A special kind of event ring mapped to a static file for replaying events.
 ///
 /// This type is intended to be used for testing / recovery where, during normal operation, an
 /// [`EventRing`] would be used.
 #[derive(Debug)]
-pub struct SnapshotEventRing<T>
+pub struct SnapshotEventRing<D>
 where
-    T: EventRingType,
+    D: EventDecoder,
 {
-    ring: EventRing<T>,
+    ring: EventRing<D>,
     snapshot_fd: libc::c_int,
 }
 
-impl<T> SnapshotEventRing<T>
+impl<D> SnapshotEventRing<D>
 where
-    T: EventRingType,
+    D: EventDecoder,
 {
     /// Produces an event ring by [`zstd`] decoding the provided `zstd_bytes` input.
     ///
@@ -62,9 +62,9 @@ where
     }
 }
 
-impl<T> Drop for SnapshotEventRing<T>
+impl<D> Drop for SnapshotEventRing<D>
 where
-    T: EventRingType,
+    D: EventDecoder,
 {
     fn drop(&mut self) {
         let ret = unsafe { libc::close(self.snapshot_fd) };
@@ -72,13 +72,13 @@ where
     }
 }
 
-impl<T> TypedEventRing for SnapshotEventRing<T>
+impl<D> DecodedEventRing for SnapshotEventRing<D>
 where
-    T: EventRingType,
+    D: EventDecoder,
 {
-    type Type = T;
+    type Decoder = D;
 
-    fn create_reader<'ring>(&'ring self) -> EventReader<'ring, T> {
+    fn create_reader<'ring>(&'ring self) -> EventReader<'ring, D> {
         let raw = RawEventReader::new(&self.ring.raw).unwrap();
 
         EventReader::new_snapshot(raw)

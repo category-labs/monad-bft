@@ -1,6 +1,6 @@
 use crate::{
     ffi::{monad_event_ring, monad_event_ring_mmap, monad_event_ring_unmap},
-    EventRingType,
+    EventDecoder,
 };
 
 #[derive(Debug)]
@@ -26,11 +26,11 @@ impl RawEventRing {
         .map(|inner| Self { inner })
     }
 
-    pub(crate) fn check_type<T>(&self) -> Result<(), String>
+    pub(crate) fn check_type<D>(&self) -> Result<(), String>
     where
-        T: EventRingType,
+        D: EventDecoder,
     {
-        T::check_ring_type(&self.inner)
+        D::check_ring_type(&self.inner)
     }
 }
 

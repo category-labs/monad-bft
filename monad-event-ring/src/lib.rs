@@ -33,22 +33,23 @@
 //!
 //! Now that the event ring is available in the process's address space, we can now start to consume
 //! events using the [`EventReader`] which can be created by calling
-//! [`TypedEventRing::create_reader`] on the [`EventRing`]. Event readers are similar in spirit to
-//! an iterator and provide the [`EventReader::next`] method which produces
+//! [`DecodedEventRing::create_reader`] on the [`EventRing`]. Event readers are similar in spirit to
+//! an iterator and provide the [`EventReader::next_descriptor`] method which produces
 //! [`EventNextResult::Ready`] when there is another event available for consumption and
 //! [`EventNextResult::NotReady`] when there isn't. If another event is writen to the event ring
 //! after the reader produces an [`EventNextResult::NotReady`], subsequently calling
-//! [`EventReader::next`] will eventually produce the event written. Unlike iterators however, event
-//! rings are backed by a fixed-size descriptor array and a fixed-size payload array, both of which
-//! can be overwritten if the current process is unable to consume events at the same rate they are
-//! being produced and falls behind. If the next descriptor in the iteration sequence has been
-//! overwritten by a newer descriptor, the user is informed through the [`EventNextResult::Gap`]
-//! variant. Similarly, if the payload pointed to by an [`EventDescriptor`] is overwritten while
-//! attempting to read it through the various [`EventDescriptor::try_*`] methods, the user is
-//! informed through the [`EventDescriptorPayload::Expired`] variant. Once an event descriptor or
-//! payload is overwritten, it is **unrecoverable** from the event ring. Programs that depend on
-//! consuming all events of some kind produced by an event ring **must** enter a recovery phase to
-//! recover the (possibly) missing data.
+//! [`EventReader::next_descriptor`] will eventually produce the event written. Unlike iterators
+//! however, event rings are backed by a fixed-size descriptor array and a fixed-size payload array,
+//! both of which can be overwritten if the current process is unable to consume events at the same
+//! rate they are being produced and falls behind. If the next descriptor in the iteration sequence
+//! has been overwritten by a newer descriptor, the user is informed through the
+//! [`EventNextResult::Gap`] variant. Similarly, if the payload pointed to by an [`EventDescriptor`]
+//! is overwritten while attempting to read it through the various
+//! [`EventDescriptor::try_*`](EventDescriptor) methods, the user is informed through the
+//! [`EventDescriptorPayload::Expired`] variant. Once an event descriptor or payload is overwritten,
+//! it is **unrecoverable** from the event ring. Programs that depend on consuming all events of
+//! some kind produced by an event ring **must** enter a recovery phase to recover the (possibly)
+//! missing data.
 //!
 //! <div class="warning">
 //!
@@ -62,18 +63,18 @@
 //!
 //! </div>
 //!
-//! Unlike [`TypedEventRing`]s, [`EventReader`]s are single threaded as they use the lifetime
-//! of a reference to a [`TypedEventRing`] to ensure that the address space where events are stored
-//! is still mapped. That being said, you can create multiple readers from the same event ring which
-//! iterate independent of each other. In other words, all event readers produce every event exactly
-//! once.
+//! Unlike [`DecodedEventRing`]s, [`EventReader`]s are single threaded as they use the lifetime
+//! of a reference to a [`DecodedEventRing`] to ensure that the address space where events are
+//! stored is still mapped. That being said, you can create multiple readers from the same event
+//! ring which iterate independent of each other. In other words, all event readers produce every
+//! event exactly once.
 
-pub use self::{descriptor::*, r#type::*, reader::*, result::*, ring::*};
+pub use self::{decoder::*, descriptor::*, reader::*, result::*, ring::*};
 
 pub mod ffi;
 
+mod decoder;
 mod descriptor;
 mod reader;
 mod result;
 mod ring;
-mod r#type;

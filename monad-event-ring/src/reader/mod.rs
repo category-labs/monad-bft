@@ -1,22 +1,22 @@
 use std::marker::PhantomData;
 
 pub(crate) use self::raw::RawEventReader;
-use crate::{EventDescriptor, EventNextResult, EventRingType};
+use crate::{EventDecoder, EventDescriptor, EventNextResult};
 
 mod raw;
 
 /// Used to consume events from an [`EventRing`](crate::EventRing).
-pub struct EventReader<'ring, T>
+pub struct EventReader<'ring, D>
 where
-    T: EventRingType,
+    D: EventDecoder,
 {
     pub(crate) raw: RawEventReader<'ring>,
-    _phantom: PhantomData<T>,
+    _phantom: PhantomData<D>,
 }
 
-impl<'ring, T> EventReader<'ring, T>
+impl<'ring, D> EventReader<'ring, D>
 where
-    T: EventRingType,
+    D: EventDecoder,
 {
     pub(crate) fn new(raw: RawEventReader<'ring>) -> Self {
         Self {
@@ -35,7 +35,7 @@ where
     }
 
     /// Produces the next event in the ring.
-    pub fn next_descriptor(&mut self) -> EventNextResult<EventDescriptor<'ring, T>> {
+    pub fn next_descriptor(&mut self) -> EventNextResult<EventDescriptor<'ring, D>> {
         self.raw.next_descriptor().map(EventDescriptor::new)
     }
 }

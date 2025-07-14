@@ -3,7 +3,7 @@ use std::{path::PathBuf, time::Duration};
 use clap::Parser;
 use itertools::Itertools;
 use monad_event_ring::{
-    EventDescriptorPayload, EventNextResult, EventRing, RawEventRingType, TypedEventRing,
+    BytesDecoder, DecodedEventRing, EventDescriptorPayload, EventNextResult, EventRing,
 };
 
 #[derive(Debug, Parser)]
@@ -22,7 +22,7 @@ fn main() {
         width,
     } = Cli::parse();
 
-    let event_ring = EventRing::<RawEventRingType>::new_from_path(event_ring_path).unwrap();
+    let event_ring = EventRing::<BytesDecoder>::new_from_path(event_ring_path).unwrap();
 
     let mut event_reader = event_ring.create_reader();
 

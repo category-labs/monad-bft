@@ -9,18 +9,22 @@ use crate::{
     EventDescriptorInfo,
 };
 
-/// Trait representing the underlying type of an event ring.
+/// Used to decode events from an event ring.
 ///
-/// An [`EventRing`](crate::EventRing) consumes events produced by an event ring writer which
-/// encodes each event into a payload byte slice. These events must have a known ABI a
-pub trait EventRingType: 'static {
+/// Events in an [`EventRing`](crate::EventRing) are written by an event ring writer using a known
+/// ABI. Each event is encoded into a u8 payload which must be decoded by consumers. Types that
+/// implement this trait describe one of said known ABIs by defining the metadata associated with
+/// the ABI, the [`EventDecoder::FlowInfo`] associated with each event, and the event type
+/// [`EventDecoder::Event`] itself along with its zero-copy variant [`EventDecoder::EventRef`]. This
+/// enables the [`EventReader`](crate::EventReader) to produce typed events.
+pub trait EventDecoder: 'static {
     /// An integer specifying the event ring type.
     fn ring_ctype() -> monad_event_ring_type;
     /// A human-readable name for the `ring_ctype`.
     ///
     /// # Panics
     ///
-    /// Panics if [`ring_ctype()`](EventRingType::ring_ctype) is invalid.
+    /// Panics if [`ring_ctype()`](EventDecoder::ring_ctype) is invalid.
     fn ring_ctype_name() -> String {
         let ring_ctype = Self::ring_ctype();
 
@@ -39,12 +43,12 @@ pub trait EventRingType: 'static {
     /// [`EventReader`](crate::EventReader) have the same underlying ABI as the event ring writer.
     fn ring_metadata_hash() -> &'static [u8; 32];
 
-    /// Used to check that the event ring matches this [`EventRingType`].
+    /// Used to check that the event ring matches this [`EventDecoder`].
     fn check_ring_type(c_event_ring: &monad_event_ring) -> Result<(), String> {
         monad_event_ring_check_type(c_event_ring, Self::ring_ctype(), Self::ring_metadata_hash())
     }
 
-    /// The metadata associated with each [`Event`](EventRingType::Event).
+    /// The metadata associated with each [`Event`](EventDecoder::Event).
     ///
     /// Every event descriptor stores a metadata array which can be used to attach metadata to
     /// events. This associated type specifies what the shape of that metadata is for this event
@@ -52,7 +56,7 @@ pub trait EventRingType: 'static {
     type FlowInfo;
 
     /// Defines how to convert the raw user info from an event descriptor to the associated
-    /// [`Self::FlowInfo`](EventRingType::FlowInfo) type.
+    /// [`Self::FlowInfo`](EventDecoder::FlowInfo) type.
     fn transmute_flow_info(user: [u64; 4]) -> Self::FlowInfo;
 
     /// The rust-native type of the elements produced by an event ring.
@@ -60,7 +64,7 @@ pub trait EventRingType: 'static {
     /// A zero-copy view of the elements produced by an event ring.
     type EventRef<'ring>;
 
-    /// Provides the zero-copy view [`Self::EventRef<'ring>`](EventRingType::EventRef) from an
+    /// Provides the zero-copy view [`Self::EventRef<'ring>`](EventDecoder::EventRef) from an
     /// event ring payload byte slice.
     fn raw_to_event_ref<'ring>(
         info: EventDescriptorInfo<Self>,
@@ -69,15 +73,15 @@ pub trait EventRingType: 'static {
     where
         Self: Sized;
 
-    /// Defines how to convert the zero-copy [`Self::EventRef<'ring>`](EventRingType::EventRef) to
-    /// the owned variant [`Self::Event`](EventRingType::Event).
+    /// Defines how to convert the zero-copy [`Self::EventRef<'ring>`](EventDecoder::EventRef) to
+    /// the owned variant [`Self::Event`](EventDecoder::Event).
     fn event_ref_to_event<'ring>(event_ref: Self::EventRef<'ring>) -> Self::Event;
 }
 
-/// Event ring type used for ingesting events as raw byte data.
-pub struct RawEventRingType;
+/// Event ring decoder used for ingesting events as raw byte data.
+pub struct BytesDecoder;
 
-impl EventRingType for RawEventRingType {
+impl EventDecoder for BytesDecoder {
     fn ring_ctype() -> monad_event_ring_type {
         unreachable!()
     }
@@ -98,7 +102,7 @@ impl EventRingType for RawEventRingType {
 
     fn transmute_flow_info(_: [u64; 4]) -> Self::FlowInfo {}
 
-    type Event = (u16, Vec<u8>);
+    type Event = (u16, Box<[u8]>);
     type EventRef<'ring> = (u16, &'ring [u8]);
 
     fn raw_to_event_ref<'ring>(
@@ -109,6 +113,6 @@ impl EventRingType for RawEventRingType {
     }
 
     fn event_ref_to_event<'ring>((event_type, event_ref): Self::EventRef<'ring>) -> Self::Event {
-        (event_type, event_ref.to_vec())
+        (event_type, event_ref.to_vec().into_boxed_slice())
     }
 }
