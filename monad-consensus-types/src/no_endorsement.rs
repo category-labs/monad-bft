@@ -1,11 +1,7 @@
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
-use monad_crypto::certificate_signature::CertificateSignature;
 use monad_types::{Epoch, Round};
 
-use crate::{
-    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    timeout::NoTipCertificate,
-};
+use crate::{signature_collection::SignatureCollection, timeout::NoTipCertificate};
 
 #[derive(PartialEq, Eq, Clone, Debug, RlpEncodable, RlpDecodable)]
 pub struct NoEndorsement {
@@ -16,26 +12,6 @@ pub struct NoEndorsement {
     pub round: Round,
 
     pub tip_qc_round: Round,
-}
-
-#[derive(PartialEq, Eq, Clone, Debug, RlpEncodable, RlpDecodable)]
-pub struct NoEndorsementMessage<SCT: SignatureCollection> {
-    pub msg: NoEndorsement,
-
-    pub signature: SCT::SignatureType,
-}
-
-impl<SCT: SignatureCollection> NoEndorsementMessage<SCT> {
-    pub fn new(no_endorsement: NoEndorsement, key: &SignatureCollectionKeyPairType<SCT>) -> Self {
-        let no_endorsement_enc = alloy_rlp::encode(&no_endorsement);
-        let signature =
-            <SCT::SignatureType as CertificateSignature>::sign(no_endorsement_enc.as_ref(), key);
-
-        Self {
-            msg: no_endorsement,
-            signature,
-        }
-    }
 }
 
 #[derive(PartialEq, Eq, Clone, Debug, RlpEncodable, RlpDecodable)]

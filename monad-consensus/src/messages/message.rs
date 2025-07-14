@@ -1,10 +1,11 @@
-use std::fmt::Debug;
+use std::{fmt::Debug, ops::Deref};
 
-use alloy_rlp::{RlpDecodable, RlpEncodable};
+use alloy_rlp::{RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
 use monad_consensus_types::{
+    no_endorsement::NoEndorsement,
     payload::ConsensusBlockBody,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    timeout::{Timeout, TimeoutCertificate},
+    timeout::{HighExtend, Timeout, TimeoutCertificate, TimeoutInfo},
     tip::ConsensusTip,
     voting::Vote,
 };
@@ -55,7 +56,81 @@ impl<SCT: SignatureCollection> VoteMessage<SCT> {
     }
 }
 
-pub type TimeoutMessage<ST, SCT, EPT> = Timeout<ST, SCT, EPT>;
+/// Wrapper for Timeout to keep validation in the same crate
+#[derive(Clone, Debug, PartialEq, Eq, RlpDecodableWrapper, RlpEncodableWrapper)]
+pub struct TimeoutMessage<ST, SCT, EPT>(pub Timeout<ST, SCT, EPT>)
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol;
+
+/// An integrity hash over all the fields
+impl<ST, SCT, EPT> Hashable for TimeoutMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn hash(&self, state: &mut impl Hasher) {
+        state.update(alloy_rlp::encode(self));
+    }
+}
+
+impl<ST, SCT, EPT> TimeoutMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    pub fn new(
+        cert_keypair: &SignatureCollectionKeyPairType<SCT>,
+        timeout: TimeoutInfo,
+        high_extend: HighExtend<ST, SCT, EPT>,
+        last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
+    ) -> Self {
+        TimeoutMessage(Timeout::new(
+            cert_keypair,
+            timeout,
+            high_extend,
+            last_round_tc,
+        ))
+    }
+}
+
+impl<ST, SCT, EPT> AsRef<Timeout<ST, SCT, EPT>> for TimeoutMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn as_ref(&self) -> &Timeout<ST, SCT, EPT> {
+        &self.0
+    }
+}
+
+impl<ST, SCT, EPT> Deref for TimeoutMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    type Target = Timeout<ST, SCT, EPT>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<ST, SCT, EPT> From<Timeout<ST, SCT, EPT>> for TimeoutMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn from(timeout: Timeout<ST, SCT, EPT>) -> Self {
+        Self(timeout)
+    }
+}
 
 /// Consensus protocol proposal message
 #[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
@@ -108,6 +183,26 @@ where
 {
     fn hash(&self, state: &mut impl Hasher) {
         state.update(alloy_rlp::encode(self));
+    }
+}
+
+#[derive(PartialEq, Eq, Clone, Debug, RlpEncodable, RlpDecodable)]
+pub struct NoEndorsementMessage<SCT: SignatureCollection> {
+    pub msg: NoEndorsement,
+
+    pub signature: SCT::SignatureType,
+}
+
+impl<SCT: SignatureCollection> NoEndorsementMessage<SCT> {
+    pub fn new(no_endorsement: NoEndorsement, key: &SignatureCollectionKeyPairType<SCT>) -> Self {
+        let no_endorsement_enc = alloy_rlp::encode(&no_endorsement);
+        let signature =
+            <SCT::SignatureType as CertificateSignature>::sign(no_endorsement_enc.as_ref(), key);
+
+        Self {
+            msg: no_endorsement,
+            signature,
+        }
     }
 }
 

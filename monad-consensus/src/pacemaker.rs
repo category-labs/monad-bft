@@ -283,7 +283,7 @@ where
     {
         let mut ret_commands = Vec::new();
 
-        let tm_info = &timeout_msg.tminfo;
+        let tm_info = &timeout_msg.as_ref().tminfo;
         if tm_info.round < self.get_current_round() {
             return ret_commands;
         }
@@ -318,7 +318,7 @@ where
                 tm_info.round,
                 self.pending_timeouts
                     .iter()
-                    .map(|(node_id, tm_msg)| (*node_id, tm_msg.clone()))
+                    .map(|(node_id, tm_msg)| (*node_id, tm_msg.as_ref().clone()))
                     .collect::<Vec<_>>()
                     .as_slice(),
                 validator_mapping,
@@ -357,7 +357,7 @@ where
         for (node_id, timeout_signature) in invalid_timeouts {
             let removed = self.pending_timeouts.remove(&node_id);
             debug_assert_eq!(
-                removed.expect("Timeout removed").timeout_signature,
+                removed.expect("Timeout removed").as_ref().timeout_signature,
                 timeout_signature
             );
         }
@@ -464,11 +464,11 @@ mod test {
             None,
         );
         if !valid {
-            if let HighExtendVote::Tip(_, vote_signature) = &mut tmo_msg.high_extend {
+            if let HighExtendVote::Tip(_, vote_signature) = &mut tmo_msg.0.high_extend {
                 *vote_signature =
                     <SCT::SignatureType as CertificateSignature>::sign(invalid_msg, certkeypair);
             }
-            tmo_msg.timeout_signature =
+            tmo_msg.0.timeout_signature =
                 <SCT::SignatureType as CertificateSignature>::sign(invalid_msg, certkeypair);
         }
         tmo_msg

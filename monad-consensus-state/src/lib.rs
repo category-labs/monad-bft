@@ -9,7 +9,10 @@ use monad_chain_config::{
 use monad_consensus::{
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
-        message::{ProposalMessage, RoundRecoveryMessage, TimeoutMessage, VoteMessage},
+        message::{
+            NoEndorsementMessage, ProposalMessage, RoundRecoveryMessage, TimeoutMessage,
+            VoteMessage,
+        },
     },
     no_endorsement_state::NoEndorsementState,
     pacemaker::Pacemaker,
@@ -23,7 +26,7 @@ use monad_consensus_types::{
     block_validator::{BlockValidationError, BlockValidator},
     checkpoint::{Checkpoint, LockedEpoch, RootInfo},
     metrics::Metrics,
-    no_endorsement::{FreshProposalCertificate, NoEndorsement, NoEndorsementMessage},
+    no_endorsement::{FreshProposalCertificate, NoEndorsement},
     payload::{ConsensusBlockBody, RoundSignature},
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -726,9 +729,10 @@ where
     pub fn handle_timeout_message(
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
-        timeout: TimeoutMessage<ST, SCT, EPT>,
+        timeout_message: TimeoutMessage<ST, SCT, EPT>,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
         let mut cmds = Vec::new();
+        let timeout = timeout_message.as_ref();
         if timeout.tminfo.round < self.consensus.pacemaker.get_current_round() {
             self.metrics.consensus_events.old_remote_timeout += 1;
             return cmds;
@@ -802,7 +806,7 @@ where
                 validator_mapping,
                 &mut self.consensus.safety,
                 author,
-                timeout,
+                timeout_message,
             );
         cmds.extend(remote_timeout_cmds.into_iter().map(|cmd| {
             ConsensusCommand::from_pacemaker_command(
@@ -1747,7 +1751,6 @@ mod test {
         payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
         quorum_certificate::QuorumCertificate,
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-        timeout::Timeout,
         tip::ConsensusTip,
         voting::{ValidatorMapping, Vote},
         RoundCertificate,
@@ -3409,7 +3412,9 @@ mod test {
 
         // now timeout someone
         let cmds = node1.wrapped_state().handle_timeout_expiry();
-        let tmo: Vec<&Timeout<SignatureType, SignatureCollectionType, EthExecutionProtocol>> = cmds
+        let tmo: Vec<
+            &TimeoutMessage<SignatureType, SignatureCollectionType, EthExecutionProtocol>,
+        > = cmds
             .iter()
             .filter_map(|cmd| match cmd {
                 ConsensusCommand::Publish { target: _, message } => {

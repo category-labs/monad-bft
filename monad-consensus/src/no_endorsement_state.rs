@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use monad_consensus_types::{
-    no_endorsement::{NoEndorsementCertificate, NoEndorsementMessage},
+    no_endorsement::NoEndorsementCertificate,
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
     },
@@ -10,6 +10,8 @@ use monad_consensus_types::{
 use monad_types::{NodeId, Round};
 use monad_validator::validator_set::ValidatorSetType;
 use tracing::{debug, error, info, warn};
+
+use crate::messages::message::NoEndorsementMessage;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct NoEndorsementState<SCT: SignatureCollection> {

@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, ops::Deref};
 
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_consensus_types::{
-    no_endorsement::{FreshProposalCertificate, NoEndorsementCertificate, NoEndorsementMessage},
+    no_endorsement::{FreshProposalCertificate, NoEndorsementCertificate},
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighExtend, HighExtendVote, NoTipCertificate, TimeoutCertificate, TimeoutInfo},
@@ -26,7 +26,9 @@ use monad_validator::{
 
 use crate::messages::{
     consensus_message::{ConsensusMessage, ProtocolMessage},
-    message::{ProposalMessage, RoundRecoveryMessage, TimeoutMessage, VoteMessage},
+    message::{
+        NoEndorsementMessage, ProposalMessage, RoundRecoveryMessage, TimeoutMessage, VoteMessage,
+    },
 };
 
 /// A verified message carries a valid signature created by the author. It's
@@ -149,6 +151,24 @@ impl<S: CertificateSignatureRecoverable, M> From<Verified<S, Validated<M>>>
     }
 }
 
+impl<ST, SCT, EPT> Verified<ST, Validated<ConsensusMessage<ST, SCT, EPT>>>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    pub fn into_inner(
+        self,
+    ) -> (
+        NodeId<CertificateSignaturePubKey<ST>>,
+        ProtocolMessage<ST, SCT, EPT>,
+    ) {
+        let author = self.author;
+        let protocol_message = self.message.obj.into_inner().message;
+        (author, protocol_message)
+    }
+}
+
 impl<ST, SCT, EPT> Unverified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>
 where
     ST: CertificateSignatureRecoverable,
@@ -260,7 +280,7 @@ where
     }
 }
 
-impl<ST, SCT, EPT> Unvalidated<ConsensusMessage<ST, SCT, EPT>>
+impl<ST, SCT, EPT> Verified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -271,60 +291,69 @@ where
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
-        version: u32,
-    ) -> Result<Validated<ProtocolMessage<ST, SCT, EPT>>, Error>
+        client_version: u32,
+    ) -> Result<Verified<ST, Validated<ConsensusMessage<ST, SCT, EPT>>>, Error>
     where
         VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
-        if self.obj.version != version {
+        let Verified {
+            author,
+            message:
+                Unverified {
+                    obj:
+                        Unvalidated {
+                            obj:
+                                ConsensusMessage {
+                                    version: msg_version,
+                                    message,
+                                },
+                        },
+                    author_signature,
+                },
+        } = self;
+
+        if msg_version != client_version {
             return Err(Error::InvalidVersion);
         }
 
-        Ok(match self.obj.message {
+        match &message {
             ProtocolMessage::Proposal(m) => {
-                let validated =
-                    Unvalidated::new(m).validate(epoch_manager, val_epoch_map, election)?;
-                Validated {
-                    message: Unvalidated::new(ProtocolMessage::Proposal(validated.into_inner())),
-                }
+                m.validate(epoch_manager, val_epoch_map, election)?;
             }
             ProtocolMessage::Vote(m) => {
-                let validated = Unvalidated::new(m).validate(epoch_manager)?;
-                Validated {
-                    message: Unvalidated::new(ProtocolMessage::Vote(validated.into_inner())),
-                }
+                m.validate(epoch_manager)?;
             }
             ProtocolMessage::Timeout(m) => {
-                let validated =
-                    Unvalidated::new(m).validate(epoch_manager, val_epoch_map, election)?;
-                Validated {
-                    message: Unvalidated::new(ProtocolMessage::Timeout(validated.into_inner())),
-                }
+                m.validate(epoch_manager, val_epoch_map, election)?;
             }
             ProtocolMessage::RoundRecovery(m) => {
-                let validated =
-                    Unvalidated::new(m).validate(epoch_manager, val_epoch_map, election)?;
-                Validated {
-                    message: Unvalidated::new(ProtocolMessage::RoundRecovery(
-                        validated.into_inner(),
-                    )),
-                }
+                m.validate(epoch_manager, val_epoch_map, election)?;
             }
             ProtocolMessage::NoEndorsement(m) => {
-                let validated = Unvalidated::new(m).validate(epoch_manager)?;
-                Validated {
-                    message: Unvalidated::new(ProtocolMessage::NoEndorsement(
-                        validated.into_inner(),
-                    )),
-                }
+                m.validate(epoch_manager)?;
             }
+        }
+
+        Ok(Verified {
+            author,
+            message: Unverified {
+                obj: Validated {
+                    message: Unvalidated {
+                        obj: ConsensusMessage {
+                            version: msg_version,
+                            message,
+                        },
+                    },
+                },
+                author_signature,
+            },
         })
     }
 }
 
-impl<ST, SCT, EPT> Unvalidated<ProposalMessage<ST, SCT, EPT>>
+impl<ST, SCT, EPT> ProposalMessage<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -334,17 +363,17 @@ where
     // the present TC or QC, and epoch number is consistent with local records
     // for block.round
     pub fn validate<VTF, VT, LT>(
-        self,
+        &self,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
-    ) -> Result<Validated<ProposalMessage<ST, SCT, EPT>>, Error>
+    ) -> Result<(), Error>
     where
         VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
-        if let Some(tc) = &self.obj.last_round_tc {
+        if let Some(tc) = &self.last_round_tc {
             verify_tc(
                 &|epoch, round| {
                     epoch_to_validators(epoch_manager, val_epoch_map, election, epoch, round)
@@ -352,7 +381,7 @@ where
                 tc,
             )?;
             // last_round_tc must be from the previous round
-            if self.obj.proposal_round != tc.round + Round(1) {
+            if self.proposal_round != tc.round + Round(1) {
                 return Err(Error::NotWellFormed);
             }
         }
@@ -361,54 +390,52 @@ where
             &|epoch, round| {
                 epoch_to_validators(epoch_manager, val_epoch_map, election, epoch, round)
             },
-            &self.obj.tip,
+            &self.tip,
         )?;
 
         self.well_formed_proposal()?;
         self.verify_epoch(epoch_manager)?;
 
-        Ok(Validated { message: self })
+        Ok(())
     }
 
     /// A well-formed proposal
     /// 1. carries a QC/TC from r-1, proving that the block is proposed on a
     ///    valid round
     fn well_formed_proposal(&self) -> Result<(), Error> {
-        if self.obj.tip.block_header.block_body_id != self.obj.block_body.get_id() {
+        if self.tip.block_header.block_body_id != self.block_body.get_id() {
             return Err(Error::NotWellFormed);
         }
 
-        if self.obj.proposal_round == self.obj.tip.block_header.qc.get_round() + Round(1) {
+        if self.proposal_round == self.tip.block_header.qc.get_round() + Round(1) {
             // Consecutive QC
-            if self.obj.last_round_tc.is_some() {
+            if self.last_round_tc.is_some() {
                 return Err(Error::NotWellFormed);
             }
             return Ok(());
         }
         // last_round_tc must exist
-        let Some(tc) = &self.obj.last_round_tc else {
+        let Some(tc) = &self.last_round_tc else {
             return Err(Error::NotWellFormed);
         };
 
         match &tc.high_extend {
             HighExtend::Qc(tc_qc) => {
-                if tc_qc.get_round() != self.obj.tip.block_header.qc.get_round() {
+                if tc_qc.get_round() != self.tip.block_header.qc.get_round() {
                     // qc of p.tc.high_extend and p.tip must match
                     return Err(Error::NotWellFormed);
                 }
             }
             HighExtend::Tip(tc_tip) => {
-                if tc_tip == &self.obj.tip {
+                if tc_tip == &self.tip {
                     // matches high_tip, so we don't need to check anything else
                     // this implies that the qc of p.tc.high_extend and p.tip match
                 } else {
-                    if self.obj.proposal_round != self.obj.tip.block_header.block_round {
+                    if self.proposal_round != self.tip.block_header.block_round {
                         // must be a fresh proposal if doesn't match high_tip
                         return Err(Error::NotWellFormed);
                     }
-                    if tc_tip.block_header.qc.get_round()
-                        != self.obj.tip.block_header.qc.get_round()
-                    {
+                    if tc_tip.block_header.qc.get_round() != self.tip.block_header.qc.get_round() {
                         // qc of p.tc.high_extend and p.tip must match
                         return Err(Error::NotWellFormed);
                     }
@@ -421,8 +448,8 @@ where
 
     /// Check local epoch manager record for block.round is equal to block.epoch
     fn verify_epoch(&self, epoch_manager: &EpochManager) -> Result<(), Error> {
-        match epoch_manager.get_epoch(self.obj.proposal_round) {
-            Some(epoch) if self.obj.proposal_epoch == epoch => Ok(()),
+        match epoch_manager.get_epoch(self.proposal_round) {
+            Some(epoch) if self.proposal_epoch == epoch => Ok(()),
             _ => Err(Error::InvalidEpoch),
         }?;
 
@@ -430,31 +457,28 @@ where
     }
 }
 
-impl<SCT: SignatureCollection> Unvalidated<VoteMessage<SCT>> {
+impl<SCT: SignatureCollection> VoteMessage<SCT> {
     /// Verifying
     /// [crate::messages::message::VoteMessage::sig] is deferred until a
     /// signature collection is optimistically aggregated because verifying a
     /// BLS signature is expensive. Verifying every signature on VoteMessage is
     /// infeasible with the block time constraint.
-    pub fn validate(
-        self,
-        epoch_manager: &EpochManager,
-    ) -> Result<Validated<VoteMessage<SCT>>, Error> {
+    pub fn validate(&self, epoch_manager: &EpochManager) -> Result<(), Error> {
         self.verify_epoch(epoch_manager)?;
 
-        Ok(Validated { message: self })
+        Ok(())
     }
 
     /// Check local epoch manager record for vote.round is equal to vote.epoch
     fn verify_epoch(&self, epoch_manager: &EpochManager) -> Result<(), Error> {
-        match epoch_manager.get_epoch(self.obj.vote.round) {
-            Some(epoch) if self.obj.vote.epoch == epoch => Ok(()),
+        match epoch_manager.get_epoch(self.vote.round) {
+            Some(epoch) if self.vote.epoch == epoch => Ok(()),
             _ => Err(Error::InvalidEpoch),
         }
     }
 }
 
-impl<ST, SCT, EPT> Unvalidated<TimeoutMessage<ST, SCT, EPT>>
+impl<ST, SCT, EPT> TimeoutMessage<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -462,17 +486,18 @@ where
 {
     /// A valid timeout message is well-formed, and carries valid QC/TC
     pub fn validate<VTF, VT, LT>(
-        self,
+        &self,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
-    ) -> Result<Validated<TimeoutMessage<ST, SCT, EPT>>, Error>
+    ) -> Result<(), Error>
     where
         VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
         LT: LeaderElection<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
-        if let Some(tc) = &self.obj.last_round_tc {
+        let timeout = &self.0;
+        if let Some(tc) = &timeout.last_round_tc {
             verify_tc(
                 &|epoch, round| {
                     epoch_to_validators(epoch_manager, val_epoch_map, election, epoch, round)
@@ -480,7 +505,7 @@ where
                 tc,
             )?;
             // last_round_tc must be from the previous round
-            if self.obj.tminfo.round != tc.round + Round(1) {
+            if timeout.tminfo.round != tc.round + Round(1) {
                 return Err(Error::NotWellFormed);
             }
         }
@@ -488,22 +513,22 @@ where
             &|epoch, round| {
                 epoch_to_validators(epoch_manager, val_epoch_map, election, epoch, round)
             },
-            &self.obj.high_extend.clone().into(),
+            &timeout.high_extend.clone().into(),
         )?;
-        match &self.obj.high_extend {
+        match &timeout.high_extend {
             HighExtendVote::Qc(qc) => {
-                if self.obj.tminfo.high_tip_round != GENESIS_ROUND {
+                if timeout.tminfo.high_tip_round != GENESIS_ROUND {
                     return Err(Error::NotWellFormed);
                 }
-                if self.obj.tminfo.high_qc_round != qc.get_round() {
+                if timeout.tminfo.high_qc_round != qc.get_round() {
                     return Err(Error::NotWellFormed);
                 }
             }
             HighExtendVote::Tip(tip, _) => {
-                if self.obj.tminfo.high_tip_round != tip.block_header.block_round {
+                if timeout.tminfo.high_tip_round != tip.block_header.block_round {
                     return Err(Error::NotWellFormed);
                 }
-                if self.obj.tminfo.high_qc_round >= tip.block_header.block_round {
+                if timeout.tminfo.high_qc_round >= tip.block_header.block_round {
                     return Err(Error::NotWellFormed);
                 }
             }
@@ -512,21 +537,22 @@ where
         self.well_formed_timeout()?;
         self.verify_epoch(epoch_manager)?;
 
-        Ok(Validated { message: self })
+        Ok(())
     }
 
     /// A well-formed timeout carries a QC/TC from r-1, proving that it's timing
     /// out a valid round
     fn well_formed_timeout(&self) -> Result<(), Error> {
-        if self.obj.tminfo.round == self.obj.high_extend.qc().get_round() + Round(1) {
+        let timeout = &self.0;
+        if timeout.tminfo.round == timeout.high_extend.qc().get_round() + Round(1) {
             // Consecutive QC
-            if self.obj.last_round_tc.is_some() {
+            if timeout.last_round_tc.is_some() {
                 return Err(Error::NotWellFormed);
             }
             return Ok(());
         }
         // last_round_tc must exist
-        let Some(_tc) = &self.obj.last_round_tc else {
+        let Some(_tc) = &timeout.last_round_tc else {
             return Err(Error::NotWellFormed);
         };
         Ok(())
@@ -534,14 +560,15 @@ where
 
     /// Check local epoch manager record for timeout.round is equal to timeout.epoch
     fn verify_epoch(&self, epoch_manager: &EpochManager) -> Result<(), Error> {
-        match epoch_manager.get_epoch(self.obj.tminfo.round) {
-            Some(epoch) if self.obj.tminfo.epoch == epoch => Ok(()),
+        let timeout = &self.0;
+        match epoch_manager.get_epoch(timeout.tminfo.round) {
+            Some(epoch) if timeout.tminfo.epoch == epoch => Ok(()),
             _ => Err(Error::InvalidEpoch),
         }
     }
 }
 
-impl<ST, SCT, EPT> Unvalidated<RoundRecoveryMessage<ST, SCT, EPT>>
+impl<ST, SCT, EPT> RoundRecoveryMessage<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -549,11 +576,11 @@ where
 {
     /// A valid timeout message is well-formed, and carries valid QC/TC
     pub fn validate<VTF, VT, LT>(
-        self,
+        &self,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
-    ) -> Result<Validated<RoundRecoveryMessage<ST, SCT, EPT>>, Error>
+    ) -> Result<(), Error>
     where
         VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
@@ -563,20 +590,20 @@ where
             &|epoch, round| {
                 epoch_to_validators(epoch_manager, val_epoch_map, election, epoch, round)
             },
-            &self.obj.tc,
+            &self.tc,
         )?;
 
         self.well_formed_round_recovery()?;
         self.verify_epoch(epoch_manager)?;
 
-        Ok(Validated { message: self })
+        Ok(())
     }
 
     fn well_formed_round_recovery(&self) -> Result<(), Error> {
-        if self.obj.round != self.obj.tc.round + Round(1) {
+        if self.round != self.tc.round + Round(1) {
             return Err(Error::InvalidTcRound);
         }
-        match &self.obj.tc.high_extend {
+        match &self.tc.high_extend {
             HighExtend::Qc(_) => return Err(Error::NotWellFormed),
             HighExtend::Tip(_) => {}
         };
@@ -586,26 +613,23 @@ where
 
     /// Check local epoch manager record for timeout.round is equal to timeout.epoch
     fn verify_epoch(&self, epoch_manager: &EpochManager) -> Result<(), Error> {
-        match epoch_manager.get_epoch(self.obj.round) {
-            Some(epoch) if self.obj.epoch == epoch => Ok(()),
+        match epoch_manager.get_epoch(self.round) {
+            Some(epoch) if self.epoch == epoch => Ok(()),
             _ => Err(Error::InvalidEpoch),
         }
     }
 }
 
-impl<SCT> Unvalidated<NoEndorsementMessage<SCT>>
+impl<SCT> NoEndorsementMessage<SCT>
 where
     SCT: SignatureCollection,
 {
     /// A valid timeout message is well-formed, and carries valid QC/TC
-    pub fn validate(
-        self,
-        epoch_manager: &EpochManager,
-    ) -> Result<Validated<NoEndorsementMessage<SCT>>, Error> {
+    pub fn validate(&self, epoch_manager: &EpochManager) -> Result<(), Error> {
         self.well_formed_no_endorsement()?;
         self.verify_epoch(epoch_manager)?;
 
-        Ok(Validated { message: self })
+        Ok(())
     }
 
     fn well_formed_no_endorsement(&self) -> Result<(), Error> {
@@ -614,8 +638,8 @@ where
 
     /// Check local epoch manager record for timeout.round is equal to timeout.epoch
     fn verify_epoch(&self, epoch_manager: &EpochManager) -> Result<(), Error> {
-        match epoch_manager.get_epoch(self.obj.msg.round) {
-            Some(epoch) if self.obj.msg.epoch == epoch => Ok(()),
+        match epoch_manager.get_epoch(self.msg.round) {
+            Some(epoch) if epoch == self.msg.epoch => Ok(()),
             _ => Err(Error::InvalidEpoch),
         }
     }
@@ -1028,7 +1052,7 @@ mod test {
     use super::{verify_qc, verify_tc, Verified};
     use crate::{
         messages::message::{ProposalMessage, TimeoutMessage},
-        validation::signing::{epoch_to_validators, Unvalidated, VoteMessage},
+        validation::signing::{epoch_to_validators, VoteMessage},
     };
 
     type SignatureType = NopSignature;
@@ -1369,14 +1393,13 @@ mod test {
             high_tip_round: GENESIS_ROUND,
         };
 
-        let unvalidated_tmo_msg =
-            Unvalidated::new(TimeoutMessage::<
-                SignatureType,
-                SignatureCollectionType,
-                ExecutionProtocolType,
-            >::new(
-                &certkeys[0], timeout, HighExtend::Qc(qc), Some(tc)
-            ));
+        let unvalidated_tmo_msg = TimeoutMessage::<
+            SignatureType,
+            SignatureCollectionType,
+            ExecutionProtocolType,
+        >::new(
+            &certkeys[0], timeout, HighExtend::Qc(qc), Some(tc)
+        );
 
         let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
         let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
@@ -1430,14 +1453,13 @@ mod test {
             high_tip_round: GENESIS_ROUND,
         };
 
-        let unvalidated_byzantine_tmo_msg =
-            Unvalidated::new(TimeoutMessage::<
-                SignatureType,
-                SignatureCollectionType,
-                ExecutionProtocolType,
-            >::new(
-                &certkeys[0], timeout, HighExtend::Qc(qc), None
-            ));
+        let unvalidated_byzantine_tmo_msg = TimeoutMessage::<
+            SignatureType,
+            SignatureCollectionType,
+            ExecutionProtocolType,
+        >::new(
+            &certkeys[0], timeout, HighExtend::Qc(qc), None
+        );
 
         let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
         let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
@@ -1511,7 +1533,7 @@ mod test {
             1,
             RoundSignature::new(Round(1), author_cert_key),
         );
-        let proposal: ProposalMessage<
+        let unvalidated_proposal: ProposalMessage<
             SignatureType,
             SignatureCollectionType,
             MockExecutionProtocol,
@@ -1522,8 +1544,6 @@ mod test {
             last_round_tc: None,
             tip: ConsensusTip::new(&keys[0], block, None),
         };
-
-        let unvalidated_proposal = Unvalidated::new(proposal);
 
         let maybe_validated =
             unvalidated_proposal.validate(&epoch_manager, &val_epoch_map, &election);
@@ -1549,11 +1569,10 @@ mod test {
             round: Round(10),
         };
 
-        let vote_message = VoteMessage::<SignatureCollectionType>::new(vote, author_cert_key);
+        let unvalidated_vote_message =
+            VoteMessage::<SignatureCollectionType>::new(vote, author_cert_key);
 
-        let unvalidated_vote = Unvalidated::new(vote_message);
-
-        let maybe_validated = unvalidated_vote.validate(&epoch_manager);
+        let maybe_validated = unvalidated_vote_message.validate(&epoch_manager);
         assert_eq!(maybe_validated, Err(Error::InvalidEpoch));
     }
 
@@ -1580,7 +1599,7 @@ mod test {
             high_tip_round: GENESIS_ROUND,
         };
 
-        let timeout_message: TimeoutMessage<
+        let unvalidated_timeout_message: TimeoutMessage<
             SignatureType,
             SignatureCollectionType,
             ExecutionProtocolType,
@@ -1591,10 +1610,8 @@ mod test {
             None,
         );
 
-        let unvalidated_timeout = Unvalidated::new(timeout_message);
-
         let maybe_validated =
-            unvalidated_timeout.validate(&epoch_manager, &val_epoch_map, &election);
+            unvalidated_timeout_message.validate(&epoch_manager, &val_epoch_map, &election);
         assert_eq!(maybe_validated, Err(Error::InvalidEpoch));
     }
 

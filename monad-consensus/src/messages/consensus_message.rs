@@ -1,9 +1,7 @@
 use std::fmt::Debug;
 
 use alloy_rlp::{encode_list, Decodable, Encodable, Header, RlpDecodable, RlpEncodable};
-use monad_consensus_types::{
-    no_endorsement::NoEndorsementMessage, signature_collection::SignatureCollection,
-};
+use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
     hasher::{Hashable, Hasher},
@@ -11,7 +9,9 @@ use monad_crypto::{
 use monad_types::{ExecutionProtocol, Round};
 
 use crate::{
-    messages::message::{ProposalMessage, RoundRecoveryMessage, TimeoutMessage, VoteMessage},
+    messages::message::{
+        NoEndorsementMessage, ProposalMessage, RoundRecoveryMessage, TimeoutMessage, VoteMessage,
+    },
     validation::signing::{Validated, Verified},
 };
 
@@ -184,7 +184,7 @@ where
         match &self.message {
             ProtocolMessage::Proposal(p) => p.proposal_round,
             ProtocolMessage::Vote(v) => v.vote.round,
-            ProtocolMessage::Timeout(t) => t.tminfo.round,
+            ProtocolMessage::Timeout(t) => t.0.tminfo.round,
             ProtocolMessage::RoundRecovery(r) => r.round,
             ProtocolMessage::NoEndorsement(n) => n.msg.round,
         }

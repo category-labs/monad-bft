@@ -6,7 +6,7 @@ use monad_consensus::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
         message::ProposalMessage,
     },
-    validation::signing::{Unvalidated, Unverified},
+    validation::signing::{Unvalidated, Unverified, Validated, Verified},
 };
 use monad_consensus_state::{command::ConsensusCommand, ConsensusConfig, ConsensusStateWrapper};
 use monad_consensus_types::{
@@ -135,32 +135,34 @@ where
                     unverified_message,
                 } = event.clone()
                 {
-                    if let Ok((author, ProtocolMessage::Proposal(proposal))) =
-                        Self::verify_and_validate_consensus_message(
-                            self.epoch_manager,
-                            self.val_epoch_map,
-                            self.leader_election,
-                            self.version,
-                            self.metrics,
-                            sender,
-                            unverified_message,
-                        )
-                    {
-                        if let Some((new_root, new_high_qc)) =
-                            block_buffer.handle_proposal(author, proposal)
-                        {
-                            if !*updating_target {
-                                // used for deduplication, because RequestStateSync isn't synchronous
-                                *updating_target = true;
-                                info!(
-                                    ?new_root,
-                                    consensus_tip =? new_root.seq_num,
-                                    "setting new statesync target",
-                                );
-                                cmds.push(self.wrap(ConsensusCommand::RequestStateSync {
-                                    root: new_root,
-                                    high_qc: new_high_qc,
-                                }));
+                    // skip evidence collection in sync mode
+                    if let Ok(verified_message) = Self::verify_and_validate_consensus_message(
+                        self.epoch_manager,
+                        self.val_epoch_map,
+                        self.leader_election,
+                        self.version,
+                        self.metrics,
+                        sender,
+                        unverified_message,
+                    ) {
+                        let (author, protocol_message) = verified_message.into_inner();
+                        if let ProtocolMessage::Proposal(proposal) = protocol_message {
+                            if let Some((new_root, new_high_qc)) =
+                                block_buffer.handle_proposal(author, proposal)
+                            {
+                                if !*updating_target {
+                                    // used for deduplication, because RequestStateSync isn't synchronous
+                                    *updating_target = true;
+                                    info!(
+                                        ?new_root,
+                                        consensus_tip =? new_root.seq_num,
+                                        "setting new statesync target",
+                                    );
+                                    cmds.push(self.wrap(ConsensusCommand::RequestStateSync {
+                                        root: new_root,
+                                        high_qc: new_high_qc,
+                                    }));
+                                }
                             }
                         }
                     }
@@ -207,36 +209,41 @@ where
                     sender,
                     unverified_message,
                 ) {
-                    Ok((author, ProtocolMessage::Proposal(msg))) => {
-                        let mut proposal_cmds =
-                            consensus.handle_proposal_message(author, msg.clone());
-                        // Maybe we could skip the below command if we could somehow determine that
-                        // the peer isn't publishing to full nodes at the moment?
-                        let epoch = msg.tip.block_header.epoch;
-                        let cons_msg = ConsensusMessage {
-                            version: consensus.version.to_owned(),
-                            message: ProtocolMessage::Proposal(msg),
+                    Ok(verified_message) => {
+                        let (author, protocol_message) = verified_message.clone().into_inner();
+                        match protocol_message {
+                            ProtocolMessage::Proposal(msg) => {
+                                let proposal_epoch = msg.proposal_epoch;
+                                let mut proposal_cmds =
+                                    consensus.handle_proposal_message(author, msg);
+                                // TODO:Maybe we could skip the below command if we could somehow determine that
+                                // the peer isn't publishing to full nodes at the moment?
+                                //
+                                // send verified_message carrying author signature
+                                proposal_cmds.push(ConsensusCommand::PublishToFullNodes {
+                                    epoch: proposal_epoch,
+                                    message: verified_message,
+                                });
+                                proposal_cmds
+                            }
+                            ProtocolMessage::Vote(msg) => {
+                                consensus.handle_vote_message(author, msg)
+                            }
+                            ProtocolMessage::Timeout(msg) => {
+                                consensus.handle_timeout_message(author, msg)
+                            }
+                            ProtocolMessage::RoundRecovery(msg) => {
+                                consensus.handle_round_recovery_message(author, msg)
+                            }
+                            ProtocolMessage::NoEndorsement(msg) => {
+                                consensus.handle_no_endorsement_message(author, msg)
+                            }
                         }
-                        .sign(self.keypair);
-                        proposal_cmds.push(ConsensusCommand::PublishToFullNodes {
-                            epoch,
-                            message: cons_msg,
-                        });
-                        proposal_cmds
                     }
-                    Ok((author, ProtocolMessage::Vote(msg))) => {
-                        consensus.handle_vote_message(author, msg)
+                    Err(evidence) => {
+                        // If we have evidence, we return it as commands
+                        evidence
                     }
-                    Ok((author, ProtocolMessage::Timeout(msg))) => {
-                        consensus.handle_timeout_message(author, msg)
-                    }
-                    Ok((author, ProtocolMessage::RoundRecovery(msg))) => {
-                        consensus.handle_round_recovery_message(author, msg)
-                    }
-                    Ok((author, ProtocolMessage::NoEndorsement(msg))) => {
-                        consensus.handle_no_endorsement_message(author, msg)
-                    }
-                    Err(evidence) => evidence,
                 }
             }
             ConsensusEvent::Timeout => consensus.handle_timeout_expiry(),
@@ -458,10 +465,7 @@ where
         sender: NodeId<CertificateSignaturePubKey<ST>>,
         message: Unverified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>,
     ) -> Result<
-        (
-            NodeId<CertificateSignaturePubKey<ST>>,
-            ProtocolMessage<ST, SCT, EPT>,
-        ),
+        Verified<ST, Validated<ConsensusMessage<ST, SCT, EPT>>>,
         Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>>,
     > {
         let verified_message = message
@@ -472,10 +476,8 @@ where
                 Vec::new()
             })?;
 
-        let (author, _, verified_message) = verified_message.destructure();
-
         // Validated message according to consensus protocol spec
-        let validated_mesage = verified_message
+        let validated_message = verified_message
             .validate(
                 epoch_manager,
                 val_epoch_map,
@@ -488,7 +490,7 @@ where
                 Vec::new()
             })?;
 
-        Ok((author, validated_mesage.into_inner()))
+        Ok(validated_message)
     }
 
     fn compute_upcoming_leader_round_pairs<

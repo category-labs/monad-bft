@@ -1,9 +1,6 @@
-use monad_consensus::{
-    messages::{
-        consensus_message::{ConsensusMessage, ProtocolMessage},
-        message::ProposalMessage,
-    },
-    validation::signing::Unvalidated,
+use monad_consensus::messages::{
+    consensus_message::{ConsensusMessage, ProtocolMessage},
+    message::ProposalMessage,
 };
 use monad_consensus_types::{
     block::{
@@ -525,13 +522,13 @@ fn test_validate_missing_tc(qc_round: Round) {
         ],
     );
 
-    let proposal = Unvalidated::new(ProposalMessage {
+    let proposal = ProposalMessage {
         tip: ConsensusTip::new(&keypairs[0], block, None),
         proposal_epoch: block_epoch,
         proposal_round: block_round,
         block_body: payload,
         last_round_tc: None,
-    });
+    };
 
     assert_eq!(
         proposal.validate(&epoch_manager, &val_epoch_map, &FakeLeaderElection(author)),
@@ -575,13 +572,13 @@ fn test_validate_incorrect_block_epoch(known_epoch: Epoch, block_epoch: Epoch) {
         ],
     );
 
-    let proposal = Unvalidated::new(ProposalMessage {
+    let proposal = ProposalMessage {
         tip: ConsensusTip::new(&keypairs[0], block, None),
         proposal_epoch: block_epoch,
         proposal_round: block_round,
         block_body: payload,
         last_round_tc: None,
-    });
+    };
 
     assert_eq!(
         proposal.validate(&epoch_manager, &val_epoch_map, &FakeLeaderElection(author)),
@@ -624,13 +621,13 @@ fn test_validate_qc_epoch() {
         ],
     );
 
-    let proposal = Unvalidated::new(ProposalMessage {
+    let proposal = ProposalMessage {
         tip: ConsensusTip::new(&keypairs[0], block, None),
         proposal_epoch: block_epoch,
         proposal_round: block_round,
         block_body: payload,
         last_round_tc: None,
-    });
+    };
 
     assert_eq!(
         proposal.validate(&epoch_manager, &val_epoch_map, &FakeLeaderElection(author)),
@@ -673,13 +670,13 @@ fn test_validate_mismatch_qc_epoch() {
         ],
     );
 
-    let proposal = Unvalidated::new(ProposalMessage {
+    let proposal = ProposalMessage {
         tip: ConsensusTip::new(&keypairs[0], block, None),
         proposal_epoch: block_epoch,
         proposal_round: block_round,
         block_body: payload,
         last_round_tc: None,
-    });
+    };
 
     assert_eq!(
         proposal.validate(&epoch_manager, &val_epoch_map, &FakeLeaderElection(author)),
@@ -722,13 +719,13 @@ fn test_proposal_invalid_qc_validator_set() {
         ],
     );
 
-    let proposal = Unvalidated::new(ProposalMessage {
+    let proposal = ProposalMessage {
         tip: ConsensusTip::new(&keypairs[0], block, None),
         proposal_epoch: block_epoch,
         proposal_round: block_round,
         block_body: payload,
         last_round_tc: None,
-    });
+    };
 
     assert_eq!(
         proposal.validate(&epoch_manager, &val_epoch_map, &FakeLeaderElection(author)),
@@ -767,13 +764,13 @@ fn test_validate_insufficient_qc_stake() {
         &[keypairs[0].pubkey()],
     );
 
-    let proposal = Unvalidated::new(ProposalMessage {
+    let proposal = ProposalMessage {
         tip: ConsensusTip::new(&keypairs[0], block, None),
         proposal_epoch: block_epoch,
         proposal_round: block_round,
         block_body: payload,
         last_round_tc: None,
-    });
+    };
 
     assert_eq!(
         proposal.validate(&epoch_manager, &val_epoch_map, &FakeLeaderElection(author)),
@@ -817,13 +814,13 @@ fn test_validate_qc_happy() {
         ],
     );
 
-    let proposal = Unvalidated::new(ProposalMessage {
+    let proposal = ProposalMessage {
         tip: ConsensusTip::new(&keypairs[0], block, None),
         proposal_epoch: block_epoch,
         proposal_round: block_round,
         block_body: payload,
         last_round_tc: None,
-    });
+    };
 
     assert!(proposal
         .validate(&epoch_manager, &val_epoch_map, &FakeLeaderElection(author))
@@ -875,7 +872,6 @@ fn test_validate_tc_invalid_round_block(block_round: Round, tc_round: Round) {
         tc_round,
     );
 
-    let proposal = Unvalidated::new(proposal);
     assert_eq!(
         proposal.validate(&epoch_manager, &val_epoch_map, &election),
         Err(Error::InvalidEpoch)
@@ -915,7 +911,6 @@ fn test_validate_tc_invalid_epoch() {
         tc_round,
     );
 
-    let proposal = Unvalidated::new(proposal);
     assert_eq!(
         proposal.validate(&epoch_manager, &val_epoch_map, &election),
         Err(Error::InvalidEpoch)
@@ -955,7 +950,6 @@ fn test_validate_tc_incorrect_epoch() {
         tc_round,
     );
 
-    let proposal = Unvalidated::new(proposal);
     assert_eq!(
         proposal.validate(&epoch_manager, &val_epoch_map, &election),
         Err(Error::InvalidEpoch)
@@ -995,7 +989,6 @@ fn test_validate_tc_invalid_val_set() {
         tc_round,
     );
 
-    let proposal = Unvalidated::new(proposal);
     assert_eq!(
         proposal.validate(&epoch_manager, &val_epoch_map, &election),
         Err(Error::ValidatorSetDataUnavailable)
@@ -1035,7 +1028,6 @@ fn test_validate_tc_invalid_round() {
         tc_round,
     );
 
-    let proposal = Unvalidated::new(proposal);
     assert_eq!(
         proposal.validate(&epoch_manager, &val_epoch_map, &election),
         Err(Error::InvalidTcRound)
@@ -1075,7 +1067,6 @@ fn test_validate_tc_happy() {
         tc_round,
     );
 
-    let proposal = Unvalidated::new(proposal);
     assert!(proposal
         .validate(&epoch_manager, &val_epoch_map, &election)
         .is_ok());
@@ -1166,7 +1157,6 @@ fn test_validate_tc_invalid_tc_signature() {
         block_body: payload,
         last_round_tc: Some(tc),
     };
-    let proposal = Unvalidated::new(proposal);
 
     assert!(matches!(
         proposal.validate(&epoch_manager, &val_epoch_map, &FakeLeaderElection(author),),
@@ -1208,7 +1198,6 @@ fn test_validate_genesis_sig() {
         tc_epoch,
         tc_round,
     );
-    let proposal = Unvalidated::new(proposal);
     assert_eq!(
         proposal.validate(&epoch_manager, &val_epoch_map, &election),
         Err(Error::InvalidSignature)

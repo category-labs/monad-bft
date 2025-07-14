@@ -18,7 +18,7 @@ pub mod test_tool {
         },
         payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
         quorum_certificate::QuorumCertificate,
-        timeout::{HighExtendVote, TimeoutInfo},
+        timeout::{HighExtendVote, Timeout, TimeoutInfo},
         tip::ConsensusTip,
         voting::Vote,
     };
@@ -136,12 +136,12 @@ pub mod test_tool {
             high_qc_round: Round(0),
             high_tip_round: Round(0),
         };
-        let internal_msg = TimeoutMessage {
+        let internal_msg = TimeoutMessage(Timeout {
             tminfo: timeout_info,
             high_extend: HighExtendVote::Qc(QuorumCertificate::genesis_qc()),
             last_round_tc: None,
             timeout_signature: NopSignature::sign(&[0x00_u8, 32], kp),
-        };
+        });
         ConsensusMessage {
             version: 1,
             message: ProtocolMessage::Timeout(internal_msg),

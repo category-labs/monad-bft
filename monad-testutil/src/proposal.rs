@@ -225,7 +225,7 @@ where
                 HighExtend::Qc(self.high_qc.clone()),
                 Some(tc.clone()),
             );
-            tmo_msgs.push(Verified::<ST, _>::new(timeout, key));
+            tmo_msgs.push(Verified::<ST, _>::new(timeout.into(), key));
         }
 
         // entering new round through tc
