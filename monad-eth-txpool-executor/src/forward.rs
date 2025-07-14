@@ -21,6 +21,7 @@ const EGRESS_MAX_RETRIES: usize = 2;
 const INGRESS_CHUNK_MAX_SIZE: usize = 128;
 const INGRESS_CHUNK_INTERVAL_MS: u64 = 8;
 const INGRESS_MAX_SIZE: usize = 64 * 1024;
+const EGRESS_MAX_SIZE_BYTES: usize = 256 * 1024;
 
 #[pin_project(project = EthTxPoolForwardingManagerProjected)]
 pub struct EthTxPoolForwardingManager {
@@ -29,7 +30,7 @@ pub struct EthTxPoolForwardingManager {
     ingress_timer: tokio::time::Interval,
     ingress_waker: Option<Waker>,
 
-    egress: Vec<Bytes>,
+    egress: VecDeque<Bytes>,
     egress_waker: Option<Waker>,
 }
 
@@ -45,7 +46,7 @@ impl EthTxPoolForwardingManager {
             ingress_timer,
             ingress_waker: None,
 
-            egress: Vec::default(),
+            egress: VecDeque::default(),
             egress_waker: None,
         }
     }
@@ -95,7 +96,18 @@ impl EthTxPoolForwardingManager {
             return Poll::Pending;
         }
 
-        Poll::Ready(std::mem::take(egress))
+        let mut total_size = 0;
+        let mut drain_count = 0;
+
+        for (i, tx) in egress.iter().enumerate() {
+            let tx_size = tx.len();
+            if total_size + tx_size > EGRESS_MAX_SIZE_BYTES && i > 0 {
+                break;
+            }
+            total_size += tx_size;
+            drain_count = i + 1;
+        }
+        Poll::Ready(egress.drain(..drain_count).collect())
     }
 
     pub fn complete_ingress(self: Pin<&mut Self>) {
@@ -170,13 +182,15 @@ mod test {
 
     use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
     use alloy_primitives::{hex, B256};
+    use bytes::Bytes;
     use futures::task::noop_waker_ref;
     use itertools::Itertools;
     use monad_eth_testutil::{make_legacy_tx, recover_tx};
     use monad_eth_types::BASE_FEE_PER_GAS;
 
     use crate::forward::{
-        EthTxPoolForwardingManager, INGRESS_CHUNK_INTERVAL_MS, INGRESS_CHUNK_MAX_SIZE,
+        EthTxPoolForwardingManager, EGRESS_MAX_SIZE_BYTES, INGRESS_CHUNK_INTERVAL_MS,
+        INGRESS_CHUNK_MAX_SIZE,
     };
 
     // pubkey starts with AAA
@@ -423,5 +437,57 @@ mod test {
         assert_eq!(txs.len(), INGRESS_CHUNK_MAX_SIZE);
 
         assert_pending_now_and_forever(forwarding_manager, cx).await;
+    }
+
+    #[tokio::test]
+    async fn test_egress_256kb_limit() {
+        let (forwarding_manager, mut cx) = setup();
+        let mut forwarding_manager = pin!(forwarding_manager);
+
+        let mut egress_txs = Vec::new();
+        let mut total_size = 0;
+        let target_size = 448 * 1024;
+
+        let mut nonce = 0u64;
+        while total_size < target_size {
+            let tx = generate_tx(nonce);
+            let encoded = alloy_rlp::encode(&tx);
+            let tx_bytes: Bytes = encoded.into();
+            total_size += tx_bytes.len();
+            egress_txs.push(tx_bytes);
+            nonce += 1;
+        }
+
+        let actual_total_size = egress_txs.iter().map(|b| b.len()).sum::<usize>();
+        assert!(actual_total_size >= target_size);
+
+        forwarding_manager
+            .as_mut()
+            .project()
+            .egress
+            .extend(egress_txs.clone());
+
+        let Poll::Ready(first_batch) = forwarding_manager.as_mut().poll_egress(&mut cx) else {
+            panic!("first poll should be ready");
+        };
+
+        let first_batch_size: usize = first_batch.iter().map(|b| b.len()).sum();
+        assert!(first_batch_size <= EGRESS_MAX_SIZE_BYTES,);
+        assert!(!first_batch.is_empty());
+
+        let Poll::Ready(second_batch) = forwarding_manager.as_mut().poll_egress(&mut cx) else {
+            panic!("second poll should be ready");
+        };
+
+        let second_batch_size: usize = second_batch.iter().map(|b| b.len()).sum();
+        assert!(!second_batch.is_empty());
+
+        assert_eq!(first_batch_size + second_batch_size, actual_total_size,);
+        assert_eq!(first_batch.len() + second_batch.len(), egress_txs.len(),);
+
+        assert_eq!(
+            forwarding_manager.as_mut().poll_egress(&mut cx),
+            Poll::Pending,
+        );
     }
 }
