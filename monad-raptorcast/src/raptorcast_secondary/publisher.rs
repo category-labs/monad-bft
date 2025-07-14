@@ -113,11 +113,13 @@ where
 
     fn new_empty_group(&self, start_round: Round) -> Group<ST> {
         let end_round = start_round + self.scheduling_cfg.init_empty_round_span;
+        let round_span = RoundSpan::new(start_round, end_round).expect("round is near Round::MAX");
+
         Group::new_fullnode_group(
             Vec::new(),
             &self.validator_node_id,
             self.validator_node_id,
-            RoundSpan::new(start_round, end_round),
+            round_span,
         )
     }
 
@@ -167,48 +169,46 @@ where
         self.group_schedule
             .retain(|_, group| group.end_round > round);
 
-        // If `round` belongs in the next group, pop & make it the current one.
-        match self.group_schedule.first_key_value() {
-            Some((start_round, group)) => {
-                assert!(start_round >= &round);
-                assert!(start_round == &group.start_round);
-                if round >= group.start_round && round < group.end_round {
-                    // The typical, correct case.
-                    self.curr_group = self
-                        .group_schedule
-                        .pop_first()
-                        .unwrap()
-                        .1
-                        .to_finalized_group(self.validator_node_id);
-                    self.metrics[PUBLISHER_CURRENT_GROUP_SIZE] =
-                        self.curr_group.size_excl_self() as u64;
-                    return;
-                }
-                // The next group is not yet scheduled to start. This can happen
-                // when there gaps in the round sequence.
-                debug!(
-                    ?round,
-                    ?group,
-                    "No group scheduled for RaptorCastSecondary \
-                    round, next group is",
-                );
-            }
-            None => {
-                // We didn't manage to form a group in time for the new round.
-                // Might be due to gap, unexpectedly long delays or Round 0/
-                // We currently have an empty group for some rounds while we
-                // allow invites for a future group to complete.
-                debug!(
-                    ?round,
-                    "No group scheduled for RaptorCastSecondary \
+        let Some(next_group) = self.group_schedule.first_entry() else {
+            // We didn't manage to form a group in time for the new round.
+            // Might be due to gap, unexpectedly long delays or Round 0/
+            // We currently have an empty group for some rounds while we
+            // allow invites for a future group to complete.
+            tracing::debug!(
+                ?round,
+                "No group scheduled for RaptorCastSecondary \
                     round nor any other future round yet.",
-                );
-            }
+            );
+            // Not serving any full nodes in current round
+            self.metrics[PUBLISHER_CURRENT_GROUP_SIZE] = 0;
+            self.curr_group = self.new_empty_group(round);
+            return;
+        };
+
+        let start_round = *next_group.key();
+        assert!(start_round >= round);
+        assert!(start_round == next_group.get().start_round);
+
+        if start_round > round {
+            // The next group is not yet scheduled to start. This can happen
+            // when there are gaps in the round sequence.
+            tracing::debug!(
+                ?round,
+                ?next_group,
+                "No group scheduled for RaptorCastSecondary \
+                    round, next group is",
+            );
+            // Not serving any full nodes in current round
+            self.metrics[PUBLISHER_CURRENT_GROUP_SIZE] = 0;
+            self.curr_group = self.new_empty_group(round);
+            return;
         }
-        // Fallback group for error cases.
-        self.curr_group = self.new_empty_group(round);
-        // Not serving any full nodes in current round
-        self.metrics[PUBLISHER_CURRENT_GROUP_SIZE] = 0;
+
+        // If `round` belongs in the next group, pop & make it the current one.
+        self.curr_group = next_group
+            .remove()
+            .to_finalized_group(self.validator_node_id);
+        self.metrics[PUBLISHER_CURRENT_GROUP_SIZE] = self.curr_group.size_excl_self() as u64;
     }
 
     // Advances the state machine to the given "time point".
@@ -549,11 +549,14 @@ where
         &self,
         validator_id: NodeId<CertificateSignaturePubKey<ST>>,
     ) -> Group<ST> {
+        let round_span =
+            RoundSpan::new(self.start_round, self.end_round).expect("invalid round span");
+
         Group::new_fullnode_group(
             self.full_nodes_accepted.list.clone(),
             &validator_id,
             validator_id,
-            RoundSpan::new(self.start_round, self.end_round),
+            round_span,
         )
     }
 }

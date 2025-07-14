@@ -98,13 +98,23 @@ pub struct RoundSpan {
 }
 
 impl RoundSpan {
-    pub fn new(start: Round, end: Round) -> Self {
-        assert!(start <= end);
-        Self { start, end }
+    pub fn new(start: Round, end: Round) -> Option<Self> {
+        if start >= end {
+            return None;
+        }
+        Some(Self { start, end })
     }
-    pub fn single(start: Round) -> Self {
-        Self::new(start, start + Round(1))
+
+    pub fn single(start: Round) -> Option<Self> {
+        if start >= Round::MAX {
+            return None;
+        }
+        Some(Self {
+            start,
+            end: start + Round(1),
+        })
     }
+
     pub fn contains(&self, round: Round) -> bool {
         self.start <= round && round < self.end
     }

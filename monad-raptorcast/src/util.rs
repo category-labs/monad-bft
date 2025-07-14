@@ -591,12 +591,15 @@ mod tests {
             vec![nid(0), nid(1), nid(2)],
             &nid(1), // self_id
             nid(3),  // validator
-            RoundSpan::new(Round(3), Round(8)),
+            RoundSpan::new(Round(3), Round(8)).unwrap(),
         );
         assert_eq!(group.size_excl_self(), 2);
         assert_eq!(group.get_validator_id(), &nid(3));
         assert_eq!(group.get_other_peers(), &vec![nid(0), nid(2)]);
-        assert_eq!(group.get_round_span(), &RoundSpan::new(Round(3), Round(8)));
+        assert_eq!(
+            group.get_round_span(),
+            &RoundSpan::new(Round(3), Round(8)).unwrap()
+        );
         let empty_iter: Vec<_> = group.empty_iterator().collect();
         assert!(empty_iter.is_empty());
 
@@ -627,12 +630,15 @@ mod tests {
             vec![nid(0), nid(1), nid(2)],
             &nid(3), // self_id
             nid(3),  // validator id
-            RoundSpan::new(Round(3), Round(8)),
+            RoundSpan::new(Round(3), Round(8)).unwrap(),
         );
         assert_eq!(group.size_excl_self(), 3);
         assert_eq!(group.get_validator_id(), &nid(3));
         assert_eq!(group.get_other_peers(), &vec![nid(0), nid(1), nid(2)]);
-        assert_eq!(group.get_round_span(), &RoundSpan::new(Round(3), Round(8)));
+        assert_eq!(
+            group.get_round_span(),
+            &RoundSpan::new(Round(3), Round(8)).unwrap()
+        );
         let empty_iter: Vec<_> = group.empty_iterator().collect();
         assert!(empty_iter.is_empty());
 
@@ -656,12 +662,15 @@ mod tests {
             vec![nid(1)],
             &nid(1), // self_id
             nid(3),  // validator id
-            RoundSpan::new(Round(3), Round(8)),
+            RoundSpan::new(Round(3), Round(8)).unwrap(),
         );
         assert_eq!(group.size_excl_self(), 0);
         assert_eq!(group.get_validator_id(), &nid(3));
         assert_eq!(group.get_other_peers(), &vec![]);
-        assert_eq!(group.get_round_span(), &RoundSpan::new(Round(3), Round(8)));
+        assert_eq!(
+            group.get_round_span(),
+            &RoundSpan::new(Round(3), Round(8)).unwrap()
+        );
         let empty_iter: Vec<_> = group.empty_iterator().collect();
         assert!(empty_iter.is_empty());
 
@@ -710,7 +719,7 @@ mod tests {
             vec![nid(0), nid(1), nid(2), nid(3), nid(4)],
             &nid(0),  // self_id
             nid(100), // validator id
-            RoundSpan::new(Round(3), Round(8)),
+            RoundSpan::new(Round(3), Round(8)).unwrap(),
         );
 
         // Non-"randomized" iteration (but sorted)

@@ -11,7 +11,7 @@ use tracing::{debug, error, warn};
 
 use super::{
     super::{config::RaptorCastConfigSecondaryClient, util::Group},
-    group_message::{FullNodesGroupMessage, PrepareGroup, PrepareGroupResponse},
+    group_message::{ConfirmGroup, FullNodesGroupMessage, PrepareGroup, PrepareGroupResponse},
 };
 
 /// Metrics constant
@@ -21,7 +21,6 @@ pub const CLIENT_RECEIVED_INVITES: &str = "monad.bft.raptorcast.secondary.client
 pub const CLIENT_RECEIVED_CONFIRMS: &str =
     "monad.bft.raptorcast.secondary.client.received_confirms";
 
-type Bandwidth = u64;
 type GroupAsClient<ST> = Group<ST>;
 
 // This is for when the router is playing the role of a client
@@ -141,6 +140,253 @@ where
         Instant::now() < self.last_round_heartbeat + self.config.invite_accept_heartbeat
     }
 
+    fn validate_prepare_group_message(&self, invite_msg: &PrepareGroup<ST>) -> bool {
+        // Sanity check the message
+        if invite_msg.start_round >= invite_msg.end_round {
+            warn!(
+                "RaptorCastSecondary rejecting invite message due to \
+                        failed sanity check: {:?}",
+                invite_msg
+            );
+            return false;
+        }
+
+        // Reject late round
+        if invite_msg.start_round <= self.curr_round {
+            warn!(
+                "RaptorCastSecondary rejecting invite for round that \
+                        already started, curr_round {:?}, invite = {:?}",
+                self.curr_round, invite_msg
+            );
+            return false;
+        }
+
+        // Reject invite outside config invitation bounds, unless we are
+        // not receiving any proposals ATM and should accept first group
+        // invite, even if far from what we believe is the current round.
+        if (invite_msg.start_round < self.curr_round + self.config.invite_future_dist_min
+            || invite_msg.start_round > self.curr_round + self.config.invite_future_dist_max)
+            && self.is_receiving_proposals()
+        {
+            warn!(
+                "RaptorCastSecondary rejecting invite outside bounds \
+                        [{:?}, {:?}], curr_round {:?}, invite = {:?}",
+                self.config.invite_future_dist_min,
+                self.config.invite_future_dist_max,
+                self.curr_round,
+                invite_msg
+            );
+            return false;
+        }
+
+        let mut bandwidth = BandwidthAggregator::new(
+            self.config.bandwidth_capacity,
+            self.config.bandwidth_cost_per_group_member,
+        );
+
+        let log_bandwidth_overflow = || {
+            debug!(
+                "RaptorCastSecondary rejected invite for rounds \
+                        [{:?}, {:?}) from validator {:?} due to low bandwidth",
+                invite_msg.start_round, invite_msg.end_round, invite_msg.validator_id
+            );
+        };
+
+        if bandwidth.add_and_check(invite_msg.max_group_size).is_none() {
+            log_bandwidth_overflow();
+            return false;
+        };
+
+        // Check confirmed groups
+        for group in self
+            .confirmed_groups
+            .values(invite_msg.start_round..invite_msg.end_round)
+        {
+            // Check if we already have an overlapping invite from same
+            // validator, e.g. [30, 40)->validator3 but we already
+            // have [25, 35)->validator3
+            // Note that we accept overlaps across different validators,
+            // e.g. [30, 40)->validator3 + [25, 35)->validator4
+            if group.get_validator_id() == &invite_msg.validator_id {
+                warn!(
+                    "RaptorCastSecondary received self-overlapping \
+                            invite for rounds [{:?}, {:?}) from validator {:?}",
+                    invite_msg.start_round, invite_msg.end_round, invite_msg.validator_id
+                );
+                return false;
+            }
+
+            // Check that we'll have enough bandwidth during round span
+            if bandwidth.add_and_check(group.size_excl_self()).is_none() {
+                log_bandwidth_overflow();
+                return false;
+            }
+        }
+
+        // Check groups we were invited to but are still unconfirmed
+        for (&key, other_invites) in self.pending_confirms.iter() {
+            if key >= invite_msg.end_round {
+                // Remaining keys are outside the invite range
+                break;
+            }
+
+            for other in other_invites.values() {
+                if !Self::overlaps(other.start_round, other.end_round, invite_msg) {
+                    continue;
+                }
+
+                if bandwidth.add_and_check(other.max_group_size).is_none() {
+                    log_bandwidth_overflow();
+                    return false;
+                }
+            }
+        }
+
+        true
+    }
+
+    fn handle_prepare_group_message(
+        &mut self,
+        invite_msg: PrepareGroup<ST>,
+    ) -> PrepareGroupResponse<ST> {
+        debug!(
+            ?invite_msg,
+            "RaptorCastSecondary Client received group invite"
+        );
+        self.metrics[CLIENT_RECEIVED_INVITES] += 1;
+
+        // Check the invite for duplicates & bandwidth requirements
+        let accept = self.validate_prepare_group_message(&invite_msg);
+
+        if accept {
+            // Let's remember about this invite so that we don't blindly
+            // accept any confirmation message.
+            self.pending_confirms
+                .entry(invite_msg.start_round)
+                .or_default()
+                .insert(invite_msg.validator_id, invite_msg.clone());
+        }
+
+        PrepareGroupResponse {
+            req: invite_msg,
+            node_id: self.client_node_id,
+            accept,
+        }
+    }
+
+    fn handle_confirm_group_message(&mut self, confirm_msg: ConfirmGroup<ST>) {
+        let start_round = &confirm_msg.prepare.start_round;
+
+        // Drop the message if the round span is invalid
+        let Some(round_span) = RoundSpan::new(
+            confirm_msg.prepare.start_round,
+            confirm_msg.prepare.end_round,
+        ) else {
+            warn!(
+                "RaptorCastSecondary ignoring invalid round span, confirm = {:?}",
+                confirm_msg
+            );
+            return;
+        };
+
+        // Drop the group if we've already entered the round
+        if start_round <= &self.curr_round {
+            warn!(
+                "RaptorCastSecondary ignoring late confirm, curr_round \
+                        {:?}, confirm = {:?}",
+                self.curr_round, confirm_msg
+            );
+            return;
+        }
+
+        let is_receiving_proposals = self.is_receiving_proposals();
+        let Some(invites) = self.pending_confirms.get_mut(start_round) else {
+            warn!(
+                "RaptorCastSecondary Ignoring confirmation message \
+                        for unrecognized start round: {:?}",
+                confirm_msg
+            );
+            return;
+        };
+
+        let maybe_entry = invites.get(&confirm_msg.prepare.validator_id);
+        let Some(old_invite) = maybe_entry else {
+            warn!(
+                "RaptorCastSecondary ignoring ConfirmGroup from \
+                            unrecognized validator id: {:?}",
+                confirm_msg
+            );
+            return;
+        };
+
+        if old_invite != &confirm_msg.prepare {
+            warn!(
+                "RaptorCastSecondary ignoring ConfirmGroup that \
+                                doesn't match the original invite. Expected: {:?}, got: {:?}",
+                old_invite, confirm_msg.prepare
+            );
+            return;
+        }
+
+        if confirm_msg.peers.len() > confirm_msg.prepare.max_group_size {
+            warn!(
+                "RaptorCastSecondary ignoring ConfirmGroup that \
+                                is larger ({}) than the promised max_group_size ({}). \
+                                Message details: {:?}",
+                confirm_msg.peers.len(),
+                confirm_msg.prepare.max_group_size,
+                confirm_msg
+            );
+            return;
+        }
+
+        if !confirm_msg.peers.contains(&self.client_node_id) {
+            warn!(
+                "RaptorCastSecondary ignoring ConfirmGroup \
+                                with a group that does not contain our node_id: {:?}",
+                confirm_msg
+            );
+            return;
+        }
+
+        let group = GroupAsClient::new_fullnode_group(
+            confirm_msg.peers,
+            &self.client_node_id,
+            confirm_msg.prepare.validator_id,
+            round_span,
+        );
+
+        // Send the group to primary instance right away.
+        // Doing so helps resolve activation of groups for
+        // bootstrapping full-nodes, as they aren't receiving
+        // proposals and hence can't advance (enter) rounds.
+        // The primary instance use the group for determining
+        // which other full-nodes to re-broadcast raptorcast
+        // chunks to.
+        if !is_receiving_proposals {
+            if let Err(error) = self.group_sink_channel.send(group.clone()) {
+                tracing::error!(
+                    "RaptorCastSecondary failed to send group to primary \
+                                        Raptorcast instance: {}",
+                    error
+                );
+            }
+        }
+
+        self.metrics[CLIENT_RECEIVED_CONFIRMS] += 1;
+        debug!(
+            "RaptorCastSecondary Client confirmed group for \
+             rounds [{:?}, {:?}) from validator {:?}",
+            confirm_msg.prepare.start_round,
+            confirm_msg.prepare.end_round,
+            confirm_msg.prepare.validator_id,
+        );
+
+        self.confirmed_groups
+            .force_insert(round_span.start..round_span.end, group);
+        invites.remove(&confirm_msg.prepare.validator_id);
+    }
+
     // Called when group invite or group confirmation is received from validator
     pub fn on_receive_group_message(
         &mut self,
@@ -150,231 +396,18 @@ where
         NodeId<CertificateSignaturePubKey<ST>>,
     )> {
         match msg {
-            //-----------------------------
-            // INVITE from validator
-            //-----------------------------
             FullNodesGroupMessage::PrepareGroup(invite_msg) => {
-                debug!(
-                    ?invite_msg,
-                    "RaptorCastSecondary Client received group invite"
-                );
-                self.metrics[CLIENT_RECEIVED_INVITES] += 1;
-
-                // Check the invite for duplicates & bandwidth requirements
-                let mut accept = true;
-
-                // Sanity check the message
-                if invite_msg.start_round >= invite_msg.end_round {
-                    warn!(
-                        "RaptorCastSecondary rejecting invite message due to \
-                        failed sanity check: {:?}",
-                        invite_msg
-                    );
-                    accept = false;
-                }
-
-                // Reject late round
-                if invite_msg.start_round <= self.curr_round {
-                    warn!(
-                        "RaptorCastSecondary rejecting invite for round that \
-                        already started, curr_round {:?}, invite = {:?}",
-                        self.curr_round, invite_msg
-                    );
-                    accept = false;
-                }
-
-                // Reject invite outside config invitation bounds, unless we are
-                // not receiving any proposals ATM and should accept first group
-                // invite, even if far from what we believe is the current round.
-                if (invite_msg.start_round < self.curr_round + self.config.invite_future_dist_min
-                    || invite_msg.start_round
-                        > self.curr_round + self.config.invite_future_dist_max)
-                    && self.is_receiving_proposals()
-                {
-                    warn!(
-                        "RaptorCastSecondary rejecting invite outside bounds \
-                        [{:?}, {:?}], curr_round {:?}, invite = {:?}",
-                        self.config.invite_future_dist_min,
-                        self.config.invite_future_dist_max,
-                        self.curr_round,
-                        invite_msg
-                    );
-                    accept = false;
-                }
-
-                let mut future_bandwidth: Bandwidth =
-                    self.bandwidth_cost(invite_msg.max_group_size);
-
-                // Check confirmed groups
-                for group in self
-                    .confirmed_groups
-                    .values(invite_msg.start_round..invite_msg.end_round)
-                {
-                    // Check if we already have an overlapping invite from same
-                    // validator, e.g. [30, 40)->validator3 but we already
-                    // have [25, 35)->validator3
-                    // Note that we accept overlaps across different validators,
-                    // e.g. [30, 40)->validator3 + [25, 35)->validator4
-                    if group.get_validator_id() == &invite_msg.validator_id {
-                        warn!(
-                            "RaptorCastSecondary received self-overlapping \
-                            invite for rounds [{:?}, {:?}) from validator {:?}",
-                            invite_msg.start_round, invite_msg.end_round, invite_msg.validator_id
-                        );
-                        accept = false;
-                        break;
-                    }
-                    // Check that we'll have enough bandwidth during round span
-                    future_bandwidth += self.bandwidth_cost(group.size_excl_self());
-                }
-
-                // Check groups we were invited to but are still unconfirmed
-                for (&key, other_invites) in self.pending_confirms.iter() {
-                    if key >= invite_msg.end_round {
-                        // Remaining keys are outside the invite range
-                        break;
-                    }
-                    for other in other_invites.values() {
-                        if Self::overlaps(other.start_round, other.end_round, &invite_msg) {
-                            future_bandwidth += self.bandwidth_cost(other.max_group_size)
-                        }
-                    }
-                }
-                // Final bandwidth check
-                if future_bandwidth > self.config.bandwidth_capacity {
-                    debug!(
-                        "RaptorCastSecondary rejected invite for rounds \
-                        [{:?}, {:?}) from validator {:?} due to low bandwidth",
-                        invite_msg.start_round, invite_msg.end_round, invite_msg.validator_id
-                    );
-                    accept = false;
-                }
-
-                if accept {
-                    // Let's remember about this invite so that we don't blindly
-                    // accept any confirmation message.
-                    self.pending_confirms
-                        .entry(invite_msg.start_round)
-                        .or_default()
-                        .insert(invite_msg.validator_id, invite_msg.clone());
-                }
                 let dest_node_id = invite_msg.validator_id;
-                let response = PrepareGroupResponse {
-                    req: invite_msg,
-                    node_id: self.client_node_id,
-                    accept,
-                };
+                let resp = self.handle_prepare_group_message(invite_msg);
                 Some((
-                    FullNodesGroupMessage::PrepareGroupResponse(response),
+                    FullNodesGroupMessage::PrepareGroupResponse(resp),
                     dest_node_id,
                 ))
             }
-
-            //-----------------------------
-            // ConfirmGroup
-            //-----------------------------
             FullNodesGroupMessage::ConfirmGroup(confirm_msg) => {
-                let start_round = &confirm_msg.prepare.start_round;
-
-                // Drop the group if we've already entered the round
-                if start_round <= &self.curr_round {
-                    warn!(
-                        "RaptorCastSecondary ignoring late confirm, curr_round \
-                        {:?}, confirm = {:?}",
-                        self.curr_round, confirm_msg
-                    );
-                    return None;
-                }
-
-                let is_receiving_proposals = self.is_receiving_proposals();
-
-                if let Some(invites) = self.pending_confirms.get_mut(start_round) {
-                    let round_span = RoundSpan::new(
-                        confirm_msg.prepare.start_round,
-                        confirm_msg.prepare.end_round,
-                    );
-                    let maybe_entry = invites.get(&confirm_msg.prepare.validator_id);
-                    if let Some(old_invite) = maybe_entry {
-                        if old_invite != &confirm_msg.prepare {
-                            warn!(
-                                "RaptorCastSecondary ignoring ConfirmGroup that \
-                                doesn't match the original invite. Expected: {:?}, got: {:?}",
-                                old_invite, confirm_msg.prepare
-                            );
-                            return None;
-                        }
-                        if confirm_msg.peers.len() > confirm_msg.prepare.max_group_size {
-                            warn!(
-                                "RaptorCastSecondary ignoring ConfirmGroup that \
-                                is larger ({}) than the promised max_group_size ({}). \
-                                Message details: {:?}",
-                                confirm_msg.peers.len(),
-                                confirm_msg.prepare.max_group_size,
-                                confirm_msg
-                            );
-                            return None;
-                        }
-                        if confirm_msg.peers.contains(&self.client_node_id) {
-                            let group = GroupAsClient::new_fullnode_group(
-                                confirm_msg.peers,
-                                &self.client_node_id,
-                                confirm_msg.prepare.validator_id,
-                                round_span,
-                            );
-
-                            // Send the group to primary instance right away.
-                            // Doing so helps resolve activation of groups for
-                            // bootstrapping full-nodes, as they aren't receiving
-                            // proposals and hence can't advance (enter) rounds.
-                            // The primary instance use the group for determining
-                            // which other full-nodes to re-broadcast raptorcast
-                            // chunks to.
-                            if !is_receiving_proposals {
-                                if let Err(error) = self.group_sink_channel.send(group.clone()) {
-                                    error!(
-                                        "RaptorCastSecondary failed to send group to primary \
-                                        Raptorcast instance: {}",
-                                        error
-                                    );
-                                }
-                            }
-                            self.metrics[CLIENT_RECEIVED_CONFIRMS] += 1;
-
-                            debug!(
-                                "RaptorCastSecondary Client confirmed group for \
-                                rounds [{:?}, {:?}) from validator {:?}",
-                                confirm_msg.prepare.start_round,
-                                confirm_msg.prepare.end_round,
-                                confirm_msg.prepare.validator_id,
-                            );
-
-                            self.confirmed_groups
-                                .force_insert(round_span.start..round_span.end, group);
-                            invites.remove(&confirm_msg.prepare.validator_id);
-                        } else {
-                            warn!(
-                                "RaptorCastSecondary ignoring ConfirmGroup \
-                                with a group that does not contain our node_id: {:?}",
-                                confirm_msg
-                            );
-                        }
-                    } else {
-                        warn!(
-                            "RaptorCastSecondary ignoring ConfirmGroup from \
-                            unrecognized validator id: {:?}",
-                            confirm_msg
-                        );
-                    }
-                } else {
-                    warn!(
-                        "RaptorCastSecondary Ignoring confirmation message \
-                        for unrecognized start round: {:?}",
-                        confirm_msg
-                    );
-                }
+                self.handle_confirm_group_message(confirm_msg);
                 None
             }
-
             FullNodesGroupMessage::PrepareGroupResponse(_) => {
                 error!(
                     "RaptorCastSecondary client received a \
@@ -383,10 +416,6 @@ where
                 None
             }
         }
-    }
-
-    fn bandwidth_cost(&self, group_size: usize) -> Bandwidth {
-        group_size as u64 * self.config.bandwidth_cost_per_group_member
     }
 
     fn overlaps(begin: Round, end: Round, group: &PrepareGroup<ST>) -> bool {
@@ -412,5 +441,112 @@ where
     #[cfg(test)]
     pub fn num_pending_confirms(&self) -> usize {
         self.pending_confirms.len()
+    }
+}
+
+struct BandwidthAggregator {
+    cap: u64,
+    sum: u64,
+    cost_per_node: u64,
+}
+
+impl BandwidthAggregator {
+    fn new(cap: u64, cost_per_node: u64) -> Self {
+        Self {
+            cap,
+            cost_per_node,
+            sum: 0,
+        }
+    }
+
+    fn add_and_check(&mut self, group_size: usize) -> Option<()> {
+        let group_size = group_size as u64;
+        let group_bandwidth = group_size.checked_mul(self.cost_per_node)?;
+        let updated_sum = self.sum.checked_add(group_bandwidth)?;
+        if updated_sum > self.cap {
+            return None;
+        }
+
+        self.sum = updated_sum;
+        Some(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use monad_secp::SecpSignature;
+    use monad_testutil::signing::get_key;
+    use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
+
+    use super::{
+        super::{
+            super::{config::RaptorCastConfigSecondaryClient, util::Group},
+            Client,
+        },
+        *,
+    };
+
+    type ST = SecpSignature;
+    type PubKeyType = CertificateSignaturePubKey<ST>;
+    type RcToRcChannelGrp<ST> = (UnboundedSender<Group<ST>>, UnboundedReceiver<Group<ST>>);
+
+    #[test]
+    fn malformed_prepare_messages() {
+        let (clt_tx, _clt_rx): RcToRcChannelGrp<ST> = unbounded_channel();
+        let self_id = nid(1);
+        let mut clt = Client::<ST>::new(
+            self_id,
+            clt_tx,
+            RaptorCastConfigSecondaryClient {
+                // we can broadcast to most 5 peers
+                bandwidth_cost_per_group_member: u64::MAX / 5,
+                bandwidth_capacity: u64::MAX,
+                invite_future_dist_min: Round(1),
+                invite_future_dist_max: Round(100),
+                invite_accept_heartbeat: Duration::from_secs(10),
+            },
+        );
+
+        clt.confirmed_groups.insert(
+            Round(1)..Round(5),
+            GroupAsClient::new_fullnode_group(
+                vec![self_id, nid(3), nid(4), nid(5)],
+                &self_id,
+                nid(2),
+                RoundSpan::new(Round(1), Round(5)).unwrap(),
+            ),
+        );
+
+        let malformed_messages = [
+            // group size overflow
+            PrepareGroup {
+                max_group_size: usize::MAX,
+                validator_id: nid(2),
+                start_round: Round(5),
+                end_round: Round(6),
+            },
+            // invalid round span
+            PrepareGroup {
+                max_group_size: 1,
+                validator_id: nid(2),
+                start_round: Round(7),
+                end_round: Round(5),
+            },
+        ];
+
+        for message in malformed_messages {
+            // handles without crashing
+            let resp = clt.handle_prepare_group_message(message);
+            assert!(!resp.accept)
+        }
+    }
+
+    // Creates a node id that we can refer to just from its seed
+    fn nid(seed: u64) -> NodeId<PubKeyType> {
+        let key_pair = get_key::<ST>(seed);
+        let pub_key = key_pair.pubkey();
+        NodeId::new(pub_key)
     }
 }
