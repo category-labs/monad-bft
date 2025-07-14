@@ -24,7 +24,7 @@ use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_dataplane::{udp::segment_size_for_mtu, Dataplane, UnicastMsg};
-use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
+use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{Message, PeerEntry, RouterCommand};
 use monad_peer_discovery::{driver::PeerDiscoveryDriver, PeerDiscoveryAlgo, PeerDiscoveryEvent};
 use monad_types::{DropTimer, Epoch, NodeId};
@@ -76,7 +76,6 @@ where
     pending_events: VecDeque<RaptorCastEvent<M::Event, ST>>,
     channel_from_primary: Receiver<FullNodesGroupMessage<ST>>,
     waker: Option<Waker>,
-    metrics: ExecutorMetrics,
     _phantom: PhantomData<(OM, SE)>,
 }
 
@@ -139,7 +138,6 @@ where
             pending_events: Default::default(),
             channel_from_primary,
             waker: None,
-            metrics: Default::default(),
             _phantom: PhantomData,
         }
     }
@@ -425,9 +423,13 @@ where
     }
 
     fn metrics(&self) -> ExecutorMetricsChain {
-        self.metrics.as_ref().into()
+        match &self.role {
+            Role::Publisher(publisher) => publisher.metrics().into(),
+            Role::Client(client) => client.metrics().into(),
+        }
     }
 }
+
 impl<ST, M, OM, E, PD> Stream for RaptorCastSecondary<ST, M, OM, E, PD>
 where
     ST: CertificateSignatureRecoverable,

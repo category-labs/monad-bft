@@ -4,6 +4,7 @@ use iset::IntervalMap;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_executor::ExecutorMetrics;
 use monad_types::{NodeId, Round, RoundSpan, GENESIS_ROUND};
 use tracing::{debug, error, warn};
 
@@ -11,6 +12,13 @@ use super::{
     super::{config::RaptorCastConfigSecondaryClient, util::Group},
     group_message::{FullNodesGroupMessage, PrepareGroup, PrepareGroupResponse},
 };
+
+/// Metrics constant
+pub const CLIENT_NUM_CURRENT_GROUPS: &str =
+    "monad.bft.raptorcast.secondary.client.num_current_groups";
+pub const CLIENT_RECEIVED_INVITES: &str = "monad.bft.raptorcast.secondary.client.received_invites";
+pub const CLIENT_RECEIVED_CONFIRMS: &str =
+    "monad.bft.raptorcast.secondary.client.received_confirms";
 
 type Bandwidth = u64;
 type GroupAsClient<ST> = Group<ST>;
@@ -47,6 +55,9 @@ where
     // cannot call enter_round() to advance state as it doesn't know what round
     // we are at.
     last_round_heartbeat: Instant,
+
+    // Metrics
+    metrics: ExecutorMetrics,
 }
 
 impl<ST> Client<ST>
@@ -69,6 +80,7 @@ where
             group_sink_channel,
             curr_round: GENESIS_ROUND,
             last_round_heartbeat,
+            metrics: ExecutorMetrics::default(),
         }
     }
 
@@ -100,7 +112,9 @@ where
         // re-broadcast raptorcast chunks. This is the normal path when we are
         // receiving proposals and thus the round increases.
         let consume_end = curr_round + Round(1);
+        let mut current_group_count = 0;
         for group in self.confirmed_groups.values(curr_round..consume_end) {
+            current_group_count += 1;
             if let Err(error) = self.group_sink_channel.send(group.clone()) {
                 error!(
                     "Failed to send group to secondary Raptorcast instance: {}",
@@ -108,6 +122,7 @@ where
                 );
             }
         }
+        self.metrics[CLIENT_NUM_CURRENT_GROUPS] = current_group_count;
 
         // Remove all groups that should already have been consumed
         let mut keys_to_remove = Vec::new();
@@ -142,6 +157,7 @@ where
                     ?invite_msg,
                     "RaptorCastSecondary Client received group invite"
                 );
+                self.metrics[CLIENT_RECEIVED_INVITES] += 1;
 
                 // Check the invite for duplicates & bandwidth requirements
                 let mut accept = true;
@@ -321,6 +337,7 @@ where
                                     );
                                 }
                             }
+                            self.metrics[CLIENT_RECEIVED_CONFIRMS] += 1;
 
                             debug!(
                                 "RaptorCastSecondary Client confirmed group for \
@@ -375,6 +392,10 @@ where
         assert!(begin <= end);
         assert!(group.start_round <= group.end_round);
         group.start_round < end && group.end_round > begin
+    }
+
+    pub fn metrics(&self) -> &ExecutorMetrics {
+        &self.metrics
     }
 
     #[cfg(test)]

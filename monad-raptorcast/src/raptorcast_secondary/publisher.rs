@@ -6,6 +6,7 @@ use std::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_executor::ExecutorMetrics;
 use monad_types::{NodeId, Round, RoundSpan};
 use rand::seq::SliceRandom;
 use rand_chacha::ChaCha8Rng;
@@ -18,6 +19,11 @@ use super::{
     },
     group_message::{ConfirmGroup, FullNodesGroupMessage, PrepareGroup},
 };
+
+/// Metrics constant
+pub const PUBLISHER_CURRENT_GROUP_SIZE: &str =
+    "monad.bft.raptorcast.secondary.publisher.current_group_size";
+pub const PUBLISHER_SENT_INVITES: &str = "monad.bft.raptorcast.secondary.publisher.sent_invites";
 
 type FullNodesST<ST> = FullNodes<CertificateSignaturePubKey<ST>>;
 type TimePoint = Round;
@@ -47,6 +53,9 @@ where
     // the full-nodes in it (FullNodesView).
     // Actually we only need full_nodes_accepted & end_round from curr_group.
     curr_group: Group<ST>,
+
+    // Metrics
+    metrics: ExecutorMetrics,
 }
 
 impl<ST> Publisher<ST>
@@ -98,6 +107,7 @@ where
             rng,
             curr_round: Round::MIN,
             curr_group: Group::default(),
+            metrics: ExecutorMetrics::default(),
         }
     }
 
@@ -170,6 +180,8 @@ where
                         .unwrap()
                         .1
                         .to_finalized_group(self.validator_node_id);
+                    self.metrics[PUBLISHER_CURRENT_GROUP_SIZE] =
+                        self.curr_group.size_excl_self() as u64;
                     return;
                 }
                 // The next group is not yet scheduled to start. This can happen
@@ -195,6 +207,8 @@ where
         }
         // Fallback group for error cases.
         self.curr_group = self.new_empty_group(round);
+        // Not serving any full nodes in current round
+        self.metrics[PUBLISHER_CURRENT_GROUP_SIZE] = 0;
     }
 
     // Advances the state machine to the given "time point".
@@ -220,6 +234,12 @@ where
                     ?out_msg,
                     "RaptorCastSecondary step_until advanced invites and will send",
                 );
+
+                // record number of invites
+                if let FullNodesGroupMessage::PrepareGroup(_) = &out_msg.0 {
+                    self.metrics[PUBLISHER_SENT_INVITES] += out_msg.1.list.len() as u64;
+                }
+
                 return Some(out_msg);
             }
         }
@@ -240,6 +260,12 @@ where
                 "RaptorCastSecondary step_until new_randomized group, will send:",
             );
             self.group_schedule.insert(new_group.start_round, new_group);
+
+            // record number of invites for new group
+            self.metrics[PUBLISHER_SENT_INVITES] += maybe_invites
+                .as_ref()
+                .map_or(0, |(_, full_nodes)| full_nodes.list.len() as u64);
+
             return maybe_invites;
         }
 
@@ -315,6 +341,10 @@ where
             }
             self.peer_disc_full_nodes.list.push(node);
         }
+    }
+
+    pub fn metrics(&self) -> &ExecutorMetrics {
+        &self.metrics
     }
 }
 
