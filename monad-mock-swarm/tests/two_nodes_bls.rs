@@ -38,7 +38,7 @@ impl SwarmRelation for BLSSwarm {
     type SignatureCollectionType =
         BlsSignatureCollection<CertificateSignaturePubKey<Self::SignatureType>>;
     type ExecutionProtocolType = MockExecutionProtocol;
-    type StateBackendType = InMemoryState;
+    type StateBackendType = InMemoryState<Self::SignatureType, Self::SignatureCollectionType>;
     type BlockPolicyType = PassthruBlockPolicy;
     type ChainConfigType = MockChainConfig;
     type ChainRevisionType = MockChainRevision;

@@ -4,7 +4,6 @@ use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_consensus_types::{
     block::ConsensusBlockHeader,
     payload::ConsensusBlockBody,
-    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{Timeout, TimeoutCertificate},
     voting::Vote,
 };
@@ -15,6 +14,7 @@ use monad_crypto::{
     hasher::{Hashable, Hasher},
 };
 use monad_types::ExecutionProtocol;
+use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionKeyPairType};
 
 /// Consensus protocol vote message
 ///

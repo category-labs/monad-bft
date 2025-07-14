@@ -2,12 +2,10 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_types::{ExecutionProtocol, Round};
+use monad_validator::signature_collection::SignatureCollection;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    quorum_certificate::QuorumCertificate, signature_collection::SignatureCollection,
-    timeout::TimeoutCertificate,
-};
+use crate::{quorum_certificate::QuorumCertificate, timeout::TimeoutCertificate};
 
 pub mod block;
 pub mod block_validator;
@@ -15,7 +13,6 @@ pub mod checkpoint;
 pub mod metrics;
 pub mod payload;
 pub mod quorum_certificate;
-pub mod signature_collection;
 pub mod timeout;
 pub mod validation;
 pub mod validator_data;

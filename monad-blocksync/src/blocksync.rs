@@ -8,7 +8,6 @@ use monad_consensus_types::{
     block::{BlockPolicy, BlockRange, ConsensusBlockHeader, ConsensusFullBlock},
     metrics::Metrics,
     payload::{ConsensusBlockBody, ConsensusBlockBodyId},
-    signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
@@ -17,6 +16,7 @@ use monad_state_backend::StateBackend;
 use monad_types::{Epoch, ExecutionProtocol, NodeId, SeqNum};
 use monad_validator::{
     epoch_manager::EpochManager,
+    signature_collection::SignatureCollection,
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
@@ -215,7 +215,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     BlockTree(&'a BlockTree<ST, SCT, EPT, BPT, SBT>),
     BlockBuffer(&'a HashMap<ConsensusBlockBodyId, ConsensusBlockBody<EPT>>),
@@ -227,7 +227,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     pub block_sync: &'a mut BlockSync<ST, SCT, EPT>,
@@ -246,7 +246,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     #[must_use]
@@ -1016,8 +1016,7 @@ mod test {
             ConsensusBlockBody, ConsensusBlockBodyId, ConsensusBlockBodyInner, RoundSignature,
         },
         quorum_certificate::QuorumCertificate,
-        signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-        voting::{ValidatorMapping, Vote},
+        voting::Vote,
     };
     use monad_crypto::{
         certificate_signature::{
@@ -1036,7 +1035,9 @@ mod test {
     use monad_validator::{
         epoch_manager::EpochManager,
         leader_election::LeaderElection,
+        signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         simple_round_robin::SimpleRoundRobin,
+        validator_mapping::ValidatorMapping,
         validator_set::{ValidatorSetFactory, ValidatorSetType, ValidatorSetTypeFactory},
         validators_epoch_mapping::ValidatorsEpochMapping,
     };
@@ -1056,7 +1057,7 @@ mod test {
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
         BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
@@ -1081,7 +1082,7 @@ mod test {
     type SignatureCollectionType = MultiSig<NopSignature>;
     type ExecutionProtocolType = MockExecutionProtocol;
     type BlockPolicyType = PassthruBlockPolicy;
-    type StateBackendType = InMemoryState;
+    type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
     type LeaderElectionType = SimpleRoundRobin<PubKeyType>;
 
     impl<BPT, SBT, VTF, LT>
@@ -1096,7 +1097,7 @@ mod test {
         >
     where
         BPT: BlockPolicy<SignatureType, SignatureCollectionType, ExecutionProtocolType, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<SignatureType, SignatureCollectionType>,
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>>,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>>,
     {

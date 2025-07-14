@@ -5,7 +5,6 @@ use std::{
 };
 
 use futures::{SinkExt, Stream, StreamExt};
-use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -15,6 +14,7 @@ use monad_executor_glue::{
     MonadEvent, ReadCommand, ReloadConfig, WriteCommand,
 };
 use monad_types::ExecutionProtocol;
+use monad_validator::signature_collection::SignatureCollection;
 use tokio::{
     net::{unix::OwnedReadHalf, UnixListener},
     sync::{broadcast, mpsc},

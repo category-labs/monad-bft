@@ -1,10 +1,10 @@
 use std::marker::PhantomData;
 
-use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_types::{ExecutionProtocol, *};
+use monad_validator::signature_collection::SignatureCollection;
 
 /// The safety module is responsible for all *stateful* safety checks.
 /// This makes sure that we don't double vote, double propose, etc.

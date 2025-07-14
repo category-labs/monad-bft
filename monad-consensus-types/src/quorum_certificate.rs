@@ -1,13 +1,14 @@
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_types::*;
-use serde::{Deserialize, Serialize};
-
-use crate::{
+use monad_validator::{
     signature_collection::{
         deserialize_signature_collection, serialize_signature_collection, SignatureCollection,
     },
-    voting::*,
+    validator_mapping::ValidatorMapping,
 };
+use serde::{Deserialize, Serialize};
+
+use crate::voting::Vote;
 
 #[non_exhaustive]
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodable, RlpDecodable)]

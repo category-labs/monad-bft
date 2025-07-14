@@ -2,7 +2,6 @@ pub mod twin_reader;
 
 use std::{collections::BTreeMap, time::Duration};
 
-use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -21,6 +20,7 @@ use monad_types::{ExecutionProtocol, NodeId, SeqNum};
 use monad_updaters::{
     ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
 };
+use monad_validator::signature_collection::SignatureCollection;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaChaRng;
 use twin_reader::TWINS_STATE_ROOT_DELAY;
@@ -35,7 +35,7 @@ where
     S: SwarmRelation<
         SignatureType = ST,
         SignatureCollectionType = SCT,
-        StateBackendType = InMemoryState,
+        StateBackendType = InMemoryState<ST, SCT>,
         Pipeline = MonadMessageTransformerPipeline<CertificateSignaturePubKey<ST>>,
         RouterScheduler = NoSerRouterScheduler<
             CertificateSignaturePubKey<ST>,

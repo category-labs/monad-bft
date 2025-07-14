@@ -12,7 +12,6 @@ use monad_chain_config::{revision::ChainParams, MockChainConfig};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::MockExecutionProtocol,
-    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     validator_data::{ValidatorData, ValidatorSetData},
 };
 use monad_crypto::certificate_signature::{
@@ -27,6 +26,7 @@ use monad_secp::SecpSignature;
 use monad_state_backend::InMemoryStateInner;
 use monad_types::{NodeId, Round, SeqNum, Stake};
 use monad_updaters::{ledger::MockableLedger, local_router::LocalRouterConfig};
+use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionKeyPairType};
 use opentelemetry::trace::{Span, TraceContextExt, Tracer};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::trace::SdkTracerProvider;

@@ -5,11 +5,7 @@ use std::{
 };
 
 use itertools::Itertools;
-use monad_consensus_types::{
-    signature_collection::SignatureCollection,
-    validator_data::{ValidatorData, ValidatorSetData},
-    voting::ValidatorMapping,
-};
+use monad_consensus_types::validator_data::{ValidatorData, ValidatorSetData};
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
 };
@@ -17,8 +13,10 @@ use monad_executor::Executor;
 use monad_executor_glue::MonadEvent;
 use monad_state::{Forkpoint, MonadStateBuilder};
 use monad_transformer::{LinkMessage, Pipeline, ID};
-use monad_validator::validator_set::{
-    BoxedValidatorSetTypeFactory, ValidatorSetType, ValidatorSetTypeFactory,
+use monad_validator::{
+    signature_collection::SignatureCollection,
+    validator_mapping::ValidatorMapping,
+    validator_set::{BoxedValidatorSetTypeFactory, ValidatorSetType, ValidatorSetTypeFactory},
 };
 use rand::{Rng, SeedableRng};
 use rand_chacha::{ChaCha20Rng, ChaChaRng};

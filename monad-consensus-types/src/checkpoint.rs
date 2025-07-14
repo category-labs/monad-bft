@@ -2,12 +2,10 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_types::{BlockId, Epoch, ExecutionProtocol, Round, SeqNum};
+use monad_validator::signature_collection::SignatureCollection;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    quorum_certificate::QuorumCertificate, signature_collection::SignatureCollection,
-    RoundCertificate,
-};
+use crate::{quorum_certificate::QuorumCertificate, RoundCertificate};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RootInfo {

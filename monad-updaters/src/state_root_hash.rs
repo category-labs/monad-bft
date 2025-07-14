@@ -6,16 +6,14 @@ use std::{
 };
 
 use futures::Stream;
-use monad_consensus_types::{
-    signature_collection::SignatureCollection,
-    validator_data::{ValidatorSetData, ValidatorSetDataWithEpoch},
-};
+use monad_consensus_types::validator_data::{ValidatorSetData, ValidatorSetDataWithEpoch};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MonadEvent, StateRootHashCommand};
 use monad_types::{Epoch, ExecutionProtocol, SeqNum, Stake};
+use monad_validator::signature_collection::SignatureCollection;
 use tracing::error;
 
 pub trait MockableStateRootHash:

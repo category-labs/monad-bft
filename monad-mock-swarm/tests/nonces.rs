@@ -53,7 +53,7 @@ mod test {
         type SignatureType = NopSignature;
         type SignatureCollectionType = MultiSig<Self::SignatureType>;
         type ExecutionProtocolType = EthExecutionProtocol;
-        type StateBackendType = InMemoryState;
+        type StateBackendType = InMemoryState<Self::SignatureType, Self::SignatureCollectionType>;
         type BlockPolicyType = EthBlockPolicy<Self::SignatureType, Self::SignatureCollectionType>;
         type ChainConfigType = MockChainConfig;
         type ChainRevisionType = MockChainRevision;

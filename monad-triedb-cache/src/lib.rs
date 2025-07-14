@@ -1,14 +1,19 @@
 use std::{
     collections::BTreeMap,
+    marker::PhantomData,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 use alloy_primitives::Address;
 use itertools::Itertools;
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_eth_types::{EthAccount, EthHeader};
 use monad_state_backend::{StateBackend, StateBackendError};
-use monad_types::{BlockId, DropTimer, Round, SeqNum};
+use monad_types::{BlockId, DropTimer, Round, SeqNum, Stake};
+use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use tracing::warn;
 
 #[derive(Debug)]
@@ -20,29 +25,41 @@ struct RoundCache {
 }
 
 #[derive(Debug)]
-pub struct StateBackendCache<SBT> {
+pub struct StateBackendCache<ST, SCT, SBT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    SBT: StateBackend<ST, SCT>,
+{
     // used so that StateBackendCache can maintain a logically immutable interface
     cache: Arc<Mutex<BTreeMap<Round, RoundCache>>>,
     state_backend: SBT,
     execution_delay: SeqNum,
+
+    _phantom: PhantomData<(ST, SCT)>,
 }
 
-impl<SBT> StateBackendCache<SBT>
+impl<ST, SCT, SBT> StateBackendCache<ST, SCT, SBT>
 where
-    SBT: StateBackend,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    SBT: StateBackend<ST, SCT>,
 {
     pub fn new(state_backend: SBT, execution_delay: SeqNum) -> Self {
         Self {
             cache: Default::default(),
             state_backend,
             execution_delay,
+            _phantom: PhantomData,
         }
     }
 }
 
-impl<SBT> StateBackend for StateBackendCache<SBT>
+impl<ST, SCT, SBT> StateBackend<ST, SCT> for StateBackendCache<ST, SCT, SBT>
 where
-    SBT: StateBackend,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    SBT: StateBackend<ST, SCT>,
 {
     fn get_account_statuses<'a>(
         &self,
@@ -194,6 +211,13 @@ where
 
     fn raw_read_latest_finalized_block(&self) -> Option<SeqNum> {
         self.state_backend.raw_read_latest_finalized_block()
+    }
+
+    fn read_next_valset(
+        &self,
+        _block_num: SeqNum,
+    ) -> Vec<(SCT::NodeIdPubKey, SignatureCollectionPubKeyType<SCT>, Stake)> {
+        unimplemented!()
     }
 
     fn total_db_lookups(&self) -> u64 {

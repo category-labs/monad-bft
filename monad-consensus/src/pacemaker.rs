@@ -4,18 +4,21 @@ use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::{
     metrics::Metrics,
     quorum_certificate::QuorumCertificate,
-    signature_collection::{
-        SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
-    },
     timeout::{Timeout, TimeoutCertificate, TimeoutInfo},
-    voting::ValidatorMapping,
     RoundCertificate,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_types::{Epoch, ExecutionProtocol, NodeId, Round};
-use monad_validator::{epoch_manager::EpochManager, validator_set::ValidatorSetType};
+use monad_validator::{
+    epoch_manager::EpochManager,
+    signature_collection::{
+        SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
+    },
+    validator_mapping::ValidatorMapping,
+    validator_set::ValidatorSetType,
+};
 use tracing::{debug, info};
 
 use crate::{messages::message::TimeoutMessage, validation::safety::Safety};

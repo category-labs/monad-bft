@@ -5,7 +5,6 @@ use std::{
 };
 
 use futures::Stream;
-use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -16,6 +15,7 @@ use monad_executor_glue::{
 };
 use monad_state_backend::{InMemoryState, StateBackend};
 use monad_types::{ExecutionProtocol, FinalizedHeader, NodeId, SeqNum, GENESIS_SEQ_NUM};
+use monad_validator::signature_collection::SignatureCollection;
 
 pub trait MockableStateSync:
     Executor<Command = StateSyncCommand<Self::Signature, Self::ExecutionProtocol>> + Unpin
@@ -56,7 +56,7 @@ where
 {
     events: VecDeque<MonadEvent<ST, SCT, EPT>>,
 
-    state_backend: InMemoryState,
+    state_backend: InMemoryState<ST, SCT>,
     peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
     max_service_window: SeqNum,
 
@@ -185,7 +185,7 @@ where
     EPT: ExecutionProtocol,
 {
     pub fn new(
-        state_backend: InMemoryState,
+        state_backend: InMemoryState<ST, SCT>,
         peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
     ) -> Self {
         Self {

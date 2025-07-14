@@ -22,7 +22,6 @@ use monad_consensus_types::{
     metrics::Metrics,
     payload::RoundSignature,
     quorum_certificate::{QuorumCertificate, Rank},
-    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::TimeoutCertificate,
     voting::Vote,
     RoundCertificate,
@@ -35,6 +34,7 @@ use monad_types::{BlockId, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
@@ -52,7 +52,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     /// Prospective blocks are stored here while they wait to be
     /// committed
@@ -75,7 +75,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     CCT: PartialEq,
     CRT: PartialEq,
 {
@@ -93,7 +93,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     CCT: Debug,
     CRT: Debug,
 {
@@ -125,7 +125,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
@@ -219,7 +219,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -317,7 +317,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
@@ -1367,9 +1367,8 @@ mod test {
         metrics::Metrics,
         payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
         quorum_certificate::QuorumCertificate,
-        signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         timeout::Timeout,
-        voting::{ValidatorMapping, Vote},
+        voting::Vote,
         RoundCertificate,
     };
     use monad_crypto::{
@@ -1398,7 +1397,9 @@ mod test {
     use monad_validator::{
         epoch_manager::EpochManager,
         leader_election::LeaderElection,
+        signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         simple_round_robin::SimpleRoundRobin,
+        validator_mapping::ValidatorMapping,
         validator_set::{ValidatorSetFactory, ValidatorSetType, ValidatorSetTypeFactory},
         validators_epoch_mapping::ValidatorsEpochMapping,
     };
@@ -1423,7 +1424,7 @@ mod test {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<SignatureType>;
     type BlockPolicyType = EthBlockPolicy<SignatureType, SignatureCollectionType>;
-    type StateBackendType = InMemoryState;
+    type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
     type BlockValidatorType =
         EthValidator<SignatureType, SignatureCollectionType, StateBackendType>;
 
@@ -1433,7 +1434,7 @@ mod test {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
-        SBT: StateBackend + StateBackendTest,
+        SBT: StateBackend<ST, SCT> + StateBackendTest<ST, SCT>,
         BVT: BlockValidator<ST, SCT, EthExecutionProtocol, BPT, SBT>,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
@@ -1472,7 +1473,7 @@ mod test {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
-        SBT: StateBackend + StateBackendTest,
+        SBT: StateBackend<ST, SCT> + StateBackendTest<ST, SCT>,
         BVT: BlockValidator<ST, SCT, EthExecutionProtocol, BPT, SBT>,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
@@ -1700,7 +1701,7 @@ mod test {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
-        SBT: StateBackend + StateBackendTest,
+        SBT: StateBackend<ST, SCT> + StateBackendTest<ST, SCT>,
         BVT: BlockValidator<ST, SCT, EthExecutionProtocol, BPT, SBT>,
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
@@ -1840,7 +1841,7 @@ mod test {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
     {
         cmds.into_iter()
             .filter_map(|c| match c {
@@ -1863,7 +1864,7 @@ mod test {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
     {
         cmds.into_iter()
             .filter_map(|c| match c {
@@ -1880,7 +1881,7 @@ mod test {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT> + std::fmt::Debug,
-        SBT: StateBackend + std::fmt::Debug,
+        SBT: StateBackend<ST, SCT> + std::fmt::Debug,
     {
         cmds.iter()
             .find_map(|c| match c {
@@ -1897,7 +1898,7 @@ mod test {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
     {
         cmds.into_iter()
             .filter_map(|c| match c {
@@ -1915,7 +1916,7 @@ mod test {
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
         BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
     {
         cmds.iter().find_map(|c| match c {
             ConsensusCommand::Publish {
@@ -1937,7 +1938,7 @@ mod test {
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
         BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
     {
         cmds.iter().find(|c| match c {
             ConsensusCommand::Publish {
@@ -1956,7 +1957,7 @@ mod test {
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
         BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
     {
         cmds.iter()
             .filter_map(|c| match c {
@@ -1976,7 +1977,7 @@ mod test {
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
         BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
     {
         cmds.iter()
             .find(|c| matches!(c, ConsensusCommand::RequestSync { .. }))
@@ -1990,7 +1991,7 @@ mod test {
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
         BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
     {
         cmds.iter()
             .filter_map(|c| match c {
@@ -2010,7 +2011,7 @@ mod test {
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
         BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
     {
         cmds.iter()
             .find(|c| matches!(c, ConsensusCommand::TimestampUpdate(_)))

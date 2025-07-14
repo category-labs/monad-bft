@@ -53,7 +53,7 @@ mod test {
         type SignatureType = NopSignature;
         type SignatureCollectionType = MultiSig<Self::SignatureType>;
         type ExecutionProtocolType = MockExecutionProtocol;
-        type StateBackendType = InMemoryState;
+        type StateBackendType = InMemoryState<Self::SignatureType, Self::SignatureCollectionType>;
         type BlockPolicyType = PassthruBlockPolicy;
         type ChainConfigType = MockChainConfig;
         type ChainRevisionType = MockChainRevision;

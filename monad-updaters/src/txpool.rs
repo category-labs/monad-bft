@@ -7,12 +7,9 @@ use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use alloy_rlp::Decodable;
 use bytes::Bytes;
 use futures::Stream;
-use monad_consensus_types::{
-    block::{
-        BlockPolicy, MockExecutionBody, MockExecutionProposedHeader, MockExecutionProtocol,
-        ProposedExecutionInputs,
-    },
-    signature_collection::SignatureCollection,
+use monad_consensus_types::block::{
+    BlockPolicy, MockExecutionBody, MockExecutionProposedHeader, MockExecutionProtocol,
+    ProposedExecutionInputs,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -24,6 +21,7 @@ use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_state_backend::StateBackend;
 use monad_types::ExecutionProtocol;
+use monad_validator::signature_collection::SignatureCollection;
 
 pub trait MockableTxPool:
     Executor<
@@ -48,7 +46,7 @@ pub trait MockableTxPool:
         Self::ExecutionProtocol,
         Self::StateBackend,
     >;
-    type StateBackend: StateBackend;
+    type StateBackend: StateBackend<Self::Signature, Self::SignatureCollection>;
 
     type Event;
 
@@ -80,7 +78,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     // This field is only populated when the execution protocol is EthExecutionProtocol
     eth: Option<(EthTxPool<ST, SCT, SBT>, BPT, SBT)>,
@@ -96,7 +94,7 @@ impl<ST, SCT, BPT, SBT> Default for MockTxPoolExecutor<ST, SCT, MockExecutionPro
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     fn default() -> Self {
         Self {
@@ -115,7 +113,7 @@ impl<ST, SCT, SBT> MockTxPoolExecutor<ST, SCT, EthExecutionProtocol, EthBlockPol
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     pub fn new(block_policy: EthBlockPolicy<ST, SCT>, state_backend: SBT) -> Self {
         Self {
@@ -135,7 +133,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BPT: BlockPolicy<ST, SCT, MockExecutionProtocol, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     type Command = TxPoolCommand<ST, SCT, MockExecutionProtocol, BPT, SBT>;
 
@@ -197,7 +195,7 @@ impl<ST, SCT, SBT> Executor
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     type Command = TxPoolCommand<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT>;
 
@@ -310,7 +308,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 
     Self: Unpin,
 {
@@ -335,7 +333,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BPT: BlockPolicy<ST, SCT, MockExecutionProtocol, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 
     Self: Executor<Command = TxPoolCommand<ST, SCT, MockExecutionProtocol, BPT, SBT>> + Unpin,
 {
@@ -363,7 +361,7 @@ impl<ST, SCT, SBT> MockableTxPool
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 
     Self: Executor<
             Command = TxPoolCommand<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT>,

@@ -1,6 +1,5 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use monad_bls::BlsSignatureCollection;
-use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
     hasher::{Hasher, HasherType},
@@ -8,7 +7,9 @@ use monad_crypto::{
 };
 use monad_testutil::validators::create_keys_w_validators;
 use monad_types::NodeId;
-use monad_validator::validator_set::ValidatorSetFactory;
+use monad_validator::{
+    signature_collection::SignatureCollection, validator_set::ValidatorSetFactory,
+};
 
 const N: u32 = 1000;
 

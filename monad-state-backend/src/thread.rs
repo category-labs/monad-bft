@@ -1,8 +1,15 @@
-use std::sync::{mpsc, Arc};
+use std::{
+    marker::PhantomData,
+    sync::{mpsc, Arc},
+};
 
 use alloy_primitives::Address;
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_eth_types::{EthAccount, EthHeader};
-use monad_types::{BlockId, Round, SeqNum};
+use monad_types::{BlockId, Round, SeqNum, Stake};
+use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use tracing::warn;
 
 use crate::{StateBackend, StateBackendError};
@@ -11,7 +18,11 @@ use crate::{StateBackend, StateBackendError};
 // sync context so a value of 16 allows 16 threads to simulatneously make state backend requests.
 const MAX_INFLIGHT_REQUESTS: usize = 16;
 
-enum StateBackendThreadRequest {
+enum StateBackendThreadRequest<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     GetAccountStatuses {
         block_id: BlockId,
         seq_num: SeqNum,
@@ -33,21 +44,39 @@ enum StateBackendThreadRequest {
     RawReadLatestFinalizedBlock {
         tx: mpsc::SyncSender<Option<SeqNum>>,
     },
+    ReadNextValidatorData {
+        block_num: SeqNum,
+        tx: mpsc::SyncSender<
+            Vec<(
+                CertificateSignaturePubKey<ST>,
+                SignatureCollectionPubKeyType<SCT>,
+                Stake,
+            )>,
+        >,
+    },
     TotalDbLookups {
         tx: mpsc::SyncSender<u64>,
     },
 }
 
 #[derive(Clone)]
-pub struct StateBackendThreadClient {
+pub struct StateBackendThreadClient<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     handle: Arc<std::thread::JoinHandle<()>>,
-    request_tx: mpsc::SyncSender<StateBackendThreadRequest>,
+    request_tx: mpsc::SyncSender<StateBackendThreadRequest<ST, SCT>>,
 }
 
-impl StateBackendThreadClient {
+impl<ST, SCT> StateBackendThreadClient<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     pub fn new<SBT>(state_backend: impl FnOnce() -> SBT + Send + 'static) -> Self
     where
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
     {
         let (request_tx, request_rx) = mpsc::sync_channel(MAX_INFLIGHT_REQUESTS);
 
@@ -60,7 +89,7 @@ impl StateBackendThreadClient {
 
     fn send_and_recv_request<T>(
         &self,
-        request: impl FnOnce(mpsc::SyncSender<T>) -> StateBackendThreadRequest,
+        request: impl FnOnce(mpsc::SyncSender<T>) -> StateBackendThreadRequest<ST, SCT>,
     ) -> T {
         if self.handle.is_finished() {
             panic!("StateBackendThread terminated!");
@@ -76,7 +105,11 @@ impl StateBackendThreadClient {
     }
 }
 
-impl StateBackend for StateBackendThreadClient {
+impl<ST, SCT> StateBackend<ST, SCT> for StateBackendThreadClient<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     fn get_account_statuses<'a>(
         &self,
         block_id: &BlockId,
@@ -123,32 +156,50 @@ impl StateBackend for StateBackendThreadClient {
         )
     }
 
+    fn read_next_valset(
+        &self,
+        block_num: SeqNum,
+    ) -> Vec<(SCT::NodeIdPubKey, SignatureCollectionPubKeyType<SCT>, Stake)> {
+        self.send_and_recv_request(|tx| StateBackendThreadRequest::ReadNextValidatorData {
+            block_num,
+            tx,
+        })
+    }
+
     fn total_db_lookups(&self) -> u64 {
         self.send_and_recv_request(|tx| StateBackendThreadRequest::TotalDbLookups { tx })
     }
 }
 
-struct StateBackendThread<SBT>
+struct StateBackendThread<ST, SCT, SBT>
 where
-    SBT: StateBackend,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    SBT: StateBackend<ST, SCT>,
 {
     state_backend: SBT,
-    request_rx: mpsc::Receiver<StateBackendThreadRequest>,
+    request_rx: mpsc::Receiver<StateBackendThreadRequest<ST, SCT>>,
+
+    _phantom: PhantomData<(ST, SCT)>,
 }
 
-impl<SBT> StateBackendThread<SBT>
+impl<ST, SCT, SBT> StateBackendThread<ST, SCT, SBT>
 where
-    SBT: StateBackend,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    SBT: StateBackend<ST, SCT>,
 {
     fn new(
         state_backend: impl FnOnce() -> SBT + Send + 'static,
-        request_rx: mpsc::Receiver<StateBackendThreadRequest>,
+        request_rx: mpsc::Receiver<StateBackendThreadRequest<ST, SCT>>,
     ) -> Self {
         let state_backend = state_backend();
 
         Self {
             state_backend,
             request_rx,
+
+            _phantom: PhantomData,
         }
     }
 
@@ -156,6 +207,7 @@ where
         let Self {
             state_backend,
             request_rx,
+            ..
         } = self;
 
         for request in request_rx.iter() {
@@ -200,6 +252,10 @@ where
                     tx.send(state_backend.raw_read_latest_finalized_block())
                         .expect("StateBackendThreadClient is alive");
                 }
+                StateBackendThreadRequest::ReadNextValidatorData { block_num, tx } => {
+                    tx.send(state_backend.read_next_valset(block_num))
+                        .expect("StateBackendThreadClient is alive");
+                }
                 StateBackendThreadRequest::TotalDbLookups { tx } => {
                     tx.send(state_backend.total_db_lookups())
                         .expect("StateBackendThreadClient is alive");
@@ -215,15 +271,21 @@ where
 mod test {
     use std::time::Duration;
 
+    use monad_crypto::NopSignature;
     use monad_eth_types::Balance;
+    use monad_multi_sig::MultiSig;
     use monad_types::{SeqNum, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM};
 
     use crate::{InMemoryStateInner, StateBackend, StateBackendThreadClient};
 
     #[test]
     fn all_requests() {
-        let client =
-            StateBackendThreadClient::new(|| InMemoryStateInner::genesis(Balance::MAX, SeqNum(4)));
+        let client = StateBackendThreadClient::new(|| {
+            InMemoryStateInner::<NopSignature, MultiSig<NopSignature>>::genesis(
+                Balance::MAX,
+                SeqNum(4),
+            )
+        });
 
         {
             let get_account_statuses = client
@@ -260,8 +322,12 @@ mod test {
 
     #[test]
     fn shutdown() {
-        let client =
-            StateBackendThreadClient::new(|| InMemoryStateInner::genesis(Balance::MAX, SeqNum(4)));
+        let client = StateBackendThreadClient::new(|| {
+            InMemoryStateInner::<NopSignature, MultiSig<NopSignature>>::genesis(
+                Balance::MAX,
+                SeqNum(4),
+            )
+        });
 
         let handle = client.handle.clone();
 

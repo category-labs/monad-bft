@@ -7,10 +7,7 @@ use std::{
 };
 
 use futures::Stream;
-use monad_consensus_types::{
-    signature_collection::SignatureCollection,
-    validator_data::{ValidatorSetDataWithEpoch, ValidatorsConfig},
-};
+use monad_consensus_types::validator_data::{ValidatorSetDataWithEpoch, ValidatorsConfig};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -18,6 +15,7 @@ use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MonadEvent, StateRootHashCommand};
 use monad_types::{Epoch, SeqNum};
+use monad_validator::signature_collection::SignatureCollection;
 use tracing::error;
 
 /// Updater that gets state root hash updates by polling triedb

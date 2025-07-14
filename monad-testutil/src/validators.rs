@@ -1,12 +1,12 @@
-use monad_consensus_types::{
-    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    voting::ValidatorMapping,
-};
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_types::{NodeId, Stake};
-use monad_validator::validator_set::ValidatorSetTypeFactory;
+use monad_validator::{
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    validator_mapping::ValidatorMapping,
+    validator_set::ValidatorSetTypeFactory,
+};
 
 use crate::signing::{create_certificate_keys, create_keys};
 

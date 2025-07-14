@@ -1,15 +1,15 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use monad_consensus_types::{
-    quorum_certificate::QuorumCertificate,
+use monad_consensus_types::{quorum_certificate::QuorumCertificate, voting::Vote};
+use monad_crypto::certificate_signature::{CertificateSignature, PubKey};
+use monad_types::{NodeId, Round};
+use monad_validator::{
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
     },
-    voting::{ValidatorMapping, Vote},
+    validator_mapping::ValidatorMapping,
+    validator_set::ValidatorSetType,
 };
-use monad_crypto::certificate_signature::{CertificateSignature, PubKey};
-use monad_types::{NodeId, Round};
-use monad_validator::validator_set::ValidatorSetType;
 use tracing::{debug, error, info, warn};
 
 use crate::messages::message::VoteMessage;
@@ -184,10 +184,7 @@ where
 mod test {
     use std::collections::HashSet;
 
-    use monad_consensus_types::{
-        signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-        voting::{ValidatorMapping, Vote},
-    };
+    use monad_consensus_types::voting::Vote;
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignature},
         hasher::Hash,
@@ -196,7 +193,11 @@ mod test {
     use monad_multi_sig::MultiSig;
     use monad_testutil::{signing::*, validators::create_keys_w_validators};
     use monad_types::{BlockId, Epoch, NodeId, Round, Stake};
-    use monad_validator::validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory};
+    use monad_validator::{
+        signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+        validator_mapping::ValidatorMapping,
+        validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
+    };
 
     use super::VoteState;
     use crate::messages::message::VoteMessage;

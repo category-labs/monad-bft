@@ -22,6 +22,7 @@ monad-executor-glue = { workspace = true }
 monad-state-backend = { workspace = true }
 monad-types = { workspace = true }
 monad-updaters = { workspace = true, features = ["tokio"] }
+monad-validator = { workspace = true }
 
 alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-primitives = { workspace = true }

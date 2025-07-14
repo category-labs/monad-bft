@@ -26,10 +26,8 @@ use monad_consensus_types::{
     checkpoint::{Checkpoint, LockedEpoch},
     metrics::Metrics,
     quorum_certificate::QuorumCertificate,
-    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     validation,
     validator_data::ValidatorSetDataWithEpoch,
-    voting::ValidatorMapping,
     RoundCertificate,
 };
 use monad_crypto::certificate_signature::{
@@ -48,8 +46,12 @@ use monad_types::{
     GENESIS_ROUND,
 };
 use monad_validator::{
-    epoch_manager::EpochManager, leader_election::LeaderElection,
-    validator_set::ValidatorSetTypeFactory, validators_epoch_mapping::ValidatorsEpochMapping,
+    epoch_manager::EpochManager,
+    leader_election::LeaderElection,
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    validator_mapping::ValidatorMapping,
+    validator_set::ValidatorSetTypeFactory,
+    validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
 use self::{
@@ -287,7 +289,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     Sync {
         high_certificate: RoundCertificate<ST, SCT, EPT>,
@@ -311,7 +313,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -349,7 +351,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     CCT: ChainConfig<CRT>,
@@ -393,7 +395,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
@@ -699,7 +701,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
@@ -731,7 +733,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
@@ -834,7 +836,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
@@ -1315,7 +1317,6 @@ mod test {
     use monad_bls::BlsSignatureCollection;
     use monad_consensus_types::{
         quorum_certificate::QuorumCertificate,
-        signature_collection::SignatureCollection,
         validator_data::{ValidatorData, ValidatorSetData, ValidatorsConfig},
         voting::Vote,
     };
@@ -1324,7 +1325,9 @@ mod test {
     use monad_secp::SecpSignature;
     use monad_testutil::validators::create_keys_w_validators;
     use monad_types::{BlockId, Hash, NodeId, Round, SeqNum, Stake};
-    use monad_validator::validator_set::ValidatorSetFactory;
+    use monad_validator::{
+        signature_collection::SignatureCollection, validator_set::ValidatorSetFactory,
+    };
 
     use super::*;
 

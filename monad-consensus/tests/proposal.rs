@@ -13,7 +13,6 @@ use monad_consensus_types::{
     },
     payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
     quorum_certificate::QuorumCertificate,
-    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighQcRound, HighQcRoundSigColTuple, TimeoutCertificate, TimeoutInfo},
     validation::Error,
     voting::Vote,
@@ -31,6 +30,7 @@ use monad_testutil::{
 use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
 use monad_validator::{
     epoch_manager::EpochManager,
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     validator_set::{ValidatorSetFactory, ValidatorSetType},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };

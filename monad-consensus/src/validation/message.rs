@@ -1,10 +1,9 @@
-use monad_consensus_types::{
-    signature_collection::SignatureCollection, timeout::TimeoutCertificate, validation::Error,
-};
+use monad_consensus_types::{timeout::TimeoutCertificate, validation::Error};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_types::*;
+use monad_validator::signature_collection::SignatureCollection;
 
 // (DiemBFT v4, p.12)
 // https://developers.diem.com/papers/diem-consensus-state-machine-replication-in-the-diem-blockchain/2021-08-17.pdf

@@ -15,7 +15,6 @@ use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     metrics::Metrics,
-    signature_collection::SignatureCollection,
     validator_data::{ValidatorSetDataWithEpoch, ValidatorsConfig},
 };
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
@@ -56,7 +55,8 @@ use monad_updaters::{
     triedb_state_root_hash::StateRootHashTriedbPoll, BoxUpdater, Updater,
 };
 use monad_validator::{
-    validator_set::ValidatorSetFactory, weighted_round_robin::WeightedRoundRobin,
+    signature_collection::SignatureCollection, validator_set::ValidatorSetFactory,
+    weighted_round_robin::WeightedRoundRobin,
 };
 use monad_wal::{wal::WALoggerConfig, PersistenceLoggerBuilder};
 use opentelemetry::metrics::MeterProvider;

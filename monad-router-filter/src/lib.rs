@@ -2,7 +2,6 @@ use std::{marker::PhantomData, task::Poll};
 
 use futures::{Stream, StreamExt};
 use itertools::Itertools;
-use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -10,6 +9,7 @@ use monad_executor::Executor;
 use monad_executor_glue::{ConsensusEvent, MonadEvent, RouterCommand};
 use monad_state::VerifiedMonadMessage;
 use monad_types::ExecutionProtocol;
+use monad_validator::signature_collection::SignatureCollection;
 
 pub struct FullNodeRouterFilter<ST, SCT, EPT, R> {
     router: R,

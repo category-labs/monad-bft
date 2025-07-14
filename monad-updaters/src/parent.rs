@@ -6,7 +6,7 @@ use std::{
 };
 
 use futures::{FutureExt, Stream, StreamExt};
-use monad_consensus_types::{block::BlockPolicy, signature_collection::SignatureCollection};
+use monad_consensus_types::block::BlockPolicy;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -18,6 +18,7 @@ use monad_executor_glue::{
 };
 use monad_state_backend::StateBackend;
 use monad_types::ExecutionProtocol;
+use monad_validator::signature_collection::SignatureCollection;
 
 /// Single top-level executor for all other required by a node.
 /// This executor will distribute commands to the appropriate sub-executor
@@ -57,7 +58,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     type Command = Command<E, OM, ST, SCT, EPT, BPT, SBT>;
 

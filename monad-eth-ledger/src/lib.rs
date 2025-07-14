@@ -14,7 +14,6 @@ use monad_blocksync::messages::message::{
 use monad_consensus_types::{
     block::{BlockRange, ConsensusFullBlock, OptimisticCommit},
     payload::ConsensusBlockBodyId,
-    signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -25,6 +24,7 @@ use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
 use monad_state_backend::{InMemoryState, StateBackendTest};
 use monad_types::{BlockId, Round, SeqNum};
 use monad_updaters::ledger::MockableLedger;
+use monad_validator::signature_collection::SignatureCollection;
 
 /// A ledger for commited Monad Blocks
 /// Purpose of the ledger is to have retrievable committed blocks to
@@ -40,7 +40,7 @@ where
     block_ids: HashMap<BlockId, Round>,
     events: VecDeque<BlockSyncEvent<ST, SCT, EthExecutionProtocol>>,
 
-    state: InMemoryState,
+    state: InMemoryState<ST, SCT>,
 
     waker: Option<Waker>,
     _phantom: PhantomData<ST>,
@@ -51,7 +51,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    pub fn new(state: InMemoryState) -> Self {
+    pub fn new(state: InMemoryState<ST, SCT>) -> Self {
         MockEthLedger {
             blocks: Default::default(),
             finalized: Default::default(),

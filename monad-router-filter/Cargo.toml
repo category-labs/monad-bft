@@ -9,12 +9,12 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-consensus-types = { workspace = true }
 monad-crypto = { workspace = true }
 monad-executor = { workspace = true }
 monad-executor-glue = { workspace = true }
 monad-state = { workspace = true }
 monad-types = { workspace = true }
+monad-validator = { workspace = true }
 
 futures = { workspace = true }
 itertools = { workspace = true }

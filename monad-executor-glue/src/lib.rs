@@ -21,7 +21,6 @@ use monad_consensus_types::{
     metrics::Metrics,
     payload::{ConsensusBlockBodyId, RoundSignature},
     quorum_certificate::{QuorumCertificate, TimestampAdjustment},
-    signature_collection::SignatureCollection,
     timeout::TimeoutCertificate,
     validator_data::ValidatorSetDataWithEpoch,
 };
@@ -33,6 +32,7 @@ use monad_types::{
     deserialize_certificate_signature, deserialize_pubkey, serialize_certificate_signature,
     serialize_pubkey, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum, Stake,
 };
+use monad_validator::signature_collection::SignatureCollection;
 use serde::{Deserialize, Serialize};
 
 const STATESYNC_NETWORK_MESSAGE_NAME: &str = "StateSyncNetworkMessage";
@@ -422,7 +422,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     /// Used to update the nonces of tracked txs
     BlockCommit(Vec<BPT::ValidatedBlock>),
@@ -468,7 +468,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -534,7 +534,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     RouterCommand(RouterCommand<ST, OM>),
     TimerCommand(TimerCommand<E>),
@@ -556,7 +556,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -589,7 +589,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     pub fn split_commands(
         commands: Vec<Self>,

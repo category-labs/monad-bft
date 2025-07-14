@@ -17,7 +17,6 @@ use bytes::{Bytes, BytesMut};
 use futures::{channel::oneshot, FutureExt, Stream, StreamExt};
 use itertools::Itertools;
 use message::{InboundRouterMessage, OutboundRouterMessage};
-use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -35,6 +34,7 @@ use monad_peer_discovery::{
     PeerDiscoveryAlgo, PeerDiscoveryEvent,
 };
 use monad_types::{DropTimer, Epoch, ExecutionProtocol, NodeId, RouterTarget};
+use monad_validator::signature_collection::SignatureCollection;
 use tracing::{debug, error, warn};
 use util::{BuildTarget, EpochValidators, FullNodes, Group, ReBroadcastGroupMap, Validator};
 

@@ -3,10 +3,8 @@ use std::{collections::BTreeMap, ops::Deref};
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_consensus_types::{
     quorum_certificate::QuorumCertificate,
-    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{TimeoutCertificate, TimeoutDigest},
     validation::Error,
-    voting::ValidatorMapping,
 };
 use monad_crypto::{
     certificate_signature::{
@@ -17,6 +15,8 @@ use monad_crypto::{
 use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, Stake, GENESIS_ROUND};
 use monad_validator::{
     epoch_manager::EpochManager,
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    validator_mapping::ValidatorMapping,
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
@@ -625,13 +625,12 @@ mod test {
         },
         payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
         quorum_certificate::QuorumCertificate,
-        signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         timeout::{
             HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutDigest,
             TimeoutInfo,
         },
         validation::Error,
-        voting::{ValidatorMapping, Vote},
+        voting::Vote,
     };
     use monad_crypto::{
         certificate_signature::{
@@ -650,6 +649,8 @@ mod test {
     };
     use monad_validator::{
         epoch_manager::EpochManager,
+        signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+        validator_mapping::ValidatorMapping,
         validator_set::{ValidatorSetFactory, ValidatorSetType, ValidatorSetTypeFactory},
         validators_epoch_mapping::ValidatorsEpochMapping,
     };
