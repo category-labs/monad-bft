@@ -404,4 +404,43 @@ mod tests {
             panic!("expected FinalMsgTooLarge error");
         }
     }
+
+    #[test]
+    fn test_outbound_message_serialize_snapshot() {
+        let msg = TestMessage { value: 42 };
+        let outbound_msg = OutboundRouterMessage::<TestMessage, SecpSignature>::AppMessage(msg);
+
+        let serialized = outbound_msg.try_serialize().unwrap();
+        let hex_encoded = hex::encode(&serialized);
+
+        insta::assert_snapshot!(hex_encoded);
+    }
+
+    #[test]
+    fn test_inbound_message_deserialize_snapshot() {
+        let msg = TestMessage { value: 12345 };
+        let outbound_msg = OutboundRouterMessage::<TestMessage, SecpSignature>::AppMessage(msg);
+
+        let serialized = outbound_msg.try_serialize().unwrap();
+        let hex_encoded_original = hex::encode(&serialized);
+
+        let deserialized =
+            InboundRouterMessage::<TestMessage, SecpSignature>::try_deserialize(&serialized)
+                .unwrap();
+
+        match deserialized {
+            InboundRouterMessage::AppMessage(decoded_msg) => {
+                assert_eq!(decoded_msg.value, 12345);
+
+                let reserialize_msg =
+                    OutboundRouterMessage::<TestMessage, SecpSignature>::AppMessage(decoded_msg);
+                let reserialized = reserialize_msg.try_serialize().unwrap();
+                let hex_encoded_roundtrip = hex::encode(&reserialized);
+
+                assert_eq!(hex_encoded_original, hex_encoded_roundtrip);
+                insta::assert_snapshot!(hex_encoded_roundtrip);
+            }
+            _ => panic!("expected AppMessage variant"),
+        }
+    }
 }

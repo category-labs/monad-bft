@@ -1,0 +1,5 @@
+---
+source: monad-raptorcast/src/message.rs
+expression: hex_encoded_roundtrip
+---
+c8c2010101c3823039
