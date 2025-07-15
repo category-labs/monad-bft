@@ -80,11 +80,11 @@ fn compute_intrinsic_gas(tx: &TxEnvelope) -> u64 {
     intrinsic_gas
 }
 
-#[allow(clippy::unnecessary_fallible_conversions)]
 pub fn compute_txn_max_value(txn: &TxEnvelope) -> U256 {
-    let txn_value = U256::try_from(txn.value()).unwrap();
-    let gas_cost = U256::from(txn.gas_limit() as u128 * txn.max_fee_per_gas());
-
+    let txn_value = txn.value();
+    let gas_limit = U256::from(txn.gas_limit());
+    let max_fee = U256::from(txn.max_fee_per_gas());
+    let gas_cost = gas_limit.checked_mul(max_fee).expect("no overflow");
     txn_value.saturating_add(gas_cost)
 }
 
@@ -835,6 +835,7 @@ mod test {
     use monad_crypto::NopSignature;
     use monad_testutil::signing::MockSignatures;
     use monad_types::{Hash, SeqNum};
+    use proptest::{prelude::*, strategy::Just};
 
     use super::*;
 
@@ -1145,5 +1146,36 @@ mod test {
         assert_eq!(result, 53166);
     }
 
+    proptest! {
+        #[test]
+        fn test_compute_txn_max_value_no_overflow(
+            gas_limit in 0u64..=u64::MAX,
+            max_fee_per_gas in 0u128..=u128::MAX,
+            value in prop_oneof![
+                Just(U256::ZERO),
+                Just(U256::MAX),
+                any::<[u8; 32]>().prop_map(U256::from_be_bytes)
+            ]
+        ) {
+            let tx = TxEip1559 {
+                chain_id: 1337,
+                nonce: 0,
+                to: TxKind::Call(Address(FixedBytes([0x11; 20]))),
+                max_fee_per_gas,
+                max_priority_fee_per_gas: max_fee_per_gas,
+                gas_limit,
+                value,
+                ..Default::default()
+            };
+            let signature = sign_tx(&tx.signature_hash());
+            let tx_envelope = TxEnvelope::from(tx.into_signed(signature));
+
+            let result = compute_txn_max_value(&tx_envelope);
+
+            let gas_cost_u256 = U256::from(gas_limit).checked_mul(U256::from(max_fee_per_gas)).expect("overflow should not occur with U256overflow should not occur with U256");
+            let expected_max_value = U256::from(value).saturating_add(gas_cost_u256);
+            assert_eq!(result, expected_max_value);
+        }
+    }
     // TODO: check accounts for previous transactions in the block
 }
