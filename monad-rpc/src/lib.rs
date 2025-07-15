@@ -11,7 +11,6 @@ pub mod jsonrpc;
 pub mod metrics;
 pub mod serialize;
 pub mod timing;
-pub mod trace;
 pub mod txpool;
 pub mod vpool;
 pub mod websocket;

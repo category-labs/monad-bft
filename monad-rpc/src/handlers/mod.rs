@@ -39,10 +39,6 @@ use crate::{
     eth_json_types::serialize_result,
     jsonrpc::{JsonRpcError, JsonRpcResultExt, Request, RequestWrapper, Response, ResponseWrapper},
     timing::RequestId,
-    trace::{
-        monad_trace_block, monad_trace_call, monad_trace_callMany, monad_trace_get,
-        monad_trace_transaction,
-    },
     vpool::{monad_txpool_statusByAddress, monad_txpool_statusByHash},
 };
 
@@ -747,57 +743,6 @@ async fn net_version(
 }
 
 #[allow(non_snake_case)]
-async fn trace_block(
-    _: RequestId,
-    _app_state: &MonadRpcResources,
-    params: Value,
-) -> Result<Box<RawValue>, JsonRpcError> {
-    let params = serde_json::from_value(params).invalid_params()?;
-    monad_trace_block(params).await.map(serialize_result)?
-}
-
-#[allow(non_snake_case)]
-async fn trace_call(
-    _: RequestId,
-    _app_state: &MonadRpcResources,
-    params: Value,
-) -> Result<Box<RawValue>, JsonRpcError> {
-    let params = serde_json::from_value(params).invalid_params()?;
-    monad_trace_call(params).await.map(serialize_result)?
-}
-
-#[allow(non_snake_case)]
-async fn trace_callMany(
-    _: RequestId,
-    _app_state: &MonadRpcResources,
-    _params: Value,
-) -> Result<Box<RawValue>, JsonRpcError> {
-    monad_trace_callMany().await.map(serialize_result)?
-}
-
-#[allow(non_snake_case)]
-async fn trace_get(
-    _: RequestId,
-    _app_state: &MonadRpcResources,
-    params: Value,
-) -> Result<Box<RawValue>, JsonRpcError> {
-    let params = serde_json::from_value(params).invalid_params()?;
-    monad_trace_get(params).await.map(serialize_result)?
-}
-
-#[allow(non_snake_case)]
-async fn trace_transaction(
-    _: RequestId,
-    _app_state: &MonadRpcResources,
-    params: Value,
-) -> Result<Box<RawValue>, JsonRpcError> {
-    let params = serde_json::from_value(params).invalid_params()?;
-    monad_trace_transaction(params)
-        .await
-        .map(serialize_result)?
-}
-
-#[allow(non_snake_case)]
 async fn txpool_statusByHash(
     _: RequestId,
     app_state: &MonadRpcResources,
@@ -914,11 +859,6 @@ enabled_methods!(
     eth_getTransactionReceipt,
     eth_getBlockReceipts,
     net_version,
-    trace_block,
-    trace_call,
-    trace_callMany,
-    trace_get,
-    trace_transaction,
     txpool_statusByHash,
     txpool_statusByAddress,
     web3_clientVersion
