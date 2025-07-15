@@ -16,6 +16,8 @@ use monad_types::NodeId;
 
 use crate::{bls::BlsAggregatePubKey, BlsAggregateSignature, BlsKeyPair, BlsSignature};
 
+const MAX_SIGNERS_LEN: usize = 1024 * 16;
+
 #[derive(Debug)]
 struct AggregationTree<PT: PubKey> {
     nodes: Vec<BlsSignatureCollection<PT>>,
@@ -191,6 +193,11 @@ impl Decodable for SignerMap {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
         let num_bits: usize = <u32 as Decodable>::decode(&mut payload)? as usize;
+
+        if num_bits > MAX_SIGNERS_LEN {
+            return Err(alloy_rlp::Error::Custom("signers count exceeds limit"));
+        }
+
         let num_bytes = num_bits.div_ceil(8);
 
         let decoded_bytes = alloy_rlp::Header::decode_bytes(&mut payload, false)?;
@@ -262,6 +269,10 @@ impl<PT: PubKey> SignatureCollection for BlsSignatureCollection<PT> {
         msg: &[u8],
     ) -> Result<Vec<NodeId<PT>>, SignatureCollectionError<PT, Self::SignatureType>> {
         if self.signers.0.len() != validator_mapping.map.len() {
+            return Err(SignatureCollectionError::InvalidSignaturesVerify);
+        }
+
+        if self.signers.0.len() > MAX_SIGNERS_LEN {
             return Err(SignatureCollectionError::InvalidSignaturesVerify);
         }
 
@@ -887,5 +898,34 @@ mod test {
         let k = <SignerMap>::decode(&mut y.as_slice()).unwrap();
         assert_eq!(a, j);
         assert_eq!(b, k);
+    }
+
+    #[test]
+    fn test_signer_map_rlp_max_pass() {
+        use bitvec::prelude::*;
+
+        const NUM_BITS: usize = 1024 * 16;
+
+        let big_map1 = SignerMap(BitVec::<u8, Lsb0>::repeat(true, NUM_BITS));
+        let encoded1 = alloy_rlp::encode(big_map1.clone());
+        let mut input1 = encoded1.as_slice();
+        let decoded1 = <SignerMap>::decode(&mut input1).unwrap();
+
+        assert_eq!(big_map1, decoded1);
+    }
+
+    #[test]
+    fn test_signer_map_rlp_max_fail() {
+        use bitvec::prelude::*;
+
+        const NUM_BITS: usize = 1024 * 16 + 1;
+
+        let big_map1 = SignerMap(BitVec::<u8, Lsb0>::repeat(true, NUM_BITS));
+        let encoded1 = alloy_rlp::encode(big_map1);
+        let mut input1 = encoded1.as_slice();
+        assert!(matches!(
+            <SignerMap>::decode(&mut input1),
+            Err(alloy_rlp::Error::Custom(_))
+        ));
     }
 }
