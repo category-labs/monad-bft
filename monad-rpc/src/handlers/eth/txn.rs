@@ -236,6 +236,12 @@ pub async fn monad_eth_sendRawTransaction<T: Triedb>(
                 ));
             }
 
+            if let Some(tx_chain_id) = tx.chain_id() {
+                if tx_chain_id != chain_id {
+                    return Err(JsonRpcError::invalid_chain_id(chain_id, tx_chain_id));
+                }
+            }
+
             if !base_fee_validation(tx.max_fee_per_gas(), base_fee_per_gas) {
                 return Err(JsonRpcError::custom(
                     "maxFeePerGas too low to be include in upcoming blocks".to_string(),

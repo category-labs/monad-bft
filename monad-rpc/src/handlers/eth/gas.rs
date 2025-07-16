@@ -292,7 +292,14 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
     )
     .await?;
 
-    if params.tx.chain_id.is_none() {
+    if let Some(tx_chain_id) = params.tx.chain_id {
+        if tx_chain_id != U64::from(chain_id) {
+            return Err(JsonRpcError::invalid_chain_id(
+                chain_id,
+                tx_chain_id.to::<u64>(),
+            ));
+        }
+    } else {
         params.tx.chain_id = Some(U64::from(chain_id));
     }
 

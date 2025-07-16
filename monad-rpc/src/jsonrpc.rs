@@ -238,6 +238,14 @@ impl JsonRpcError {
         }
     }
 
+    pub fn invalid_chain_id(expected: u64, got: u64) -> Self {
+        Self {
+            code: -32000,
+            message: format!("Invalid chain ID: expected {}, got {}", expected, got),
+            data: None,
+        }
+    }
+
     // application errors
     pub fn custom(message: String) -> Self {
         Self {
