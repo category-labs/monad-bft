@@ -27,6 +27,7 @@ pub struct MonadChainConfig {
     pub chain_id: u64,
     pub v_0_7_0_activation: Round,
     pub v_0_8_0_activation: Round,
+    pub v_0_10_0_activation: Round,
 
     pub execution_v_one_activation: u64,
     pub execution_v_two_activation: u64,
@@ -91,7 +92,9 @@ impl ChainConfig<MonadChainRevision> for MonadChainConfig {
 
     #[allow(clippy::if_same_then_else)]
     fn get_chain_revision(&self, round: Round) -> MonadChainRevision {
-        if round >= self.v_0_8_0_activation {
+        if round >= self.v_0_10_0_activation {
+            MonadChainRevision::V_0_10_0
+        } else if round >= self.v_0_8_0_activation {
             MonadChainRevision::V_0_8_0
         } else if round >= self.v_0_7_0_activation {
             MonadChainRevision::V_0_7_0
@@ -115,6 +118,7 @@ const MONAD_DEVNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     chain_id: MONAD_DEVNET_CHAIN_ID,
     v_0_7_0_activation: Round::MIN,
     v_0_8_0_activation: Round::MIN,
+    v_0_10_0_activation: Round::MIN,
 
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
@@ -124,6 +128,7 @@ const MONAD_TESTNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     chain_id: MONAD_TESTNET_CHAIN_ID,
     v_0_7_0_activation: Round::MIN,
     v_0_8_0_activation: Round(3263000),
+    v_0_10_0_activation: Round(3263000), // TODO fill in real round later
 
     execution_v_one_activation: 1739559600, // 2025-02-14T19:00:00.000Z
     execution_v_two_activation: 1741978800, // 2025-03-14T19:00:00.000Z
@@ -133,6 +138,7 @@ const MONAD_TESTNET2_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     chain_id: MONAD_TESTNET2_CHAIN_ID,
     v_0_7_0_activation: Round::MIN,
     v_0_8_0_activation: Round::MIN,
+    v_0_10_0_activation: Round::MIN, // TODO fill in real round later
 
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
@@ -143,6 +149,7 @@ const MONAD_MAINNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     chain_id: MONAD_MAINNET_CHAIN_ID,
     v_0_7_0_activation: Round::MIN,
     v_0_8_0_activation: Round::MIN,
+    v_0_10_0_activation: Round::MIN, // TODO fill in real round later
 
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,

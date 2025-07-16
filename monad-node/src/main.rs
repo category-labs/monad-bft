@@ -366,7 +366,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         block_sync_override_peers,
         consensus_config: ConsensusConfig {
             execution_delay: SeqNum(node_state.node_config.consensus.execution_delay),
-            delta: Duration::from_millis(node_state.node_config.network.max_rtt_ms / 2),
+            delta: Duration::from_millis(100),
             // StateSync -> Live transition happens here
             statesync_to_live_threshold: SeqNum(statesync_threshold as u64),
             // Live -> StateSync transition happens here

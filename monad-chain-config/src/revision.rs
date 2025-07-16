@@ -1,6 +1,6 @@
 use std::{fmt::Debug, time::Duration};
 
-pub const CHAIN_PARAMS_LATEST: ChainParams = CHAIN_PARAMS_V_0_8_0;
+pub const CHAIN_PARAMS_LATEST: ChainParams = CHAIN_PARAMS_V_0_10_0;
 
 pub trait ChainRevision: Copy + Clone {
     fn chain_params(&self) -> &'static ChainParams;
@@ -11,6 +11,7 @@ pub trait ChainRevision: Copy + Clone {
 pub enum MonadChainRevision {
     V_0_7_0,
     V_0_8_0,
+    V_0_10_0,
 }
 
 impl ChainRevision for MonadChainRevision {
@@ -18,6 +19,7 @@ impl ChainRevision for MonadChainRevision {
         match &self {
             MonadChainRevision::V_0_7_0 => &CHAIN_PARAMS_V_0_7_0,
             MonadChainRevision::V_0_8_0 => &CHAIN_PARAMS_V_0_8_0,
+            MonadChainRevision::V_0_10_0 => &CHAIN_PARAMS_V_0_10_0,
         }
     }
 }
@@ -54,6 +56,13 @@ const CHAIN_PARAMS_V_0_8_0: ChainParams = ChainParams {
     proposal_gas_limit: 150_000_000,
     proposal_byte_limit: 2_000_000,
     vote_pace: Duration::from_millis(500),
+};
+
+const CHAIN_PARAMS_V_0_10_0: ChainParams = ChainParams {
+    tx_limit: 5_000,
+    proposal_gas_limit: 150_000_000,
+    proposal_byte_limit: 2_000_000,
+    vote_pace: Duration::from_millis(400),
 };
 
 #[cfg(test)]
