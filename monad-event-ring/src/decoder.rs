@@ -3,8 +3,7 @@ use std::ffi::CStr;
 use crate::{
     ffi::{
         g_monad_event_ring_type_names, monad_event_ring, monad_event_ring_check_type,
-        monad_event_ring_type, monad_event_ring_type_MONAD_EVENT_RING_TYPE_COUNT,
-        monad_event_ring_type_MONAD_EVENT_RING_TYPE_NONE,
+        monad_event_ring_type, MONAD_EVENT_RING_TYPE_COUNT, MONAD_EVENT_RING_TYPE_NONE,
     },
     EventDescriptorInfo,
 };
@@ -28,8 +27,8 @@ pub trait EventDecoder: 'static {
     fn ring_ctype_name() -> String {
         let ring_ctype = Self::ring_ctype();
 
-        assert!(monad_event_ring_type_MONAD_EVENT_RING_TYPE_NONE < ring_ctype);
-        assert!(ring_ctype < monad_event_ring_type_MONAD_EVENT_RING_TYPE_COUNT);
+        assert!(MONAD_EVENT_RING_TYPE_NONE < ring_ctype);
+        assert!(ring_ctype < MONAD_EVENT_RING_TYPE_COUNT);
 
         let description_cstr =
             unsafe { CStr::from_ptr(g_monad_event_ring_type_names[ring_ctype as usize]) };

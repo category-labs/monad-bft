@@ -40,6 +40,7 @@ fn main() {
         .derive_copy(false)
         .derive_partialeq(true)
         .derive_eq(true)
+        .prepend_enum_name(false)
         .allowlist_recursively(false);
 
     for (lib_path, lib_files) in INCLUDES {

@@ -1,7 +1,7 @@
 use crate::{
     ffi::{
-        self, monad_event_descriptor, monad_event_iterator_reset, monad_event_iterator_try_next,
-        monad_event_next_result,
+        self, monad_event_descriptor, monad_event_iter_result, monad_event_iterator_reset,
+        monad_event_iterator_try_next,
     },
     RawEventDescriptor, RawEventReader,
 };
@@ -25,19 +25,22 @@ pub enum EventNextResult<T> {
 
 impl<'ring> EventNextResult<RawEventDescriptor<'ring>> {
     pub(crate) fn new_from_raw(reader: &mut RawEventReader<'ring>) -> Self {
-        let (c_next_result, c_event_descriptor): (monad_event_next_result, monad_event_descriptor) =
-            monad_event_iterator_try_next(&mut reader.inner);
+        let (c_event_iter_result, c_event_descriptor): (
+            monad_event_iter_result,
+            monad_event_descriptor,
+        ) = monad_event_iterator_try_next(&mut reader.inner);
 
-        match c_next_result {
-            ffi::monad_event_next_result_MONAD_EVENT_SUCCESS => Self::Ready(
-                RawEventDescriptor::new(reader.event_ring, c_event_descriptor),
-            ),
-            ffi::monad_event_next_result_MONAD_EVENT_NOT_READY => Self::NotReady,
-            ffi::monad_event_next_result_MONAD_EVENT_GAP => {
+        match c_event_iter_result {
+            ffi::MONAD_EVENT_SUCCESS => Self::Ready(RawEventDescriptor::new(
+                reader.event_ring,
+                c_event_descriptor,
+            )),
+            ffi::MONAD_EVENT_NOT_READY => Self::NotReady,
+            ffi::MONAD_EVENT_GAP => {
                 monad_event_iterator_reset(&mut reader.inner);
                 Self::Gap
             }
-            _ => panic!("EventNextResult encountered unknown value {c_next_result}"),
+            _ => panic!("EventNextResult encountered unknown value {c_event_iter_result}"),
         }
     }
 
