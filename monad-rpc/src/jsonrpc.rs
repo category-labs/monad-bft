@@ -15,18 +15,79 @@
 
 //! reference: https://www.jsonrpc.org/specification
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{value::RawValue, Value};
 
 pub const JSONRPC_VERSION: &str = "2.0";
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Request {
+    #[serde(deserialize_with = "deserialize_jsonrpc")]
     pub jsonrpc: String,
     pub method: String,
     #[serde(default)]
     pub params: Value,
-    pub id: Value,
+    #[serde(deserialize_with = "deserialize_id")]
+    pub id: RequestId,
+}
+
+fn deserialize_jsonrpc<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    if value == "2.0" {
+        Ok(value)
+    } else {
+        Err(serde::de::Error::custom("jsonrpc must be \"2.0\""))
+    }
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq, Clone)]
+#[serde(untagged)]
+pub enum RequestId {
+    Number(i64),
+    String(String),
+    Null,
+}
+
+impl<'de> Deserialize<'de> for RequestId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+
+        match value {
+            Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Ok(RequestId::Number(i))
+                } else {
+                    Err(serde::de::Error::custom("number must be a valid integer"))
+                }
+            }
+            Value::String(s) => {
+                if s.parse::<i64>().is_ok() {
+                    Ok(RequestId::String(s))
+                } else {
+                    Err(serde::de::Error::custom(
+                        "string must represent a valid integer",
+                    ))
+                }
+            }
+            Value::Null => Ok(RequestId::Null),
+            _ => Err(serde::de::Error::custom(
+                "id must be a integer, string, or null",
+            )),
+        }
+    }
+}
+
+fn deserialize_id<'de, D>(deserializer: D) -> Result<RequestId, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    RequestId::deserialize(deserializer)
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -76,12 +137,12 @@ pub enum RequestWrapper<T> {
 
 impl Request {
     #[allow(dead_code)]
-    pub fn new(method: String, params: Value, id: Value) -> Self {
+    pub fn new(method: String, params: Value, id: i64) -> Self {
         Self {
             jsonrpc: JSONRPC_VERSION.into(),
             method,
             params,
-            id,
+            id: RequestId::Number(id),
         }
     }
 }
@@ -93,7 +154,8 @@ pub struct Response {
     pub result: Option<Box<RawValue>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<JsonRpcError>,
-    pub id: Value,
+    #[schemars(with = "Option<i64>")]
+    pub id: RequestId,
 }
 
 impl PartialEq for Response {
@@ -114,7 +176,7 @@ pub enum ResponseWrapper<T> {
 }
 
 impl Response {
-    pub fn new(result: Option<Box<RawValue>>, error: Option<JsonRpcError>, id: Value) -> Self {
+    pub fn new(result: Option<Box<RawValue>>, error: Option<JsonRpcError>, id: RequestId) -> Self {
         Self {
             jsonrpc: JSONRPC_VERSION.into(),
             result,
@@ -123,7 +185,7 @@ impl Response {
         }
     }
 
-    pub fn from_result(request_id: Value, result: Result<Box<RawValue>, JsonRpcError>) -> Self {
+    pub fn from_result(request_id: RequestId, result: Result<Box<RawValue>, JsonRpcError>) -> Self {
         match result {
             Ok(v) => Self::new(Some(v), None, request_id),
             Err(e) => Self::new(None, Some(e), request_id),
@@ -131,7 +193,7 @@ impl Response {
     }
 
     pub fn from_error(error: JsonRpcError) -> Self {
-        Self::new(None, Some(error), Value::Null)
+        Self::new(None, Some(error), RequestId::Null)
     }
 }
 
@@ -307,6 +369,7 @@ mod test {
     use serde_json::Value;
 
     use super::Request;
+    use crate::jsonrpc::RequestId;
 
     #[test]
     fn test_request() {
@@ -324,7 +387,7 @@ mod test {
                 jsonrpc: "2.0".into(),
                 method: "foobar".into(),
                 params: Value::Array(vec![Value::Number(42.into()), Value::Number(43.into())]),
-                id: Value::Number(1.into()),
+                id: RequestId::Number(1),
             },
             req.unwrap()
         );
@@ -335,7 +398,7 @@ mod test {
                 jsonrpc: "2.0".into(),
                 method: "foobar".into(),
                 params: Value::Array(vec![Value::Number(42.into()), Value::Number(43.into())]),
-                id: Value::Number(1.into()),
+                id: RequestId::Number(1),
             },
             req.unwrap()
         );

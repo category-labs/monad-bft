@@ -433,10 +433,10 @@ mod tests {
     use monad_rpc::{
         fee::FixedFee,
         handlers::eth::call::EthCallStatsTracker,
-        jsonrpc::{self, JsonRpcError, ResponseWrapper},
+        jsonrpc::{self, JsonRpcError, RequestId, ResponseWrapper},
         txpool::EthTxPoolBridgeClient,
     };
-    use serde_json::{json, Number, Value};
+    use serde_json::{json, Value};
     use test_case::test_case;
 
     use super::*;
@@ -560,14 +560,14 @@ mod tests {
     }
 
     #[allow(non_snake_case)]
-    #[test_case(json!([]), ResponseWrapper::Single(Response::new(None, Some(JsonRpcError::custom("empty batch request".to_string())), Value::Null)); "empty batch")]
-    #[test_case(json!([1]), ResponseWrapper::Batch(vec![Response::new(None, Some(JsonRpcError::invalid_request()), Value::Null)]); "invalid batch but not empty")]
+    #[test_case(json!([]), ResponseWrapper::Single(Response::new(None, Some(JsonRpcError::custom("empty batch request".to_string())), RequestId::Null)); "empty batch")]
+    #[test_case(json!([1]), ResponseWrapper::Batch(vec![Response::new(None, Some(JsonRpcError::invalid_request()), RequestId::Null)]); "invalid batch but not empty")]
     #[test_case(json!([1, 2, 3, 4]),
     ResponseWrapper::Batch(vec![
-        Response::new(None, Some(JsonRpcError::invalid_request()), Value::Null),
-        Response::new(None, Some(JsonRpcError::invalid_request()), Value::Null),
-        Response::new(None, Some(JsonRpcError::invalid_request()), Value::Null),
-        Response::new(None, Some(JsonRpcError::invalid_request()), Value::Null),
+        Response::new(None, Some(JsonRpcError::invalid_request()), RequestId::Null),
+        Response::new(None, Some(JsonRpcError::invalid_request()), RequestId::Null),
+        Response::new(None, Some(JsonRpcError::invalid_request()), RequestId::Null),
+        Response::new(None, Some(JsonRpcError::invalid_request()), RequestId::Null),
     ]); "multiple invalid batch")]
     #[test_case(json!([
         {"jsonrpc": "2.0", "method": "subtract", "params": [42, 43], "id": 1},
@@ -576,9 +576,9 @@ mod tests {
     ]),
     ResponseWrapper::Batch(
         vec![
-            Response::new(None, Some(JsonRpcError::method_not_found()), Value::Number(Number::from(1))),
-            Response::new(None, Some(JsonRpcError::invalid_request()), Value::Null),
-            Response::new(None, Some(JsonRpcError::method_not_found()), Value::Number(Number::from(1))),
+            Response::new(None, Some(JsonRpcError::method_not_found()), RequestId::Number(1)),
+            Response::new(None, Some(JsonRpcError::invalid_request()), RequestId::Null),
+            Response::new(None, Some(JsonRpcError::method_not_found()), RequestId::Number(1)),
         ],
     ); "partial success")]
     #[test_case(json!([
@@ -590,7 +590,7 @@ mod tests {
         {"jsonrpc": "2.0", "method": "eth_chainId", "params": [], "id": 1}
     ]),
     ResponseWrapper::Single(
-        Response::new(None, Some(JsonRpcError::custom("number of requests in batch request exceeds limit of 5".to_string())), Value::Null)
+        Response::new(None, Some(JsonRpcError::custom("number of requests in batch request exceeds limit of 5".to_string())), RequestId::Null)
     ); "exceed batch request limit")]
     #[actix_web::test]
     async fn json_rpc_specification_batch_compliance(

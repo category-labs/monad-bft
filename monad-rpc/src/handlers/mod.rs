@@ -133,7 +133,10 @@ pub async fn rpc_handler(
 
                     async move {
                         let Ok(request) = serde_json::from_value::<Request>(json_request) else {
-                            return (Value::Null, Err(JsonRpcError::invalid_request()));
+                            return (
+                                crate::jsonrpc::RequestId::Null,
+                                Err(JsonRpcError::invalid_request()),
+                            );
                         };
                         let (state, id, method, params) =
                             (app_state, request.id, request.method, request.params);
@@ -142,7 +145,7 @@ pub async fn rpc_handler(
                 }))
                 .await
                 .into_iter()
-                .map(|(request_id, response)| Response::from_result(request_id, response))
+                .map(|(id, response)| Response::from_result(id, response))
                 .collect::<Vec<_>>();
             ResponseWrapper::Batch(batch_response)
         }

@@ -23,7 +23,7 @@ use criterion::{
 use itertools::Itertools;
 use monad_rpc::{
     eth_json_types::{serialize_result, MonadBlock, MonadLog, MonadTransactionReceipt},
-    jsonrpc::{Response, ResponseWrapper},
+    jsonrpc::{RequestId, Response, ResponseWrapper},
 };
 use serde::Serialize;
 
@@ -33,10 +33,7 @@ where
 {
     let result = serialize_result(value);
 
-    let response = ResponseWrapper::Single(Response::from_result(
-        serde_json::Value::Number(serde_json::Number::from(0u64)),
-        result,
-    ));
+    let response = ResponseWrapper::Single(Response::from_result(RequestId::Number(0), result));
 
     let response_raw_value = serde_json::value::to_raw_value(&response).unwrap();
 
