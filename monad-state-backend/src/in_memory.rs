@@ -233,14 +233,39 @@ impl StateBackend for InMemoryStateInner {
 
     fn get_execution_result(
         &self,
-        _block_id: &BlockId,
+        block_id: &BlockId,
         seq_num: &SeqNum,
-        _round: &Round,
-        _is_finalized: bool,
+        round: &Round,
+        is_finalized: bool,
     ) -> Result<EthHeader, StateBackendError> {
+        let block = if is_finalized
+            && self
+                .commits
+                .last_key_value()
+                .is_some_and(|(latest_seq_num, _)| seq_num <= latest_seq_num)
+        {
+            let Some(block) = self.commits.get(seq_num) else {
+                return Err(StateBackendError::NotAvailableYet);
+            };
+
+            block
+        } else {
+            let Some(block) = self.proposals.get(round) else {
+                return Err(StateBackendError::NotAvailableYet);
+            };
+
+            assert_eq!(&block.seq_num, seq_num);
+
+            if &block.block_id != block_id {
+                return Err(StateBackendError::NotAvailableYet);
+            }
+
+            block
+        };
+
         // TODO make this mock less trivial
         Ok(EthHeader(Header {
-            number: seq_num.0,
+            number: block.seq_num.0,
             ..Default::default()
         }))
     }

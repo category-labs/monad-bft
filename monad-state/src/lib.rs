@@ -45,7 +45,7 @@ use monad_executor_glue::{
 use monad_state_backend::StateBackend;
 use monad_types::{
     Epoch, ExecutionProtocol, MonadVersion, NodeId, Round, RouterTarget, SeqNum, GENESIS_BLOCK_ID,
-    GENESIS_ROUND,
+    GENESIS_ROUND, GENESIS_SEQ_NUM,
 };
 use monad_validator::{
     epoch_manager::EpochManager, leader_election::LeaderElection,
@@ -965,20 +965,8 @@ where
                     match maybe_target {
                         Some(target) if n >= target => {
                             assert_eq!(n, target);
-                            assert!(
-                                self.state_backend
-                                    .raw_read_earliest_finalized_block()
-                                    .expect("earliest_finalized doesn't exist")
-                                    <= n
-                            );
-                            assert!(
-                                self.state_backend
-                                    .raw_read_latest_finalized_block()
-                                    .expect("latest_finalized doesn't exist")
-                                    >= n
-                            );
 
-                            tracing::info!(?n, "done db statesync");
+                            tracing::info!(?target, ?n, "done db statesync");
                             *db_status = DbSyncStatus::Done;
 
                             self.maybe_start_consensus()
@@ -1141,17 +1129,37 @@ where
         if db_status == &DbSyncStatus::Waiting {
             *db_status = DbSyncStatus::Started;
             let delay = self.consensus_config.execution_delay;
-            let state_root_seq_num = root_seq_num.max(delay) - delay;
+            let delay_seq_num = root_seq_num.max(delay) - delay;
 
-            let latest_block = self.state_backend.raw_read_latest_finalized_block();
-            assert!(
-                latest_block.unwrap_or(SeqNum(0)) <= root_seq_num,
-                "tried to statesync backwards: {latest_block:?} <= {root_seq_num:?}"
-            );
+            let delay_child_seq_num = delay_seq_num + SeqNum(1);
+            let delay_child_block = root_parent_chain
+                .iter()
+                .find(|block| block.get_seq_num() == delay_child_seq_num);
 
-            if latest_block.is_none()
-                || latest_block.is_some_and(|latest_block| latest_block < state_root_seq_num)
-            {
+            let (delay_block_id, delay_block_round) = delay_child_block
+                .map(|block| (block.get_parent_id(), block.get_parent_round()))
+                .unwrap_or_else(|| {
+                    assert_eq!(
+                        root_seq_num,
+                        GENESIS_SEQ_NUM,
+                        "Root parent chain always contains `delay` blocks when `root_seq_num >= delay`"
+                    );
+
+                    (GENESIS_BLOCK_ID, GENESIS_ROUND)
+                });
+
+            // We use get_execution_result as a proxy to determine if the delay_block has been executed.
+            let delay_executed = self
+                .state_backend
+                .get_execution_result(&delay_block_id, &delay_seq_num, &delay_block_round, true)
+                .is_ok();
+
+            if delay_executed {
+                // TODO assert state root matches?
+                return self.update(MonadEvent::StateSyncEvent(StateSyncEvent::DoneSync(
+                    delay_seq_num,
+                )));
+            } else {
                 let delayed_execution_result = block_buffer
                     .root_delayed_execution_result()
                     .expect("is DB state empty? use execution to populate genesis if so");
@@ -1160,26 +1168,13 @@ where
                     1,
                     "always 1 execution result after first k-1 blocks for now"
                 );
+
                 return vec![Command::StateSyncCommand(StateSyncCommand::RequestSync(
                     delayed_execution_result
                         .first()
                         .expect("asserted 1 execution result")
                         .clone(),
                 ))];
-            } else {
-                // if latest_block > state_root_seq_num, we can't RequestSync because we
-                // would be trying to sync backwards.
-
-                assert!(
-                    self.state_backend
-                        .raw_read_earliest_finalized_block()
-                        .expect("latest_finalized_block exists")
-                        <= state_root_seq_num
-                );
-                // TODO assert state root matches?
-                return self.update(MonadEvent::StateSyncEvent(StateSyncEvent::DoneSync(
-                    state_root_seq_num,
-                )));
             }
         } else if db_status == &DbSyncStatus::Started {
             tracing::info!(
