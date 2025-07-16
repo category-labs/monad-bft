@@ -1,24 +1,32 @@
 use clap::Parser;
+use eyre::bail;
 use monad_archive::{
     cli::set_source_and_sink_metrics, model::logs_index::LogsIndexArchiver, prelude::*,
     workers::index_worker::index_worker,
 };
 use tracing::{info, Level};
 
-use crate::migrate_logs::run_migrate_logs;
+use crate::{migrate_capped::migrate_to_uncapped, migrate_logs::run_migrate_logs};
 
 mod cli;
+mod migrate_capped;
 mod migrate_logs;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
-    let args = cli::Cli::parse();
+    let mut args = cli::Cli::parse();
     info!(?args, "Cli Arguments: ");
 
-    match args.command {
+    match std::mem::take(&mut args.command) {
         Some(cli::Commands::MigrateLogs) => run_migrate_logs(args).await,
+        Some(cli::Commands::MigrateCapped {
+            db_name,
+            coll_name,
+            batch_size,
+            free_factor,
+        }) => run_migrate_capped(db_name, coll_name, batch_size, free_factor, args).await,
         None => run_indexer(args).await,
     }
 }
@@ -75,4 +83,27 @@ async fn run_indexer(args: cli::Cli) -> Result<()> {
     ))
     .await
     .map_err(Into::into)
+}
+
+async fn run_migrate_capped(
+    db_name: String,
+    coll_name: String,
+    batch_size: u32,
+    free_factor: f64,
+    args: cli::Cli,
+) -> Result<()> {
+    let metrics = Metrics::none();
+
+    let tx_index_archiver = args
+        .archive_sink
+        .build_index_archive(&metrics, args.max_inline_encoded_len)
+        .await?;
+
+    let mongodb_storage = match &tx_index_archiver.index_store {
+        KVStoreErased::MongoDbStorage(storage) => storage,
+        _ => bail!("migrate_capped requires MongoDB storage"),
+    };
+
+    let client = &mongodb_storage.client;
+    migrate_to_uncapped(client, &db_name, &coll_name, batch_size, free_factor).await
 }

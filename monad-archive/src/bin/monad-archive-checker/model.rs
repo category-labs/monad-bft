@@ -175,10 +175,7 @@ impl CheckerModel {
     }
 
     pub async fn find_chunk_starts_with_faults(&self) -> Result<HashSet<u64>> {
-        let keys = self
-            .store
-            .scan_prefix(format!("{}", FAULTS_CHUNK_PREFIX).as_str())
-            .await?;
+        let keys = self.store.scan_prefix(FAULTS_CHUNK_PREFIX).await?;
         let chunks = keys
             .into_iter()
             .map(|key| {

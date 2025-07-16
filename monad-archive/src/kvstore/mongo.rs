@@ -320,8 +320,6 @@ impl KVStore for MongoDbStorage {
 
 #[cfg(test)]
 pub mod mongo_tests {
-    use serial_test::serial;
-
     use super::*;
     use crate::test_utils::TestMongoContainer;
 
@@ -342,7 +340,6 @@ pub mod mongo_tests {
 
     #[ignore]
     #[tokio::test]
-    #[serial]
     async fn test_basic_operations() {
         let (_container, storage) = setup().await.unwrap();
 
@@ -362,7 +359,6 @@ pub mod mongo_tests {
 
     #[ignore]
     #[tokio::test]
-    #[serial]
     async fn test_large_value() {
         let (_container, storage) = setup().await.unwrap();
 
@@ -383,7 +379,6 @@ pub mod mongo_tests {
 
     #[ignore]
     #[tokio::test]
-    #[serial]
     async fn test_bulk_operations() {
         let (_container, storage) = setup().await.unwrap();
 
@@ -417,7 +412,6 @@ pub mod mongo_tests {
 
     #[ignore]
     #[tokio::test]
-    #[serial]
     async fn test_prefix_scan() {
         let (_container, storage) = setup().await.unwrap();
 

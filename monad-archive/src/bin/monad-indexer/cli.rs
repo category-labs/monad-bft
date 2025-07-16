@@ -59,4 +59,19 @@ pub struct Cli {
 pub enum Commands {
     /// Migrate logs index
     MigrateLogs,
+    /// Migrate capped collection to uncapped
+    MigrateCapped {
+        /// Database name
+        #[arg(long)]
+        db_name: String,
+        /// Collection name to migrate
+        #[arg(long)]
+        coll_name: String,
+        /// Batch size for copying
+        #[arg(long, default_value_t = 2000)]
+        batch_size: u32,
+        /// Free space factor
+        #[arg(long, default_value_t = 1.5)]
+        free_factor: f64,
+    },
 }

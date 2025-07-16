@@ -69,6 +69,7 @@ pub struct TestMongoContainer {
     pub container_id: String,
     pub uri: String,
     pub port: u16,
+    pub temp_dir: Option<tempfile::TempDir>,
 }
 
 static NEXT_PORT: AtomicU16 = AtomicU16::new(27017);
@@ -79,7 +80,18 @@ impl TestMongoContainer {
         let container_name = format!("mongo_test_{}", container_id.to_string());
         let port = NEXT_PORT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-        // Start container
+        // Create temporary directory for MongoDB data
+        let temp_dir = tempfile::TempDir::new().wrap_err("Failed to create temp directory")?;
+        let data_path = temp_dir.path().to_string_lossy();
+
+        // Set permissions on temp directory to be writable by MongoDB
+        Command::new("chmod")
+            .args(["777", &data_path])
+            .output()
+            .wrap_err("Failed to set permissions on temp directory")?;
+
+        // Start container with mounted volume
+        // Use explicit mongod command to ensure proper startup
         let output = Command::new("docker")
             .args([
                 "run",
@@ -88,7 +100,13 @@ impl TestMongoContainer {
                 &format!("{port}:27017"),
                 "--name",
                 &container_name,
+                "-v",
+                &format!("{}:/data/db", data_path),
                 "mongo:latest",
+                "mongod",
+                "--dbpath",
+                "/data/db",
+                "--bind_ip_all",
             ])
             .output()
             .wrap_err("Failed to start MongoDB container")?;
@@ -127,6 +145,7 @@ impl TestMongoContainer {
                                 container_id,
                                 uri: format!("mongodb://localhost:{port}"),
                                 port,
+                                temp_dir: Some(temp_dir),
                             })
                         }
                         Err(_) => {
