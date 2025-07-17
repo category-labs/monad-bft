@@ -567,6 +567,24 @@ impl fmt::Debug for Redundancy {
     }
 }
 
+pub(crate) fn parse_redundancy_config(value: f32, name: &str) -> Redundancy {
+    match Redundancy::from_f32(value) {
+        None => panic!(
+            "Configuration value {} cannot fit in Redundancy data type. \
+             Valid range: [1.0, {}]",
+            name,
+            Redundancy::MAX.to_f32()
+        ),
+        Some(value) if value.to_f32() < 1.0 => panic!(
+            "Configuration value {} must be equal or greater than 1, \
+             but got {}.",
+            name,
+            value.to_f32()
+        ),
+        Some(value) => value,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;

@@ -21,7 +21,7 @@ use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_dataplane::{udp::segment_size_for_mtu, Dataplane, UnicastMsg};
-use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
+use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{Message, PeerEntry, RouterCommand};
 use monad_peer_discovery::{driver::PeerDiscoveryDriver, PeerDiscoveryAlgo, PeerDiscoveryEvent};
 use monad_types::{DropTimer, Epoch, NodeId};
@@ -38,6 +38,7 @@ use super::{
     util::{BuildTarget, FullNodes, Group, Redundancy},
     RaptorCastEvent,
 };
+use crate::parse_redundancy_config;
 
 // We're planning to merge monad-node (validator binary) and monad-full-node
 // (full node binary), so it's possible for a node to switch between roles at
@@ -64,7 +65,7 @@ where
 
     // Args for encoding outbound (validator -> full-node) messages
     signing_key: Arc<ST::KeyPairType>, // for re-signing app messages
-    raptor10_redundancy: Redundancy,
+    redundancy: Redundancy,
     curr_epoch: Epoch,
 
     mtu: u16,
@@ -72,7 +73,6 @@ where
     peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
 
     channel_from_primary: UnboundedReceiver<FullNodesGroupMessage<ST>>,
-    metrics: ExecutorMetrics,
     _phantom: PhantomData<(OM, SE, M)>,
 }
 
@@ -110,30 +110,24 @@ where
             ),
         };
 
-        let raptor10_redundancy = config.secondary_instance.raptor10_redundancy;
+        let default_redundancy = config.secondary_instance.default_redundancy;
         trace!(
-            self_id =? node_id, mtu =? config.mtu, ?raptor10_redundancy,
+            self_id =? node_id, mtu =? config.mtu, ?default_redundancy,
             "RaptorCastSecondary::new()",
         );
 
-        if raptor10_redundancy < 1 {
-            panic!(
-                "Configuration value raptor10_redundancy must be equal or greater than 1, \
-                but got {}. This is a bug in the configuration for the secondary instance.",
-                raptor10_redundancy
-            );
-        }
+        let redundancy =
+            parse_redundancy_config(default_redundancy, "secondary_instance.default_redundancy");
 
         Self {
             role,
             signing_key: config.shared_key.clone(),
-            raptor10_redundancy: Redundancy::from_u8(raptor10_redundancy),
             curr_epoch: Epoch(0),
             mtu: config.mtu,
             dataplane,
             peer_discovery_driver,
             channel_from_primary,
-            metrics: Default::default(),
+            redundancy,
             _phantom: PhantomData,
         }
     }
@@ -211,7 +205,7 @@ where
             msg_bytes,
             self.mtu,
             &self.signing_key,
-            self.raptor10_redundancy,
+            self.redundancy,
             known_addresses,
         );
         self.dataplane
@@ -418,7 +412,7 @@ where
                         outbound_message,
                         self.mtu,
                         &self.signing_key,
-                        self.raptor10_redundancy,
+                        self.redundancy,
                         &known_addresses,
                     );
 

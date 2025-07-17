@@ -27,7 +27,8 @@ chain_id = 20143
 #########################################################
 # Node-specific configuration
 #########################################################
-raptor10_validator_redundancy_factor = 3
+raptor10_validator_redundancy_factor = 3.0
+raptor10_p2p_redundancy_factor = 1.05
 
 [bootstrap]
 peers = []

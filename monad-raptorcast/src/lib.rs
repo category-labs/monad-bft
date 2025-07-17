@@ -37,7 +37,8 @@ use raptorcast_secondary::group_message::FullNodesGroupMessage;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, error, warn};
 use util::{
-    BuildTarget, EpochValidators, FullNodes, Group, ReBroadcastGroupMap, Redundancy, Validator,
+    parse_redundancy_config, BuildTarget, EpochValidators, FullNodes, Group, ReBroadcastGroupMap,
+    Redundancy, Validator,
 };
 
 pub mod config;
@@ -57,6 +58,7 @@ where
 {
     signing_key: Arc<ST::KeyPairType>,
     redundancy: Redundancy,
+    p2p_redundancy: Redundancy,
     is_fullnode: bool,
 
     // Raptorcast group with stake information. For the send side (i.e., initiating proposals)
@@ -105,13 +107,6 @@ where
         dataplane: Arc<Mutex<Dataplane>>,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
     ) -> Self {
-        if config.primary_instance.raptor10_redundancy < 1 {
-            panic!(
-                "Configuration value raptor10_redundancy must be equal or greater than 1, \
-                but got {}. This is a bug in the configuration for the primary instance.",
-                config.primary_instance.raptor10_redundancy
-            );
-        }
         let self_id = NodeId::new(config.shared_key.pubkey());
         let is_fullnode = matches!(
             config.secondary_instance.mode,
@@ -119,6 +114,14 @@ where
         );
         tracing::trace!(
             ?is_fullnode, ?self_id, ?config.mtu, "RaptorCast::new",
+        );
+        let redundancy = parse_redundancy_config(
+            config.primary_instance.default_redundancy,
+            "primary_instance.default_redundancy",
+        );
+        let p2p_redundancy = parse_redundancy_config(
+            config.primary_instance.p2p_redundancy,
+            "primary_instance.p2p_redundancy",
         );
         Self {
             is_fullnode,
@@ -130,7 +133,8 @@ where
             peer_discovery_driver,
 
             signing_key: config.shared_key.clone(),
-            redundancy: Redundancy::from_u8(config.primary_instance.raptor10_redundancy),
+            redundancy,
+            p2p_redundancy,
 
             current_epoch: Epoch(0),
 
@@ -271,7 +275,7 @@ where
         udp_message_max_age_ms: u64::MAX, // No timestamp validation for tests
         primary_instance: Default::default(),
         secondary_instance: config::RaptorCastConfigSecondary {
-            raptor10_redundancy: 2,
+            default_redundancy: 2.0,
             mode: config::SecondaryRaptorCastModeConfig::None,
         },
     };
@@ -459,7 +463,7 @@ where
                                     outbound_message,
                                     self.mtu,
                                     &self.signing_key,
-                                    self.redundancy,
+                                    self.p2p_redundancy,
                                     &known_addresses,
                                 );
                                 self.dataplane.lock().unwrap().udp_write_unicast(rc_chunks);

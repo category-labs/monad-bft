@@ -644,7 +644,7 @@ where
                 monad_node_config::fullnode_raptorcast::SecondaryRaptorCastModeConfig::Client => {
                     debug!("Configured with Secondary RaptorCast instance: Client");
                     RaptorCastConfigSecondary {
-                        raptor10_redundancy: cfg_2nd.raptor10_fullnode_redundancy_factor,
+                        default_redundancy: cfg_2nd.raptor10_fullnode_redundancy_factor,
                         mode: SecondaryRaptorCastModeConfig::Client(RaptorCastConfigSecondaryClient {
                             bandwidth_cost_per_group_member: cfg_2nd.bandwidth_cost_per_group_member,
                             bandwidth_capacity: cfg_2nd.bandwidth_capacity,
@@ -667,7 +667,7 @@ where
                     pinned_full_nodes.extend(full_nodes_prioritized.iter());
 
                     RaptorCastConfigSecondary {
-                        raptor10_redundancy: cfg_2nd.raptor10_fullnode_redundancy_factor,
+                        default_redundancy: cfg_2nd.raptor10_fullnode_redundancy_factor,
                         mode: SecondaryRaptorCastModeConfig::Publisher(RaptorCastConfigSecondaryPublisher {
                             full_nodes_prioritized,
                             group_scheduling: GroupSchedulingConfig {
@@ -712,7 +712,8 @@ where
             mtu: network_config.mtu,
             udp_message_max_age_ms: network_config.udp_message_max_age_ms,
             primary_instance: RaptorCastConfigPrimary {
-                raptor10_redundancy: node_config.raptor10_validator_redundancy_factor,
+                default_redundancy: node_config.raptor10_validator_redundancy_factor,
+                p2p_redundancy: node_config.raptor10_p2p_redundancy_factor,
                 fullnode_dedicated: full_nodes
                     .iter()
                     .map(|full_node| NodeId::new(full_node.secp256k1_pubkey))
