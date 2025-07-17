@@ -579,12 +579,17 @@ fn test_ping_timeout() {
         refresh_period: Duration::from_secs(20),
         request_timeout: Duration::from_secs(1),
         epoch_validators: BTreeMap::default(),
+        last_participation_prune_threshold: Round(3),
         outbound_pipeline: vec![GenericTransformer::Latency(LatencyTransformer::new(
             Duration::from_secs(2),
         ))],
         ..Default::default()
     };
-    let (_, swarm_builder) = setup_keys_and_swarm_builder(config);
+    let (keys, swarm_builder) = setup_keys_and_swarm_builder(config);
+    let node_ids = keys
+        .iter()
+        .map(|k| NodeId::new(k.pubkey()))
+        .collect::<Vec<_>>();
     let mut nodes = swarm_builder.build();
 
     while nodes.step_until(Duration::from_secs(20)) {}
@@ -601,16 +606,29 @@ fn test_ping_timeout() {
         assert_eq!(metrics[GAUGE_PEER_DISC_PING_TIMEOUT], 3);
         assert_eq!(metrics[GAUGE_PEER_DISC_RECV_PONG], 3);
         assert_eq!(metrics[GAUGE_PEER_DISC_DROP_PONG], 3);
-
-        assert!(state.connection_info.is_empty());
     }
 
-    // no more pings after sent after connection is pruned
+    // no more pings after being pruned
     while nodes.step_until(Duration::from_secs(30)) {}
     for state in nodes.states().values() {
         let state = state.peer_disc_driver.get_peer_disc_state();
         let metrics = state.metrics();
         assert_eq!(metrics[GAUGE_PEER_DISC_SEND_PING], 3);
+    }
+
+    // eventually both name record and connection info should be pruned (during refresh)
+    let round_change_event = PeerDiscoveryEvent::UpdateCurrentRound {
+        round: Round(5),
+        epoch: Epoch(1),
+    };
+    for node_id in &node_ids {
+        nodes.insert_test_event(node_id, Duration::from_secs(30), round_change_event.clone());
+    }
+    while nodes.step_until(Duration::from_secs(40)) {}
+    for state in nodes.states().values() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
+        assert!(state.routing_info.is_empty());
+        assert!(state.connection_info.is_empty());
     }
 }
 
@@ -989,11 +1007,15 @@ fn test_validator_demoted_to_full_node() {
 fn test_prune_non_participating_full_node() {
     // 3 nodes: Node0, Node1, Node2
     // Node0 is a validator, Node1 and Node2 are full nodes
+    // initialize routing info
+    // Node0 name record: empty
+    // Node1 name record: Node0
+    // Node2 name record: Node0, Node1
     let config = TestConfig {
         num_nodes: 3,
         routing_info: BTreeMap::from([
-            (0, BTreeSet::from([1, 2])),
-            (1, BTreeSet::from([0, 2])),
+            (0, BTreeSet::new()),
+            (1, BTreeSet::from([0])),
             (2, BTreeSet::from([0, 1])),
         ]),
         epoch_validators: BTreeMap::from([(Epoch(1), BTreeSet::from([0]))]),
@@ -1012,6 +1034,7 @@ fn test_prune_non_participating_full_node() {
 
     while nodes.step_until(Duration::from_secs(0)) {}
 
+    // all nodes should have routing info of each other
     for state in nodes.states().values() {
         let state = state.peer_disc_driver.get_peer_disc_state();
         for node_id in node_ids.iter() {

@@ -300,15 +300,30 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
 
         self.metrics[GAUGE_PEER_DISC_NUM_PEERS] = self.routing_info.len() as u64;
 
-        // send pings to newly modified/added peers
         // full nodes only need to connect to a few validators so they don't need to connect to other full nodes
         if self.self_role == Role::FullNode {
             if self.is_validator(&peer_id) {
+                // look for upstream validator if insufficient
                 return self.look_for_upstream_validators();
             } else {
+                // no need to send ping to other full nodes but still record last participation
+                self.connection_info
+                    .entry(peer_id)
+                    .and_modify(|connection_entry| {
+                        if connection_entry.last_participation < self.current_round {
+                            connection_entry.last_participation = self.current_round;
+                        }
+                    })
+                    .or_insert_with(|| ConnectionInfo {
+                        last_ping: None,
+                        unresponsive_pings: 0,
+                        last_participation: self.current_round,
+                    });
                 return vec![];
             }
         }
+
+        // validators send pings to newly modified/added peers
         self.send_ping(peer_id)
     }
 
@@ -1655,8 +1670,8 @@ mod tests {
         assert_eq!(state.routing_info.len(), 3);
         match role {
             Role::FullNode => {
-                // full node should not add peer3 to connection info and should not send ping
-                assert!(!state.connection_info.contains_key(&peer3_pubkey));
+                // full node adds peer3 to connection info but should not send ping
+                assert!(state.connection_info.contains_key(&peer3_pubkey));
                 assert!(extract_ping(cmds).is_empty());
             }
             Role::Validator => {
