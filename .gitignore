@@ -1,4 +1,4 @@
-/target
+*target
 /docker/single-node/.venv
 /docker/single-node/logs
 /docker/devnet/monad/bft-ledger

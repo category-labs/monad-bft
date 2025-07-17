@@ -307,6 +307,17 @@ impl BlsKeyPair {
         Ok(keypair)
     }
 
+    pub fn from_ikm(mut ikm: impl AsMut<[u8]>) -> Result<Self, BlsError> {
+        let dst = b"monad-bls-keygen";
+        let ikm_mut = ikm.as_mut();
+        let sk = BlsSecretKey::key_gen(ikm_mut, dst)?;
+        let keypair = Self {
+            pubkey: sk.sk_to_pk(),
+            secretkey: sk,
+        };
+        Ok(keypair)
+    }
+
     pub fn sign<SD: SigningDomain>(&self, msg: &[u8]) -> BlsSignature {
         let msg = [SD::PREFIX, msg].concat();
         self.secretkey.0.sign(&msg, DST, &[]).into()

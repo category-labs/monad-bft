@@ -14,11 +14,16 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use alloy_rlp::{Decodable, Encodable};
+use k256::{
+    elliptic_curve::hash2curve::{ExpandMsgXmd, GroupDigest},
+    Secp256k1 as K256Secp256k1,
+};
 use monad_crypto::{
     hasher::{Hasher, HasherType},
     signing_domain::SigningDomain,
 };
 use secp256k1::{ffi::CPtr, Secp256k1};
+use sha2::Sha256;
 use zeroize::Zeroize;
 
 /// secp256k1 public key
@@ -58,7 +63,6 @@ impl std::fmt::Debug for PubKey {
     }
 }
 
-/// The comparison is faster but might not be stable across library versions
 impl std::cmp::PartialEq for PubKey {
     fn eq(&self, other: &Self) -> bool {
         self.0.eq_fast_unstable(&other.0)
@@ -67,8 +71,6 @@ impl std::cmp::PartialEq for PubKey {
 
 impl std::cmp::Eq for PubKey {}
 
-/// Faster to use the transmuted memory values, but might not be stable across
-/// library versions
 impl std::hash::Hash for PubKey {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         let slice = unsafe { std::mem::transmute::<Self, [u8; 64]>(*self) };
@@ -94,6 +96,17 @@ impl KeyPair {
             .map_err(Error);
         secret.zeroize();
         keypair
+    }
+
+    pub fn from_ikm(ikm: &[u8]) -> Result<Self, Error> {
+        let dst = b"monad-ecdsa-keygen";
+        let scalar =
+            <K256Secp256k1 as GroupDigest>::hash_to_scalar::<ExpandMsgXmd<Sha256>>(&[ikm], &[dst])
+                .map_err(|_| Error(secp256k1::Error::InvalidSecretKey))?;
+        let mut scalar_bytes = scalar.to_bytes();
+        let result = Self::from_bytes(scalar_bytes.as_mut_slice());
+        scalar_bytes.zeroize();
+        result
     }
 
     /// Create a SecpSignature over Hash(msg)
@@ -209,6 +222,7 @@ impl Drop for KeyPair {
 #[cfg(test)]
 mod tests {
     use monad_crypto::signing_domain;
+    use proptest::prelude::*;
     use tiny_keccak::Hasher;
 
     use super::{KeyPair, PubKey, SecpSignature};
@@ -309,5 +323,106 @@ mod tests {
         let x: SecpSignature = alloy_rlp::decode_exact(rlp).unwrap();
 
         assert_eq!(signature, x);
+    }
+
+    #[test]
+    fn test_from_ikm() {
+        let ikm = b"test input keying material 32byt";
+        let keypair = KeyPair::from_ikm(ikm).unwrap();
+
+        let msg = b"test message";
+        let signature = keypair.sign::<SigningDomainType>(msg);
+        assert!(keypair
+            .pubkey()
+            .verify::<SigningDomainType>(msg, &signature)
+            .is_ok());
+
+        let keypair2 = KeyPair::from_ikm(ikm).unwrap();
+        assert_eq!(keypair.pubkey().bytes(), keypair2.pubkey().bytes());
+    }
+
+    #[test]
+    fn test_secp256k1_out_of_range_key_fails() {
+        let mut zero_key = [0u8; 32];
+        let result = KeyPair::from_bytes(&mut zero_key);
+        assert!(result.is_err());
+
+        let mut curve_order =
+            hex::decode("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141")
+                .unwrap();
+        let result = KeyPair::from_bytes(&mut curve_order);
+        assert!(result.is_err());
+
+        let mut above_order =
+            hex::decode("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364142")
+                .unwrap();
+        let result = KeyPair::from_bytes(&mut above_order);
+        assert!(result.is_err());
+
+        let mut max_value = [0xFFu8; 32];
+        let result = KeyPair::from_bytes(&mut max_value);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_from_ikm_deterministic_profiles() {
+        #[derive(Debug)]
+        struct IkmProfile {
+            #[allow(dead_code)]
+            ikm_hex: String,
+            #[allow(dead_code)]
+            private_key_hex: String,
+            #[allow(dead_code)]
+            pubkey_hex: String,
+        }
+
+        let test_ikm_hexes = [
+            "0000000000000000000000000000000000000000000000000000000000000001",
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+            "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfc0c1c2c3c4c5c6c7c8c9cacbcccdcecf",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            "2222222222222222222222222222222222222222222222222222222222222222",
+            "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+            "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+        ];
+
+        let profiles: Vec<_> = test_ikm_hexes
+            .into_iter()
+            .map(|ikm_hex| {
+                let ikm = hex::decode(ikm_hex).unwrap();
+                let keypair = KeyPair::from_ikm(&ikm).unwrap();
+                let private_key_bytes = keypair.0.secret_key().secret_bytes();
+                let pubkey_bytes = keypair.pubkey().bytes();
+
+                IkmProfile {
+                    ikm_hex: ikm_hex.to_string(),
+                    private_key_hex: hex::encode(private_key_bytes),
+                    pubkey_hex: hex::encode(pubkey_bytes),
+                }
+            })
+            .collect();
+
+        insta::assert_debug_snapshot!(profiles);
+    }
+
+    proptest! {
+        #[test]
+        fn proptest_from_ikm(ikm: [u8; 32]) {
+            let keypair_result = KeyPair::from_ikm(&ikm);
+
+            match keypair_result {
+                Ok(keypair) => {
+                    let msg = b"test message for proptest";
+                    let signature = keypair.sign::<SigningDomainType>(msg);
+                    prop_assert!(keypair.pubkey().verify::<SigningDomainType>(msg, &signature).is_ok());
+                }
+                Err(e) => {
+                    panic!("key should be valid: {:?}", e);
+                }
+            }
+        }
     }
 }
