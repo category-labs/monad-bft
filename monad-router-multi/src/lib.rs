@@ -57,8 +57,7 @@ where
         let pdd = PeerDiscoveryDriver::new(peer_discovery_builder);
         let shared_pdd = Arc::new(Mutex::new(pdd));
 
-        let dp = dataplane_builder.build();
-        let shared_dataplane = Arc::new(Mutex::new(dp));
+        let (dp_reader, dp_writer) = dataplane_builder.build().split();
 
         // Create a channel between primary and secondary raptorcast instances.
         // Fundamentally this is needed because, while both can send, only the
@@ -71,14 +70,14 @@ where
             SecondaryRaptorCastModeConfig::None => None,
             _ => Some(RaptorCastSecondary::new(
                 cfg.clone(),
-                shared_dataplane.clone(),
+                dp_writer.clone(),
                 shared_pdd.clone(),
                 recv_net_messages,
                 send_group_infos,
             )),
         };
 
-        let rc_primary = RaptorCast::new(cfg, shared_dataplane, shared_pdd)
+        let rc_primary = RaptorCast::new(cfg, dp_reader, dp_writer, shared_pdd)
             .bind_channel_to_secondary_raptorcast(send_net_messages, recv_group_infos);
 
         Self {

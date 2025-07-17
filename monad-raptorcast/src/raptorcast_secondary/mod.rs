@@ -20,7 +20,7 @@ use group_message::FullNodesGroupMessage;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_dataplane::{udp::segment_size_for_mtu, Dataplane, UnicastMsg};
+use monad_dataplane::{udp::segment_size_for_mtu, DataplaneWriter, UnicastMsg};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, PeerEntry, RouterCommand};
 use monad_peer_discovery::{driver::PeerDiscoveryDriver, PeerDiscoveryAlgo, PeerDiscoveryEvent};
@@ -68,7 +68,7 @@ where
     curr_epoch: Epoch,
 
     mtu: u16,
-    dataplane: Arc<Mutex<Dataplane>>,
+    dataplane_writer: DataplaneWriter,
     peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
 
     channel_from_primary: UnboundedReceiver<FullNodesGroupMessage<ST>>,
@@ -85,7 +85,7 @@ where
 {
     pub fn new(
         config: RaptorCastConfig<ST>,
-        dataplane: Arc<Mutex<Dataplane>>,
+        dataplane_writer: DataplaneWriter,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
         channel_from_primary: UnboundedReceiver<FullNodesGroupMessage<ST>>,
         channel_to_primary: UnboundedSender<Group<ST>>,
@@ -130,7 +130,7 @@ where
             raptor10_redundancy: Redundancy::from_u8(raptor10_redundancy),
             curr_epoch: Epoch(0),
             mtu: config.mtu,
-            dataplane,
+            dataplane_writer,
             peer_discovery_driver,
             channel_from_primary,
             metrics: Default::default(),
@@ -214,10 +214,7 @@ where
             self.raptor10_redundancy,
             known_addresses,
         );
-        self.dataplane
-            .lock()
-            .unwrap()
-            .udp_write_unicast(udp_messages);
+        self.dataplane_writer.udp_write_unicast(udp_messages);
     }
 
     fn send_group_msg(
@@ -423,7 +420,7 @@ where
                     );
 
                     // Send the raptorcast chunks via UDP to all peers in group
-                    self.dataplane.lock().unwrap().udp_write_unicast(rc_chunks);
+                    self.dataplane_writer.udp_write_unicast(rc_chunks);
                 }
             }
         }

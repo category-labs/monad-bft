@@ -21,7 +21,8 @@ use monad_crypto::certificate_signature::{
 };
 use monad_dataplane::{
     udp::{segment_size_for_mtu, DEFAULT_MTU},
-    BroadcastMsg, Dataplane, DataplaneBuilder, RecvTcpMsg, RecvUdpMsg, TcpMsg, UnicastMsg,
+    BroadcastMsg, DataplaneBuilder, DataplaneReader, DataplaneWriter, RecvTcpMsg, TcpMsg,
+    UnicastMsg,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
@@ -71,7 +72,8 @@ where
     udp_state: udp::UdpState<ST>,
     mtu: u16,
 
-    dataplane: Arc<Mutex<Dataplane>>,
+    dataplane_reader: DataplaneReader,
+    dataplane_writer: DataplaneWriter,
     pending_events: VecDeque<RaptorCastEvent<M::Event, ST>>,
 
     channel_to_secondary: Option<UnboundedSender<FullNodesGroupMessage<ST>>>,
@@ -102,7 +104,8 @@ where
 {
     pub fn new(
         config: config::RaptorCastConfig<ST>,
-        dataplane: Arc<Mutex<Dataplane>>,
+        dataplane_reader: DataplaneReader,
+        dataplane_writer: DataplaneWriter,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
     ) -> Self {
         if config.primary_instance.raptor10_redundancy < 1 {
@@ -137,7 +140,8 @@ where
             udp_state: udp::UdpState::new(self_id, config.udp_message_max_age_ms),
             mtu: config.mtu,
 
-            dataplane,
+            dataplane_reader,
+            dataplane_writer,
             pending_events: Default::default(),
             channel_to_secondary: None,
             channel_from_secondary: None,
@@ -199,7 +203,7 @@ where
                 assert_eq!(signature.len(), SIGNATURE_SIZE);
                 signed_message[..SIGNATURE_SIZE].copy_from_slice(&signature);
                 signed_message[SIGNATURE_SIZE..].copy_from_slice(&app_message);
-                self.dataplane.lock().unwrap().tcp_write(
+                self.dataplane_writer.tcp_write(
                     address,
                     TcpMsg {
                         msg: signed_message.freeze(),
@@ -264,7 +268,7 @@ where
     };
     let up_bandwidth_mbps = 1_000;
     let dp_builder = DataplaneBuilder::new(&local_addr, up_bandwidth_mbps);
-    let shared_dataplane = Arc::new(Mutex::new(dp_builder.build()));
+    let (dp_reader, dp_writer) = dp_builder.build().split();
     let config = config::RaptorCastConfig {
         shared_key,
         mtu: DEFAULT_MTU,
@@ -277,7 +281,7 @@ where
     };
     let pd = PeerDiscoveryDriver::new(peer_discovery_builder);
     let shared_pd = Arc::new(Mutex::new(pd));
-    RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>>::new(config, shared_dataplane, shared_pd)
+    RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>>::new(config, dp_reader, dp_writer, shared_pd)
 }
 
 impl<ST, M, OM, SE, PD> Executor for RaptorCast<ST, M, OM, SE, PD>
@@ -431,7 +435,7 @@ where
                                 self.redundancy,
                                 &known_addresses,
                             );
-                            self.dataplane.lock().unwrap().udp_write_unicast(rc_chunks);
+                            self.dataplane_writer.udp_write_unicast(rc_chunks);
                         }
 
                         RouterTarget::PointToPoint(to) => {
@@ -462,7 +466,7 @@ where
                                     self.redundancy,
                                     &known_addresses,
                                 );
-                                self.dataplane.lock().unwrap().udp_write_unicast(rc_chunks);
+                                self.dataplane_writer.udp_write_unicast(rc_chunks);
                             }
                         }
 
@@ -577,14 +581,10 @@ where
             .collect::<Vec<_>>();
 
         loop {
-            let message: RecvUdpMsg;
-            {
-                let mut dataplane = this.dataplane.lock().unwrap();
-                let Poll::Ready(msg) = pin!(dataplane.udp_read()).poll_unpin(cx) else {
-                    break;
-                };
-                message = msg;
-            }
+            let dataplane = &mut this.dataplane_reader;
+            let Poll::Ready(message) = pin!(dataplane.udp_read()).poll_unpin(cx) else {
+                break;
+            };
 
             tracing::trace!(
                 "RaptorCastPrimary rx message len {} from: {}",
@@ -611,25 +611,19 @@ where
                             })
                             .collect();
 
-                        this.dataplane
-                            .lock()
-                            .unwrap()
-                            .udp_write_broadcast(BroadcastMsg {
-                                targets: target_addrs,
-                                payload,
-                                stride: bcast_stride,
-                            });
+                        this.dataplane_writer.udp_write_broadcast(BroadcastMsg {
+                            targets: target_addrs,
+                            payload,
+                            stride: bcast_stride,
+                        });
                     },
                     |payload, bcast_stride| {
                         // Callback for forwarding chunks to full nodes
-                        this.dataplane
-                            .lock()
-                            .unwrap()
-                            .udp_write_broadcast(BroadcastMsg {
-                                targets: full_node_addrs.clone(),
-                                payload,
-                                stride: bcast_stride,
-                            });
+                        this.dataplane_writer.udp_write_broadcast(BroadcastMsg {
+                            targets: full_node_addrs.clone(),
+                            payload,
+                            stride: bcast_stride,
+                        });
                     },
                     message,
                 )
@@ -704,10 +698,12 @@ where
             }
         }
 
-        while let Poll::Ready(recv_msg) =
-            pin!(this.dataplane.lock().unwrap().tcp_read()).poll_unpin(cx)
-        {
-            let RecvTcpMsg { payload, src_addr } = recv_msg;
+        loop {
+            let dataplane = &mut this.dataplane_reader;
+            let Poll::Ready(msg) = pin!(dataplane.tcp_read()).poll_unpin(cx) else {
+                break;
+            };
+            let RecvTcpMsg { payload, src_addr } = msg;
             // check message length to prevent panic during message slicing
             if payload.len() < SIGNATURE_SIZE {
                 warn!(
@@ -789,10 +785,7 @@ where
                             this.redundancy,
                             &pd_driver.get_known_addresses(),
                         );
-                        this.dataplane
-                            .lock()
-                            .unwrap()
-                            .udp_write_unicast(unicast_msg);
+                        this.dataplane_writer.udp_write_unicast(unicast_msg);
                     }
                     PeerDiscoveryEmit::MetricsCommand(executor_metrics) => {
                         this.peer_discovery_metrics = executor_metrics;

@@ -128,7 +128,7 @@ where
             RouterConfig::RaptorCast(cfg) => {
                 let pdd = PeerDiscoveryDriver::new(peer_discovery_builder);
                 let shared_peer_discovery_driver = Arc::new(Mutex::new(pdd));
-                let shared_dataplane = Arc::new(Mutex::new(dataplane_builder.build()));
+                let (dp_reader, dp_writer) = dataplane_builder.build().split();
                 Updater::boxed(RaptorCast::<
                     ST,
                     MonadMessage<ST, SCT, MockExecutionProtocol>,
@@ -136,7 +136,7 @@ where
                     MonadEvent<ST, SCT, MockExecutionProtocol>,
                     NopDiscovery<ST>,
                 >::new(
-                    cfg, shared_dataplane, shared_peer_discovery_driver
+                    cfg, dp_reader, dp_writer, shared_peer_discovery_driver
                 ))
             }
         },
