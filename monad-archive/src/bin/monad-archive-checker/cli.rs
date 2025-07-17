@@ -148,6 +148,9 @@ pub struct InspectorArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum InspectorCommand {
+    /// Show status summary of the checker model
+    Status,
+
     /// List all fault ranges collapsed to start-end format
     ListFaults,
 

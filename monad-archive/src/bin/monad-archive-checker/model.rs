@@ -343,6 +343,12 @@ pub enum FaultKind {
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InconsistentBlockReason {
     Header,
+    /// Parent hash doesn't match the hash of the parent block
+    InvalidParentHash,
+    /// Transaction root in header doesn't match calculated root
+    InvalidTransactionRoot,
+    /// Receipts root in header doesn't match calculated root
+    InvalidReceiptsRoot,
     BodyContents,
     BodyLen,
     ReceiptsContents,
@@ -357,6 +363,9 @@ impl InconsistentBlockReason {
     pub fn metric_name(&self) -> &'static str {
         match self {
             InconsistentBlockReason::Header => "inconsistent_header",
+            InconsistentBlockReason::InvalidParentHash => "invalid_parent_hash",
+            InconsistentBlockReason::InvalidTransactionRoot => "invalid_transaction_root",
+            InconsistentBlockReason::InvalidReceiptsRoot => "invalid_receipts_root",
             InconsistentBlockReason::BodyContents => "inconsistent_body_contents",
             InconsistentBlockReason::BodyLen => "inconsistent_body_len",
             InconsistentBlockReason::ReceiptsContents => "inconsistent_receipts_contents",
@@ -375,6 +384,9 @@ impl std::fmt::Display for InconsistentBlockReason {
             "InconsistentBlockReason: {}",
             match self {
                 InconsistentBlockReason::Header => "Header",
+                InconsistentBlockReason::InvalidParentHash => "Invalid Parent Hash",
+                InconsistentBlockReason::InvalidTransactionRoot => "Invalid Transaction Root",
+                InconsistentBlockReason::InvalidReceiptsRoot => "Invalid Receipts Root",
                 InconsistentBlockReason::BodyContents => "Body Contents",
                 InconsistentBlockReason::BodyLen => "Body Length",
                 InconsistentBlockReason::ReceiptsContents => "Receipts Contents",

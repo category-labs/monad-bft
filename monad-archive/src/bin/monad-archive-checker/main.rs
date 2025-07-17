@@ -176,6 +176,10 @@ async fn main() -> Result<()> {
             let model = CheckerModel::new(s3, &metrics, None).await?;
 
             match inspector_args.command {
+                cli::InspectorCommand::Status => {
+                    info!("Displaying checker status");
+                    inspector::status(&model).await?;
+                }
                 cli::InspectorCommand::ListFaults => {
                     info!("Listing all fault ranges");
                     inspector::list_fault_ranges(&model).await?;

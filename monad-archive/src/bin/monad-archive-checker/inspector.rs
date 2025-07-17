@@ -16,8 +16,78 @@
 use std::collections::HashMap;
 
 use eyre::Result;
+use monad_archive::prelude::*;
 
 use crate::{checker::fetch_block_data, model::CheckerModel, CHUNK_SIZE};
+
+/// Displays status summary of the checker model
+pub async fn status(model: &CheckerModel) -> Result<()> {
+    println!("Archive Checker Status");
+    println!("====================");
+
+    // Get replicas
+    let replicas: Vec<&str> = model
+        .block_data_readers
+        .keys()
+        .map(String::as_str)
+        .collect();
+    println!("\nReplicas: {}", replicas.len());
+    for replica in &replicas {
+        println!("  - {}", replica);
+    }
+
+    // Get latest checked for each replica
+    println!("\nLatest Checked Blocks:");
+    let mut min_checked = u64::MAX;
+    let mut max_checked = 0;
+
+    for replica in &replicas {
+        let latest = model.get_latest_checked_for_replica(replica).await?;
+        println!("  {}: {}", replica, latest);
+        min_checked = min_checked.min(latest);
+        max_checked = max_checked.max(latest);
+    }
+
+    if !replicas.is_empty() {
+        println!("\n  Min: {}", min_checked);
+        println!("  Max: {}", max_checked);
+        println!("  Lag: {}", max_checked.saturating_sub(min_checked));
+    }
+
+    // Count fault chunks using scan_prefix
+    println!("\nFault Chunks:");
+    let fault_keys = model
+        .store
+        .scan_prefix(crate::model::FAULTS_CHUNK_PREFIX)
+        .await?;
+
+    // Group by replica
+    let mut faults_by_replica: HashMap<String, usize> = HashMap::new();
+    for key in &fault_keys {
+        let parts: Vec<&str> = key.split('/').collect();
+        if parts.len() >= 3 {
+            let replica = parts[1];
+            *faults_by_replica.entry(replica.to_string()).or_default() += 1;
+        }
+    }
+
+    println!("  Total fault chunks: {}", fault_keys.len());
+    for replica in &replicas {
+        let count = faults_by_replica.get(*replica).unwrap_or(&0);
+        println!("  {}: {} chunks", replica, count);
+    }
+
+    // Get latest available to check
+    if let Ok(latest_to_check) = model.latest_to_check().await {
+        println!("\nLatest available to check: {}", latest_to_check);
+        println!(
+            "Blocks behind tip: {}",
+            latest_to_check.saturating_sub(max_checked)
+        );
+    }
+
+    Ok(())
+}
 
 /// Lists all fault ranges across replicas, collapsed to start-end ranges
 pub async fn list_fault_ranges(model: &CheckerModel) -> Result<()> {

@@ -17,7 +17,6 @@
 
 pub mod archive_reader;
 pub mod cli;
-pub mod fault;
 pub mod kvstore;
 pub mod metrics;
 pub mod model;

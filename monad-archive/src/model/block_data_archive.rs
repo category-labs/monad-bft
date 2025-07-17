@@ -296,6 +296,10 @@ impl BlockDataArchive {
     }
 }
 
+pub fn encode_block(block: Block) -> Result<Vec<u8>> {
+    BlockStorageRepr::V2(block).encode()
+}
+
 impl BlockStorageRepr {
     const SENTINEL: u8 = 55;
     const V0_MARKER: u8 = 0;
@@ -513,17 +517,6 @@ impl ReceiptStorageRepr {
     }
 }
 
-async fn spawn_rayon_async<F, R>(func: F) -> Result<R>
-where
-    F: FnOnce() -> R + Send + 'static,
-    R: Send + 'static,
-{
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    rayon::spawn(|| {
-        let _ = tx.send(func());
-    });
-    rx.await.map_err(Into::into)
-}
 #[cfg(test)]
 mod tests {
     use std::iter::repeat_n;

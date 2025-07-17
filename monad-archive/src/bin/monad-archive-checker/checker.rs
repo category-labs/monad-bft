@@ -15,6 +15,7 @@
 
 use std::collections::HashMap;
 
+use alloy_consensus::proofs::{calculate_receipt_root, calculate_transaction_root};
 use eyre::Result;
 use futures::stream;
 use monad_archive::prelude::*;
@@ -181,10 +182,13 @@ pub fn process_blocks(
 
     for block_num in start_block..=end_block {
         if let Some(replica_data) = data_by_block_num.get(&block_num) {
+            let prev_headers = get_prev_header(block_num, data_by_block_num);
+
             debug!(block_num, "Processing block");
             process_single_block(
                 block_num,
                 replica_data,
+                prev_headers,
                 &mut faults_by_replica,
                 &mut good_blocks,
             );
@@ -202,10 +206,29 @@ pub fn process_blocks(
     (faults_by_replica, good_blocks)
 }
 
+fn get_prev_header(
+    block_num: u64,
+    data_by_block_num: &HashMap<u64, HashMap<String, Option<(Block, BlockReceipts, BlockTraces)>>>,
+) -> HashMap<String, Header> {
+    let Some(prev_block_num) = block_num.checked_sub(1) else {
+        return HashMap::new();
+    };
+    let Some(prev_block_data) = data_by_block_num.get(&prev_block_num) else {
+        return HashMap::new();
+    };
+    prev_block_data
+        .iter()
+        .filter_map(|(replica_name, block_data)| {
+            Some((replica_name.clone(), block_data.as_ref()?.0.header.clone()))
+        })
+        .collect()
+}
+
 /// Processes a single block across all replicas
 pub fn process_single_block(
     block_num: u64,
     replica_data: &HashMap<String, Option<(Block, BlockReceipts, BlockTraces)>>,
+    parents: HashMap<String, Header>,
     faults_by_replica: &mut HashMap<String, Vec<Fault>>,
     good_blocks: &mut GoodBlocks,
 ) {
@@ -236,7 +259,8 @@ pub fn process_single_block(
         let (block, receipts, traces) = block_data_opt.as_ref().unwrap();
 
         // Step 2: Perform basic verifications on parsed blocks
-        if let Err(verification_fault) = verify_block(block_num, block, receipts, traces) {
+        let parent = parents.get(replica_name);
+        if let Err(verification_fault) = verify_block(block_num, block, receipts, traces, parent) {
             debug!(
                 block_num,
                 %replica_name,
@@ -314,10 +338,12 @@ fn find_consensus(
     );
 
     // Find the largest equivalence group - the majority consensus
-    if let Some(largest_group) = equivalence_groups.iter().max_by_key(|group| group.len()) {
+    if let Some(largest_group) = equivalence_groups
+        .iter_mut()
+        .min_by_key(|group| (-(group.len() as isize), group.first().unwrap().clone()))
+    {
         // Sort the group for deterministic selection
-        let mut sorted_group = largest_group.clone();
-        sorted_group.sort(); // Sort lexicographically by replica name
+        largest_group.sort(); // Sort lexicographically by replica name
 
         debug!(
             block_num,
@@ -326,7 +352,7 @@ fn find_consensus(
         );
 
         // The first replica in the sorted largest group is our "good" one
-        if let Some(good_replica) = sorted_group.first() {
+        if let Some(good_replica) = largest_group.first() {
             debug!(
                 block_num,
                 %good_replica,
@@ -464,6 +490,7 @@ fn verify_block(
     block: &Block,
     receipts: &BlockReceipts,
     traces: &BlockTraces,
+    parent: Option<&Header>,
 ) -> Result<(), FaultKind> {
     // Verify block number
     if block.header.number != block_num {
@@ -476,6 +503,19 @@ fn verify_block(
             expected: block_num,
             actual: block.header.number,
         });
+    }
+
+    if let Some(parent) = parent {
+        if block.header.parent_hash != parent.hash_slow() {
+            debug!(
+                expected = %parent.hash_slow(),
+                actual = %block.header.parent_hash,
+                "Invalid parent hash"
+            );
+            return Err(FaultKind::InconsistentBlock(
+                InconsistentBlockReason::InvalidParentHash,
+            ));
+        }
     }
 
     // Verify receipts match the block
@@ -504,6 +544,46 @@ fn verify_block(
             tx_count: block.body.transactions.len(),
             trace_count: traces.len(),
         });
+    }
+
+    // Verify transaction root
+    {
+        let txs = block
+            .body
+            .transactions
+            .iter()
+            .map(|tx| tx.tx.clone())
+            .collect::<Vec<_>>();
+        let tx_root = calculate_transaction_root(&txs);
+        if block.header.transactions_root != tx_root {
+            debug!(
+                expected = %tx_root,
+                actual = %block.header.transactions_root,
+                "Invalid transaction root"
+            );
+            return Err(FaultKind::InconsistentBlock(
+                InconsistentBlockReason::InvalidTransactionRoot,
+            ));
+        }
+    }
+
+    // Verify receipts root
+    {
+        let receipts = receipts
+            .iter()
+            .map(|r| r.receipt.clone())
+            .collect::<Vec<_>>();
+        let receipt_root = calculate_receipt_root(&receipts);
+        if block.header.receipts_root != receipt_root {
+            debug!(
+                expected = %receipt_root,
+                actual = %block.header.receipts_root,
+                "Invalid receipts root"
+            );
+            return Err(FaultKind::InconsistentBlock(
+                InconsistentBlockReason::InvalidReceiptsRoot,
+            ));
+        }
     }
     Ok(())
 }
@@ -658,9 +738,7 @@ pub fn find_inconsistent_reason(
 
 #[cfg(test)]
 pub mod tests {
-    use alloy_consensus::TxEnvelope;
-    use alloy_primitives::Bytes;
-    use alloy_rlp::Encodable;
+    use alloy_primitives::{Bytes, FixedBytes};
     use monad_archive::{
         kvstore::memory::MemoryStorage,
         test_utils::{mock_block, mock_rx, mock_tx},
@@ -682,16 +760,22 @@ pub mod tests {
     fn test_verify_block() {
         // Valid block case
         let block_num = 123;
-        let block = create_test_block(block_num);
-        let receipts = create_test_receipts(3); // 3 transactions
-        let traces = create_test_traces(3);
+        let (parent, _, _) = create_test_block_data(block_num - 1, 1, None);
+        let (block, receipts, traces) =
+            create_test_block_data(block_num, 1, Some(parent.header.hash_slow()));
 
         // Valid case should return Ok
-        assert!(verify_block(block_num, &block, &receipts, &traces).is_ok());
+        assert!(verify_block(block_num, &block, &receipts, &traces, Some(&parent.header)).is_ok());
 
         // Invalid block number
         let wrong_block_num = 456;
-        match verify_block(wrong_block_num, &block, &receipts, &traces) {
+        match verify_block(
+            wrong_block_num,
+            &block,
+            &receipts,
+            &traces,
+            Some(&parent.header),
+        ) {
             Err(FaultKind::InvalidBlockNumber { expected, actual }) => {
                 assert_eq!(expected, wrong_block_num);
                 assert_eq!(actual, block_num);
@@ -701,7 +785,13 @@ pub mod tests {
 
         // Receipt count mismatch
         let fewer_receipts = create_test_receipts(2); // Only 2 receipts for 3 transactions
-        match verify_block(block_num, &block, &fewer_receipts, &traces) {
+        match verify_block(
+            block_num,
+            &block,
+            &fewer_receipts,
+            &traces,
+            Some(&parent.header),
+        ) {
             Err(FaultKind::ReceiptCountMismatch {
                 tx_count,
                 receipt_count,
@@ -710,6 +800,15 @@ pub mod tests {
                 assert_eq!(receipt_count, 2);
             }
             _ => panic!("Expected ReceiptCountMismatch fault"),
+        }
+
+        // Invalid parent
+        match verify_block(block_num, &block, &receipts, &traces, Some(&block.header)) {
+            Err(FaultKind::InconsistentBlock(InconsistentBlockReason::InvalidParentHash)) => {}
+            out => panic!(
+                "Expected InconsistentBlock(InvalidParentHash) fault, got {:?}",
+                out
+            ),
         }
     }
 
@@ -722,15 +821,15 @@ pub mod tests {
         };
 
         // Create three different valid blocks
-        let (block1, receipts1, traces1) = create_test_block_data(block_num, 1);
-        let (block2, receipts2, traces2) = create_test_block_data(block_num, 2);
-        let (block3, receipts3, traces3) = create_test_block_data(block_num, 3);
+        let (block1, receipts1, traces1) = create_test_block_data(block_num, 1, None);
+        let (block2, receipts2, traces2) = create_test_block_data(block_num + 1, 2, None);
+        let (block3, receipts3, traces3) = create_test_block_data(block_num + 2, 3, None);
 
         // Create a map with 3 replicas, two agreeing, one different
         let mut valid_replicas = HashMap::new();
-        valid_replicas.insert("replica1".to_string(), (&block1, &receipts1, &traces1));
-        valid_replicas.insert("replica2".to_string(), (&block1, &receipts1, &traces1)); // Same as replica1
-        valid_replicas.insert("replica3".to_string(), (&block2, &receipts2, &traces2)); // Different
+        valid_replicas.insert("replica1".into(), (&block1, &receipts1, &traces1));
+        valid_replicas.insert("replica2".into(), (&block2, &receipts2, &traces2)); // Same as replica1
+        valid_replicas.insert("replica3".into(), (&block3, &receipts3, &traces3)); // Different
 
         find_consensus(
             block_num,
@@ -742,7 +841,7 @@ pub mod tests {
         // Should select replica1 as the good replica (they're identical, but replica1 is chosen since it's first)
         assert!(good_blocks.block_num_to_replica.contains_key(&block_num));
         let selected_replica = good_blocks.block_num_to_replica.get(&block_num).unwrap();
-        assert!(selected_replica == "replica1");
+        assert_eq!(selected_replica, "replica1");
 
         // replica3 should be marked as inconsistent
         assert!(faults_by_replica.contains_key("replica3"));
@@ -757,10 +856,13 @@ pub mod tests {
         faults_by_replica.clear();
         good_blocks.block_num_to_replica.clear();
 
+        let (block1, receipts1, traces1) = create_test_block_data(block_num, 1, None);
+        let (block2, receipts2, traces2) = create_test_block_data(block_num + 1, 2, None);
+
         valid_replicas.clear();
-        valid_replicas.insert("replica1".to_string(), (&block1, &receipts1, &traces1));
-        valid_replicas.insert("replica2".to_string(), (&block2, &receipts2, &traces2));
-        valid_replicas.insert("replica3".to_string(), (&block3, &receipts3, &traces3));
+        valid_replicas.insert("replica1".into(), (&block1, &receipts1, &traces1));
+        valid_replicas.insert("replica2".into(), (&block2, &receipts2, &traces2));
+        valid_replicas.insert("replica3".into(), (&block1, &receipts1, &traces1));
 
         find_consensus(
             block_num,
@@ -773,7 +875,7 @@ pub mod tests {
         assert!(good_blocks.block_num_to_replica.contains_key(&block_num));
 
         // The other two should be marked as inconsistent
-        assert_eq!(faults_by_replica.len(), 2);
+        assert_eq!(faults_by_replica.len(), 1);
     }
 
     #[test]
@@ -785,18 +887,18 @@ pub mod tests {
         };
 
         // Create test data for each replica
-        let (block1, receipts1, traces1) = create_test_block_data(block_num, 1);
-        let (block2, receipts2, traces2) = create_test_block_data(block_num, 2);
+        let mut blocks = create_test_block_data_range(block_num, [1, 2]);
 
         // Create replica data with one valid, one invalid, and one missing
         let mut replica_data = HashMap::new();
-        replica_data.insert("replica1".to_string(), Some((block1, receipts1, traces1)));
-        replica_data.insert("replica2".to_string(), Some((block2, receipts2, traces2)));
         replica_data.insert("replica3".to_string(), None); // Missing data
+        replica_data.insert("replica2".to_string(), blocks.remove(&(block_num + 1)));
+        replica_data.insert("replica1".to_string(), blocks.remove(&block_num));
 
         process_single_block(
             block_num,
             &replica_data,
+            HashMap::new(),
             &mut faults_by_replica,
             &mut good_blocks,
         );
@@ -816,10 +918,22 @@ pub mod tests {
     }
 
     // Helper functions to create test data
-    fn create_test_block(block_num: u64) -> Block {
-        // Use the existing mock_block utility with 3 transactions
-        mock_block(block_num, vec![mock_tx(1), mock_tx(2), mock_tx(3)])
-    }
+    // fn create_test_block(block_num: u64, parent_hash: Option<FixedBytes<32>>) -> Block {
+    //     // Use the existing mock_block utility with 3 transactions
+    //     let mut block = mock_block(block_num, vec![mock_tx(1), mock_tx(2), mock_tx(3)]);
+    //     if let Some(parent_hash) = parent_hash {
+    //         block.header.parent_hash = parent_hash;
+    //     }
+    //     let txs = block
+    //         .body
+    //         .transactions
+    //         .iter()
+    //         .map(|tx| tx.tx.clone())
+    //         .collect::<Vec<_>>();
+    //     let tx_root = calculate_transaction_root(&txs);
+    //     block.header.transactions_root = tx_root;
+    //     block
+    // }
 
     fn create_test_receipts(count: usize) -> BlockReceipts {
         // Use the existing mock_rx utility
@@ -834,14 +948,49 @@ pub mod tests {
     pub(crate) fn create_test_block_data_with_len(
         block_num: u64,
         header_variant: u8,
+        parent_hash: Option<FixedBytes<32>>,
         receipts_len: usize,
         traces_len: usize,
     ) -> (Block, BlockReceipts, BlockTraces) {
-        let mut block = create_test_block(block_num);
+        // Use the existing mock_block utility with 3 transactions
+        let mut block = mock_block(block_num, vec![mock_tx(1), mock_tx(2), mock_tx(3)]);
+        if let Some(parent_hash) = parent_hash {
+            block.header.parent_hash = parent_hash;
+        }
+        let txs = block
+            .body
+            .transactions
+            .iter()
+            .map(|tx| tx.tx.clone())
+            .collect::<Vec<_>>();
+        let tx_root = calculate_transaction_root(&txs);
+        block.header.transactions_root = tx_root;
+
+        // let mut block = create_test_block(block_num, parent_hash);
         // Make the block slightly different based on variant
         block.header.extra_data = Bytes::from(vec![header_variant]);
 
         let receipts = create_test_receipts(receipts_len);
+
+        // Calculate transactions_root
+        {
+            let txs = block
+                .body
+                .transactions
+                .iter()
+                .map(|tx| tx.tx.clone())
+                .collect::<Vec<_>>();
+            block.header.transactions_root = calculate_transaction_root(&txs);
+        }
+        // Calculate receipts_root
+        {
+            let receipts = receipts
+                .iter()
+                .map(|r| r.receipt.clone())
+                .collect::<Vec<_>>();
+            block.header.receipts_root = calculate_receipt_root(&receipts);
+        }
+
         let traces = create_test_traces(traces_len);
 
         (block, receipts, traces)
@@ -850,8 +999,24 @@ pub mod tests {
     pub(crate) fn create_test_block_data(
         block_num: u64,
         header_variant: u8,
+        parent_hash: Option<FixedBytes<32>>,
     ) -> (Block, BlockReceipts, BlockTraces) {
-        create_test_block_data_with_len(block_num, header_variant, 3, 3)
+        create_test_block_data_with_len(block_num, header_variant, parent_hash, 3, 3)
+    }
+
+    pub(crate) fn create_test_block_data_range(
+        block_start: u64,
+        header_variants: impl IntoIterator<Item = u8>,
+    ) -> HashMap<u64, (Block, BlockReceipts, BlockTraces)> {
+        let mut out = HashMap::new();
+        let mut prev_hash = None;
+        for (i, header_variant) in header_variants.into_iter().enumerate() {
+            let block_num = block_start + i as u64;
+            let data = create_test_block_data_with_len(block_num, header_variant, prev_hash, 3, 3);
+            prev_hash = Some(data.0.header.hash_slow());
+            out.insert(block_num, data);
+        }
+        out
     }
 
     #[test]
@@ -860,51 +1025,73 @@ pub mod tests {
         let mut data_by_block_num = HashMap::new();
 
         // Create three blocks with data
-        for i in block_num..block_num + 3 {
+
+        // All replicas have identical data for block 100
+        {
             let mut replica_data = HashMap::new();
+            let (block, receipts, traces) = create_test_block_data(block_num, 1, None);
+            replica_data.insert(
+                "replica1".to_string(),
+                Some((block.clone(), receipts.clone(), traces.clone())),
+            );
+            replica_data.insert(
+                "replica2".to_string(),
+                Some((block.clone(), receipts.clone(), traces.clone())),
+            );
+            replica_data.insert("replica3".to_string(), Some((block, receipts, traces)));
+            data_by_block_num.insert(block_num, replica_data);
+        }
 
-            // All replicas have identical data for block 100
-            if i == block_num {
-                let (block, receipts, traces) = create_test_block_data(i, 1);
-                replica_data.insert(
-                    "replica1".to_string(),
-                    Some((block.clone(), receipts.clone(), traces.clone())),
-                );
-                replica_data.insert(
-                    "replica2".to_string(),
-                    Some((block.clone(), receipts.clone(), traces.clone())),
-                );
-                replica_data.insert("replica3".to_string(), Some((block, receipts, traces)));
-            }
-            // Two replicas agree, one is different for block 101
-            else if i == block_num + 1 {
-                let (block1, receipts1, traces1) = create_test_block_data(i, 1);
-                let (block2, receipts2, traces2) = create_test_block_data(i, 2);
-                replica_data.insert(
-                    "replica1".to_string(),
-                    Some((block1.clone(), receipts1.clone(), traces1.clone())),
-                );
-                replica_data.insert("replica2".to_string(), Some((block1, receipts1, traces1)));
-                replica_data.insert("replica3".to_string(), Some((block2, receipts2, traces2)));
-            }
-            // One replica has data, one is missing, one has invalid block number for block 102
-            else if i == block_num + 2 {
-                let (mut block, receipts, traces) = create_test_block_data(i, 1);
-                let (valid_block, valid_receipts, valid_traces) = create_test_block_data(i, 1);
+        let phash = |replica: &str,
+                     block_num: u64,
+                     table: &HashMap<
+            u64,
+            HashMap<String, Option<(Block, BlockReceipts, BlockTraces)>>,
+        >| {
+            let data = table.get(&block_num).unwrap();
+            let replica_data = data.get(replica).unwrap();
+            replica_data.as_ref().unwrap().0.header.hash_slow()
+        };
 
-                // Make block's number invalid
-                block.header.number = i + 100; // Wrong block number
+        // Two replicas agree, one is different for block 101
+        {
+            let mut replica_data = HashMap::new();
+            let parent_hash = phash("replica1", block_num, &data_by_block_num);
 
-                replica_data.insert(
-                    "replica1".to_string(),
-                    Some((valid_block, valid_receipts, valid_traces)),
-                );
-                replica_data.insert("replica2".to_string(), None); // Missing
-                replica_data.insert("replica3".to_string(), Some((block, receipts, traces)));
-                // Invalid
-            }
+            let (block1, receipts1, traces1) =
+                create_test_block_data(block_num + 1, 1, Some(parent_hash));
+            let (block2, receipts2, traces2) =
+                create_test_block_data(block_num + 1, 2, Some(parent_hash));
+            replica_data.insert(
+                "replica1".to_string(),
+                Some((block1.clone(), receipts1.clone(), traces1.clone())),
+            );
+            replica_data.insert("replica2".to_string(), Some((block1, receipts1, traces1)));
+            replica_data.insert("replica3".to_string(), Some((block2, receipts2, traces2)));
+            data_by_block_num.insert(block_num + 1, replica_data);
+        }
 
-            data_by_block_num.insert(i, replica_data);
+        // One replica has data, one is missing, one has invalid block number for block 102
+        {
+            let mut replica_data = HashMap::new();
+            let parent_hash_3 = phash("replica3", block_num + 1, &data_by_block_num);
+            let (mut block, receipts, traces) =
+                create_test_block_data(block_num + 2, 1, Some(parent_hash_3));
+
+            let parent_hash_1 = phash("replica1", block_num + 1, &data_by_block_num);
+            let (valid_block, valid_receipts, valid_traces) =
+                create_test_block_data(block_num + 2, 1, Some(parent_hash_1));
+
+            // Make block's number invalid
+            block.header.number = block_num + 100; // Wrong block number
+
+            replica_data.insert(
+                "replica1".to_string(),
+                Some((valid_block, valid_receipts, valid_traces)),
+            );
+            replica_data.insert("replica2".to_string(), None); // Missing
+            replica_data.insert("replica3".to_string(), Some((block, receipts, traces)));
+            data_by_block_num.insert(block_num + 2, replica_data);
         }
 
         let (faults_by_replica, good_blocks) =
@@ -956,18 +1143,18 @@ pub mod tests {
     #[test]
     fn test_verify_block_additional_cases() {
         let block_num = 123;
-        let block = create_test_block(block_num);
+        let (block, _, _) = create_test_block_data(block_num, 1, None);
 
         // Test with mismatched receipt and trace counts
         let receipts = create_test_receipts(3); // 3 transactions
         let traces = create_test_traces(2); // Only 2 traces
 
         // Check invalid trace counts cause error
-        assert!(verify_block(block_num, &block, &receipts, &traces).is_err());
+        assert!(verify_block(block_num, &block, &receipts, &traces, None).is_err());
 
         // Test with empty receipts
         let empty_receipts = create_test_receipts(0);
-        match verify_block(block_num, &block, &empty_receipts, &traces) {
+        match verify_block(block_num, &block, &empty_receipts, &traces, None) {
             Err(FaultKind::ReceiptCountMismatch {
                 tx_count,
                 receipt_count,
@@ -1003,9 +1190,15 @@ pub mod tests {
         skip_3: bool,
     ) {
         // Add test blocks to all replicas, with some variations
+
+        let mut blocks = create_test_block_data_range(
+            *block_range.start(),
+            std::iter::repeat(1).take((*block_range.end() - *block_range.start() + 1) as usize),
+        );
+
         for block_num in block_range {
             // For replica1 and replica2, add identical data (consensus)
-            let (block1, receipts1, traces1) = create_test_block_data(block_num, 1);
+            let (block1, receipts1, traces1) = blocks.remove(&block_num).unwrap();
 
             if let Some(archiver) = model.block_data_readers.get("replica1") {
                 archiver.archive_block(block1.clone()).await.unwrap();
@@ -1043,7 +1236,7 @@ pub mod tests {
                 // For replica3, add slightly different data (will be marked as inconsistent)
                 let (block3, receipts3, traces3) = if block_num % 3 == 0 {
                     // Every third block is different
-                    create_test_block_data(block_num, 2)
+                    create_test_block_data(block_num, 2, None)
                 } else {
                     // Otherwise identical to others
                     (block1, receipts1, traces1)
@@ -1095,7 +1288,9 @@ pub mod tests {
                     f.block_num == block_num
                         && matches!(
                             f.fault,
-                            FaultKind::InconsistentBlock(InconsistentBlockReason::Header)
+                            FaultKind::InconsistentBlock(
+                                InconsistentBlockReason::InvalidParentHash
+                            )
                         )
                 });
                 assert!(
@@ -1143,11 +1338,11 @@ pub mod tests {
                     continue; // Skip this block
                 }
 
-                let (block, receipts, traces) = if block_num % 3 == 0 {
-                    create_test_block_data(block_num, 2)
-                } else {
-                    create_test_block_data(block_num, 1)
-                };
+                // Fetch the data for replica1 and archive it
+                let (block, receipts, traces) = model
+                    .fetch_block_data_for_replica(block_num, "replica1")
+                    .await
+                    .unwrap();
 
                 archiver.archive_block(block).await.unwrap();
                 archiver
@@ -1194,58 +1389,27 @@ pub mod tests {
         let start_block = 300;
         let end_block = 310;
 
+        populate_test_replicas(&model, start_block..=end_block, false).await;
+
         let invalid_block_num = 305;
-        // First populate replica1 and replica2 with normal data
-        for replica_name in ["replica1", "replica2", "replica3"] {
-            if let Some(archiver) = model.block_data_readers.get(replica_name) {
-                for block_num in start_block..=end_block {
-                    let (block, receipts, traces) = create_test_block_data(block_num, 1);
+        if let Some(archiver) = model.block_data_readers.get("replica3") {
+            let (mut block, _, _) = model
+                .fetch_block_data_for_replica(invalid_block_num, "replica1")
+                .await
+                .unwrap();
 
-                    if replica_name == "replica3" && block_num == invalid_block_num {
-                        let block = alloy_consensus::Block::<TxEnvelope> {
-                            header: Header {
-                                number: 999,
-                                timestamp: 1234567,
-                                base_fee_per_gas: Some(100),
-                                ..Default::default()
-                            },
-                            body: BlockBody {
-                                transactions: Vec::<TxEnvelope>::new(),
-                                ommers: vec![],
-                                withdrawals: None,
-                            },
-                        };
+            // 1) Insert into block table
+            let block_key = archiver.block_key(invalid_block_num);
 
-                        // 1) Insert into block table
-                        let block_key = archiver.block_key(invalid_block_num);
+            // 2) Change the block number to an invalid one
+            block.header.number = 9999;
 
-                        // 3) Encode into storage repr
-                        let mut encoded_block = Vec::new();
-                        block.encode(&mut encoded_block);
+            // 3) Encode into storage repr
+            let encoded_block = encode_block(block).unwrap();
 
-                        // must put the block directly
-                        archiver.store.put(&block_key, encoded_block).await.unwrap();
-                        archiver
-                            .archive_receipts(receipts, block_num)
-                            .await
-                            .unwrap();
-                        archiver.archive_traces(traces, block_num).await.unwrap();
-                        continue;
-                    }
-
-                    archiver.archive_block(block).await.unwrap();
-                    archiver
-                        .archive_receipts(receipts, block_num)
-                        .await
-                        .unwrap();
-                    archiver.archive_traces(traces, block_num).await.unwrap();
-                }
-                archiver
-                    .update_latest(end_block, LatestKind::Uploaded)
-                    .await
-                    .unwrap();
-            }
-        }
+            // 4) Put the block directly into the block table
+            archiver.store.put(&block_key, encoded_block).await.unwrap();
+        };
 
         // Process the batch
         let next_block = process_block_batch(&model, start_block, end_block)
@@ -1316,9 +1480,12 @@ pub mod tests {
         let end_block = 105;
 
         // Populate test data in all replicas
+        let mut parent_hash1 = None;
+        let mut parent_hash3 = None;
         for block_num in start_block..=end_block {
             // For replica1 (MongoDB) and replica2 (Memory), add identical data
-            let (block1, receipts1, traces1) = create_test_block_data(block_num, 1);
+            let (block1, receipts1, traces1) = create_test_block_data(block_num, 1, parent_hash1);
+            parent_hash1 = Some(block1.header.hash_slow());
 
             for replica_name in ["replica1", "replica2"] {
                 if let Some(archiver) = model.block_data_readers.get(replica_name) {
@@ -1341,10 +1508,11 @@ pub mod tests {
             // For replica3 (Memory), add different data for every other block
             if let Some(archiver) = model.block_data_readers.get("replica3") {
                 let (block3, receipts3, traces3) = if block_num % 2 == 0 {
-                    create_test_block_data(block_num, 2) // Different data
+                    create_test_block_data(block_num, 2, parent_hash3) // Different data
                 } else {
                     (block1, receipts1, traces1) // Same data
                 };
+                parent_hash3 = Some(block3.header.hash_slow());
 
                 archiver.archive_block(block3).await.unwrap();
                 archiver

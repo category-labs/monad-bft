@@ -350,11 +350,12 @@ async fn fix_fault(
 
 #[cfg(test)]
 mod tests {
+    use alloy_primitives::Bytes;
     use monad_archive::prelude::LatestKind;
 
     use super::*;
     use crate::{
-        checker::tests::{create_test_block_data, setup_test_model},
+        checker::tests::{create_test_block_data, create_test_block_data_range, setup_test_model},
         model::{GoodBlocks, InconsistentBlockReason},
     };
 
@@ -386,7 +387,7 @@ mod tests {
         // Add the "good" block to replica2
         if let Some(archiver) = model.block_data_readers.get(good_replica_name) {
             // Add block data
-            let (block, receipts, traces) = create_test_block_data(block_num, 1);
+            let (block, receipts, traces) = create_test_block_data(block_num, 1, None);
             archiver.archive_block(block).await.unwrap();
             archiver
                 .archive_receipts(receipts, block_num)
@@ -487,12 +488,14 @@ mod tests {
             .await
             .unwrap();
 
+        let blocks = create_test_block_data_range(chunk_start + 1, [1, 2]);
+
         // Add the "good" blocks to replica2 and replica3
         for good_replica in [good_replica_name, "replica3"] {
             if let Some(archiver) = model.block_data_readers.get(good_replica) {
                 // Add block data for both blocks
                 for block_num in [chunk_start + 1, chunk_start + 2] {
-                    let (block, receipts, traces) = create_test_block_data(block_num, 1);
+                    let (block, receipts, traces) = blocks.get(&block_num).unwrap().clone();
                     archiver.archive_block(block).await.unwrap();
                     archiver
                         .archive_receipts(receipts, block_num)
@@ -511,7 +514,8 @@ mod tests {
         // Add an inconsistent block to replica1
         if let Some(archiver) = model.block_data_readers.get(replica_name) {
             // Add the second block with incorrect data
-            let (block, receipts, traces) = create_test_block_data(chunk_start + 2, 2); // Different data
+            let (mut block, receipts, traces) = blocks.get(&(chunk_start + 2)).unwrap().clone();
+            block.header.extra_data = Bytes::from(vec![2]);
             archiver.archive_block(block).await.unwrap();
             archiver
                 .archive_receipts(receipts, chunk_start + 2)
@@ -621,7 +625,7 @@ mod tests {
         // Add the "good" block to replica2
         if let Some(archiver) = model.block_data_readers.get(good_replica_name) {
             // Add block data
-            let (block, receipts, traces) = create_test_block_data(chunk_start + 1, 1);
+            let (block, receipts, traces) = create_test_block_data(chunk_start + 1, 1, None);
             archiver.archive_block(block).await.unwrap();
             archiver
                 .archive_receipts(receipts, chunk_start + 1)

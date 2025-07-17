@@ -42,3 +42,16 @@ pub use crate::{
         BlockDataWithOffsets, HeaderSubset, TxByteOffsets, TxIndexedData,
     },
 };
+
+/// Spawn a rayon task and wait for it to complete.
+pub async fn spawn_rayon_async<F, R>(func: F) -> Result<R>
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    rayon::spawn(|| {
+        let _ = tx.send(func());
+    });
+    rx.await.map_err(Into::into)
+}

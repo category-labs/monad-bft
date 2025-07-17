@@ -486,7 +486,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        checker::tests::{create_test_block_data, setup_test_model},
+        checker::tests::{create_test_block_data, create_test_block_data_range, setup_test_model},
         model::{GoodBlocks, InconsistentBlockReason},
     };
 
@@ -530,9 +530,10 @@ mod tests {
             .unwrap();
 
         // Add good data to replica2
+        let blocks = create_test_block_data_range(chunk_start + 1, [1, 2]);
         if let Some(archiver) = model.block_data_readers.get("replica2") {
             for block_num in [chunk_start + 1, chunk_start + 2] {
-                let (block, receipts, traces) = create_test_block_data(block_num, 1);
+                let (block, receipts, traces) = blocks.get(&block_num).unwrap().clone();
                 archiver.archive_block(block).await.unwrap();
                 archiver
                     .archive_receipts(receipts, block_num)
@@ -554,7 +555,7 @@ mod tests {
 
         // Now fix the first block in replica1 (was missing)
         if let Some(archiver) = model.block_data_readers.get("replica1") {
-            let (block, receipts, traces) = create_test_block_data(chunk_start + 1, 1);
+            let (block, receipts, traces) = create_test_block_data(chunk_start + 1, 1, None);
             archiver.archive_block(block).await.unwrap();
             archiver
                 .archive_receipts(receipts, chunk_start + 1)
@@ -691,7 +692,7 @@ mod tests {
 
         // Add the missing block to replica1 (fix the fault)
         if let Some(archiver) = model.block_data_readers.get("replica1") {
-            let (block, receipts, traces) = create_test_block_data(chunk_start + 1, 1);
+            let (block, receipts, traces) = create_test_block_data(chunk_start + 1, 1, None);
             archiver.archive_block(block).await.unwrap();
             archiver
                 .archive_receipts(receipts, chunk_start + 1)
@@ -1009,9 +1010,13 @@ mod tests {
         }
 
         // Now fix the issues in replica1 by adding ALL blocks in the chunk
+        let blocks = create_test_block_data_range(
+            chunk_start,
+            std::iter::repeat(1).take(CHUNK_SIZE as usize),
+        );
         if let Some(archiver) = model.block_data_readers.get("replica1") {
             for block_num in chunk_start..(chunk_start + CHUNK_SIZE) {
-                let (block, receipts, traces) = create_test_block_data(block_num, 1);
+                let (block, receipts, traces) = blocks.get(&block_num).unwrap().clone();
                 archiver.archive_block(block).await.unwrap();
                 archiver
                     .archive_receipts(receipts, block_num)
@@ -1029,7 +1034,7 @@ mod tests {
         for replica in ["replica2", "replica3"] {
             if let Some(archiver) = model.block_data_readers.get(replica) {
                 for block_num in chunk_start..(chunk_start + CHUNK_SIZE) {
-                    let (block, receipts, traces) = create_test_block_data(block_num, 1);
+                    let (block, receipts, traces) = blocks.get(&block_num).unwrap().clone();
                     archiver.archive_block(block).await.unwrap();
                     archiver
                         .archive_receipts(receipts, block_num)
@@ -1138,9 +1143,13 @@ mod tests {
         // NOTE: this takes ~2 secs bc generating 3k pubkeys takes a long time
         //       could use threadpool here if this is an issue, or use fewer blocks or no txs per block
         for chunk_start in [0, 1000, 2000] {
+            let blocks = create_test_block_data_range(
+                chunk_start,
+                std::iter::repeat(1).take(CHUNK_SIZE as usize),
+            );
             for i in 0..CHUNK_SIZE {
                 let block_num = chunk_start + i;
-                let (block, receipts, traces) = create_test_block_data(block_num, 1);
+                let (block, receipts, traces) = blocks.get(&block_num).unwrap().clone();
                 for replica in ["replica1", "replica2", "replica3"] {
                     if let Some(archiver) = model.block_data_readers.get(replica) {
                         archiver.archive_block(block.clone()).await.unwrap();
