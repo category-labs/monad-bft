@@ -11,17 +11,10 @@ use alloy_primitives::Address;
 use alloy_rlp::Decodable;
 use futures::{channel::oneshot, executor::block_on, future::join_all, FutureExt};
 use key::Version;
-use monad_bls::BlsSignatureCollection;
-use monad_consensus_types::block::ConsensusBlockHeader;
-use monad_crypto::{
-    certificate_signature::CertificateSignaturePubKey,
-    hasher::{Hasher, HasherType},
-};
-use monad_eth_types::{EthAccount, EthExecutionProtocol, EthHeader};
-use monad_secp::SecpSignature;
+use monad_eth_types::{EthAccount, EthHeader};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_triedb::TriedbHandle;
-use monad_types::{BlockId, Hash, SeqNum, GENESIS_BLOCK_ID, GENESIS_SEQ_NUM};
+use monad_types::{BlockId, Hash, SeqNum};
 use tracing::{debug, trace, warn};
 
 use crate::{
@@ -114,46 +107,6 @@ impl TriedbReader {
         let block_header = Header::decode(&mut rlp_buf).expect("invalid rlp eth header");
 
         Some(EthHeader(block_header))
-    }
-
-    // only guaranteed to work for proposals
-    pub fn get_bft_block(
-        &self,
-        seq_num: &SeqNum,
-        block_id: &BlockId,
-    ) -> Option<
-        ConsensusBlockHeader<
-            SecpSignature,
-            BlsSignatureCollection<CertificateSignaturePubKey<SecpSignature>>,
-            EthExecutionProtocol,
-        >,
-    > {
-        if seq_num == &GENESIS_SEQ_NUM || block_id == &GENESIS_BLOCK_ID {
-            // execution populates a garbage genesis consensus block
-            return None;
-        }
-
-        let (triedb_key, key_len_nibbles) =
-            create_triedb_key(Version::Proposal(*block_id), KeyInput::BftBlock);
-        let bft_block = self.handle.read(&triedb_key, key_len_nibbles, seq_num.0)?;
-
-        let block: ConsensusBlockHeader<_, _, _> = alloy_rlp::decode_exact(&bft_block)
-            .unwrap_or_else(|err| {
-                panic!(
-                    "failed to decode rlp ConsensusBlockHeader, err={:?}, seq_num={:?}, block_id={:?}, hex_hash={}, hex={}",
-                    err,
-                    seq_num,
-                    block_id,
-                    {
-                        let mut hasher = HasherType::new();
-                        hasher.update(&bft_block);
-                        hex::encode(hasher.hash().0)
-                    },
-                    hex::encode(bft_block),
-                )
-            });
-
-        Some(block)
     }
 
     // for accessing Version::Proposed, bft_id MUST BE VERIFIED

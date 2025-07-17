@@ -12,7 +12,6 @@ const BLOCK_HEADER_NIBBLE: u8 = 4;
 const TRANSACTION_HASH_NIBBLE: u8 = 7;
 const BLOCK_HASH_NIBBLE: u8 = 8;
 const CALL_FRAME_NIBBLE: u8 = 9;
-const BFT_BLOCK_NIBBLE: u8 = 10;
 
 // table_key = concat(proposal nibble, little_endian(round - 8 bytes), table_nibble)
 const PROPOSAL_NIBBLE: u8 = 0;
@@ -36,7 +35,6 @@ pub enum KeyInput<'a> {
     TxHash(&'a [u8; 32]),
     BlockHash(&'a [u8; 32]),
     CallFrame,
-    BftBlock,
 }
 
 pub fn create_triedb_key(version: Version, key: KeyInput) -> (Vec<u8>, u8) {
@@ -130,7 +128,6 @@ pub fn create_triedb_key(version: Version, key: KeyInput) -> (Vec<u8>, u8) {
             }
         }
         KeyInput::CallFrame => key_nibbles.push(CALL_FRAME_NIBBLE),
-        KeyInput::BftBlock => key_nibbles.push(BFT_BLOCK_NIBBLE),
     }
 
     let num_nibbles: u8 = match key_nibbles.len().try_into() {
