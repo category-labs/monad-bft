@@ -45,8 +45,9 @@ where
         epoch: Epoch,
         message: Verified<ST, Validated<ConsensusMessage<ST, SCT, EPT>>>,
     },
-    /// Schedule a timeout event to be emitted in `duration`
+    /// Schedule a timeout event for `round` to be emitted in `duration`
     Schedule {
+        round: Round,
         duration: Duration,
     },
     /// Cancel scheduled (if exists) timeout event
@@ -129,7 +130,9 @@ where
                     .sign(keypair),
                 }
             }
-            PacemakerCommand::Schedule { duration } => ConsensusCommand::Schedule { duration },
+            PacemakerCommand::Schedule { round, duration } => {
+                ConsensusCommand::Schedule { round, duration }
+            }
             PacemakerCommand::ScheduleReset => ConsensusCommand::ScheduleReset,
         }
     }

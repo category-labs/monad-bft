@@ -54,6 +54,7 @@ pub struct MockExecutor<S: SwarmRelation> {
     router: S::RouterScheduler,
 }
 
+#[derive(Debug)]
 pub struct TimerEvent<E> {
     pub variant: TimeoutVariant,
     pub callback: Option<E>,
@@ -308,6 +309,10 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
                     variant,
                     on_timeout,
                 } => {
+                    // only one timeout variant may be armed at any time
+                    // scheduling a new timer automatically resets the previous
+                    // one
+                    self.timer.remove(&TimerEvent::new(variant));
                     self.timer.push(
                         TimerEvent::new(variant).with_call_back(on_timeout),
                         Reverse(self.tick + duration),

@@ -94,7 +94,7 @@ where
     ),
 
     /// schedule a local round timeout event after duration
-    Schedule { duration: Duration },
+    Schedule { round: Round, duration: Duration },
 
     /// cancel the current local round timeout
     ScheduleReset,
@@ -193,6 +193,7 @@ where
         vec![
             PacemakerCommand::EnterRound(self.current_epoch, self.get_current_round()),
             PacemakerCommand::Schedule {
+                round: self.get_current_round(),
                 duration: self.get_round_timer(self.get_current_round()),
             },
         ]
@@ -245,6 +246,7 @@ where
             PacemakerCommand::ScheduleReset,
             PacemakerCommand::PrepareTimeout(timeout, high_extend, last_round_tc.cloned()),
             PacemakerCommand::Schedule {
+                round: current_round,
                 duration: self.get_round_timer(current_round),
             },
         ]
@@ -582,6 +584,7 @@ mod test {
             vec![
                 PacemakerCommand::EnterRound(Epoch(1), Round(2)),
                 PacemakerCommand::Schedule {
+                    round: Round(2),
                     duration: Duration::from_secs(3),
                 },
             ]
@@ -836,6 +839,7 @@ mod test {
             vec![
                 PacemakerCommand::EnterRound(Epoch(1), Round(2)),
                 PacemakerCommand::Schedule {
+                    round: Round(2),
                     duration: Duration::from_secs(3),
                 },
             ]

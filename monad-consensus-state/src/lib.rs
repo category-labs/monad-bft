@@ -370,8 +370,15 @@ where
     CRT: ChainRevision,
 {
     /// handles the local timeout expiry event
-    pub fn handle_timeout_expiry(&mut self) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+    pub fn handle_timeout_expiry(
+        &mut self,
+        timeout_round: Round,
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
         let mut cmds = Vec::new();
+
+        if timeout_round < self.consensus.pacemaker.get_current_round() {
+            return cmds;
+        }
 
         self.metrics.consensus_events.local_timeout += 1;
         debug!(
@@ -3179,7 +3186,10 @@ mod test {
         assert!(matches!(cmds[0], ConsensusCommand::EnterRound(_, _)));
         assert!(matches!(
             cmds[1],
-            ConsensusCommand::Schedule { duration: _ }
+            ConsensusCommand::Schedule {
+                round: _,
+                duration: _
+            }
         ));
         assert!(matches!(cmds[2], ConsensusCommand::RequestSync { .. }));
     }
@@ -3261,7 +3271,10 @@ mod test {
         assert!(matches!(cmds[1], ConsensusCommand::EnterRound(_, _)));
         assert!(matches!(
             cmds[2],
-            ConsensusCommand::Schedule { duration: _ }
+            ConsensusCommand::Schedule {
+                round: _,
+                duration: _
+            }
         ));
     }
 
@@ -3409,9 +3422,10 @@ mod test {
 
         let (node0, xs) = ctx.split_first_mut().unwrap();
         let node1 = &mut xs[0];
+        let node1_round = node1.consensus_state.get_current_round();
 
         // now timeout someone
-        let cmds = node1.wrapped_state().handle_timeout_expiry();
+        let cmds = node1.wrapped_state().handle_timeout_expiry(node1_round);
         let tmo: Vec<
             &TimeoutMessage<SignatureType, SignatureCollectionType, EthExecutionProtocol>,
         > = cmds

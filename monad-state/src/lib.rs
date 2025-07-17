@@ -1268,6 +1268,7 @@ where
             root_info,
             high_certificate.clone(),
         );
+        let current_round = consensus.get_current_round();
         tracing::info!(
             ?root_info,
             ?high_certificate,
@@ -1275,7 +1276,11 @@ where
         );
         self.consensus = ConsensusMode::Live(consensus);
         commands.push(Command::StateSyncCommand(StateSyncCommand::StartExecution));
-        commands.extend(self.update(MonadEvent::ConsensusEvent(ConsensusEvent::Timeout)));
+        commands.extend(
+            self.update(MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(
+                current_round,
+            ))),
+        );
         for (sender, proposal) in cached_proposals {
             // handle proposals in reverse order because later blocks are more likely to pass
             // timestamp validation

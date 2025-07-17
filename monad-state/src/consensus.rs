@@ -246,7 +246,7 @@ where
                     }
                 }
             }
-            ConsensusEvent::Timeout => consensus.handle_timeout_expiry(),
+            ConsensusEvent::Timeout(round) => consensus.handle_timeout_expiry(round),
             ConsensusEvent::BlockSync {
                 block_range,
                 full_blocks,
@@ -611,11 +611,11 @@ where
                     message: VerifiedMonadMessage::Consensus(message),
                 }))
             }
-            ConsensusCommand::Schedule { duration } => {
+            ConsensusCommand::Schedule { round, duration } => {
                 parent_cmds.push(Command::TimerCommand(TimerCommand::Schedule {
                     duration,
                     variant: TimeoutVariant::Pacemaker,
-                    on_timeout: MonadEvent::ConsensusEvent(ConsensusEvent::Timeout),
+                    on_timeout: MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(round)),
                 }))
             }
             ConsensusCommand::ScheduleReset => parent_cmds.push(Command::TimerCommand(

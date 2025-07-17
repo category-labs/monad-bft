@@ -665,7 +665,7 @@ where
         sender: NodeId<SCT::NodeIdPubKey>,
         unverified_message: Unverified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>,
     },
-    Timeout,
+    Timeout(Round),
     /// a block that was previously requested
     /// this is an invariant
     BlockSync {
@@ -690,8 +690,8 @@ where
                 let enc: [&dyn Encodable; 3] = [&1u8, &snd, &msg];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
-            Self::Timeout => {
-                let enc: [&dyn Encodable; 1] = [&2u8];
+            Self::Timeout(round) => {
+                let enc: [&dyn Encodable; 2] = [&2u8, round];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
             Self::BlockSync {
@@ -728,7 +728,10 @@ where
                     unverified_message: msg,
                 })
             }
-            2 => Ok(Self::Timeout),
+            2 => {
+                let round = Round::decode(&mut payload)?;
+                Ok(Self::Timeout(round))
+            }
             3 => {
                 let block_range = BlockRange::decode(&mut payload)?;
                 let full_blocks = Vec::<ConsensusFullBlock<ST, SCT, EPT>>::decode(&mut payload)?;
@@ -761,7 +764,9 @@ where
                 .field("sender", sender)
                 .field("msg", unverified_message)
                 .finish(),
-            ConsensusEvent::Timeout => f.debug_struct("Timeout").finish(),
+            ConsensusEvent::Timeout(round) => {
+                f.debug_struct("Timeout").field("round", round).finish()
+            }
             ConsensusEvent::BlockSync {
                 block_range,
                 full_blocks,
@@ -2017,8 +2022,8 @@ where
             }) => {
                 format!("ConsensusEvent::Message from {sender}")
             }
-            MonadEvent::ConsensusEvent(ConsensusEvent::Timeout) => {
-                "ConsensusEvent::Timeout Pacemaker local timeout".to_string()
+            MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(round)) => {
+                format!("ConsensusEvent::Timeout Pacemaker local timeout round {round:?}")
             }
             MonadEvent::ConsensusEvent(_) => "CONSENSUS".to_string(),
             MonadEvent::BlockSyncEvent(_) => "BLOCKSYNC".to_string(),
