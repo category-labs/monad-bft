@@ -3,7 +3,7 @@ use monad_crypto::{
     hasher::{Hasher, HasherType},
     signing_domain::SigningDomain,
 };
-use secp256k1::Secp256k1;
+use secp256k1::{ffi::CPtr, Secp256k1};
 use zeroize::Zeroize;
 
 /// secp256k1 public key
@@ -178,6 +178,15 @@ impl Decodable for SecpSignature {
         match SecpSignature::deserialize(&raw_bytes) {
             Ok(sig) => Ok(sig),
             Err(_) => Err(alloy_rlp::Error::Custom("invalid secp signature")),
+        }
+    }
+}
+
+impl Drop for KeyPair {
+    fn drop(&mut self) {
+        let ptr = self.0.as_mut_c_ptr();
+        unsafe {
+            (*ptr).non_secure_erase();
         }
     }
 }
