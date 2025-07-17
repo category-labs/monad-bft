@@ -1,0 +1,57 @@
+---
+source: monad-secp/src/secp.rs
+assertion_line: 357
+expression: profiles
+---
+[
+    IkmProfile {
+        ikm_hex: "0000000000000000000000000000000000000000000000000000000000000001",
+        private_key_hex: "19c43ba94703a52eb1f92d2730680f11c4b1dda0b8250e4fd181c8887721c068",
+        pubkey_hex: "040dfb46fe45b09e39724a3fdd8b1f70683a1d742176411344881564f4297a573e265fa3e1707c6528c85807d7f172c32e685ff97a2a9a15d16c437c5e098ea21c",
+    },
+    IkmProfile {
+        ikm_hex: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        private_key_hex: "9980b74f4b1cf34c9fb20893150f728bdcb6207837d578e873814f679134d007",
+        pubkey_hex: "045e392da7456fae2c69614b84f48b02d350106c25814db5318d11f318d451b1598479e0f59b2d9f389ec2f2198035f3a3ac93285d29c1aff34d403e9bf7535171",
+    },
+    IkmProfile {
+        ikm_hex: "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+        private_key_hex: "f08a0a4ee09dac2fa35fb06a1243c282f9f02db454df14bf2666b653445899f2",
+        pubkey_hex: "04f7906130b234a7781931a23841a288b2c4329e1af7de13ea23933d6d900366421cef21415e32bf322425b844f59b3314526b8e482ed1e02042cdc033102df9fc",
+    },
+    IkmProfile {
+        ikm_hex: "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfc0c1c2c3c4c5c6c7c8c9cacbcccdcecf",
+        private_key_hex: "1f929d698065e90ac492611f6fe766ef695dc1e709f59dc41613c8a71f66d404",
+        pubkey_hex: "04f43aff500f6e25b5fe8e3494807810a54afdba0e9550bf0f7fc3e4507d4e74182c98e08e9ee96a4153dc64808963217154ebea38ae5844ed0f329d5c620425d6",
+    },
+    IkmProfile {
+        ikm_hex: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        private_key_hex: "63291b446bc5bbc0264f4ce55ba76b71e8ef6590d8ac52729bd097c0b9ddfb65",
+        pubkey_hex: "0494f5f7bc682cbfd68bd90504e293a8eb4ed50068472889ee2358f43a55ea8757689d2fb93c246933f10161ed3f429e33cd7d4043ec959e53371ef32c9a3a0327",
+    },
+    IkmProfile {
+        ikm_hex: "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
+        private_key_hex: "b0b0460498a4864cfe55fb1d64b91318e231202cdf54bcc5916e823844014f0f",
+        pubkey_hex: "04868dfdd354f24a121fef4cac5a6553d9e5b366fc243f3cec846c0ce157e47d65d2e05217d2183b93fa73f751d7c218cc0ac3f766965c5e29bc71c91f42746fdf",
+    },
+    IkmProfile {
+        ikm_hex: "1111111111111111111111111111111111111111111111111111111111111111",
+        private_key_hex: "f1d2c9428e08b7280d094b5765b385972756d86518dc1b30d4143e3864a90ef7",
+        pubkey_hex: "04ab56737bbcc70ea4c174d74df847850e0d2bc55080ca8172bae48771b489c7d7b3727a59184b4a3d32d89386c94a45a96973b5cb0b6b0dc71ea1e942c5fb8d75",
+    },
+    IkmProfile {
+        ikm_hex: "2222222222222222222222222222222222222222222222222222222222222222",
+        private_key_hex: "a1baca24086055c9933c6b715d8a5118b684dbe6b627366182efe8771d27de48",
+        pubkey_hex: "042e952dda537fa8cf8b46aa2255ac18042eaaacfb71881f133a631d5271a118a9abac39d1274b10da751c4515e0562c5154f9249b6ba1788b2c4d6131301a85e7",
+    },
+    IkmProfile {
+        ikm_hex: "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+        private_key_hex: "8f45f49f2bb20ab50534cfc4fd053215ab5b64eff942559e6507c561996aec15",
+        pubkey_hex: "048e38845cf825106e9a429327f7033b9e5b6d8be4dd9132b18d9718e0ec56b0e2d340267b0752b0d601bd3faa14931c49b6ebdc0c13edfa947cbd4d2fd43153d7",
+    },
+    IkmProfile {
+        ikm_hex: "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+        private_key_hex: "8f6a14a4e4b0ec08c352e9b871b24de1234d4140786a255e2dbac0ca6b67ea17",
+        pubkey_hex: "04158aafc1918871e2790f177d2d6fd94cd8f115b15555fb9c9c0c181e298a0439047fda3030c128981097a7bdd072592e0ef0037623b50fd53911e20941068e1f",
+    },
+]
