@@ -16,9 +16,46 @@ use crate::{
     kdf_module::{KDFError, KDFModule, KDFParams, ScryptParams},
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(try_from = "u32", into = "u32")]
+pub enum KeystoreVersion {
+    #[default]
+    Legacy = 1,
+    DirectIkm = 2,
+}
+
+impl TryFrom<u32> for KeystoreVersion {
+    type Error = String;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(KeystoreVersion::Legacy),
+            2 => Ok(KeystoreVersion::DirectIkm),
+            _ => Err(format!("Unknown keystore version: {}", value)),
+        }
+    }
+}
+
+impl From<KeystoreVersion> for u32 {
+    fn from(version: KeystoreVersion) -> Self {
+        version as u32
+    }
+}
+
+impl std::fmt::Display for KeystoreVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            KeystoreVersion::Legacy => write!(f, "v1 (Legacy)"),
+            KeystoreVersion::DirectIkm => write!(f, "v2 (Direct IKM)"),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Keystore {
+    #[serde(default)]
+    pub version: KeystoreVersion,
     #[serde(
         serialize_with = "serialize_bytes_to_hex_string",
         deserialize_with = "deserialize_bytes_from_hex_string"
@@ -197,10 +234,26 @@ impl Keystore {
         password: &str,
         path: &Path,
     ) -> Result<(), KeystoreError> {
+        Self::create_keystore_json_with_version(
+            private_key,
+            password,
+            path,
+            KeystoreVersion::Legacy,
+        )
+    }
+
+    // Creates a new keystore json file with specified version
+    pub fn create_keystore_json_with_version(
+        private_key: &[u8],
+        password: &str,
+        path: &Path,
+        version: KeystoreVersion,
+    ) -> Result<(), KeystoreError> {
         let crypto_modules = CryptoModules::create_default(&mut OsRng);
         let (ciphertext, checksum) = crypto_modules.encrypt(private_key, password)?;
 
         let keystore = Keystore {
+            version,
             ciphertext,
             checksum,
             crypto: crypto_modules,
@@ -214,6 +267,15 @@ impl Keystore {
 
     // Reads a keystore json file and obtain the corresponding private key
     pub fn load_key(path: &Path, password: &str) -> Result<SecretKey, KeystoreError> {
+        let (private_key, _version) = Self::load_key_with_version(path, password)?;
+        Ok(private_key)
+    }
+
+    // Reads a keystore json file and obtain the corresponding private key and version
+    pub fn load_key_with_version(
+        path: &Path,
+        password: &str,
+    ) -> Result<(SecretKey, KeystoreVersion), KeystoreError> {
         let mut file = File::open(path)?;
         let mut contents = String::new();
         file.read_to_string(&mut contents)?;
@@ -224,7 +286,7 @@ impl Keystore {
                 .crypto
                 .decrypt(&keystore.ciphertext, password, &keystore.checksum)?;
 
-        Ok(private_key)
+        Ok((private_key, keystore.version))
     }
 }
 
@@ -326,8 +388,10 @@ mod test {
             Keystore::create_keystore_json(&hex::decode(private_key).unwrap(), password, file_path);
         assert!(result.is_ok());
 
-        // decrypt keystore json file
-        let retrieved_key = Keystore::load_key(file_path, password).unwrap();
+        // decrypt keystore json file and verify version
+        let (retrieved_key, version) =
+            Keystore::load_key_with_version(file_path, password).unwrap();
         assert!(hex::encode(retrieved_key) == private_key);
+        assert_eq!(version, crate::keystore::KeystoreVersion::Legacy);
     }
 }
