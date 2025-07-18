@@ -61,6 +61,10 @@ pub enum MetricNames {
     FAULTS_MISSING_TXHASH,
     FAULTS_INCORRECT_TX_DATA,
     FAULTS_MISSING_ALL_TXHASH,
+
+    // Eviction
+    DATA_SIZE,
+    LATEST_BLOCK_FOR_TRACE_EVICTION,
 }
 
 impl MetricNames {
@@ -107,6 +111,8 @@ impl MetricNames {
             MetricNames::FAULTS_MISSING_TXHASH => "faults_missing_txhash",
             MetricNames::FAULTS_INCORRECT_TX_DATA => "faults_incorrect_tx_data",
             MetricNames::FAULTS_MISSING_ALL_TXHASH => "faults_missing_all_txhash",
+            MetricNames::DATA_SIZE => "data_size",
+            MetricNames::LATEST_BLOCK_FOR_TRACE_EVICTION => "latest_block_for_trace_eviction",
         }
     }
 }

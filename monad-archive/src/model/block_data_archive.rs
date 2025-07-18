@@ -8,7 +8,11 @@ use futures::try_join;
 use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
-use crate::{prelude::*, rlp_offset_scanner::get_all_tx_offsets};
+use super::RangeRlp;
+use crate::{
+    prelude::*,
+    rlp_offset_scanner::{get_all_tx_offsets, get_rlp_list_ranges},
+};
 
 pub type Block = AlloyBlock<TxEnvelopeWithSender, Header>;
 pub type BlockReceipts = Vec<ReceiptWithLogIndex>;
@@ -278,6 +282,27 @@ impl BlockDataArchive {
         self.store
             .put(&self.traces_key(block_num), rlp_traces)
             .await
+    }
+
+    pub async fn get_traces_with_offsets(
+        &self,
+        block_num: u64,
+    ) -> Result<(BlockTraces, Vec<RangeRlp>)> {
+        let traces_key = self.traces_key(block_num);
+
+        let rlp_traces = self
+            .store
+            .get(&traces_key)
+            .await?
+            .wrap_err("No traces found")?;
+        let mut rlp_traces_slice: &[u8] = &rlp_traces;
+
+        let offsets =
+            get_rlp_list_ranges(&rlp_traces).wrap_err("Cannot get rlp list ranges for traces")?;
+
+        let traces = Vec::decode(&mut rlp_traces_slice).wrap_err("Cannot decode block")?;
+
+        Ok((traces, offsets))
     }
 }
 

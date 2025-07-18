@@ -28,6 +28,20 @@ impl S3Bucket {
             metrics,
         }
     }
+
+    pub async fn get_range(&self, key: &str, start: i32, end: i32) -> Result<Bytes> {
+        let resp = self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .range(format!("bytes {}-{}/*", start, end))
+            .send()
+            .await?;
+
+        let data = resp.body.collect().await?;
+        Ok(data.into_bytes())
+    }
 }
 
 impl KVReader for S3Bucket {

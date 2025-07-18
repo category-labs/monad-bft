@@ -105,7 +105,7 @@ pub fn get_transaction_ranges(block_rlp: &[u8]) -> Result<Vec<(usize, usize)>> {
 }
 
 /// Get byte ranges for items in an RLP list
-fn get_rlp_list_ranges(data: &[u8]) -> Result<Vec<RangeRlp>> {
+pub fn get_rlp_list_ranges(data: &[u8]) -> Result<Vec<RangeRlp>> {
     let mut scanner = RlpScanner::new(data);
     let mut ranges = Vec::new();
 

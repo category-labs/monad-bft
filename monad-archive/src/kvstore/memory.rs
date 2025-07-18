@@ -1,6 +1,5 @@
 use std::{collections::HashMap, sync::Arc};
 
-use alloy_primitives::TxHash;
 use bytes::Bytes;
 use eyre::Result;
 use tokio::sync::Mutex;
@@ -10,7 +9,6 @@ use crate::prelude::*;
 #[derive(Clone)]
 pub struct MemoryStorage {
     pub db: Arc<Mutex<HashMap<String, Bytes>>>,
-    pub index: Arc<Mutex<HashMap<TxHash, TxIndexedData>>>,
     pub name: String,
 }
 
@@ -18,9 +16,29 @@ impl MemoryStorage {
     pub fn new(name: impl Into<String>) -> MemoryStorage {
         MemoryStorage {
             db: Arc::new(Mutex::new(HashMap::default())),
-            index: Arc::new(Mutex::new(HashMap::default())),
             name: name.into(),
         }
+    }
+
+    pub async fn get_range(&self, key: &str, start: i32, end: i32) -> Result<Bytes> {
+        let data = self
+            .get(key)
+            .await?
+            .ok_or_else(|| eyre::eyre!("Key not found: {}", key))?;
+
+        let start = start as usize;
+        let end = (end + 1) as usize; // S3 range is inclusive
+
+        if start >= data.len() || end > data.len() {
+            return Err(eyre::eyre!(
+                "Range out of bounds: start={}, end={}, len={}",
+                start,
+                end - 1,
+                data.len()
+            ));
+        }
+
+        Ok(data.slice(start..end))
     }
 }
 

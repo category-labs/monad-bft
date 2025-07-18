@@ -2,6 +2,7 @@ pub mod cloud_proxy;
 pub mod dynamodb;
 pub mod memory;
 pub mod mongo;
+pub mod object_store;
 pub mod s3;
 pub mod triedb_reader;
 
