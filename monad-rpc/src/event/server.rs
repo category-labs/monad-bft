@@ -258,7 +258,6 @@ mod test {
     use crate::event::{EventServer, EventServerEvent};
 
     #[tokio::test]
-    #[ignore]
     async fn testing_server() {
         let snapshot_event_ring = SnapshotEventRing::new_from_zstd_bytes(
             include_bytes!("../../../monad-exec-events/test/data/exec-events-emn-30b-15m.zst"),

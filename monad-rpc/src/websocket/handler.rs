@@ -561,7 +561,7 @@ fn to_request<T: serde::de::DeserializeOwned>(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{sync::Arc, time::Duration};
 
     use actix_http::{ws, ws::Frame};
     use actix_web::{web, App};
@@ -569,12 +569,16 @@ mod tests {
     use futures_util::{SinkExt as _, StreamExt as _};
     use monad_event_ring::SnapshotEventRing;
     use serde_json::json;
+    use tokio::sync::Semaphore;
 
     use super::ws_handler;
     use crate::{
         eth_json_types::{EthSubscribeResult, FixedData},
         event::EventServer,
+        fee::FixedFee,
+        handlers::{eth::call::EthCallStatsTracker, resources::MonadRpcResources},
         hex,
+        txpool::EthTxPoolBridgeClient,
     };
 
     fn create_test_server() -> actix_test::TestServer {
@@ -588,16 +592,42 @@ mod tests {
         let ws_server_handle =
             EventServer::start_for_testing_with_delay(snapshot, Duration::from_secs(1));
 
+        let app_state = MonadRpcResources {
+            txpool_bridge_client: EthTxPoolBridgeClient::for_testing(),
+            triedb_reader: None,
+            eth_call_executor: None,
+            eth_call_executor_fibers: 64,
+            eth_call_stats_tracker: Some(Arc::new(EthCallStatsTracker::default())),
+            archive_reader: None,
+            base_fee_per_gas: FixedFee::new(2000),
+            chain_id: 1337,
+            chain_state: None,
+            batch_request_limit: 5,
+            max_response_size: 25_000_000,
+            allow_unprotected_txs: false,
+            rate_limiter: Arc::new(Semaphore::new(1000)),
+            total_permits: 1000,
+            logs_max_block_range: 1000,
+            eth_call_provider_gas_limit: u64::MAX,
+            eth_estimate_gas_provider_gas_limit: u64::MAX,
+            dry_run_get_logs_index: false,
+            use_eth_get_logs_index: false,
+            max_finalized_block_cache_len: 200,
+            enable_eth_call_statistics: true,
+            metrics: None,
+            rpc_comparator: None,
+        };
+
         actix_test::start(move || {
             App::new()
                 .app_data(web::JsonConfig::default().limit(8192))
                 .app_data(web::Data::new(ws_server_handle.clone()))
+                .app_data(web::Data::new(app_state.clone()))
                 .service(web::resource("/ws/").route(web::get().to(ws_handler)))
         })
     }
 
     #[actix_rt::test]
-    #[ignore]
     async fn websocket_wait_for_ping() {
         let mut server = create_test_server();
         let mut framed = server.ws_at("/ws/").await.unwrap();
@@ -610,7 +640,6 @@ mod tests {
     }
 
     #[actix_rt::test]
-    #[ignore]
     async fn websocket_eth_subscribe() {
         let mut server: actix_test::TestServer = create_test_server();
         let mut framed = server.ws_at("/ws/").await.unwrap();
@@ -696,7 +725,6 @@ mod tests {
     }
 
     #[actix_rt::test]
-    #[ignore]
     async fn websocket_multiple_connections() {
         // Create a test server with two connections
         let mut server = create_test_server();
