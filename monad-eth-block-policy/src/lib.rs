@@ -128,8 +128,18 @@ pub fn static_validate_transaction(
         return Err(TransactionError::GasLimitTooHigh);
     }
 
-    if tx.is_eip4844() || tx.is_eip7702() {
+    if tx.is_eip4844() {
         return Err(TransactionError::UnsupportedTransactionType);
+    }
+
+    if tx.is_eip7702() {
+        if let Some(auth_list) = tx.authorization_list() {
+            if auth_list.is_empty() || auth_list.len() >= 20 {
+                return Err(TransactionError::InvalidSetCodeTx);
+            }
+        } else {
+            return Err(TransactionError::InvalidSetCodeTx);
+        }
     }
 
     Ok(())
@@ -146,14 +156,16 @@ struct BlockLookupIndex {
 pub struct AccountBalanceState {
     pub balance: Balance,
     pub reserve_balance: Balance,
+    pub is_delegated: bool,
     pub last_txn_seqnum: SeqNum,
 }
 
 impl AccountBalanceState {
-    pub fn new() -> Self {
+    pub fn new_not_delegated() -> Self {
         AccountBalanceState {
             balance: Balance::ZERO,
             reserve_balance: Balance::ZERO,
+            is_delegated: false,
             last_txn_seqnum: GENESIS_SEQ_NUM,
         }
     }
@@ -603,10 +615,11 @@ where
             )?
             .into_iter()
             .map(|maybe_status| {
-                maybe_status.map_or(AccountBalanceState::new(), |status| {
+                maybe_status.map_or(AccountBalanceState::new_not_delegated(), |status| {
                     AccountBalanceState {
                         balance: status.balance,
                         reserve_balance: status.balance.min(self.reserve_balance),
+                        is_delegated: status.is_delegated,
                         last_txn_seqnum: base_seq_num, // most pessimistic assumption
                     }
                 })
@@ -629,8 +642,9 @@ where
                     self.execution_delay,
                 );
 
-                let mut can_charge_into_reserve = next_validate
-                    >= (balance_state.last_txn_seqnum + self.min_blocks_since_last_txn);
+                let mut can_charge_into_reserve = !balance_state.is_delegated
+                    && next_validate
+                        >= (balance_state.last_txn_seqnum + self.min_blocks_since_last_txn);
 
                 if balance_state.reserve_balance < carriage_cost {
                     panic!(
@@ -642,24 +656,28 @@ where
                     );
                 }
 
-                if !can_charge_into_reserve
-                    && (balance_state
-                        .balance
-                        .saturating_sub(balance_state.reserve_balance)
-                        < max_cost)
-                    || can_charge_into_reserve && (balance_state.balance < max_cost)
-                {
-                    warn!(
-                        ?balance_state,
-                        ?can_charge_into_reserve,
-                        ?max_cost,
-                        ?carriage_cost,
-                        ?consensus_block_seq_num,
-                        ?address,
-                        "Committed block with insufficient balance",
-                    );
+                if !balance_state.is_delegated {
+                    if !can_charge_into_reserve
+                        && (balance_state
+                            .balance
+                            .saturating_sub(balance_state.reserve_balance)
+                            < max_cost)
+                        || can_charge_into_reserve && (balance_state.balance < max_cost)
+                    {
+                        warn!(
+                            ?balance_state,
+                            ?can_charge_into_reserve,
+                            ?max_cost,
+                            ?carriage_cost,
+                            ?consensus_block_seq_num,
+                            ?address,
+                            "Committed block with insufficient balance",
+                        );
+                    }
+                    balance_state.balance = balance_state.balance.saturating_sub(max_cost);
+                } else {
+                    // No checks for delegated accounts.
                 }
-                balance_state.balance = balance_state.balance.saturating_sub(max_cost);
 
                 balance_state.reserve_balance -= carriage_cost;
 
@@ -704,27 +722,32 @@ where
                     );
                 }
 
-                can_charge_into_reserve = next_validate
-                    >= (balance_state.last_txn_seqnum + self.min_blocks_since_last_txn);
+                can_charge_into_reserve = !balance_state.is_delegated
+                    && next_validate
+                        >= (balance_state.last_txn_seqnum + self.min_blocks_since_last_txn);
 
-                if !can_charge_into_reserve
-                    && (balance_state
-                        .balance
-                        .saturating_sub(balance_state.reserve_balance)
-                        < max_cost_pending)
-                    || can_charge_into_reserve && (balance_state.balance < max_cost_pending)
-                {
-                    warn!(
-                        ?balance_state,
-                        ?carriage_cost_pending,
-                        ?consensus_block_seq_num,
-                        ?can_charge_into_reserve,
-                        ?address,
-                        "Pending block with insufficient balance"
-                    );
+                if !balance_state.is_delegated {
+                    if !can_charge_into_reserve
+                        && (balance_state
+                            .balance
+                            .saturating_sub(balance_state.reserve_balance)
+                            < max_cost_pending)
+                        || can_charge_into_reserve && (balance_state.balance < max_cost_pending)
+                    {
+                        warn!(
+                            ?balance_state,
+                            ?carriage_cost_pending,
+                            ?consensus_block_seq_num,
+                            ?can_charge_into_reserve,
+                            ?address,
+                            "Pending block with insufficient balance"
+                        );
+                    }
+
+                    balance_state.balance = balance_state.balance.saturating_sub(max_cost_pending);
+                } else {
+                    // No checks for delegated accounts.
                 }
-
-                balance_state.balance = balance_state.balance.saturating_sub(max_cost_pending);
 
                 balance_state.reserve_balance -= carriage_cost_pending;
 
@@ -822,11 +845,40 @@ where
         }
 
         // TODO fix this unnecessary copy into a new vec to generate an owned Address
-        let tx_signers = block
-            .validated_txns
-            .iter()
-            .map(|txn| txn.signer())
-            .collect_vec();
+        let mut delegated_addresses: Vec<Address> = Vec::new();
+        let mut tx_signers: Vec<Address> = Vec::new();
+
+        for tx_signer in block.validated_txns.iter().map(|txn| {
+            if txn.is_eip7702() {
+                if let Some(auth_list) = txn.authorization_list() {
+                    for result in auth_list.iter().map(|a| a.recover_authority()) {
+                        match result {
+                            Ok(address) => {
+                                delegated_addresses.push(address);
+                            }
+                            Err(error) => {
+                                warn!(?error, "Can not process authorization list");
+                                return Err(BlockPolicyError::BlockNotCoherent);
+                            }
+                        }
+                    }
+                }
+            };
+
+            Ok(txn.signer())
+        }) {
+            match tx_signer {
+                Ok(address) => tx_signers.push(address),
+                Err(err) => {
+                    return Err(err);
+                }
+            }
+        }
+
+        for addr in delegated_addresses {
+            debug!(?addr, "Adding delegated address");
+            tx_signers.push(addr);
+        }
 
         // these must be updated as we go through txs in the block
         let mut account_nonces = self.get_account_base_nonces(
@@ -847,6 +899,40 @@ where
         for (idx, txn) in block.validated_txns.iter().enumerate() {
             let eth_address = txn.signer();
             let txn_nonce = txn.nonce();
+
+            if txn.is_eip7702() {
+                if let Some(auth_list) = txn.authorization_list() {
+                    let authorities = auth_list
+                        .iter()
+                        .map(|a| (*a.address(), a.nonce(), a.address))
+                        .collect_vec();
+                    for (signer, nonce, address) in authorities {
+                        let expected_delegated_nonce = account_nonces.get(&signer).expect(
+                            "account_nonces should have been populated for delegated accounts",
+                        );
+                        if &nonce != expected_delegated_nonce {
+                            warn!(
+                                seq_num =? block.header().seq_num,
+                                round =? block.header().round,
+                                ?nonce,
+                                "block not coherent, invalid nonce for delegated address"
+                            );
+                            return Err(BlockPolicyError::BlockNotCoherent);
+                        }
+                        let account_balance = account_balances.get_mut(&signer).expect(
+                            "account_balances should have been populated for delegated accounts",
+                        );
+
+                        if address == Address::ZERO {
+                            debug!(?address, ?account_balance.is_delegated, "Setting account is_delegated: false");
+                            account_balance.is_delegated = false;
+                        } else {
+                            debug!(?address, ?account_balance.is_delegated, "Setting account is_delegated: true");
+                            account_balance.is_delegated = true;
+                        }
+                    }
+                }
+            }
 
             let expected_nonce = account_nonces
                 .get_mut(&eth_address)
@@ -869,7 +955,9 @@ where
             let blocks_since_last_txn = block_seq_num.max(account_balance.last_txn_seqnum)
                 - account_balance.last_txn_seqnum;
 
-            let can_charge_into_reserve = blocks_since_last_txn >= self.min_blocks_since_last_txn;
+            let can_charge_into_reserve = 
+                (!account_balance.is_delegated
+                    && blocks_since_last_txn >= self.min_blocks_since_last_txn);
             let max_cost = compute_txn_max_value(txn);
             let carriage_cost = compute_txn_carriage_cost(txn);
 

@@ -32,11 +32,17 @@ pub fn rlp_decode_account(account_rlp: Vec<u8>) -> Option<EthAccount> {
         return None;
     };
 
+    let mut is_delegated = false;
     let code_hash = if buf.is_empty() {
         None
     } else {
         match <[u8; 32]>::decode(&mut buf) {
-            Ok(x) => Some(x),
+            Ok(x) => {
+                if x.starts_with(b"ef0100") {
+                    is_delegated = true;
+                }
+                Some(x)
+            }
             Err(e) => {
                 warn!("rlp code_hash decode failed: {:?}", e);
                 return None;
@@ -48,6 +54,7 @@ pub fn rlp_decode_account(account_rlp: Vec<u8>) -> Option<EthAccount> {
         nonce,
         balance,
         code_hash: code_hash.map(B256::from),
+        is_delegated,
     })
 }
 

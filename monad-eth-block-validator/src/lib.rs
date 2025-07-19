@@ -140,6 +140,38 @@ where
             txn_fee_entry.max_cost = txn_fee_entry
                 .max_cost
                 .saturating_add(compute_txn_max_value(eth_txn));
+
+            if eth_txn.is_eip7702() {
+                if let Some(auth_list) = eth_txn.authorization_list() {
+                    let authorities = auth_list
+                        .iter()
+                        .map(|a| (a.recover_authority(), a.nonce(), a.address))
+                        .collect_vec();
+                    for (result, nonce, address) in authorities {
+                        if let Ok(signer) = result {
+                            if let Some(n) = nonces.get(&signer) {
+                                if *n != nonce {
+                                    return Err(BlockValidationError::TxnError);
+                                }
+                            }
+                            nonces
+                                .entry(signer)
+                                .and_modify(|n| *n += 1)
+                                .or_insert(nonce + 1);
+                            if address == Address::ZERO { // undelegate
+                            } else {
+                                // delegate
+                                txn_fees.entry(signer).or_insert(TxnFee {
+                                    max_cost: Balance::ZERO,
+                                    carriage_cost: Balance::ZERO,
+                                });
+                            }
+                        } else {
+                            return Err(BlockValidationError::TxnError);
+                        }
+                    }
+                }
+            }
         }
 
         let total_gas: u64 = eth_txns.iter().map(|tx| tx.gas_limit()).sum();

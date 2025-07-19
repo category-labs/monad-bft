@@ -226,6 +226,7 @@ impl StateBackend for InMemoryStateInner {
                     nonce: *nonce,
                     balance: self.max_account_balance,
                     code_hash: None,
+                    is_delegated: false,
                 })
             })
             .collect())

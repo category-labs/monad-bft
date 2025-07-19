@@ -401,6 +401,7 @@ where
             else {
                 return TrackedTxHeapDrainAction::Skip;
             };
+            account_balance.reserve_balance = new_reserve_balance;
 
             if !can_charge_into_reserve && new_account_balance < account_balance.reserve_balance {  // TODO: should it be max_reserve_balance?
                 debug!(txn_hash = ?tx.hash(), "skip. txn charges into reserve balance");

@@ -145,9 +145,32 @@ where
         // the range at N-k+1.
         let block_seq_num = block_policy.get_last_commit() + SeqNum(1);
 
-        let addresses = txs.iter().map(ValidEthTransaction::signer).collect_vec();
+        // enrich with delegated EOAs
+        let mut delegated_addresses = Vec::new();
+        let mut addresses = txs
+            .iter()
+            .map(|txn| {
+                if txn.raw().is_eip7702() {
+                    if let Some(auth_list) = txn.raw().authorization_list() {
+                        for result in auth_list.iter().map(|a| (a.recover_authority(), a.address)) {
+                            if let Ok(signer) = result.0 {
+                                delegated_addresses.push((signer, result.1));
+                            } else {
+                                event_tracker
+                                    .drop(txn.hash(), EthTxPoolDropReason::InvalidSignature);
+                            }
+                        }
+                    }
+                }
+                txn.signer()
+            })
+            .collect_vec();
 
-        let account_balances = match block_policy.compute_account_base_balances(
+        for (signer, _) in &delegated_addresses {
+            addresses.push(*signer);
+        }
+
+        let mut account_balances = match block_policy.compute_account_base_balances(
             block_seq_num,
             state_backend,
             None,
@@ -164,19 +187,35 @@ where
             }
         };
 
+        for (signer, address) in &delegated_addresses {
+            let account_balance = account_balances
+                .get_mut(&signer)
+                .expect("account_balances should have been populated for delegated accounts");
+
+            if *address == Address::ZERO {
+                debug!(?address, ?account_balance.is_delegated, "Setting account is_delegated: false");
+                account_balance.is_delegated = false;
+            } else {
+                debug!(?address, ?account_balance.is_delegated, "Setting account is_delegated: true");
+                account_balance.is_delegated = true;
+            }
+        }
+
         for tx in txs {
             let account_balance = account_balances
                 .get(tx.signer_ref())
                 .cloned()
-                .unwrap_or(AccountBalanceState::new());
+                .unwrap_or(AccountBalanceState::new_not_delegated()); // TODO: why not expect?
 
             // allow charging into reserve
-            let Some(_new_account_balance) =
-                ValidEthTransaction::apply_max_value(&tx, account_balance.balance)
-            else {
-                event_tracker.drop(tx.hash(), EthTxPoolDropReason::InsufficientBalance);
-                continue;
-            };
+            if !account_balance.is_delegated {
+                let Some(_new_account_balance) =
+                    ValidEthTransaction::apply_max_value(&tx, account_balance.balance)
+                else {
+                    event_tracker.drop(tx.hash(), EthTxPoolDropReason::InsufficientBalance);
+                    continue;
+                };
+            }
 
             let Some(_new_reserve_balance) =
                 ValidEthTransaction::apply_carriage_cost(&tx, account_balance.reserve_balance)
