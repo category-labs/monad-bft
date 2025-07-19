@@ -304,7 +304,7 @@ fn find_consensus(
     good_blocks: &mut GoodBlocks,
 ) {
     // Group replicas by equivalent data
-    let mut equivalence_groups: Vec<Vec<String>> = Vec::new();
+    let mut equivalence_groups: Vec<Vec<(String, &BlockTraces)>> = Vec::new();
 
     for (replica_name, (block, receipts, traces)) in valid_replicas {
         // Check if this block data matches any existing group
@@ -312,14 +312,14 @@ fn find_consensus(
 
         for group in &mut equivalence_groups {
             // Check against the first replica in the group
-            let first_replica = group.first().unwrap();
+            let (first_replica, _) = group.first().unwrap();
             let (first_block, first_receipts, first_traces) =
                 valid_replicas.get(first_replica).unwrap();
 
             // Direct equality comparison to group identical blocks
             if block == first_block && receipts == first_receipts && traces == first_traces {
                 // Add to this group
-                group.push(replica_name.clone());
+                group.push((replica_name.clone(), traces));
                 found_match = true;
                 break;
             }
@@ -327,7 +327,7 @@ fn find_consensus(
 
         if !found_match {
             // Create a new group if no match was found
-            equivalence_groups.push(vec![replica_name.clone()]);
+            equivalence_groups.push(vec![(replica_name.clone(), traces)]);
         }
     }
 
@@ -337,55 +337,41 @@ fn find_consensus(
         "Found equivalence groups for block"
     );
 
-    // Find the largest equivalence group - the majority consensus
-    if let Some(largest_group) = equivalence_groups
-        .iter_mut()
-        .min_by_key(|group| (-(group.len() as isize), group.first().unwrap().clone()))
-    {
-        // Sort the group for deterministic selection
-        largest_group.sort(); // Sort lexicographically by replica name
+    if let Some(good_group) = choose_good_replica(&equivalence_groups, block_num) {
+        let good_replica = good_group.first().unwrap();
 
         debug!(
             block_num,
-            group_size = largest_group.len(),
-            "Largest consensus group"
+            %good_replica,
+            "Selected good replica for block"
         );
 
-        // The first replica in the sorted largest group is our "good" one
-        if let Some(good_replica) = largest_group.first() {
-            debug!(
-                block_num,
-                %good_replica,
-                "Selected good replica for block"
-            );
+        good_blocks
+            .block_num_to_replica
+            .insert(block_num, good_replica.clone());
 
-            good_blocks
-                .block_num_to_replica
-                .insert(block_num, good_replica.clone());
+        // Mark replicas not in this group as inconsistent
+        for replica_name in valid_replicas.keys() {
+            if !good_group.contains(replica_name) {
+                debug!(
+                    block_num,
+                    %replica_name,
+                    "Replica has inconsistent block data"
+                );
 
-            // Mark replicas not in this group as inconsistent
-            for replica_name in valid_replicas.keys() {
-                if !largest_group.contains(replica_name) {
-                    debug!(
+                faults_by_replica
+                    .entry(replica_name.clone())
+                    .or_default()
+                    .push(Fault {
                         block_num,
-                        %replica_name,
-                        "Replica has inconsistent block data"
-                    );
-
-                    faults_by_replica
-                        .entry(replica_name.clone())
-                        .or_default()
-                        .push(Fault {
+                        replica: replica_name.clone(),
+                        fault: FaultKind::InconsistentBlock(find_inconsistent_reason(
+                            *valid_replicas.get(good_replica).unwrap(),
+                            *valid_replicas.get(replica_name).unwrap(),
+                            replica_name,
                             block_num,
-                            replica: replica_name.clone(),
-                            fault: FaultKind::InconsistentBlock(find_inconsistent_reason(
-                                *valid_replicas.get(good_replica).unwrap(),
-                                *valid_replicas.get(replica_name).unwrap(),
-                                replica_name,
-                                block_num,
-                            )),
-                        });
-                }
+                        )),
+                    });
             }
         }
     } else {
@@ -407,6 +393,68 @@ fn find_consensus(
                 });
         }
     }
+}
+
+/// The "good" replica group is the one with the fewest non-empty outputs.
+/// If there are multiple groups with the same number of non-empty outputs,
+/// the largest group is chosen.
+/// The replica in the group with the lexicographically smallest name is chosen as the "good" replica from the group.
+fn choose_good_replica(
+    equivalence_groups: &Vec<Vec<(String, &BlockTraces)>>,
+    block_num: u64,
+) -> Option<Vec<String>> {
+    dbg!(&equivalence_groups.len());
+    dbg!(&equivalence_groups
+        .iter()
+        .map(|group| group.len())
+        .collect::<Vec<_>>());
+    let good_group = if equivalence_groups.len() > 1 {
+        dbg!("sorting");
+        // Sort by number of non-empty outputs, then by group size, then by lexicographically smallest replica name
+        equivalence_groups.iter().min_by_key(|group| {
+            let (_replica, traces) = group.first().expect("group is empty");
+
+            let x = match decode_traces(traces) {
+                Ok(x) => x,
+                Err(e) => {
+                    dbg!("decode_traces failed", e);
+                    warn!(?e, "decode_traces failed");
+                    return (0, 0, None);
+                }
+            };
+            let num_non_empty_outputs = x
+                .iter()
+                .flatten()
+                .flatten()
+                .filter(|x| !x.output.is_empty())
+                .count();
+
+            // Take the negative of the values to make the min_by_key function sort in ascending order
+            dbg!((
+                -(num_non_empty_outputs as isize),
+                -(group.len() as isize),
+                // Take the lexicographically smallest replica name
+                group.iter().map(|(replica, _)| replica).min(),
+            ))
+        })?
+    } else {
+        dbg!("no sorting");
+        equivalence_groups.first()?
+    };
+
+    if good_group.is_empty() {
+        return None;
+    }
+
+    let mut good_replicas = good_group
+        .iter()
+        .map(|(replica, _)| replica.clone())
+        .collect::<Vec<_>>();
+
+    debug!(block_num, ?good_replicas, "Good replicas");
+
+    good_replicas.sort();
+    Some(good_replicas)
 }
 
 /// Stores checking results in S3, including faults and good block references.
@@ -696,12 +744,16 @@ pub fn find_inconsistent_reason(
             }
         }
         InconsistentBlockReason::ReceiptsContents
-    } else if good_traces.len() != faulty_traces.len() {
+    } else if good_traces.len() != faulty_traces.len()
+        || good_traces.iter().flatten().count() != faulty_traces.iter().flatten().count()
+    {
         debug!(
             %replica,
             block_num,
             good_len = good_traces.len(),
             faulty_len = faulty_traces.len(),
+            good_total_len = good_traces.iter().flatten().count(),
+            faulty_total_len = faulty_traces.iter().flatten().count(),
             "Traces length does not match good replica"
         );
         InconsistentBlockReason::TracesLen
@@ -712,33 +764,81 @@ pub fn find_inconsistent_reason(
             "Traces do not match good replica"
         );
         let mut count = 0;
-        for (good_trace, faulty_trace) in good_traces.iter().zip(faulty_traces.iter()) {
-            if let (Ok(good_trace), Ok(faulty_trace)) = (
-                serde_json::to_string(good_trace),
-                serde_json::to_string(faulty_trace),
-            ) {
-                debug!(
-                    %replica,
-                    block_num,
-                    count,
-                    max_count = 10,
-                    good_trace,
-                    faulty_trace,
-                    "Trace does not match good replica"
-                );
+        for (i, (good_trace, faulty_trace)) in
+            good_traces.iter().zip(faulty_traces.iter()).enumerate()
+        {
+            if good_trace == faulty_trace {
+                continue;
             }
+
+            let Ok(good_call_frames) = decode_trace(good_trace) else {
+                return InconsistentBlockReason::TracesContents;
+            };
+            let Ok(faulty_call_frames) = decode_trace(faulty_trace) else {
+                return InconsistentBlockReason::TracesContents;
+            };
+
+            if good_call_frames == faulty_call_frames {
+                continue;
+            }
+
+            for (good_call_frame, faulty_call_frame) in
+                good_call_frames.iter().zip(faulty_call_frames.iter())
+            {
+                for (g, f) in good_call_frame.iter().zip(faulty_call_frame.iter()) {
+                    if g.typ != f.typ
+                        || g.flags != f.flags
+                        || g.from != f.from
+                        || g.to != f.to
+                        || g.value != f.value
+                        || g.gas != f.gas
+                        || g.gas_used != f.gas_used
+                        || g.input != f.input
+                    {
+                        debug!(
+                            %replica,
+                            block_num,
+                            trace_index = i,
+                            "Trace contents differ"
+                        );
+                        return InconsistentBlockReason::TracesContents;
+                    }
+
+                    if g.output != f.output {
+                        debug!(
+                            %replica,
+                            block_num,
+                            trace_index = i,
+                            "Trace output differs"
+                        );
+                        return InconsistentBlockReason::TracesOutputDiffers;
+                    }
+                }
+            }
+
+            debug!(
+                %replica,
+                block_num,
+                count,
+                trace_index = i,
+                ?good_trace,
+                ?faulty_trace,
+                "Trace does not match good replica"
+            );
+
             count += 1;
             if count > 10 {
-                break;
+                return InconsistentBlockReason::TracesContents;
             }
         }
-        InconsistentBlockReason::TracesContents
+        InconsistentBlockReason::Unknown
     }
 }
 
 #[cfg(test)]
 pub mod tests {
-    use alloy_primitives::{Bytes, FixedBytes};
+    use alloy_primitives::{Address, Bytes, FixedBytes, U8};
+    use alloy_rlp::Encodable;
     use monad_archive::{
         kvstore::memory::MemoryStorage,
         test_utils::{mock_block, mock_rx, mock_tx},
@@ -820,15 +920,14 @@ pub mod tests {
             block_num_to_replica: HashMap::new(),
         };
 
-        // Create three different valid blocks
+        // Create 2 different valid blocks
         let (block1, receipts1, traces1) = create_test_block_data(block_num, 1, None);
-        let (block2, receipts2, traces2) = create_test_block_data(block_num + 1, 2, None);
-        let (block3, receipts3, traces3) = create_test_block_data(block_num + 2, 3, None);
+        let (block3, receipts3, traces3) = create_test_block_data(block_num, 3, None);
 
         // Create a map with 3 replicas, two agreeing, one different
         let mut valid_replicas = HashMap::new();
         valid_replicas.insert("replica1".into(), (&block1, &receipts1, &traces1));
-        valid_replicas.insert("replica2".into(), (&block2, &receipts2, &traces2)); // Same as replica1
+        valid_replicas.insert("replica2".into(), (&block1, &receipts1, &traces1)); // Same as replica1
         valid_replicas.insert("replica3".into(), (&block3, &receipts3, &traces3)); // Different
 
         find_consensus(
@@ -856,13 +955,15 @@ pub mod tests {
         faults_by_replica.clear();
         good_blocks.block_num_to_replica.clear();
 
+        // Create three different valid blocks
         let (block1, receipts1, traces1) = create_test_block_data(block_num, 1, None);
-        let (block2, receipts2, traces2) = create_test_block_data(block_num + 1, 2, None);
+        let (block2, receipts2, traces2) = create_test_block_data(block_num, 1, None);
+        let (block3, receipts3, traces3) = create_test_block_data(block_num, 3, None);
 
         valid_replicas.clear();
         valid_replicas.insert("replica1".into(), (&block1, &receipts1, &traces1));
         valid_replicas.insert("replica2".into(), (&block2, &receipts2, &traces2));
-        valid_replicas.insert("replica3".into(), (&block1, &receipts1, &traces1));
+        valid_replicas.insert("replica3".into(), (&block3, &receipts3, &traces3));
 
         find_consensus(
             block_num,
@@ -941,8 +1042,23 @@ pub mod tests {
     }
 
     fn create_test_traces(count: usize) -> BlockTraces {
-        // Simple trace creation
-        vec![b"trace".to_vec(); count]
+        let call_frame = CallFrame {
+            typ: CallKind::Call,
+            flags: U64::from(1),
+            from: Address::default(),
+            to: None,
+            value: U256::from(1),
+            gas: U64::from(1),
+            gas_used: U64::from(1),
+            input: Bytes::from(vec![1, 2, 3]),
+            output: Bytes::from(vec![4, 5, 6]),
+            status: U8::from(1),
+            depth: U64::from(1),
+        };
+        let mut buf = Vec::new();
+        vec![vec![call_frame; 2]; 2].encode(&mut &mut buf);
+
+        vec![buf; count]
     }
 
     pub(crate) fn create_test_block_data_with_len(
@@ -1058,16 +1174,11 @@ pub mod tests {
             let mut replica_data = HashMap::new();
             let parent_hash = phash("replica1", block_num, &data_by_block_num);
 
-            let (block1, receipts1, traces1) =
-                create_test_block_data(block_num + 1, 1, Some(parent_hash));
-            let (block2, receipts2, traces2) =
-                create_test_block_data(block_num + 1, 2, Some(parent_hash));
-            replica_data.insert(
-                "replica1".to_string(),
-                Some((block1.clone(), receipts1.clone(), traces1.clone())),
-            );
-            replica_data.insert("replica2".to_string(), Some((block1, receipts1, traces1)));
-            replica_data.insert("replica3".to_string(), Some((block2, receipts2, traces2)));
+            let data1 = create_test_block_data(block_num + 1, 1, Some(parent_hash));
+            let data2 = create_test_block_data(block_num + 1, 2, Some(parent_hash));
+            replica_data.insert("replica1".to_string(), Some(data1.clone()));
+            replica_data.insert("replica2".to_string(), Some(data1));
+            replica_data.insert("replica3".to_string(), Some(data2));
             data_by_block_num.insert(block_num + 1, replica_data);
         }
 
@@ -1191,9 +1302,10 @@ pub mod tests {
     ) {
         // Add test blocks to all replicas, with some variations
 
+        use std::iter::repeat_n;
         let mut blocks = create_test_block_data_range(
             *block_range.start(),
-            std::iter::repeat(1).take((*block_range.end() - *block_range.start() + 1) as usize),
+            repeat_n(1, (*block_range.end() - *block_range.start() + 1) as usize),
         );
 
         for block_num in block_range {
@@ -1541,7 +1653,7 @@ pub mod tests {
             .await
             .unwrap();
 
-        let expected_fault_count = ((end_block - start_block + 1) / 2) as usize;
+        let expected_fault_count = (end_block - start_block).div_ceil(2) as usize;
         assert!(faults.len() >= expected_fault_count);
 
         // Verify good blocks were stored

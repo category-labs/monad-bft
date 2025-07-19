@@ -16,8 +16,9 @@
 use core::str;
 
 use alloy_consensus::{Block as AlloyBlock, BlockBody, Header, ReceiptEnvelope, TxEnvelope};
-use alloy_primitives::BlockHash;
+use alloy_primitives::{Address, BlockHash, Bytes, U8};
 use alloy_rlp::{Decodable, Encodable, EMPTY_LIST_CODE};
+use bytes::BufMut;
 use eyre::{bail, OptionExt};
 use futures::try_join;
 use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
@@ -393,7 +394,7 @@ impl BlockStorageRepr {
                     header: block.header,
                     body: BlockBody {
                         ommers: block.body.ommers,
-                        withdrawals: block.body.withdrawals,
+                        withdrawals: Some(alloy_eips::eip4895::Withdrawals::default()),
                         transactions,
                     },
                 }
@@ -514,6 +515,123 @@ impl ReceiptStorageRepr {
             [Self::SENTINEL, Self::V0_MARKER] | [Self::SENTINEL, Self::V1_MARKER] => &buf[2..],
             _ => buf,
         }
+    }
+}
+
+pub fn decode_traces(traces: &BlockTraces) -> Result<Vec<Vec<Vec<CallFrame>>>, alloy_rlp::Error> {
+    traces.iter().map(Vec::as_slice).map(decode_trace).collect()
+}
+
+pub fn decode_trace(trace: &[u8]) -> Result<Vec<Vec<CallFrame>>, alloy_rlp::Error> {
+    Vec::<Vec<CallFrame>>::decode(&mut &trace[..])
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallKind {
+    Call,
+    DelegateCall,
+    CallCode,
+    Create,
+    Create2,
+    SelfDestruct,
+    StaticCall,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallFrame {
+    pub typ: CallKind,
+    pub flags: U64,
+    pub from: Address,
+    pub to: Option<Address>,
+    pub value: U256,
+    pub gas: U64,
+    pub gas_used: U64,
+    pub input: Bytes,
+    pub output: Bytes,
+    pub status: U8,
+    pub depth: U64,
+}
+
+impl Decodable for CallFrame {
+    fn decode(rlp_buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let typ: U8 = U8::decode(rlp_buf)?;
+        let flags: U64 = U64::decode(rlp_buf)?;
+        let from: Address = Address::decode(rlp_buf)?;
+
+        // Decode the `to` field, handling the case where it's `None`.
+        let to: Option<Address> = {
+            let first_byte = rlp_buf.first().ok_or(alloy_rlp::Error::InputTooShort)?;
+            if *first_byte == 0x80 {
+                // If the first byte is 0x80, it represents an empty value (None for the Address).
+                *rlp_buf = &rlp_buf[1..]; // Advance the buffer
+                None
+            } else {
+                // Otherwise, decode it as a normal Address.
+                Some(Address::decode(rlp_buf)?)
+            }
+        };
+
+        let value: U256 = U256::decode(rlp_buf)?;
+        let gas: U64 = U64::decode(rlp_buf)?;
+        let gas_used: U64 = U64::decode(rlp_buf)?;
+        let input = Bytes::decode(rlp_buf)?;
+        let output = Bytes::decode(rlp_buf)?;
+        let status: U8 = U8::decode(rlp_buf)?;
+        let depth: U64 = U64::decode(rlp_buf)?;
+
+        let typ = match typ.to::<u8>() {
+            0 if flags == U64::from(1) => CallKind::StaticCall,
+            0 => CallKind::Call,
+            1 => CallKind::DelegateCall,
+            2 => CallKind::CallCode,
+            3 => CallKind::Create,
+            4 => CallKind::Create2,
+            5 => CallKind::SelfDestruct,
+            _ => return Err(alloy_rlp::Error::Custom("Invalid call kind")),
+        };
+
+        Ok(Self {
+            typ,
+            flags,
+            from,
+            to,
+            value,
+            gas,
+            gas_used,
+            input,
+            output,
+            status,
+            depth,
+        })
+    }
+}
+
+impl Encodable for CallFrame {
+    fn encode(&self, out: &mut dyn BufMut) {
+        let typ: u8 = match self.typ {
+            CallKind::Call => 0,
+            CallKind::StaticCall => 0,
+            CallKind::DelegateCall => 1,
+            CallKind::CallCode => 2,
+            CallKind::Create => 3,
+            CallKind::Create2 => 4,
+            CallKind::SelfDestruct => 5,
+        };
+        typ.encode(out);
+        self.flags.encode(out);
+        self.from.encode(out);
+        if let Some(to) = self.to {
+            to.encode(out);
+        } else {
+            out.put_u8(0x80);
+        }
+        self.value.encode(out);
+        self.gas.encode(out);
+        self.gas_used.encode(out);
+        self.input.encode(out);
+        self.output.encode(out);
+        self.status.encode(out);
+        self.depth.encode(out);
     }
 }
 

@@ -35,12 +35,18 @@ pub async fn migrate_to_uncapped(
     loop {
         match state.phase {
             Phase::DiskCheck => {
+                info!(coll_name, "Starting migration phase: DiskCheck");
                 ensure_disk_space(&db, coll_name, &source_capped, free_factor).await?;
                 state.phase = Phase::Renamed;
                 meta.upsert(&state).await?;
+                info!(
+                    coll_name,
+                    "Completed DiskCheck phase, moving to Renamed phase"
+                );
                 continue; // re-enter loop
             }
             Phase::Renamed => {
+                info!(coll_name, "Starting migration phase: Renamed");
                 let renamed = maybe_rename(&db, coll_name, &source_capped).await?;
                 if !renamed {
                     // Collection was already uncapped, we're done
@@ -48,13 +54,23 @@ pub async fn migrate_to_uncapped(
                     meta.delete_one(doc! { "_id": coll_name }).await?;
                     return Ok(());
                 }
+                info!(
+                    coll_name,
+                    "Creating uncapped collection and copying indexes"
+                );
                 create_uncapped_and_indexes(&db, coll_name, &source_capped).await?;
                 state.phase = Phase::Copying;
                 meta.upsert(&state).await?;
+                info!(
+                    coll_name,
+                    "Completed Renamed phase, moving to Copying phase"
+                );
                 continue;
             }
             Phase::Copying => {
+                info!(coll_name, batch_size, "Starting migration phase: Copying");
                 // Keep copying until all batches are done
+                let mut batch_count = 0;
                 loop {
                     let copied = copy_batches(
                         &db,
@@ -68,20 +84,38 @@ pub async fn migrate_to_uncapped(
 
                     if !copied {
                         // No more documents to copy
+                        info!(coll_name, batch_count, "Finished copying all batches");
                         break;
+                    }
+                    batch_count += 1;
+                    if batch_count % 10 == 0 {
+                        info!(
+                            coll_name,
+                            batch_count, "Progress: copied {} batches", batch_count
+                        );
                     }
                 }
                 state.phase = Phase::Dropping;
                 meta.upsert(&state).await?;
+                info!(
+                    coll_name,
+                    "Completed Copying phase, moving to Dropping phase"
+                );
                 continue;
             }
             Phase::Dropping => {
+                info!(
+                    coll_name,
+                    source = &source_capped,
+                    "Starting migration phase: Dropping"
+                );
                 drop_source(&db, &source_capped, coll_name).await?;
                 meta.delete_one(doc! { "_id": coll_name }).await?;
-                info!(coll_name, "migration complete");
+                info!(coll_name, "Dropped source collection, migration complete");
                 return Ok(());
             }
             Phase::Done => {
+                info!(coll_name, "Migration already completed (Done phase)");
                 return Ok(());
             }
         }
@@ -260,7 +294,11 @@ async fn create_uncapped_and_indexes(
     } else {
         info!(coll, "Destination collection already exists");
     }
-    // copy indexes from source (no-op if they already exist)
+    info!(
+        source,
+        coll, "Copying indexes from source (no-op if they already exist)",
+    );
+
     let src_coll = db.collection::<Document>(source);
     let dst_coll = db.collection::<Document>(coll);
 
@@ -341,8 +379,17 @@ async fn copy_batches(
     let end_id = if let Some(last) = ids.last() {
         last.get("_id").ok_or_eyre("No _id found")?.clone()
     } else {
+        info!(src, dst, "No more documents to copy");
         return Ok(false);
     };
+
+    info!(
+        src, dst,
+        batch_size = ids.len(),
+        start_id = ?state.last_id,
+        end_id = ?end_id,
+        "Copying batch of documents"
+    );
 
     // 2 — server-side aggregate:  match this id window → merge into dst
     let pipeline = vec![
@@ -368,8 +415,9 @@ async fn copy_batches(
         .wrap_err("Failed to drain aggregate cursor")?;
 
     // 3 — checkpoint and persist
-    state.last_id = Some(end_id);
+    state.last_id = Some(end_id.clone());
     meta.upsert(state).await?;
+    info!(src, dst, last_id = ?end_id, "Batch copied and checkpoint saved");
     Ok(true)
 }
 
@@ -380,9 +428,17 @@ async fn drop_source(db: &mongodb::Database, src: &str, dst: &str) -> Result<()>
     let dst_stats = coll_stats(db, dst).await?;
     let src_count = get_int_field(&src_stats, "count")?;
     let dst_count = get_int_field(&dst_stats, "count")?;
+    info!(
+        src,
+        dst, src_count, dst_count, "Verifying document counts before dropping source"
+    );
     if src_count != dst_count {
-        warn!(src, "document counts differ, dropping anyway");
+        warn!(
+            src,
+            dst, src_count, dst_count, "document counts differ, dropping anyway"
+        );
     }
+    info!(src, "Dropping source capped collection");
     db.collection::<Document>(src).drop().await?;
     Ok(())
 }

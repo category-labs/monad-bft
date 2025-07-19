@@ -109,11 +109,11 @@ pub struct Rechecker {
 
     /// Optional start block to recheck (inclusive)
     #[arg(long)]
-    pub start_block: Option<u64>,
+    pub start: Option<u64>,
 
     /// Optional end block to recheck (inclusive)
     #[arg(long)]
-    pub end_block: Option<u64>,
+    pub end: Option<u64>,
 
     /// Force rechecking all chunks in range even if no faults are present
     #[arg(long)]
@@ -138,6 +138,14 @@ pub struct FaultFixerArgs {
     /// Comma-separated list of specific replicas to fix (defaults to all)
     #[clap(long, value_delimiter = ',')]
     pub replicas: Option<Vec<String>>,
+
+    /// Start block (inclusive)
+    #[clap(long)]
+    pub start: Option<u64>,
+
+    /// End block (inclusive)
+    #[clap(long)]
+    pub end: Option<u64>,
 }
 
 #[derive(Parser, Debug)]
@@ -152,10 +160,11 @@ pub enum InspectorCommand {
     Status,
 
     /// List all fault ranges collapsed to start-end format
-    ListFaults,
+    ListFaults {
+        /// Show summary with only first 10 ranges per fault type
+        #[arg(long)]
+        summary: bool,
 
-    /// List all blocks with faults in a given range
-    ListFaultyBlocks {
         /// Start block (inclusive)
         #[arg(long)]
         start: Option<u64>,
@@ -163,6 +172,10 @@ pub enum InspectorCommand {
         /// End block (inclusive)
         #[arg(long)]
         end: Option<u64>,
+
+        /// Replica to list faults for
+        #[arg(long)]
+        replica: Option<String>,
     },
 
     /// Inspect a specific block across all replicas
@@ -171,12 +184,12 @@ pub enum InspectorCommand {
         block_num: u64,
 
         /// Output format
-        #[arg(long, default_value = "summary")]
+        #[arg(long, default_value = "all")]
         format: InspectorOutputFormat,
 
-        /// Print full parsed data
-        #[arg(long)]
-        print_data: bool,
+        /// Show raw data
+        #[arg(long, short = 'r')]
+        raw: bool,
     },
 }
 

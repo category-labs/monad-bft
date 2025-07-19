@@ -312,7 +312,7 @@ mod test {
         for num_half_symbols in CodeParameters::HALF_MIN..=CodeParameters::HALF_MAX {
             let num_half_symbols = u8::try_from(num_half_symbols).unwrap();
 
-            if CodeParameters::choose(num_half_symbols, (num_half_symbols + 1) / 2)
+            if CodeParameters::choose(num_half_symbols, num_half_symbols.div_ceil(2))
                 >= num_source_symbols + num_ldpc_symbols
             {
                 return Ok(num_half_symbols);

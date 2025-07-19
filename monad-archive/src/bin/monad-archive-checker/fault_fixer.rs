@@ -16,6 +16,7 @@
 use std::collections::HashMap;
 
 use eyre::{eyre, Context, Result};
+use futures::stream;
 use monad_archive::prelude::*;
 use opentelemetry::KeyValue;
 use tracing::{debug, error, info, warn};
@@ -34,6 +35,8 @@ pub async fn run_fixer(
     dry_run: bool,
     verify: bool,
     specific_replicas: Option<Vec<String>>,
+    start: Option<u64>,
+    end: Option<u64>,
 ) -> Result<(usize, usize)> {
     let replicas: Vec<String> = if let Some(replicas) = specific_replicas {
         // Validate that specified replicas exist
@@ -60,56 +63,83 @@ pub async fn run_fixer(
             info!("Fixing faults for replica '{}'...", replica);
         }
 
-        let mut replica_fixed = 0;
-        let mut replica_failed = 0;
+        let start_idx = if let Some(start) = start {
+            start / CHUNK_SIZE
+        } else {
+            0
+        };
+
+        let end_idx = if let Some(end) = end {
+            end.min(latest_checked) / CHUNK_SIZE
+        } else {
+            latest_checked / CHUNK_SIZE
+        };
 
         // Process chunks of CHUNK_SIZE blocks at a time
-        for idx in 0..(latest_checked / CHUNK_SIZE) {
-            let chunk_start = idx * CHUNK_SIZE;
+        let (replica_fixed, replica_failed) = stream::iter(start_idx..end_idx)
+            .map(|idx| {
+                let replica = replica.clone();
+                async move {
+                    let chunk_start = idx * CHUNK_SIZE;
 
-            // Get current faults for this chunk
-            let faults = model.get_faults_chunk(&replica, chunk_start).await?;
-            if faults.is_empty() {
-                continue;
-            }
+                    // Get current faults for this chunk
+                    let faults = model.get_faults_chunk(&replica, chunk_start).await?;
+                    if faults.is_empty() {
+                        return eyre::Ok((0, 0));
+                    }
 
-            debug!(
-                num_faults = faults.len(),
-                chunk_start, "Retrieved faults for chunk"
-            );
+                    debug!(
+                        num_faults = faults.len(),
+                        chunk_start, "Retrieved faults for chunk"
+                    );
 
-            // Attempt to fix faults in this chunk (or simulate in dry run)
-            let (fixed, failed) =
-                fix_faults_in_range(model, chunk_start, &replica, metrics, dry_run, &faults)
+                    // Attempt to fix faults in this chunk (or simulate in dry run)
+                    let (fixed, failed) = fix_faults_in_range(
+                        model,
+                        chunk_start,
+                        &replica,
+                        metrics,
+                        dry_run,
+                        &faults,
+                    )
                     .await?;
 
-            replica_fixed += fixed;
-            replica_failed += failed;
+                    // replica_fixed += fixed;
+                    // replica_failed += failed;
 
-            // If verification is requested and not in dry run, verify the fixes
-            if verify && !dry_run && fixed > 0 {
-                info!("Verifying fixes for chunk starting at {}...", chunk_start);
+                    // If verification is requested and not in dry run, verify the fixes
+                    if verify && !dry_run && fixed > 0 {
+                        info!("Verifying fixes for chunk starting at {}...", chunk_start);
 
-                // Recheck the chunk from scratch
-                recheck_chunk_from_scratch(model, chunk_start, dry_run).await?;
+                        // Recheck the chunk from scratch
+                        recheck_chunk_from_scratch(model, chunk_start, dry_run).await?;
 
-                // Get the updated faults for this replica
-                let remaining_faults = model.get_faults_chunk(&replica, chunk_start).await?;
+                        // Get the updated faults for this replica
+                        let remaining_faults =
+                            model.get_faults_chunk(&replica, chunk_start).await?;
 
-                if !remaining_faults.is_empty() {
-                    warn!(
-                        "Verification found {} remaining faults in chunk {} after fixing",
-                        remaining_faults.len(),
-                        chunk_start
-                    );
-                } else {
-                    info!(
-                        "All faults in chunk {} successfully fixed and verified",
-                        chunk_start
-                    );
+                        if !remaining_faults.is_empty() {
+                            warn!(
+                                "Verification found {} remaining faults in chunk {} after fixing",
+                                remaining_faults.len(),
+                                chunk_start
+                            );
+                        } else {
+                            info!(
+                                "All faults in chunk {} successfully fixed and verified",
+                                chunk_start
+                            );
+                        }
+                    }
+
+                    Ok((fixed, failed))
                 }
-            }
-        }
+            })
+            .buffered(if dry_run { 1 } else { 2 })
+            .try_fold((0, 0), |(fixed_count, failed_count), (fixed, failed)| {
+                futures::future::ready(Ok((fixed_count + fixed, failed_count + failed)))
+            })
+            .await?;
 
         // Print summary for this replica
         if dry_run {
@@ -167,13 +197,12 @@ async fn fix_faults_in_range(
         .await?
         .block_num_to_replica;
 
-    let mut fixed_count = 0;
-    let mut failed_count = 0;
-
     // Process each fault
-    for fault in faults {
-        // If dry run, just check if we would be able to fix it
-        if dry_run {
+    // If dry run, just check if we would be able to fix it
+    if dry_run {
+        let mut fixed_count = 0;
+        let mut failed_count = 0;
+        for fault in faults {
             // Check if we have a good replica for this block
             if good_block_mapping.contains_key(&fault.block_num) {
                 let good_replica = good_block_mapping.get(&fault.block_num).unwrap();
@@ -210,36 +239,38 @@ async fn fix_faults_in_range(
                 );
                 failed_count += 1;
             }
-            continue;
         }
+        return Ok((fixed_count, failed_count));
+    }
 
-        // Attempt to fix the fault
-        let result = fix_fault(model, fault, good_block_mapping).await;
+    let fixed_count = stream::iter(faults)
+        .map(|fault| async move {
+            // Attempt to fix the fault
+            let result = fix_fault(model, fault, good_block_mapping).await;
 
-        if let Err(e) = result {
-            error!(
-                "Failed to fix fault for block {} in replica {}: {:?}",
-                fault.block_num, replica, e
-            );
+            if let Err(e) = result {
+                error!(
+                    "Failed to fix fault for block {} in replica {}: {:?}",
+                    fault.block_num, replica, e
+                );
 
-            // Report error metric
-            metrics.counter_with_attrs(
-                MetricNames::REPLICA_FAULTS_FIX_FAILED,
-                1,
-                &[
-                    KeyValue::new("replica", replica.to_owned()),
-                    KeyValue::new("block_num", fault.block_num.to_string()),
-                    KeyValue::new("error", e.to_string()),
-                ],
-            );
+                // Report error metric
+                metrics.counter_with_attrs(
+                    MetricNames::REPLICA_FAULTS_FIX_FAILED,
+                    1,
+                    &[
+                        KeyValue::new("replica", replica.to_owned()),
+                        KeyValue::new("block_num", fault.block_num.to_string()),
+                        KeyValue::new("error", e.to_string()),
+                    ],
+                );
 
-            // Fail fast on errors
-            return Err(e.wrap_err(format!(
-                "Failed to fix fault for block {} in replica {}",
-                fault.block_num, replica
-            )));
-        } else {
-            fixed_count += 1;
+                // Fail fast on errors
+                return Err(e.wrap_err(format!(
+                    "Failed to fix fault for block {} in replica {}",
+                    fault.block_num, replica
+                )));
+            }
 
             // Report success metric
             metrics.counter_with_attrs(
@@ -251,10 +282,15 @@ async fn fix_faults_in_range(
                     KeyValue::new("fault_type", fault.fault.variant_name()),
                 ],
             );
-        }
-    }
+            Ok(())
+        })
+        .buffered(200)
+        .try_fold(0, |fixed_count, _| {
+            futures::future::ready(Ok(fixed_count + 1))
+        })
+        .await?;
 
-    Ok((fixed_count, failed_count))
+    Ok((fixed_count, 0))
 }
 
 /// Fixes a single fault by copying the good block data to the faulty replica

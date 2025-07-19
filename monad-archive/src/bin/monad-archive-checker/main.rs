@@ -122,7 +122,7 @@ async fn main() -> Result<()> {
         cli::Mode::Rechecker(rechecker_args) => {
             info!(
                 "Starting in rechecker mode with recheck_freq_min: {}, dry_run: {}, worker: {}, start: {:?}, end: {:?}, force_recheck: {}",
-                rechecker_args.recheck_freq_min, rechecker_args.dry_run, rechecker_args.worker, rechecker_args.start_block, rechecker_args.end_block, rechecker_args.force_recheck
+                rechecker_args.recheck_freq_min, rechecker_args.dry_run, rechecker_args.worker, rechecker_args.start, rechecker_args.end, rechecker_args.force_recheck
             );
             let model = CheckerModel::new(s3, &metrics, None).await?;
             let recheck_freq = Duration::from_secs_f64(rechecker_args.recheck_freq_min * 60.);
@@ -132,8 +132,8 @@ async fn main() -> Result<()> {
                 model,
                 metrics,
                 rechecker_args.dry_run,
-                rechecker_args.start_block,
-                rechecker_args.end_block,
+                rechecker_args.start,
+                rechecker_args.end,
                 rechecker_args.force_recheck,
                 rechecker_args.worker,
             ))
@@ -155,6 +155,8 @@ async fn main() -> Result<()> {
                 !fixer_args.commit_changes,
                 fixer_args.verify,
                 fixer_args.replicas,
+                fixer_args.start,
+                fixer_args.end,
             )
             .await?;
 
@@ -180,21 +182,22 @@ async fn main() -> Result<()> {
                     info!("Displaying checker status");
                     inspector::status(&model).await?;
                 }
-                cli::InspectorCommand::ListFaults => {
-                    info!("Listing all fault ranges");
-                    inspector::list_fault_ranges(&model).await?;
-                }
-                cli::InspectorCommand::ListFaultyBlocks { start, end } => {
-                    info!("Listing faulty blocks in range {:?} to {:?}", start, end);
-                    inspector::list_faulty_blocks(&model, start, end).await?;
+                cli::InspectorCommand::ListFaults {
+                    summary,
+                    start,
+                    end,
+                    replica,
+                } => {
+                    info!("Listing all fault ranges (summary: {})", summary);
+                    inspector::list_fault_ranges(&model, summary, start, end, replica).await?;
                 }
                 cli::InspectorCommand::InspectBlock {
                     block_num,
                     format,
-                    print_data,
+                    raw,
                 } => {
                     info!("Inspecting block {} with format {:?}", block_num, format);
-                    inspector::inspect_block(&model, block_num, format, print_data).await?;
+                    inspector::inspect_block(&model, block_num, format, raw).await?;
                 }
             }
         }
