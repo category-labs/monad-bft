@@ -6,12 +6,12 @@
 #include <optional>
 #include <vector>
 
-#include <monad/core/byte_string.hpp>
-#include <monad/core/nibble.h>
-#include <monad/mpt/db.hpp>
-#include <monad/mpt/ondisk_db_config.hpp>
-#include <monad/mpt/traverse.hpp>
-#include <monad/mpt/traverse_util.hpp>
+#include <category/core/byte_string.hpp>
+#include <category/core/nibble.h>
+#include <category/mpt/db.hpp>
+#include <category/mpt/ondisk_db_config.hpp>
+#include <category/mpt/traverse.hpp>
+#include <category/mpt/traverse_util.hpp>
 
 #include "triedb.h"
 
@@ -373,7 +373,7 @@ size_t triedb_poll(triedb *db, bool blocking, size_t count)
 
 int triedb_finalize(bytes value)
 {
-    delete [] value;
+    delete[] value;
     return 0;
 }
 
@@ -385,7 +385,8 @@ uint64_t triedb_latest_voted_block(triedb *db)
 
 bytes triedb_latest_voted_block_id(triedb *db)
 {
-    monad::bytes32_t latest_voted_block_id = db->db_.get_latest_voted_block_id();
+    monad::bytes32_t latest_voted_block_id =
+        db->db_.get_latest_voted_block_id();
     if (latest_voted_block_id == monad::bytes32_t{}) {
         return nullptr;
     }

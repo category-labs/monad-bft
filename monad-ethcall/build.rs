@@ -17,17 +17,16 @@ fn main() {
 
         println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dst.display());
         println!(
-            "cargo:rustc-link-search=native={}/build/libs/rpc",
+            "cargo:rustc-link-search=native={}/build/category/rpc",
             dst.display()
         );
         println!("cargo:rustc-link-lib=dylib={}", &target);
     }
 
     let bindings = bindgen::Builder::default()
-        .header("../monad-cxx/monad-execution/libs/execution/src/monad/chain/chain_config.h")
-        .header("../monad-cxx/monad-execution/libs/rpc/src/monad/rpc/eth_call.h")
-        .clang_arg("-I../monad-cxx/monad-execution/libs/rpc/src")
-        .clang_arg("-I../monad-cxx/monad-execution/libs/execution/src")
+        .header("../monad-cxx/monad-execution/category/execution/ethereum/chain/chain_config.h")
+        .header("../monad-cxx/monad-execution/category/rpc/eth_call.h")
+        .clang_arg("-I../monad-cxx/monad-execution")
         .clang_arg("-std=c23")
         // invalidate on header change
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))

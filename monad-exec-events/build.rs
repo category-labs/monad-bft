@@ -2,15 +2,15 @@ use std::path::PathBuf;
 
 const INCLUDES: &[(&str, &[&str])] = &[
     (
-        "../monad-cxx/monad-execution/libs/core/src/",
-        &["monad/event/event_metadata.h"],
+        "../monad-cxx/monad-execution/",
+        &["category/core/event/event_metadata.h"],
     ),
     (
-        "../monad-cxx/monad-execution/libs/execution/src/",
+        "../monad-cxx/monad-execution/",
         &[
-            "monad/core/base_ctypes.h",
-            "monad/core/eth_ctypes.h",
-            "monad/core/event/exec_event_ctypes.h",
+            "category/execution/ethereum/core/base_ctypes.h",
+            "category/execution/ethereum/core/eth_ctypes.h",
+            "category/execution/ethereum/event/exec_event_ctypes.h",
         ],
     ),
 ];

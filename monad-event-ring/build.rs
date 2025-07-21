@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 
 const INCLUDES: [(&str, &[&str]); 1] = [(
-    "../monad-cxx/monad-execution/libs/core/src/",
+    "../monad-cxx/monad-execution/",
     &[
-        "monad/event/event_iterator_inline.h",
-        "monad/event/event_iterator.h",
-        "monad/event/event_metadata.h",
-        "monad/event/event_ring_util.h",
-        "monad/event/event_ring.h",
+        "category/core/event/event_iterator_inline.h",
+        "category/core/event/event_iterator.h",
+        "category/core/event/event_metadata.h",
+        "category/core/event/event_ring_util.h",
+        "category/core/event/event_ring.h",
     ],
 )];
 
@@ -18,7 +18,7 @@ fn main() {
     println!("cargo:rerun-if-changed=../monad-cxx/monad-execution");
 
     let client_target = "monad_event";
-    let client_dst = cmake::Config::new("../monad-cxx/monad-execution/libs/event")
+    let client_dst = cmake::Config::new("../monad-cxx/monad-execution/category/event")
         .define("CMAKE_BUILD_TARGET", client_target)
         .build_target(client_target)
         .build();

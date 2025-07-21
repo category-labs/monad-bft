@@ -16,23 +16,17 @@ fn main() {
 
         println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dst.display());
         println!(
-            "cargo:rustc-link-search=native={}/build/libs/statesync",
+            "cargo:rustc-link-search=native={}/build/category/statesync",
             dst.display()
         );
         println!("cargo:rustc-link-lib=dylib={}", &target);
     }
 
     let bindings = bindgen::Builder::default()
-        .header(
-            "../monad-cxx/monad-execution/libs/statesync/src/monad/statesync/statesync_messages.h",
-        )
-        .header(
-            "../monad-cxx/monad-execution/libs/statesync/src/monad/statesync/statesync_client.h",
-        )
-        .header(
-            "../monad-cxx/monad-execution/libs/statesync/src/monad/statesync/statesync_version.h",
-        )
-        .clang_arg("-I../monad-cxx/monad-execution/libs/statesync/src")
+        .header("../monad-cxx/monad-execution/category/statesync/statesync_messages.h")
+        .header("../monad-cxx/monad-execution/category/statesync/statesync_client.h")
+        .header("../monad-cxx/monad-execution/category/statesync/statesync_version.h")
+        .clang_arg("-I../monad-cxx/monad-execution")
         .clang_arg("-std=c23")
         // invalidate on header change
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
