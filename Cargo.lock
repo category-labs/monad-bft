@@ -5511,6 +5511,7 @@ name = "monad-peer-discovery"
 version = "0.1.0"
 dependencies = [
  "alloy-rlp",
+ "arc-swap",
  "clap 4.5.40",
  "futures",
  "hex",
@@ -5525,6 +5526,7 @@ dependencies = [
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "test-case",
+ "tokio",
  "tokio-util",
  "toml",
  "tracing",

@@ -10,10 +10,12 @@ monad-executor-glue = { workspace = true }
 monad-types = { workspace = true }
 
 alloy-rlp = { workspace = true }
+arc-swap = { workspace = true }
 futures = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 tracing = { workspace = true }
+tokio = { workspace = true }
 tokio-util = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
