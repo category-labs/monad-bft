@@ -167,7 +167,7 @@ where
 
         // Remove all groups that have ended.
         self.group_schedule
-            .retain(|_, group| group.end_round > round);
+            .retain(|_, group| group.end_round >= round);
 
         let Some(next_group) = self.group_schedule.first_entry() else {
             // We didn't manage to form a group in time for the new round.
@@ -1465,6 +1465,7 @@ mod tests {
 
         // RaptorCast group from v0 should be down now, as it only covered rounds [5, 7)
         // Here we should see a group gap
+        group_map.update(&clt);
         assert!(group_map.is_empty(&clt));
 
         //-------------------------------------------------------------------[8]

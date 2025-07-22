@@ -492,7 +492,7 @@ where
 //
 //     data: Bytes,
 // }
-pub const HEADER_LEN: u16 = SIGNATURE_SIZE as u16 // Sender signature
+pub const HEADER_LEN: u16 = SIGNATURE_SIZE as u16 // Sender signature (65 bytes)
             + 2  // Version
             + 1  // Broadcast bit, 7 bits for Merkle Tree Depth
             + 8  // Epoch #

@@ -339,10 +339,18 @@ where
     pub fn check_author_node_id(&self, author_id: &NodeId<CertificateSignaturePubKey<ST>>) -> bool {
         if let Some(root_vid) = self.validator_id {
             // Case for full-node raptorcasting
-            &root_vid == author_id
+            let good = &root_vid == author_id;
+            if !good {
+                tracing::debug!(?author_id, ?root_vid, "check_author_node_id (fn) failed");
+            }
+            good
         } else {
             // Case for validator-to-validator
-            self.sorted_other_peers.binary_search(author_id).is_ok()
+            let good = self.sorted_other_peers.binary_search(author_id).is_ok();
+            if !good {
+                tracing::debug!(?author_id, ?self.sorted_other_peers, "check_author_node_id (v2v) failed");
+            }
+            good
         }
     }
 }
@@ -398,21 +406,25 @@ where
     fullnode_map: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Group<ST>>,
 
     // Regarding re-raptorcasting from primary instance, if this.is_fullnode =
-    // = true, then we are a full-node re-raptorcasting to other full-nodes.
-    // = false, then we are a validator re-raptorcasting to other validators.
-    is_fullnode: bool,
+    // = true,  then we are a full-node re-raptorcasting to other full-nodes.
+    // = false, then we are a validator re-raptorcasting to other validators,
+    //          or a dedicated full-node.
+    is_dynamic_fullnode: bool,
 }
 
 impl<ST> ReBroadcastGroupMap<ST>
 where
     ST: CertificateSignatureRecoverable,
 {
-    pub fn new(our_node_id: NodeId<CertificateSignaturePubKey<ST>>, is_fullnode: bool) -> Self {
+    pub fn new(
+        our_node_id: NodeId<CertificateSignaturePubKey<ST>>,
+        is_dynamic_fullnode: bool,
+    ) -> Self {
         Self {
             our_node_id,
             validator_map: BTreeMap::new(),
             fullnode_map: BTreeMap::new(),
-            is_fullnode,
+            is_dynamic_fullnode,
         }
     }
 
@@ -423,14 +435,26 @@ where
         msg_epoch: Epoch,
         author_node_id: &NodeId<CertificateSignaturePubKey<ST>>,
     ) -> bool {
-        if self.is_fullnode {
+        if self.is_dynamic_fullnode {
             // Source node id (validator) is already the key to the map, so
             // we don't need to look into the group itself.
-            return self.fullnode_map.contains_key(author_node_id);
+            let author_found = self.fullnode_map.contains_key(author_node_id);
+            if !author_found {
+                tracing::debug!(?author_node_id, ?self.fullnode_map,
+                    "Validator author for v2fn group not found in fullnode_map");
+            }
+            return author_found;
         }
         if let Some(group) = self.validator_map.get(&msg_epoch) {
-            group.check_author_node_id(author_node_id)
+            let author_found = group.check_author_node_id(author_node_id);
+            if !author_found {
+                tracing::debug!(?author_node_id, ?self.validator_map,
+                    "Validator author for v2v group not found in validator_map");
+            }
+            author_found
         } else {
+            tracing::debug!(?msg_epoch, ?self.validator_map,
+                "Epoch not found in validator_map");
             false
         }
     }
@@ -445,7 +469,7 @@ where
         msg_epoch: Epoch, // for validator-to-validator re-raptorcasting only
         msg_author: &NodeId<CertificateSignaturePubKey<ST>>, // skipped when iterating RaptorCast group
     ) -> Option<GroupIterator<ST>> {
-        let maybe_group = if self.is_fullnode {
+        let maybe_group = if self.is_dynamic_fullnode {
             self.fullnode_map.get(msg_author)
         } else {
             self.validator_map.get(&msg_epoch)
@@ -480,7 +504,7 @@ where
 
     // As Full-node: When secondary RaptorCast instance (Client) sends us a Group<>
     pub fn push_group_fullnodes(&mut self, group: Group<ST>) {
-        assert!(self.is_fullnode);
+        assert!(self.is_dynamic_fullnode);
         if let Some(old_grp) = self
             .fullnode_map
             .insert(*group.get_validator_id(), group.clone())
@@ -494,10 +518,16 @@ where
     pub fn delete_expired_groups(&mut self, curr_epoch: Epoch, curr_round: Round) {
         let old_count;
         let new_count;
-        if self.is_fullnode {
+        if self.is_dynamic_fullnode {
             old_count = self.fullnode_map.len();
+            // Keep current and future* groups.
+            // Note: normally the client will only send as groups that are
+            // currently active, but it is possible for the client to send us a
+            // group scheduled for the future when we (the non-dedicated full-node)
+            // aren't received proposals yet and hence do not know what the current
+            // round is.
             self.fullnode_map
-                .retain(|_, group| group.round_span.contains(curr_round));
+                .retain(|_, group| curr_round < group.round_span.end);
             new_count = self.fullnode_map.len();
         } else {
             old_count = self.validator_map.len();

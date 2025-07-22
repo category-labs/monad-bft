@@ -57,7 +57,7 @@ where
 {
     signing_key: Arc<ST::KeyPairType>,
     redundancy: Redundancy,
-    is_fullnode: bool,
+    is_dynamic_fullnode: bool,
 
     // Raptorcast group with stake information. For the send side (i.e., initiating proposals)
     epoch_validators: BTreeMap<Epoch, EpochValidators<ST>>,
@@ -113,17 +113,17 @@ where
             );
         }
         let self_id = NodeId::new(config.shared_key.pubkey());
-        let is_fullnode = matches!(
+        let is_dynamic_fullnode = matches!(
             config.secondary_instance.mode,
             config::SecondaryRaptorCastModeConfig::Client(_)
         );
-        tracing::trace!(
-            ?is_fullnode, ?self_id, ?config.mtu, "RaptorCast::new",
+        tracing::debug!(
+            ?is_dynamic_fullnode, ?self_id, ?config.mtu, "RaptorCast::new",
         );
         Self {
-            is_fullnode,
+            is_dynamic_fullnode,
             epoch_validators: Default::default(),
-            rebroadcast_map: ReBroadcastGroupMap::new(self_id, is_fullnode),
+            rebroadcast_map: ReBroadcastGroupMap::new(self_id, is_dynamic_fullnode),
             dedicated_full_nodes: FullNodes::new(
                 config.primary_instance.fullnode_dedicated.clone(),
             ),
@@ -158,7 +158,7 @@ where
         channel_from_secondary: UnboundedReceiver<Group<ST>>,
     ) -> Self {
         self.channel_to_secondary = Some(channel_to_secondary);
-        if self.is_fullnode {
+        if self.is_dynamic_fullnode {
             self.channel_from_secondary = Some(channel_from_secondary);
         }
         self

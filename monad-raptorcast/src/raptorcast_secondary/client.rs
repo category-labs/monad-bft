@@ -371,6 +371,13 @@ where
                     error
                 );
             }
+            // Pulse a heartbeat, giving the new group above some time to be
+            // picked up by UDP state and be used. Without this pulse, there's
+            // a risk that the same validator will send us an invite for a
+            // future group before we receive the first proposal via raptorcast,
+            // causing the `is_receiving_proposals` check above to eagerly send
+            // the future group to primary and eject the current one.
+            self.last_round_heartbeat = Instant::now();
         }
 
         self.metrics[CLIENT_RECEIVED_CONFIRMS] += 1;
