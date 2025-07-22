@@ -1256,7 +1256,7 @@ where
             debug!(
                 seq_num =? block.header().seq_num,
                 block_round =? block.header().block_round,
-                "committing block"
+                "committing block finalized"
             );
             // when epoch boundary block is committed, this updates
             // epoch manager records
@@ -1317,6 +1317,11 @@ where
             self.block_policy,
             self.state_backend,
         ) {
+            debug!(
+                seq_num =? newly_coherent_block.header().seq_num,
+                block_round =? newly_coherent_block.header().block_round,
+                "committing block proposed"
+            );
             // optimistically commit any block that has been added to the blocktree and is coherent
             cmds.push(ConsensusCommand::CommitBlocks(
                 OptimisticPolicyCommit::Proposed(newly_coherent_block.to_owned()),
