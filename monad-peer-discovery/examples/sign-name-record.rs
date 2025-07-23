@@ -1,4 +1,4 @@
-use std::{net::SocketAddrV4, path::PathBuf};
+use std::{net::SocketAddrV4, panic, path::PathBuf};
 
 use clap::Parser;
 use monad_keystore::keystore::Keystore;
@@ -15,9 +15,13 @@ struct Args {
     #[arg(long)]
     address: SocketAddrV4,
 
+    /// Sequence number for the name record
+    #[arg(long)]
+    self_record_seq_num: Option<u64>,
+
     /// Set the node config path
     #[arg(long)]
-    node_config: PathBuf,
+    node_config: Option<PathBuf>,
 
     /// File path to secp keystore json file
     #[arg(long)]
@@ -40,12 +44,17 @@ fn main() {
         }
     };
 
-    let node_config: MonadNodeConfig =
-        toml::from_str(&std::fs::read_to_string(args.node_config).expect("node.toml not found"))
-            .unwrap();
-
+    let self_record_seq_num = if let Some(node_config_path) = args.node_config {
+        let contents =
+            std::fs::read_to_string(node_config_path).expect("Failed to read node toml file");
+        let node_config: MonadNodeConfig =
+            toml::from_str(&contents).expect("Invalid format in node toml file");
+        node_config.peer_discovery.self_record_seq_num + 1
+    } else {
+        args.self_record_seq_num
+            .unwrap_or_else(|| panic!("Either node_config or self_record_seq_num must be provided"))
+    };
     let self_address = args.address;
-    let self_record_seq_num = node_config.peer_discovery.self_record_seq_num + 1;
     let name_record = NameRecord {
         address: self_address,
         seq: self_record_seq_num,
