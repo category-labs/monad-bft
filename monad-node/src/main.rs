@@ -640,7 +640,7 @@ where
     );
 
     // initial set of peers
-    let routing_info = bootstrap_nodes
+    let bootstrap_peers = bootstrap_nodes
         .peers
         .iter()
         .filter_map(|peer| {
@@ -762,7 +762,7 @@ where
         current_epoch,
         epoch_validators,
         pinned_full_nodes,
-        routing_info,
+        bootstrap_peers,
         ping_period: Duration::from_secs(peer_discovery_config.ping_period),
         refresh_period: Duration::from_secs(peer_discovery_config.refresh_period),
         request_timeout: Duration::from_secs(peer_discovery_config.request_timeout),
