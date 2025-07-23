@@ -110,6 +110,8 @@ impl<ST: CertificateSignatureRecoverable> MonadNameRecord<ST> {
 pub enum PeerDiscoveryEvent<ST: CertificateSignatureRecoverable> {
     SendPing {
         to: NodeId<CertificateSignaturePubKey<ST>>,
+        socket_address: SocketAddrV4,
+        ping: Ping<ST>,
     },
     PingRequest {
         from: NodeId<CertificateSignaturePubKey<ST>>,
@@ -167,7 +169,7 @@ pub enum TimerKind {
     Refresh,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PeerDiscoveryTimerCommand<E, ST: CertificateSignatureRecoverable> {
     Schedule {
         node_id: NodeId<CertificateSignaturePubKey<ST>>,
@@ -181,10 +183,10 @@ pub enum PeerDiscoveryTimerCommand<E, ST: CertificateSignatureRecoverable> {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PeerDiscoveryMetricsCommand(ExecutorMetrics);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PeerDiscoveryCommand<ST: CertificateSignatureRecoverable> {
     RouterCommand {
         target: NodeId<CertificateSignaturePubKey<ST>>,
@@ -205,6 +207,8 @@ pub trait PeerDiscoveryAlgo {
     fn send_ping(
         &mut self,
         target: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+        socket_address: SocketAddrV4,
+        ping: Ping<Self::SignatureType>,
     ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
     fn handle_ping(
@@ -277,6 +281,11 @@ pub trait PeerDiscoveryAlgo {
     ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
     fn metrics(&self) -> &ExecutorMetrics;
+
+    fn get_pending_addr_by_id(
+        &self,
+        id: &NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+    ) -> Option<SocketAddrV4>;
 
     fn get_addr_by_id(
         &self,

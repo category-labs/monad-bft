@@ -83,6 +83,8 @@ where
     fn send_ping(
         &mut self,
         target: NodeId<CertificateSignaturePubKey<ST>>,
+        _socket_address: SocketAddrV4,
+        _ping: Ping<ST>,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!(?target, "handle send ping");
 
@@ -210,6 +212,13 @@ where
 
     fn metrics(&self) -> &ExecutorMetrics {
         &self.metrics
+    }
+
+    fn get_pending_addr_by_id(
+        &self,
+        _id: &NodeId<CertificateSignaturePubKey<ST>>,
+    ) -> Option<SocketAddrV4> {
+        None
     }
 
     fn get_addr_by_id(&self, id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<SocketAddrV4> {
