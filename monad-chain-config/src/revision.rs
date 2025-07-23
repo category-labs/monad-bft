@@ -72,5 +72,6 @@ mod test {
     #[test]
     fn chain_revision_ord() {
         assert!(MonadChainRevision::V_0_7_0 < MonadChainRevision::V_0_8_0);
+        assert!(MonadChainRevision::V_0_8_0 < MonadChainRevision::V_0_10_0);
     }
 }

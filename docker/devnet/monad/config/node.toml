@@ -69,9 +69,3 @@ bind_address_host = "0.0.0.0"
 bind_address_port = 8000
 max_rtt_ms = 300
 max_mbps = 1000
-
-#########################################################
-# Network-wide configuration
-#########################################################
-[consensus]
-execution_delay = 10

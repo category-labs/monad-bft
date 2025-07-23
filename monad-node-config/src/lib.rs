@@ -12,7 +12,6 @@ use serde::Deserialize;
 
 pub use self::{
     bootstrap::{NodeBootstrapConfig, NodeBootstrapPeerConfig},
-    consensus::NodeConsensusConfig,
     fullnode::{FullNodeConfig, FullNodeIdentityConfig},
     network::NodeNetworkConfig,
     peers::PeerDiscoveryConfig,
@@ -20,7 +19,6 @@ pub use self::{
 };
 
 mod bootstrap;
-mod consensus;
 mod fullnode;
 mod network;
 mod peers;
@@ -67,7 +65,6 @@ pub struct NodeConfig<ST: CertificateSignatureRecoverable> {
     // NETWORK-WIDE CONFIGURATION //
     ////////////////////////////////
     pub chain_id: u64,
-    pub consensus: NodeConsensusConfig,
 }
 
 pub type SignatureType = SecpSignature;

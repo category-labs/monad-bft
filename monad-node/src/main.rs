@@ -93,6 +93,8 @@ pub static malloc_conf: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0
 const CLIENT_VERSION: &str = env!("VERGEN_GIT_DESCRIBE");
 const STATESYNC_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
+const EXECUTION_DELAY: u64 = 3;
+
 fn main() {
     let mut cmd = Cli::command();
 
@@ -278,7 +280,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
     let create_block_policy = || {
         EthBlockPolicy::new(
             GENESIS_SEQ_NUM, // FIXME: MonadStateBuilder is responsible for updating this to forkpoint root if necessary
-            node_state.node_config.consensus.execution_delay,
+            EXECUTION_DELAY,
             node_state.node_config.chain_id,
         )
     };
@@ -290,10 +292,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
             let triedb_handle =
                 TriedbReader::try_new(triedb_path.as_path()).expect("triedb should exist in path");
 
-            StateBackendCache::new(
-                triedb_handle,
-                SeqNum(node_state.node_config.consensus.execution_delay),
-            )
+            StateBackendCache::new(triedb_handle, SeqNum(EXECUTION_DELAY))
         }
     });
 
@@ -400,7 +399,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
         forkpoint: node_state.forkpoint_config.into(),
         block_sync_override_peers,
         consensus_config: ConsensusConfig {
-            execution_delay: SeqNum(node_state.node_config.consensus.execution_delay),
+            execution_delay: SeqNum(EXECUTION_DELAY),
             delta: Duration::from_millis(100),
             // StateSync -> Live transition happens here
             statesync_to_live_threshold: SeqNum(statesync_threshold as u64),
