@@ -438,6 +438,13 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                 } else {
                     // request failed, so don't send finish the response. we've dropped the
                     // wip_response at this point.
+                    tracing::warn!(
+                        from =? wip_response.from,
+                        request =? wip_response.response.request,
+                        nonce =? wip_response.response.nonce,
+                        response_index = wip_response.response.response_index,
+                        "received SyncDone with failure, dropping pending response"
+                    );
                 }
                 self.try_queue_response().await?;
             }
@@ -573,9 +580,21 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
             .as_ref()
             .is_some_and(|wip_response| wip_response.response.request == request)
         {
+            tracing::debug!(
+                ?from,
+                ?request,
+                "ignoring duplicate request, already servicing this request"
+            );
             // we are already servicing this request, drop the new one
             return Ok(());
         }
+        tracing::debug!(
+            ?from,
+            ?request,
+            "received statesync request, num pending {}, in progress {}",
+            self.pending_requests.len(),
+            if self.wip_response.is_some() { 1 } else { 0 }
+        );
         self.pending_requests.push_back(PendingRequest {
             from,
             request,

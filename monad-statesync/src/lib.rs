@@ -138,7 +138,7 @@ where
                     let statesync = match &mut self.mode {
                         StateSyncMode::Sync(sync) => sync,
                         StateSyncMode::Live(_) => {
-                            tracing::trace!(
+                            tracing::warn!(
                                 ?from,
                                 "dropping statesync bad version, already done syncing"
                             );
@@ -150,7 +150,7 @@ where
                 StateSyncCommand::Message((from, StateSyncNetworkMessage::Request(request))) => {
                     let execution_ipc = match &mut self.mode {
                         StateSyncMode::Sync(_) => {
-                            tracing::trace!(?from, "dropping statesync request, still syncing");
+                            tracing::warn!(?from, "dropping statesync request, still syncing");
                             continue;
                         }
                         StateSyncMode::Live(live) => live,
@@ -169,7 +169,7 @@ where
                 )) => {
                     let execution_ipc = match &mut self.mode {
                         StateSyncMode::Sync(_) => {
-                            tracing::trace!(?from, "dropping statesync completion, still syncing");
+                            tracing::warn!(?from, "dropping statesync completion, still syncing");
                             continue;
                         }
                         StateSyncMode::Live(live) => live,
