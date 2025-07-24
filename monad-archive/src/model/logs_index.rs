@@ -274,13 +274,8 @@ mod tests {
     async fn setup() -> Result<(TestMongoContainer, LogsIndexArchiver, TxIndexArchiver)> {
         let container = TestMongoContainer::new().await?;
 
-        let mongo_storage = MongoDbStorage::new_index_store(
-            &container.uri,
-            "archive-db",
-            Some(100_000),
-            Metrics::none(),
-        )
-        .await?;
+        let mongo_storage =
+            MongoDbStorage::new_index_store(&container.uri, "archive-db", Metrics::none()).await?;
         let indexer = TxIndexArchiver::new(
             mongo_storage.clone(),
             BlockDataArchive::new(mongo_storage),

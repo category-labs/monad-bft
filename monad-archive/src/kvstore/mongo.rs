@@ -95,7 +95,6 @@ impl MongoDbStorage {
     pub async fn new_index_store(
         connection_string: &str,
         database: &str,
-        create_with_capped_size: Option<u64>,
         metrics: Metrics,
     ) -> Result<Self> {
         trace!(
@@ -103,20 +102,12 @@ impl MongoDbStorage {
             connection_string,
             database
         );
-        Self::new(
-            connection_string,
-            database,
-            "tx_index",
-            create_with_capped_size,
-            metrics,
-        )
-        .await
+        Self::new(connection_string, database, "tx_index", metrics).await
     }
 
     pub async fn new_block_store(
         connection_string: &str,
         database: &str,
-        create_with_capped_size: Option<u64>,
         metrics: Metrics,
     ) -> Result<Self> {
         trace!(
@@ -124,21 +115,13 @@ impl MongoDbStorage {
             connection_string,
             database
         );
-        Self::new(
-            connection_string,
-            database,
-            "block_level",
-            create_with_capped_size,
-            metrics,
-        )
-        .await
+        Self::new(connection_string, database, "block_level", metrics).await
     }
 
     pub async fn new(
         connection_string: &str,
         database: &str,
         collection_name: &str,
-        create_with_capped_size: Option<u64>,
         metrics: Metrics,
     ) -> Result<Self> {
         info!(
@@ -149,7 +132,6 @@ impl MongoDbStorage {
         let client = new_client(connection_string).await?;
 
         let db = client.database(database);
-        debug!("Using database: {}", database);
 
         let collection_exists = db
             .list_collection_names()
@@ -157,35 +139,14 @@ impl MongoDbStorage {
             .contains(&collection_name.to_string());
 
         if !collection_exists {
-            debug!("Collection '{}' not found", collection_name);
-
-            // If we aren't creating the collection and it's not found, error
-            let Some(max_size_gb) = create_with_capped_size else {
-                warn!(
-                    "Collection '{}' not found and no capped size provided",
-                    collection_name
-                );
-                bail!("Collection not found: {}", collection_name);
-            };
-            let max_size_bytes = max_size_gb * 2u64.pow(30);
-
-            info!(
-                "Creating capped collection '{}' with size: {} GB ({} bytes)",
-                collection_name, max_size_gb, max_size_bytes
-            );
+            info!("Collection '{}' not found, creating...", collection_name);
 
             // Create capped collection if it doesn't exist
-            db.create_collection(collection_name)
-                .capped(true)
-                .size(max_size_bytes)
-                .await?;
+            db.create_collection(collection_name).await?;
 
-            debug!(
-                "Capped collection '{}' created successfully",
-                collection_name
-            );
+            info!("Collection '{}' created successfully", collection_name);
         } else {
-            trace!("Collection '{}' already exists", collection_name);
+            info!("Collection '{}' already exists", collection_name);
         }
 
         // Ensure writes are journaled before returning
@@ -345,7 +306,6 @@ pub mod mongo_tests {
             &container.uri,
             "test_db",
             "test_collection",
-            Some(5), // 5gb cap
             Metrics::none(),
         )
         .await?;

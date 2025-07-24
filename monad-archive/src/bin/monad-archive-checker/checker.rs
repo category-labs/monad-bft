@@ -1018,24 +1018,6 @@ pub mod tests {
         assert_eq!(faults_by_replica.len(), 2); // replica3 and one other
     }
 
-    // Helper functions to create test data
-    // fn create_test_block(block_num: u64, parent_hash: Option<FixedBytes<32>>) -> Block {
-    //     // Use the existing mock_block utility with 3 transactions
-    //     let mut block = mock_block(block_num, vec![mock_tx(1), mock_tx(2), mock_tx(3)]);
-    //     if let Some(parent_hash) = parent_hash {
-    //         block.header.parent_hash = parent_hash;
-    //     }
-    //     let txs = block
-    //         .body
-    //         .transactions
-    //         .iter()
-    //         .map(|tx| tx.tx.clone())
-    //         .collect::<Vec<_>>();
-    //     let tx_root = calculate_transaction_root(&txs);
-    //     block.header.transactions_root = tx_root;
-    //     block
-    // }
-
     fn create_test_receipts(count: usize) -> BlockReceipts {
         // Use the existing mock_rx utility
         (0..count).map(|i| mock_rx(i, 1000 + i as u128)).collect()
@@ -1562,15 +1544,10 @@ pub mod tests {
         let mut block_data_readers = HashMap::new();
 
         // Replica1: MongoDB storage
-        let mongo_store = MongoDbStorage::new(
-            &container.uri,
-            "replica_db",
-            "blocks",
-            Some(1), // 1gb cap
-            Metrics::none(),
-        )
-        .await
-        .unwrap();
+        let mongo_store =
+            MongoDbStorage::new(&container.uri, "replica_db", "blocks", Metrics::none())
+                .await
+                .unwrap();
 
         let mongo_reader = BlockDataArchive::new(mongo_store);
         block_data_readers.insert("replica1".to_string(), mongo_reader);
