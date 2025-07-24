@@ -21,7 +21,7 @@ use std::{
 
 use actix_http::ws;
 use actix_web::{web, HttpRequest, HttpResponse};
-use actix_ws::{AggregatedMessage, CloseCode, CloseReason};
+use actix_ws::{AggregatedMessage, CloseCode, CloseReason, Closed};
 use alloy_rpc_types::eth::{pubsub::Params, Filter, FilteredParams};
 use futures::StreamExt;
 use itertools::Either;
@@ -69,33 +69,56 @@ pub async fn ws_handler(
         actix_web::error::ErrorInternalServerError("WebSocketServer is currently unavailable, please try again later.")
     })?;
 
-    let (res, session, msg_stream) = actix_ws::handle(&req, stream)?;
+    let (res, mut session, msg_stream) = actix_ws::handle(&req, stream)?;
 
-    actix_rt::spawn(handler(
-        session,
-        msg_stream,
-        req.connection_info().host().to_string(),
-        req.connection_info().peer_addr().map(ToString::to_string),
-        rx,
-        app_state,
-    ));
+    let hostname = req.connection_info().host().to_string();
+    let peer_addr = req.connection_info().peer_addr().map(ToString::to_string);
+
+    actix_rt::spawn(async move {
+        if let Some(metrics) = &app_state.metrics {
+            metrics.record_websocket_connection(1);
+        }
+
+        let mut subscriptions: HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<Filter>)>> =
+            HashMap::default();
+
+        let close_reason = handler(
+            &mut session,
+            msg_stream,
+            &hostname,
+            &peer_addr,
+            &mut subscriptions,
+            rx,
+            &app_state,
+        )
+        .await;
+
+        debug!(?hostname, ?peer_addr, ?close_reason, "ws connection closed");
+
+        let _: Result<(), Closed> = session.close(close_reason).await;
+
+        if let Some(metrics) = &app_state.metrics {
+            metrics.record_websocket_connection(-1);
+
+            subscriptions.iter().for_each(|(_, subs)| {
+                metrics.record_websocket_topic(-(subs.len() as i64));
+            });
+        }
+    });
 
     Ok(res)
 }
 
 async fn handler(
-    mut session: actix_ws::Session,
+    session: &mut actix_ws::Session,
     msg_stream: actix_ws::MessageStream,
-    hostname: String,
-    peer_addr: Option<String>,
+    hostname: &String,
+    peer_addr: &Option<String>,
+    mut subscriptions: &mut HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<Filter>)>>,
     rx: broadcast::Receiver<EventServerEvent>,
-    app_state: web::Data<MonadRpcResources>,
-) {
+    app_state: &web::Data<MonadRpcResources>,
+) -> Option<CloseReason> {
     debug!(?hostname, ?peer_addr, "ws connection opened");
-
-    if let Some(metrics) = &app_state.metrics {
-        metrics.record_websocket_connection(1);
-    }
 
     let mut last_heartbeat = Instant::now();
     let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
@@ -108,14 +131,11 @@ async fn handler(
     let mut msg_stream = pin!(msg_stream);
     let mut broadcast_rx = pin!(rx);
 
-    let mut subscriptions: HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<Filter>)>> =
-        HashMap::new();
-
-    let close_reason = loop {
+    loop {
         tokio::select! {
             _ = interval.tick() => {
                 if Instant::now().duration_since(last_heartbeat) > Duration::from_secs(CLIENT_TIMEOUT_SECS) {
-                    break Some(CloseReason {
+                    return Some(CloseReason {
                         code: ws::CloseCode::Protocol,
                         description: Some(format!("ws server did not receive ping in {CLIENT_TIMEOUT_SECS}s"))
                     });
@@ -144,8 +164,8 @@ async fn handler(
 
                         match request {
                             Ok(req) => {
-                                if let Err(close_reason) = handle_request(&mut session, &mut subscriptions, &app_state, req).await {
-                                    break Some(close_reason);
+                                if let Err(close_reason) = handle_request(session, subscriptions, app_state, req).await {
+                                    return Some(close_reason);
                                 }
                             }
                             Err(e) => {
@@ -153,7 +173,7 @@ async fn handler(
                                     .text(to_response(&crate::jsonrpc::Response::from_error(e)))
                                     .await {
                                     warn!(?err, "ws handler AggregatedMessage text error");
-                                    break None;
+                                    return None;
                                 }
                             }
                         };
@@ -165,8 +185,8 @@ async fn handler(
 
                         match request {
                             Ok(req) => {
-                                if let Err(close_reason) = handle_request(&mut session, &mut subscriptions, &app_state, req).await {
-                                    break Some(close_reason);
+                                if let Err(close_reason) = handle_request(session,  subscriptions, app_state, req).await {
+                                    return Some(close_reason);
                                 }
                             }
                             Err(e) => {
@@ -174,39 +194,39 @@ async fn handler(
                                     .binary(to_response(&crate::jsonrpc::Response::from_error(e)))
                                     .await {
                                     warn!(?err, "ws handler AggregatedMessage binary error");
-                                    break None;
+                                    return None;
                                 }
                             }
                         };
                     }
                     Some(Ok(AggregatedMessage::Close(close_reason))) => {
                         debug!(?hostname, ?peer_addr, ?close_reason, "ws connection closed by request");
-                        break None;
+                        return None;
                     }
                     Some(Err(err)) => {
                         error!(?err, "ws connection protocol error");
-                        break Some(CloseReason {
+                        return Some(CloseReason {
                             code: ws::CloseCode::Protocol,
                             description: Some(format!("ws protocol error: {err:#?}"))
                         });
                     }
                     None => {
                         warn!(?hostname, ?peer_addr, "ws connection closed abruptly");
-                        break None;
+                        return None;
                     }
                 }
             }
             cmd = broadcast_rx.recv() => {
                 match cmd {
                     Ok(msg) => {
-                        if let Err(close_reason) = handle_notification(&mut session, &subscriptions, msg).await {
-                            break Some(close_reason);
+                        if let Err(close_reason) = handle_notification(session, subscriptions, msg).await {
+                            return Some(close_reason);
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(skipped_messages)) => {
                         warn!(?skipped_messages, "ws handler lagging");
 
-                        break Some(CloseReason {
+                        return Some(CloseReason {
                             code: ws::CloseCode::Error,
                             description: Some("ws server lagging, please try again later".to_string())
                         });
@@ -214,7 +234,7 @@ async fn handler(
                     Err(broadcast::error::RecvError::Closed) => {
                         error!("ws handler detected event server close");
 
-                        break Some(CloseReason {
+                        return Some(CloseReason {
                             code: ws::CloseCode::Error,
                             description: Some("ws server shutdown".to_string())
                         });
@@ -222,28 +242,11 @@ async fn handler(
                 }
             }
         };
-    };
-
-    debug!(?hostname, ?peer_addr, ?close_reason, "ws connection closed");
-
-    if let Some(reason) = close_reason {
-        session
-            .close(Some(reason))
-            .await
-            .unwrap_or_else(|err| warn!("ws handler close error: {err:?}"));
-    }
-
-    if let Some(metrics) = &app_state.metrics {
-        metrics.record_websocket_connection(-1);
-
-        subscriptions.iter().for_each(|(_, subs)| {
-            metrics.record_websocket_topic(-(subs.len() as i64));
-        });
     }
 }
 
 async fn handle_notification(
-    mut session: &mut actix_ws::Session,
+    session: &mut actix_ws::Session,
     subscriptions: &HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<Filter>)>>,
     msg: EventServerEvent,
 ) -> Result<(), CloseReason> {
