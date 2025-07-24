@@ -30,12 +30,14 @@ use crate::{
 
 const MAX_CONNECTION_POOL_SIZE: u32 = 50;
 const CHUNK_SIZE: usize = 1024 * 1024 * 15; // 15MB
+const DEFAULT_MAX_TIME_SECS: u64 = 5;
 
 #[derive(Clone)]
 pub struct MongoDbStorage {
     pub client: Client,
     pub(crate) collection: Collection<KeyValueDocument>,
     pub db_name: String,
+    pub max_time_get: Duration,
     name: String,
     metrics: Metrics,
 }
@@ -164,6 +166,7 @@ impl MongoDbStorage {
             db_name: database.to_string(),
             name: format!("mongodb://{database}/{collection_name}"),
             metrics,
+            max_time_get: Duration::from_secs(DEFAULT_MAX_TIME_SECS),
         };
 
         info!("MongoDB storage initialized: {}", storage.name);
@@ -177,6 +180,7 @@ impl KVReader for MongoDbStorage {
         match self
             .collection
             .find_one(doc! { "_id": key })
+            .max_time(self.max_time_get)
             .await
             .wrap_err("MongoDB get operation failed")
             .write_get_metrics_on_err(start.elapsed(), KVStoreType::Mongo, &self.metrics)?
@@ -196,6 +200,7 @@ impl KVReader for MongoDbStorage {
         let find_result = self
             .collection
             .find(doc! { "_id": {"$in": keys} })
+            .max_time(self.max_time_get)
             .await
             .write_get_metrics(start.elapsed(), KVStoreType::Mongo, &self.metrics)
             .wrap_err("MongoDB get operation failed")?

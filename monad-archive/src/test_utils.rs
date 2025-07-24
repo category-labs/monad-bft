@@ -92,7 +92,7 @@ static NEXT_PORT: AtomicU16 = AtomicU16::new(27017);
 impl TestMongoContainer {
     pub async fn new() -> Result<Self> {
         let container_id = mongodb::bson::uuid::Uuid::new();
-        let container_name = format!("mongo_test_{}", container_id.to_string());
+        let container_name = format!("mongo_test_{}", container_id);
         let port = NEXT_PORT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
         // Create temporary directory for MongoDB data

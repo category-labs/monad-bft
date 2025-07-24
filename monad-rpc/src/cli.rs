@@ -167,6 +167,18 @@ pub struct Cli {
     #[arg(long)]
     pub mongo_db_name: Option<String>,
 
+    /// Set the max time to get from mongo
+    #[arg(long)]
+    pub mongo_max_time_get_millis: Option<u64>,
+
+    /// Set the mongo failure threshold
+    #[arg(long)]
+    pub mongo_failure_threshold: Option<u32>,
+
+    /// Set the mongo failure timeout
+    #[arg(long)]
+    pub mongo_failure_timeout_millis: Option<u64>,
+
     /// Use mongo index to serve eth_getLogs
     #[arg(long)]
     pub use_eth_get_logs_index: bool,
