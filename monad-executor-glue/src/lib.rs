@@ -223,12 +223,12 @@ impl<ST: CertificateSignatureRecoverable> Decodable for PeerEntry<ST> {
         let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
 
         let pubkey = CertificateSignaturePubKey::<ST>::decode(&mut payload)?;
-        let s = <String as Decodable>::decode(buf)?;
+        let s = <String as Decodable>::decode(&mut payload)?;
         let addr = s
             .parse::<SocketAddrV4>()
             .map_err(|_| alloy_rlp::Error::Custom("invalid SocketAddrV4"))?;
-        let signature = ST::decode(buf)?;
-        let record_seq_num = u64::decode(buf)?;
+        let signature = ST::decode(&mut payload)?;
+        let record_seq_num = u64::decode(&mut payload)?;
 
         Ok(Self {
             pubkey,
@@ -2114,8 +2114,15 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::net::SocketAddrV4;
+
+    use monad_crypto::{
+        certificate_signature::{CertificateSignaturePubKey, PubKey},
+        NopSignature,
+    };
+
     use crate::{
-        StateSyncRequest, StateSyncResponse, StateSyncUpsertType, StateSyncUpsertV1,
+        PeerEntry, StateSyncRequest, StateSyncResponse, StateSyncUpsertType, StateSyncUpsertV1,
         StateSyncVersion, SELF_STATESYNC_VERSION, STATESYNC_VERSION_V0, STATESYNC_VERSION_V1,
     };
 
@@ -2260,5 +2267,22 @@ mod tests {
         assert_eq!(deserialized_request.from, 0);
         assert_eq!(deserialized_request.until, 0);
         assert_eq!(deserialized_request.old_target, 0);
+    }
+
+    #[test]
+    fn peer_entry_rlp_encode_decode() {
+        let pubkey = CertificateSignaturePubKey::<NopSignature>::from_bytes(&[1u8; 32]).unwrap();
+        let addr: SocketAddrV4 = "127.0.0.1:8000".parse().unwrap();
+        let signature = NopSignature { pubkey, id: 1234 };
+        let record_seq_num = 0;
+        let entry = PeerEntry {
+            pubkey,
+            addr,
+            signature,
+            record_seq_num,
+        };
+        let encoded = alloy_rlp::encode(&entry);
+        let decoded: PeerEntry<NopSignature> = alloy_rlp::decode_exact(&encoded).unwrap();
+        assert_eq!(entry, decoded);
     }
 }
