@@ -331,6 +331,11 @@ where
         VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
+        if self.obj.block_header.timestamp_ns
+            > std::time::Duration::from_secs(1753459200).as_nanos()
+        {
+            return Err(Error::NotWellFormed);
+        }
         self.well_formed_proposal()?;
         self.verify_epoch(epoch_manager)?;
         verify_certificates(
