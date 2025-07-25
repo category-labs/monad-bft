@@ -18,7 +18,14 @@ tracing = { workspace = true }
 bindgen = { workspace = true }
 
 [dev-dependencies]
+alloy-primitives = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
 criterion = { workspace = true }
+hex = { workspace = true }
+ratatui = { workspace = true }
+serde_json = { workspace = true }
+strum = { workspace = true }
 
 [features]
 default = []
