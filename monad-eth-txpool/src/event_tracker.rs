@@ -3,7 +3,8 @@ use std::{sync::atomic::Ordering, time::Instant};
 use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use alloy_primitives::{Address, TxHash};
 use monad_eth_txpool_types::{
-    EthTxPoolDropReason, EthTxPoolEvent, EthTxPoolEvictReason, EthTxPoolInternalDropReason,
+    EthTxPoolDropReason, EthTxPoolEvent, EthTxPoolEventAction, EthTxPoolEvictReason,
+    EthTxPoolInternalDropReason,
 };
 
 use crate::EthTxPoolMetrics;
@@ -34,11 +35,13 @@ impl<'a> EthTxPoolEventTracker<'a> {
                 .fetch_add(1, Ordering::SeqCst);
         }
 
-        self.events.push(EthTxPoolEvent::Insert {
+        self.events.push(EthTxPoolEvent {
             tx_hash: *tx.tx_hash(),
-            address: tx.signer(),
-            owned,
-            tracked: false,
+            action: EthTxPoolEventAction::Insert {
+                address: tx.signer(),
+                owned,
+                tracked: false,
+            },
         });
     }
 
@@ -51,11 +54,13 @@ impl<'a> EthTxPoolEventTracker<'a> {
                 .fetch_add(1, Ordering::SeqCst);
         }
 
-        self.events.push(EthTxPoolEvent::Insert {
+        self.events.push(EthTxPoolEvent {
             tx_hash: *tx.tx_hash(),
-            address: tx.signer(),
-            owned,
-            tracked: true,
+            action: EthTxPoolEventAction::Insert {
+                address: tx.signer(),
+                owned,
+                tracked: true,
+            },
         });
     }
 
@@ -74,15 +79,19 @@ impl<'a> EthTxPoolEventTracker<'a> {
                 .fetch_add(1, Ordering::SeqCst);
         }
 
-        self.events.push(EthTxPoolEvent::Drop {
+        self.events.push(EthTxPoolEvent {
             tx_hash: old_tx_hash,
-            reason: EthTxPoolDropReason::ReplacedByHigherPriority,
+            action: EthTxPoolEventAction::Drop {
+                reason: EthTxPoolDropReason::ReplacedByHigherPriority,
+            },
         });
-        self.events.push(EthTxPoolEvent::Insert {
+        self.events.push(EthTxPoolEvent {
             tx_hash: new_tx_hash,
-            address: *address,
-            owned: new_owned,
-            tracked: false,
+            action: EthTxPoolEventAction::Insert {
+                address: *address,
+                owned: new_owned,
+                tracked: false,
+            },
         });
     }
 
@@ -101,15 +110,19 @@ impl<'a> EthTxPoolEventTracker<'a> {
                 .fetch_add(1, Ordering::SeqCst);
         }
 
-        self.events.push(EthTxPoolEvent::Drop {
+        self.events.push(EthTxPoolEvent {
             tx_hash: old_tx_hash,
-            reason: EthTxPoolDropReason::ReplacedByHigherPriority,
+            action: EthTxPoolEventAction::Drop {
+                reason: EthTxPoolDropReason::ReplacedByHigherPriority,
+            },
         });
-        self.events.push(EthTxPoolEvent::Insert {
+        self.events.push(EthTxPoolEvent {
             tx_hash: new_tx_hash,
-            address: *address,
-            owned: new_owned,
-            tracked: true,
+            action: EthTxPoolEventAction::Insert {
+                address: *address,
+                owned: new_owned,
+                tracked: true,
+            },
         });
     }
 
@@ -168,7 +181,10 @@ impl<'a> EthTxPoolEventTracker<'a> {
             }
         }
 
-        self.events.push(EthTxPoolEvent::Drop { tx_hash, reason });
+        self.events.push(EthTxPoolEvent {
+            tx_hash,
+            action: EthTxPoolEventAction::Drop { reason },
+        });
     }
 
     pub fn drop_all(
@@ -193,8 +209,9 @@ impl<'a> EthTxPoolEventTracker<'a> {
                 .promote_txs
                 .fetch_add(1, Ordering::SeqCst);
 
-            self.events.push(EthTxPoolEvent::Promoted {
+            self.events.push(EthTxPoolEvent {
                 tx_hash: tx_hash.to_owned(),
+                action: EthTxPoolEventAction::Promoted,
             });
         }
     }
@@ -211,9 +228,11 @@ impl<'a> EthTxPoolEventTracker<'a> {
                 .drop_unknown_txs
                 .fetch_add(1, Ordering::SeqCst);
 
-            self.events.push(EthTxPoolEvent::Drop {
+            self.events.push(EthTxPoolEvent {
                 tx_hash,
-                reason: EthTxPoolDropReason::InsufficientBalance,
+                action: EthTxPoolEventAction::Drop {
+                    reason: EthTxPoolDropReason::InsufficientBalance,
+                },
             });
         }
     }
@@ -236,9 +255,11 @@ impl<'a> EthTxPoolEventTracker<'a> {
                 .drop_low_nonce_txs
                 .fetch_add(1, Ordering::SeqCst);
 
-            self.events.push(EthTxPoolEvent::Drop {
+            self.events.push(EthTxPoolEvent {
                 tx_hash,
-                reason: EthTxPoolDropReason::NonceTooLow,
+                action: EthTxPoolEventAction::Drop {
+                    reason: EthTxPoolDropReason::NonceTooLow,
+                },
             });
         }
     }
@@ -257,7 +278,10 @@ impl<'a> EthTxPoolEventTracker<'a> {
                 .remove_committed_txs
                 .fetch_add(1, Ordering::SeqCst);
 
-            self.events.push(EthTxPoolEvent::Commit { tx_hash });
+            self.events.push(EthTxPoolEvent {
+                tx_hash,
+                action: EthTxPoolEventAction::Commit,
+            });
         }
     }
 
@@ -279,9 +303,11 @@ impl<'a> EthTxPoolEventTracker<'a> {
                 .evict_expired_txs
                 .fetch_add(1, Ordering::SeqCst);
 
-            self.events.push(EthTxPoolEvent::Evict {
+            self.events.push(EthTxPoolEvent {
                 tx_hash,
-                reason: EthTxPoolEvictReason::Expired,
+                action: EthTxPoolEventAction::Evict {
+                    reason: EthTxPoolEvictReason::Expired,
+                },
             });
         }
     }
