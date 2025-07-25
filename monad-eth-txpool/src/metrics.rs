@@ -29,6 +29,7 @@ pub struct EthTxPoolMetrics {
     pub drop_fee_too_low: AtomicU64,
     pub drop_insufficient_balance: AtomicU64,
     pub drop_existing_higher_priority: AtomicU64,
+    pub drop_replaced_by_higher_priority: AtomicU64,
     pub drop_pool_full: AtomicU64,
     pub drop_pool_not_ready: AtomicU64,
     pub drop_internal_state_backend_error: AtomicU64,
@@ -61,6 +62,8 @@ impl EthTxPoolMetrics {
             self.drop_insufficient_balance.load(Ordering::SeqCst);
         metrics["monad.bft.txpool.pool.drop_existing_higher_priority"] =
             self.drop_existing_higher_priority.load(Ordering::SeqCst);
+        metrics["monad.bft.txpool.pool.drop_replaced_by_higher_priority"] =
+            self.drop_replaced_by_higher_priority.load(Ordering::SeqCst);
         metrics["monad.bft.txpool.pool.drop_pool_full"] =
             self.drop_pool_full.load(Ordering::SeqCst);
         metrics["monad.bft.txpool.pool.drop_pool_not_ready"] =

@@ -28,17 +28,6 @@ pub enum EthTxPoolEvent {
         tracked: bool,
     },
 
-    /// A tx with a higher fee replaced an exixting tx.
-    ///
-    /// Note: The new tx is always placed in the same tx list as the original, preserving promotion
-    /// status.
-    Replace {
-        old_tx_hash: B256,
-        new_tx_hash: B256,
-        new_owned: bool,
-        tracked: bool,
-    },
-
     /// The tx was dropped for the attached reason.
     Drop {
         tx_hash: B256,
@@ -77,6 +66,7 @@ pub enum EthTxPoolDropReason {
     FeeTooLow,
     InsufficientBalance,
     ExistingHigherPriority,
+    ReplacedByHigherPriority { replacement: TxHash },
     PoolFull,
     PoolNotReady,
     Internal(EthTxPoolInternalDropReason),
@@ -107,7 +97,10 @@ impl EthTxPoolDropReason {
             EthTxPoolDropReason::InsufficientBalance => "Signer had insufficient balance",
             EthTxPoolDropReason::PoolFull => "Transaction pool is full",
             EthTxPoolDropReason::ExistingHigherPriority => {
-                "Another transaction has higher priority"
+                "An existing transaction had higher priority"
+            }
+            EthTxPoolDropReason::ReplacedByHigherPriority { .. } => {
+                "A newer transaction had higher priority"
             }
             EthTxPoolDropReason::PoolNotReady => "Transaction pool is not ready",
             EthTxPoolDropReason::Internal(_) => "Internal error",

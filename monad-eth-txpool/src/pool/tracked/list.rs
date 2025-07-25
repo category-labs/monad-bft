@@ -126,7 +126,12 @@ impl TrackedTxList {
                     return None;
                 }
 
-                event_tracker.replace_tracked(existing_tx.hash(), tx.hash(), tx.is_owned());
+                event_tracker.replace_tracked(
+                    tx.signer_ref(),
+                    existing_tx.hash(),
+                    tx.hash(),
+                    tx.is_owned(),
+                );
                 entry.insert((tx, event_tracker.now));
                 Some(&entry.into_mut().0)
             }
