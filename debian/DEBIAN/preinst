@@ -1,0 +1,80 @@
+#!/bin/bash
+set -e
+
+# CONFIG_SRC="/opt/monad/scripts/otel-config.yaml"
+# CONFIG_DST="/etc/otelcol/config.yaml"
+# BACKUP_DST="/etc/otelcol/config.yaml.bak"
+
+case "$1" in
+  install)
+    # If we are doing a fresh install, then these files are no longer needed.
+    # They were around for a very short time and are best simply removed and these are old remnants
+    rm -f /etc/sysctl.d/99-custom.conf # Replaced with 90-monad-network-buffer
+    check_hyperthreading() {
+    HT_ENABLED=$(lscpu | awk '
+        /Thread\(s\) per core:/ { threads_per_core = $4 }
+        END {
+            if (threads_per_core > 1) {
+                print "yes"
+            } else {
+                print "no"
+            }
+        }')
+        echo "$HT_ENABLED"
+    }
+
+    # Checking for Hyper-Threading
+
+    if [ "$(check_hyperthreading)" = "yes" ]; then
+        echo "Hyper-Threading is ENABLED on this system."
+        echo
+        echo "Monad recommends disabling Hyper-Threading for optimal performance."
+    fi
+
+    # Check if core count is more than 16
+
+    CORES_PER_SOCKET=$(lscpu | awk '/Core\(s\) per socket:/ { print $4 }')
+
+    if [ "$CORES_PER_SOCKET" -lt 16 ]; then
+        echo "WARN: System has only $CORES_PER_SOCKET cores per socket. Minimum required: 16."
+    else
+        echo "System has $CORES_PER_SOCKET cores per socket."
+    fi
+
+    # Check triedb symlink from udev rules
+
+    # if find "/dev/triedb" -type l &>/dev/null; then
+    #     echo "Symlink /dev/triedb exists from udev rules"
+    # else
+    #     echo "Symlink /dev/triedb not found"
+    #     echo "Available block devices:"
+    #     lsblk -dpno NAME,SIZE | grep -v loop
+    #     echo
+    #     read -p "Enter the full path of the drive you want to link (e.g., /dev/nvme9n1): " TRIEDB_DRIVE
+    #     if [ ! -b "$TRIEDB_DRIVE" ]; then
+    #         echo "Invalid block device: $TRIEDB_DRIVE"
+    #         exit 1
+    #     fi
+    #     echo "You selected: $TRIEDB_DRIVE"
+    #     echo "Creating symlink..."
+    #     parted $TRIEDB_DRIVE mklabel gpt
+    #     parted $TRIEDB_DRIVE mkpart triedb 0% 100%
+    #     PARTUUID=$(lsblk -o PARTUUID $TRIEDB_DRIVE | tail -n 1)
+    #     echo "ENV{ID_PART_ENTRY_UUID}==\"$PARTUUID\", MODE=\"0666\", SYMLINK+=\"triedb\"" | tee /etc/udev/rules.d/90-triedb.rules
+    #     udevadm trigger
+    #     udevadm control --reload
+    #     chmod a+rwx /dev/triedb
+    # fi
+
+    ;;
+  upgrade)
+    # If this is an upgrade, upcoming instructions can be added here
+    ;;
+  abort-upgrade)
+    ;;
+
+  *)
+    echo "preinst called with unknown argument \`$1'" >&2
+    exit 1
+    ;;
+esac

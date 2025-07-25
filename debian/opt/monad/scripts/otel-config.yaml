@@ -1,0 +1,50 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  prometheus:
+    config:
+      scrape_configs:
+      - job_name: 'otel-collector'
+        scrape_interval: 10s
+        static_configs:
+        - targets: ['127.0.0.1:8888']
+
+exporters:
+  otlp:
+    endpoint: peach10.devcore4.com:4317
+    tls:
+      insecure: true
+      insecure_skip_verify: true
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    send_timestamps: true
+    metric_expiration: 180m
+    enable_open_metrics: true
+    resource_to_telemetry_conversion:
+      enabled: true
+
+processors:
+  batch:
+  memory_limiter:
+    limit_mib: 1500
+    spike_limit_mib: 512
+    check_interval: 5s
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      exporters: [prometheus,otlp]
+      processors: [batch]
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp]

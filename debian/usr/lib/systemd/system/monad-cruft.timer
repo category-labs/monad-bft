@@ -1,0 +1,6 @@
+[Timer]
+OnCalendar=hourly
+Unit=monad-cruft.service
+
+[Install]
+WantedBy=multi-user.target

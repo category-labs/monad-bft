@@ -1,0 +1,26 @@
+[Unit]
+Description="Service file for Monad Indexer"
+After=network.target
+
+[Service]
+WorkingDirectory=/home/monad
+Type=simple
+ExecStart=/usr/local/bin/monad-indexer \
+    --block-data-source "${BLOCK_DATA_SOURCE}" \
+    --archive-sink "${ARCHIVE_SINK}" \
+    --otel-endpoint "http://0.0.0.0:4317"
+EnvironmentFile=-/home/monad/.env
+Restart=no
+User=monad
+Group=monad
+DeviceAllow=/dev/triedb rw
+LimitNOFILE=1048576
+# Hugemem configs below
+LimitMEMLOCK=infinity
+MemoryDenyWriteExecute=false
+#SystemCallFilter=~@memlock
+ProtectKernelModules=no
+ProtectKernelLogs=no
+
+[Install]
+WantedBy=multi-user.target

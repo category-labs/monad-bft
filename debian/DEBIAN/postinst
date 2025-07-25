@@ -1,0 +1,29 @@
+#!/bin/bash
+set -e
+case "$1" in
+  configure)
+    ldconfig
+    if command -v systemctl >/dev/null 2>&1 && [ "$(ps -p 1 -o comm=)" = "systemd" ]; then
+        echo "Detected systemd, enabling service..."
+        systemctl daemon-reexec
+        systemctl daemon-reload
+        systemctl start set-hugepages.service
+        systemctl enable set-hugepages.service
+        systemctl enable monad-cruft.timer
+        systemctl start monad-cruft.timer
+        sysctl -p
+    else
+      echo "Skipping systemd setup: systemd not found or not running as init"
+    fi
+    sysctl --system
+    ;;
+  abort-upgrade|abort-remove)
+    echo "Aborted state, nothing to configure."
+    ;;
+  *)
+    echo "postinst called with unknown argument '$1'" >&2
+    exit 1
+    ;;
+esac
+
+

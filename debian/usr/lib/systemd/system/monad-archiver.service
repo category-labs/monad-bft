@@ -1,0 +1,30 @@
+[Unit]
+Description="Service file for Monad Archiver"
+After=network.target
+[Service]
+
+Type=simple
+ExecStart=/usr/local/bin/monad-archiver \
+    --block-data-source ${BLOCK_DATA_SOURCE} \
+    --fallback-block-data-source ${FALLBACK_BLOCK_DATA_SOURCE} \
+    --archive-sink ${ARCHIVE_SINK} \
+    --bft-block-path ${BFT_BLOCK_PATH} \
+    --otel-endpoint ${OTEL_ENDPOINT} \
+    --max-concurrent-blocks ${MAX_CONCURRENT_BLOCKS}
+EnvironmentFile=-/home/monad/.env
+Environment="RUST_LOG=debug,h2=warn,tower=warn"
+Restart=no
+User=monad
+Group=monad
+AllowedCPUs=13-14
+DeviceAllow=/dev/triedb rw
+LimitNOFILE=1048576
+# Hugemem configs below
+LimitMEMLOCK=infinity
+MemoryDenyWriteExecute=false
+#SystemCallFilter=~@memlock
+ProtectKernelModules=no
+ProtectKernelLogs=no
+
+[Install]
+WantedBy=multi-user.target

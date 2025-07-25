@@ -1,0 +1,30 @@
+[Unit]
+Description="Service file for Monad Execution"
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/monad \
+    --chain "$CHAIN" \
+    --db /dev/triedb \
+    --block_db /home/monad/monad-bft/ledger \
+    --nblocks 0 \
+    --ro_sq_thread_cpu 5 \
+    --sq_thread_cpu 6 \
+    --log_level INFO
+EnvironmentFile=-/home/monad/.env
+User=monad
+Restart=no
+Group=monad
+DeviceAllow=/dev/triedb rw
+LimitNOFILE=1048576
+AllowedCPUs=4-11
+# Hugemem configs below
+LimitMEMLOCK=infinity
+MemoryDenyWriteExecute=false
+#SystemCallFilter=~@memlock
+ProtectKernelModules=no
+ProtectKernelLogs=no
+
+[Install]
+WantedBy=multi-user.target
