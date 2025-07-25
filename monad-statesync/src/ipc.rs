@@ -502,7 +502,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                 self.handle_completion(from, session_id)
             }
             _ => {
-                tracing::warn!(?from, ?message, "unexpected message from execution client");
+                tracing::warn!(?from, ?message, "unexpected message from client");
                 Ok(())
             }
         }
@@ -518,19 +518,15 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                 wip_response.unacknowledged_responses =
                     wip_response.unacknowledged_responses.saturating_sub(1);
             } else {
-                tracing::warn!(
-                    ?from,
-                    ?session_id,
-                    "unexpected completion from execution client"
-                );
+                tracing::debug!(?from, ?session_id, "unexpected completion from client");
             }
             wip_response.completion_time = Instant::now();
             self.maybe_send_batch();
         } else {
-            tracing::warn!(
+            tracing::debug!(
                 ?from,
                 ?session_id,
-                "unexpected completion from execution client, no pending response"
+                "unexpected completion from client, no pending response"
             );
         }
         Ok(())
