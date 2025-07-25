@@ -332,7 +332,7 @@ where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
         if self.obj.block_header.timestamp_ns
-            > std::time::Duration::from_secs(1753459200).as_nanos()
+            > std::time::Duration::from_secs(1753460452).as_nanos()
         {
             return Err(Error::NotWellFormed);
         }
