@@ -199,9 +199,6 @@ impl EthTxPoolBridgeState {
                 EthTxPoolEventAction::Drop { reason } => {
                     insert(tx_hash, TxStatus::Dropped { reason });
                 }
-                EthTxPoolEventAction::Promoted => {
-                    insert(tx_hash, TxStatus::Tracked);
-                }
                 EthTxPoolEventAction::Commit => {
                     insert(tx_hash, TxStatus::Committed);
                 }
@@ -467,7 +464,11 @@ mod test {
                         &mut eviction_queue,
                         vec![EthTxPoolEvent {
                             tx_hash: tx.tx_hash().to_owned(),
-                            action: EthTxPoolEventAction::Promoted,
+                            action: EthTxPoolEventAction::Insert {
+                                address: tx.recover_signer().unwrap(),
+                                owned: true,
+                                tracked: true,
+                            },
                         }],
                     );
                     assert_eq!(
