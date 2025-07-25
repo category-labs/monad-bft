@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use common::SignatureType;
 use criterion::{criterion_group, criterion_main, Criterion};
 use monad_eth_block_policy::EthBlockPolicy;
@@ -35,7 +37,10 @@ fn criterion_benchmark(c: &mut Criterion) {
         },
         |(pool, txs, state_backend)| {
             pool.insert_txs(
-                &mut EthTxPoolEventTracker::new(&EthTxPoolMetrics::default(), &mut Vec::default()),
+                &mut EthTxPoolEventTracker::new(
+                    &EthTxPoolMetrics::default(),
+                    &mut BTreeMap::default(),
+                ),
                 &block_policy,
                 state_backend,
                 txs.to_owned(),

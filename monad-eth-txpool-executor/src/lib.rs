@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     io,
     marker::PhantomData,
     pin::Pin,
@@ -22,7 +22,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker};
-use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolEvent, EthTxPoolEventAction};
+use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolEventAction};
 use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
@@ -199,7 +199,7 @@ where
     type Command = TxPoolCommand<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
-        let mut ipc_events = Vec::default();
+        let mut ipc_events = BTreeMap::default();
 
         let mut event_tracker = EthTxPoolEventTracker::new(&self.metrics.pool, &mut ipc_events);
 
@@ -397,7 +397,7 @@ where
 
         self.metrics.update(&mut self.executor_metrics);
 
-        self.ipc.as_mut().broadcast_tx_events(&ipc_events);
+        self.ipc.as_mut().broadcast_tx_events(ipc_events);
     }
 
     fn metrics(&self) -> ExecutorMetricsChain {
@@ -465,25 +465,25 @@ where
 
         if let Poll::Ready(unvalidated_txs) = ipc.as_mut().poll_txs(cx, || pool.generate_snapshot())
         {
-            let mut ipc_events = Vec::default();
+            let mut ipc_events = BTreeMap::default();
             let mut inserted_txs = Vec::default();
             let mut inserted_addresses = HashSet::<Address>::default();
 
             let recovered_txs = {
-                let (recovered_txs, dropped_txs): (Vec<_>, Vec<_>) = unvalidated_txs
+                let (recovered_txs, dropped_txs): (Vec<_>, BTreeMap<_, _>) = unvalidated_txs
                     .into_par_iter()
                     .partition_map(|tx| match tx.secp256k1_recover() {
                         Ok(signer) => {
                             rayon::iter::Either::Left(Recovered::new_unchecked(tx, signer))
                         }
-                        Err(_) => rayon::iter::Either::Right(EthTxPoolEvent {
-                            tx_hash: *tx.tx_hash(),
-                            action: EthTxPoolEventAction::Drop {
+                        Err(_) => rayon::iter::Either::Right((
+                            *tx.tx_hash(),
+                            EthTxPoolEventAction::Drop {
                                 reason: EthTxPoolDropReason::InvalidSignature,
                             },
-                        }),
+                        )),
                     });
-                ipc_events.extend_from_slice(&dropped_txs);
+                ipc_events.extend(dropped_txs);
                 recovered_txs
             };
 
@@ -501,7 +501,7 @@ where
             );
 
             metrics.update(executor_metrics);
-            ipc.as_mut().broadcast_tx_events(&ipc_events);
+            ipc.as_mut().broadcast_tx_events(ipc_events);
             preload_manager.add_requests(inserted_addresses.iter());
 
             return Poll::Ready(Some(MonadEvent::MempoolEvent(MempoolEvent::ForwardTxs(
@@ -509,7 +509,7 @@ where
             ))));
         }
 
-        let mut ipc_events = Vec::default();
+        let mut ipc_events = BTreeMap::default();
 
         while let Poll::Ready(forwarded_txs) = forwarding_manager.as_mut().poll_ingress(cx) {
             let mut inserted_addresses = HashSet::<Address>::default();
@@ -575,7 +575,7 @@ where
         }
 
         metrics.update(executor_metrics);
-        ipc.as_mut().broadcast_tx_events(&ipc_events);
+        ipc.as_mut().broadcast_tx_events(ipc_events);
 
         Poll::Pending
     }

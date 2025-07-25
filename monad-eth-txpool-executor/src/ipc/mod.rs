@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     future::Future,
     io,
     pin::Pin,
@@ -7,9 +8,10 @@ use std::{
 };
 
 use alloy_consensus::TxEnvelope;
+use alloy_primitives::TxHash;
 use futures::StreamExt;
 use monad_eth_txpool_ipc::EthTxPoolIpcStream;
-use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolSnapshot};
+use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolEventAction, EthTxPoolSnapshot};
 use pin_project::pin_project;
 use tokio::{
     net::UnixListener,
@@ -59,13 +61,22 @@ impl EthTxPoolIpcServer {
         })
     }
 
-    pub fn broadcast_tx_events(self: Pin<&mut Self>, events: &Vec<EthTxPoolEvent>) {
+    pub fn broadcast_tx_events(
+        self: Pin<&mut Self>,
+        events: BTreeMap<TxHash, EthTxPoolEventAction>,
+    ) {
         if events.is_empty() {
             return;
         }
 
-        self.project().connections.retain(|stream| {
-            match stream.send_tx_events(events.to_owned()) {
+        let events: Vec<EthTxPoolEvent> = events
+            .into_iter()
+            .map(|(tx_hash, action)| EthTxPoolEvent { tx_hash, action })
+            .collect();
+
+        self.project()
+            .connections
+            .retain(|stream| match stream.send_tx_events(events.clone()) {
                 Ok(()) => true,
                 Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                     warn!("dropping ipc stream, reason: channel full!");
@@ -75,8 +86,7 @@ impl EthTxPoolIpcServer {
                     info!("dropping ipc stream, reason: channel closed!");
                     false
                 }
-            }
-        });
+            });
     }
 
     pub fn poll_txs(
