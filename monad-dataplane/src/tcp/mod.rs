@@ -1,6 +1,9 @@
 use std::{net::SocketAddr, time::Duration};
 
-use monoio::spawn;
+use monoio::{
+    net::{ListenerOpts, TcpListener},
+    spawn,
+};
 use tokio::sync::mpsc;
 use zerocopy::{
     byteorder::little_endian::{U32, U64},
@@ -40,7 +43,10 @@ pub fn spawn_tasks(
     tcp_ingress_tx: mpsc::Sender<RecvTcpMsg>,
     tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>,
 ) {
-    spawn(rx::task(local_addr, tcp_ingress_tx));
+    let opts = ListenerOpts::new().reuse_addr(true);
+    let tcp_listener = TcpListener::bind_with_config(local_addr, &opts).unwrap();
+
+    spawn(rx::task(tcp_listener, tcp_ingress_tx));
     spawn(tx::task(tcp_egress_rx));
 }
 

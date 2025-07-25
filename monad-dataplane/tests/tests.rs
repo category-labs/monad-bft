@@ -39,7 +39,8 @@ fn udp_broadcast() {
     let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 
     // Allow Dataplane threads to set themselves up.
-    sleep(Duration::from_millis(10));
+    assert!(rx.block_until_ready(Duration::from_secs(1)));
+    assert!(tx.block_until_ready(Duration::from_secs(1)));
 
     let payload: Vec<u8> = (0..DEFAULT_SEGMENT_SIZE)
         .map(|_| rand::thread_rng().gen_range(0..255))
@@ -72,7 +73,8 @@ fn udp_unicast() {
     let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 
     // Allow Dataplane threads to set themselves up.
-    sleep(Duration::from_millis(10));
+    assert!(rx.block_until_ready(Duration::from_secs(1)));
+    assert!(tx.block_until_ready(Duration::from_secs(1)));
 
     let payload: Vec<u8> = (0..DEFAULT_SEGMENT_SIZE)
         .map(|_| rand::thread_rng().gen_range(0..255))
@@ -106,7 +108,8 @@ fn tcp_very_slow() {
     let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 
     // Allow Dataplane threads to set themselves up.
-    sleep(Duration::from_millis(10));
+    assert!(rx.block_until_ready(Duration::from_secs(1)));
+    assert!(tx.block_until_ready(Duration::from_secs(1)));
 
     let payload: Vec<u8> = (0..DEFAULT_SEGMENT_SIZE)
         .map(|_| rand::thread_rng().gen_range(0..255))
@@ -149,7 +152,8 @@ fn tcp_slow() {
     let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 
     // Allow Dataplane threads to set themselves up.
-    sleep(Duration::from_millis(10));
+    assert!(rx.block_until_ready(Duration::from_secs(1)));
+    assert!(tx.block_until_ready(Duration::from_secs(1)));
 
     let payload: Vec<u8> = (0..DEFAULT_SEGMENT_SIZE)
         .map(|_| rand::thread_rng().gen_range(0..255))
@@ -189,7 +193,8 @@ fn tcp_rapid() {
     let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 
     // Allow Dataplane threads to set themselves up.
-    sleep(Duration::from_millis(10));
+    assert!(rx.block_until_ready(Duration::from_secs(1)));
+    assert!(tx.block_until_ready(Duration::from_secs(1)));
 
     let payload: Vec<u8> = (0..DEFAULT_SEGMENT_SIZE)
         .map(|_| rand::thread_rng().gen_range(0..255))
@@ -238,7 +243,7 @@ fn tcp_connect_fail() {
     let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 
     // Allow Dataplane threads to set themselves up.
-    sleep(Duration::from_millis(10));
+    assert!(tx.block_until_ready(Duration::from_secs(1)));
 
     let payload: Vec<u8> = (0..DEFAULT_SEGMENT_SIZE)
         .map(|_| rand::thread_rng().gen_range(0..255))
@@ -270,7 +275,8 @@ fn tcp_exceed_queue_limits() {
     let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 
     // Allow Dataplane threads to set themselves up.
-    sleep(Duration::from_millis(10));
+    assert!(rx.block_until_ready(Duration::from_secs(1)));
+    assert!(tx.block_until_ready(Duration::from_secs(1)));
 
     let payload: Vec<u8> = (0..DEFAULT_SEGMENT_SIZE)
         .map(|_| rand::thread_rng().gen_range(0..255))
@@ -328,7 +334,8 @@ fn tcp_reject_oversized_message() {
     let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 
     // Allow Dataplane threads to set themselves up.
-    sleep(Duration::from_millis(10));
+    assert!(rx.block_until_ready(Duration::from_secs(1)));
+    assert!(tx.block_until_ready(Duration::from_secs(1)));
 
     let oversized_payload = vec![0u8; 3 * 1024 * 1024 + 1];
 
@@ -360,7 +367,8 @@ fn tcp_accept_max_size_message() {
     let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 
     // Allow Dataplane threads to set themselves up.
-    sleep(Duration::from_millis(10));
+    assert!(rx.block_until_ready(Duration::from_secs(1)));
+    assert!(tx.block_until_ready(Duration::from_secs(1)));
 
     let max_size_payload = vec![0u8; 3 * 1024 * 1024];
 
@@ -427,7 +435,8 @@ fn broadcast_all_strides() {
     let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 
     // Allow Dataplane threads to set themselves up.
-    sleep(Duration::from_millis(10));
+    assert!(rx.block_until_ready(Duration::from_secs(1)));
+    assert!(tx.block_until_ready(Duration::from_secs(1)));
 
     let total_length: usize = 100000;
 
@@ -472,7 +481,8 @@ fn unicast_all_strides() {
     let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 
     // Allow Dataplane threads to set themselves up.
-    sleep(Duration::from_millis(10));
+    assert!(rx.block_until_ready(Duration::from_secs(1)));
+    assert!(tx.block_until_ready(Duration::from_secs(1)));
 
     let total_length: usize = 100000;
 

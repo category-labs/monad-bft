@@ -1,10 +1,11 @@
 use std::{
     net::SocketAddr,
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
     thread,
+    time::Duration,
 };
 
 use bytes::Bytes;
@@ -52,6 +53,9 @@ impl DataplaneBuilder {
         let (udp_ingress_tx, udp_ingress_rx) = mpsc::channel(UDP_INGRESS_CHANNEL_SIZE);
         let (udp_egress_tx, udp_egress_rx) = mpsc::channel(UDP_EGRESS_CHANNEL_SIZE);
 
+        let ready = Arc::new(AtomicBool::new(false));
+        let ready_clone = ready.clone();
+
         thread::Builder::new()
             .name("monad-dataplane".into())
             .spawn(move || {
@@ -70,6 +74,8 @@ impl DataplaneBuilder {
                             buffer_size,
                         );
 
+                        ready_clone.store(true, Ordering::Release);
+
                         futures::future::pending::<()>().await;
                     });
             })
@@ -78,13 +84,18 @@ impl DataplaneBuilder {
         let writer = DataplaneWriter::new(tcp_egress_tx, udp_egress_tx);
         let reader = DataplaneReader::new(tcp_ingress_rx, udp_ingress_rx);
 
-        Dataplane { writer, reader }
+        Dataplane {
+            writer,
+            reader,
+            ready,
+        }
     }
 }
 
 pub struct Dataplane {
     writer: DataplaneWriter,
     reader: DataplaneReader,
+    ready: Arc<AtomicBool>,
 }
 
 pub struct DataplaneReader {
@@ -204,6 +215,21 @@ impl Dataplane {
 
     pub fn udp_write_unicast(&self, msg: UnicastMsg) {
         self.writer.udp_write_unicast(msg);
+    }
+
+    pub fn ready(&self) -> bool {
+        self.ready.load(Ordering::Acquire)
+    }
+
+    pub fn block_until_ready(&self, timeout: Duration) -> bool {
+        let start = std::time::Instant::now();
+        while !self.ready() {
+            if start.elapsed() >= timeout {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        true
     }
 }
 

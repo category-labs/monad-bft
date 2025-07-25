@@ -28,7 +28,7 @@ fn address_family_mismatch() {
         let dataplane = DataplaneBuilder::new(&addr.parse().unwrap(), UP_BANDWIDTH_MBPS).build();
 
         // Allow Dataplane thread to set itself up.
-        sleep(Duration::from_millis(10));
+        assert!(dataplane.block_until_ready(Duration::from_secs(1)));
 
         for tx_addr in TX_ADDRS {
             debug!("sending to {} from {}", tx_addr, addr);
