@@ -815,6 +815,7 @@ where
 
             let total_peers = group.size_excl_self();
             let mut pp = 0;
+            let mut chunk_idx = 0_u16;
             // Group shuffling so chunks for small proposals aren't always assigned
             // to the same nodes, until researchers come up with something better.
             for node_id in group.iter_skip_self_and_author(&self_id, rand::random::<usize>()) {
@@ -833,12 +834,11 @@ where
                 } else {
                     tracing::warn!(?node_id, "not sending v2fn message, address unknown")
                 }
-                for (chunk_idx, (chunk_symbol_id, chunk_data)) in
-                    chunk_datas[start_idx..end_idx].iter_mut().enumerate()
-                {
+                for (chunk_symbol_id, chunk_data) in chunk_datas[start_idx..end_idx].iter_mut() {
                     // populate chunk_recipient
                     chunk_data[0..20].copy_from_slice(&compute_hash(node_id).0);
-                    *chunk_symbol_id = Some(chunk_idx as u16);
+                    *chunk_symbol_id = Some(chunk_idx);
+                    chunk_idx += 1;
                 }
             }
         }
