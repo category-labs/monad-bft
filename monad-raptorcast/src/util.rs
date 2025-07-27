@@ -475,9 +475,8 @@ where
             self.validator_map.get(&msg_epoch)
         };
         if let Some(group) = maybe_group {
-            // If the group excluding self only has the author, then there's
-            // nobody to re-broadcast to
-            if group.size_excl_self() == 1 {
+            // If there's no other peers in the group, then there's no one to broadcast to
+            if group.size_excl_self() == 0 {
                 return None;
             }
             return Some(group.iter_skip_self_and_author(msg_author, 0)); // this validates author
