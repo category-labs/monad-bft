@@ -436,12 +436,15 @@ where
         let mut cmds = Vec::new();
 
         // must have a MonadNameRecord to send a ping
-        if !self.routing_info.contains_key(&to) {
-            warn!(
-                ?to,
-                "name record not present locally but trying to send ping"
-            );
-            return cmds;
+        let socket_address = match self.routing_info.get(&to) {
+            Some(info) => info.address(),
+            None => {
+                warn!(
+                    ?to,
+                    "name record not present locally but trying to send ping"
+                );
+                return cmds;
+            }
         };
 
         // TODO: use connection heuristics to decide if attaching local_name_record
@@ -465,8 +468,9 @@ where
         // reset timer to schedule for the next ping
         cmds.extend(self.reset_ping_timer(to, ping_msg.id));
 
-        cmds.push(PeerDiscoveryCommand::RouterCommand {
+        cmds.push(PeerDiscoveryCommand::PingPongCommand {
             target: to,
+            socket_address,
             message: PeerDiscoveryMessage::Ping(ping_msg),
         });
 
@@ -536,16 +540,19 @@ where
         }
 
         // respond to ping
-        let pong_msg = Pong {
-            ping_id: ping_msg.id,
-            local_record_seq: self.self_record.name_record.seq,
+        if let Some(socket_address) = self.routing_info.get(&from).map(|info| info.address()) {
+            let pong_msg = Pong {
+                ping_id: ping_msg.id,
+                local_record_seq: self.self_record.name_record.seq,
+            };
+            cmds.push(PeerDiscoveryCommand::PingPongCommand {
+                target: from,
+                socket_address,
+                message: PeerDiscoveryMessage::Pong(pong_msg),
+            });
+            self.metrics[GAUGE_PEER_DISC_SEND_PONG] += 1;
         };
-        cmds.push(PeerDiscoveryCommand::RouterCommand {
-            target: from,
-            message: PeerDiscoveryMessage::Pong(pong_msg),
-        });
 
-        self.metrics[GAUGE_PEER_DISC_SEND_PONG] += 1;
         cmds
     }
 
@@ -1254,8 +1261,9 @@ mod tests {
     )> {
         cmds.into_iter()
             .filter_map(|c| match c {
-                PeerDiscoveryCommand::RouterCommand {
+                PeerDiscoveryCommand::PingPongCommand {
                     target,
+                    socket_address: _,
                     message: PeerDiscoveryMessage::Ping(ping),
                 } => Some((target, ping)),
                 _ => None,
@@ -1266,8 +1274,9 @@ mod tests {
     fn extract_pong(cmds: Vec<PeerDiscoveryCommand<SignatureType>>) -> Vec<Pong> {
         cmds.into_iter()
             .filter_map(|c| match c {
-                PeerDiscoveryCommand::RouterCommand {
+                PeerDiscoveryCommand::PingPongCommand {
                     target: _,
+                    socket_address: _,
                     message: PeerDiscoveryMessage::Pong(pong),
                 } => Some(pong),
                 _ => None,
@@ -1794,7 +1803,7 @@ mod tests {
         ));
         assert!(matches!(
             cmds[4],
-            PeerDiscoveryCommand::RouterCommand { .. }
+            PeerDiscoveryCommand::PingPongCommand { .. }
         ));
 
         let (_, ping) = extract_ping(cmds)[0];

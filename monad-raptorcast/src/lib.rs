@@ -48,6 +48,7 @@ use monad_executor_glue::{
 };
 use monad_peer_discovery::{
     driver::{PeerDiscoveryDriver, PeerDiscoveryEmit},
+    message::PeerDiscoveryMessage,
     mock::{NopDiscovery, NopDiscoveryBuilder},
     PeerDiscoveryAlgo, PeerDiscoveryEvent,
 };
@@ -822,31 +823,45 @@ where
 
         {
             let mut pd_driver = this.peer_discovery_driver.lock().unwrap();
+
+            let send_peer_disc_msg = |target: NodeId<CertificateSignaturePubKey<ST>>,
+                                      message: PeerDiscoveryMessage<ST>,
+                                      known_addresses: HashMap<
+                NodeId<CertificateSignaturePubKey<ST>>,
+                SocketAddr,
+            >| {
+                let _span = debug_span!("publish discovery").entered();
+                let Ok(router_message) =
+                    OutboundRouterMessage::<OM, ST>::PeerDiscoveryMessage(message).try_serialize()
+                else {
+                    error!("failed to serialize peer discovery message");
+                    return;
+                };
+
+                let unicast_msg = Self::udp_build(
+                    &this.current_epoch,
+                    BuildTarget::<ST>::PointToPoint(&target),
+                    router_message,
+                    this.mtu,
+                    &this.signing_key,
+                    this.redundancy,
+                    &known_addresses,
+                );
+                this.dataplane_writer.udp_write_unicast(unicast_msg);
+            };
+
             while let Poll::Ready(Some(peer_disc_emit)) = pd_driver.poll_next_unpin(cx) {
                 match peer_disc_emit {
                     PeerDiscoveryEmit::RouterCommand { target, message } => {
-                        let _span = debug_span!("publish discovery").entered();
-                        let router_message =
-                            match OutboundRouterMessage::<OM, ST>::PeerDiscoveryMessage(message)
-                                .try_serialize()
-                            {
-                                Ok(msg) => msg,
-                                Err(err) => {
-                                    error!(?err, "failed to serialize peer discovery message");
-                                    continue;
-                                }
-                            };
-                        let current_epoch = this.current_epoch;
-                        let unicast_msg = Self::udp_build(
-                            &current_epoch,
-                            BuildTarget::<ST>::PointToPoint(&target),
-                            router_message,
-                            this.mtu,
-                            &this.signing_key,
-                            this.redundancy,
-                            &pd_driver.get_known_addresses(),
-                        );
-                        this.dataplane_writer.udp_write_unicast(unicast_msg);
+                        send_peer_disc_msg(target, message, pd_driver.get_known_addresses());
+                    }
+                    PeerDiscoveryEmit::PingPongCommand {
+                        target,
+                        socket_address,
+                        message,
+                    } => {
+                        let addrs = HashMap::from_iter([(target, SocketAddr::V4(socket_address))]);
+                        send_peer_disc_msg(target, message, addrs);
                     }
                     PeerDiscoveryEmit::MetricsCommand(executor_metrics) => {
                         this.peer_discovery_metrics = executor_metrics;
