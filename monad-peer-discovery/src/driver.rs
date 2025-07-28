@@ -15,7 +15,7 @@
 
 use std::{
     collections::{HashMap, VecDeque},
-    net::SocketAddr,
+    net::{SocketAddr, SocketAddrV4},
     task::{Context, Poll, Waker},
     time::Duration,
 };
@@ -35,9 +35,13 @@ use crate::{
 };
 
 pub enum PeerDiscoveryEmit<ST: CertificateSignatureRecoverable> {
-    // TODO: other output events
     RouterCommand {
         target: NodeId<CertificateSignaturePubKey<ST>>,
+        message: PeerDiscoveryMessage<ST>,
+    },
+    PingPongCommand {
+        target: NodeId<CertificateSignaturePubKey<ST>>,
+        socket_address: SocketAddrV4,
         message: PeerDiscoveryMessage<ST>,
     },
     MetricsCommand(ExecutorMetrics),
@@ -219,6 +223,22 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
                 PeerDiscoveryCommand::RouterCommand { target, message } => {
                     self.pending_emits
                         .push_back(PeerDiscoveryEmit::RouterCommand { target, message });
+
+                    if let Some(waker) = self.waker.take() {
+                        waker.wake();
+                    }
+                }
+                PeerDiscoveryCommand::PingPongCommand {
+                    target,
+                    socket_address,
+                    message,
+                } => {
+                    self.pending_emits
+                        .push_back(PeerDiscoveryEmit::PingPongCommand {
+                            target,
+                            socket_address,
+                            message,
+                        });
 
                     if let Some(waker) = self.waker.take() {
                         waker.wake();

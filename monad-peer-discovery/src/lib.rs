@@ -190,6 +190,11 @@ pub enum PeerDiscoveryCommand<ST: CertificateSignatureRecoverable> {
         target: NodeId<CertificateSignaturePubKey<ST>>,
         message: PeerDiscoveryMessage<ST>,
     },
+    PingPongCommand {
+        target: NodeId<CertificateSignaturePubKey<ST>>,
+        socket_address: SocketAddrV4,
+        message: PeerDiscoveryMessage<ST>,
+    },
     TimerCommand(PeerDiscoveryTimerCommand<PeerDiscoveryEvent<ST>, ST>),
     MetricsCommand(PeerDiscoveryMetricsCommand),
 }

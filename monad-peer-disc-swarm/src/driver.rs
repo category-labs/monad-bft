@@ -193,12 +193,15 @@ where
 
         for cmd in cmds {
             match cmd {
-                PeerDiscoveryCommand::RouterCommand { target, message } => {
-                    router_cmds.push(RouterCommand::Publish {
-                        target: RouterTarget::PointToPoint(target),
-                        message,
-                    })
-                }
+                PeerDiscoveryCommand::RouterCommand { target, message }
+                | PeerDiscoveryCommand::PingPongCommand {
+                    target,
+                    socket_address: _,
+                    message,
+                } => router_cmds.push(RouterCommand::Publish {
+                    target: RouterTarget::PointToPoint(target),
+                    message,
+                }),
                 PeerDiscoveryCommand::TimerCommand(peer_discovery_timer_command) => {
                     self.timer.exec(vec![peer_discovery_timer_command]);
                 }
