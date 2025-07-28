@@ -265,13 +265,19 @@ mod test {
     use std::time::Duration;
 
     use monad_event_ring::SnapshotEventRing;
+    use serde::{de::DeserializeOwned, Serialize};
 
-    use crate::event::{EventServer, EventServerEvent};
+    use crate::{
+        eth_json_types::MonadNotification,
+        event::{EventServer, EventServerEvent},
+    };
 
     #[tokio::test]
     async fn testing_server() {
         let snapshot_event_ring = SnapshotEventRing::new_from_zstd_bytes(
-            include_bytes!("../../../monad-exec-events/test/data/exec-events-emn-30b-15m.zst"),
+            include_bytes!(
+                "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/snapshot.zst"
+            ),
             "TEST",
         )
         .unwrap();
@@ -290,6 +296,99 @@ mod test {
                 panic!("EventServer using snapshot should never produce a gap!")
             }
             EventServerEvent::Block { .. } => {}
+        }
+    }
+
+    #[tokio::test]
+    async fn json() {
+        let snapshot_event_ring = SnapshotEventRing::new_from_zstd_bytes(
+            include_bytes!(
+                "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/snapshot.zst"
+            ),
+            "TEST",
+        )
+        .unwrap();
+
+        let event_server_client = EventServer::start_for_testing(snapshot_event_ring);
+
+        let mut subscription = event_server_client.subscribe().unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(10), subscription.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        let (monad_header, monad_block, monad_logs) = match event {
+            EventServerEvent::Gap => {
+                panic!("EventServer using snapshot should never produce a gap!")
+            }
+            EventServerEvent::Block {
+                header,
+                block,
+                logs,
+            } => (header, block, logs),
+        };
+
+        assert_json::<_, MonadNotification<alloy_rpc_types::Header>>(
+            &[&monad_header],
+            include_str!(
+                "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/0.monad-header.json"
+            ),
+        );
+
+        assert_json::<_, alloy_rpc_types::Header>(
+            &[&monad_header.data, &monad_block.data.header],
+            include_str!(
+                "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/0.header.json"
+            ),
+        );
+
+        assert_json::<_, MonadNotification<alloy_rpc_types::Block>>(
+            &[&monad_block],
+            include_str!(
+                "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/0.monad-block.json"
+            ),
+        );
+
+        assert_json::<_, alloy_rpc_types::Block>(
+            &[&monad_block.data],
+            include_str!(
+                "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/0.block.json"
+            ),
+        );
+
+        let monad_log = monad_logs.first().unwrap().clone();
+
+        assert_json::<_, MonadNotification<alloy_rpc_types::Log>>(
+            &[&monad_log],
+            include_str!(
+                "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/0.monad-log.0.json"
+            ),
+        );
+
+        assert_json::<_, alloy_rpc_types::Log>(
+            &[&monad_log.data],
+            include_str!(
+                "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/0.log.0.json"
+            ),
+        );
+    }
+
+    fn assert_json<T, E>(values: &[T], json: &'static str)
+    where
+        T: Serialize,
+        E: DeserializeOwned,
+    {
+        for value in values {
+            let str = serde_json::to_string(value).unwrap();
+
+            assert!(!str.contains("serde"));
+            assert!(!str.contains("RawValue"));
+            assert!(!str.contains("$serde_json::private::RawValue"));
+
+            assert_eq!(str, json);
+
+            let _: E = serde_json::from_str(&str).unwrap();
         }
     }
 }

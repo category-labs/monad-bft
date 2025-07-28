@@ -583,8 +583,9 @@ mod tests {
 
     fn create_test_server() -> actix_test::TestServer {
         const SNAPSHOT_NAME: &str = "ETHEREUM_MAINNET_30B_15M";
-        const SNAPSHOT_ZSTD_BYTES: &[u8] =
-            include_bytes!("../../../monad-exec-events/test/data/exec-events-emn-30b-15m.zst");
+        const SNAPSHOT_ZSTD_BYTES: &[u8] = include_bytes!(
+            "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/snapshot.zst"
+        );
 
         let snapshot =
             SnapshotEventRing::new_from_zstd_bytes(SNAPSHOT_ZSTD_BYTES, SNAPSHOT_NAME).unwrap();

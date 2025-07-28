@@ -370,7 +370,7 @@ mod test {
     fn basic_test() {
         const SNAPSHOT_NAME: &str = "ETHEREUM_MAINNET_30B_15M";
         const SNAPSHOT_ZSTD_BYTES: &[u8] =
-            include_bytes!("../../test/data/exec-events-emn-30b-15m.zst");
+            include_bytes!("../../test/data/exec-events-emn-30b-15m/snapshot.zst");
 
         let snapshot = SnapshotEventRing::<ExecEventDecoder>::new_from_zstd_bytes(
             SNAPSHOT_ZSTD_BYTES,

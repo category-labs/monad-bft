@@ -6,7 +6,7 @@ use monad_event_ring::{
 fn bench_snapshot(c: &mut Criterion) {
     const SNAPSHOT_NAME: &str = "ETHEREUM_MAINNET_30B_15M";
     const SNAPSHOT_ZSTD_BYTES: &[u8] =
-        include_bytes!("../../monad-exec-events/test/data/exec-events-emn-30b-15m.zst");
+        include_bytes!("../../monad-exec-events/test/data/exec-events-emn-30b-15m/snapshot.zst");
 
     let mut g = c.benchmark_group("snapshot_raw");
 

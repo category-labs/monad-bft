@@ -371,7 +371,7 @@ mod test {
     fn basic_test_ethereum_mainnet() {
         const SNAPSHOT_NAME: &str = "ETHEREUM_MAINNET_30B_15M";
         const SNAPSHOT_ZSTD_BYTES: &[u8] =
-            include_bytes!("../../../test/data/exec-events-emn-30b-15m.zst");
+            include_bytes!("../../../test/data/exec-events-emn-30b-15m/snapshot.zst");
 
         run_block_builder(SNAPSHOT_NAME, SNAPSHOT_ZSTD_BYTES);
     }
@@ -380,7 +380,7 @@ mod test {
     fn basic_test_monad_testnet() {
         const SNAPSHOT_NAME: &str = "MONAD_DEVNET_500B_GENESIS";
         const SNAPSHOT_ZSTD_BYTES: &[u8] =
-            include_bytes!("../../../test/data/exec-events-mdn-500b-genesis.zst");
+            include_bytes!("../../../test/data/exec-events-mdn-500b-genesis/snapshot.zst");
 
         run_block_builder(SNAPSHOT_NAME, SNAPSHOT_ZSTD_BYTES);
     }
