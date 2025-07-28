@@ -420,11 +420,28 @@ pub enum SubscriptionResult {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MonadNotification<T> {
     pub block_id: BlockId,
     pub commit_state: BlockCommitState,
     #[serde(flatten)]
     pub data: T,
+}
+
+impl<T> MonadNotification<T> {
+    pub(crate) fn map<U>(self, f: impl FnOnce(T) -> U) -> MonadNotification<U> {
+        let Self {
+            block_id,
+            commit_state,
+            data,
+        } = self;
+
+        MonadNotification {
+            block_id,
+            commit_state,
+            data: f(data),
+        }
+    }
 }
 
 pub fn serialize_result<T: Serialize>(value: T) -> Result<Box<RawValue>, JsonRpcError> {

@@ -18,13 +18,36 @@ where
     T: Serialize,
 {
     pub fn new(value: T) -> Self {
-        let serialized = serde_json::value::to_raw_value(&value).unwrap();
-
-        Self { value, serialized }
+        Self::new_with_map(value, |t| t)
     }
 
     pub fn new_shared(value: T) -> SharedJsonSerialized<T> {
         Arc::new(Self::new(value))
+    }
+
+    pub fn new_with_map<U>(serialize_value: U, map: impl FnOnce(U) -> T) -> Self
+    where
+        U: Serialize,
+    {
+        let serialized = serde_json::value::to_raw_value(&serialize_value).unwrap();
+
+        let value = map(serialize_value);
+
+        Self { value, serialized }
+    }
+
+    pub fn new_shared_with_map<U>(
+        serialize_value: U,
+        map: impl FnOnce(U) -> T,
+    ) -> SharedJsonSerialized<T>
+    where
+        U: Serialize,
+    {
+        Arc::new(Self::new_with_map(serialize_value, map))
+    }
+
+    pub fn value(&self) -> &T {
+        &self.value
     }
 }
 

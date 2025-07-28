@@ -196,37 +196,56 @@ fn broadcast_block_updates(
 ) {
     let block_id = BlockId(monad_types::Hash(block.start.block_tag.id.bytes));
 
-    let (serialized_header, serialized_block) = {
-        let alloy_rpc_types::Block {
-            header,
-            uncles,
-            transactions,
-            withdrawals,
-        } = block.to_alloy_rpc();
+    let alloy_block = block.to_alloy_rpc();
 
-        let serialized_header = JsonSerialized::new_shared(header);
+    let serialized_monad_header = JsonSerialized::new_shared_with_map(
+        MonadNotification {
+            block_id,
+            commit_state,
+            data: alloy_block.header.clone(),
+        },
+        |notification| notification.map(JsonSerialized::new_shared),
+    );
 
-        (
-            serialized_header.clone(),
-            JsonSerialized::new_shared(alloy_rpc_types::Block {
-                header: serialized_header,
-                uncles,
-                transactions,
-                withdrawals,
-            }),
-        )
-    };
+    let serialized_monad_block = JsonSerialized::new_shared_with_map(
+        MonadNotification {
+            block_id,
+            commit_state,
+            data: alloy_block,
+        },
+        |notification| {
+            notification.map(|alloy_block| {
+                JsonSerialized::new_shared_with_map(
+                    alloy_block,
+                    |alloy_rpc_types::Block {
+                         header: _,
+                         uncles,
+                         transactions,
+                         withdrawals,
+                     }| alloy_rpc_types::Block {
+                        header: serialized_monad_header.data.clone(),
+                        uncles,
+                        transactions,
+                        withdrawals,
+                    },
+                )
+            })
+        },
+    );
 
     let logs = Arc::new(
         block
             .get_alloy_rpc_logs()
             .into_iter()
             .map(|log| {
-                JsonSerialized::new_shared(MonadNotification {
-                    block_id,
-                    commit_state,
-                    data: JsonSerialized::new_shared(log),
-                })
+                JsonSerialized::new_shared_with_map(
+                    MonadNotification {
+                        block_id,
+                        commit_state,
+                        data: log,
+                    },
+                    |notification| notification.map(JsonSerialized::new_shared),
+                )
             })
             .collect_vec(),
     );
@@ -234,16 +253,8 @@ fn broadcast_block_updates(
     broadcast_event(
         broadcast_tx,
         EventServerEvent::Block {
-            header: JsonSerialized::new_shared(MonadNotification {
-                block_id,
-                commit_state,
-                data: serialized_header,
-            }),
-            block: JsonSerialized::new_shared(MonadNotification {
-                block_id,
-                commit_state,
-                data: serialized_block,
-            }),
+            header: serialized_monad_header,
+            block: serialized_monad_block,
             logs,
         },
     );
