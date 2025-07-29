@@ -138,7 +138,7 @@ const MONAD_TESTNET2_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     chain_id: MONAD_TESTNET2_CHAIN_ID,
     v_0_7_0_activation: Round::MIN,
     v_0_8_0_activation: Round::MIN,
-    v_0_10_0_activation: Round::MIN, // TODO fill in real round later
+    v_0_10_0_activation: Round(6487752), // 2025-07-29T13:30:00.000Z
 
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
