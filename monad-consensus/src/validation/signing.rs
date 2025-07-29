@@ -36,7 +36,7 @@ use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, Stake, GENESIS_ROUND}
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
-    validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
+    validator_set::{ValidatorSetError, ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
@@ -774,8 +774,12 @@ where
         node_ids.extend(signers);
     }
 
-    if !validators.has_super_majority_votes(&node_ids) {
-        return Err(Error::InsufficientStake);
+    match validators.has_super_majority_votes(&node_ids) {
+        Err(ValidatorSetError::DuplicateValidator(_)) => {
+            return Err(Error::SignaturesDuplicateNode)
+        }
+        Ok(false) => return Err(Error::InsufficientStake),
+        Ok(true) => {}
     }
 
     verify_high_extend(epoch_to_validators, &tc.high_extend)?;
@@ -840,11 +844,11 @@ where
         .verify::<signing_domain::Vote>(validator_mapping, qc_msg.as_ref())
         .map_err(|_| Error::InvalidSignature)?;
 
-    if !validators.has_super_majority_votes(&node_ids) {
-        return Err(Error::InsufficientStake);
+    match validators.has_super_majority_votes(&node_ids) {
+        Err(ValidatorSetError::DuplicateValidator(_)) => Err(Error::SignaturesDuplicateNode),
+        Ok(false) => Err(Error::InsufficientStake),
+        Ok(true) => Ok(()),
     }
-
-    Ok(())
 }
 
 /// Verify the high_extend
@@ -996,11 +1000,11 @@ where
         .verify::<signing_domain::NoEndorsement>(validator_mapping, nec_msg.as_ref())
         .map_err(|_| Error::InvalidSignature)?;
 
-    if !validators.has_super_majority_votes(&node_ids) {
-        return Err(Error::InsufficientStake);
+    match validators.has_super_majority_votes(&node_ids) {
+        Err(ValidatorSetError::DuplicateValidator(_)) => Err(Error::SignaturesDuplicateNode),
+        Ok(false) => Err(Error::InsufficientStake),
+        Ok(true) => Ok(()),
     }
-
-    Ok(())
 }
 
 trait ValidatorPubKey {

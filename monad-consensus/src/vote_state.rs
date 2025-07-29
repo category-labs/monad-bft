@@ -130,6 +130,7 @@ where
 
         while validators
             .has_super_majority_votes(&round_pending_votes.keys().copied().collect::<Vec<_>>())
+            .expect("has_super_majority_votes succeeds since addresses are unique")
         {
             assert!(round >= self.earliest_round);
             let vote_enc = alloy_rlp::encode(vote);

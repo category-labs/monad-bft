@@ -13,21 +13,21 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{
-    collections::{BTreeMap, HashSet},
-    error, fmt,
-    marker::PhantomData,
-};
+use std::{collections::BTreeMap, error, fmt, marker::PhantomData};
 
 use as_any::AsAny;
 use auto_impl::auto_impl;
+use itertools::Itertools;
 use monad_crypto::certificate_signature::PubKey;
 use monad_types::{NodeId, Stake};
 
 pub type Result<T, PT> = std::result::Result<T, ValidatorSetError<PT>>;
 
-#[derive(Debug)]
-pub enum ValidatorSetError<PT: PubKey> {
+#[derive(Debug, PartialEq, Eq)]
+pub enum ValidatorSetError<PT>
+where
+    PT: PubKey,
+{
     DuplicateValidator(NodeId<PT>),
 }
 
@@ -116,10 +116,27 @@ pub trait ValidatorSetType: Send + Sync + AsAny {
     fn len(&self) -> usize;
     fn is_empty(&self) -> bool;
     fn is_member(&self, addr: &NodeId<Self::NodeIdPubKey>) -> bool;
-    fn has_super_majority_votes(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> bool;
-    fn has_honest_vote(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> bool;
-    fn has_threshold_votes(&self, addrs: &[NodeId<Self::NodeIdPubKey>], threshold: Stake) -> bool;
-    fn calculate_current_stake(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> Stake;
+
+    fn has_super_majority_votes(
+        &self,
+        addrs: &[NodeId<Self::NodeIdPubKey>],
+    ) -> Result<bool, Self::NodeIdPubKey>;
+
+    fn has_honest_vote(
+        &self,
+        addrs: &[NodeId<Self::NodeIdPubKey>],
+    ) -> Result<bool, Self::NodeIdPubKey>;
+
+    fn has_threshold_votes(
+        &self,
+        addrs: &[NodeId<Self::NodeIdPubKey>],
+        threshold: Stake,
+    ) -> Result<bool, Self::NodeIdPubKey>;
+
+    fn calculate_current_stake(
+        &self,
+        addrs: &[NodeId<Self::NodeIdPubKey>],
+    ) -> Result<Stake, Self::NodeIdPubKey>;
 }
 
 #[derive(Clone, Copy)]
@@ -185,49 +202,40 @@ impl<PT: PubKey> ValidatorSetType for ValidatorSet<PT> {
         self.validators.contains_key(addr)
     }
 
-    fn has_super_majority_votes(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> bool {
-        let mut duplicates = HashSet::new();
-
-        let mut voter_stake: Stake = Stake(0);
-        for addr in addrs {
-            if let Some(v) = self.validators.get(addr) {
-                voter_stake += *v;
-                debug_assert!(duplicates.insert(addr));
-            }
-        }
-        voter_stake >= Stake(self.total_stake.0 * 2 / 3 + 1)
+    fn has_super_majority_votes(
+        &self,
+        addrs: &[NodeId<Self::NodeIdPubKey>],
+    ) -> Result<bool, Self::NodeIdPubKey> {
+        self.has_threshold_votes(addrs, Stake(self.total_stake.0 * 2 / 3 + 1))
     }
 
-    fn has_honest_vote(&self, addrs: &[NodeId<PT>]) -> bool {
-        assert_eq!(addrs.iter().collect::<HashSet<_>>().len(), addrs.len());
-        addrs
+    fn has_honest_vote(&self, addrs: &[NodeId<PT>]) -> Result<bool, Self::NodeIdPubKey> {
+        self.has_threshold_votes(addrs, Stake(self.total_stake.0 / 3 + 1))
+    }
+
+    fn has_threshold_votes(
+        &self,
+        addrs: &[NodeId<Self::NodeIdPubKey>],
+        threshold: Stake,
+    ) -> Result<bool, Self::NodeIdPubKey> {
+        let voter_stake = self.calculate_current_stake(addrs)?;
+
+        Ok(voter_stake >= threshold)
+    }
+
+    fn calculate_current_stake(
+        &self,
+        addrs: &[NodeId<Self::NodeIdPubKey>],
+    ) -> Result<Stake, Self::NodeIdPubKey> {
+        if let Some(node) = addrs.iter().duplicates().next() {
+            return Err(ValidatorSetError::DuplicateValidator(*node));
+        }
+
+        Ok(addrs
             .iter()
-            .filter_map(|addr| self.validators.get(addr).copied())
-            .sum::<Stake>()
-            >= Stake(self.total_stake.0 / 3 + 1)
-    }
-
-    fn has_threshold_votes(&self, addrs: &[NodeId<Self::NodeIdPubKey>], threshold: Stake) -> bool {
-        let mut duplicates = HashSet::new();
-
-        let mut voter_stake: Stake = Stake(0);
-        for addr in addrs {
-            if let Some(v) = self.validators.get(addr) {
-                voter_stake += *v;
-                debug_assert!(duplicates.insert(addr));
-            }
-        }
-        voter_stake >= threshold
-    }
-
-    fn calculate_current_stake(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> Stake {
-        let mut voter_stake: Stake = Stake(0);
-        for addr in addrs {
-            if let Some(v) = self.validators.get(addr) {
-                voter_stake += *v;
-            }
-        }
-        voter_stake
+            .filter_map(|addr| self.validators.get(addr))
+            .cloned()
+            .sum::<Stake>())
     }
 }
 
@@ -240,7 +248,9 @@ mod test {
     use monad_testutil::signing::{create_keys, get_key};
     use monad_types::{NodeId, Stake};
 
-    use crate::validator_set::{ValidatorSetFactory, ValidatorSetType, ValidatorSetTypeFactory};
+    use crate::validator_set::{
+        ValidatorSetError, ValidatorSetFactory, ValidatorSetType, ValidatorSetTypeFactory,
+    };
 
     type SignatureType = NopSignature;
     type KeyPairType = <SignatureType as CertificateSignature>::KeyPairType;
@@ -283,10 +293,14 @@ mod test {
 
         let validators = vec![v1, v2];
         let vs = ValidatorSetFactory::default().create(validators).unwrap();
-        assert!(vs.has_super_majority_votes(&[v2.0]));
-        assert!(!vs.has_super_majority_votes(&[v1.0]));
-        assert!(vs.has_super_majority_votes(&[v2.0, NodeId::new(pubkey3)]));
-        assert!(!vs.has_super_majority_votes(&[v1.0, NodeId::new(pubkey3)]));
+        assert!(vs.has_super_majority_votes(&[v2.0]).unwrap());
+        assert!(!vs.has_super_majority_votes(&[v1.0]).unwrap());
+        assert!(vs
+            .has_super_majority_votes(&[v2.0, NodeId::new(pubkey3)])
+            .unwrap());
+        assert!(!vs
+            .has_super_majority_votes(&[v1.0, NodeId::new(pubkey3)])
+            .unwrap());
         // Address(3) is a non-member
     }
 
@@ -299,8 +313,8 @@ mod test {
 
         let validators = vec![v1, v2];
         let vs = ValidatorSetFactory::default().create(validators).unwrap();
-        assert!(!vs.has_honest_vote(&[v1.0]));
-        assert!(vs.has_honest_vote(&[v2.0]));
+        assert!(!vs.has_honest_vote(&[v1.0]).unwrap());
+        assert!(vs.has_honest_vote(&[v2.0]).unwrap());
     }
 
     #[test]
@@ -315,9 +329,33 @@ mod test {
         let validators = vec![v1, v2];
         let vs = ValidatorSetFactory::default().create(validators).unwrap();
         let majority_threshold = Stake(vs.get_total_stake().0 / 2 + 1);
-        assert!(vs.has_threshold_votes(&[v2.0], majority_threshold));
-        assert!(!vs.has_threshold_votes(&[v1.0], majority_threshold));
-        assert!(vs.has_threshold_votes(&[v2.0, n3], majority_threshold));
-        assert!(!vs.has_threshold_votes(&[v1.0, n3], majority_threshold));
+        assert!(vs.has_threshold_votes(&[v2.0], majority_threshold).unwrap());
+        assert!(!vs.has_threshold_votes(&[v1.0], majority_threshold).unwrap());
+        assert!(vs
+            .has_threshold_votes(&[v2.0, n3], majority_threshold)
+            .unwrap());
+        assert!(!vs
+            .has_threshold_votes(&[v1.0, n3], majority_threshold)
+            .unwrap());
+    }
+
+    #[test]
+    fn test_duplicates() {
+        let keypairs = create_keys::<SignatureType>(3);
+
+        let v1 = (NodeId::new(keypairs[0].pubkey()), Stake(2));
+        let v2 = (NodeId::new(keypairs[1].pubkey()), Stake(3));
+
+        let validators = vec![v1, v2];
+        let vs = ValidatorSetFactory::default().create(validators).unwrap();
+        assert_eq!(vs.calculate_current_stake(&[v2.0, v1.0]), Ok(Stake(5)));
+        assert_eq!(
+            vs.calculate_current_stake(&[v2.0, v2.0]),
+            Err(ValidatorSetError::DuplicateValidator(v2.0))
+        );
+        assert_eq!(
+            vs.calculate_current_stake(&[v2.0, v1.0, v2.0]),
+            Err(ValidatorSetError::DuplicateValidator(v2.0))
+        );
     }
 }

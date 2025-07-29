@@ -27,6 +27,8 @@ pub enum Error {
     InsufficientStake,
     /// Required validator set (or cert pubkeys) not in validators epoch mapping
     ValidatorSetDataUnavailable,
+    /// Signatures contain duplicate node id
+    SignaturesDuplicateNode,
     /// Vote does not contain a valid commit condition
     InvalidVote,
     /// Consensus Message version must match

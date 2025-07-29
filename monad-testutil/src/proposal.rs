@@ -201,7 +201,7 @@ where
             .iter()
             .map(|keypair| NodeId::new(keypair.pubkey()))
             .collect::<Vec<_>>();
-        if !valset.has_super_majority_votes(&node_ids) {
+        if !valset.has_super_majority_votes(&node_ids).unwrap() {
             return Vec::new();
         }
 

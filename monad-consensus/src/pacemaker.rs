@@ -321,7 +321,11 @@ where
             "processing remote timeout"
         );
 
-        if self.phase == PhaseHonest::Zero && validators.has_honest_vote(&timeouts) {
+        if self.phase == PhaseHonest::Zero
+            && validators
+                .has_honest_vote(&timeouts)
+                .expect("has_honest_vote succeeds since addresses are unique")
+        {
             // self.local_timeout_round emits PacemakerCommand::ScheduleReset
             ret_commands.extend(self.local_timeout_round(safety));
             self.phase = PhaseHonest::One;
@@ -329,7 +333,11 @@ where
 
         // try to create a TimeoutCertificate from the pending timeouts, filtering out
         // invalid timeout messages if there are signature errors
-        while self.phase == PhaseHonest::One && validators.has_super_majority_votes(&timeouts) {
+        while self.phase == PhaseHonest::One
+            && validators
+                .has_super_majority_votes(&timeouts)
+                .expect("has_super_majority_votes succeeds since addresses are unique")
+        {
             match TimeoutCertificate::new(
                 tm_info.epoch,
                 tm_info.round,

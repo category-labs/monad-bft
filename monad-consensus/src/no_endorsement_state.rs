@@ -124,12 +124,15 @@ where
             "collecting no-endorsement"
         );
 
-        while validators.has_super_majority_votes(
-            &round_pending_no_endorsements
-                .keys()
-                .copied()
-                .collect::<Vec<_>>(),
-        ) {
+        while validators
+            .has_super_majority_votes(
+                &round_pending_no_endorsements
+                    .keys()
+                    .copied()
+                    .collect::<Vec<_>>(),
+            )
+            .expect("has_super_majority_votes succeeds since addresses are unique")
+        {
             assert!(round >= self.earliest_round);
             let no_endorsement_enc = alloy_rlp::encode(&no_endorsement);
             match SCT::new::<signing_domain::NoEndorsement>(

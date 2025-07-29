@@ -83,6 +83,7 @@ metrics!(
             insufficient_stake,
             invalid_seq_num,
             val_data_unavailable,
+            signatures_duplicate_node,
             invalid_vote_message,
             invalid_version,
             invalid_epoch

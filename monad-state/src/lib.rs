@@ -103,6 +103,9 @@ pub(crate) fn handle_validation_error(e: validation::Error, metrics: &mut Metric
             // TODO: This should trigger statesync
             metrics.validation_errors.val_data_unavailable += 1;
         }
+        validation::Error::SignaturesDuplicateNode => {
+            metrics.validation_errors.signatures_duplicate_node += 1;
+        }
         validation::Error::InvalidVote => {
             metrics.validation_errors.invalid_vote_message += 1;
         }

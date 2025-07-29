@@ -6004,6 +6004,7 @@ dependencies = [
  "alloy-primitives",
  "as-any",
  "auto_impl",
+ "itertools 0.10.5",
  "monad-consensus-types",
  "monad-crypto",
  "monad-testutil",
