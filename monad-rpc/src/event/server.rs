@@ -52,8 +52,8 @@ impl EventServer<ExecEventRing> {
                     warn!("EventServer event_reader gapped");
 
                     broadcast_event(&broadcast_tx, EventServerEvent::Gap);
+                    event_reader.reset();
                     block_builder.reset();
-                    event_reader = event_ring.create_reader();
                     continue;
                 }
                 EventNextResult::NotReady => {
@@ -75,8 +75,8 @@ impl EventServer<ExecEventRing> {
                     warn!("EventServer consensus state tracker gapped through payload expired");
 
                     broadcast_event(&broadcast_tx, EventServerEvent::Gap);
+                    event_reader.reset();
                     block_builder.reset();
-                    event_reader = event_ring.create_reader();
                     continue;
                 }
                 Err(BlockBuilderError::ImplicitDrop {

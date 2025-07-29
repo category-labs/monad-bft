@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
 pub(crate) use self::raw::RawEventReader;
-use crate::{EventDecoder, EventDescriptor, EventNextResult};
+use crate::{ffi::monad_event_iterator_reset, EventDecoder, EventDescriptor, EventNextResult};
 
 mod raw;
 
@@ -37,5 +37,10 @@ where
     /// Produces the next event in the ring.
     pub fn next_descriptor(&mut self) -> EventNextResult<EventDescriptor<'ring, D>> {
         self.raw.next_descriptor().map(EventDescriptor::new)
+    }
+
+    /// Resets the reader to the latest event in the ring.
+    pub fn reset(&mut self) {
+        monad_event_iterator_reset(&mut self.raw.inner);
     }
 }
