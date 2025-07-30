@@ -4,7 +4,7 @@ use alloy_consensus::{
     transaction::Recovered, Eip658Value, Receipt, ReceiptWithBloom, SignableTransaction,
     Transaction, TxEip1559, TxEnvelope, TxLegacy,
 };
-use alloy_primitives::{keccak256, Address, Bloom, FixedBytes, Log, LogData, TxKind, U256};
+use alloy_primitives::{keccak256, Address, Bloom, FixedBytes, Log, LogData, TxKind};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use monad_consensus_types::{
@@ -13,11 +13,13 @@ use monad_consensus_types::{
     quorum_certificate::QuorumCertificate,
 };
 use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
-use monad_eth_block_policy::{compute_txn_max_value, EthValidatedBlock};
+use monad_eth_block_policy::{
+    compute_txn_max_gas_cost, compute_txn_max_value, EthValidatedBlock, TxnFee,
+};
 use monad_eth_types::EthBlockBody;
 use monad_secp::KeyPair;
 use monad_testutil::signing::MockSignatures;
-use monad_types::{Epoch, NodeId, Round, SeqNum};
+use monad_types::{Balance, Epoch, NodeId, Round, SeqNum};
 
 pub fn make_legacy_tx(
     sender: FixedBytes<32>,
@@ -144,11 +146,27 @@ pub fn generate_block_with_txs(
 
     let txn_fees = txs
         .iter()
-        .map(|t| (t.signer(), compute_txn_max_value(t)))
-        .fold(BTreeMap::new(), |mut costs, (address, cost)| {
-            *costs.entry(address).or_insert(U256::ZERO) += cost;
-            costs
-        });
+        .map(|t| {
+            (
+                t.signer(),
+                compute_txn_max_value(t),
+                compute_txn_max_gas_cost(t),
+            )
+        })
+        .fold(
+            BTreeMap::new(),
+            |mut costs, (address, max_cost, max_gas_cost)| {
+                costs
+                    .entry(address)
+                    .or_insert(TxnFee {
+                        first_txn_value: Balance::ZERO,
+                        max_gas_cost: Balance::ZERO,
+                    })
+                    .max_gas_cost += max_gas_cost;
+
+                costs
+            },
+        );
 
     EthValidatedBlock {
         block: ConsensusFullBlock::new(header, body).expect("header doesn't match body"),

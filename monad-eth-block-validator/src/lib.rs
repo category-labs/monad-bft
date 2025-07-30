@@ -6,7 +6,7 @@ use alloy_consensus::{
     transaction::{Recovered, Transaction},
     TxEnvelope, EMPTY_OMMER_ROOT_HASH,
 };
-use alloy_primitives::{Address, U256};
+use alloy_primitives::Address;
 use alloy_rlp::Encodable;
 use monad_consensus_types::{
     block::{BlockPolicy, ConsensusBlockHeader, ConsensusFullBlock},
@@ -18,18 +18,17 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{
-    compute_txn_max_value, static_validate_transaction, EthBlockPolicy, EthValidatedBlock,
+    compute_txn_max_gas_cost, static_validate_transaction, EthBlockPolicy, EthValidatedBlock,
+    TxnFee, TxnFees,
 };
-use monad_eth_types::{
-    EthBlockBody, EthExecutionProtocol, Nonce, ProposedEthHeader, BASE_FEE_PER_GAS,
-};
+use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader, BASE_FEE_PER_GAS};
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
+use monad_types::{Balance, Nonce};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing::warn;
 
 type NonceMap = BTreeMap<Address, Nonce>;
-type TxnFeeMap = BTreeMap<Address, U256>;
 type ValidatedTxns = Vec<Recovered<TxEnvelope>>;
 
 /// Validates transactions as valid Ethereum transactions and also validates that
@@ -67,7 +66,7 @@ where
         proposal_gas_limit: u64,
         proposal_byte_limit: u64,
         max_code_size: usize,
-    ) -> Result<(ValidatedTxns, NonceMap, TxnFeeMap), BlockValidationError> {
+    ) -> Result<(ValidatedTxns, NonceMap, TxnFees), BlockValidationError> {
         let EthBlockBody {
             transactions,
             ommers,
@@ -100,7 +99,7 @@ where
 
         // recover the account nonces and txn fee usage in this block
         let mut nonces = BTreeMap::new();
-        let mut txn_fees: BTreeMap<Address, U256> = BTreeMap::new();
+        let mut txn_fees: TxnFees = TxnFees::default();
 
         for eth_txn in &eth_txns {
             if static_validate_transaction(
@@ -130,9 +129,16 @@ where
                 }
             }
 
-            let txn_fee_entry = txn_fees.entry(eth_txn.signer()).or_insert(U256::ZERO);
-
-            *txn_fee_entry = txn_fee_entry.saturating_add(compute_txn_max_value(eth_txn));
+            let txn_fee_entry = txn_fees.entry(eth_txn.signer()).or_insert(TxnFee {
+                first_txn_value: Balance::ZERO,
+                max_gas_cost: Balance::ZERO,
+            });
+            txn_fee_entry.max_gas_cost = txn_fee_entry
+                .max_gas_cost
+                .saturating_add(compute_txn_max_gas_cost(eth_txn));
+            if txn_fee_entry.first_txn_value == Balance::ZERO {
+                txn_fee_entry.first_txn_value = eth_txn.value();
+            }
         }
 
         let total_gas: u64 = eth_txns.iter().map(|tx| tx.gas_limit()).sum();
@@ -291,6 +297,7 @@ mod test {
     use monad_eth_testutil::make_legacy_tx;
     use monad_state_backend::InMemoryState;
     use monad_testutil::signing::MockSignatures;
+    use monad_types::Balance;
 
     use super::*;
 
@@ -469,7 +476,7 @@ mod test {
         // ECDSA signature is malleable
         // given a signature, we can form a second signature by computing additive inverse of s and flips v
         let original_signature = valid_txn.signature();
-        let secp256k1_n = U256::from_str_radix(
+        let secp256k1_n = Balance::from_str_radix(
             "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
             16,
         )

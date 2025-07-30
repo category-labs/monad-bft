@@ -275,6 +275,9 @@ where
                 Err(BlockPolicyError::ExecutionResultMismatch) => {
                     metrics.consensus_events.rx_bad_state_root += 1;
                 }
+                Err(BlockPolicyError::BlockPolicyBlockValidatorError(_)) => {
+                    // TODO add metrics
+                }
                 Err(
                     BlockPolicyError::BlockNotCoherent
                     | BlockPolicyError::TimestampError
@@ -511,10 +514,10 @@ mod test {
         },
         NopKeyPair, NopSignature,
     };
-    use monad_eth_types::{Balance, EMPTY_RLP_TX_LIST};
+    use monad_eth_types::EMPTY_RLP_TX_LIST;
     use monad_state_backend::{InMemoryState, InMemoryStateInner};
     use monad_testutil::signing::MockSignatures;
-    use monad_types::{Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
+    use monad_types::{Balance, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 
     use super::BlockTree;
     use crate::blocktree::RootInfo;

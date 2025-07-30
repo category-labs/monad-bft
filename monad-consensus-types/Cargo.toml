@@ -13,6 +13,7 @@ monad-crypto = { workspace = true }
 monad-state-backend = { workspace = true }
 monad-types = { workspace = true }
 
+alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 auto_impl = { workspace = true }
 bytes = { workspace = true }
