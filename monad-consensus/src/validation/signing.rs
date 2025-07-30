@@ -24,6 +24,7 @@ use monad_consensus_types::{
     tip::ConsensusTip,
     validation::Error,
     voting::ValidatorMapping,
+    RoundCertificate,
 };
 use monad_crypto::{
     certificate_signature::{
@@ -532,15 +533,39 @@ where
             return Err(Error::InvalidSignature);
         }
 
-        if let Some(tc) = &timeout.last_round_tc {
-            verify_tc(
-                &|epoch, round| {
-                    epoch_to_validators(epoch_manager, val_epoch_map, election, epoch, round)
-                },
-                tc,
-            )?;
-            // last_round_tc must be from the previous round
-            if timeout.tminfo.round != tc.round + Round(1) {
+        if let Some(round_certificate) = &timeout.last_round_certificate {
+            match round_certificate {
+                RoundCertificate::Tc(tc) => {
+                    verify_tc(
+                        &|epoch, round| {
+                            epoch_to_validators(
+                                epoch_manager,
+                                val_epoch_map,
+                                election,
+                                epoch,
+                                round,
+                            )
+                        },
+                        tc,
+                    )?;
+                }
+                RoundCertificate::Qc(qc) => {
+                    verify_qc(
+                        &|epoch, round| {
+                            epoch_to_validators(
+                                epoch_manager,
+                                val_epoch_map,
+                                election,
+                                epoch,
+                                round,
+                            )
+                        },
+                        qc,
+                    )?;
+                }
+            }
+            // last_round_certificate must be from the previous round
+            if timeout.tminfo.round != round_certificate.round() + Round(1) {
                 return Err(Error::NotWellFormed);
             }
         }
@@ -581,13 +606,13 @@ where
         let timeout = &self.0;
         if timeout.tminfo.round == timeout.high_extend.qc().get_round() + Round(1) {
             // Consecutive QC
-            if timeout.last_round_tc.is_some() {
+            if timeout.last_round_certificate.is_some() {
                 return Err(Error::NotWellFormed);
             }
             return Ok(());
         }
-        // last_round_tc must exist
-        let Some(_tc) = &timeout.last_round_tc else {
+        // last_round_certificate must exist
+        let Some(_rc) = &timeout.last_round_certificate else {
             return Err(Error::NotWellFormed);
         };
         Ok(())
@@ -1048,6 +1073,7 @@ mod test {
         tip::ConsensusTip,
         validation::Error,
         voting::{ValidatorMapping, Vote},
+        RoundCertificate,
     };
     use monad_crypto::{
         certificate_signature::{
@@ -1430,13 +1456,13 @@ mod test {
             high_tip_round: GENESIS_ROUND,
         };
 
-        let unvalidated_tmo_msg = TimeoutMessage::<
-            SignatureType,
-            SignatureCollectionType,
-            ExecutionProtocolType,
-        >::new(
-            &certkeys[0], timeout, HighExtend::Qc(qc), Some(tc)
-        );
+        let unvalidated_tmo_msg =
+            TimeoutMessage::<SignatureType, SignatureCollectionType, ExecutionProtocolType>::new(
+                &certkeys[0],
+                timeout,
+                HighExtend::Qc(qc),
+                Some(RoundCertificate::Tc(tc)),
+            );
 
         let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
         let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());

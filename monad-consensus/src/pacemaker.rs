@@ -105,7 +105,7 @@ where
     PrepareTimeout(
         TimeoutInfo,
         HighExtend<ST, SCT, EPT>,
-        Option<TimeoutCertificate<ST, SCT, EPT>>,
+        Option<RoundCertificate<ST, SCT, EPT>>,
     ),
 
     /// schedule a local round timeout event after duration
@@ -232,7 +232,7 @@ where
                 HighExtend::Tip(tip.clone())
             });
 
-        let (high_tip_round, high_qc_round) = match &high_extend {
+        let (high_tip_round, high_extend_qc_round) = match &high_extend {
             HighExtend::Tip(tip) => (
                 tip.block_header.block_round,
                 tip.block_header.qc.get_round(),
@@ -244,23 +244,18 @@ where
             epoch: self.get_current_epoch(),
             round: current_round,
             high_tip_round,
-            high_qc_round,
+            high_qc_round: high_extend_qc_round,
         };
 
-        let last_round_tc = if high_qc_round + Round(1) == current_round {
+        let last_round_rc = if high_extend_qc_round + Round(1) == current_round {
             None
         } else {
-            match &self.high_certificate {
-                RoundCertificate::Qc(_) => {
-                    unreachable!("if high_qc was not from last round, tc must exist")
-                }
-                RoundCertificate::Tc(tc) => Some(tc),
-            }
+            Some(&self.high_certificate)
         };
 
         vec![
             PacemakerCommand::ScheduleReset,
-            PacemakerCommand::PrepareTimeout(timeout, high_extend, last_round_tc.cloned()),
+            PacemakerCommand::PrepareTimeout(timeout, high_extend, last_round_rc.cloned()),
             PacemakerCommand::Schedule {
                 round: current_round,
                 duration: self.get_round_timer(current_round),

@@ -13,6 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use alloy_rlp::{Decodable, Encodable};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -74,6 +75,50 @@ where
         match &self {
             Self::Qc(qc) => qc,
             Self::Tc(tc) => tc.high_extend.qc(),
+        }
+    }
+}
+
+impl<ST, SCT, EPT> Encodable for RoundCertificate<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        match &self {
+            Self::Qc(qc) => {
+                let enc: [&dyn Encodable; 2] = [&1u8, qc];
+                alloy_rlp::encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::Tc(tc) => {
+                let enc: [&dyn Encodable; 2] = [&2u8, tc];
+                alloy_rlp::encode_list::<_, dyn Encodable>(&enc, out);
+            }
+        }
+    }
+}
+
+impl<ST, SCT, EPT> Decodable for RoundCertificate<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+        match u8::decode(&mut payload)? {
+            1 => {
+                let qc = QuorumCertificate::decode(&mut payload)?;
+                Ok(Self::Qc(qc))
+            }
+            2 => {
+                let tc = TimeoutCertificate::decode(&mut payload)?;
+                Ok(Self::Tc(tc))
+            }
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown RoundCertificate",
+            )),
         }
     }
 }

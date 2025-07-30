@@ -27,6 +27,7 @@ use monad_consensus_types::{
     timeout::{HighExtend, HighTipRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
     tip::ConsensusTip,
     voting::{ValidatorMapping, Vote},
+    RoundCertificate,
 };
 use monad_crypto::{
     certificate_signature::{
@@ -245,7 +246,7 @@ where
                 certkey,
                 tminfo.clone(),
                 HighExtend::Qc(self.high_qc.clone()),
-                Some(tc.clone()),
+                Some(RoundCertificate::Tc(tc.clone())),
             );
             tmo_msgs.push(Verified::<ST, _>::new(timeout.into(), key));
         }
