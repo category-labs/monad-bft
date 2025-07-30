@@ -40,9 +40,9 @@ mod test {
     use monad_types::{Epoch, NodeId, Round, SeqNum};
     use monad_updaters::{
         ledger::{MockLedger, MockableLedger},
-        state_root_hash::{MockStateRootHashNop, MockStateRootHashSwap},
         statesync::MockStateSyncExecutor,
         txpool::MockTxPoolExecutor,
+        val_set::{MockValSetUpdaterNop, MockValSetUpdaterSwap},
     };
     use monad_validator::{
         simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory,
@@ -92,7 +92,7 @@ mod test {
             Self::TransportMessage,
         >;
 
-        type StateRootHashExecutor = MockStateRootHashSwap<
+        type ValSetUpdater = MockValSetUpdaterSwap<
             Self::SignatureType,
             Self::SignatureCollectionType,
             Self::ExecutionProtocolType,
@@ -229,7 +229,7 @@ mod test {
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockStateRootHashNop::new(
+                        MockValSetUpdaterNop::new(
                             validators.validators.clone(),
                             val_set_update_interval,
                         ),
@@ -334,7 +334,7 @@ mod test {
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockStateRootHashNop::new(
+                        MockValSetUpdaterNop::new(
                             validators.validators.clone(),
                             val_set_update_interval,
                         ),
@@ -500,11 +500,10 @@ mod test {
         .iter()
         .map(|vdata| vdata.node_id)
         .collect();
-        let (validators_epoch_3, validators_epoch_4) = genesis_validators.split_at(2);
+        let (validators_epoch_2, validators_epoch_3) = genesis_validators.split_at(2);
         // validators for epoch 1 = genesis_validators
-        // validators for epoch 2 = genesis_validators
+        // validators for epoch 2 = validators_epoch_2
         // validators for epoch 3 = validators_epoch_3
-        // validators for epoch 4 = validators_epoch_4
 
         let all_peers: BTreeSet<_> = state_configs
             .iter()
@@ -526,7 +525,7 @@ mod test {
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockStateRootHashSwap::new(
+                        MockValSetUpdaterSwap::new(
                             validators.validators.clone(),
                             val_set_update_interval,
                         ),
@@ -552,17 +551,17 @@ mod test {
 
         let mut nodes = swarm_config.build();
 
-        let update_block_num_end_1 = val_set_update_interval - SeqNum(1);
+        let boundary_block_1 = val_set_update_interval - SeqNum(1);
 
         let mut term_on_schedule_epoch_2 =
-            UntilTerminator::new().until_block(update_block_num_end_1.0 as usize + 1);
+            UntilTerminator::new().until_block(boundary_block_1.0 as usize + 1);
         while nodes.step_until(&mut term_on_schedule_epoch_2).is_some() {}
 
         // all nodes must still be in epoch 1 but schedule epoch 2
         verify_nodes_in_epoch(nodes.states().values().collect_vec(), Epoch(1));
         let epoch_2_start_round = verify_nodes_scheduled_epoch(
             nodes.states().values().collect_vec(),
-            update_block_num_end_1,
+            boundary_block_1,
             Epoch(2),
         );
 
@@ -574,17 +573,17 @@ mod test {
         // all nodes must have advanced to next epoch
         verify_nodes_in_epoch(nodes.states().values().collect_vec(), Epoch(2));
 
-        let update_block_num_end_2 = SeqNum(val_set_update_interval.0 * 2) - SeqNum(1);
+        let boundary_block_2 = SeqNum(val_set_update_interval.0 * 2) - SeqNum(1);
 
         let mut term_on_schedule_epoch_3 =
-            UntilTerminator::new().until_block(update_block_num_end_2.0 as usize + 1);
+            UntilTerminator::new().until_block(boundary_block_2.0 as usize + 1);
         while nodes.step_until(&mut term_on_schedule_epoch_3).is_some() {}
 
         // all nodes must still be in the same epoch but schedule next epoch
         verify_nodes_in_epoch(nodes.states().values().collect_vec(), Epoch(2));
         let epoch_3_start_round = verify_nodes_scheduled_epoch(
             nodes.states().values().collect_vec(),
-            update_block_num_end_2,
+            boundary_block_2,
             Epoch(3),
         );
 
@@ -592,28 +591,6 @@ mod test {
         let mut term_in_epoch_3 =
             UntilTerminator::new().until_round(epoch_3_start_round + Round(10));
         while nodes.step_until(&mut term_in_epoch_3).is_some() {}
-
-        // all nodes must have advanced to next epoch
-        verify_nodes_in_epoch(nodes.states().values().collect_vec(), Epoch(3));
-
-        let update_block_num_end_3 = SeqNum(val_set_update_interval.0 * 3) - SeqNum(1);
-
-        let mut term_on_schedule_epoch_4 =
-            UntilTerminator::new().until_block(update_block_num_end_3.0 as usize + 1);
-        while nodes.step_until(&mut term_on_schedule_epoch_4).is_some() {}
-
-        // all nodes must still be in the same epoch but schedule next epoch
-        verify_nodes_in_epoch(nodes.states().values().collect_vec(), Epoch(3));
-        let epoch_4_start_round = verify_nodes_scheduled_epoch(
-            nodes.states().values().collect_vec(),
-            update_block_num_end_3,
-            Epoch(4),
-        );
-
-        // terminate well into the fourth epoch
-        let mut term_in_epoch_4 =
-            UntilTerminator::new().until_round(epoch_4_start_round + Round(10));
-        while nodes.step_until(&mut term_in_epoch_4).is_some() {}
 
         let ledgers = nodes
             .states()
@@ -631,14 +608,13 @@ mod test {
 
         for ledger in ledgers {
             for full_block in ledger {
-                if full_block.get_round() < epoch_3_start_round {
-                    // the first two epochs both have genesis validators as the
-                    // validator set
+                if full_block.get_round() < epoch_2_start_round {
+                    // the first epoch has genesis validators as the validator set
                     assert!(genesis_validators.contains(full_block.get_author()));
-                } else if full_block.get_round() < epoch_4_start_round {
-                    assert!(validators_epoch_3.contains(full_block.get_author()));
+                } else if full_block.get_round() < epoch_3_start_round {
+                    assert!(validators_epoch_2.contains(full_block.get_author()));
                 } else {
-                    assert!(validators_epoch_4.contains(full_block.get_author()));
+                    assert!(validators_epoch_3.contains(full_block.get_author()));
                 }
             }
         }
@@ -713,7 +689,7 @@ mod test {
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockStateRootHashSwap::new(
+                        MockValSetUpdaterSwap::new(
                             validators.validators.clone(),
                             val_set_update_interval,
                         ),

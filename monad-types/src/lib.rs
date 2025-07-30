@@ -7,6 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use alloy_primitives::U256;
 use alloy_rlp::{
     Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper,
 };
@@ -292,8 +293,7 @@ impl SeqNum {
         Epoch((self.0 / val_set_update_interval.0) + 1)
     }
 
-    /// This tells us what the boundary block of the epoch is. Note that this only indicates when
-    /// the next epoch's round is scheduled.
+    /// This returns true if self is the boundary block of an epoch.
     pub fn is_epoch_end(&self, val_set_update_interval: SeqNum) -> bool {
         *self % val_set_update_interval == val_set_update_interval - SeqNum(1)
     }
@@ -301,11 +301,10 @@ impl SeqNum {
     /// Get the epoch number whose validator set is locked by this block. Should
     /// only be called on the boundary block sequence number
     ///
-    /// Current design locks the info for epoch n + 2 by the end of epoch n. The
-    /// validators have an entire epoch to prepare themselves for any duties
+    /// Current design locks the info for epoch n + 1 by the end of epoch n.
     pub fn get_locked_epoch(&self, val_set_update_interval: SeqNum) -> Epoch {
         assert!(self.is_epoch_end(val_set_update_interval));
-        (*self).to_epoch(val_set_update_interval) + Epoch(2)
+        (*self).to_epoch(val_set_update_interval) + Epoch(1)
     }
 }
 
@@ -456,7 +455,7 @@ impl Debug for BlockId {
     RlpEncodableWrapper,
     RlpDecodableWrapper,
 )]
-pub struct Stake(pub u64);
+pub struct Stake(pub U256);
 
 impl Add for Stake {
     type Output = Self;
@@ -496,7 +495,7 @@ impl SubAssign for Stake {
 
 impl std::iter::Sum for Stake {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        iter.fold(Stake(0), |a, b| a + b)
+        iter.fold(Stake(U256::ZERO), |a, b| a + b)
     }
 }
 

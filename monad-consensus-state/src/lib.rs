@@ -45,6 +45,13 @@ use crate::{command::ConsensusCommand, timestamp::BlockTimestamp};
 pub mod command;
 pub mod timestamp;
 
+#[derive(Debug, PartialEq, Eq)]
+enum Role {
+    FullNode,
+    UpcomingValidator,
+    Validator,
+}
+
 /// core consensus algorithm
 pub struct ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
@@ -54,6 +61,8 @@ where
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend<ST, SCT>,
 {
+    /// Current role
+    role: Role,
     /// Prospective blocks are stored here while they wait to be
     /// committed
     pending_block_tree: BlockTree<ST, SCT, EPT, BPT, SBT>,
@@ -228,13 +237,18 @@ where
     /// Arguments
     ///
     /// config - collection of configurable parameters for core consensus algorithm
-    pub fn new(
+    pub fn new<VTF>(
         epoch_manager: &EpochManager,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
+        node_id: &NodeId<CertificateSignaturePubKey<ST>>,
         config: &ConsensusConfig<CCT, CRT>,
         root: RootInfo,
         high_certificate: RoundCertificate<ST, SCT, EPT>,
         high_qc: QuorumCertificate<SCT>,
-    ) -> Self {
+    ) -> Self
+    where
+        VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    {
         let pacemaker = Pacemaker::new(
             config.delta,
             config.chain_config,
@@ -244,7 +258,8 @@ where
             high_qc.clone(),
         );
         let high_qc_round = high_qc.get_round();
-        ConsensusState {
+        let mut consensus = ConsensusState {
+            role: Role::FullNode,
             pending_block_tree: BlockTree::new(root),
             scheduled_vote: None,
             vote_state: VoteState::new(pacemaker.get_current_round()),
@@ -261,7 +276,61 @@ where
             ),
 
             block_sync_requests: Default::default(),
+        };
+        consensus.update_role(epoch_manager, val_epoch_map, node_id);
+        debug!(role=?consensus.role, "Consensus role initialized");
+        consensus
+    }
+
+    fn update_role<VTF>(
+        &mut self,
+        epoch_manager: &EpochManager,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
+        node_id: &NodeId<CertificateSignaturePubKey<ST>>,
+    ) where
+        VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    {
+        // update consensus state role
+        // - Validator if a current validator
+        // - UpcomingValidator if will become a validator in the next 10 rounds
+        //   - 10 is arbitrary. the exact number of rounds can be as small as 1
+        // - FullNode otherwise
+        let consensus_round = self.pacemaker.get_current_round();
+        let consensus_epoch = self.pacemaker.get_current_epoch();
+
+        let validator_set = val_epoch_map
+            .get_val_set(&consensus_epoch)
+            .unwrap_or_else(|| {
+                panic!(
+                    "unknown validator set for current_epoch={:?}",
+                    consensus_epoch
+                )
+            });
+
+        let new_role = if validator_set.is_member(node_id) {
+            Role::Validator
+        } else {
+            let upcoming_epoch = epoch_manager
+                .get_epoch(consensus_round + Round(10))
+                .expect("Epoch is always found for future rounds");
+            let upcoming_validator_set = val_epoch_map
+                .get_val_set(&upcoming_epoch)
+                .unwrap_or_else(|| panic!("unknown validator set for epoch={:?}", upcoming_epoch));
+            if upcoming_validator_set.is_member(node_id) {
+                Role::UpcomingValidator
+            } else {
+                Role::FullNode
+            }
+        };
+
+        if self.role != new_role {
+            info!(old_role=?self.role, new_role=?new_role, "Consensus role updated");
+            self.role = new_role;
         }
+    }
+
+    fn get_role(&self) -> &Role {
+        &self.role
     }
 
     pub fn blocktree(&self) -> &BlockTree<ST, SCT, EPT, BPT, SBT> {
@@ -931,11 +1000,12 @@ where
 
     #[must_use]
     pub fn checkpoint(&self) -> Checkpoint<ST, SCT, EPT> {
-        let val_set_data = |epoch: Epoch| {
+        let get_locked_epoch = |epoch: Epoch| {
             // return early if validator set isn't locked
             let _ = self.val_epoch_map.get_val_set(&epoch)?;
-
-            let round = self.epoch_manager.epoch_starts.get(&epoch).copied();
+            // return early if next epoch isn't scheduled
+            let round = self.epoch_manager.epoch_starts.get(&epoch).copied()?;
+            // this implies that epoch is scheduled and validator set is ready
             Some(LockedEpoch { epoch, round })
         };
 
@@ -944,16 +1014,12 @@ where
             root: self.consensus.pending_block_tree.root().block_id,
             high_certificate: self.consensus.pacemaker.high_certificate().clone(),
             high_qc: self.consensus.get_high_qc().clone(),
-            validator_sets: vec![
-                val_set_data(base_epoch)
-                    .expect("checkpoint: no validator set populated for base_epoch"),
-                val_set_data(base_epoch + Epoch(1))
-                    .expect("checkpoint: no validator set populated for base_epoch + 1"),
-            ]
+            validator_sets: vec![get_locked_epoch(base_epoch)
+                .expect("checkpoint: no validator set populated for base_epoch")]
             .into_iter()
             .chain(
-                // third val_set might not be ready
-                val_set_data(base_epoch + Epoch(2)),
+                // next val_set might not be ready
+                get_locked_epoch(base_epoch + Epoch(1)),
             )
             .collect(),
         }
@@ -1334,6 +1400,29 @@ where
             delayed_execution_results,
         }]
     }
+
+    pub fn update_role(&mut self) {
+        self.consensus
+            .update_role(self.epoch_manager, self.val_epoch_map, self.nodeid)
+    }
+
+    pub fn filter_cmd(&self, cmd: &ConsensusCommand<ST, SCT, EPT, BPT, SBT>) -> bool {
+        match self.consensus.get_role() {
+            Role::FullNode => match cmd {
+                // disable sending votes/timeouts for full node
+                ConsensusCommand::Publish { .. } => false,
+                // consensus state logic shouldn't trigger create proposal on a
+                // full node, but filtering it out to be safe
+                ConsensusCommand::CreateProposal { .. } => {
+                    warn!("Full node emitting CreateProposal command");
+                    false
+                }
+                ConsensusCommand::PublishToFullNodes { .. } => false,
+                _ => true,
+            },
+            Role::UpcomingValidator | Role::Validator => true,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1344,6 +1433,7 @@ mod test {
         constants::{EMPTY_TRANSACTIONS, EMPTY_WITHDRAWALS},
         Header, TxEnvelope, EMPTY_OMMER_ROOT_HASH,
     };
+    use alloy_primitives::U256;
     use itertools::Itertools;
     use monad_chain_config::{
         revision::{ChainParams, MockChainRevision},
@@ -1751,6 +1841,7 @@ mod test {
                         &mut [127; 32],
                     )
                     .unwrap();
+                let node_id = NodeId::new(keys[i as usize].pubkey());
                 let consensus_config = ConsensusConfig {
                     execution_delay,
                     delta: Duration::from_secs(1),
@@ -1764,6 +1855,8 @@ mod test {
                 let genesis_qc = QuorumCertificate::genesis_qc();
                 let cs = ConsensusState::new(
                     &epoch_manager,
+                    &val_epoch_map,
+                    &node_id,
                     &consensus_config,
                     RootInfo {
                         round: genesis_qc.get_round(),
@@ -1791,7 +1884,7 @@ mod test {
                     state_backend: state_backend(),
                     block_timestamp: BlockTimestamp::new(1000, 1),
                     beneficiary: Default::default(),
-                    nodeid: NodeId::new(keys[i as usize].pubkey()),
+                    nodeid: node_id,
                     consensus_config,
 
                     keypair: std::mem::replace(&mut dupkeys[i as usize], default_key),
@@ -4093,13 +4186,13 @@ mod test {
         let epoch_2_leader = NodeId::new(get_key::<SignatureType>(100).pubkey());
         env.val_epoch_map.insert(
             Epoch(2),
-            vec![(epoch_2_leader, Stake(1))],
+            vec![(epoch_2_leader, Stake(U256::ONE))],
             ValidatorMapping::new(vec![(epoch_2_leader, epoch_2_leader.pubkey())]),
         );
         for node in ctx.iter_mut() {
             node.val_epoch_map.insert(
                 Epoch(2),
-                vec![(epoch_2_leader, Stake(1))],
+                vec![(epoch_2_leader, Stake(U256::ONE))],
                 ValidatorMapping::new(vec![(epoch_2_leader, epoch_2_leader.pubkey())]),
             );
         }

@@ -4,6 +4,7 @@ use std::{
     marker::PhantomData,
 };
 
+use alloy_primitives::U256;
 use as_any::AsAny;
 use auto_impl::auto_impl;
 use monad_crypto::certificate_signature::PubKey;
@@ -124,7 +125,7 @@ impl<PT: PubKey> ValidatorSetTypeFactory for ValidatorSetFactory<PT> {
         validators: Vec<(NodeId<Self::NodeIdPubKey>, Stake)>,
     ) -> Result<Self::ValidatorSetType, Self::NodeIdPubKey> {
         let mut vmap = BTreeMap::new();
-        let mut total_stake = Stake(0);
+        let mut total_stake = Stake(U256::ZERO);
         for (node_id, stake) in validators.into_iter() {
             // TODO disallow unstaked?
             let duplicate = vmap.insert(node_id, stake);
@@ -173,14 +174,14 @@ impl<PT: PubKey> ValidatorSetType for ValidatorSet<PT> {
     fn has_super_majority_votes(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> bool {
         let mut duplicates = HashSet::new();
 
-        let mut voter_stake: Stake = Stake(0);
+        let mut voter_stake: Stake = Stake(U256::ZERO);
         for addr in addrs {
             if let Some(v) = self.validators.get(addr) {
                 voter_stake += *v;
                 debug_assert!(duplicates.insert(addr));
             }
         }
-        voter_stake >= Stake(self.total_stake.0 * 2 / 3 + 1)
+        voter_stake >= Stake(self.total_stake.0 * U256::from(2) / U256::from(3) + U256::from(1))
     }
 
     fn has_honest_vote(&self, addrs: &[NodeId<PT>]) -> bool {
@@ -189,13 +190,13 @@ impl<PT: PubKey> ValidatorSetType for ValidatorSet<PT> {
             .iter()
             .filter_map(|addr| self.validators.get(addr).copied())
             .sum::<Stake>()
-            >= Stake(self.total_stake.0 / 3 + 1)
+            >= Stake(self.total_stake.0 / U256::from(3) + U256::from(1))
     }
 
     fn has_threshold_votes(&self, addrs: &[NodeId<Self::NodeIdPubKey>], threshold: Stake) -> bool {
         let mut duplicates = HashSet::new();
 
-        let mut voter_stake: Stake = Stake(0);
+        let mut voter_stake: Stake = Stake(U256::ZERO);
         for addr in addrs {
             if let Some(v) = self.validators.get(addr) {
                 voter_stake += *v;
@@ -206,7 +207,7 @@ impl<PT: PubKey> ValidatorSetType for ValidatorSet<PT> {
     }
 
     fn calculate_current_stake(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> Stake {
-        let mut voter_stake: Stake = Stake(0);
+        let mut voter_stake: Stake = Stake(U256::ZERO);
         for addr in addrs {
             if let Some(v) = self.validators.get(addr) {
                 voter_stake += *v;
@@ -218,6 +219,7 @@ impl<PT: PubKey> ValidatorSetType for ValidatorSet<PT> {
 
 #[cfg(test)]
 mod test {
+    use alloy_primitives::U256;
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignature},
         NopSignature,
@@ -236,12 +238,12 @@ mod test {
         let seed2 = 8_u64;
         let keypair1 = get_key::<SignatureType>(seed1);
 
-        let v1 = (NodeId::new(keypair1.pubkey()), Stake(1));
-        let v1_ = (NodeId::new(keypair1.pubkey()), Stake(2));
+        let v1 = (NodeId::new(keypair1.pubkey()), Stake(U256::ONE));
+        let v1_ = (NodeId::new(keypair1.pubkey()), Stake(U256::from(2)));
 
         let keypair2 = get_key::<SignatureType>(seed2);
 
-        let v2 = (NodeId::new(keypair2.pubkey()), Stake(2));
+        let v2 = (NodeId::new(keypair2.pubkey()), Stake(U256::from(2)));
 
         let validators_duplicate = vec![v1, v1_];
         let _vs_err = ValidatorSetFactory::default()
@@ -261,8 +263,8 @@ mod test {
     fn test_super_maj() {
         let keypairs = create_keys::<SignatureType>(3);
 
-        let v1 = (NodeId::new(keypairs[0].pubkey()), Stake(1));
-        let v2 = (NodeId::new(keypairs[1].pubkey()), Stake(3));
+        let v1 = (NodeId::new(keypairs[0].pubkey()), Stake(U256::ONE));
+        let v2 = (NodeId::new(keypairs[1].pubkey()), Stake(U256::from(3)));
 
         let pubkey3 = keypairs[2].pubkey();
 
@@ -279,8 +281,8 @@ mod test {
     fn test_honest_vote() {
         let keypairs = create_keys::<SignatureType>(2);
 
-        let v1 = (NodeId::new(keypairs[0].pubkey()), Stake(1));
-        let v2 = (NodeId::new(keypairs[1].pubkey()), Stake(2));
+        let v1 = (NodeId::new(keypairs[0].pubkey()), Stake(U256::ONE));
+        let v2 = (NodeId::new(keypairs[1].pubkey()), Stake(U256::from(2)));
 
         let validators = vec![v1, v2];
         let vs = ValidatorSetFactory::default().create(validators).unwrap();
@@ -292,14 +294,14 @@ mod test {
     fn test_threshold() {
         let keypairs = create_keys::<SignatureType>(3);
 
-        let v1 = (NodeId::new(keypairs[0].pubkey()), Stake(2));
-        let v2 = (NodeId::new(keypairs[1].pubkey()), Stake(3));
+        let v1 = (NodeId::new(keypairs[0].pubkey()), Stake(U256::from(2)));
+        let v2 = (NodeId::new(keypairs[1].pubkey()), Stake(U256::from(3)));
 
         let n3 = NodeId::new(keypairs[2].pubkey());
 
         let validators = vec![v1, v2];
         let vs = ValidatorSetFactory::default().create(validators).unwrap();
-        let majority_threshold = Stake(vs.get_total_stake().0 / 2 + 1);
+        let majority_threshold = Stake(vs.get_total_stake().0 / U256::from(2) + U256::ONE);
         assert!(vs.has_threshold_votes(&[v2.0], majority_threshold));
         assert!(!vs.has_threshold_votes(&[v1.0], majority_threshold));
         assert!(vs.has_threshold_votes(&[v2.0, n3], majority_threshold));

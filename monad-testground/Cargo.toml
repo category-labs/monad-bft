@@ -29,6 +29,7 @@ monad-types = { workspace = true }
 monad-updaters = { workspace = true, features = ["tokio"] }
 monad-validator = { workspace = true }
 
+alloy-primitives = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 futures-util = { workspace = true }
 opentelemetry = { workspace = true }

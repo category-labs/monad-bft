@@ -180,7 +180,7 @@ where
 }
 
 #[derive(Debug)]
-pub enum StateRootHashCommand {
+pub enum ValSetCommand {
     NotifyFinalized(SeqNum),
 }
 
@@ -540,7 +540,7 @@ where
     TimerCommand(TimerCommand<E>),
     LedgerCommand(LedgerCommand<ST, SCT, EPT>),
     CheckpointCommand(CheckpointCommand<ST, SCT, EPT>),
-    StateRootHashCommand(StateRootHashCommand),
+    ValSetCommand(ValSetCommand),
     TimestampCommand(TimestampCommand),
 
     TxPoolCommand(TxPoolCommand<ST, SCT, EPT, BPT, SBT>),
@@ -566,9 +566,7 @@ where
             Self::CheckpointCommand(arg0) => {
                 f.debug_tuple("CheckpointCommand").field(arg0).finish()
             }
-            Self::StateRootHashCommand(arg0) => {
-                f.debug_tuple("StateRootHashCommand").field(arg0).finish()
-            }
+            Self::ValSetCommand(arg0) => f.debug_tuple("ValSetCommand").field(arg0).finish(),
             Self::TimestampCommand(arg0) => f.debug_tuple("TimestampCommand").field(arg0).finish(),
             Self::TxPoolCommand(arg0) => f.debug_tuple("TxPoolCommand").field(arg0).finish(),
             Self::ControlPanelCommand(arg0) => {
@@ -598,7 +596,7 @@ where
         Vec<TimerCommand<E>>,
         Vec<LedgerCommand<ST, SCT, EPT>>,
         Vec<CheckpointCommand<ST, SCT, EPT>>,
-        Vec<StateRootHashCommand>,
+        Vec<ValSetCommand>,
         Vec<TimestampCommand>,
         Vec<TxPoolCommand<ST, SCT, EPT, BPT, SBT>>,
         Vec<ControlPanelCommand<ST>>,
@@ -610,7 +608,7 @@ where
         let mut timer_cmds = Vec::new();
         let mut ledger_cmds = Vec::new();
         let mut checkpoint_cmds = Vec::new();
-        let mut state_root_hash_cmds = Vec::new();
+        let mut val_set_cmds = Vec::new();
         let mut timestamp_cmds = Vec::new();
         let mut txpool_cmds = Vec::new();
         let mut control_panel_cmds = Vec::new();
@@ -624,7 +622,7 @@ where
                 Command::TimerCommand(cmd) => timer_cmds.push(cmd),
                 Command::LedgerCommand(cmd) => ledger_cmds.push(cmd),
                 Command::CheckpointCommand(cmd) => checkpoint_cmds.push(cmd),
-                Command::StateRootHashCommand(cmd) => state_root_hash_cmds.push(cmd),
+                Command::ValSetCommand(cmd) => val_set_cmds.push(cmd),
                 Command::TimestampCommand(cmd) => timestamp_cmds.push(cmd),
                 Command::TxPoolCommand(cmd) => txpool_cmds.push(cmd),
                 Command::ControlPanelCommand(cmd) => control_panel_cmds.push(cmd),
@@ -639,7 +637,7 @@ where
             timer_cmds,
             ledger_cmds,
             checkpoint_cmds,
-            state_root_hash_cmds,
+            val_set_cmds,
             timestamp_cmds,
             txpool_cmds,
             control_panel_cmds,

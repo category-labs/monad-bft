@@ -292,6 +292,13 @@ where
             .copied()
     }
 
+    fn raw_read_latest_verified_block(&self) -> Option<SeqNum> {
+        self.commits
+            .last_key_value()
+            .map(|(block, _)| block)
+            .copied()
+    }
+
     fn read_next_valset(
         &self,
         _block_num: SeqNum,

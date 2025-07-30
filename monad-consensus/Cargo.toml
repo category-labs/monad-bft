@@ -15,6 +15,7 @@ monad-crypto = { workspace = true }
 monad-types = { workspace = true }
 monad-validator = { workspace = true }
 
+alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 tracing = { workspace = true }
 

@@ -4,8 +4,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+use alloy_primitives::U256;
 use clap::Parser;
-use executor::{LedgerConfig, StateRootHashConfig};
+use executor::{LedgerConfig, ValSetConfig};
 use futures_util::{FutureExt, StreamExt};
 use monad_bls::BlsSignatureCollection;
 use monad_chain_config::{revision::ChainParams, MockChainConfig};
@@ -268,7 +269,7 @@ where
             .iter()
             .map(|(keypair, _, cert_keypair)| ValidatorData {
                 node_id: NodeId::new(keypair.pubkey()),
-                stake: Stake(1),
+                stake: Stake(U256::ONE),
                 cert_pubkey: cert_keypair.pubkey(),
             })
             .collect::<Vec<_>>(),
@@ -326,7 +327,7 @@ where
                     ledger_config: match args.ledger {
                         LedgerArgs::Mock => LedgerConfig::Mock,
                     },
-                    state_root_hash_config: StateRootHashConfig::Mock {
+                    val_set_config: ValSetConfig::Mock {
                         genesis_validator_data: validators.clone(),
                         val_set_update_interval: SeqNum(args.val_set_update_interval),
                     },

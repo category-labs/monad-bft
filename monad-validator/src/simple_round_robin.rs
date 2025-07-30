@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, marker::PhantomData};
 
+use alloy_primitives::U256;
 use monad_crypto::certificate_signature::PubKey;
 use monad_types::{NodeId, Round, Stake};
 
@@ -22,7 +23,7 @@ impl<PT: PubKey> LeaderElection for SimpleRoundRobin<PT> {
     ) -> NodeId<PT> {
         let validators: Vec<_> = validators
             .iter()
-            .filter_map(|(node_id, stake)| (*stake != Stake(0)).then_some(node_id))
+            .filter_map(|(node_id, stake)| (*stake != Stake(U256::ZERO)).then_some(node_id))
             .collect();
         *validators[round.0 as usize % validators.len()]
     }

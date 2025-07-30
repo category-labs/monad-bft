@@ -20,11 +20,11 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor_glue::{
     BlockSyncEvent, CheckpointCommand, Command, ConsensusEvent, LedgerCommand, LoopbackCommand,
-    MempoolEvent, MonadEvent, RouterCommand, StateRootHashCommand, StateSyncEvent, TimeoutVariant,
-    TimerCommand, TimestampCommand, TxPoolCommand,
+    MempoolEvent, MonadEvent, RouterCommand, StateSyncEvent, TimeoutVariant, TimerCommand,
+    TimestampCommand, TxPoolCommand, ValSetCommand,
 };
 use monad_state_backend::StateBackend;
-use monad_types::{ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum};
+use monad_types::{ExecutionProtocol, NodeId, Round, RouterTarget};
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
@@ -237,10 +237,14 @@ where
             } => consensus.handle_block_sync(block_range, full_blocks),
             ConsensusEvent::SendVote(round) => consensus.handle_vote_timer(round),
         };
-        consensus_cmds
+        let filtered_cmds = consensus_cmds
+            .into_iter()
+            .filter(|cmd| consensus.filter_cmd(cmd))
+            .collect_vec(); // FIXME remove collect_vec
+        filtered_cmds
             .into_iter()
             .map(|cmd| self.wrap(cmd))
-            .collect::<Vec<_>>()
+            .collect_vec()
     }
 
     pub(super) fn handle_mempool_event(
@@ -516,7 +520,6 @@ where
         command: ConsensusCommand<ST, SCT, EPT, BPT, SBT>,
     ) -> WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT> {
         WrappedConsensusCommand {
-            state_root_delay: self.consensus_config.execution_delay,
             upcoming_leader_rounds: self.get_upcoming_leader_rounds(),
             command,
         }
@@ -531,7 +534,6 @@ where
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend<ST, SCT>,
 {
-    state_root_delay: SeqNum,
     upcoming_leader_rounds: Vec<Round>,
     pub command: ConsensusCommand<ST, SCT, EPT, BPT, SBT>,
 }
@@ -557,7 +559,6 @@ where
 {
     fn from(wrapped: WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT>) -> Self {
         let WrappedConsensusCommand {
-            state_root_delay,
             upcoming_leader_rounds,
             command,
         } = wrapped;
@@ -638,19 +639,15 @@ where
                 )));
 
                 match commit {
-                    OptimisticPolicyCommit::Proposed(block) => {
-                        let block_id = block.get_id();
-                        let round = block.get_round();
-                        let seq_num = block.get_seq_num();
-                    }
+                    OptimisticPolicyCommit::Proposed(_) => {}
                     OptimisticPolicyCommit::Finalized(block) => {
                         let finalized_seq_num = block.get_seq_num();
                         parent_cmds.push(Command::TxPoolCommand(TxPoolCommand::BlockCommit(vec![
                             block,
                         ])));
-                        parent_cmds.push(Command::StateRootHashCommand(
-                            StateRootHashCommand::NotifyFinalized(finalized_seq_num),
-                        ));
+                        parent_cmds.push(Command::ValSetCommand(ValSetCommand::NotifyFinalized(
+                            finalized_seq_num,
+                        )));
                     }
                 }
             }

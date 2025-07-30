@@ -184,6 +184,7 @@ where
 mod test {
     use std::collections::HashSet;
 
+    use alloy_primitives::U256;
     use monad_consensus_types::voting::Vote;
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignature},
@@ -413,11 +414,11 @@ mod test {
         let mut staking_list = keys
             .iter()
             .map(|k| NodeId::new(k.pubkey()))
-            .zip(std::iter::repeat(Stake(1)))
+            .zip(std::iter::repeat(Stake(U256::ONE)))
             .collect::<Vec<_>>();
 
         // node2 has supermajority stake by itself
-        staking_list[2].1 = Stake(10);
+        staking_list[2].1 = Stake(U256::from(10));
 
         let voting_identity = keys
             .iter()

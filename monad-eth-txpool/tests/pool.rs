@@ -21,7 +21,7 @@ use monad_eth_txpool_types::EthTxPoolSnapshot;
 use monad_eth_types::{Balance, BASE_FEE_PER_GAS};
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
-use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
+use monad_types::{Epoch, Round, SeqNum, GENESIS_SEQ_NUM};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing_test::traced_test;
 
@@ -232,6 +232,7 @@ fn run_custom_iter<const N: usize>(
                         PROPOSAL_SIZE_LIMIT,
                         [0_u8; 20],
                         GENESIS_TIMESTAMP + current_seq_num as u128,
+                        Epoch(1),
                         RoundSignature::new(Round(0), &mock_keypair),
                         pending_blocks.iter().cloned().collect_vec(),
                         &eth_block_policy,

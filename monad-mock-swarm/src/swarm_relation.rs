@@ -12,7 +12,7 @@ use monad_crypto::{
     NopSignature,
 };
 use monad_executor_glue::{
-    LedgerCommand, MonadEvent, StateRootHashCommand, StateSyncCommand, TxPoolCommand,
+    LedgerCommand, MonadEvent, StateSyncCommand, TxPoolCommand, ValSetCommand,
 };
 use monad_multi_sig::MultiSig;
 use monad_router_scheduler::{BytesRouterScheduler, NoSerRouterScheduler, RouterScheduler};
@@ -22,9 +22,9 @@ use monad_transformer::{GenericTransformerPipeline, Pipeline};
 use monad_types::ExecutionProtocol;
 use monad_updaters::{
     ledger::{MockLedger, MockableLedger},
-    state_root_hash::{MockStateRootHashNop, MockableStateRootHash},
     statesync::{MockStateSyncExecutor, MockableStateSync},
     txpool::{MockTxPoolExecutor, MockableTxPool},
+    val_set::{MockValSetUpdaterNop, MockableValSetUpdater},
 };
 use monad_validator::{
     leader_election::LeaderElection,
@@ -125,7 +125,7 @@ where
         + Sync
         + Unpin;
 
-    type StateRootHashExecutor: MockableStateRootHash<
+    type ValSetUpdater: MockableValSetUpdater<
             Event = MonadEvent<
                 Self::SignatureType,
                 Self::SignatureCollectionType,
@@ -234,15 +234,15 @@ impl SwarmRelation for DebugSwarmRelation {
             + Sync,
     >;
 
-    type StateRootHashExecutor = Box<
-        dyn MockableStateRootHash<
+    type ValSetUpdater = Box<
+        dyn MockableValSetUpdater<
                 Event = MonadEvent<
                     Self::SignatureType,
                     Self::SignatureCollectionType,
                     Self::ExecutionProtocolType,
                 >,
                 SignatureCollection = Self::SignatureCollectionType,
-                Command = StateRootHashCommand,
+                Command = ValSetCommand,
                 Item = MonadEvent<
                     Self::SignatureType,
                     Self::SignatureCollectionType,
@@ -331,7 +331,7 @@ impl SwarmRelation for NoSerSwarm {
         Self::TransportMessage,
     >;
 
-    type StateRootHashExecutor = MockStateRootHashNop<
+    type ValSetUpdater = MockValSetUpdaterNop<
         Self::SignatureType,
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,
@@ -387,7 +387,7 @@ impl SwarmRelation for BytesSwarm {
         Self::TransportMessage,
     >;
 
-    type StateRootHashExecutor = MockStateRootHashNop<
+    type ValSetUpdater = MockValSetUpdaterNop<
         Self::SignatureType,
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,
@@ -446,7 +446,7 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
     type Pipeline =
         MonadMessageTransformerPipeline<CertificateSignaturePubKey<Self::SignatureType>>;
 
-    type StateRootHashExecutor = MockStateRootHashNop<
+    type ValSetUpdater = MockValSetUpdaterNop<
         Self::SignatureType,
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,

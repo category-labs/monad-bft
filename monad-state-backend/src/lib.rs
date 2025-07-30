@@ -54,6 +54,8 @@ where
     fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum>;
     /// Fetches latest block from storage backend
     fn raw_read_latest_finalized_block(&self) -> Option<SeqNum>;
+    /// Fetches latest verified block (finalized + executed) from storage backend
+    fn raw_read_latest_verified_block(&self) -> Option<SeqNum>;
 
     fn read_next_valset(
         &self,
@@ -117,6 +119,11 @@ where
     fn raw_read_latest_finalized_block(&self) -> Option<SeqNum> {
         let state = self.lock().unwrap();
         state.raw_read_latest_finalized_block()
+    }
+
+    fn raw_read_latest_verified_block(&self) -> Option<SeqNum> {
+        let state = self.lock().unwrap();
+        state.raw_read_latest_verified_block()
     }
 
     fn read_next_valset(

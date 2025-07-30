@@ -40,8 +40,8 @@ mod test {
     };
     use monad_types::{NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
     use monad_updaters::{
-        ledger::MockableLedger, state_root_hash::MockStateRootHashNop,
-        statesync::MockStateSyncExecutor, txpool::MockTxPoolExecutor,
+        ledger::MockableLedger, statesync::MockStateSyncExecutor, txpool::MockTxPoolExecutor,
+        val_set::MockValSetUpdaterNop,
     };
     use monad_validator::{
         simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory,
@@ -93,7 +93,7 @@ mod test {
             Self::TransportMessage,
         >;
 
-        type StateRootHashExecutor = MockStateRootHashNop<
+        type ValSetUpdater = MockValSetUpdaterNop<
             Self::SignatureType,
             Self::SignatureCollectionType,
             Self::ExecutionProtocolType,
@@ -169,7 +169,7 @@ mod test {
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
+                        MockValSetUpdaterNop::new(validators.validators.clone(), SeqNum(2000)),
                         MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
                         MockEthLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(

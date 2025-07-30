@@ -20,8 +20,8 @@ use monad_transformer::{
 };
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
-    ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
-    txpool::MockTxPoolExecutor,
+    ledger::MockLedger, statesync::MockStateSyncExecutor, txpool::MockTxPoolExecutor,
+    val_set::MockValSetUpdaterNop,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 
@@ -64,7 +64,7 @@ fn random_latency_test(latency_seed: u64) {
                     ID::new(NodeId::new(state_builder.key.pubkey())),
                     state_builder,
                     NoSerRouterConfig::new(all_peers.clone()).build(),
-                    MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
+                    MockValSetUpdaterNop::new(validators.validators.clone(), SeqNum(2000)),
                     MockTxPoolExecutor::default(),
                     MockLedger::new(state_backend.clone()),
                     MockStateSyncExecutor::new(
@@ -137,7 +137,7 @@ fn delayed_message_test(latency_seed: u64) {
                     ID::new(NodeId::new(state_builder.key.pubkey())),
                     state_builder,
                     NoSerRouterConfig::new(all_peers.clone()).build(),
-                    MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
+                    MockValSetUpdaterNop::new(validators.validators.clone(), SeqNum(2000)),
                     MockTxPoolExecutor::default(),
                     MockLedger::new(state_backend.clone()),
                     MockStateSyncExecutor::new(

@@ -78,6 +78,11 @@ impl TriedbReader {
         Some(SeqNum(earliest_finalized))
     }
 
+    pub fn get_latest_verified_block(&self) -> Option<SeqNum> {
+        let latest_verified = self.handle.latest_verified_block()?;
+        Some(SeqNum(latest_verified))
+    }
+
     pub fn get_account_finalized(
         &self,
         seq_num: &SeqNum,
@@ -381,8 +386,12 @@ impl StateBackend<SecpSignature, BlsSignatureCollection<PubKey>> for TriedbReade
         self.get_latest_finalized_block()
     }
 
-    fn read_next_valset(&self, _block_num: SeqNum) -> Vec<(PubKey, BlsPubKey, Stake)> {
-        unimplemented!()
+    fn raw_read_latest_verified_block(&self) -> Option<SeqNum> {
+        self.get_latest_verified_block()
+    }
+
+    fn read_next_valset(&self, block_num: SeqNum) -> Vec<(PubKey, BlsPubKey, Stake)> {
+        self.handle.get_next_valset(block_num)
     }
 
     fn total_db_lookups(&self) -> u64 {

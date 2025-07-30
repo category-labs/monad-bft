@@ -27,7 +27,7 @@ use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_state_backend::StateBackend;
-use monad_types::DropTimer;
+use monad_types::{DropTimer, SeqNum};
 use monad_updaters::TokioTaskUpdater;
 use monad_validator::signature_collection::SignatureCollection;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -96,6 +96,7 @@ where
         hard_tx_expiry: Duration,
         chain_config: CCT,
         proposal_gas_limit: u64,
+        val_set_update_interval: SeqNum,
     ) -> io::Result<TokioTaskUpdater<Pin<Box<Self>>, MonadEvent<ST, SCT, EthExecutionProtocol>>>
     {
         let ipc = Box::pin(EthTxPoolIpcServer::new(ipc_config)?);
@@ -122,6 +123,8 @@ where
                         soft_tx_expiry,
                         hard_tx_expiry,
                         proposal_gas_limit,
+                        val_set_update_interval,
+                        chain_config.chain_id(),
                         // it's safe to default max_code_size to zero because it gets set on commit + reset
                         0,
                     );
@@ -258,6 +261,7 @@ where
                         proposal_byte_limit,
                         beneficiary,
                         timestamp_ns,
+                        epoch,
                         round_signature.clone(),
                         extending_blocks,
                         &self.block_policy,

@@ -6,12 +6,22 @@
 #include <optional>
 #include <vector>
 
+#include <monad/config.hpp>
 #include <monad/core/byte_string.hpp>
+#include <monad/core/int.hpp>
 #include <monad/core/nibble.h>
+#include <monad/db/trie_db.hpp>
+#include <monad/db/util.hpp>
+#include <monad/execution/staking/types.hpp>
+#include <monad/execution/staking_contract.hpp>
 #include <monad/mpt/db.hpp>
 #include <monad/mpt/ondisk_db_config.hpp>
 #include <monad/mpt/traverse.hpp>
 #include <monad/mpt/traverse_util.hpp>
+#include <monad/state2/block_state.hpp>
+#include <monad/state3/state.hpp>
+#include <monad/types/incarnation.hpp>
+#include <monad/vm/vm.hpp>
 
 #include "triedb.h"
 
@@ -405,4 +415,53 @@ uint64_t triedb_earliest_finalized_block(triedb *db)
 {
     uint64_t earliest_block_id = db->db_.get_earliest_block_id();
     return earliest_block_id;
+}
+
+monad_validator_set monad_alloc_valset(size_t length)
+{
+    auto *output = new monad_validator[length];
+    return monad_validator_set{.valset = output, .length = length};
+}
+
+void monad_free_valset(monad_validator_set valset)
+{
+    delete[] valset.valset;
+}
+
+monad_validator_set
+monad_read_valset(triedb *db, size_t const block_num, bool get_next)
+{
+    using namespace monad;
+
+    vm::VM vm;
+    TrieDb tdb(db->db_);
+    BlockState block_state{tdb, vm};
+    Incarnation const incarnation{block_num, Incarnation::LAST_TX - 1u};
+    State state{block_state, incarnation};
+    StakingContract contract(state, STAKING_CONTRACT_ADDRESS);
+    state.touch(STAKING_CONTRACT_ADDRESS);
+
+    if (!contract.vars.in_boundary.load()) {
+        get_next = false;
+    }
+    auto const valset = get_next ? contract.vars._valset_consensus()
+                                 : contract.vars._valset_snapshot();
+    auto get_valinfo = [&](u64_be const id) {
+        return get_next ? contract.vars._val_consensus(id)
+                        : contract.vars._val_snapshot(id);
+    };
+
+    uint64_t const length = valset.length();
+    auto output = monad_alloc_valset(length);
+
+    for (uint64_t i = 0; i < length; i += 1) {
+        auto const val_id = valset.get(i).load();
+        auto const val = get_valinfo(val_id);
+        auto const keys = val.keys().load();
+        auto const stake = val.stake().load();
+        std::memcpy(output.valset[i].secp_pubkey, keys.secp_pubkey.data(), 33);
+        std::memcpy(output.valset[i].bls_pubkey, keys.bls_pubkey.data(), 48);
+        std::memcpy(output.valset[i].stake, stake.buf, 32);
+    }
+    return output;
 }

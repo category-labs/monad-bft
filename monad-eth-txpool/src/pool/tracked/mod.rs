@@ -132,6 +132,7 @@ where
         proposal_byte_limit: u64,
         block_policy: &EthBlockPolicy<ST, SCT>,
         extending_blocks: Vec<&EthValidatedBlock<ST, SCT>>,
+        system_transactions: Vec<Recovered<TxEnvelope>>,
         state_backend: &SBT,
         pending: &mut PendingTxMap,
     ) -> Result<Vec<Recovered<TxEnvelope>>, StateBackendError> {
@@ -214,6 +215,7 @@ where
             proposal_byte_limit,
             tx_heap,
             account_balances,
+            system_transactions,
         );
 
         let proposal_num_txs = proposal_tx_list.len();
@@ -351,10 +353,11 @@ where
         proposal_byte_limit: u64,
         tx_heap: TrackedTxHeap<'_>,
         mut account_balances: BTreeMap<&Address, Balance>,
+        system_transactions: Vec<Recovered<TxEnvelope>>,
     ) -> (u64, Vec<Recovered<TxEnvelope>>) {
         assert!(tx_limit > 0);
 
-        let mut txs = Vec::new();
+        let mut txs = system_transactions;
         let mut total_gas = 0u64;
         let mut total_size = 0u64;
 

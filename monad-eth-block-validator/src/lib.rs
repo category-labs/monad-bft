@@ -210,9 +210,9 @@ where
         if nonce != &[0_u8; 8] {
             return Err(BlockValidationError::HeaderError);
         }
-        if extra_data != &[0_u8; 32] {
-            return Err(BlockValidationError::HeaderError);
-        }
+        // if extra_data != &[0_u8; 32] {
+        //     return Err(BlockValidationError::HeaderError);
+        // }
         if base_fee_per_gas != &BASE_FEE_PER_GAS {
             return Err(BlockValidationError::HeaderError);
         }

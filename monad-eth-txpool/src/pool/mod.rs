@@ -1,9 +1,12 @@
 use std::time::Duration;
 
 use alloy_consensus::{
-    constants::EMPTY_WITHDRAWALS, transaction::Recovered, TxEnvelope, EMPTY_OMMER_ROOT_HASH,
+    constants::EMPTY_WITHDRAWALS, transaction::Recovered, SignableTransaction, TxEnvelope,
+    TxLegacy, EMPTY_OMMER_ROOT_HASH,
 };
-use alloy_primitives::Address;
+use alloy_primitives::{hex, Address, FixedBytes, TxKind, B256};
+use alloy_signer::SignerSync;
+use alloy_signer_local::PrivateKeySigner;
 use itertools::Itertools;
 use monad_consensus_types::{block::ProposedExecutionInputs, payload::RoundSignature};
 use monad_crypto::certificate_signature::{
@@ -13,7 +16,7 @@ use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason, EthTxPoolSnapshot};
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader, BASE_FEE_PER_GAS};
 use monad_state_backend::{StateBackend, StateBackendError};
-use monad_types::SeqNum;
+use monad_types::{Epoch, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::{info, warn};
 
@@ -23,6 +26,20 @@ use crate::EthTxPoolEventTracker;
 mod pending;
 mod tracked;
 mod transaction;
+
+// Key used by all consensus nodes to sign and verify system transactions
+const SYSTEM_TRANSACTIONS_PRIV_KEY: B256 = B256::new(hex!(
+    "b0358e6d701a955d9926676f227e40172763296b317ff554e49cdf2c2c35f8a7"
+));
+const SYSTEM_TRANSACTIONS_ETH_ADDRESS: Address =
+    Address::new(hex!("0x6f49a8F621353f12378d0046E7d7e4b9B249DC9e"));
+
+// System transactions related to staking precompile
+const STAKING_CONTRACT_ADDRESS: Address =
+    Address::new(hex!("0x0000000000000000000000000000000000001000"));
+const EPOCH_CHANGE_IDENTIFIER: FixedBytes<4> = FixedBytes::new(hex!("0x00000000"));
+const SNAPSHOT_IDENTIFIER: FixedBytes<4> = FixedBytes::new(hex!("0x00000001"));
+const REWARD_IDENTIFIER: FixedBytes<4> = FixedBytes::new(hex!("0x00000002"));
 
 // This constants controls the maximum number of addresses that get promoted during the tx insertion
 // process. It was set based on intuition and should be changed once we have more data on txpool
@@ -45,6 +62,8 @@ where
     // <= proposal_gas_limit to reject anything that can't possibly fit in a
     // block. Create proposal doesn't rely on this value
     proposal_gas_limit: u64,
+    val_set_update_interval: SeqNum,
+    chain_id: u64,
 
     max_code_size: usize,
 }
@@ -60,6 +79,8 @@ where
         soft_tx_expiry: Duration,
         hard_tx_expiry: Duration,
         proposal_gas_limit: u64,
+        val_set_update_interval: SeqNum,
+        chain_id: u64,
         max_code_size: usize,
     ) -> Self {
         Self {
@@ -67,18 +88,24 @@ where
             pending: PendingTxMap::default(),
             tracked: TrackedTxMap::new(soft_tx_expiry, hard_tx_expiry),
             proposal_gas_limit,
+            val_set_update_interval,
+            chain_id,
             max_code_size,
         }
     }
 
     pub fn default_testing() -> Self {
         const PROPOSAL_GAS_LIMIT: u64 = 300_000_000;
+        const VAL_SET_UPDATE_INTERVAL: SeqNum = SeqNum(100);
+        const CHAIN_ID: u64 = 1337;
         const MAX_CODE_SIZE: usize = 0x6000;
         Self::new(
             true,
             Duration::from_secs(60),
             Duration::from_secs(60),
             PROPOSAL_GAS_LIMIT,
+            VAL_SET_UPDATE_INTERVAL,
+            CHAIN_ID,
             MAX_CODE_SIZE,
         )
     }
@@ -225,6 +252,7 @@ where
         proposal_byte_limit: u64,
         beneficiary: [u8; 20],
         timestamp_ns: u128,
+        epoch: Epoch,
         round_signature: RoundSignature<SCT::SignatureType>,
         extending_blocks: Vec<EthValidatedBlock<ST, SCT>>,
 
@@ -245,6 +273,17 @@ where
         // u64::MAX seconds is ~500 Billion years
         assert!(timestamp_seconds < u64::MAX.into());
 
+        let mut system_transactions = Vec::new();
+        if proposed_seq_num.is_epoch_end(self.val_set_update_interval) {
+            system_transactions.push(self.generate_snapshot_tx());
+        } else if extending_blocks
+            .last()
+            .is_some_and(|parent_block| parent_block.block.get_epoch() != epoch)
+        {
+            system_transactions.push(self.generate_epoch_change_tx(epoch));
+        }
+        system_transactions.push(self.generate_reward_tx(&beneficiary));
+
         let transactions = self.tracked.create_proposal(
             event_tracker,
             proposed_seq_num,
@@ -253,6 +292,7 @@ where
             proposal_byte_limit,
             block_policy,
             extending_blocks.iter().collect(),
+            system_transactions,
             state_backend,
             &mut self.pending,
         )?;
@@ -262,6 +302,12 @@ where
             ommers: Vec::new(),
             withdrawals: Vec::new(),
         };
+        let extra_data = if proposed_seq_num.is_epoch_end(self.val_set_update_interval) {
+            [u8::MAX; 32]
+        } else {
+            [0_u8; 32]
+        };
+
         let header = ProposedEthHeader {
             transactions_root: *alloy_consensus::proofs::calculate_transaction_root(
                 &body.transactions,
@@ -282,7 +328,7 @@ where
             timestamp: timestamp_seconds as u64,
             mix_hash: round_signature.get_hash().0,
             nonce: [0_u8; 8],
-            extra_data: [0_u8; 32],
+            extra_data,
             base_fee_per_gas: BASE_FEE_PER_GAS,
             blob_gas_used: 0,
             excess_blob_gas: 0,
@@ -363,5 +409,65 @@ where
             .chain(self.pending.iter_txs().map(ValidEthTransaction::signer))
             .unique()
             .collect()
+    }
+
+    fn sign_system_tx(tx: TxLegacy) -> Recovered<TxEnvelope> {
+        let signer = PrivateKeySigner::from_bytes(&SYSTEM_TRANSACTIONS_PRIV_KEY).unwrap();
+        let signature = signer
+            .sign_hash_sync(&tx.signature_hash())
+            .unwrap();
+        let signed = tx.into_signed(signature);
+
+        Recovered::new_unchecked(TxEnvelope::Legacy(signed), SYSTEM_TRANSACTIONS_ETH_ADDRESS)
+    }
+
+    fn generate_epoch_change_tx(&self, new_epoch: Epoch) -> Recovered<TxEnvelope> {
+        let mut input = [0_u8; 12];
+        input[0..4].copy_from_slice(EPOCH_CHANGE_IDENTIFIER.as_slice());
+        input[5..12].copy_from_slice(&new_epoch.0.to_be_bytes());
+
+        let transaction = TxLegacy {
+            chain_id: Some(self.chain_id),
+            nonce: 0,
+            gas_price: 0,
+            gas_limit: 0,
+            to: TxKind::Call(STAKING_CONTRACT_ADDRESS),
+            value: Default::default(),
+            input: input.into(),
+        };
+
+        Self::sign_system_tx(transaction)
+    }
+
+    fn generate_snapshot_tx(&self) -> Recovered<TxEnvelope> {
+        let transaction = TxLegacy {
+            chain_id: Some(self.chain_id),
+            nonce: 0,
+            gas_price: 0,
+            gas_limit: 0,
+            to: TxKind::Call(STAKING_CONTRACT_ADDRESS),
+            value: Default::default(),
+            input: SNAPSHOT_IDENTIFIER.into(),
+        };
+
+        Self::sign_system_tx(transaction)
+    }
+
+    fn generate_reward_tx(&self, beneficiary: &[u8; 20]) -> Recovered<TxEnvelope> {
+        let mut input = [0_u8; 24];
+        input[0..4].copy_from_slice(REWARD_IDENTIFIER.as_slice());
+        input[5..24].copy_from_slice(beneficiary);
+
+        let transaction = TxLegacy {
+            chain_id: Some(self.chain_id),
+            nonce: 0,
+            gas_price: 0,
+            gas_limit: 0,
+            to: TxKind::Call(STAKING_CONTRACT_ADDRESS),
+            value: Default::default(),
+            input: input.into(),
+        };
+
+        Self::sign_system_tx(transaction)
     }
 }

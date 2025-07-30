@@ -213,11 +213,15 @@ where
         self.state_backend.raw_read_latest_finalized_block()
     }
 
+    fn raw_read_latest_verified_block(&self) -> Option<SeqNum> {
+        self.state_backend.raw_read_latest_verified_block()
+    }
+
     fn read_next_valset(
         &self,
-        _block_num: SeqNum,
+        block_num: SeqNum,
     ) -> Vec<(SCT::NodeIdPubKey, SignatureCollectionPubKeyType<SCT>, Stake)> {
-        unimplemented!()
+        self.state_backend.read_next_valset(block_num)
     }
 
     fn total_db_lookups(&self) -> u64 {

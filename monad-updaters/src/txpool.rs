@@ -231,6 +231,7 @@ where
                             proposal_byte_limit,
                             beneficiary,
                             timestamp_ns,
+                            epoch,
                             round_signature.clone(),
                             extending_blocks,
                             block_policy,

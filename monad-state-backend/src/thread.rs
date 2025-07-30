@@ -44,6 +44,9 @@ where
     RawReadLatestFinalizedBlock {
         tx: mpsc::SyncSender<Option<SeqNum>>,
     },
+    RawReadLatestVerifiedBlock {
+        tx: mpsc::SyncSender<Option<SeqNum>>,
+    },
     ReadNextValidatorData {
         block_num: SeqNum,
         tx: mpsc::SyncSender<
@@ -156,6 +159,12 @@ where
         )
     }
 
+    fn raw_read_latest_verified_block(&self) -> Option<SeqNum> {
+        self.send_and_recv_request(|tx| StateBackendThreadRequest::RawReadLatestVerifiedBlock {
+            tx,
+        })
+    }
+
     fn read_next_valset(
         &self,
         block_num: SeqNum,
@@ -250,6 +259,10 @@ where
                 }
                 StateBackendThreadRequest::RawReadLatestFinalizedBlock { tx } => {
                     tx.send(state_backend.raw_read_latest_finalized_block())
+                        .expect("StateBackendThreadClient is alive");
+                }
+                StateBackendThreadRequest::RawReadLatestVerifiedBlock { tx } => {
+                    tx.send(state_backend.raw_read_latest_verified_block())
                         .expect("StateBackendThreadClient is alive");
                 }
                 StateBackendThreadRequest::ReadNextValidatorData { block_num, tx } => {

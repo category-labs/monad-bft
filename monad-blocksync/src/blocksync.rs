@@ -419,7 +419,7 @@ where
                 .collect_vec();
             assert!(!members.is_empty(), "no nodes to blocksync from");
             *members
-                .choose_weighted(rng, |(_peer, weight)| weight.0)
+                .choose_weighted(rng, |(_, weight)| weight.0.to::<u64>()) // FIXME impl SampleUniform for Stake
                 .expect("nonempty")
                 .0
         }
