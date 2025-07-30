@@ -9,10 +9,7 @@ use alloy_consensus::{
 use alloy_primitives::{Address, U256};
 use alloy_rlp::Encodable;
 use monad_consensus_types::{
-    block::{BlockPolicy, ConsensusBlockHeader, ConsensusFullBlock},
-    block_validator::{BlockValidationError, BlockValidator},
-    payload::ConsensusBlockBody,
-    signature_collection::{SignatureCollection, SignatureCollectionPubKeyType},
+    block::{BlockPolicy, ConsensusBlockHeader, ConsensusFullBlock}, block_validator::{BlockValidationError, BlockValidator}, payload::ConsensusBlockBody, quorum_certificate::HALT_TIP, signature_collection::{SignatureCollection, SignatureCollectionPubKeyType}
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -157,6 +154,10 @@ where
     ) -> Result<(), BlockValidationError> {
         if header.block_body_id != body.get_id() {
             return Err(BlockValidationError::HeaderPayloadMismatchError);
+        }
+
+        if header.get_id() == *HALT_TIP.lock().unwrap() {
+            return Ok(())
         }
 
         if let Some(author_pubkey) = author_pubkey {

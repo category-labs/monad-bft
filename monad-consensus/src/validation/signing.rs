@@ -1,14 +1,21 @@
-use std::{collections::BTreeMap, ops::Deref};
+use std::{
+    collections::BTreeMap,
+    num::NonZero,
+    ops::Deref,
+    sync::{LazyLock, Mutex},
+};
 
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
+use lru::LruCache;
 use monad_consensus_types::{
     no_endorsement::{FreshProposalCertificate, NoEndorsementCertificate},
-    quorum_certificate::QuorumCertificate,
+    quorum_certificate::{QuorumCertificate, HALT_TIP},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighExtend, HighExtendVote, NoTipCertificate, TimeoutCertificate, TimeoutInfo},
     tip::ConsensusTip,
     validation::Error,
     voting::ValidatorMapping,
+    RoundCertificate,
 };
 use monad_crypto::{
     certificate_signature::{
@@ -17,7 +24,9 @@ use monad_crypto::{
     },
     signing_domain,
 };
-use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, Stake, GENESIS_ROUND};
+use monad_types::{
+    Epoch, ExecutionProtocol, NodeId, Round, Stake, GENESIS_ROUND,
+};
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
@@ -291,6 +300,9 @@ impl<M> From<Validated<M>> for Unvalidated<M> {
     }
 }
 
+static CERT_CACHE: LazyLock<Mutex<LruCache<Vec<u8>, ()>>> =
+    LazyLock::new(|| Mutex::new(LruCache::new(NonZero::new(10_000).unwrap())));
+
 impl<ST, SCT, EPT> Verified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>
 where
     ST: CertificateSignatureRecoverable,
@@ -517,15 +529,39 @@ where
             return Err(Error::InvalidSignature);
         }
 
-        if let Some(tc) = &timeout.last_round_tc {
-            verify_tc(
-                &|epoch, round| {
-                    epoch_to_validators(epoch_manager, val_epoch_map, election, epoch, round)
-                },
-                tc,
-            )?;
-            // last_round_tc must be from the previous round
-            if timeout.tminfo.round != tc.round + Round(1) {
+        if let Some(round_certificate) = &timeout.last_round_certificate {
+            match round_certificate {
+                RoundCertificate::Tc(tc) => {
+                    verify_tc(
+                        &|epoch, round| {
+                            epoch_to_validators(
+                                epoch_manager,
+                                val_epoch_map,
+                                election,
+                                epoch,
+                                round,
+                            )
+                        },
+                        tc,
+                    )?;
+                }
+                RoundCertificate::Qc(qc) => {
+                    verify_qc(
+                        &|epoch, round| {
+                            epoch_to_validators(
+                                epoch_manager,
+                                val_epoch_map,
+                                election,
+                                epoch,
+                                round,
+                            )
+                        },
+                        qc,
+                    )?;
+                }
+            }
+            // last_round_certificate must be from the previous round
+            if timeout.tminfo.round != round_certificate.round() + Round(1) {
                 return Err(Error::NotWellFormed);
             }
         }
@@ -566,13 +602,13 @@ where
         let timeout = &self.0;
         if timeout.tminfo.round == timeout.high_extend.qc().get_round() + Round(1) {
             // Consecutive QC
-            if timeout.last_round_tc.is_some() {
+            if timeout.last_round_certificate.is_some() {
                 return Err(Error::NotWellFormed);
             }
             return Ok(());
         }
-        // last_round_tc must exist
-        let Some(_tc) = &timeout.last_round_tc else {
+        // last_round_certificate must exist
+        let Some(_rc) = &timeout.last_round_certificate else {
             return Err(Error::NotWellFormed);
         };
         Ok(())
@@ -725,6 +761,11 @@ where
     EPT: ExecutionProtocol,
     VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
 {
+    let cache_key = alloy_rlp::encode(tc);
+    if let Some(()) = CERT_CACHE.lock().unwrap().get(&cache_key) {
+        return Ok(());
+    }
+
     let (validators, validator_mapping, _leader) = epoch_to_validators(tc.epoch, tc.round)?;
 
     let mut node_ids = Vec::new();
@@ -785,6 +826,8 @@ where
         }
     }
 
+    CERT_CACHE.lock().unwrap().push(cache_key, ());
+
     Ok(())
 }
 
@@ -809,6 +852,10 @@ where
     SCT: SignatureCollection,
     VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
 {
+    let cache_key = alloy_rlp::encode(qc);
+    if let Some(()) = CERT_CACHE.lock().unwrap().get(&cache_key) {
+        return Ok(());
+    }
     let (validators, validator_mapping, _leader) =
         epoch_to_validators(qc.get_epoch(), qc.get_round())?;
 
@@ -828,6 +875,8 @@ where
     if !validators.has_super_majority_votes(&node_ids) {
         return Err(Error::InsufficientStake);
     }
+
+    CERT_CACHE.lock().unwrap().push(cache_key, ());
 
     Ok(())
 }
@@ -886,6 +935,9 @@ where
     EPT: ExecutionProtocol,
     VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
 {
+    if tip.block_header.get_id() == *HALT_TIP.lock().unwrap() {
+        return Ok(());
+    }
     let (_, _, leader) = epoch_to_validators(tip.block_header.epoch, tip.block_header.block_round)?;
 
     let tip_author = tip
@@ -972,6 +1024,11 @@ where
     SCT: SignatureCollection,
     VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
 {
+    let cache_key = alloy_rlp::encode(nec);
+    if let Some(()) = CERT_CACHE.lock().unwrap().get(&cache_key) {
+        return Ok(());
+    }
+
     let (validators, validator_mapping, _leader) =
         epoch_to_validators(nec.msg.epoch, nec.msg.round)?;
 
@@ -984,6 +1041,8 @@ where
     if !validators.has_super_majority_votes(&node_ids) {
         return Err(Error::InsufficientStake);
     }
+
+    CERT_CACHE.lock().unwrap().push(cache_key, ());
 
     Ok(())
 }
@@ -1029,6 +1088,7 @@ mod test {
         tip::ConsensusTip,
         validation::Error,
         voting::{ValidatorMapping, Vote},
+        RoundCertificate,
     };
     use monad_crypto::{
         certificate_signature::{
@@ -1411,13 +1471,13 @@ mod test {
             high_tip_round: GENESIS_ROUND,
         };
 
-        let unvalidated_tmo_msg = TimeoutMessage::<
-            SignatureType,
-            SignatureCollectionType,
-            ExecutionProtocolType,
-        >::new(
-            &certkeys[0], timeout, HighExtend::Qc(qc), Some(tc)
-        );
+        let unvalidated_tmo_msg =
+            TimeoutMessage::<SignatureType, SignatureCollectionType, ExecutionProtocolType>::new(
+                &certkeys[0],
+                timeout,
+                HighExtend::Qc(qc),
+                Some(RoundCertificate::Tc(tc)),
+            );
 
         let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
         let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
@@ -1589,6 +1649,8 @@ mod test {
             id: BlockId(Hash([0x0a_u8; 32])),
             epoch: Epoch(2), // wrong epoch: should be 1
             round: Round(10),
+            v0_parent_id: None,
+            v0_parent_round: None,
         };
 
         let unvalidated_vote_message =
@@ -1627,6 +1689,8 @@ mod test {
             id: BlockId(Hash([0x0a_u8; 32])),
             epoch: Epoch(1),
             round: Round(10),
+            v0_parent_id: None,
+            v0_parent_round: None,
         };
 
         let mut vote_msg = VoteMessage::<SignatureCollectionType>::new(vote, author_cert_key);
@@ -1742,6 +1806,8 @@ mod test {
             id: BlockId(Hash([0x09_u8; 32])),
             epoch: Epoch(2), // wrong epoch
             round: Round(10),
+            v0_parent_id: None,
+            v0_parent_round: None,
         };
 
         let msg = alloy_rlp::encode(vote);
@@ -1791,6 +1857,8 @@ mod test {
             id: BlockId(Hash([0x09_u8; 32])),
             epoch: Epoch(1), // correct epoch
             round: Round(10),
+            v0_parent_id: None,
+            v0_parent_round: None,
         };
 
         let msg = alloy_rlp::encode(vote);

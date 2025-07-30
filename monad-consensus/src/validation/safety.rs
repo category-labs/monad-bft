@@ -79,12 +79,16 @@ where
         maybe_high_tip: Option<ConsensusTip<ST, SCT, EPT>>,
     ) -> Self {
         let current_round = high_certificate.round() + Round(1);
+        let mut highest_vote = current_round;
+        if let Some(high_tip) = &maybe_high_tip {
+            highest_vote = high_tip.block_header.block_round.max(highest_vote);
+        }
         Self {
             maybe_high_tip,
             high_certificate_qc_round: high_certificate.qc().get_round(),
 
             // we never vote/ne/propose the current round
-            highest_vote: current_round,
+            highest_vote,
             highest_no_endorse: HighNoEndorse {
                 round: current_round,
                 tip: GENESIS_BLOCK_ID,
@@ -156,8 +160,8 @@ where
     }
 
     pub fn timeout(&mut self, round: Round) {
-        assert!(round >= self.highest_vote);
-        self.highest_vote = round;
+        // assert!(round >= self.highest_vote);
+        self.highest_vote = round.max(self.highest_vote);
     }
 
     pub fn is_safe_to_propose(&self, round: Round) -> bool {

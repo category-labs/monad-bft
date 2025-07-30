@@ -1,3 +1,5 @@
+use std::sync::Mutex;
+
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
@@ -13,6 +15,8 @@ use crate::{
     },
     voting::*,
 };
+
+pub static HALT_TIP: Mutex<BlockId> = Mutex::new(GENESIS_BLOCK_ID);
 
 #[non_exhaustive]
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodable, RlpDecodable)]
@@ -71,6 +75,8 @@ impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
             id: GENESIS_BLOCK_ID,
             epoch: Epoch(1),
             round: GENESIS_ROUND,
+            v0_parent_id: None,
+            v0_parent_round: None,
         };
 
         let sigs = SCT::new::<signing_domain::Vote>(

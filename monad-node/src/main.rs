@@ -16,6 +16,7 @@ use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     metrics::Metrics,
+    quorum_certificate::HALT_TIP,
     signature_collection::SignatureCollection,
     validator_data::{ValidatorSetDataWithEpoch, ValidatorsConfig},
 };
@@ -193,6 +194,8 @@ fn setup_tracing(
 }
 
 async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Result<(), ()> {
+    *HALT_TIP.lock().unwrap() = node_state.node_config.maybe_fork_tip;
+
     let locked_epoch_validators = ValidatorsConfig::read_from_path(&node_state.validators_path)
         .unwrap_or_else(|err| {
             panic!(

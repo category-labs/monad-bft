@@ -552,6 +552,8 @@ mod test {
             id: block.get_id(),
             epoch: block.epoch,
             round: block.block_round,
+            v0_parent_id: None,
+            v0_parent_round: None,
         }
     }
 
@@ -564,6 +566,8 @@ mod test {
             id: block.get_id(),
             epoch: block.epoch,
             round: block.block_round,
+            v0_parent_id: None,
+            v0_parent_round: None,
         };
         QC::new(vote, MockSignatures::with_pubkeys(&[]))
     }

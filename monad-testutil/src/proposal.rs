@@ -12,6 +12,7 @@ use monad_consensus_types::{
     timeout::{HighExtend, HighTipRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
     tip::ConsensusTip,
     voting::{ValidatorMapping, Vote},
+    RoundCertificate,
 };
 use monad_crypto::{
     certificate_signature::{
@@ -230,7 +231,7 @@ where
                 certkey,
                 tminfo.clone(),
                 HighExtend::Qc(self.high_qc.clone()),
-                Some(tc.clone()),
+                Some(RoundCertificate::Tc(tc.clone())),
             );
             tmo_msgs.push(Verified::<ST, _>::new(timeout.into(), key));
         }
@@ -255,6 +256,8 @@ where
             id: block.get_id(),
             epoch: block.epoch,
             round: block.block_round,
+            v0_parent_id: None,
+            v0_parent_round: None,
         };
 
         let msg = alloy_rlp::encode(vote);

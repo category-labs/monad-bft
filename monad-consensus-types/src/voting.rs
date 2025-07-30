@@ -29,6 +29,7 @@ impl<PT: PubKey, VKT: CertificateKeyPair> IntoIterator for ValidatorMapping<PT, 
 
 /// Vote for consensus proposals
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, RlpDecodable, RlpEncodable)]
+#[rlp(trailing)]
 pub struct Vote {
     /// id of the proposed block
     pub id: BlockId,
@@ -36,6 +37,9 @@ pub struct Vote {
     pub round: Round,
     /// the epoch of the round that this vote is for
     pub epoch: Epoch,
+
+    pub v0_parent_id: Option<BlockId>,
+    pub v0_parent_round: Option<Round>,
 }
 
 impl std::fmt::Debug for Vote {
@@ -54,6 +58,8 @@ impl DontCare for Vote {
             id: BlockId(Hash([0x0_u8; 32])),
             epoch: Epoch(1),
             round: Round(0),
+            v0_parent_id: None,
+            v0_parent_round: None,
         }
     }
 }

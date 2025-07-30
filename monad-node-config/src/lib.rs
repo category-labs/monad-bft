@@ -8,6 +8,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_types::{serde::deserialize_eth_address_from_str, EthExecutionProtocol};
 use monad_secp::SecpSignature;
+use monad_types::BlockId;
 use serde::Deserialize;
 
 pub use self::{
@@ -65,6 +66,7 @@ pub struct NodeConfig<ST: CertificateSignatureRecoverable> {
     // NETWORK-WIDE CONFIGURATION //
     ////////////////////////////////
     pub chain_id: u64,
+    pub maybe_fork_tip: BlockId,
 }
 
 pub type SignatureType = SecpSignature;
