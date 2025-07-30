@@ -56,6 +56,10 @@ pub struct Cli {
     #[arg(long, default_value_t = 500)]
     pub ws_conn_limit: usize,
 
+    /// Set the subscription limit for each connection
+    #[arg(long, default_value_t = 100)]
+    pub ws_sub_per_conn_limit: u16,
+
     /// Set the max number of requests in a batch request
     #[arg(long, default_value_t = 5000)]
     pub batch_request_limit: u16,

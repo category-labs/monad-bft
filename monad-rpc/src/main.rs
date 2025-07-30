@@ -354,6 +354,7 @@ async fn main() -> std::io::Result<()> {
     let ws_server_handle = if let Some(events_client) = events_client {
         let ws_app_data = app_state.clone();
         let conn_limit = websocket::handler::ConnectionLimit::new(args.ws_conn_limit);
+        let sub_limit = websocket::handler::SubscriptionLimit(args.ws_sub_per_conn_limit);
 
         args.ws_enabled.then(|| {
             HttpServer::new(move || {
@@ -361,6 +362,7 @@ async fn main() -> std::io::Result<()> {
                     .app_data(web::Data::new(conn_limit.clone()))
                     .app_data(web::Data::new(events_client.clone()))
                     .app_data(web::Data::new(ws_app_data.clone()))
+                    .app_data(web::Data::new(sub_limit.clone()))
                     .service(
                         web::resource("/").route(web::get().to(websocket::handler::ws_handler)),
                     )
