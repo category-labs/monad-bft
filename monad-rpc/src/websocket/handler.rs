@@ -252,6 +252,16 @@ async fn handle_notification(
                 send_notification(session, id, header.as_ref()).await?;
             }
 
+            if header.commit_state == BlockCommitState::Finalized {
+                for (id, _) in subscriptions
+                    .get(&SubscriptionKind::NewHeads)
+                    .map(|x| x.iter())
+                    .unwrap_or_default()
+                {
+                    send_notification(session, id, header.data.as_ref()).await?;
+                }
+            }
+
             for (id, filter) in subscriptions
                 .get(&SubscriptionKind::MonadLogs)
                 .map(|x| x.iter())
@@ -268,14 +278,6 @@ async fn handle_notification(
             }
 
             if header.commit_state == BlockCommitState::Finalized {
-                for (id, _) in subscriptions
-                    .get(&SubscriptionKind::NewHeads)
-                    .map(|x| x.iter())
-                    .unwrap_or_default()
-                {
-                    send_notification(session, id, header.data.as_ref()).await?;
-                }
-
                 for (id, filter) in subscriptions
                     .get(&SubscriptionKind::Logs)
                     .map(|x| x.iter())
