@@ -28,7 +28,7 @@ jobs:
           - { name: "monad-execution", file: "monad-cxx/monad-execution/docker/release.Dockerfile", context: "monad-cxx/monad-execution" }
           - { name: "monad-tx-gen", file: "docker/txgen/Dockerfile" }
           - { name: "monad-archive", file: "docker/archive/Dockerfile" }
-          - { name: "monad-archive", file: "docker/archive/Dockerfile", target: -debug }
+          - { name: "monad-archive", file: "docker/archive/Dockerfile", target_postfix: -debug }
           - { name: "rpc-request-generator", file: "docker/rpc-request-gen/Dockerfile" }
 
     permissions:
