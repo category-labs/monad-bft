@@ -78,6 +78,8 @@ RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell -fno-omit-frame-pointer" CX
     cp `ls -Lt $(find target/release | grep -e "libmonad_rpc.so") | awk -F/ '!seen[$NF]++'` . && \
     cp `ls -Lt $(find target/release | grep -e "libtriedb_driver.so") | awk -F/ '!seen[$NF]++'` .
 
+RUN cp `ls -Lt $(find target/release | grep -e "libblake3.so") | awk -F/ '!seen[$NF]++'` .
+
 # Debug runner
 FROM base AS runner-debug
 

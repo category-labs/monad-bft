@@ -16,7 +16,6 @@ use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     metrics::Metrics,
-    signature_collection::SignatureCollection,
     validator_data::{ValidatorSetDataWithEpoch, ValidatorsConfig},
 };
 use monad_control_panel::{ipc::ControlPanelIpcReceiver, TracingReload};
@@ -57,10 +56,11 @@ use monad_types::{DropTimer, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_updaters::{
     checkpoint::FileCheckpoint, config_loader::ConfigLoader, loopback::LoopbackExecutor,
     parent::ParentExecutor, timer::TokioTimer, tokio_timestamp::TokioTimestamp,
-    triedb_state_root_hash::StateRootHashTriedbPoll, BoxUpdater, Updater,
+    triedb_val_set::ValSetUpdater, BoxUpdater, Updater,
 };
 use monad_validator::{
-    validator_set::ValidatorSetFactory, weighted_round_robin::WeightedRoundRobin,
+    signature_collection::SignatureCollection, validator_set::ValidatorSetFactory,
+    weighted_round_robin::WeightedRoundRobin,
 };
 use monad_wal::{wal::WALoggerConfig, PersistenceLoggerBuilder};
 use opentelemetry::metrics::MeterProvider;
@@ -231,13 +231,11 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
         )
         .await;
 
-        #[cfg(feature = "full-node")]
-        let raptor_router = monad_router_filter::FullNodeRouterFilter::new(raptor_router);
-
         <_ as Updater<_>>::boxed(raptor_router)
     };
 
-    let val_set_update_interval = SeqNum(50_000); // TODO configurable
+    let val_set_update_interval = SeqNum(100); // TODO configurable
+    let epoch_start_delay = Round(20); // TODO configurable
 
     let statesync_threshold: usize = node_state.node_config.statesync_threshold.into();
 
@@ -301,11 +299,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
         timer: TokioTimer::default(),
         ledger: MonadBlockFileLedger::new(node_state.ledger_path),
         checkpoint: FileCheckpoint::new(node_state.forkpoint_path),
-        state_root_hash: StateRootHashTriedbPoll::new(
-            &node_state.triedb_path,
-            &node_state.validators_path,
-            val_set_update_interval,
-        ),
+        val_set: ValSetUpdater::new(val_set_update_interval, state_backend.clone()),
         timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
         txpool: EthTxPoolExecutor::new(
             create_block_policy(),
@@ -333,6 +327,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
                 )
                 .chain_params()
                 .proposal_gas_limit,
+            val_set_update_interval,
         )
         .expect("txpool ipc succeeds"),
         control_panel: ControlPanelIpcReceiver::new(
@@ -393,7 +388,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
         key: node_state.secp256k1_identity,
         certkey: node_state.bls12_381_identity,
         val_set_update_interval,
-        epoch_start_delay: Round(5000),
+        epoch_start_delay,
         beneficiary: node_state.node_config.beneficiary.into(),
         locked_epoch_validators,
         forkpoint: node_state.forkpoint_config.into(),
@@ -580,12 +575,7 @@ where
     tracing::debug!(
         ?bind_address,
         ?name_record_address,
-        "Monad-node ({}) starting, pid: {}",
-        if cfg!(feature = "full-node") {
-            "full-node"
-        } else {
-            "validator"
-        },
+        "Monad-node starting, pid: {}",
         process::id()
     );
 

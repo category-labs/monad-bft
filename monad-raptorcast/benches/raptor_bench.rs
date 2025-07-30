@@ -1,5 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
+use alloy_primitives::U256;
 use bytes::Bytes;
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
 use itertools::Itertools;
@@ -34,7 +35,14 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         let mut validators = EpochValidators {
             validators: keys
                 .iter()
-                .map(|key| (NodeId::new(key.pubkey()), Validator { stake: Stake(1) }))
+                .map(|key| {
+                    (
+                        NodeId::new(key.pubkey()),
+                        Validator {
+                            stake: Stake(U256::ONE),
+                        },
+                    )
+                })
                 .collect(),
         };
 
@@ -78,7 +86,14 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         let mut validators = EpochValidators {
             validators: keys
                 .iter()
-                .map(|key| (NodeId::new(key.pubkey()), Validator { stake: Stake(1) }))
+                .map(|key| {
+                    (
+                        NodeId::new(key.pubkey()),
+                        Validator {
+                            stake: Stake(U256::ONE),
+                        },
+                    )
+                })
                 .collect(),
         };
         let epoch_validators = validators.view_without(vec![&NodeId::new(keys[0].pubkey())]);

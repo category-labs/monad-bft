@@ -2,7 +2,6 @@ pub mod twin_reader;
 
 use std::{collections::BTreeMap, time::Duration};
 
-use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -19,8 +18,9 @@ use monad_state_backend::InMemoryState;
 use monad_transformer::RandLatencyTransformer;
 use monad_types::{ExecutionProtocol, NodeId, SeqNum};
 use monad_updaters::{
-    ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
+    ledger::MockLedger, statesync::MockStateSyncExecutor, val_set::MockValSetUpdaterNop,
 };
+use monad_validator::signature_collection::SignatureCollection;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaChaRng;
 use twin_reader::TWINS_STATE_ROOT_DELAY;
@@ -35,14 +35,14 @@ where
     S: SwarmRelation<
         SignatureType = ST,
         SignatureCollectionType = SCT,
-        StateBackendType = InMemoryState,
+        StateBackendType = InMemoryState<ST, SCT>,
         Pipeline = MonadMessageTransformerPipeline<CertificateSignaturePubKey<ST>>,
         RouterScheduler = NoSerRouterScheduler<
             CertificateSignaturePubKey<ST>,
             MonadMessage<ST, SCT, EPT>,
             VerifiedMonadMessage<ST, SCT, EPT>,
         >,
-        StateRootHashExecutor = MockStateRootHashNop<ST, SCT, EPT>,
+        ValSetUpdater = MockValSetUpdaterNop<ST, SCT, EPT>,
         StateSyncExecutor = MockStateSyncExecutor<ST, SCT, EPT>,
         Ledger = MockLedger<ST, SCT, EPT>,
     >,
@@ -94,7 +94,7 @@ where
                     .collect(),
             )
             .build(),
-            MockStateRootHashNop::new(
+            MockValSetUpdaterNop::new(
                 validators.validators.clone(),
                 SeqNum(TWINS_STATE_ROOT_DELAY), // ?? val_set_interval?
             ),

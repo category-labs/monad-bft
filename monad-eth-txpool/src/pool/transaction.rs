@@ -3,9 +3,7 @@ use std::cmp::Ordering;
 use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
 use alloy_primitives::{Address, TxHash};
 use alloy_rlp::Encodable;
-use monad_consensus_types::{
-    block::ConsensusBlockHeader, signature_collection::SignatureCollection,
-};
+use monad_consensus_types::block::ConsensusBlockHeader;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -13,6 +11,7 @@ use monad_eth_block_policy::{compute_txn_max_value, static_validate_transaction,
 use monad_eth_txpool_types::EthTxPoolDropReason;
 use monad_eth_types::{Balance, EthExecutionProtocol, Nonce, BASE_FEE_PER_GAS};
 use monad_types::SeqNum;
+use monad_validator::signature_collection::SignatureCollection;
 use tracing::trace;
 
 use crate::EthTxPoolEventTracker;

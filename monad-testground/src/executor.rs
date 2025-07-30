@@ -11,7 +11,6 @@ use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::{MockExecutionProtocol, PassthruBlockPolicy},
     block_validator::MockValidator,
-    signature_collection::SignatureCollection,
     validator_data::{ValidatorSetData, ValidatorSetDataWithEpoch},
 };
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
@@ -19,7 +18,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_dataplane::DataplaneBuilder;
-use monad_executor_glue::{Command, MonadEvent, RouterCommand, StateRootHashCommand};
+use monad_executor_glue::{Command, MonadEvent, RouterCommand, ValSetCommand};
 use monad_peer_discovery::{
     driver::PeerDiscoveryDriver,
     mock::{NopDiscovery, NopDiscoveryBuilder},
@@ -31,8 +30,12 @@ use monad_types::{ExecutionProtocol, NodeId, Round, SeqNum};
 use monad_updaters::{
     checkpoint::MockCheckpoint, config_loader::MockConfigLoader, ledger::MockLedger,
     local_router::LocalPeerRouter, loopback::LoopbackExecutor, parent::ParentExecutor,
-    state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor, timer::TokioTimer,
-    tokio_timestamp::TokioTimestamp, txpool::MockTxPoolExecutor, BoxUpdater, Updater,
+    statesync::MockStateSyncExecutor, timer::TokioTimer, tokio_timestamp::TokioTimestamp,
+    txpool::MockTxPoolExecutor, val_set::MockValSetUpdaterNop, BoxUpdater, Updater,
+};
+use monad_validator::{
+    signature_collection::SignatureCollection, simple_round_robin::SimpleRoundRobin,
+    validator_set::ValidatorSetFactory,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Layer};
@@ -54,7 +57,7 @@ pub enum LedgerConfig {
     Mock,
 }
 
-pub enum StateRootHashConfig<SCT>
+pub enum ValSetConfig<SCT>
 where
     SCT: SignatureCollection,
 {
@@ -74,13 +77,13 @@ where
     pub known_addresses: HashMap<NodeId<SCT::NodeIdPubKey>, SocketAddrV4>,
     pub router_config: RouterConfig<ST, SCT, EPT>,
     pub ledger_config: LedgerConfig,
-    pub state_root_hash_config: StateRootHashConfig<SCT>,
+    pub val_set_config: ValSetConfig<SCT>,
     pub nodeid: NodeId<SCT::NodeIdPubKey>,
 }
 
 pub fn make_monad_executor<ST, SCT>(
     index: usize,
-    state_backend: InMemoryState,
+    state_backend: InMemoryState<ST, SCT>,
     config: ExecutorConfig<ST, SCT, MockExecutionProtocol>,
 ) -> ParentExecutor<
     BoxUpdater<
@@ -91,9 +94,9 @@ pub fn make_monad_executor<ST, SCT>(
     TokioTimer<MonadEvent<ST, SCT, MockExecutionProtocol>>,
     MockLedger<ST, SCT, MockExecutionProtocol>,
     MockCheckpoint<ST, SCT, MockExecutionProtocol>,
-    BoxUpdater<'static, StateRootHashCommand, MonadEvent<ST, SCT, MockExecutionProtocol>>,
+    BoxUpdater<'static, ValSetCommand, MonadEvent<ST, SCT, MockExecutionProtocol>>,
     TokioTimestamp<ST, SCT, MockExecutionProtocol>,
-    MockTxPoolExecutor<ST, SCT, MockExecutionProtocol, PassthruBlockPolicy, InMemoryState>,
+    MockTxPoolExecutor<ST, SCT, MockExecutionProtocol, PassthruBlockPolicy, InMemoryState<ST, SCT>>,
     ControlPanelIpcReceiver<ST, SCT, MockExecutionProtocol>,
     LoopbackExecutor<MonadEvent<ST, SCT, MockExecutionProtocol>>,
     MockStateSyncExecutor<ST, SCT, MockExecutionProtocol>,
@@ -146,11 +149,11 @@ where
             LedgerConfig::Mock => MockLedger::new(state_backend.clone()),
         },
         checkpoint: MockCheckpoint::default(),
-        state_root_hash: match config.state_root_hash_config {
-            StateRootHashConfig::Mock {
+        val_set: match config.val_set_config {
+            ValSetConfig::Mock {
                 genesis_validator_data,
                 val_set_update_interval,
-            } => Updater::boxed(MockStateRootHashNop::new(
+            } => Updater::boxed(MockValSetUpdaterNop::new(
                 genesis_validator_data,
                 val_set_update_interval,
             )),
@@ -178,7 +181,7 @@ type MonadStateType<ST, SCT> = MonadState<
     SCT,
     MockExecutionProtocol,
     PassthruBlockPolicy,
-    InMemoryState,
+    InMemoryState<ST, SCT>,
     ValidatorSetFactory<CertificateSignaturePubKey<ST>>,
     SimpleRoundRobin<CertificateSignaturePubKey<ST>>,
     MockValidator,
@@ -203,7 +206,7 @@ where
 }
 
 pub fn make_monad_state<ST, SCT>(
-    state_backend: InMemoryState,
+    state_backend: InMemoryState<ST, SCT>,
     config: StateConfig<ST, SCT>,
 ) -> (
     MonadStateType<ST, SCT>,
@@ -215,7 +218,7 @@ pub fn make_monad_state<ST, SCT>(
             SCT,
             MockExecutionProtocol,
             PassthruBlockPolicy,
-            InMemoryState,
+            InMemoryState<ST, SCT>,
         >,
     >,
 )

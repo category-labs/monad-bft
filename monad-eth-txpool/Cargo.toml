@@ -17,10 +17,13 @@ monad-eth-types = { workspace = true }
 monad-executor = { workspace = true }
 monad-state-backend = { workspace = true }
 monad-types = { workspace = true }
+monad-validator = { workspace = true }
 
 alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
+alloy-signer = { workspace = true }
+alloy-signer-local = { workspace = true }
 indexmap = { workspace = true }
 itertools = { workspace = true }
 serde = { workspace = true }
@@ -33,8 +36,6 @@ monad-perf-util = { workspace = true }
 monad-testutil = { workspace = true }
 monad-types = { workspace = true }
 
-alloy-signer = { workspace = true }
-alloy-signer-local = { workspace = true }
 criterion = { workspace = true, features = ["html_reports"] }
 rand = { workspace = true }
 rand_chacha = { workspace = true }

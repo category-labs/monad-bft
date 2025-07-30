@@ -16,7 +16,7 @@ use alloy_primitives::Address;
 use alloy_rlp::Decodable;
 use futures::Stream;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
-use monad_consensus_types::{block::BlockPolicy, signature_collection::SignatureCollection};
+use monad_consensus_types::block::BlockPolicy;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -28,8 +28,9 @@ use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
-use monad_types::DropTimer;
+use monad_types::{DropTimer, SeqNum};
 use monad_updaters::TokioTaskUpdater;
+use monad_validator::signature_collection::SignatureCollection;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tokio::{sync::mpsc, time::Instant};
 use tracing::{debug, error, info, warn};
@@ -53,7 +54,7 @@ pub struct EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -82,7 +83,7 @@ impl<ST, SCT, SBT, CCT, CRT> EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend + Send + 'static,
+    SBT: StateBackend<ST, SCT> + Send + 'static,
     CCT: ChainConfig<CRT> + Send + 'static,
     CRT: ChainRevision + Send + 'static,
     Self: Unpin,
@@ -96,6 +97,7 @@ where
         hard_tx_expiry: Duration,
         chain_config: CCT,
         proposal_gas_limit: u64,
+        val_set_update_interval: SeqNum,
     ) -> io::Result<TokioTaskUpdater<Pin<Box<Self>>, MonadEvent<ST, SCT, EthExecutionProtocol>>>
     {
         let ipc = Box::pin(EthTxPoolIpcServer::new(ipc_config)?);
@@ -122,6 +124,8 @@ where
                         soft_tx_expiry,
                         hard_tx_expiry,
                         proposal_gas_limit,
+                        val_set_update_interval,
+                        chain_config.chain_id(),
                         // it's safe to default max_code_size to zero because it gets set on commit + reset
                         0,
                     );
@@ -192,7 +196,7 @@ impl<ST, SCT, SBT, CCT, CRT> Executor for EthTxPoolExecutor<ST, SCT, SBT, CCT, C
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -259,6 +263,7 @@ where
                         proposal_byte_limit,
                         beneficiary,
                         timestamp_ns,
+                        epoch,
                         round_signature.clone(),
                         extending_blocks,
                         &self.block_policy,
@@ -409,7 +414,7 @@ impl<ST, SCT, SBT, CCT, CRT> Stream for EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 

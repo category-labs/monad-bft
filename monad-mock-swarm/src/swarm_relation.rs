@@ -6,14 +6,13 @@ use monad_chain_config::{
 use monad_consensus_types::{
     block::{BlockPolicy, MockExecutionProtocol, PassthruBlockPolicy},
     block_validator::{BlockValidator, MockValidator},
-    signature_collection::SignatureCollection,
 };
 use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
     NopSignature,
 };
 use monad_executor_glue::{
-    LedgerCommand, MonadEvent, StateRootHashCommand, StateSyncCommand, TxPoolCommand,
+    LedgerCommand, MonadEvent, StateSyncCommand, TxPoolCommand, ValSetCommand,
 };
 use monad_multi_sig::MultiSig;
 use monad_router_scheduler::{BytesRouterScheduler, NoSerRouterScheduler, RouterScheduler};
@@ -23,12 +22,13 @@ use monad_transformer::{GenericTransformerPipeline, Pipeline};
 use monad_types::ExecutionProtocol;
 use monad_updaters::{
     ledger::{MockLedger, MockableLedger},
-    state_root_hash::{MockStateRootHashNop, MockableStateRootHash},
     statesync::{MockStateSyncExecutor, MockableStateSync},
     txpool::{MockTxPoolExecutor, MockableTxPool},
+    val_set::{MockValSetUpdaterNop, MockableValSetUpdater},
 };
 use monad_validator::{
     leader_election::LeaderElection,
+    signature_collection::SignatureCollection,
     simple_round_robin::SimpleRoundRobin,
     validator_set::{BoxedValidatorSetTypeFactory, ValidatorSetFactory, ValidatorSetTypeFactory},
 };
@@ -65,7 +65,10 @@ where
         > + Send
         + Sync
         + Unpin;
-    type StateBackendType: StateBackend + Send + Sync + Unpin;
+    type StateBackendType: StateBackend<Self::SignatureType, Self::SignatureCollectionType>
+        + Send
+        + Sync
+        + Unpin;
     type ChainConfigType: ChainConfig<Self::ChainRevisionType> + Send + Unpin;
     type ChainRevisionType: ChainRevision + Send + Unpin;
 
@@ -122,7 +125,7 @@ where
         + Sync
         + Unpin;
 
-    type StateRootHashExecutor: MockableStateRootHash<
+    type ValSetUpdater: MockableValSetUpdater<
             Event = MonadEvent<
                 Self::SignatureType,
                 Self::SignatureCollectionType,
@@ -160,7 +163,7 @@ impl SwarmRelation for DebugSwarmRelation {
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
     type ExecutionProtocolType = MockExecutionProtocol;
     type BlockPolicyType = PassthruBlockPolicy;
-    type StateBackendType = InMemoryState;
+    type StateBackendType = InMemoryState<Self::SignatureType, Self::SignatureCollectionType>;
     type ChainConfigType = MockChainConfig;
     type ChainRevisionType = MockChainRevision;
 
@@ -231,15 +234,15 @@ impl SwarmRelation for DebugSwarmRelation {
             + Sync,
     >;
 
-    type StateRootHashExecutor = Box<
-        dyn MockableStateRootHash<
+    type ValSetUpdater = Box<
+        dyn MockableValSetUpdater<
                 Event = MonadEvent<
                     Self::SignatureType,
                     Self::SignatureCollectionType,
                     Self::ExecutionProtocolType,
                 >,
                 SignatureCollection = Self::SignatureCollectionType,
-                Command = StateRootHashCommand,
+                Command = ValSetCommand,
                 Item = MonadEvent<
                     Self::SignatureType,
                     Self::SignatureCollectionType,
@@ -292,7 +295,7 @@ impl SwarmRelation for NoSerSwarm {
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
     type ExecutionProtocolType = MockExecutionProtocol;
     type BlockPolicyType = PassthruBlockPolicy;
-    type StateBackendType = InMemoryState;
+    type StateBackendType = InMemoryState<Self::SignatureType, Self::SignatureCollectionType>;
     type ChainConfigType = MockChainConfig;
     type ChainRevisionType = MockChainRevision;
 
@@ -328,7 +331,7 @@ impl SwarmRelation for NoSerSwarm {
         Self::TransportMessage,
     >;
 
-    type StateRootHashExecutor = MockStateRootHashNop<
+    type ValSetUpdater = MockValSetUpdaterNop<
         Self::SignatureType,
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,
@@ -353,7 +356,7 @@ impl SwarmRelation for BytesSwarm {
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
     type ExecutionProtocolType = MockExecutionProtocol;
     type BlockPolicyType = PassthruBlockPolicy;
-    type StateBackendType = InMemoryState;
+    type StateBackendType = InMemoryState<Self::SignatureType, Self::SignatureCollectionType>;
     type ChainConfigType = MockChainConfig;
     type ChainRevisionType = MockChainRevision;
 
@@ -384,7 +387,7 @@ impl SwarmRelation for BytesSwarm {
         Self::TransportMessage,
     >;
 
-    type StateRootHashExecutor = MockStateRootHashNop<
+    type ValSetUpdater = MockValSetUpdaterNop<
         Self::SignatureType,
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,
@@ -409,7 +412,7 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
     type ExecutionProtocolType = MockExecutionProtocol;
     type BlockPolicyType = PassthruBlockPolicy;
-    type StateBackendType = InMemoryState;
+    type StateBackendType = InMemoryState<Self::SignatureType, Self::SignatureCollectionType>;
     type ChainConfigType = MockChainConfig;
     type ChainRevisionType = MockChainRevision;
 
@@ -443,7 +446,7 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
     type Pipeline =
         MonadMessageTransformerPipeline<CertificateSignaturePubKey<Self::SignatureType>>;
 
-    type StateRootHashExecutor = MockStateRootHashNop<
+    type ValSetUpdater = MockValSetUpdaterNop<
         Self::SignatureType,
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,

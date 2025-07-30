@@ -11,6 +11,7 @@ bench = false
 [dependencies]
 monad-crypto = { workspace = true }
 
+alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true, features = ["derive"] }
 futures = { workspace = true }
 hex = { workspace = true }

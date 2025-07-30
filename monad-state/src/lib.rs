@@ -26,10 +26,8 @@ use monad_consensus_types::{
     checkpoint::{Checkpoint, LockedEpoch},
     metrics::Metrics,
     quorum_certificate::QuorumCertificate,
-    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     validation,
     validator_data::ValidatorSetDataWithEpoch,
-    voting::ValidatorMapping,
     RoundCertificate,
 };
 use monad_crypto::certificate_signature::{
@@ -38,9 +36,9 @@ use monad_crypto::certificate_signature::{
 use monad_executor_glue::{
     BlockSyncEvent, ClearMetrics, Command, ConfigEvent, ConfigReloadCommand, ConsensusEvent,
     ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers, LedgerCommand,
-    MempoolEvent, Message, MonadEvent, ReadCommand, ReloadConfig, RouterCommand,
-    StateRootHashCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, TxPoolCommand,
-    ValidatorEvent, WriteCommand,
+    MempoolEvent, Message, MonadEvent, ReadCommand, ReloadConfig, RouterCommand, StateSyncCommand,
+    StateSyncEvent, StateSyncNetworkMessage, TxPoolCommand, ValSetCommand, ValidatorEvent,
+    WriteCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{
@@ -50,6 +48,8 @@ use monad_types::{
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    validator_mapping::ValidatorMapping,
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
@@ -157,36 +157,26 @@ where
         Checkpoint {
             root: GENESIS_BLOCK_ID,
             high_certificate: RoundCertificate::Qc(QuorumCertificate::genesis_qc()),
-            validator_sets: vec![
-                LockedEpoch {
-                    epoch: Epoch(1),
-                    round: Some(GENESIS_ROUND),
-                },
-                LockedEpoch {
-                    epoch: Epoch(2),
-                    round: None,
-                },
-            ],
+            validator_sets: vec![LockedEpoch {
+                epoch: Epoch(1),
+                round: GENESIS_ROUND,
+            }],
         }
         .into()
     }
 
     pub fn get_epoch_starts(&self) -> Vec<(Epoch, Round)> {
-        let mut known = Vec::new();
-        for validator_set in self.validator_sets.iter() {
-            if let Some(round) = validator_set.round {
-                known.push((validator_set.epoch, round));
-            }
-        }
-        known
+        self.validator_sets
+            .iter()
+            .map(|locked_epoch| (locked_epoch.epoch, locked_epoch.round))
+            .collect()
     }
 
     /// locked_validator_sets must correspond 1:1 with the epochs in Checkpoint::validator_sets
     // Concrete verification steps:
-    // 1. 2 <= validator_sets.len() <= 3
+    // 1. 1 <= validator_sets.len() <= 2
     // 2. validator_sets have consecutive epochs
-    // 3. assert!(validator_sets[0].round.is_some())
-    // 4. high_qc is valid against matching epoch validator_set
+    // 3. high_qc is valid against matching epoch validator_set
     pub fn validate(
         &self,
         validator_set_factory: &impl ValidatorSetTypeFactory<NodeIdPubKey = SCT::NodeIdPubKey>,
@@ -194,10 +184,10 @@ where
         election: &impl LeaderElection<NodeIdPubKey = SCT::NodeIdPubKey>,
     ) -> Result<(), ForkpointValidationError> {
         // 1.
-        if self.validator_sets.len() < 2 {
+        if self.validator_sets.is_empty() {
             return Err(ForkpointValidationError::TooFewValidatorSets);
         }
-        if self.validator_sets.len() > 3 {
+        if self.validator_sets.len() > 2 {
             return Err(ForkpointValidationError::TooManyValidatorSets);
         }
 
@@ -219,11 +209,6 @@ where
             .all(|(locked_vset, forkpoint_vset)| locked_vset.epoch == forkpoint_vset.epoch));
 
         // 3.
-        let Some(_validator_set_0_round) = self.validator_sets[0].round else {
-            return Err(ForkpointValidationError::InvalidValidatorSetStartRound);
-        };
-
-        // 6.
         let validators = locked_validator_sets
             .iter()
             .map(|locked| {
@@ -283,7 +268,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     Sync {
         high_certificate: RoundCertificate<ST, SCT, EPT>,
@@ -306,7 +291,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -347,7 +332,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     CCT: ChainConfig<CRT>,
@@ -391,7 +376,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
@@ -701,7 +686,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
@@ -733,7 +718,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
@@ -837,7 +822,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
@@ -1249,9 +1234,9 @@ where
             commands.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
                 OptimisticCommit::Finalized(block.deref().to_owned()),
             )));
-            commands.push(Command::StateRootHashCommand(
-                StateRootHashCommand::NotifyFinalized(block.get_seq_num()),
-            ));
+            commands.push(Command::ValSetCommand(ValSetCommand::NotifyFinalized(
+                block.get_seq_num(),
+            )));
         }
 
         let cached_proposals = block_buffer.proposals().cloned().collect_vec();
@@ -1264,6 +1249,8 @@ where
         // (N-delay, N] roots have been requested
         let consensus = ConsensusState::new(
             &self.epoch_manager,
+            &self.val_epoch_map,
+            &self.nodeid,
             &self.consensus_config,
             root_info,
             high_certificate.clone(),
@@ -1318,10 +1305,10 @@ where
 
 #[cfg(test)]
 mod test {
+    use alloy_primitives::U256;
     use monad_bls::BlsSignatureCollection;
     use monad_consensus_types::{
         quorum_certificate::QuorumCertificate,
-        signature_collection::SignatureCollection,
         validator_data::{ValidatorData, ValidatorSetData, ValidatorsConfig},
         voting::Vote,
     };
@@ -1331,6 +1318,7 @@ mod test {
     use monad_testutil::validators::create_keys_w_validators;
     use monad_types::{BlockId, Hash, NodeId, Round, SeqNum, Stake};
     use monad_validator::{
+        signature_collection::SignatureCollection,
         validator_set::ValidatorSetFactory, weighted_round_robin::WeightedRoundRobin,
     };
 
@@ -1384,23 +1372,17 @@ mod test {
 
         let forkpoint: Forkpoint<_, _, _> = Checkpoint {
             root: qc.get_block_id(),
-            high_certificate: RoundCertificate::Qc(qc),
-            validator_sets: vec![
-                LockedEpoch {
-                    epoch: Epoch(3),
-                    round: Some(Round(3050)),
-                },
-                LockedEpoch {
-                    epoch: Epoch(4),
-                    round: None,
-                },
-            ],
+            high_certificate: RoundCertificate::Qc(qc.clone()),
+            validator_sets: vec![LockedEpoch {
+                epoch: Epoch(3),
+                round: Round(3050),
+            }],
         }
         .into();
 
         let mut validators = Vec::new();
         for (key, cert_key) in keys.iter().zip(cert_keys.iter()) {
-            validators.push((key.pubkey(), Stake(7), cert_key.pubkey()));
+            validators.push((key.pubkey(), Stake(U256::from(7)), cert_key.pubkey()));
         }
         let validator_data = ValidatorSetData::<SignatureCollectionType>::new(validators);
         let validator_sets = forkpoint
@@ -1479,33 +1461,13 @@ mod test {
         );
     }
 
-    #[test]
-    fn test_forkpoint_validate_4() {
-        let (mut forkpoint, locked_validator_sets, election) = get_forkpoint();
-
-        forkpoint.0.validator_sets[0].round = None;
-
-        assert_eq!(
-            forkpoint.validate(
-                &ValidatorSetFactory::default(),
-                &locked_validator_sets,
-                &election
-            ),
-            Err(ForkpointValidationError::InvalidValidatorSetStartRound)
-        );
-    }
-
     // TODO test every branch of 5
     // the mock-swarm forkpoint tests sort of cover these, but we should unit-test these eventually
     // for completeness
 
     #[test]
-    fn test_forkpoint_validate_6() {
+    fn test_forkpoint_validate_3() {
         let (mut forkpoint, locked_validator_sets, election) = get_forkpoint();
-
-        let RoundCertificate::Qc(qc) = &mut forkpoint.0.high_certificate else {
-            unreachable!();
-        };
         // change qc content so signature collection is invalid
         qc.info.round = qc.info.round - Round(1);
 
@@ -1537,28 +1499,28 @@ mod test {
 
         let validators_config: ValidatorsConfig<SignatureCollectionType> = ValidatorsConfig {
             validators: vec![
-                (Epoch(1), make_val_set_data(Stake(1))),
-                (Epoch(2), make_val_set_data(Stake(2))),
-                (Epoch(4), make_val_set_data(Stake(3))),
-                (Epoch(10), make_val_set_data(Stake(4))),
+                (Epoch(1), make_val_set_data(Stake(U256::ONE))),
+                (Epoch(2), make_val_set_data(Stake(U256::from(2)))),
+                (Epoch(4), make_val_set_data(Stake(U256::from(3)))),
+                (Epoch(10), make_val_set_data(Stake(U256::from(4)))),
             ]
             .into_iter()
             .collect(),
         };
 
         let expected = vec![
-            (Epoch(1), make_val_set_data(Stake(1))),
-            (Epoch(2), make_val_set_data(Stake(2))),
-            (Epoch(3), make_val_set_data(Stake(2))),
-            (Epoch(4), make_val_set_data(Stake(3))),
-            (Epoch(5), make_val_set_data(Stake(3))),
-            (Epoch(6), make_val_set_data(Stake(3))),
-            (Epoch(7), make_val_set_data(Stake(3))),
-            (Epoch(8), make_val_set_data(Stake(3))),
-            (Epoch(9), make_val_set_data(Stake(3))),
-            (Epoch(10), make_val_set_data(Stake(4))),
-            (Epoch(11), make_val_set_data(Stake(4))),
-            (Epoch(12), make_val_set_data(Stake(4))),
+            (Epoch(1), make_val_set_data(Stake(U256::ONE))),
+            (Epoch(2), make_val_set_data(Stake(U256::from(2)))),
+            (Epoch(3), make_val_set_data(Stake(U256::from(2)))),
+            (Epoch(4), make_val_set_data(Stake(U256::from(3)))),
+            (Epoch(5), make_val_set_data(Stake(U256::from(3)))),
+            (Epoch(6), make_val_set_data(Stake(U256::from(3)))),
+            (Epoch(7), make_val_set_data(Stake(U256::from(3)))),
+            (Epoch(8), make_val_set_data(Stake(U256::from(3)))),
+            (Epoch(9), make_val_set_data(Stake(U256::from(3)))),
+            (Epoch(10), make_val_set_data(Stake(U256::from(4)))),
+            (Epoch(11), make_val_set_data(Stake(U256::from(4)))),
+            (Epoch(12), make_val_set_data(Stake(U256::from(4)))),
         ];
 
         for (epoch, val_set) in &expected {

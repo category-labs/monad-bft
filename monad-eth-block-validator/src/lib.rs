@@ -12,7 +12,6 @@ use monad_consensus_types::{
     block::{BlockPolicy, ConsensusBlockHeader, ConsensusFullBlock},
     block_validator::{BlockValidationError, BlockValidator},
     payload::ConsensusBlockBody,
-    signature_collection::{SignatureCollection, SignatureCollectionPubKeyType},
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -25,6 +24,7 @@ use monad_eth_types::{
 };
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
+use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing::warn;
 
@@ -39,7 +39,7 @@ pub struct EthValidator<ST, SCT, SBT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     /// chain id
     pub chain_id: u64,
@@ -51,7 +51,7 @@ impl<ST, SCT, SBT> EthValidator<ST, SCT, SBT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     pub fn new(chain_id: u64) -> Self {
         Self {
@@ -214,9 +214,9 @@ where
         if nonce != &[0_u8; 8] {
             return Err(BlockValidationError::HeaderError);
         }
-        if extra_data != &[0_u8; 32] {
-            return Err(BlockValidationError::HeaderError);
-        }
+        // if extra_data != &[0_u8; 32] {
+        //     return Err(BlockValidationError::HeaderError);
+        // }
         if base_fee_per_gas != &BASE_FEE_PER_GAS {
             return Err(BlockValidationError::HeaderError);
         }
@@ -240,7 +240,7 @@ impl<ST, SCT, SBT> BlockValidator<ST, SCT, EthExecutionProtocol, EthBlockPolicy<
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     fn validate(
         &self,
@@ -304,7 +304,7 @@ mod test {
         let block_validator: EthValidator<
             NopSignature,
             MockSignatures<NopSignature>,
-            InMemoryState,
+            InMemoryState<NopSignature, MockSignatures<NopSignature>>,
         > = EthValidator::new(1337);
 
         // txn1 with nonce 1 while txn2 with nonce 3 (there is a nonce gap)
@@ -337,7 +337,7 @@ mod test {
         let block_validator: EthValidator<
             NopSignature,
             MockSignatures<NopSignature>,
-            InMemoryState,
+            InMemoryState<NopSignature, MockSignatures<NopSignature>>,
         > = EthValidator::new(1337);
 
         // total gas used is 400_000_000 which is higher than block gas limit
@@ -370,7 +370,7 @@ mod test {
         let block_validator: EthValidator<
             NopSignature,
             MockSignatures<NopSignature>,
-            InMemoryState,
+            InMemoryState<NopSignature, MockSignatures<NopSignature>>,
         > = EthValidator::new(1337);
 
         // tx limit per block is 1
@@ -403,7 +403,7 @@ mod test {
         let block_validator: EthValidator<
             NopSignature,
             MockSignatures<NopSignature>,
-            InMemoryState,
+            InMemoryState<NopSignature, MockSignatures<NopSignature>>,
         > = EthValidator::new(1337);
 
         // proposal limit is 4MB
@@ -441,7 +441,7 @@ mod test {
         let block_validator: EthValidator<
             NopSignature,
             MockSignatures<NopSignature>,
-            InMemoryState,
+            InMemoryState<NopSignature, MockSignatures<NopSignature>>,
         > = EthValidator::new(1337);
 
         let valid_txn = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 1, 10);

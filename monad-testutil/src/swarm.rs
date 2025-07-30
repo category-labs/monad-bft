@@ -3,7 +3,6 @@ use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::ConsensusFullBlock,
-    signature_collection::SignatureCollection,
     validator_data::{ValidatorSetData, ValidatorSetDataWithEpoch},
 };
 use monad_crypto::certificate_signature::{
@@ -13,7 +12,7 @@ use monad_mock_swarm::{mock_swarm::Nodes, swarm_relation::SwarmRelation};
 use monad_state::{Forkpoint, MonadStateBuilder};
 use monad_types::{ExecutionProtocol, Round, SeqNum};
 use monad_updaters::ledger::MockableLedger;
-use monad_validator::validator_set::ValidatorSetType;
+use monad_validator::{signature_collection::SignatureCollection, validator_set::ValidatorSetType};
 
 use crate::validators::create_keys_w_validators;
 

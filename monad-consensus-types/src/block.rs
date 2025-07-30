@@ -9,13 +9,13 @@ use monad_crypto::{
 };
 use monad_state_backend::{InMemoryState, StateBackend, StateBackendError};
 use monad_types::{BlockId, Epoch, ExecutionProtocol, FinalizedHeader, NodeId, Round, SeqNum};
+use monad_validator::signature_collection::SignatureCollection;
 
 use crate::{
     block_validator::BlockValidationError,
     checkpoint::RootInfo,
     payload::{ConsensusBlockBody, ConsensusBlockBodyId, RoundSignature},
     quorum_certificate::QuorumCertificate,
-    signature_collection::SignatureCollection,
 };
 
 pub const GENESIS_TIMESTAMP: u128 = 0;
@@ -151,7 +151,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     type ValidatedBlock: Sized
         + Clone
@@ -219,7 +219,7 @@ where
     }
 }
 
-impl<ST, SCT, EPT> BlockPolicy<ST, SCT, EPT, InMemoryState> for PassthruBlockPolicy
+impl<ST, SCT, EPT> BlockPolicy<ST, SCT, EPT, InMemoryState<ST, SCT>> for PassthruBlockPolicy
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -232,7 +232,7 @@ where
         block: &Self::ValidatedBlock,
         extending_blocks: Vec<&Self::ValidatedBlock>,
         blocktree_root: RootInfo,
-        state_backend: &InMemoryState,
+        state_backend: &InMemoryState<ST, SCT>,
     ) -> Result<(), BlockPolicyError> {
         // check coherency against the block being extended or against the root of the blocktree if
         // there is no extending branch
@@ -268,7 +268,7 @@ where
         &self,
         _block_seq_num: SeqNum,
         _extending_blocks: Vec<&Self::ValidatedBlock>,
-        _state_backend: &InMemoryState,
+        _state_backend: &InMemoryState<ST, SCT>,
     ) -> Result<Vec<EPT::FinalizedHeader>, StateBackendError> {
         Ok(Vec::new())
     }
@@ -417,7 +417,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     Proposed(BPT::ValidatedBlock),
     Finalized(BPT::ValidatedBlock),
@@ -440,7 +440,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     fn from(value: &OptimisticPolicyCommit<ST, SCT, EPT, BPT, SBT>) -> Self {
         match value {

@@ -1,10 +1,7 @@
 use std::marker::PhantomData;
 
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
-use monad_consensus_types::{
-    block::BlockPolicy, block_validator::BlockValidator, signature_collection::SignatureCollection,
-    voting::ValidatorMapping,
-};
+use monad_consensus_types::{block::BlockPolicy, block_validator::BlockValidator};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
@@ -12,6 +9,7 @@ use monad_executor_glue::{Command, MonadEvent, RouterCommand, ValidatorEvent};
 use monad_state_backend::StateBackend;
 use monad_types::{Epoch, ExecutionProtocol, NodeId, Stake};
 use monad_validator::{
+    signature_collection::SignatureCollection, validator_mapping::ValidatorMapping,
     validator_set::ValidatorSetTypeFactory, validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
@@ -23,7 +21,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
@@ -46,7 +44,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     CCT: ChainConfig<CRT>,
@@ -97,7 +95,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     fn from(command: EpochCommand<CertificateSignaturePubKey<ST>>) -> Self {
         match command {

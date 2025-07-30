@@ -14,7 +14,6 @@ use monad_consensus_types::{
     no_endorsement::FreshProposalCertificate,
     payload::RoundSignature,
     quorum_certificate::{QuorumCertificate, TimestampAdjustment},
-    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::TimeoutCertificate,
 };
 use monad_crypto::certificate_signature::{
@@ -22,6 +21,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_state_backend::StateBackend;
 use monad_types::{Epoch, ExecutionProtocol, Round, RouterTarget, SeqNum};
+use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionKeyPairType};
 
 /// Command type that the consensus state-machine outputs
 /// This is converted to a monad-executor-glue::Command at the top-level monad-state
@@ -32,7 +32,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     EnterRound(Epoch, Round),
     /// Attempt to send a message to RouterTarget
@@ -102,7 +102,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     pub fn from_pacemaker_command(
         keypair: &ST::KeyPairType,
@@ -144,7 +144,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     fn from(_value: VoteStateCommand) -> Self {
         //TODO-3 VoteStateCommand used for evidence collection

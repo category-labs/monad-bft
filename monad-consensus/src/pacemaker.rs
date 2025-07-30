@@ -3,18 +3,21 @@ use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::{
     metrics::Metrics,
-    signature_collection::{
-        SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
-    },
     timeout::{HighExtend, TimeoutCertificate, TimeoutInfo},
-    voting::ValidatorMapping,
     RoundCertificate,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, GENESIS_ROUND};
-use monad_validator::{epoch_manager::EpochManager, validator_set::ValidatorSetType};
+use monad_validator::{
+    epoch_manager::EpochManager,
+    signature_collection::{
+        SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
+    },
+    validator_mapping::ValidatorMapping,
+    validator_set::ValidatorSetType,
+};
 use tracing::debug;
 
 use crate::{messages::message::TimeoutMessage, validation::safety::Safety};
@@ -372,6 +375,7 @@ where
 mod test {
     use std::collections::HashSet;
 
+    use alloy_primitives::U256;
     use monad_chain_config::{
         revision::{ChainParams, MockChainRevision},
         MockChainConfig,
@@ -724,16 +728,16 @@ mod test {
         let mut staking_list = keys
             .iter()
             .map(|k| NodeId::new(k.pubkey()))
-            .zip(std::iter::repeat(Stake(1)))
+            .zip(std::iter::repeat(Stake(U256::ONE)))
             .collect::<Vec<_>>();
 
         // total stake = 7, f = 2
         // node1 holds f+1 stake
         // node1 + node2 has 2f+1 stake
-        staking_list[0].1 = Stake(1);
-        staking_list[1].1 = Stake(3);
-        staking_list[2].1 = Stake(2);
-        staking_list[3].1 = Stake(1);
+        staking_list[0].1 = Stake(U256::ONE);
+        staking_list[1].1 = Stake(U256::from(3));
+        staking_list[2].1 = Stake(U256::from(2));
+        staking_list[3].1 = Stake(U256::ONE);
 
         let voting_identity = keys
             .iter()

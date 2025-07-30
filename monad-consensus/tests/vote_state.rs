@@ -1,9 +1,5 @@
 use monad_consensus::{messages::message::VoteMessage, vote_state::VoteState};
-use monad_consensus_types::{
-    quorum_certificate::QuorumCertificate,
-    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    voting::{ValidatorMapping, Vote},
-};
+use monad_consensus_types::{quorum_certificate::QuorumCertificate, voting::Vote};
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
     NopKeyPair, NopSignature,
@@ -11,7 +7,11 @@ use monad_crypto::{
 use monad_multi_sig::MultiSig;
 use monad_testutil::validators::create_keys_w_validators;
 use monad_types::{DontCare, Epoch, NodeId, Round};
-use monad_validator::validator_set::{ValidatorSet, ValidatorSetFactory};
+use monad_validator::{
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    validator_mapping::ValidatorMapping,
+    validator_set::{ValidatorSet, ValidatorSetFactory},
+};
 use test_case::test_case;
 
 type SignatureType = NopSignature;

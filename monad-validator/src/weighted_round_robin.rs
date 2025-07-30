@@ -45,11 +45,11 @@ impl<PT: PubKey> LeaderElection for WeightedRoundRobin<PT> {
     /// Panics if `validators.is_empty()` or if `validators` does not contain an element whose stake is > 0, because
     /// there is no sensible choice for leader in either of those cases.
     fn get_leader(&self, round: Round, validators: &BTreeMap<NodeId<PT>, Stake>) -> NodeId<PT> {
-        let mut total_stakes = 0_u64;
+        let mut total_stakes = U256::ZERO;
         let stake_bounds: Vec<_> = validators
             .iter()
             .filter_map(|(node_id, stake)| {
-                if stake.0 > 0 {
+                if stake.0 > U256::ZERO {
                     total_stakes += stake.0;
                     Some((node_id, total_stakes))
                 } else {
@@ -61,7 +61,7 @@ impl<PT: PubKey> LeaderElection for WeightedRoundRobin<PT> {
             panic!("no validator has positive stake");
         }
 
-        let stake_index = randomize(round.0, total_stakes);
+        let stake_index = randomize_256(U256::from(round.0), total_stakes);
         let upper_bound = stake_bounds
             .binary_search_by(|&(_, stake_bound)| {
                 if stake_bound > stake_index {
@@ -82,27 +82,33 @@ mod tests {
 
     use super::*;
 
-    #[test_case(vec![('A', 1), ('B', 1), ('C', 1)]; "equal stakes")]
-    #[test_case(vec![('A', 1), ('B', 1), ('C', 1)]; "test equal stakes")]
-    #[test_case(vec![('A', 1), ('B', 0), ('C', 1)];      "test unstaked schedule")]
-    #[test_case(vec![('A', 1), ('B', 2), ('C', 1)]; "test validator with more stake")]
-    #[test_case(vec![('A', 2), ('B', 2), ('C', 2)]; "test equal schedule with more stake")]
-    #[test_case(vec![('A', 1), ('B', 2), ('C', 3)]; "test unequal schedule")]
-    #[test_case(vec![('A', 10), ('B', 2), ('C', 3)]; "test big stake")]
-    fn test_weighted_round_robin(validator_set: Vec<(char, u64)>) {
+    #[test_case(vec![('A', U256::ONE), ('B', U256::ONE), ('C', U256::ONE)]; "equal stakes")]
+    #[test_case(vec![('A', U256::ONE), ('B', U256::ONE), ('C', U256::ONE)]; "test equal stakes")]
+    #[test_case(vec![('A', U256::ONE), ('B', U256::ZERO), ('C', U256::ONE)];      "test unstaked schedule")]
+    #[test_case(vec![('A', U256::ONE), ('B', U256::from(2)), ('C', U256::ONE)]; "test validator with more stake")]
+    #[test_case(vec![('A', U256::from(2)), ('B', U256::from(2)), ('C', U256::from(2))]; "test equal schedule with more stake")]
+    #[test_case(vec![('A', U256::ONE), ('B', U256::from(2)), ('C', U256::from(3))]; "test unequal schedule")]
+    #[test_case(vec![('A', U256::from(10)), ('B', U256::from(2)), ('C', U256::from(3))]; "test big stake")]
+    fn test_weighted_round_robin(validator_set: Vec<(char, U256)>) {
         let num_iterations = 10000_u64;
         let l = WeightedRoundRobin::default();
         let total_stakes = validator_set
             .iter()
-            .filter_map(|(_, stake)| if *stake > 0 { Some(*stake) } else { None })
-            .sum::<u64>();
+            .filter_map(|(_, stake)| {
+                if *stake > U256::ZERO {
+                    Some(*stake)
+                } else {
+                    None
+                }
+            })
+            .sum::<U256>();
         let expected_num_picked = validator_set
             .iter()
             .map(|(validator, stake)| {
                 (
                     NodeId::new(NopPubKey::from_bytes(&[*validator as u8; 32]).unwrap()),
-                    if *stake > 0 {
-                        num_iterations * *stake / total_stakes
+                    if *stake > U256::ZERO {
+                        (U256::from(num_iterations) * *stake / total_stakes).to::<u64>()
                     } else {
                         0
                     },

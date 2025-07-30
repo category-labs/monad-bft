@@ -19,4 +19,5 @@ monad-types = { workspace = true }
 monad-updaters = { workspace = true }
 monad-validator = { workspace = true }
 
+alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }

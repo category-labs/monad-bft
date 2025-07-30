@@ -1,12 +1,13 @@
-use monad_consensus_types::{
-    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    voting::ValidatorMapping,
-};
+use alloy_primitives::U256;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_types::{NodeId, Stake};
-use monad_validator::validator_set::ValidatorSetTypeFactory;
+use monad_validator::{
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    validator_mapping::ValidatorMapping,
+    validator_set::ValidatorSetTypeFactory,
+};
 
 use crate::signing::{create_certificate_keys, create_keys};
 
@@ -47,7 +48,7 @@ where
     let staking_list = keys
         .iter()
         .map(|k| NodeId::new(k.pubkey()))
-        .zip(std::iter::repeat(Stake(1)))
+        .zip(std::iter::repeat(Stake(U256::ONE)))
         .collect::<Vec<_>>();
 
     let voting_identity = keys

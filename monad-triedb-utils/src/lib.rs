@@ -11,10 +11,19 @@ use alloy_primitives::Address;
 use alloy_rlp::Decodable;
 use futures::{channel::oneshot, executor::block_on, future::join_all, FutureExt};
 use key::Version;
+use monad_bls::{BlsPubKey, BlsSignatureCollection};
+use monad_consensus_types::block::ConsensusBlockHeader;
+use monad_crypto::{
+    certificate_signature::CertificateSignaturePubKey,
+    hasher::{Hasher, HasherType},
+};
 use monad_eth_types::{EthAccount, EthHeader};
+use monad_secp::{PubKey, SecpSignature};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_triedb::TriedbHandle;
-use monad_types::{BlockId, Hash, SeqNum};
+use monad_types::{
+    BlockId, Round, SeqNum, Stake,
+};
 use tracing::{debug, trace, warn};
 
 use crate::{
@@ -67,6 +76,11 @@ impl TriedbReader {
     pub fn get_earliest_finalized_block(&self) -> Option<SeqNum> {
         let earliest_finalized = self.handle.earliest_finalized_block()?;
         Some(SeqNum(earliest_finalized))
+    }
+
+    pub fn get_latest_verified_block(&self) -> Option<SeqNum> {
+        let latest_verified = self.handle.latest_verified_block()?;
+        Some(SeqNum(latest_verified))
     }
 
     pub fn get_account_finalized(
@@ -181,7 +195,7 @@ impl TriedbReader {
     }
 }
 
-impl StateBackend for TriedbReader {
+impl StateBackend<SecpSignature, BlsSignatureCollection<PubKey>> for TriedbReader {
     fn get_account_statuses<'a>(
         &self,
         block_id: &BlockId,
@@ -271,6 +285,14 @@ impl StateBackend for TriedbReader {
 
     fn raw_read_latest_finalized_block(&self) -> Option<SeqNum> {
         self.get_latest_finalized_block()
+    }
+
+    fn raw_read_latest_verified_block(&self) -> Option<SeqNum> {
+        self.get_latest_verified_block()
+    }
+
+    fn read_next_valset(&self, block_num: SeqNum) -> Vec<(PubKey, BlsPubKey, Stake)> {
+        self.handle.get_next_valset(block_num)
     }
 
     fn total_db_lookups(&self) -> u64 {

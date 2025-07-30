@@ -2,9 +2,10 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_types::{BlockId, Epoch, ExecutionProtocol, Round, SeqNum};
+use monad_validator::signature_collection::SignatureCollection;
 use serde::{Deserialize, Serialize};
 
-use crate::{signature_collection::SignatureCollection, RoundCertificate};
+use crate::RoundCertificate;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RootInfo {
@@ -36,5 +37,5 @@ pub struct LockedEpoch {
     /// Validator set are active for this epoch
     pub epoch: Epoch,
     /// By the end of epoch - 1, the next epoch is scheduled to start on round. Otherwise, it's left empty
-    pub round: Option<Round>,
+    pub round: Round,
 }

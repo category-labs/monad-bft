@@ -15,5 +15,6 @@ add_library(triedb_driver SHARED "${PROJECT_SOURCE_DIR}/include/triedb.h"
 target_include_directories(triedb_driver PUBLIC ${PROJECT_SOURCE_DIR}/include)
 
 target_link_libraries(triedb_driver PUBLIC monad_trie)
+target_link_libraries(triedb_driver PUBLIC monad_execution)
 
 monad_compile_options(triedb_driver)

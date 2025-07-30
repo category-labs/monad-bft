@@ -1,12 +1,14 @@
 use std::collections::{BTreeMap, HashMap};
 
 use alloy_rlp::{BytesMut, Decodable, Encodable, RlpDecodable, RlpEncodable};
-use monad_consensus_types::{
+use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
+use monad_types::NodeId;
+use monad_validator::{
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
         SignatureCollectionPubKeyType,
     },
-    voting::ValidatorMapping,
+    validator_mapping::ValidatorMapping,
 };
 use monad_crypto::{
     certificate_signature::CertificateSignatureRecoverable, signing_domain::SigningDomain,
@@ -169,9 +171,6 @@ impl<S: CertificateSignatureRecoverable> SignatureCollection for MultiSig<S> {
 mod test {
     use std::collections::HashSet;
 
-    use monad_consensus_types::signature_collection::{
-        SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
-    };
     use monad_crypto::{
         certificate_signature::{
             CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
@@ -184,7 +183,12 @@ mod test {
         validators::create_keys_w_validators,
     };
     use monad_types::NodeId;
-    use monad_validator::validator_set::ValidatorSetFactory;
+    use monad_validator::{
+        signature_collection::{
+            SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
+        },
+        validator_set::ValidatorSetFactory,
+    };
     use rand::{seq::SliceRandom, SeedableRng};
     use rand_chacha::ChaChaRng;
     use test_case::test_case;

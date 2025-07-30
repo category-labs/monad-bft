@@ -8,10 +8,9 @@ use monad_consensus_types::{
     block::ConsensusBlockHeader,
     payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
     quorum_certificate::QuorumCertificate,
-    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighExtend, HighTipRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
     tip::ConsensusTip,
-    voting::{ValidatorMapping, Vote},
+    voting::Vote,
 };
 use monad_crypto::{
     certificate_signature::{
@@ -24,6 +23,8 @@ use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, SeqNum, GENESIS_ROUND
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    validator_mapping::ValidatorMapping,
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };

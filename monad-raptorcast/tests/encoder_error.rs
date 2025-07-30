@@ -1,5 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
+use alloy_primitives::U256;
 use bytes::Bytes;
 use itertools::Itertools;
 use monad_crypto::hasher::{Hasher, HasherType};
@@ -38,7 +39,14 @@ pub fn encoder_error() {
     let mut validators = EpochValidators {
         validators: keys
             .iter()
-            .map(|key| (NodeId::new(key.pubkey()), Validator { stake: Stake(1) }))
+            .map(|key| {
+                (
+                    NodeId::new(key.pubkey()),
+                    Validator {
+                        stake: Stake(U256::ONE),
+                    },
+                )
+            })
             .collect(),
     };
 
