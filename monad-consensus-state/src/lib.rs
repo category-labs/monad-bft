@@ -780,27 +780,35 @@ where
             cmds.extend(handle_vote_cmds);
         }
 
-        if let Some(last_round_tc) = timeout.last_round_tc.as_ref() {
-            self.metrics.consensus_events.remote_timeout_msg_with_tc += 1;
-            let advance_round_cmds = self
-                .consensus
-                .pacemaker
-                .process_certificate(
-                    self.metrics,
-                    self.epoch_manager,
-                    &mut self.consensus.safety,
-                    RoundCertificate::Tc(last_round_tc.clone()),
-                )
-                .into_iter()
-                .map(|cmd| {
-                    ConsensusCommand::from_pacemaker_command(
-                        self.keypair,
-                        self.cert_keypair,
-                        self.version,
-                        cmd,
+        match &timeout.last_round_certificate {
+            Some(RoundCertificate::Tc(tc)) => {
+                self.metrics.consensus_events.remote_timeout_msg_with_tc += 1;
+                let advance_round_cmds = self
+                    .consensus
+                    .pacemaker
+                    .process_certificate(
+                        self.metrics,
+                        self.epoch_manager,
+                        &mut self.consensus.safety,
+                        RoundCertificate::Tc(tc.clone()),
                     )
-                });
-            cmds.extend(advance_round_cmds);
+                    .into_iter()
+                    .map(|cmd| {
+                        ConsensusCommand::from_pacemaker_command(
+                            self.keypair,
+                            self.cert_keypair,
+                            self.version,
+                            cmd,
+                        )
+                    });
+                cmds.extend(advance_round_cmds);
+            }
+            Some(RoundCertificate::Qc(qc)) => {
+                cmds.extend(self.process_qc(qc));
+            }
+            None => {
+                // don't do anything
+            }
         }
 
         let remote_timeout_cmds = self

@@ -139,7 +139,7 @@ pub mod test_tool {
         let internal_msg = TimeoutMessage(Timeout {
             tminfo: timeout_info,
             high_extend: HighExtendVote::Qc(QuorumCertificate::genesis_qc()),
-            last_round_tc: None,
+            last_round_certificate: None,
             timeout_signature: NopSignature::sign::<signing_domain::Timeout>(&[0x00_u8, 32], kp),
         });
         ConsensusMessage {

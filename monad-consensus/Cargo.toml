@@ -16,6 +16,7 @@ monad-types = { workspace = true }
 monad-validator = { workspace = true }
 
 alloy-rlp = { workspace = true }
+lru = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
