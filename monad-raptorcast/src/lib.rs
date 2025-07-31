@@ -59,7 +59,9 @@ use monad_validator::signature_collection::SignatureCollection;
 use raptorcast_secondary::group_message::FullNodesGroupMessage;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, debug_span, error, warn};
-use util::{BuildTarget, EpochValidators, FullNodes, Group, ReBroadcastGroupMap, Redundancy};
+use util::{
+    unix_ts_ms_now, BuildTarget, EpochValidators, FullNodes, Group, ReBroadcastGroupMap, Redundancy,
+};
 
 pub mod config;
 pub mod message;
@@ -266,12 +268,7 @@ where
     ) -> UnicastMsg {
         let segment_size = segment_size_for_mtu(mtu);
 
-        let unix_ts_ms = std::time::UNIX_EPOCH
-            .elapsed()
-            .expect("time went backwards")
-            .as_millis()
-            .try_into()
-            .expect("unix epoch doesn't fit in u64");
+        let unix_ts_ms = unix_ts_ms_now();
 
         let messages = udp::build_messages::<ST>(
             signing_key,
@@ -709,7 +706,9 @@ where
             let decoded_app_messages = {
                 // FIXME: pass dataplane as arg to handle_message
                 this.udp_state.handle_message(
+                    this.current_epoch,
                     &this.rebroadcast_map, // contains the NodeIds for all the RC participants for each epoch
+                    &this.epoch_validators,
                     |targets, payload, bcast_stride| {
                         // Callback for re-broadcasting raptorcast chunks to other RaptorCast participants (validator peers)
                         let target_addrs: Vec<SocketAddr> = targets
