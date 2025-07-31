@@ -20,7 +20,7 @@ use std::{
 
 use monad_event_ring::{EventDescriptor, EventDescriptorPayload};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 use super::BlockBuilderError;
 use crate::{
@@ -224,12 +224,7 @@ impl CommitStateBlockBuilder {
                     })
                     .collect::<Vec<_>>();
 
-                if candidates.insert(block_tag.id) {
-                    warn!(
-                        id =? block_tag.id,
-                        "CommitStateBlockBuilder re-added finalized proposal to candidates"
-                    );
-                }
+                candidates.insert(block_tag.id);
 
                 Some(CommitStateBlockUpdate {
                     block,
