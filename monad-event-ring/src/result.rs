@@ -14,10 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use crate::{
-    ffi::{
-        self, monad_event_descriptor, monad_event_iter_result, monad_event_iterator_reset,
-        monad_event_iterator_try_next,
-    },
+    ffi::{self, monad_event_descriptor, monad_event_iter_result, monad_event_iterator_try_next},
     RawEventDescriptor, RawEventReader,
 };
 
@@ -51,10 +48,7 @@ impl<'ring> EventNextResult<RawEventDescriptor<'ring>> {
                 c_event_descriptor,
             )),
             ffi::MONAD_EVENT_NOT_READY => Self::NotReady,
-            ffi::MONAD_EVENT_GAP => {
-                monad_event_iterator_reset(&mut reader.inner);
-                Self::Gap
-            }
+            ffi::MONAD_EVENT_GAP => Self::Gap,
             _ => panic!("EventNextResult encountered unknown value {c_event_iter_result}"),
         }
     }
