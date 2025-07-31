@@ -182,6 +182,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
             pending_inbound_messages: Default::default(),
             rng: ChaCha20Rng::seed_from_u64(rng.gen()),
             current_seed: rng.gen(),
+            message_nonce: 0,
         }
     }
 }
@@ -201,6 +202,8 @@ where
     >,
     rng: ChaCha20Rng,
     current_seed: usize,
+
+    message_nonce: usize,
 }
 
 impl<S: SwarmRelation> Node<S> {
@@ -286,7 +289,9 @@ impl<S: SwarmRelation> Node<S> {
                                 message: serialized,
 
                                 from_tick: tick,
+                                nonce: self.message_nonce,
                             };
+                            self.message_nonce += 1;
                             let outbound_transformed = self.outbound_pipeline.process(lm);
                             for (delay, msg) in outbound_transformed {
                                 let sched_tick = tick + delay;

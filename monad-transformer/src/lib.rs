@@ -70,6 +70,8 @@ pub struct LinkMessage<PT: PubKey, M> {
 
     /// absolute time
     pub from_tick: Duration,
+
+    pub nonce: usize,
 }
 
 impl<PT: PubKey, M: Eq> Ord for LinkMessage<PT, M> {
@@ -113,6 +115,15 @@ pub trait Transformer<M> {
     ) -> TransformerStream<Self::NodeIdPubKey, M>;
 
     fn min_external_delay(&self) -> Option<Duration> {
+        None
+    }
+
+    /// Used for visualization
+    fn is_outbound_blocked(
+        &self,
+        _tick: Duration,
+        _node: &NodeId<Self::NodeIdPubKey>,
+    ) -> Option<bool> {
         None
     }
 
@@ -210,6 +221,19 @@ impl<PT: PubKey, M> Transformer<M> for PartitionTransformer<PT> {
             TransformerStream::Complete(vec![(Duration::ZERO, message)])
         }
     }
+
+    fn is_outbound_blocked(
+        &self,
+        _tick: Duration,
+        node: &NodeId<Self::NodeIdPubKey>,
+    ) -> Option<bool> {
+        let id = ID::new(*node);
+        if self.0.contains(&id) || self.0.contains(&id) {
+            None
+        } else {
+            Some(false)
+        }
+    }
 }
 
 impl<PT: PubKey> Debug for PartitionTransformer<PT> {
@@ -222,11 +246,15 @@ impl<PT: PubKey> Debug for PartitionTransformer<PT> {
 
 #[derive(Clone, Debug)]
 
-pub struct DropTransformer<PT: PubKey>(PhantomData<PT>);
+pub struct DropTransformer<PT: PubKey> {
+    drop_only_from: Option<NodeId<PT>>,
+}
 
 impl<PT: PubKey> Default for DropTransformer<PT> {
     fn default() -> Self {
-        Self(PhantomData)
+        Self {
+            drop_only_from: None,
+        }
     }
 }
 
@@ -234,12 +262,41 @@ impl<PT: PubKey> DropTransformer<PT> {
     pub fn new() -> Self {
         Self::default()
     }
+
+    pub fn drop_only_from(mut self, from: NodeId<PT>) -> Self {
+        self.drop_only_from = Some(from);
+        self
+    }
 }
 
 impl<PT: PubKey, M> Transformer<M> for DropTransformer<PT> {
     type NodeIdPubKey = PT;
-    fn transform(&mut self, _: LinkMessage<PT, M>) -> TransformerStream<PT, M> {
-        TransformerStream::Complete(vec![])
+    fn transform(&mut self, message: LinkMessage<PT, M>) -> TransformerStream<PT, M> {
+        if let Some(drop_only_from) = &self.drop_only_from {
+            if drop_only_from == message.from.get_peer_id() {
+                TransformerStream::Complete(vec![])
+            } else {
+                TransformerStream::Continue(vec![(Duration::ZERO, message)])
+            }
+        } else {
+            TransformerStream::Complete(vec![])
+        }
+    }
+
+    fn is_outbound_blocked(
+        &self,
+        _tick: Duration,
+        node: &NodeId<Self::NodeIdPubKey>,
+    ) -> Option<bool> {
+        if let Some(drop_only_from) = &self.drop_only_from {
+            if drop_only_from == node {
+                Some(true)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
     }
 }
 
@@ -270,6 +327,18 @@ impl<PT: PubKey, M> Transformer<M> for PeriodicTransformer<PT> {
             TransformerStream::Complete(vec![(Duration::ZERO, message)])
         } else {
             TransformerStream::Continue(vec![(Duration::ZERO, message)])
+        }
+    }
+
+    fn is_outbound_blocked(
+        &self,
+        tick: Duration,
+        _node: &NodeId<Self::NodeIdPubKey>,
+    ) -> Option<bool> {
+        if tick < self.start || tick >= self.end {
+            Some(false)
+        } else {
+            None
         }
     }
 }
@@ -385,6 +454,34 @@ impl<PT: PubKey, M> Transformer<M> for GenericTransformer<PT, M> {
                 <PeriodicTransformer<PT> as Transformer<M>>::min_external_delay(t)
             }
             GenericTransformer::Replay(t) => t.min_external_delay(),
+        }
+    }
+
+    fn is_outbound_blocked(
+        &self,
+        _tick: Duration,
+        _node: &NodeId<Self::NodeIdPubKey>,
+    ) -> Option<bool> {
+        match self {
+            GenericTransformer::Latency(t) => {
+                <LatencyTransformer<PT> as Transformer<M>>::is_outbound_blocked(t, _tick, _node)
+            }
+            GenericTransformer::XorLatency(t) => {
+                <XorLatencyTransformer<PT> as Transformer<M>>::is_outbound_blocked(t, _tick, _node)
+            }
+            GenericTransformer::RandLatency(t) => {
+                <RandLatencyTransformer<PT> as Transformer<M>>::is_outbound_blocked(t, _tick, _node)
+            }
+            GenericTransformer::Partition(t) => {
+                <PartitionTransformer<PT> as Transformer<M>>::is_outbound_blocked(t, _tick, _node)
+            }
+            GenericTransformer::Drop(t) => {
+                <DropTransformer<PT> as Transformer<M>>::is_outbound_blocked(t, _tick, _node)
+            }
+            GenericTransformer::Periodic(t) => {
+                <PeriodicTransformer<PT> as Transformer<M>>::is_outbound_blocked(t, _tick, _node)
+            }
+            GenericTransformer::Replay(t) => t.is_outbound_blocked(_tick, _node),
         }
     }
 }
@@ -548,6 +645,7 @@ impl<PT: PubKey> Transformer<Bytes> for PacerTransformer<PT> {
                 message: chunk,
 
                 from_tick: message.from_tick,
+                nonce: message.nonce,
             };
             let extra_delay =
                 idx as f64 * (self.burst_bits as f64 / (self.upload_mbps * 1_000_000) as f64);
@@ -619,6 +717,34 @@ impl<PT: PubKey> Transformer<Bytes> for BytesTransformer<PT> {
             BytesTransformer::Pacer(t) => t.min_external_delay(),
         }
     }
+
+    fn is_outbound_blocked(&self, tick: Duration, node: &NodeId<PT>) -> Option<bool> {
+        match self {
+            BytesTransformer::Latency(t) => {
+                <LatencyTransformer<PT> as Transformer<Bytes>>::is_outbound_blocked(t, tick, node)
+            }
+            BytesTransformer::XorLatency(t) => {
+                <XorLatencyTransformer<PT> as Transformer<Bytes>>::is_outbound_blocked(
+                    t, tick, node,
+                )
+            }
+            BytesTransformer::RandLatency(t) => <RandLatencyTransformer<PT> as Transformer<
+                Bytes,
+            >>::is_outbound_blocked(t, tick, node),
+            BytesTransformer::Partition(t) => {
+                <PartitionTransformer<PT> as Transformer<Bytes>>::is_outbound_blocked(t, tick, node)
+            }
+            BytesTransformer::Drop(t) => {
+                <DropTransformer<PT> as Transformer<Bytes>>::is_outbound_blocked(t, tick, node)
+            }
+            BytesTransformer::Periodic(t) => {
+                <PeriodicTransformer<PT> as Transformer<Bytes>>::is_outbound_blocked(t, tick, node)
+            }
+            BytesTransformer::Replay(t) => t.is_outbound_blocked(tick, node),
+            BytesTransformer::Bw(t) => t.is_outbound_blocked(tick, node),
+            BytesTransformer::Pacer(t) => t.is_outbound_blocked(tick, node),
+        }
+    }
 }
 
 pub type BytesTransformerPipeline<PT> = Vec<BytesTransformer<PT>>;
@@ -641,6 +767,9 @@ pub trait Pipeline<M> {
     /// pipeline must always emit delays >= min_delay for EXTERNAl messages
     /// min_external_delay MUST be > 0
     fn min_external_delay(&self) -> Duration;
+
+    /// Used for visualization
+    fn is_outbound_blocked(&self, tick: Duration, node: &NodeId<Self::NodeIdPubKey>) -> bool;
 }
 
 // unlike regular transformer, pipeline's job is simply organizing various form of transformer and feed them through
@@ -693,5 +822,13 @@ where
         let delay = self.iter().map_while(T::min_external_delay).sum();
         assert!(delay > Duration::ZERO, "min_external_delay must be > 0");
         delay
+    }
+
+    fn is_outbound_blocked(&self, tick: Duration, node: &NodeId<Self::NodeIdPubKey>) -> bool {
+        self.iter()
+            // get first Some(_) result
+            .filter_map(|layer| layer.is_outbound_blocked(tick, node))
+            .next()
+            .unwrap_or_default()
     }
 }

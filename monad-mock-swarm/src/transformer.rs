@@ -137,6 +137,7 @@ where
             from,
             message,
             from_tick,
+            nonce,
         } = message;
         let dup_identifier = *to.get_identifier();
         let pid = *to.get_peer_id();
@@ -186,6 +187,7 @@ where
                                     to: ID::new(pid).as_non_unique(*id),
                                     message: message.clone(),
                                     from_tick,
+                                    nonce,
                                 },
                             )
                         })
@@ -206,6 +208,7 @@ where
                                     to: *id,
                                     message: message.clone(),
                                     from_tick,
+                                    nonce,
                                 };
                                 Some((Duration::ZERO, msg))
                             } else {
@@ -495,6 +498,7 @@ mod test {
                     to: default_id,
                     message: msg,
                     from_tick: Duration::ZERO,
+                    nonce: rand::random(),
                 }) else {
                     panic!("twins_transformer returned wrong type")
                 };
@@ -508,6 +512,7 @@ mod test {
             to: default_id,
             message: fake_timeout_message(&keys[0]),
             from_tick: Duration::ZERO,
+            nonce: rand::random(),
         }) else {
             panic!("twins_transformer returned wrong type")
         };
@@ -521,6 +526,7 @@ mod test {
                     to,
                     message,
                     from_tick,
+                    nonce: _,
                 },
             ),
         ) in c.into_iter().enumerate()
@@ -542,6 +548,7 @@ mod test {
                 to: default_id,
                 message: msg.clone(),
                 from_tick: Duration::ZERO,
+                nonce: rand::random(),
             }) else {
                 panic!("twins_transformer returned wrong type")
             };
@@ -556,6 +563,7 @@ mod test {
                         to,
                         message,
                         from_tick,
+                        nonce: _,
                     },
                 ),
             ) in c.into_iter().enumerate()
@@ -578,6 +586,7 @@ mod test {
                 to: default_id,
                 message: msg.clone(),
                 from_tick: Duration::ZERO,
+                nonce: rand::random(),
             }) else {
                 panic!("twins_transformer returned wrong type")
             };
@@ -592,6 +601,7 @@ mod test {
                         to,
                         message,
                         from_tick,
+                        nonce: _,
                     },
                 ),
             ) in c.into_iter().enumerate()
@@ -617,6 +627,7 @@ mod test {
                     to: wrong_id,
                     message: msg.clone(),
                     from_tick: Duration::ZERO,
+                    nonce: rand::random(),
                 });
                 // no matter stage is drop triggered, it should be empty always
                 match stream {
@@ -638,6 +649,7 @@ mod test {
                 to: default_id,
                 message: msg,
                 from_tick: Duration::ZERO,
+                nonce: rand::random(),
             }) else {
                 panic!("twins_transformer returned wrong type")
             };
@@ -657,6 +669,7 @@ mod test {
                 to: default_id,
                 message: msg,
                 from_tick: Duration::ZERO,
+                nonce: rand::random(),
             }) else {
                 panic!("twins_transformer returned wrong type")
             };
