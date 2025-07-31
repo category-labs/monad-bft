@@ -35,7 +35,7 @@ pub async fn get_block_key_from_tag_or_hash<T: Triedb>(
 
 #[rpc(method = "eth_blockNumber")]
 #[allow(non_snake_case)]
-#[tracing::instrument(level = "debug", skip(chain_state))]
+#[tracing::instrument(level = "debug", skip_all)]
 /// Returns the number of most recent block.
 pub async fn monad_eth_blockNumber<T: Triedb>(
     chain_state: &ChainState<T>,
@@ -70,7 +70,7 @@ pub struct MonadEthGetBlock {
 
 #[rpc(method = "eth_getBlockByHash")]
 #[allow(non_snake_case)]
-#[tracing::instrument(level = "debug", skip(chain_state))]
+#[tracing::instrument(level = "debug", skip_all)]
 /// Returns information about a block by hash.
 pub async fn monad_eth_getBlockByHash<T: Triedb>(
     chain_state: &ChainState<T>,
@@ -100,7 +100,7 @@ pub struct MonadEthGetBlockByNumberParams {
 
 #[rpc(method = "eth_getBlockByNumber")]
 #[allow(non_snake_case)]
-#[tracing::instrument(level = "debug", skip(chain_state))]
+#[tracing::instrument(level = "debug", skip_all)]
 /// Returns information about a block by number.
 pub async fn monad_eth_getBlockByNumber<T: Triedb>(
     chain_state: &ChainState<T>,
@@ -129,7 +129,7 @@ pub struct MonadEthGetBlockTransactionCountByHashParams {
 
 #[rpc(method = "eth_getBlockTransactionCountByHash")]
 #[allow(non_snake_case)]
-#[tracing::instrument(level = "debug", skip(chain_state))]
+#[tracing::instrument(level = "debug", skip_all)]
 /// Returns the number of transactions in a block from a block matching the given block hash.
 pub async fn monad_eth_getBlockTransactionCountByHash<T: Triedb>(
     chain_state: &ChainState<T>,
@@ -153,7 +153,7 @@ pub struct MonadEthGetBlockTransactionCountByNumberParams {
 
 #[rpc(method = "eth_getBlockTransactionCountByNumber")]
 #[allow(non_snake_case)]
-#[tracing::instrument(level = "debug", skip(chain_state))]
+#[tracing::instrument(level = "debug", skip_all)]
 /// Returns the number of transactions in a block matching the given block number.
 pub async fn monad_eth_getBlockTransactionCountByNumber<T: Triedb>(
     chain_state: &ChainState<T>,
@@ -240,7 +240,7 @@ pub struct MonadEthGetBlockReceiptsResult(Vec<MonadTransactionReceipt>);
 
 #[rpc(method = "eth_getBlockReceipts")]
 #[allow(non_snake_case)]
-#[tracing::instrument(level = "debug", skip(chain_state))]
+#[tracing::instrument(level = "debug", skip_all)]
 /// Returns the receipts of a block by number or hash.
 pub async fn monad_eth_getBlockReceipts<T: Triedb>(
     chain_state: &ChainState<T>,

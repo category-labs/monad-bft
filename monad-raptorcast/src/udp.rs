@@ -120,6 +120,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
     }
 
     /// Given a RecvMsg, emits all decoded messages while rebroadcasting as necessary
+    #[tracing::instrument(level = "debug", name = "udp_handle_message", skip_all)]
     pub fn handle_message(
         &mut self,
         group_map: &ReBroadcastGroupMap<ST>,

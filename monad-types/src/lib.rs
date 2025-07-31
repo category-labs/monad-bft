@@ -47,6 +47,10 @@ pub struct Round(pub u64);
 impl Round {
     pub const MIN: Round = Round(u64::MIN);
     pub const MAX: Round = Round(u64::MAX);
+
+    pub fn as_u64(&self) -> u64 {
+        self.0
+    }
 }
 
 impl AsRef<[u8]> for Round {
@@ -316,6 +320,10 @@ impl SeqNum {
     pub fn get_locked_epoch(&self, val_set_update_interval: SeqNum) -> Epoch {
         assert!(self.is_epoch_end(val_set_update_interval));
         (*self).to_epoch(val_set_update_interval) + Epoch(2)
+    }
+
+    pub fn as_u64(&self) -> u64 {
+        self.0
     }
 }
 

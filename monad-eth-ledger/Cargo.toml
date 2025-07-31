@@ -21,3 +21,4 @@ monad-updaters = { workspace = true }
 
 alloy-consensus = { workspace = true, features = ["k256"] }
 futures = { workspace = true }
+tracing = { workspace = true }

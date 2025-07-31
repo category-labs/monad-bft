@@ -26,7 +26,7 @@ use monad_eth_types::{
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use tracing::warn;
+use tracing::{debug, trace_span, warn};
 
 type NonceMap = BTreeMap<Address, Nonce>;
 type TxnFeeMap = BTreeMap<Address, U256>;
@@ -92,6 +92,7 @@ where
         let eth_txns: Vec<Recovered<TxEnvelope>> = transactions
             .into_par_iter()
             .map(|tx| {
+                let _span = trace_span!("validator: recover signer").entered();
                 let signer = tx.secp256k1_recover()?;
                 Ok(Recovered::new_unchecked(tx.clone(), signer))
             })
@@ -136,11 +137,18 @@ where
         }
 
         let total_gas: u64 = eth_txns.iter().map(|tx| tx.gas_limit()).sum();
+        let proposal_size: usize = eth_txns.iter().map(|tx| tx.length()).sum();
+        debug!(
+            total_gas,
+            proposal_size,
+            txs = transactions.len(),
+            "proposal stats"
+        );
+
         if total_gas > proposal_gas_limit {
             return Err(BlockValidationError::TxnError);
         }
 
-        let proposal_size: usize = eth_txns.iter().map(|tx| tx.length()).sum();
         if proposal_size as u64 > proposal_byte_limit {
             return Err(BlockValidationError::TxnError);
         }
@@ -242,6 +250,11 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend,
 {
+    #[tracing::instrument(
+        level = "debug", 
+        skip_all,
+        fields(seq_num = header.seq_num.as_u64())
+    )]
     fn validate(
         &self,
         header: ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,

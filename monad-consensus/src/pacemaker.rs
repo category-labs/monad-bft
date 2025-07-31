@@ -161,6 +161,7 @@ where
     /// pending timeout messages are cleared.
     /// Creates the command to start the local round timeout
     #[must_use]
+    #[tracing::instrument(level = "debug", skip_all)]
     pub fn process_certificate(
         &mut self,
         metrics: &mut Metrics,

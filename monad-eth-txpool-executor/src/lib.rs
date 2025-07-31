@@ -32,7 +32,7 @@ use monad_types::DropTimer;
 use monad_updaters::TokioTaskUpdater;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tokio::{sync::mpsc, time::Instant};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, debug_span, error, info, trace_span, warn};
 
 pub use self::ipc::EthTxPoolIpcConfig;
 use self::{
@@ -199,6 +199,7 @@ where
     type Command = TxPoolCommand<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
+        let _span = debug_span!("txpool exec").entered();
         let mut ipc_events = Vec::default();
 
         let mut event_tracker = EthTxPoolEventTracker::new(&self.metrics.pool, &mut ipc_events);
@@ -206,6 +207,7 @@ where
         for command in commands {
             match command {
                 TxPoolCommand::BlockCommit(committed_blocks) => {
+                    let _span = debug_span!("block commit").entered();
                     for committed_block in committed_blocks {
                         BlockPolicy::<ST, SCT, EthExecutionProtocol, SBT>::update_committed_block(
                             &mut self.block_policy,
@@ -247,6 +249,8 @@ where
                     extending_blocks,
                     delayed_execution_results,
                 } => {
+                    let _span =
+                        debug_span!("create proposal", seq_num = seq_num.as_u64(),).entered();
                     self.preload_manager.update_on_create_proposal(seq_num);
 
                     let create_proposal_start = Instant::now();
@@ -293,6 +297,7 @@ where
                     }
                 }
                 TxPoolCommand::InsertForwardedTxs { sender, txs } => {
+                    let _span = debug_span!("insert forwarded txs").entered();
                     debug!(
                         ?sender,
                         num_txs = txs.len(),
@@ -421,6 +426,7 @@ where
         self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
+        let _span = debug_span!("txpool poll").entered();
         let _timer = DropTimer::start(Duration::from_millis(10), |elapsed| {
             info!(?elapsed, "txpool executor long poll");
         });
@@ -465,21 +471,24 @@ where
 
         if let Poll::Ready(unvalidated_txs) = ipc.as_mut().poll_txs(cx, || pool.generate_snapshot())
         {
+            let _span = debug_span!("ipc txs", len = unvalidated_txs.len()).entered();
             let mut ipc_events = Vec::default();
             let mut inserted_txs = Vec::default();
             let mut inserted_addresses = HashSet::<Address>::default();
 
             let recovered_txs = {
-                let (recovered_txs, dropped_txs): (Vec<_>, Vec<_>) = unvalidated_txs
-                    .into_par_iter()
-                    .partition_map(|tx| match tx.secp256k1_recover() {
-                        Ok(signer) => {
-                            rayon::iter::Either::Left(Recovered::new_unchecked(tx, signer))
+                let (recovered_txs, dropped_txs): (Vec<_>, Vec<_>) =
+                    unvalidated_txs.into_par_iter().partition_map(|tx| {
+                        let _span = trace_span!("txpool: recover signer").entered();
+                        match tx.secp256k1_recover() {
+                            Ok(signer) => {
+                                rayon::iter::Either::Left(Recovered::new_unchecked(tx, signer))
+                            }
+                            Err(_) => rayon::iter::Either::Right(EthTxPoolEvent::Drop {
+                                tx_hash: *tx.tx_hash(),
+                                reason: EthTxPoolDropReason::InvalidSignature,
+                            }),
                         }
-                        Err(_) => rayon::iter::Either::Right(EthTxPoolEvent::Drop {
-                            tx_hash: *tx.tx_hash(),
-                            reason: EthTxPoolDropReason::InvalidSignature,
-                        }),
                     });
                 ipc_events.extend_from_slice(&dropped_txs);
                 recovered_txs
@@ -510,6 +519,7 @@ where
         let mut ipc_events = Vec::default();
 
         while let Poll::Ready(forwarded_txs) = forwarding_manager.as_mut().poll_ingress(cx) {
+            let _span = debug_span!("forwarded txs", len = forwarded_txs.len()).entered();
             let mut inserted_addresses = HashSet::<Address>::default();
 
             pool.insert_txs(

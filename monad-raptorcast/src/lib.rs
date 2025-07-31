@@ -35,7 +35,7 @@ use monad_peer_discovery::{
 use monad_types::{DropTimer, Epoch, ExecutionProtocol, NodeId, RouterTarget};
 use raptorcast_secondary::group_message::FullNodesGroupMessage;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tracing::{debug, error, warn};
+use tracing::{debug, debug_span, error, warn};
 use util::{
     BuildTarget, EpochValidators, FullNodes, Group, ReBroadcastGroupMap, Redundancy, Validator,
 };
@@ -357,7 +357,7 @@ where
                     );
                 }
                 RouterCommand::Publish { target, message } => {
-                    tracing::trace!(?target, "RaptorCast Publish AppMessage");
+                    let _span = debug_span!("router publish").entered();
                     let _timer = DropTimer::start(Duration::from_millis(20), |elapsed| {
                         warn!(?elapsed, "long time to publish message")
                     });
@@ -769,6 +769,7 @@ where
             while let Poll::Ready(Some(peer_disc_emit)) = pd_driver.poll_next_unpin(cx) {
                 match peer_disc_emit {
                     PeerDiscoveryEmit::RouterCommand { target, message } => {
+                        let _span = debug_span!("publish discovery").entered();
                         let router_message =
                             match OutboundRouterMessage::<OM, ST>::PeerDiscoveryMessage(message)
                                 .try_serialize()

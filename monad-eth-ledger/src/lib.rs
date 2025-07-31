@@ -25,6 +25,7 @@ use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
 use monad_state_backend::{InMemoryState, StateBackendTest};
 use monad_types::{BlockId, SeqNum};
 use monad_updaters::ledger::MockableLedger;
+use tracing::debug_span;
 
 /// A ledger for commited Monad Blocks
 /// Purpose of the ledger is to have retrievable committed blocks to
@@ -111,6 +112,7 @@ where
         for command in commands {
             match command {
                 LedgerCommand::LedgerCommit(OptimisticCommit::Proposed(block)) => {
+                    let _span = debug_span!("optimistic commit proposed").entered();
                     // generate eth block and update the state backend with committed nonces
                     let new_account_nonces = block
                         .body()
@@ -140,11 +142,13 @@ where
                     self.blocks.insert(block.get_id(), block);
                 }
                 LedgerCommand::LedgerCommit(OptimisticCommit::Finalized(block)) => {
+                    let _span = debug_span!("optimistic commit finalized").entered();
                     self.finalized.insert(block.get_seq_num(), block.clone());
                     let mut state = self.state.lock().unwrap();
                     state.ledger_commit(&block.get_id());
                 }
                 LedgerCommand::LedgerFetchHeaders(block_range) => {
+                    let _span = debug_span!("ledger fetch header").entered();
                     self.events.push_back(BlockSyncEvent::SelfResponse {
                         response: BlockSyncResponseMessage::HeadersResponse(
                             self.get_headers(block_range),
@@ -152,6 +156,7 @@ where
                     });
                 }
                 LedgerCommand::LedgerFetchPayload(payload_id) => {
+                    let _span = debug_span!("ledger fetch payload").entered();
                     self.events.push_back(BlockSyncEvent::SelfResponse {
                         response: BlockSyncResponseMessage::PayloadResponse(
                             self.get_payload(payload_id),

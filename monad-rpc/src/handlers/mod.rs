@@ -924,7 +924,7 @@ enabled_methods!(
     web3_clientVersion
 );
 
-#[tracing::instrument(level = "debug", skip(app_state))]
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn rpc_select(
     app_state: &MonadRpcResources,
     method: &str,

@@ -410,6 +410,13 @@ where
     /// NULL block proposals are not required to validate the state_root field of the
     /// proposal's payload
     #[must_use]
+    #[tracing::instrument(
+        level = "debug", 
+        skip_all,
+        fields(
+            round = p.tip.block_header.block_round.as_u64(),
+        ),
+    )]
     pub fn handle_proposal_message(
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
@@ -682,6 +689,7 @@ where
     /// collect votes from other nodes and handle at vote_state state machine
     /// When enough votes are collected, a QC is formed and broadcast to other nodes
     #[must_use]
+    #[tracing::instrument(level = "debug", skip_all)]
     pub fn handle_vote_message(
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
@@ -733,6 +741,7 @@ where
 
     /// handling remote timeout messages from other nodes
     #[must_use]
+    #[tracing::instrument(level = "debug", skip_all)]
     pub fn handle_timeout_message(
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
@@ -1000,6 +1009,7 @@ where
     /// due to the original proposal arriving before the requested block is returned,
     /// or the requested block is no longer relevant due to prune
     #[must_use]
+    #[tracing::instrument(level = "debug", skip_all)]
     pub fn handle_block_sync(
         &mut self,
         block_range: BlockRange,
@@ -1047,6 +1057,7 @@ where
     }
 
     #[must_use]
+    #[tracing::instrument(level = "debug", skip_all)]
     pub fn handle_vote_timer(
         &mut self,
         round: Round,
@@ -1060,6 +1071,7 @@ where
     }
 
     #[must_use]
+    #[tracing::instrument(level = "debug", skip_all)]
     pub fn send_vote_and_reset_timer(
         &mut self,
         round: Round,
@@ -1112,6 +1124,7 @@ where
     /// block tree
     /// Update our highest seen qc (high_qc) if the incoming qc is of higher rank
     #[must_use]
+    #[tracing::instrument(level = "debug", skip_all)]
     pub fn process_qc(
         &mut self,
         qc: &QuorumCertificate<SCT>,
@@ -1273,6 +1286,13 @@ where
         cmds
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(
+            seqnum = block.get_seq_num().as_u64()
+        )
+    )]
     fn try_add_and_commit_blocktree(
         &mut self,
         block: BPT::ValidatedBlock,
@@ -1283,6 +1303,7 @@ where
         )>,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
         trace!(?block, "adding block to blocktree");
+
         let mut cmds = Vec::new();
         self.consensus.pending_block_tree.add(block.clone());
 

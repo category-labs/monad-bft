@@ -380,7 +380,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
         .map(|p| NodeId::new(p.secp256k1_pubkey))
         .collect();
 
-    let mut last_ledger_tip = None;
+    let mut last_ledger_tip: Option<SeqNum> = None;
 
     let builder = MonadStateBuilder {
         validator_set_factory: ValidatorSetFactory::default(),
@@ -415,7 +415,10 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
     let (mut state, init_commands) = builder.build();
     executor.exec(init_commands);
 
-    let mut ledger_span = tracing::info_span!("ledger_span", last_ledger_tip =? last_ledger_tip);
+    let mut ledger_span = tracing::info_span!(
+        "ledger_span",
+        last_ledger_tip = last_ledger_tip.map(|s| s.as_u64())
+    );
 
     let (maybe_otel_meter_provider, mut maybe_metrics_ticker) = node_state
         .otel_endpoint_interval
@@ -530,7 +533,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
                 if let Some(ledger_tip) = executor.ledger.last_commit() {
                     if last_ledger_tip.is_none_or(|last_ledger_tip| ledger_tip > last_ledger_tip) {
                         last_ledger_tip = Some(ledger_tip);
-                        ledger_span = tracing::info_span!("ledger_span", last_ledger_tip =? last_ledger_tip);
+                        ledger_span = tracing::info_span!("ledger_span", last_ledger_tip = last_ledger_tip.map(|s| s.as_u64()));
                     }
                 }
             }

@@ -297,6 +297,11 @@ impl DataplaneWriter {
         }
     }
 
+    #[tracing::instrument(
+        level="trace", 
+        skip_all,
+        fields(len = msg.payload.len(), targets = msg.targets.len())
+    )]
     pub fn udp_write_broadcast(&self, msg: BroadcastMsg) {
         let mut pending_count = msg.msg_count();
         let msg_len = msg.payload.len();
@@ -330,6 +335,11 @@ impl DataplaneWriter {
         );
     }
 
+    #[tracing::instrument(
+        level="trace", 
+        skip_all,
+        fields(msgs = msg.msgs.len())
+    )]
     pub fn udp_write_unicast(&self, msg: UnicastMsg) {
         let mut pending_count = msg.msg_count();
 

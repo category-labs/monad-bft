@@ -138,7 +138,7 @@ fn schema_for_filter(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema
 #[rpc(method = "eth_getLogs", ignore = "max_block_range")]
 #[allow(non_snake_case)]
 /// Returns an array of all logs matching filter with given id.
-#[tracing::instrument(level = "debug", skip(chain_state))]
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn monad_eth_getLogs<T: Triedb>(
     chain_state: &ChainState<T>,
     max_block_range: u64,
@@ -190,7 +190,7 @@ const MAX_CONCURRENT_SEND_RAW_TX: usize = 1_000;
 // TODO: need to support EIP-4844 transactions
 #[rpc(method = "eth_sendRawTransaction", ignore = "tx_pool", ignore = "ipc")]
 #[allow(non_snake_case)]
-#[tracing::instrument(level = "debug", skip(txpool_bridge_client))]
+#[tracing::instrument(level = "debug", skip_all)]
 /// Submits a raw transaction. For EIP-4844 transactions, the raw form must be the network form.
 /// This means it includes the blobs, KZG commitments, and KZG proofs.
 pub async fn monad_eth_sendRawTransaction<T: Triedb>(
@@ -276,7 +276,7 @@ pub struct MonadEthGetTransactionReceiptParams {
 #[rpc(method = "eth_getTransactionReceipt")]
 #[allow(non_snake_case)]
 /// Returns the receipt of a transaction by transaction hash.
-#[tracing::instrument(level = "debug", skip(chain_state))]
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn monad_eth_getTransactionReceipt<T: Triedb>(
     chain_state: &ChainState<T>,
     params: MonadEthGetTransactionReceiptParams,
@@ -298,7 +298,7 @@ pub struct MonadEthGetTransactionByHashParams {
 #[rpc(method = "eth_getTransactionByHash")]
 #[allow(non_snake_case)]
 /// Returns the information about a transaction requested by transaction hash.
-#[tracing::instrument(level = "debug", skip(chain_state))]
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn monad_eth_getTransactionByHash<T: Triedb>(
     chain_state: &ChainState<T>,
     params: MonadEthGetTransactionByHashParams,
@@ -320,7 +320,7 @@ pub struct MonadEthGetTransactionByBlockHashAndIndexParams {
 
 #[rpc(method = "eth_getTransactionByBlockHashAndIndex")]
 #[allow(non_snake_case)]
-#[tracing::instrument(level = "debug", skip(chain_state))]
+#[tracing::instrument(level = "debug", skip_all)]
 /// Returns information about a transaction by block hash and transaction index position.
 pub async fn monad_eth_getTransactionByBlockHashAndIndex<T: Triedb>(
     chain_state: &ChainState<T>,
@@ -349,7 +349,7 @@ pub struct MonadEthGetTransactionByBlockNumberAndIndexParams {
 
 #[rpc(method = "eth_getTransactionByBlockNumberAndIndex")]
 #[allow(non_snake_case)]
-#[tracing::instrument(level = "debug", skip(chain_state))]
+#[tracing::instrument(level = "debug", skip_all)]
 /// Returns information about a transaction by block number and transaction index position.
 pub async fn monad_eth_getTransactionByBlockNumberAndIndex<T: Triedb>(
     chain_state: &ChainState<T>,
