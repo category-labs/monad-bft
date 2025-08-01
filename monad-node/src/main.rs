@@ -613,7 +613,10 @@ where
 
     let self_id = NodeId::new(identity.pubkey());
     let self_record = NameRecord {
-        address: name_record_address,
+        ip: *name_record_address.ip(),
+        tcp_port: name_record_address.port(),
+        udp_port: name_record_address.port(),
+        capabilities: 0,
         seq: peer_discovery_config.self_record_seq_num,
     };
     let self_record = MonadNameRecord::new(self_record, &identity);
@@ -639,7 +642,10 @@ where
                 }
             };
             let name_record = NameRecord {
-                address,
+                ip: *address.ip(),
+                tcp_port: address.port(),
+                udp_port: address.port(),
+                capabilities: 0,
                 seq: peer.record_seq_num,
             };
 
