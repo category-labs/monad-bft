@@ -22,7 +22,10 @@ use alloy_consensus::{
 use alloy_primitives::{Address, TxHash, U256};
 use itertools::Itertools;
 use monad_consensus_types::{
-    block::{BlockPolicy, BlockPolicyError, ConsensusFullBlock},
+    block::{
+        AccountBalanceState, BlockPolicy, BlockPolicyBlockValidator,
+        BlockPolicyBlockValidatorError, BlockPolicyError, ConsensusFullBlock, TxnFee, TxnFees,
+    },
     checkpoint::RootInfo,
     signature_collection::SignatureCollection,
 };
@@ -30,11 +33,11 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_txpool_types::TransactionError;
-use monad_eth_types::{Balance, EthAccount, EthExecutionProtocol, EthHeader, Nonce};
+use monad_eth_types::{EthAccount, EthExecutionProtocol, EthHeader};
 use monad_state_backend::{StateBackend, StateBackendError};
-use monad_types::{BlockId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_SEQ_NUM};
+use monad_types::{Balance, BlockId, Nonce, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_SEQ_NUM};
 use sorted_vector_map::SortedVectorMap;
-use tracing::{trace, warn};
+use tracing::{debug, trace, warn};
 
 /// Retriever trait for account nonces from block(s)
 pub trait AccountNonceRetrievable {
@@ -81,11 +84,13 @@ fn compute_intrinsic_gas(tx: &TxEnvelope) -> u64 {
 }
 
 pub fn compute_txn_max_value(txn: &TxEnvelope) -> U256 {
-    let txn_value = txn.value();
-    let gas_limit = U256::from(txn.gas_limit());
-    let max_fee = U256::from(txn.max_fee_per_gas());
-    let gas_cost = gas_limit.checked_mul(max_fee).expect("no overflow");
+    let txn_value = U256::try_from(txn.value()).unwrap();
+    let gas_cost = compute_txn_max_gas_cost(txn);
     txn_value.saturating_add(gas_cost)
+}
+
+pub fn compute_txn_max_gas_cost(txn: &TxEnvelope) -> U256 {
+    U256::from(txn.gas_limit() as u128 * txn.max_fee_per_gas())
 }
 
 /// Stateless helper function to check validity of an Ethereum transaction
@@ -156,7 +161,7 @@ where
     pub block: ConsensusFullBlock<ST, SCT, EthExecutionProtocol>,
     pub validated_txns: Vec<Recovered<TxEnvelope>>,
     pub nonces: BTreeMap<Address, Nonce>,
-    pub txn_fees: BTreeMap<Address, Balance>,
+    pub txn_fees: TxnFees,
 }
 
 impl<ST, SCT> Deref for EthValidatedBlock<ST, SCT>
@@ -254,12 +259,12 @@ impl BlockAccountNonce {
 }
 
 #[derive(Debug)]
-struct BlockTxnFees {
-    txn_fees: BTreeMap<Address, Balance>,
+struct BlockTxnFeeStates {
+    txn_fees: TxnFees,
 }
 
-impl BlockTxnFees {
-    fn get(&self, eth_address: &Address) -> Option<Balance> {
+impl BlockTxnFeeStates {
+    fn get(&self, eth_address: &Address) -> Option<TxnFee> {
         self.txn_fees.get(eth_address).cloned()
     }
 }
@@ -270,20 +275,15 @@ struct CommittedBlock {
     round: Round,
 
     nonces: BlockAccountNonce,
-    fees: BlockTxnFees,
+    fees: BlockTxnFeeStates,
 }
 
 #[derive(Debug)]
 struct CommittedBlkBuffer<ST, SCT> {
     blocks: SortedVectorMap<SeqNum, CommittedBlock>,
-    size: usize, // should be execution delay
+    min_buffer_size: usize, // should be execution delay
 
     _phantom: PhantomData<(ST, SCT)>,
-}
-
-struct CommittedTxnFeeResult {
-    txn_fee: Balance,
-    next_validate: SeqNum, // next block number to validate; included for assertions only
 }
 
 impl<ST, SCT> CommittedBlkBuffer<ST, SCT>
@@ -291,10 +291,10 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    fn new(size: usize) -> Self {
+    fn new(min_buffer_size: usize) -> Self {
         Self {
             blocks: Default::default(),
-            size,
+            min_buffer_size,
 
             _phantom: Default::default(),
         }
@@ -314,27 +314,43 @@ where
         maybe_account_nonce
     }
 
-    fn compute_txn_fee(
+    fn update_account_balance(
         &self,
-        base_seq_num: SeqNum,
+        base_seq_num: &mut SeqNum,
+        account_balance: &mut AccountBalanceState,
         eth_address: &Address,
-    ) -> CommittedTxnFeeResult {
-        let mut txn_fee: Balance = Balance::ZERO;
-        let mut next_validate = base_seq_num + SeqNum(1);
+        execution_delay: SeqNum,
+        only_seqnum: bool,
+    ) -> Result<(), BlockPolicyError> {
+        let next_seq_num = *base_seq_num;
+        let mut block_range = self.blocks.range(next_seq_num..);
+        if only_seqnum {
+            let start_seq_num = next_seq_num.max(execution_delay) - execution_delay;
+            block_range = self.blocks.range(start_seq_num..next_seq_num);
+        }
+        for (&cache_seq_num, block) in block_range {
+            trace!(
+                ?cache_seq_num,
+                ?eth_address,
+                ?only_seqnum,
+                "update_account_balance"
+            );
+            if let Some(block_txn_fees) = block.fees.get(eth_address) {
+                let mut validator =
+                    EthBlockPolicyBlockValidator::new(cache_seq_num, execution_delay)?;
 
-        // start iteration from base_seq_num (non inclusive)
-        for (&cache_seq_num, block) in self.blocks.range(next_validate..) {
-            assert_eq!(next_validate, cache_seq_num);
-            if let Some(account_txn_fee) = block.fees.get(eth_address) {
-                txn_fee = txn_fee.saturating_add(account_txn_fee);
+                validator.try_apply_block_fees(
+                    account_balance,
+                    &block_txn_fees,
+                    eth_address,
+                    only_seqnum,
+                )?;
             }
-            next_validate += SeqNum(1);
+            *base_seq_num = cache_seq_num;
         }
+        *base_seq_num += SeqNum(1);
 
-        CommittedTxnFeeResult {
-            txn_fee,
-            next_validate,
-        }
+        Ok(())
     }
 
     fn update_committed_block(&mut self, block: &EthValidatedBlock<ST, SCT>) {
@@ -343,9 +359,12 @@ where
             assert_eq!(last_block_num + SeqNum(1), block_number);
         }
 
-        if self.blocks.len() >= self.size.saturating_mul(2) {
+        let current_size = self.blocks.len();
+
+        if current_size >= self.min_buffer_size.saturating_mul(2) {
             let (&first_block_num, _) = self.blocks.first_key_value().expect("txns non-empty");
-            let divider = first_block_num + SeqNum(self.size as u64);
+            let divider =
+                first_block_num + SeqNum(current_size as u64 - self.min_buffer_size as u64);
 
             // TODO: revisit once perf implications are understood
             self.blocks = self.blocks.split_off(&divider);
@@ -353,7 +372,7 @@ where
                 *self.blocks.last_key_value().expect("non-empty").0 + SeqNum(1),
                 block_number
             );
-            assert_eq!(self.blocks.len(), self.size);
+            assert!(self.blocks.len() >= self.min_buffer_size);
         }
 
         assert!(self
@@ -366,12 +385,178 @@ where
                     nonces: BlockAccountNonce {
                         nonces: block.get_account_nonces(),
                     },
-                    fees: BlockTxnFees {
+                    fees: BlockTxnFeeStates {
                         txn_fees: block.txn_fees.clone()
                     }
                 },
             )
             .is_none());
+    }
+}
+
+pub struct EthBlockPolicyBlockState {
+    fees: BTreeMap<Address, TxnFees>,
+}
+
+pub struct EthBlockPolicyBlockValidator {
+    block_seq_num: SeqNum,
+    min_blocks_since_latest_txn: SeqNum,
+}
+
+impl BlockPolicyBlockValidator for EthBlockPolicyBlockValidator
+where
+    Self: Sized,
+{
+    type Transaction = Recovered<TxEnvelope>;
+
+    fn new(
+        block_seq_num: SeqNum,
+        min_blocks_since_latest_txn: SeqNum,
+    ) -> Result<Self, BlockPolicyError> {
+        Ok(Self {
+            block_seq_num,
+            min_blocks_since_latest_txn,
+        })
+    }
+
+    fn try_apply_block_fees(
+        &mut self,
+        account_balance: &mut AccountBalanceState,
+        block_txn_fees: &TxnFee,
+        eth_address: &Address,
+        only_seqnum: bool,
+    ) -> Result<(), BlockPolicyError> {
+        if !only_seqnum {
+            let blocks_since_latest_txn = self
+                .block_seq_num
+                .max(account_balance.block_seqnum_of_latest_txn)
+                - account_balance.block_seqnum_of_latest_txn;
+
+            let has_emptying_transaction =
+                blocks_since_latest_txn >= self.min_blocks_since_latest_txn;
+            if has_emptying_transaction {
+                if account_balance.balance < block_txn_fees.first_txn_value {
+                    debug!(
+                        "Block with insufficient balance: {:?} \
+                            first txn value {:?} \
+                            block seq_num {:?} \
+                            address: {:?}",
+                        account_balance,
+                        block_txn_fees.first_txn_value,
+                        self.block_seq_num,
+                        eth_address,
+                    );
+                    return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+                        BlockPolicyBlockValidatorError::InsufficientBalance,
+                    ));
+                }
+                let estimated_balance = account_balance
+                    .balance
+                    .saturating_sub(block_txn_fees.first_txn_value); // not including txn cost which is included later
+
+                account_balance.remaining_reserve_balance =
+                    estimated_balance.min(account_balance.max_reserve_balance);
+            }
+
+            if account_balance.remaining_reserve_balance < block_txn_fees.max_gas_cost {
+                debug!(
+                    "Block with insufficient reserve balance: {:?} \
+                            max gas cost {:?} \
+                            block seq_num {:?} \
+                            address: {:?}",
+                    account_balance, block_txn_fees.max_gas_cost, self.block_seq_num, eth_address,
+                );
+                return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+                    BlockPolicyBlockValidatorError::InsufficientReserveBalance,
+                ));
+            }
+            account_balance.remaining_reserve_balance = account_balance
+                .remaining_reserve_balance
+                .saturating_sub(block_txn_fees.max_gas_cost);
+        }
+        if account_balance.block_seqnum_of_latest_txn < self.block_seq_num {
+            account_balance.block_seqnum_of_latest_txn = self.block_seq_num;
+        }
+        trace!(
+            ?account_balance,
+            ?self.block_seq_num,
+            ?eth_address,
+            "try_apply_block_fees updated balance state",
+        );
+        Ok(())
+    }
+
+    fn try_add_transaction(
+        &mut self,
+        account_balances: &mut BTreeMap<Address, AccountBalanceState>,
+        txn: &Self::Transaction,
+    ) -> Result<(), BlockPolicyError> {
+        let eth_address = txn.signer();
+
+        let maybe_account_balance = account_balances.get_mut(&eth_address);
+
+        if maybe_account_balance.is_none() {
+            warn!(
+                seq_num =?self.block_seq_num,
+                ?eth_address,
+                "account balance have not been populated"
+            );
+            return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+                BlockPolicyBlockValidatorError::AccountBalanceMissing,
+            ));
+        }
+
+        let account_balance = maybe_account_balance.unwrap();
+
+        // if an account is not delegated and had no transactions in the last execution_delay blocks, then can charge into reserve.
+        let blocks_since_latest_txn = self
+            .block_seq_num
+            .max(account_balance.block_seqnum_of_latest_txn)
+            - account_balance.block_seqnum_of_latest_txn;
+
+        let is_emptying_transaction = blocks_since_latest_txn >= self.min_blocks_since_latest_txn;
+
+        if is_emptying_transaction {
+            let txn_max_cost = compute_txn_max_value(txn);
+            if account_balance.balance < txn_max_cost {
+                warn!(
+                    seq_num =?self.block_seq_num,
+                    ?account_balance,
+                    ?txn_max_cost,
+                    "Incoherent block with insufficient balance"
+                );
+                return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+                    BlockPolicyBlockValidatorError::InsufficientBalance,
+                ));
+            }
+            let estimated_balance = account_balance.balance.saturating_sub(txn_max_cost);
+            let reserve_balance = account_balance.max_reserve_balance.min(estimated_balance);
+
+            account_balance.balance = estimated_balance;
+            account_balance.remaining_reserve_balance = reserve_balance;
+            account_balance.block_seqnum_of_latest_txn = self.block_seq_num;
+        } else {
+            let txn_max_gas_cost = compute_txn_max_gas_cost(txn);
+            if account_balance.remaining_reserve_balance < txn_max_gas_cost {
+                warn!(
+                    seq_num =?self.block_seq_num,
+                    ?account_balance,
+                    ?txn_max_gas_cost,
+                    "Incoherent block with insufficient reserve balance"
+                );
+                return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+                    BlockPolicyBlockValidatorError::InsufficientReserveBalance,
+                ));
+            }
+            let reserve_balance = account_balance
+                .remaining_reserve_balance
+                .saturating_sub(txn_max_gas_cost);
+
+            account_balance.remaining_reserve_balance = reserve_balance;
+            account_balance.block_seqnum_of_latest_txn = self.block_seq_num;
+        }
+
+        Ok(())
     }
 }
 
@@ -393,6 +578,11 @@ where
 
     /// Chain ID
     chain_id: u64,
+
+    max_reserve_balance: Balance,
+
+    // Smallest number of blocks after the latest txn to allow transferring out of reserve balance
+    min_blocks_since_latest_txn: SeqNum,
 }
 
 impl<ST, SCT> EthBlockPolicy<ST, SCT>
@@ -404,12 +594,16 @@ where
         last_commit: SeqNum, // TODO deprecate
         execution_delay: u64,
         chain_id: u64,
+        max_reserve_balance: u128,
     ) -> Self {
         Self {
-            committed_cache: CommittedBlkBuffer::new(execution_delay as usize),
+            // Needs to be at least 2 * execution_delay to detect emptying transactions
+            committed_cache: CommittedBlkBuffer::new((execution_delay * 2) as usize),
             last_commit,
             execution_delay: SeqNum(execution_delay),
             chain_id,
+            max_reserve_balance: Balance::from(max_reserve_balance),
+            min_blocks_since_latest_txn: SeqNum(execution_delay),
         }
     }
 
@@ -532,11 +726,11 @@ where
         state_backend: &impl StateBackend,
         extending_blocks: Option<&Vec<&EthValidatedBlock<ST, SCT>>>,
         addresses: impl Iterator<Item = &'a Address>,
-    ) -> Result<BTreeMap<&'a Address, Balance>, StateBackendError>
+    ) -> Result<BTreeMap<Address, AccountBalanceState>, BlockPolicyError>
     where
         SCT: SignatureCollection,
     {
-        trace!(block = consensus_block_seq_num.0, "compute_base_balance");
+        trace!(?self.min_blocks_since_latest_txn, ?consensus_block_seq_num, "compute_account_base_balances");
 
         // calculation correct only if GENESIS_SEQ_NUM == 0
         assert_eq!(GENESIS_SEQ_NUM, SeqNum(0));
@@ -551,91 +745,88 @@ where
                 &base_seq_num,
             )?
             .into_iter()
-            .map(|maybe_status| maybe_status.map_or(Balance::ZERO, |status| status.balance))
+            .map(|maybe_status| {
+                maybe_status.map_or(
+                    AccountBalanceState::new(self.max_reserve_balance),
+                    |status| {
+                        AccountBalanceState {
+                            balance: status.balance,
+                            remaining_reserve_balance: status.balance.min(self.max_reserve_balance),
+                            max_reserve_balance: self.max_reserve_balance,
+                            block_seqnum_of_latest_txn: base_seq_num, // most pessimistic assumption
+                        }
+                    },
+                )
+            })
             .collect_vec();
 
-        let account_balances = addresses
-            .into_iter()
-            .zip_eq(account_balances)
-            .map(|(address, mut account_balance)| {
-                // Apply Txn Fees for the txns from committed blocks
-                let CommittedTxnFeeResult {
-                    txn_fee: txn_fee_committed,
-                    mut next_validate,
-                } = self.committed_cache.compute_txn_fee(base_seq_num, address);
+        let account_balances: Result<BTreeMap<Address, AccountBalanceState>, BlockPolicyError> =
+            addresses
+                .into_iter()
+                .cloned()
+                .zip_eq(account_balances)
+                .map(|(address, mut balance_state)| {
+                    // Apply Txn Fees for the txns from committed blocks
+                    let mut next_seq_num = base_seq_num + SeqNum(1);
+                    self.committed_cache.update_account_balance(
+                        &mut next_seq_num,
+                        &mut balance_state,
+                        &address,
+                        self.execution_delay,
+                        true,
+                    )?;
 
-                if account_balance < txn_fee_committed {
-                    panic!(
-                        "Committed block with incoherent transaction fee 
-                            Not sufficient balance: {:?} \
-                            Transaction Fee Committed: {:?} \
-                            consensus block:seq num {:?} \
-                            for address: {:?}",
-                        account_balance, txn_fee_committed, consensus_block_seq_num, address
-                    );
-                } else {
-                    account_balance -= txn_fee_committed;
-                    trace!(
-                        "AccountBalance compute 4: \
-                            updated balance to: {:?} \
-                            Transaction Fee Committed: {:?} \
-                            consensus block:seq num {:?} \
-                            for address: {:?}",
-                        account_balance,
-                        txn_fee_committed,
-                        consensus_block_seq_num,
-                        address
-                    );
-                }
+                    self.committed_cache.update_account_balance(
+                        &mut next_seq_num,
+                        &mut balance_state,
+                        &address,
+                        self.execution_delay,
+                        false,
+                    )?;
 
-                // Apply Txn Fees for txns in extending blocks
-                let mut txn_fee_pending: Balance = Balance::ZERO;
-                if let Some(blocks) = extending_blocks {
-                    // handle the case where base_seq_num is a pending block
-                    let next_blocks = blocks
-                        .iter()
-                        .skip_while(move |block| block.get_seq_num() < next_validate);
-                    for extending_block in next_blocks {
-                        assert_eq!(next_validate, extending_block.get_seq_num());
-                        if let Some(txn_fee) = extending_block.txn_fees.get(address) {
-                            txn_fee_pending = txn_fee_pending.saturating_add(*txn_fee);
+                    // Apply Txn Fees for txns in extending blocks
+                    if let Some(blocks) = extending_blocks {
+                        // handle the case where base_seq_num is a pending block
+                        let next_blocks = blocks
+                            .iter()
+                            .skip_while(move |block| block.get_seq_num() < next_seq_num);
+                        for extending_block in next_blocks {
+                            trace!(?next_seq_num, "looking for txn fees in extanding block");
+                            assert_eq!(next_seq_num, extending_block.get_seq_num());
+                            if let Some(txn_fee) = extending_block.txn_fees.get(&address) {
+                                trace!(?next_seq_num, ?address, "try_apply_block_fees");
+                                let mut validator = EthBlockPolicyBlockValidator::new(
+                                    next_seq_num,
+                                    self.execution_delay,
+                                )?;
+
+                                validator.try_apply_block_fees(
+                                    &mut balance_state,
+                                    txn_fee,
+                                    &address,
+                                    false,
+                                )?;
+                            }
+                            next_seq_num += SeqNum(1);
                         }
-                        next_validate += SeqNum(1);
                     }
-                }
 
-                if account_balance < txn_fee_pending {
-                    panic!(
-                        "Majority extended a block with an incoherent balance \
-                            Not sufficient balance: {:?} \
-                            Txn Fees Pending: {:?} \
-                            consensus block:seq num {:?} \
-                            for address: {:?}",
-                        account_balance, txn_fee_pending, consensus_block_seq_num, address
-                    );
-                } else {
-                    account_balance -= txn_fee_pending;
-                    trace!(
-                        "AccountBalance compute 6: \
-                            updated balance to: {:?} \
-                            Txn Fees Pending: {:?} \
-                            consensus block:seq num {:?} \
-                            for address: {:?}",
-                        account_balance,
-                        txn_fee_pending,
-                        consensus_block_seq_num,
-                        address
-                    );
-                }
-
-                (address, account_balance)
-            })
-            .collect();
-        Ok(account_balances)
+                    Ok((address, balance_state))
+                })
+                .collect();
+        account_balances
     }
 
     pub fn get_chain_id(&self) -> u64 {
         self.chain_id
+    }
+
+    pub fn min_blocks_since_latest_txn(&self) -> SeqNum {
+        self.min_blocks_since_latest_txn
+    }
+
+    pub fn max_reserve_balance(&self) -> Balance {
+        self.max_reserve_balance
     }
 }
 
@@ -655,6 +846,7 @@ where
         state_backend: &SBT,
     ) -> Result<(), BlockPolicyError> {
         trace!(?block, "check_coherency");
+
         let first_block = extending_blocks
             .iter()
             .chain(std::iter::once(&block))
@@ -713,6 +905,7 @@ where
             .iter()
             .map(|txn| txn.signer())
             .collect_vec();
+
         // these must be updated as we go through txs in the block
         let mut account_nonces = self.get_account_base_nonces(
             block.get_seq_num(),
@@ -726,6 +919,11 @@ where
             state_backend,
             Some(&extending_blocks),
             tx_signers.iter(),
+        )?;
+
+        let mut validator = EthBlockPolicyBlockValidator::new(
+            block.get_seq_num(),
+            self.min_blocks_since_latest_txn,
         )?;
 
         for txn in block.validated_txns.iter() {
@@ -745,45 +943,8 @@ where
                 return Err(BlockPolicyError::BlockNotCoherent);
             }
 
-            let account_balance = account_balances
-                .get_mut(&eth_address)
-                .expect("account_balances should have been populated");
-
-            let txn_fee = compute_txn_max_value(txn);
-
-            if *account_balance >= txn_fee {
-                *account_balance -= txn_fee;
-                *expected_nonce += 1;
-                trace!(
-                    "AccountBalance - check_coherency 2: \
-                            updated balance: {:?} \
-                            txn Fee: {:?} \
-                            consensus block:seq num {:?} \
-                            for address: {:?}",
-                    account_balance,
-                    txn_fee,
-                    block.get_seq_num(),
-                    eth_address
-                );
-            } else {
-                trace!(
-                    "AccountBalance - check_coherency 3: \
-                            Not sufficient balance: {:?} \
-                            Txn Fee: {:?} \
-                            consensus block:seq num {:?} \
-                            for address: {:?}",
-                    account_balance,
-                    txn_fee,
-                    block.get_seq_num(),
-                    eth_address
-                );
-                warn!(
-                    seq_num =? block.header().seq_num,
-                    round =? block.header().block_round,
-                    "block not coherent, invalid balance"
-                );
-                return Err(BlockPolicyError::BlockNotCoherent);
-            }
+            validator.try_add_transaction(&mut account_balances, txn)?;
+            *expected_nonce += 1;
         }
         Ok(())
     }
@@ -816,7 +977,7 @@ where
     }
 
     fn reset(&mut self, last_delay_committed_blocks: Vec<&Self::ValidatedBlock>) {
-        self.committed_cache = CommittedBlkBuffer::new(self.committed_cache.size);
+        self.committed_cache = CommittedBlkBuffer::new(self.committed_cache.min_buffer_size);
         for block in last_delay_committed_blocks {
             self.last_commit = block.get_seq_num();
             self.committed_cache.update_committed_block(block);
@@ -829,18 +990,28 @@ mod test {
     use std::str::FromStr;
 
     use alloy_consensus::{SignableTransaction, TxEip1559, TxLegacy};
-    use alloy_primitives::{Address, Bytes, FixedBytes, PrimitiveSignature, TxKind, B256};
+    use alloy_primitives::{hex, Address, Bytes, FixedBytes, PrimitiveSignature, TxKind, B256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use monad_crypto::NopSignature;
+    use monad_eth_testutil::{make_eip1559_tx_with_value, make_legacy_tx, recover_tx};
+    use monad_eth_types::BASE_FEE_PER_GAS;
     use monad_testutil::signing::MockSignatures;
     use monad_types::{Hash, SeqNum};
     use proptest::{prelude::*, strategy::Just};
+    use rstest::*;
 
     use super::*;
 
     type SignatureType = NopSignature;
     type SignatureCollectionType = MockSignatures<SignatureType>;
+
+    const RESERVE_BALANCE: u128 = 1_000_000_000_000_000_000;
+    const EXEC_DELAY: u64 = 3;
+    const MIN_BLOCKS_SINCE_LATEST_TXN: SeqNum = SeqNum(EXEC_DELAY);
+    const S1: B256 = B256::new(hex!(
+        "0ed2e19e3aca1a321349f295837988e9c6f95d4a6fc54cfab6befd5ee82662ad"
+    ));
 
     fn sign_tx(signature_hash: &FixedBytes<32>) -> PrimitiveSignature {
         let secret_key = B256::repeat_byte(0xAu8).to_string();
@@ -848,14 +1019,26 @@ mod test {
         signer.sign_hash_sync(signature_hash).unwrap()
     }
 
+    fn make_test_tx(value: u64, nonce: u64, signer: FixedBytes<32>) -> Recovered<TxEnvelope> {
+        recover_tx(make_legacy_tx(
+            signer,
+            BASE_FEE_PER_GAS as u128,
+            value,
+            nonce,
+            0,
+        ))
+    }
+
     #[test]
-    fn test_compute_txn_fee() {
+    fn test_compute_account_balance_state() {
         // setup test addresses
         let address1 = Address(FixedBytes([0x11; 20]));
         let address2 = Address(FixedBytes([0x22; 20]));
         let address3 = Address(FixedBytes([0x33; 20]));
         let address4 = Address(FixedBytes([0x44; 20]));
 
+        let max_reserve_balance = Balance::from(RESERVE_BALANCE);
+
         // add committed blocks to buffer
         let mut buffer = CommittedBlkBuffer::<SignatureType, SignatureCollectionType>::new(3);
         let block1 = CommittedBlock {
@@ -864,10 +1047,22 @@ mod test {
             nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address1, 1), (address2, 1)]),
             },
-            fees: BlockTxnFees {
+            fees: BlockTxnFeeStates {
                 txn_fees: BTreeMap::from([
-                    (address1, Balance::from(100)),
-                    (address2, Balance::from(200)),
+                    (
+                        address1,
+                        TxnFee {
+                            first_txn_value: Balance::from(100),
+                            max_gas_cost: Balance::from(100),
+                        },
+                    ),
+                    (
+                        address2,
+                        TxnFee {
+                            first_txn_value: Balance::from(200),
+                            max_gas_cost: Balance::from(200),
+                        },
+                    ),
                 ]),
             },
         };
@@ -878,10 +1073,22 @@ mod test {
             nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address1, 2), (address3, 1)]),
             },
-            fees: BlockTxnFees {
+            fees: BlockTxnFeeStates {
                 txn_fees: BTreeMap::from([
-                    (address1, Balance::from(150)),
-                    (address3, Balance::from(300)),
+                    (
+                        address1,
+                        TxnFee {
+                            first_txn_value: Balance::from(150),
+                            max_gas_cost: Balance::from(150),
+                        },
+                    ),
+                    (
+                        address3,
+                        TxnFee {
+                            first_txn_value: Balance::from(300),
+                            max_gas_cost: Balance::from(300),
+                        },
+                    ),
                 ]),
             },
         };
@@ -892,10 +1099,48 @@ mod test {
             nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address2, 2), (address3, 2)]),
             },
-            fees: BlockTxnFees {
+            fees: BlockTxnFeeStates {
                 txn_fees: BTreeMap::from([
-                    (address2, Balance::from(250)),
-                    (address3, Balance::from(350)),
+                    (
+                        address2,
+                        TxnFee {
+                            first_txn_value: Balance::from(250),
+                            max_gas_cost: Balance::from(250),
+                        },
+                    ),
+                    (
+                        address3,
+                        TxnFee {
+                            first_txn_value: Balance::from(350),
+                            max_gas_cost: Balance::from(350),
+                        },
+                    ),
+                ]),
+            },
+        };
+
+        let block4 = CommittedBlock {
+            block_id: BlockId(Hash(Default::default())),
+            round: Round(0),
+            nonces: BlockAccountNonce {
+                nonces: BTreeMap::from([(address2, 3), (address3, 3)]),
+            },
+            fees: BlockTxnFeeStates {
+                txn_fees: BTreeMap::from([
+                    (
+                        address2,
+                        TxnFee {
+                            first_txn_value: Balance::from(1250),
+                            max_gas_cost: Balance::from(0),
+                        },
+                    ),
+                    (
+                        address4,
+                        TxnFee {
+                            first_txn_value: Balance::from(1350),
+                            max_gas_cost: Balance::from(0),
+                        },
+                    ),
                 ]),
             },
         };
@@ -903,114 +1148,134 @@ mod test {
         buffer.blocks.insert(SeqNum(1), block1);
         buffer.blocks.insert(SeqNum(2), block2);
         buffer.blocks.insert(SeqNum(3), block3);
+        buffer.blocks.insert(SeqNum(4), block4);
 
-        // test compute_txn_fee for different addresses and base sequence numbers
-        assert_eq!(
-            buffer.compute_txn_fee(SeqNum(0), &address1).txn_fee,
-            U256::from(250)
+        let mut account_balance = AccountBalanceState {
+            balance: Balance::from(250),
+            block_seqnum_of_latest_txn: GENESIS_SEQ_NUM,
+            remaining_reserve_balance: Balance::from(250),
+            max_reserve_balance,
+        };
+        let mut next_seq_num = SeqNum(1);
+        let res = buffer.update_account_balance(
+            &mut next_seq_num,
+            &mut account_balance,
+            &address1,
+            SeqNum(EXEC_DELAY),
+            false,
+        );
+        assert!(res.is_ok());
+        assert_eq!(next_seq_num, SeqNum(5));
+        assert_eq!(account_balance.block_seqnum_of_latest_txn, SeqNum(2));
+        assert_eq!(account_balance.remaining_reserve_balance, Balance::ZERO);
+
+        let mut account_balance = AccountBalanceState {
+            balance: Balance::from(250),
+            block_seqnum_of_latest_txn: GENESIS_SEQ_NUM,
+            remaining_reserve_balance: Balance::from(249),
+            max_reserve_balance,
+        };
+        let mut next_seq_num = SeqNum(1);
+        let res = buffer.update_account_balance(
+            &mut next_seq_num,
+            &mut account_balance,
+            &address1,
+            SeqNum(EXEC_DELAY),
+            false,
         );
         assert_eq!(
-            buffer.compute_txn_fee(SeqNum(1), &address1).txn_fee,
-            U256::from(150)
-        );
-        assert_eq!(
-            buffer.compute_txn_fee(SeqNum(2), &address1).txn_fee,
-            U256::from(0)
+            res,
+            Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+                BlockPolicyBlockValidatorError::InsufficientReserveBalance
+            ))
         );
 
-        assert_eq!(
-            buffer.compute_txn_fee(SeqNum(0), &address2).txn_fee,
-            U256::from(450)
+        let mut account_balance = AccountBalanceState {
+            balance: Balance::from(150),
+            block_seqnum_of_latest_txn: GENESIS_SEQ_NUM,
+            remaining_reserve_balance: Balance::from(150),
+            max_reserve_balance,
+        };
+        let mut next_seq_num = SeqNum(2);
+        let res = buffer.update_account_balance(
+            &mut next_seq_num,
+            &mut account_balance,
+            &address1,
+            SeqNum(EXEC_DELAY),
+            false,
         );
-        assert_eq!(
-            buffer.compute_txn_fee(SeqNum(0), &address3).txn_fee,
-            U256::from(650)
+        assert!(res.is_ok());
+        assert_eq!(next_seq_num, SeqNum(5));
+        assert_eq!(account_balance.block_seqnum_of_latest_txn, SeqNum(2));
+        assert_eq!(account_balance.remaining_reserve_balance, Balance::ZERO);
+
+        let mut account_balance = AccountBalanceState::new(max_reserve_balance);
+        let mut next_seq_num = SeqNum(3);
+        let res = buffer.update_account_balance(
+            &mut next_seq_num,
+            &mut account_balance,
+            &address1,
+            SeqNum(EXEC_DELAY),
+            false,
         );
+        assert!(res.is_ok());
+        assert_eq!(next_seq_num, SeqNum(5));
+        assert_eq!(account_balance.block_seqnum_of_latest_txn, GENESIS_SEQ_NUM);
+
+        let mut account_balance = AccountBalanceState {
+            balance: Balance::from(450),
+            block_seqnum_of_latest_txn: GENESIS_SEQ_NUM,
+            remaining_reserve_balance: Balance::from(450),
+            max_reserve_balance,
+        };
+        let mut next_seq_num = SeqNum(0);
+        let res = buffer.update_account_balance(
+            &mut next_seq_num,
+            &mut account_balance,
+            &address2,
+            SeqNum(EXEC_DELAY),
+            false,
+        );
+        assert!(res.is_ok());
+        assert_eq!(next_seq_num, SeqNum(5));
+        assert_eq!(account_balance.block_seqnum_of_latest_txn, SeqNum(4));
+
+        let mut account_balance = AccountBalanceState {
+            balance: Balance::from(650),
+            block_seqnum_of_latest_txn: GENESIS_SEQ_NUM,
+            remaining_reserve_balance: Balance::from(650),
+            max_reserve_balance,
+        };
+        let mut next_seq_num = SeqNum(0);
+        let res = buffer.update_account_balance(
+            &mut next_seq_num,
+            &mut account_balance,
+            &address3,
+            SeqNum(EXEC_DELAY),
+            false,
+        );
+        assert!(res.is_ok());
+        assert_eq!(next_seq_num, SeqNum(5));
+        assert_eq!(account_balance.block_seqnum_of_latest_txn, SeqNum(3));
 
         // address that is not present in all blocks
-        assert_eq!(
-            buffer.compute_txn_fee(SeqNum(0), &address4).txn_fee,
-            U256::from(0)
-        );
-    }
-
-    #[test]
-    fn test_compute_txn_fee_overflow() {
-        // setup test addresses
-        let address1 = Address(FixedBytes([0x11; 20]));
-        let address2 = Address(FixedBytes([0x22; 20]));
-        let address3 = Address(FixedBytes([0x33; 20]));
-
-        // add committed blocks to buffer
-        let mut buffer = CommittedBlkBuffer::<SignatureType, SignatureCollectionType>::new(3);
-        let block1 = CommittedBlock {
-            block_id: BlockId(Hash(Default::default())),
-            round: Round(0),
-            nonces: BlockAccountNonce {
-                nonces: BTreeMap::from([(address1, 1), (address2, 1)]),
-            },
-            fees: BlockTxnFees {
-                txn_fees: BTreeMap::from([
-                    (address1, U256::MAX - U256::from(1)),
-                    (address2, U256::MAX),
-                ]),
-            },
-        };
-
-        let block2 = CommittedBlock {
-            block_id: BlockId(Hash(Default::default())),
-            round: Round(0),
-            nonces: BlockAccountNonce {
-                nonces: BTreeMap::from([(address1, 2), (address3, 1)]),
-            },
-            fees: BlockTxnFees {
-                txn_fees: BTreeMap::from([
-                    (address1, U256::from(1)),
-                    (address3, U256::MAX.div_ceil(U256::from(2))),
-                ]),
-            },
-        };
-
-        let block3 = CommittedBlock {
-            block_id: BlockId(Hash(Default::default())),
-            round: Round(0),
-            nonces: BlockAccountNonce {
-                nonces: BTreeMap::from([(address2, 2), (address3, 2)]),
-            },
-            fees: BlockTxnFees {
-                txn_fees: BTreeMap::from([
-                    (address2, U256::MAX),
-                    (address3, U256::MAX.div_ceil(U256::from(2)) + U256::from(1)),
-                ]),
-            },
-        };
-
-        buffer.blocks.insert(SeqNum(1), block1);
-        buffer.blocks.insert(SeqNum(2), block2);
-        buffer.blocks.insert(SeqNum(3), block3);
-
-        // test compute_txn_fee for different addresses and base sequence numbers
-        assert_eq!(
-            buffer.compute_txn_fee(SeqNum(0), &address1).txn_fee,
-            U256::MAX
+        let mut account_balance = AccountBalanceState::new(max_reserve_balance);
+        let mut next_seq_num = SeqNum(3);
+        let res = buffer.update_account_balance(
+            &mut next_seq_num,
+            &mut account_balance,
+            &address4,
+            SeqNum(EXEC_DELAY),
+            false,
         );
         assert_eq!(
-            buffer.compute_txn_fee(SeqNum(1), &address1).txn_fee,
-            U256::from(1)
+            res,
+            Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+                BlockPolicyBlockValidatorError::InsufficientBalance
+            ))
         );
-        assert_eq!(
-            buffer.compute_txn_fee(SeqNum(2), &address1).txn_fee,
-            U256::from(0)
-        );
-
-        assert_eq!(
-            buffer.compute_txn_fee(SeqNum(0), &address2).txn_fee,
-            U256::MAX
-        );
-        assert_eq!(
-            buffer.compute_txn_fee(SeqNum(0), &address3).txn_fee,
-            U256::MAX
-        );
+        assert_eq!(next_seq_num, SeqNum(3));
+        assert_eq!(account_balance.block_seqnum_of_latest_txn, GENESIS_SEQ_NUM);
     }
 
     #[test]
@@ -1178,4 +1443,420 @@ mod test {
         }
     }
     // TODO: check accounts for previous transactions in the block
+    #[test]
+    fn test_validate_emptying_txn() {
+        let reserve_balance = Balance::from(RESERVE_BALANCE);
+        let latest_seq_num = SeqNum(1000);
+        let txn_value = 1000;
+        let block_seq_num = latest_seq_num + MIN_BLOCKS_SINCE_LATEST_TXN;
+
+        let tx = make_test_tx(txn_value, 0, S1);
+        let txs = vec![tx.clone()];
+        let signer = tx.recover_signer().unwrap();
+        let min_balance = compute_txn_max_value(&tx);
+
+        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
+        account_balances.insert(
+            signer,
+            AccountBalanceState {
+                balance: min_balance,
+                remaining_reserve_balance: min_balance,
+                block_seqnum_of_latest_txn: latest_seq_num,
+                max_reserve_balance: reserve_balance,
+            },
+        );
+
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, MIN_BLOCKS_SINCE_LATEST_TXN).unwrap();
+
+        for txn in txs.iter() {
+            assert!(validator
+                .try_add_transaction(&mut account_balances, txn)
+                .is_ok());
+        }
+
+        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
+        account_balances.insert(
+            signer,
+            AccountBalanceState {
+                balance: min_balance - Balance::from(1),
+                remaining_reserve_balance: min_balance,
+                block_seqnum_of_latest_txn: latest_seq_num,
+                max_reserve_balance: reserve_balance,
+            },
+        );
+
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, MIN_BLOCKS_SINCE_LATEST_TXN).unwrap();
+
+        for txn in txs.iter() {
+            assert!(
+                validator.try_add_transaction(&mut account_balances, txn)
+                    == Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+                        BlockPolicyBlockValidatorError::InsufficientBalance
+                    ))
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_nonemptying_txn() {
+        let reserve_balance = Balance::from(RESERVE_BALANCE);
+        let latest_seq_num = SeqNum(1000);
+        let txn_value = 1000;
+        let block_seq_num = latest_seq_num + MIN_BLOCKS_SINCE_LATEST_TXN - SeqNum(1);
+
+        let tx = make_test_tx(txn_value, 0, S1);
+        let txs = vec![tx.clone()];
+        let signer = tx.recover_signer().unwrap();
+        let min_balance = compute_txn_max_gas_cost(&tx);
+
+        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
+        account_balances.insert(
+            signer,
+            AccountBalanceState {
+                balance: min_balance,
+                remaining_reserve_balance: min_balance,
+                block_seqnum_of_latest_txn: latest_seq_num,
+                max_reserve_balance: reserve_balance,
+            },
+        );
+
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, MIN_BLOCKS_SINCE_LATEST_TXN).unwrap();
+
+        for txn in txs.iter() {
+            assert!(validator
+                .try_add_transaction(&mut account_balances, txn)
+                .is_ok());
+        }
+
+        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
+        account_balances.insert(
+            signer,
+            AccountBalanceState {
+                balance: min_balance,
+                remaining_reserve_balance: min_balance - Balance::from(1),
+                block_seqnum_of_latest_txn: latest_seq_num,
+                max_reserve_balance: reserve_balance,
+            },
+        );
+
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, MIN_BLOCKS_SINCE_LATEST_TXN).unwrap();
+
+        for txn in txs.iter() {
+            assert!(
+                validator.try_add_transaction(&mut account_balances, txn)
+                    == Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+                        BlockPolicyBlockValidatorError::InsufficientReserveBalance
+                    ))
+            );
+        }
+    }
+
+    #[test]
+    fn test_missing_balance() {
+        let reserve_balance = Balance::from(RESERVE_BALANCE);
+        let latest_seq_num = SeqNum(1000);
+        let txn_value = 1000;
+        let block_seq_num = latest_seq_num + MIN_BLOCKS_SINCE_LATEST_TXN;
+
+        let tx = make_test_tx(txn_value, 0, S1);
+        let txs = vec![tx.clone()];
+        let min_balance = compute_txn_max_gas_cost(&tx);
+
+        let address = Address(FixedBytes([0x11; 20]));
+
+        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
+        account_balances.insert(
+            address,
+            AccountBalanceState {
+                balance: min_balance,
+                remaining_reserve_balance: min_balance,
+                block_seqnum_of_latest_txn: latest_seq_num,
+                max_reserve_balance: reserve_balance,
+            },
+        );
+
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, MIN_BLOCKS_SINCE_LATEST_TXN).unwrap();
+
+        for txn in txs.iter() {
+            assert!(
+                validator.try_add_transaction(&mut account_balances, txn)
+                    == Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+                        BlockPolicyBlockValidatorError::AccountBalanceMissing
+                    ))
+            );
+        }
+    }
+
+    #[test]
+    fn test_validator_inconsistency() {
+        let reserve_balance = Balance::from(RESERVE_BALANCE);
+        let latest_seq_num = SeqNum(1000);
+        let txn_value = 1000;
+        let block_seq_num = latest_seq_num + MIN_BLOCKS_SINCE_LATEST_TXN;
+
+        let tx = make_test_tx(txn_value, 0, S1);
+        let txs = vec![tx.clone()];
+        let signer = tx.recover_signer().unwrap();
+        let min_balance = compute_txn_max_value(&tx);
+
+        // Empty reserve balance
+        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
+        account_balances.insert(
+            signer,
+            AccountBalanceState {
+                balance: min_balance,
+                remaining_reserve_balance: Balance::ZERO,
+                block_seqnum_of_latest_txn: latest_seq_num,
+                max_reserve_balance: reserve_balance,
+            },
+        );
+
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, MIN_BLOCKS_SINCE_LATEST_TXN).unwrap();
+
+        for txn in txs.iter() {
+            assert!(validator
+                .try_add_transaction(&mut account_balances, txn)
+                .is_ok());
+        }
+
+        // Overdraft
+        let block_seq_num = latest_seq_num;
+        let min_reserve = compute_txn_max_gas_cost(&tx);
+        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
+        account_balances.insert(
+            signer,
+            AccountBalanceState {
+                balance: Balance::ZERO,
+                remaining_reserve_balance: min_reserve,
+                block_seqnum_of_latest_txn: latest_seq_num,
+                max_reserve_balance: reserve_balance,
+            },
+        );
+
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, MIN_BLOCKS_SINCE_LATEST_TXN).unwrap();
+
+        for txn in txs.iter() {
+            assert!(validator
+                .try_add_transaction(&mut account_balances, txn)
+                .is_ok());
+        }
+    }
+
+    #[test]
+    fn test_validate_many_txn() {
+        let reserve_balance = Balance::from(RESERVE_BALANCE);
+        let latest_seq_num = SeqNum(1000);
+        let txn_value = 1000;
+        let block_seq_num = latest_seq_num + MIN_BLOCKS_SINCE_LATEST_TXN;
+
+        let tx1 = make_test_tx(txn_value, 0, S1);
+        let tx2 = make_test_tx(txn_value * 2, 1, S1);
+        let signer = tx1.recover_signer().unwrap();
+
+        let txs = vec![tx1.clone(), tx2.clone()];
+        let min_balance = compute_txn_max_value(&tx1) + compute_txn_max_gas_cost(&tx2);
+
+        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
+        account_balances.insert(
+            signer,
+            AccountBalanceState {
+                balance: min_balance,
+                remaining_reserve_balance: Balance::ZERO,
+                block_seqnum_of_latest_txn: latest_seq_num,
+                max_reserve_balance: reserve_balance,
+            },
+        );
+
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, MIN_BLOCKS_SINCE_LATEST_TXN).unwrap();
+
+        for txn in txs.iter() {
+            assert!(validator
+                .try_add_transaction(&mut account_balances, txn)
+                .is_ok());
+        }
+
+        let min_reserve = compute_txn_max_gas_cost(&tx1) + compute_txn_max_gas_cost(&tx2);
+
+        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
+        account_balances.insert(
+            signer,
+            AccountBalanceState {
+                balance: Balance::ZERO,
+                remaining_reserve_balance: min_reserve,
+                block_seqnum_of_latest_txn: latest_seq_num,
+                max_reserve_balance: reserve_balance,
+            },
+        );
+
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(latest_seq_num, MIN_BLOCKS_SINCE_LATEST_TXN).unwrap();
+
+        for txn in txs.iter() {
+            assert!(validator
+                .try_add_transaction(&mut account_balances, txn)
+                .is_ok());
+        }
+    }
+
+    const RESERVE_FAIL: Result<(), BlockPolicyError> =
+        Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+            BlockPolicyBlockValidatorError::InsufficientReserveBalance,
+        ));
+    const BALANCE_FAIL: Result<(), BlockPolicyError> =
+        Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+            BlockPolicyBlockValidatorError::InsufficientBalance,
+        ));
+
+    #[rstest]
+    #[case(Balance::from(100), Balance::from(10), Balance::from(10), SeqNum(3), 1_u128, 1_u64, Ok(()))]
+    #[case(Balance::from(5), Balance::from(10), Balance::from(10), SeqNum(3), 2_u128, 2_u64, Ok(()))]
+    #[case(Balance::from(5), Balance::from(5), Balance::from(5), SeqNum(3), 0_u128, 5_u64, Ok(()))]
+    #[case(
+        Balance::from(5),
+        Balance::from(10),
+        Balance::from(10),
+        SeqNum(3),
+        7_u128,
+        2_u64,
+        BALANCE_FAIL
+    )]
+    #[case(
+        Balance::from(100),
+        Balance::from(1),
+        Balance::from(1),
+        SeqNum(2),
+        3_u128,
+        2_u64,
+        RESERVE_FAIL
+    )]
+    fn test_txn_tfm(
+        #[case] account_balance: Balance,
+        #[case] reserve_balance: Balance,
+        #[case] max_reserve_balance: Balance,
+        #[case] block_seq_num: SeqNum,
+        #[case] txn_value: u128,
+        #[case] txn_gas_limit: u64,
+        #[case] expect: Result<(), BlockPolicyError>,
+    ) {
+        let abs = AccountBalanceState {
+            balance: account_balance,
+            remaining_reserve_balance: reserve_balance,
+            block_seqnum_of_latest_txn: SeqNum(0),
+            max_reserve_balance,
+        };
+
+        let txn = make_test_eip1559_tx(txn_value, 0, txn_gas_limit, signer());
+        let signer = txn.recover_signer().unwrap();
+
+        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
+        account_balances.insert(signer, abs);
+
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, min_blocks_since_latest_txn())
+                .unwrap();
+
+        assert_eq!(
+            validator.try_add_transaction(&mut account_balances, &txn),
+            expect
+        );
+    }
+
+    #[rstest]
+    #[case(
+        Balance::from(100),
+        Balance::from(5),
+        Balance::from(10),
+        vec![(4_u128, 2_u64), (4_u128, 2_u64), (4_u128, 2_u64)],
+        vec![SeqNum(1), SeqNum(2), SeqNum(3)],
+        vec![Ok(()), Ok(()), RESERVE_FAIL],
+    )]
+    #[case(
+        Balance::from(100),
+        Balance::from(6),
+        Balance::from(10),
+        vec![(4_u128, 2_u64), (4_u128, 2_u64), (4_u128, 2_u64)],
+        vec![SeqNum(1), SeqNum(2), SeqNum(3)],
+        vec![Ok(()), Ok(()), Ok(())],
+    )]
+    fn test_multi_txn_tfm(
+        #[case] account_balance: Balance,
+        #[case] reserve_balance: Balance,
+        #[case] max_reserve_balance: Balance,
+        #[case] txns: Vec<(u128, u64)>, // txn (value, gas_limit)
+        #[case] txn_block_num: Vec<SeqNum>,
+        #[case] expected: Vec<Result<(), BlockPolicyError>>,
+    ) {
+        assert_eq!(txns.len(), expected.len());
+        assert_eq!(txns.len(), txn_block_num.len());
+
+        let abs = AccountBalanceState {
+            balance: account_balance,
+            remaining_reserve_balance: reserve_balance,
+            block_seqnum_of_latest_txn: SeqNum(0),
+            max_reserve_balance,
+        };
+
+        let txns = txns
+            .iter()
+            .enumerate()
+            .map(|(nonce, (value, gas_limit))| {
+                make_test_eip1559_tx(*value, nonce as u64, *gas_limit, signer())
+            })
+            .collect_vec();
+        let signer = txns[0].recover_signer().unwrap();
+
+        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
+        account_balances.insert(signer, abs);
+
+        for ((tx, expect), seqnum) in txns.into_iter().zip(expected).zip(txn_block_num) {
+            check_txn_helper(seqnum, &mut account_balances, &tx, expect);
+        }
+    }
+
+    fn check_txn_helper(
+        block_seq_num: SeqNum,
+        account_balances: &mut BTreeMap<Address, AccountBalanceState>,
+        txn: &Recovered<TxEnvelope>,
+        expect: Result<(), BlockPolicyError>,
+    ) {
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, min_blocks_since_latest_txn())
+                .unwrap();
+
+        assert_eq!(
+            validator.try_add_transaction(account_balances, txn),
+            expect,
+            "txn nonce {}",
+            txn.nonce()
+        );
+    }
+
+    fn signer() -> B256 {
+        B256::new(hex!(
+            "0ed2e19e3aca1a321349f295837988e9c6f95d4a6fc54cfab6befd5ee82662ad"
+        ))
+    }
+
+    fn min_blocks_since_latest_txn() -> SeqNum {
+        SeqNum(3)
+    }
+
+    fn make_test_eip1559_tx(
+        value: u128,
+        nonce: u64,
+        gas_limit: u64,
+        signer: FixedBytes<32>,
+    ) -> Recovered<TxEnvelope> {
+        recover_tx(make_eip1559_tx_with_value(
+            signer, value, 1_u128, 0, gas_limit, nonce, 0,
+        ))
+    }
 }

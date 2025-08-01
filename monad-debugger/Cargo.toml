@@ -17,7 +17,6 @@ bench = false
 monad-chain-config = { workspace = true }
 monad-consensus-types = { workspace = true }
 monad-crypto = { workspace = true }
-monad-eth-types = { path = "../monad-eth-types" }
 monad-executor-glue = { workspace = true }
 monad-mock-swarm = { workspace = true }
 monad-router-scheduler = { workspace = true }

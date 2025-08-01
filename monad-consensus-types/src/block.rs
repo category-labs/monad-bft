@@ -13,8 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{fmt::Debug, ops::Deref};
+use std::{collections::BTreeMap, fmt::Debug, ops::Deref};
 
+use alloy_primitives::Address;
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use auto_impl::auto_impl;
 use bytes::Bytes;
@@ -23,7 +24,10 @@ use monad_crypto::{
     hasher::{Hasher, HasherType},
 };
 use monad_state_backend::{InMemoryState, StateBackend, StateBackendError};
-use monad_types::{BlockId, Epoch, ExecutionProtocol, FinalizedHeader, NodeId, Round, SeqNum};
+use monad_types::{
+    Balance, BlockId, Epoch, ExecutionProtocol, FinalizedHeader, NodeId, Round, SeqNum,
+    GENESIS_SEQ_NUM,
+};
 
 use crate::{
     block_validator::BlockValidationError,
@@ -151,12 +155,84 @@ pub enum BlockPolicyError {
     StateBackendError(StateBackendError),
     TimestampError,
     ExecutionResultMismatch,
+    BlockPolicyBlockValidatorError(BlockPolicyBlockValidatorError),
 }
 
 impl From<StateBackendError> for BlockPolicyError {
     fn from(err: StateBackendError) -> Self {
         Self::StateBackendError(err)
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct AccountBalanceState {
+    pub balance: Balance,
+    pub remaining_reserve_balance: Balance,
+    pub max_reserve_balance: Balance,
+    pub block_seqnum_of_latest_txn: SeqNum,
+}
+
+impl AccountBalanceState {
+    pub fn new(max_reserve_balance: Balance) -> Self {
+        AccountBalanceState {
+            balance: Balance::ZERO,
+            remaining_reserve_balance: Balance::ZERO,
+            max_reserve_balance,
+            block_seqnum_of_latest_txn: GENESIS_SEQ_NUM,
+        }
+    }
+}
+
+pub type AccountBalanceStates = BTreeMap<Address, AccountBalanceState>;
+
+#[derive(Debug, PartialEq)]
+pub enum BlockPolicyBlockValidatorError {
+    AccountBalanceMissing,
+    InsufficientBalance,
+    InsufficientReserveBalance,
+}
+
+#[derive(Debug, Clone)]
+pub struct TxnFee {
+    pub first_txn_value: Balance,
+    pub max_gas_cost: Balance,
+}
+
+impl Default for TxnFee {
+    fn default() -> Self {
+        TxnFee {
+            first_txn_value: Balance::ZERO,
+            max_gas_cost: Balance::ZERO,
+        }
+    }
+}
+
+pub type TxnFees = BTreeMap<Address, TxnFee>;
+
+pub trait BlockPolicyBlockValidator
+where
+    Self: Sized,
+{
+    type Transaction;
+
+    fn new(
+        block_seq_num: SeqNum,
+        min_blocks_since_latest_txn: SeqNum,
+    ) -> Result<Self, BlockPolicyError>;
+
+    fn try_apply_block_fees(
+        &mut self,
+        account_balance: &mut AccountBalanceState,
+        fees: &TxnFee,
+        eth_address: &Address,
+        only_seqnum: bool,
+    ) -> Result<(), BlockPolicyError>;
+
+    fn try_add_transaction(
+        &mut self,
+        account_balances: &mut BTreeMap<Address, AccountBalanceState>,
+        txn: &Self::Transaction,
+    ) -> Result<(), BlockPolicyError>;
 }
 
 /// Trait that represents how inner contents of a block should be validated

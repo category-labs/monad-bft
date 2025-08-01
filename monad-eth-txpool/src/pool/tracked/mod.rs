@@ -20,17 +20,20 @@ use alloy_primitives::Address;
 use indexmap::{map::Entry as IndexMapEntry, IndexMap};
 use itertools::Itertools;
 use monad_consensus_types::{
-    block::ConsensusBlockHeader, signature_collection::SignatureCollection,
+    block::{
+        AccountBalanceState, BlockPolicyBlockValidator, BlockPolicyError, ConsensusBlockHeader,
+    },
+    signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
+use monad_eth_block_policy::{EthBlockPolicy, EthBlockPolicyBlockValidator, EthValidatedBlock};
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason};
-use monad_eth_types::{Balance, EthExecutionProtocol};
-use monad_state_backend::{StateBackend, StateBackendError};
+use monad_eth_types::EthExecutionProtocol;
+use monad_state_backend::StateBackend;
 use monad_types::{DropTimer, SeqNum};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, warn};
 use tx_heap::TrackedTxHeapDrainAction;
 
 use self::{list::TrackedTxList, tx_heap::TrackedTxHeap};
@@ -150,7 +153,7 @@ where
         extending_blocks: Vec<&EthValidatedBlock<ST, SCT>>,
         state_backend: &SBT,
         pending: &mut PendingTxMap,
-    ) -> Result<Vec<Recovered<TxEnvelope>>, StateBackendError> {
+    ) -> Result<Vec<Recovered<TxEnvelope>>, BlockPolicyError> {
         let Some(last_commit) = &self.last_commit else {
             return Ok(Vec::new());
         };
@@ -229,8 +232,10 @@ where
             proposal_gas_limit,
             proposal_byte_limit,
             tx_heap,
+            proposed_seq_num,
+            block_policy.min_blocks_since_latest_txn(),
             account_balances,
-        );
+        )?;
 
         let proposal_num_txs = proposal_tx_list.len();
 
@@ -366,13 +371,19 @@ where
         proposal_gas_limit: u64,
         proposal_byte_limit: u64,
         tx_heap: TrackedTxHeap<'_>,
-        mut account_balances: BTreeMap<&Address, Balance>,
-    ) -> (u64, Vec<Recovered<TxEnvelope>>) {
+        proposed_seq_num: SeqNum,
+        min_blocks_since_latest_txn: SeqNum,
+        account_balances: BTreeMap<Address, AccountBalanceState>,
+    ) -> Result<(u64, Vec<Recovered<TxEnvelope>>), BlockPolicyError> {
         assert!(tx_limit > 0);
 
         let mut txs = Vec::new();
         let mut total_gas = 0u64;
         let mut total_size = 0u64;
+
+        let mut balances = account_balances;
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(proposed_seq_num, min_blocks_since_latest_txn)?;
 
         tx_heap.drain_in_order_while(|sender, tx| {
             if total_gas
@@ -390,23 +401,15 @@ where
                 return TrackedTxHeapDrainAction::Skip;
             }
 
-            let Some(account_balance) = account_balances.get_mut(sender) else {
-                error!(
-                    ?sender,
-                    "txpool create_proposal account_balances lookup failed"
-                );
+            if validator
+                .try_add_transaction(&mut balances, tx.raw())
+                .is_err()
+            {
                 return TrackedTxHeapDrainAction::Skip;
-            };
-
-            let Some(new_account_balance) = tx.apply_max_value(*account_balance) else {
-                return TrackedTxHeapDrainAction::Skip;
-            };
-
-            *account_balance = new_account_balance;
+            }
 
             total_gas += tx.gas_limit();
             total_size += tx_size;
-            trace!(txn_hash = ?tx.hash(), "txn included in proposal");
             txs.push(tx.raw().to_owned());
 
             if txs.len() < tx_limit {
@@ -416,7 +419,7 @@ where
             }
         });
 
-        (total_gas, txs)
+        Ok((total_gas, txs))
     }
 
     pub fn update_committed_block(
