@@ -486,25 +486,7 @@ where
 
         if let Some(last_round_tc) = p.last_round_tc.as_ref() {
             self.metrics.consensus_events.proposal_with_tc += 1;
-            let advance_round_cmds = self
-                .consensus
-                .pacemaker
-                .process_certificate(
-                    self.metrics,
-                    self.epoch_manager,
-                    &mut self.consensus.safety,
-                    RoundCertificate::Tc(last_round_tc.clone()),
-                )
-                .into_iter()
-                .map(|cmd| {
-                    ConsensusCommand::from_pacemaker_command(
-                        self.keypair,
-                        self.cert_keypair,
-                        self.version,
-                        cmd,
-                    )
-                });
-            cmds.extend(advance_round_cmds);
+            cmds.extend(self.process_tc(last_round_tc));
         }
 
         // author, leader, round checks
@@ -823,25 +805,7 @@ where
 
         if let Some(last_round_tc) = timeout.last_round_tc.as_ref() {
             self.metrics.consensus_events.remote_timeout_msg_with_tc += 1;
-            let advance_round_cmds = self
-                .consensus
-                .pacemaker
-                .process_certificate(
-                    self.metrics,
-                    self.epoch_manager,
-                    &mut self.consensus.safety,
-                    RoundCertificate::Tc(last_round_tc.clone()),
-                )
-                .into_iter()
-                .map(|cmd| {
-                    ConsensusCommand::from_pacemaker_command(
-                        self.keypair,
-                        self.cert_keypair,
-                        self.version,
-                        cmd,
-                    )
-                });
-            cmds.extend(advance_round_cmds);
+            cmds.extend(self.process_tc(last_round_tc));
         }
 
         let remote_timeout_cmds = self
@@ -893,25 +857,7 @@ where
         // handling the proposal certificate
         let _original_round = self.consensus.pacemaker.get_current_round();
 
-        let advance_round_cmds = self
-            .consensus
-            .pacemaker
-            .process_certificate(
-                self.metrics,
-                self.epoch_manager,
-                &mut self.consensus.safety,
-                RoundCertificate::Tc(round_recovery.tc.clone()),
-            )
-            .into_iter()
-            .map(|cmd| {
-                ConsensusCommand::from_pacemaker_command(
-                    self.keypair,
-                    self.cert_keypair,
-                    self.version,
-                    cmd,
-                )
-            });
-        cmds.extend(advance_round_cmds);
+        cmds.extend(self.process_tc(&round_recovery.tc));
 
         // author, leader, round checks
         let pacemaker_round = self.consensus.pacemaker.get_current_round();
@@ -1225,6 +1171,32 @@ where
             .start_new_round(self.consensus.pacemaker.get_current_round());
 
         cmds
+    }
+
+    #[must_use]
+    #[tracing::instrument(level = "debug", skip_all)]
+    pub fn process_tc(
+        &mut self,
+        tc: &TimeoutCertificate<ST, SCT, EPT>,
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+        self.consensus
+            .pacemaker
+            .process_certificate(
+                self.metrics,
+                self.epoch_manager,
+                &mut self.consensus.safety,
+                RoundCertificate::Tc(tc.clone()),
+            )
+            .into_iter()
+            .map(|cmd| {
+                ConsensusCommand::from_pacemaker_command(
+                    self.keypair,
+                    self.cert_keypair,
+                    self.version,
+                    cmd,
+                )
+            })
+            .collect()
     }
 
     #[must_use]
