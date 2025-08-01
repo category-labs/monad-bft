@@ -396,10 +396,22 @@ where
         }
 
         self.metrics.consensus_events.local_timeout += 1;
-        debug!(
-            round = ?self.consensus.pacemaker.get_current_round(),
-            "local timeout"
-        );
+
+        {
+            let round = self.consensus.pacemaker.get_current_round();
+            let epoch = self
+                .epoch_manager
+                .get_epoch(round)
+                .expect("must know epoch for current round");
+            let validator_set = self
+                .val_epoch_map
+                .get_val_set(&epoch)
+                .expect("must know validator set for current round");
+            let leader = self.election.get_leader(round, validator_set.get_members());
+
+            debug!(?round, ?leader, "local timeout");
+        };
+
         cmds.extend(
             self.consensus
                 .pacemaker
