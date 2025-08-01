@@ -130,7 +130,11 @@ fn generate_name_record(keypair: &KeyPairType) -> MonadNameRecord<SignatureType>
     assert_ne!(ipaddr_v4, Ipv4Addr::UNSPECIFIED);
 
     let name_record = NameRecord {
-        address: SocketAddrV4::new(ipaddr_v4, 8000),
+        ip: ipaddr_v4,
+        tcp_port: 8000,
+        udp_port: 8000,
+        direct_udp_port: None,
+        capabilities: 0,
         seq: 0,
     };
     let mut encoded = Vec::new();
@@ -331,7 +335,11 @@ fn test_update_name_record() {
 
     // create new name record for Node0 with new IP and incremented seq number
     let new_name_record = NameRecord {
-        address: SocketAddrV4::from_str("2.2.2.2:8000").unwrap(),
+        ip: SocketAddrV4::from_str("2.2.2.2:8000").unwrap().ip().clone(),
+        tcp_port: 8000,
+        udp_port: 8000,
+        direct_udp_port: None,
+        capabilities: 0,
         seq: 1,
     };
     let mut encoded = Vec::new();
@@ -347,7 +355,7 @@ fn test_update_name_record() {
         addr: new_name_record.address(),
         algo_builder: PeerDiscoveryBuilder {
             self_id: node_0,
-            self_record: new_name_record,
+            self_record: new_name_record.clone(),
             current_round: config.current_round,
             current_epoch: config.current_epoch,
             epoch_validators: BTreeMap::new(),

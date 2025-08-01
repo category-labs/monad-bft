@@ -23,6 +23,7 @@ use monad_secp::{KeyPair, SecpSignature};
 
 /// Example command to run the following program:
 /// sign-name-record -- --address 0.0.0.0:8888 --node-config <...> --keystore-path <...> --password ""
+/// sign-name-record -- --address 0.0.0.0:8888 --direct-udp-port 9999 --node-config <...> --keystore-path <...> --password ""
 #[derive(Debug, Parser)]
 #[command(name = "monad-peer-discovery", about)]
 struct Args {
@@ -33,6 +34,10 @@ struct Args {
     /// Sequence number for the name record
     #[arg(long)]
     self_record_seq_num: Option<u64>,
+    
+    /// Direct UDP port (optional)
+    #[arg(long)]
+    direct_udp_port: Option<u16>,
 
     /// Set the node config path
     #[arg(long)]
@@ -71,7 +76,11 @@ fn main() {
     };
     let self_address = args.address;
     let name_record = NameRecord {
-        address: self_address,
+        ip: self_address.ip().clone(),
+        tcp_port: self_address.port(),
+        udp_port: self_address.port(),
+        direct_udp_port: args.direct_udp_port,
+        capabilities: 0,
         seq: self_record_seq_num,
     };
     let keypair = KeyPair::from_bytes(private_key.as_mut()).expect("Invalid keypair");
@@ -79,6 +88,9 @@ fn main() {
         MonadNameRecord::new(name_record, &keypair);
 
     println!("self_address = {:?}", self_address.to_string());
+    if let Some(direct_udp_port) = args.direct_udp_port {
+        println!("direct_udp_port = {}", direct_udp_port);
+    }
     println!("self_record_seq_num = {}", self_record_seq_num);
     println!(
         "self_name_record_sig = {:?}",
