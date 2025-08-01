@@ -1,0 +1,26 @@
+name: License
+
+on:
+  merge_group:
+    branches: ["master"]
+    paths-ignore:
+      - 'debian/**'
+  push:
+    branches: ["master"]
+    paths-ignore:
+      - 'debian/**'
+  pull_request:
+    branches: ["master"]
+    types: [ opened, synchronize, reopened, edited ]
+    paths-ignore:
+      - 'debian/**'
+
+jobs:
+  check-license:
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Check licenses
+        run: .github/workflows/license.sh
