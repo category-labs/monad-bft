@@ -225,4 +225,11 @@ where
     ) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<ST>> {
         HashMap::new()
     }
+
+    fn get_name_record(
+        &self,
+        _node_id: &NodeId<CertificateSignaturePubKey<ST>>,
+    ) -> Option<MonadNameRecord<ST>> {
+        None
+    }
 }

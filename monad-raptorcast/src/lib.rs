@@ -479,16 +479,62 @@ where
                                             continue;
                                         }
                                     };
-                                let rc_chunks: UnicastMsg = Self::udp_build(
-                                    &self.current_epoch,
-                                    BuildTarget::<ST>::PointToPoint(&to),
-                                    outbound_message,
-                                    self.mtu,
-                                    &self.signing_key,
-                                    self.redundancy,
-                                    &known_addresses,
-                                );
-                                self.dataplane_writer.udp_write_unicast(rc_chunks);
+
+                                let pd_driver = self.peer_discovery_driver.lock().unwrap();
+
+                                if let Some(name_record) = pd_driver.get_name_record(&to) {
+                                    if let Some(direct_socket) =
+                                        name_record.name_record.direct_udp_socket()
+                                    {
+                                        let mut direct_known_addresses = HashMap::new();
+                                        direct_known_addresses
+                                            .insert(to, SocketAddr::V4(direct_socket));
+
+                                        let rc_chunks: UnicastMsg = Self::udp_build(
+                                            &self.current_epoch,
+                                            BuildTarget::<ST>::PointToPoint(&to),
+                                            outbound_message,
+                                            self.mtu,
+                                            &self.signing_key,
+                                            self.redundancy,
+                                            &direct_known_addresses,
+                                        );
+
+                                        for (_, payload) in rc_chunks.msgs {
+                                            self.dataplane_writer.udp_write_direct(
+                                                SocketAddr::V4(direct_socket),
+                                                payload,
+                                                rc_chunks.stride,
+                                            );
+                                        }
+                                    } else {
+                                        let udp_socket = name_record.name_record.udp_socket();
+                                        let mut udp_known_addresses = HashMap::new();
+                                        udp_known_addresses.insert(to, SocketAddr::V4(udp_socket));
+
+                                        let rc_chunks: UnicastMsg = Self::udp_build(
+                                            &self.current_epoch,
+                                            BuildTarget::<ST>::PointToPoint(&to),
+                                            outbound_message,
+                                            self.mtu,
+                                            &self.signing_key,
+                                            self.redundancy,
+                                            &udp_known_addresses,
+                                        );
+                                        self.dataplane_writer.udp_write_unicast(rc_chunks);
+                                    }
+                                } else {
+                                    let rc_chunks: UnicastMsg = Self::udp_build(
+                                        &self.current_epoch,
+                                        BuildTarget::<ST>::PointToPoint(&to),
+                                        outbound_message,
+                                        self.mtu,
+                                        &self.signing_key,
+                                        self.redundancy,
+                                        &known_addresses,
+                                    );
+                                    self.dataplane_writer.udp_write_unicast(rc_chunks);
+                                }
                             }
                         }
 
