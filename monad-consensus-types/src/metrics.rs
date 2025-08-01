@@ -128,7 +128,8 @@ metrics!(
             handle_no_endorsement,
             old_no_endorsement_received,
             future_no_endorsement_received,
-            created_nec
+            created_nec,
+            handle_advance_round
         ]
     ),
     (

@@ -247,6 +247,9 @@ where
                             ProtocolMessage::NoEndorsement(msg) => {
                                 consensus.handle_no_endorsement_message(author, msg)
                             }
+                            ProtocolMessage::AdvanceRound(msg) => {
+                                consensus.handle_advance_round_message(author, msg)
+                            }
                         }
                     }
                     Err(evidence) => {

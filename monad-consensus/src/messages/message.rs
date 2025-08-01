@@ -150,6 +150,18 @@ where
     pub last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
 }
 
+/// This message is broadcasted upon locally constructing QC(r)
+/// This helps other nodes advance their round faster
+#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+pub struct AdvanceRoundMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    pub last_round_certificate: RoundCertificate<ST, SCT, EPT>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct RoundRecoveryMessage<ST, SCT, EPT>
 where

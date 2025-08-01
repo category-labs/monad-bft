@@ -290,11 +290,12 @@ impl<S: SwarmRelation> MockSwarmVerifier<S> {
                 ledger_len,
             );
             // votes from f peers after receiving 2f+1 votes as a leader
+            // 2x because votes are sent to current and next leader
             // NOTE: malicious votes should be rejected before reaching consensus
             self.metric_maximum(
                 node_ids,
                 fetch_metric!(consensus_events.old_vote_received),
-                (num_blocks_authored + 1) * max_byzantine_nodes,
+                2 * (num_blocks_authored + 1) * max_byzantine_nodes,
             );
             // votes from 2f+1 peers as a leader
             // except if the node is a leader in round 2 when it receives timeouts instead

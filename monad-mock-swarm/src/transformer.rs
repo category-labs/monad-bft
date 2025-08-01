@@ -71,6 +71,7 @@ where
                     ProtocolMessage::Timeout(_) => self.drop_timeout,
                     ProtocolMessage::RoundRecovery(_) => false,
                     ProtocolMessage::NoEndorsement(_) => false,
+                    ProtocolMessage::AdvanceRound(_) => false,
                 }
             }
             VerifiedMonadMessage::BlockSyncRequest(_)
@@ -153,6 +154,9 @@ where
                     ProtocolMessage::Timeout(_) => TwinsCapture::Spread(pid),
                     ProtocolMessage::RoundRecovery(m) => TwinsCapture::Process(pid, m.round),
                     ProtocolMessage::NoEndorsement(m) => TwinsCapture::Process(pid, m.msg.round),
+                    ProtocolMessage::AdvanceRound(m) => {
+                        TwinsCapture::Process(pid, m.last_round_certificate.round() + Round(1))
+                    }
                 }
             }
             VerifiedMonadMessage::BlockSyncRequest(_)

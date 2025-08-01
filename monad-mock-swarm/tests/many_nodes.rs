@@ -185,7 +185,7 @@ fn many_nodes_noser_one_offline() {
     max_observed_local_timeouts -= 1;
 
     let max_allowed_local_timeouts =
-        (2 * num_rounds * num_offline_nodes as u64).div_ceil(num_nodes.into());
+        (num_rounds * num_offline_nodes as u64).div_ceil(num_nodes.into());
 
     assert!(max_observed_local_timeouts <= max_allowed_local_timeouts);
 }

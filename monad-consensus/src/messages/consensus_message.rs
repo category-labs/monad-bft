@@ -24,7 +24,8 @@ use monad_types::{ExecutionProtocol, Round};
 
 use crate::{
     messages::message::{
-        NoEndorsementMessage, ProposalMessage, RoundRecoveryMessage, TimeoutMessage, VoteMessage,
+        AdvanceRoundMessage, NoEndorsementMessage, ProposalMessage, RoundRecoveryMessage,
+        TimeoutMessage, VoteMessage,
     },
     validation::signing::{Validated, Verified},
 };
@@ -50,6 +51,10 @@ where
 
     RoundRecovery(RoundRecoveryMessage<ST, SCT, EPT>),
     NoEndorsement(NoEndorsementMessage<SCT>),
+
+    /// This message is broadcasted upon locally constructing QC(r)
+    /// This helps other nodes advance their round faster
+    AdvanceRound(AdvanceRoundMessage<ST, SCT, EPT>),
 }
 
 impl<ST, SCT, EPT> Debug for ProtocolMessage<ST, SCT, EPT>
@@ -65,6 +70,7 @@ where
             ProtocolMessage::Timeout(t) => f.debug_tuple("").field(&t).finish(),
             ProtocolMessage::RoundRecovery(r) => f.debug_tuple("").field(&r).finish(),
             ProtocolMessage::NoEndorsement(n) => f.debug_tuple("").field(&n).finish(),
+            ProtocolMessage::AdvanceRound(l) => f.debug_tuple("").field(&l).finish(),
         }
     }
 }
@@ -103,6 +109,10 @@ where
                 let enc: [&dyn Encodable; 3] = [&name, &5u8, &m];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
+            ProtocolMessage::AdvanceRound(m) => {
+                let enc: [&dyn Encodable; 3] = [&name, &6u8, &m];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
         }
     }
 }
@@ -136,6 +146,9 @@ where
             5 => Ok(ProtocolMessage::NoEndorsement(
                 NoEndorsementMessage::decode(&mut payload)?,
             )),
+            6 => Ok(ProtocolMessage::AdvanceRound(AdvanceRoundMessage::decode(
+                &mut payload,
+            )?)),
             _ => Err(alloy_rlp::Error::Custom(
                 "failed to decode unknown ProtocolMessage",
             )),
@@ -183,6 +196,7 @@ where
             ProtocolMessage::Timeout(t) => t.0.tminfo.round,
             ProtocolMessage::RoundRecovery(r) => r.round,
             ProtocolMessage::NoEndorsement(n) => n.msg.round,
+            ProtocolMessage::AdvanceRound(n) => n.last_round_certificate.round(),
         }
     }
 }

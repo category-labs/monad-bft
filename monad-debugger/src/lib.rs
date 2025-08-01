@@ -101,11 +101,11 @@ pub fn simulation_make() -> *mut Simulation {
                         ),
                         vec![
                             GenericTransformer::Latency(LatencyTransformer::new(
-                                Duration::from_millis(10),
+                                Duration::from_millis(25),
                             )),
                             GenericTransformer::RandLatency(RandLatencyTransformer::new(
                                 0,
-                                Duration::from_millis(40),
+                                Duration::from_millis(25),
                             )),
                             GenericTransformer::Periodic(PeriodicTransformer::new(
                                 Duration::from_millis(1_000),

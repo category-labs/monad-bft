@@ -20,13 +20,14 @@ use monad_consensus::{
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
         message::{
-            NoEndorsementMessage, ProposalMessage, RoundRecoveryMessage, TimeoutMessage,
-            VoteMessage,
+            AdvanceRoundMessage, NoEndorsementMessage, ProposalMessage, RoundRecoveryMessage,
+            TimeoutMessage, VoteMessage,
         },
     },
     validation::signing::{Validated, Verified},
 };
 use monad_state::VerifiedMonadMessage;
+use monad_types::Round;
 
 use crate::graphql::{
     ExecutionProtocolType, GraphQLRound, GraphQLSeqNum, SignatureCollectionType, SignatureType,
@@ -81,6 +82,9 @@ impl<'s> From<&'s VerifiedConsensusMessageType> for GraphQLConsensusMessageType<
             ProtocolMessage::NoEndorsement(no_endorsement) => {
                 Self::NoEndorsement(GraphQLNoEndorsement(no_endorsement))
             }
+            ProtocolMessage::AdvanceRound(advance_round) => {
+                Self::AdvanceRound(GraphQLAdvanceRound(advance_round))
+            }
         }
     }
 }
@@ -92,6 +96,7 @@ enum GraphQLConsensusMessageType<'s> {
     Timeout(GraphQLTimeout<'s>),
     RoundRecovery(GraphQLRoundRecovery<'s>),
     NoEndorsement(GraphQLNoEndorsement<'s>),
+    AdvanceRound(GraphQLAdvanceRound<'s>),
 }
 
 struct GraphQLProposal<'s>(
@@ -137,5 +142,15 @@ struct GraphQLNoEndorsement<'s>(&'s NoEndorsementMessage<SignatureCollectionType
 impl<'s> GraphQLNoEndorsement<'s> {
     async fn round(&self) -> GraphQLRound {
         GraphQLRound::new(self.0.msg.round)
+    }
+}
+
+struct GraphQLAdvanceRound<'s>(
+    &'s AdvanceRoundMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
+);
+#[Object]
+impl<'s> GraphQLAdvanceRound<'s> {
+    async fn round(&self) -> GraphQLRound {
+        GraphQLRound::new(self.0.last_round_certificate.round() + Round(1))
     }
 }

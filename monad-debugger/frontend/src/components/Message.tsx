@@ -74,6 +74,17 @@ const Message: Component<{
                     </div>
                 </div>
             );
+        case "GraphQLAdvanceRound":
+            return (
+                <div class="p-2 lg:p-4 text-nowrap rounded-2xl bg-green-400/35 border border-black shadow-sm">
+                    <div class="text-xl lg:text-2xl">AdvanceRound</div>
+                    <div>
+                        <span class="hidden lg:inline">round=</span>
+                        <span class="inline lg:hidden">r=</span>
+                        {round()}
+                    </div>
+                </div>
+            );
         default:
             assertUnreachable(messageType);
             return <div>Unknown message type</div>;

@@ -26,8 +26,8 @@ use monad_consensus::{
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
         message::{
-            NoEndorsementMessage, ProposalMessage, RoundRecoveryMessage, TimeoutMessage,
-            VoteMessage,
+            AdvanceRoundMessage, NoEndorsementMessage, ProposalMessage, RoundRecoveryMessage,
+            TimeoutMessage, VoteMessage,
         },
     },
     no_endorsement_state::NoEndorsementState,
@@ -715,11 +715,12 @@ where
         vote_msg: VoteMessage<SCT>,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
         debug!(?author, ?vote_msg, "vote message");
-        if vote_msg.vote.round < self.consensus.pacemaker.get_current_round() {
+        let vote_round = vote_msg.vote.round;
+        if vote_round < self.consensus.pacemaker.get_current_round() {
             self.metrics.consensus_events.old_vote_received += 1;
             return Default::default();
         }
-        if vote_msg.vote.round > self.consensus.pacemaker.get_current_round() + FUTURE_VOTE_BOUND {
+        if vote_round > self.consensus.pacemaker.get_current_round() + FUTURE_VOTE_BOUND {
             self.metrics.consensus_events.future_vote_received += 1;
             return Default::default();
         }
@@ -729,7 +730,7 @@ where
 
         let epoch = self
             .epoch_manager
-            .get_epoch(vote_msg.vote.round)
+            .get_epoch(vote_round)
             .expect("epoch verified");
         let validator_set = self
             .val_epoch_map
@@ -753,6 +754,27 @@ where
 
             cmds.extend(self.process_qc(&qc));
             cmds.extend(self.try_propose());
+
+            let vote_round_leader = self
+                .election
+                .get_leader(vote_round, validator_set.get_members());
+            if self.nodeid == &vote_round_leader {
+                // Note that if we're also the leader of (vote_round + 1), we'll send QC(r) in
+                // both AdvanceRound(QC(r)) and Proposal(r+1). This is fine, as AdvanceRound(r)
+                // will be propagated faster than Proposal(r+1) due to it being direct broadcast.
+                //
+                // Also note that this broadcasts to the (qc.round + 1) validator set
+                cmds.push(ConsensusCommand::Publish {
+                    target: RouterTarget::Broadcast(self.consensus.get_current_epoch()),
+                    message: ConsensusMessage {
+                        message: ProtocolMessage::AdvanceRound(AdvanceRoundMessage {
+                            last_round_certificate: RoundCertificate::Qc(qc),
+                        }),
+                        version: self.version,
+                    }
+                    .sign(self.keypair),
+                });
+            }
         };
 
         cmds
@@ -994,6 +1016,20 @@ where
         cmds
     }
 
+    #[must_use]
+    pub fn handle_advance_round_message(
+        &mut self,
+        author: NodeId<SCT::NodeIdPubKey>,
+        advance_round_msg: AdvanceRoundMessage<ST, SCT, EPT>,
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+        debug!(?author, ?advance_round_msg, "advance round message");
+        self.metrics.consensus_events.handle_advance_round += 1;
+        match &advance_round_msg.last_round_certificate {
+            RoundCertificate::Tc(tc) => self.process_tc(tc),
+            RoundCertificate::Qc(qc) => self.process_qc(qc),
+        }
+    }
+
     /// invariant: handle_block_sync must only be passed blocks that were previously requested
     ///
     /// it is possible that a requested block failed to be added to the tree
@@ -1068,36 +1104,48 @@ where
         round: Round,
         vote: Vote,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+        let mut cmds = Vec::new();
         let vote_msg = VoteMessage::<SCT>::new(vote, self.cert_keypair);
-
-        // TODO this grouping should be enforced by epoch_manager/val_epoch_map to be less
-        // error-prone
-        let (next_round, next_validator_set) = {
-            let next_round = round + Round(1);
-            let next_epoch = self
-                .epoch_manager
-                .get_epoch(next_round)
-                .expect("higher epoch always exists");
-            let Some(next_validator_set) = self.val_epoch_map.get_val_set(&next_epoch) else {
-                todo!("handle non-existent validatorset for next round epoch");
-            };
-            (next_round, next_validator_set.get_members())
-        };
-        let next_leader = self.election.get_leader(next_round, next_validator_set);
-        let msg = ConsensusMessage {
+        let message = ConsensusMessage {
             version: self.version,
             message: ProtocolMessage::Vote(vote_msg),
         }
         .sign(self.keypair);
-        let send_cmd = ConsensusCommand::Publish {
-            target: RouterTarget::PointToPoint(next_leader),
-            message: msg,
-        };
-        debug!(?round, ?vote, ?next_leader, "created vote");
+
         self.metrics.consensus_events.created_vote += 1;
 
+        let get_leader = |round: Round| {
+            // TODO this grouping should be enforced by epoch_manager/val_epoch_map to be less
+            // error-prone
+            let epoch = self
+                .epoch_manager
+                .get_epoch(round)
+                .expect("looked up leader for invalid round");
+            let validator_set = self
+                .val_epoch_map
+                .get_val_set(&epoch)
+                .expect("looked up leader for invalid round");
+            self.election.get_leader(round, validator_set.get_members())
+        };
+        // leader for next round must be known
+        let next_leader = get_leader(round + Round(1));
+        cmds.push(ConsensusCommand::Publish {
+            target: RouterTarget::PointToPoint(next_leader),
+            message: message.clone(),
+        });
+        // leader for current round must be known
+        let current_leader = get_leader(round);
+        if current_leader != next_leader {
+            cmds.push(ConsensusCommand::Publish {
+                target: RouterTarget::PointToPoint(current_leader),
+                message,
+            });
+        }
+
+        debug!(?round, ?vote, ?current_leader, ?next_leader, "sending vote");
+
         // start the vote-timer for the next round
-        let vote_timer_cmd = ConsensusCommand::ScheduleVote {
+        cmds.push(ConsensusCommand::ScheduleVote {
             duration: self
                 .config
                 .chain_config
@@ -1105,10 +1153,10 @@ where
                 .chain_params()
                 .vote_pace,
             round: round + Round(1),
-        };
-
+        });
         self.consensus.scheduled_vote = None;
-        vec![send_cmd, vote_timer_cmd]
+
+        cmds
     }
 
     /// If the qc has a commit_state_hash, commit the parent block and prune the
@@ -3016,7 +3064,8 @@ mod test {
         // proposal and qc have non-consecutive rounds
         // vote after a timeout happens immediately and is therefore extracted from the output cmds
         let p3_votes = extract_vote_msgs(cmds);
-        assert!(p3_votes.len() == 1);
+        assert!(p3_votes.len() == 2);
+        assert_eq!(p3_votes[0].vote, p3_votes[1].vote);
         let p3_vote = p3_votes[0].vote;
         assert_eq!(p3_vote.round, Round(3));
     }
@@ -3443,8 +3492,9 @@ mod test {
                             .send_vote_and_reset_timer(vote.round, vote);
 
                         let v = extract_vote_msgs(cmds);
-                        assert_eq!(v.len(), 1);
+                        assert_eq!(v.len(), 2);
                         assert_eq!(v[0].vote.round, Round(10));
+                        assert_eq!(v[0].vote, v[1].vote);
 
                         proposal_10_votes.push((node.nodeid, v[0]));
                     }
@@ -3657,7 +3707,7 @@ mod test {
                     .send_vote_and_reset_timer(vote.round, vote);
 
                 let v = extract_vote_msgs(cmds);
-                assert_eq!(v.len(), 1);
+                assert_eq!(v.len(), 2);
                 votes.push((node.nodeid, v[0]));
             } else {
                 leader_index = i;
