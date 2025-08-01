@@ -16,24 +16,28 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     iter::Iterator,
+    str::FromStr,
 };
 
 use alloy_json_rpc::RpcError;
 use alloy_network::TransactionResponse;
-use alloy_primitives::{Address, BlockNumber, Bytes, LogData, U256, U64};
+use alloy_primitives::{Address, BlockNumber, Bytes, LogData, TxKind, B256, U256, U64};
 use alloy_rpc_client::{ClientBuilder, ReqwestClient};
 use alloy_rpc_types::{Filter, TransactionRequest};
 use alloy_rpc_types_eth::BlockTransactionHashes;
 use alloy_rpc_types_trace::geth::{
     GethDebugBuiltInTracerType, GethDebugTracerType, GethDebugTracingOptions, GethTrace,
 };
+use alloy_signer_local::PrivateKeySigner;
+use alloy_sol_types::SolCall;
 use clap::Parser;
+use contract::{Contract, Example};
 use futures::{stream::FuturesUnordered, StreamExt};
 use itertools::Itertools;
 use rand::seq::IteratorRandom;
 use tokio::{
     task::JoinHandle,
-    time::{Duration, Instant},
+    time::{sleep, Duration, Instant},
 };
 use tracing::{debug, info, warn};
 use tracing_subscriber::{
@@ -42,6 +46,8 @@ use tracing_subscriber::{
     EnvFilter, Registry,
 };
 use url::Url;
+
+mod contract;
 
 // bytecode for eth_call contract deployment simulation (test contract in flexnet)
 const CONTRACT_BYTECODE: &[u8] = &[
@@ -89,16 +95,37 @@ where
 #[derive(Debug, Parser)]
 #[command(name = "rpc-request-generator", about, long_about = None)]
 pub struct Config {
+    /// Sets the RPC URL
     #[arg(long, global = true, default_value = "http://localhost:8080")]
     pub rpc_url: Url,
-    #[arg(long, global = true, default_value_t = 5)]
+    /// Sets the number of (eth_getBlockReceipts, eth_getLogs, debug_traceBlockByNumber) per block
+    #[arg(long, global = true, default_value_t = 2)]
     pub requests_per_new_block: u64,
-    #[arg(long, global = true, default_value_t = 5)]
+    /// Sets the number of historical block queries per block
+    #[arg(long, global = true, default_value_t = 2)]
     pub historical_blocks_per_round: u64,
+    /// Set the lookback window for historical block queries
     #[arg(long, global = true, default_value_t = 200)]
     pub historical_block_window: u64,
+    /// Maximum acceptable distance from chain tip, indexer to crash beyond that
     #[arg(long, global = true, default_value_t = 15)]
     pub max_distance_from_tip: u64,
+    /// Allow periodic expensive eth calls that reads 50k unique storage slots
+    #[arg(long, global = true, default_value = "false")]
+    pub enable_expensive_eth_call: bool,
+    /// Interval between expensive eth calls that reads 50k unique storage slots
+    #[arg(long, global = true, default_value_t = 30)]
+    pub expensive_eth_call_interval: u64,
+    /// Chain ID of the network
+    #[arg(long, global = true, default_value_t = 20143)]
+    pub chain_id: u64,
+    /// Private key used to initialize state for expensive eth calls
+    #[arg(
+        long,
+        global = true,
+        default_value = "0x2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6"
+    )]
+    pub private_key: String,
 }
 
 struct TipRefresher {
@@ -155,6 +182,10 @@ struct RpcRequestGenerator {
     historical_blocks_per_round: u64,
     historical_block_window: u64,
     max_distance_from_tip: u64,
+    enable_expensive_eth_call: bool,
+    expensive_eth_call_interval: u64,
+    private_key: String,
+    chain_id: u64,
     pending_indexing: BTreeMap<BlockNumber, JoinHandle<()>>,
     uniq_addrs: BTreeSet<Address>,
     total_indexed: u64,
@@ -174,6 +205,10 @@ impl RpcRequestGenerator {
         historical_blocks_per_round: u64,
         historical_block_window: u64,
         max_distance_from_tip: u64,
+        enable_expensive_eth_call: bool,
+        expensive_eth_call_interval: u64,
+        private_key: String,
+        chain_id: u64,
     ) -> Self {
         Self {
             rpc_url,
@@ -181,6 +216,10 @@ impl RpcRequestGenerator {
             historical_blocks_per_round,
             historical_block_window,
             max_distance_from_tip,
+            enable_expensive_eth_call,
+            expensive_eth_call_interval,
+            private_key,
+            chain_id,
             pending_indexing: Default::default(),
             uniq_addrs: Default::default(),
             total_indexed: 0,
@@ -222,11 +261,20 @@ impl RpcRequestGenerator {
     async fn run(&mut self) {
         // start block tip refresher task
         let (tip_sender, mut tip_receiver) = tokio::sync::mpsc::channel(8);
-        // let (mut index_sender, index_receiver) = tokio::sync
         let (index_done_sender, mut index_done_receiver) = tokio::sync::mpsc::channel(32);
 
         let refresher = TipRefresher::new(self.rpc_url.clone(), tip_sender);
         tokio::spawn(async move { refresher.run().await });
+
+        if self.enable_expensive_eth_call {
+            let chain_id = self.chain_id;
+            let private_key = self.private_key.clone();
+            let rpc_url = self.rpc_url.clone();
+            let eth_call_interval = self.expensive_eth_call_interval;
+            tokio::spawn(async move {
+                expensive_eth_call(private_key, chain_id, rpc_url, eth_call_interval).await;
+            });
+        }
 
         let mut status_interval = tokio::time::interval(Duration::from_secs(1));
         status_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -762,6 +810,85 @@ impl RpcRequestGenerator {
     }
 }
 
+async fn expensive_eth_call(
+    private_key: String,
+    chain_id: u64,
+    rpc_url: Url,
+    eth_call_interval: u64,
+) {
+    let private_key = PrivateKeySigner::from_bytes(&B256::from_str(private_key.as_ref()).unwrap())
+        .expect("invalid private key");
+    let address = private_key.address();
+    let client = ClientBuilder::default().http(rpc_url);
+
+    let nonce: U64 = client
+        .request::<_, U64>("eth_getTransactionCount", (address, "latest"))
+        .await
+        .expect("retrieve nonce failed");
+    let nonce = nonce.to();
+    info!(?nonce, "starting nonce");
+
+    let contract = Contract::deploy_tx(&client, nonce, &private_key, chain_id)
+        .await
+        .expect("contract deployment failed");
+    info!(?contract, "start initializing state for expensive eth call");
+
+    // write 50k unique storage slots
+    // each transaction writes 200 unique storage slots
+    // we need to split into multiple transactions in order to fit into block gas limit
+    let nonce = nonce + 1;
+    for i in 0..250 {
+        debug!("building state");
+        sleep(Duration::from_millis(5)).await;
+        let _ = contract
+            .contract_write(
+                &client,
+                &private_key,
+                nonce + i,
+                chain_id,
+                U256::from(i * 250),
+            )
+            .await;
+    }
+    sleep(Duration::from_secs(3)).await;
+    let nonce: U64 = client
+        .request::<_, U64>("eth_getTransactionCount", (address, "latest"))
+        .await
+        .expect("retrieve nonce failed");
+    let nonce: u64 = nonce.to();
+    info!(?nonce, "ending nonce");
+
+    // periodically sends expensive eth call
+    loop {
+        let input: Bytes = Example::expensiveReadCall {
+            num: U256::from(50_000),
+        }
+        .abi_encode()
+        .into();
+        let call_request = TransactionRequest {
+            to: Some(TxKind::Call(contract.addr)),
+            input: Some(input).into(),
+            ..Default::default()
+        };
+        let client_clone = client.clone();
+        tokio::spawn(async move {
+            let start_time = Instant::now();
+            match client_clone
+                .request::<_, Bytes>("eth_call", (call_request, "latest"))
+                .await
+            {
+                Ok(_) => {
+                    let duration = start_time.elapsed();
+                    info!("Time taken for expensive eth call: {:?}", duration);
+                }
+                Err(e) => warn!("eth_call failed: {:?}", e),
+            }
+        });
+
+        sleep(Duration::from_secs(eth_call_interval)).await;
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let config = Config::parse();
@@ -785,6 +912,10 @@ async fn main() {
         config.historical_blocks_per_round,
         config.historical_block_window,
         config.max_distance_from_tip,
+        config.enable_expensive_eth_call,
+        config.expensive_eth_call_interval,
+        config.private_key,
+        config.chain_id,
     );
     indexer.run().await
 }
