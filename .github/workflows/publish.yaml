@@ -59,6 +59,9 @@ jobs:
           username: ${{ secrets.PRIVATE_REGISTRY_USERNAME }}
           password: ${{ secrets.PRIVATE_REGISTRY_PASSWORD }}
 
+      #   release/release-to-docker-io relies on the the particular method
+      #   this script uses to produce the Docker tags; if you change this,
+      #   please ensure you update that if necessary.
       - name: Extract metadata (tags, labels) for Docker
         id: meta
         uses: docker/metadata-action@v5.5.1

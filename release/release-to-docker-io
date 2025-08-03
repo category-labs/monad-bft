@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+#
+#   release-to-docker-io: copy Docker images from the CL internal Docker
+#   registry to the docker.io categoryxyz/ public repository
+#
+#   See usage() for command line options. The one you're most likely to use
+#   is `-i IMAGE-NAME` (which can be given multiple times) to release just
+#   one image, rather than the entire default list of $image_names below.
+#
+#   .github/workflows/publish.yml builds and uploads releasable Docker
+#   images to the categoryxyz/ repository in the private
+#   peach10.devcore4.com registry ($internal_repo). These are always tagged
+#   with an abbreviated commit ID (currently 7 chars).
+#
+#   We release to docker.io images tagged *only* with a Git tag known to
+#   exist in our repo. I.e., the the `…:12ab34c` image in $internal_repo is
+#   `…:GIT-TAG` in $public_repo. (The commit to which these Git tags point
+#   _can_ change, but by convention never does.)
+#
+#   This should work on any system where the user is logged in to both
+#   registries; check `~/.docker/config.json` to see if it has entries in
+#   the `auths:` dictionary for these.
+
+set -Eeuo pipefail
+trap 'ec=$?; echo 1>&2 "INTERNAL ERROR: ec=$ec line=$LINENO cmd=$BASH_COMMAND";
+    exit $ec;' ERR
+
+die()  { ec=$1; shift; echo 1>&2 "$(basename "$0"):" "$@"; exit $ec; }
+fail() { echo -e 1>&2 "FAILED: $@"; exit 1; }
+
+setup_docker() {
+    declare -g docker=docker
+    if ! $docker --version >/dev/null; then
+        die 1 "Cannot run '$docker' command. Check path?"
+    elif ! $docker info >/dev/null 2>&1; then
+        docker="sudo docker --config $HOME/.docker/"
+        #   We do not use `sudo -v` here: in common configurations that
+        #   may require a password even when `sudo any-command` doesn't.
+        sudo -p 'sudo pw for %u@%h to run docker: ' \
+            docker --version >/dev/null \
+            || die 3 "Cannot sudo to run '$docker'; start proxy?"
+    fi
+}
+
+####################################################################
+#   Argument checking and setup
+
+PROJDIR=$(command cd "$(dirname "$0")/.." && pwd)
+
+usage() {
+    cat <<_____
+Usage: $(basename "$0") [-h] [-i image]  GIT-TAG"
+  -h        This help.
+  -i NAME   Name of an image to release. May be specified multiple times.
+_____
+}
+
+image_list=()
+while [[ $# -gt 0 ]]; do case "$1" in
+    -h)     usage; exit 0;;
+    -i)     shift; image_list+=("$1"); shift;;
+    -*)     die 2 "Unknown option '$1'; use -h for help";;
+    *)      break;
+esac; done
+#   This is the default set of images we release to docker.io; see the
+#   matrix in .github/workflows/publish.yml for the set of images that were
+#   uploaded and are available to release.
+[[ ${#image_list[@]} -gt 0 ]] || image_list=(
+    monad-bft monad-rpc monad-archive monad-full-node monad-execution)
+
+[[ $# -ne 1 ]] && { usage; exit 2; }
+tag="$1"; shift
+
+#   Get the "short" ID used on peach10 for the Docker image tag.
+#   • publish.yml always appears to abbreviate the commit ID to 7 chars. We
+#     must specify this explicitly to --short or that will decide for
+#     itself how many chars it needs based on the number of commits in the
+#     repo. (As of writing, it decides 8.)
+#   • We need to append ^{commit} to the ref to ensure that we're getting
+#     the object ID of the commit to which the tag points, not the ID of
+#     the tag itself if it's an annotated tag.
+commit_abbrev=$(git -C "$PROJDIR" 2>/dev/null \
+    rev-parse --verify --short=7  "refs/tags/$tag^{commit}" || true)
+[[ -n $commit_abbrev ]] || die 1 "Tag $tag not found. Do a 'git fetch'?"
+echo "━━━━━ tag $tag is abbreviated commit $commit_abbrev"
+
+setup_docker
+
+####################################################################
+#   Main
+
+#   Remember: the Docker "repo" is the `categoryxyz/` or whatever after
+#   the Docker registry, which is an internal hostname for our internal one
+#   or '' (empty string) for the public docker.io one.
+
+internal_repo=peach10.devcore4.com/category-labs
+echo "━━━━━ Pulls from internal registry/repo: $internal_repo"
+for i in ${image_list[@]}; do
+    full_name="$internal_repo/$i:$commit_abbrev"
+    echo "▶ Pulling $full_name"
+    #   We always pull the linux/amd64 image, even when not on a Linux machine.
+    $docker pull -q --platform linux/amd64 "$full_name" \
+        || fail "Unable to pull from $internal_repo: $i"
+done
+echo '━━━━━ Pulls complete'
+
+public_repo=categoryxyz
+echo "━━━━━ Pushes to public (docker.io) registry, repo categoryxyz/"
+#   Do not try to push until we've pulled everything successfully.
+for i in ${image_list[@]}; do
+    internal_full_name="$internal_repo/$i:$commit_abbrev"
+    public_full_name="$public_repo/$i:$tag"
+    echo "▶ Pushing public $public_full_name"
+    $docker tag "$internal_full_name" "$public_full_name"
+    $docker push "$public_repo/$i:$tag" \
+        || fail "Unable to push to docker.io: $i" \
+           "\nTry 'docker login -u $public_repo'?"
+done
+echo '━━━━━ Pushes complete'
+
+####################################################################
+
+#   Some of the code above is based on the script in the "Pushing Images"
+#   section of the notion.so "Devops Chain Network Guides" page:
+#   https://www.notion.so/DevOps-Chain-Network-Guides-17675b0ba84080349dcfc72c2e9f29ec#18a75b0ba840809c819bdc7152848aeb
+
+#COMMIT=8275465
+## Make SURE to prepend with a "v"
+#TAG=v0.7.1
+#
+#for IMAGE in ${IMAGES[@]}
+#do
+#       # the --platform ensures the correct pull in case you do this on a non-Linux machine
+#       docker pull "peach10.devcore4.com/category-labs/$IMAGE:$COMMIT" --platform linux/amd64
+#       docker tag "peach10.devcore4.com/category-labs/$IMAGE:$COMMIT" "categoryxyz/$IMAGE:$TAG"
+#       # docker push categoryxyz/$IMAGE:$TAG
+#done
