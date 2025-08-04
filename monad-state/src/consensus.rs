@@ -381,9 +381,8 @@ where
                 })]
             }
             MempoolEvent::ForwardTxs(txs) => {
-                self.compute_upcoming_leader_round_pairs::<false, true, NUM_LEADERS_FORWARD_TXS>()
-                    .into_iter()
-                    .map(|(target, _)| {
+                self.iter_future_other_leaders()
+                    .map(|target| {
                         // TODO ideally we could batch these all as one RouterCommand(PointToPoint) so
                         // that we can:
                         // 1. avoid cloning txns
@@ -512,19 +511,24 @@ where
 
     fn compute_upcoming_leader_round_pairs<
         const INCLUDE_CURRENT_ROUND: bool,
-        const SKIP_SELF: bool,
-        const NUM: usize,
+        const NUM_ROUNDS: usize,
     >(
-        &self,
-    ) -> Vec<(NodeId<CertificateSignaturePubKey<ST>>, Round)> {
-        let ConsensusMode::Live(mode) = &self.consensus else {
-            return Vec::default();
-        };
+        &'a self,
+    ) -> impl Iterator<Item = (NodeId<CertificateSignaturePubKey<ST>>, Round)> + 'a {
+        let (round_range_start, round_range_len) =
+            if let ConsensusMode::Live(mode) = &self.consensus {
+                (
+                    mode.get_current_round().0 + (if INCLUDE_CURRENT_ROUND { 0 } else { 1 }),
+                    NUM_ROUNDS,
+                )
+            } else {
+                (0, 0)
+            };
 
-        (mode.get_current_round().0 + (if INCLUDE_CURRENT_ROUND { 0 } else { 1 })..)
-            .take(NUM)
+        (round_range_start..)
+            .take(round_range_len)
             .map(Round)
-            .filter_map(|round| {
+            .map(|round| {
                 let epoch = self.epoch_manager.get_epoch(round).expect("epoch exists");
 
                 let Some(next_validator_set) = self.val_epoch_map.get_val_set(&epoch) else {
@@ -535,21 +539,21 @@ where
                     .leader_election
                     .get_leader(round, next_validator_set.get_members());
 
-                if SKIP_SELF {
-                    (&leader != self.nodeid).then_some((leader, round))
-                } else {
-                    Some((leader, round))
-                }
+                (leader, round)
             })
-            .unique_by(|(nodeid, _)| *nodeid)
-            .collect()
     }
 
-    fn get_upcoming_leader_rounds(&self) -> Vec<Round> {
-        self.compute_upcoming_leader_round_pairs::<true, false, NUM_LEADERS_UPCOMING>()
-            .into_iter()
-            .map(|(_, round)| round)
-            .collect()
+    fn iter_upcoming_self_leader_rounds(&'a self) -> impl Iterator<Item = Round> + 'a {
+        self.compute_upcoming_leader_round_pairs::<true, NUM_LEADERS_UPCOMING>()
+            .filter_map(|(nodeid, round)| (nodeid == *self.nodeid).then_some(round))
+    }
+
+    fn iter_future_other_leaders(
+        &'a self,
+    ) -> impl Iterator<Item = NodeId<CertificateSignaturePubKey<ST>>> + 'a {
+        self.compute_upcoming_leader_round_pairs::<false, NUM_LEADERS_FORWARD_TXS>()
+            .filter_map(|(nodeid, _)| (nodeid != *self.nodeid).then_some(nodeid))
+            .unique()
     }
 
     pub(super) fn wrap(
@@ -558,7 +562,7 @@ where
     ) -> WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT> {
         WrappedConsensusCommand {
             state_root_delay: self.consensus_config.execution_delay,
-            upcoming_leader_rounds: self.get_upcoming_leader_rounds(),
+            upcoming_leader_rounds: self.iter_upcoming_self_leader_rounds().collect(),
             command,
         }
     }
