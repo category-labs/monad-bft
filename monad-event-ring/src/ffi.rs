@@ -22,15 +22,15 @@ use std::{
 };
 
 pub(crate) use self::bindings::{
-    g_monad_event_ring_type_names, monad_event_descriptor, monad_event_iter_result,
-    monad_event_iterator, monad_event_ring, MONAD_EVENT_GAP, MONAD_EVENT_NOT_READY,
+    g_monad_event_ring_type_names, monad_event_iter_result, MONAD_EVENT_GAP, MONAD_EVENT_NOT_READY,
     MONAD_EVENT_RING_TYPE_COUNT, MONAD_EVENT_RING_TYPE_NONE, MONAD_EVENT_SUCCESS,
 };
 pub use self::bindings::{
-    monad_event_ring_type, MONAD_EVENT_RING_TYPE_EXEC, MONAD_EVENT_RING_TYPE_TEST,
+    monad_event_descriptor, monad_event_iterator, monad_event_ring, monad_event_ring_type,
+    MONAD_EVENT_RING_TYPE_EXEC, MONAD_EVENT_RING_TYPE_TEST,
 };
 
-#[allow(dead_code, non_camel_case_types, non_upper_case_globals)]
+#[allow(dead_code, missing_docs, non_camel_case_types, non_upper_case_globals)]
 mod bindings {
     use libc::{off_t, pid_t};
 
