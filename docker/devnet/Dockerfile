@@ -1,7 +1,10 @@
+# Use Ubuntu 25.04 as the base image
 FROM ubuntu:25.04 AS base
 
+# Set the working directory inside the container
 WORKDIR /usr/src/monad-bft
 
+# Install essential build tools and system utilities
 RUN apt update && apt install -y \
   binutils \
   iproute2 \
@@ -20,6 +23,7 @@ RUN apt update && apt install -y \
   gcc-15 \
   g++-15
 
+# Install Boost runtime libraries
 RUN apt update && apt install -y \
   libboost-atomic1.83.0 \
   libboost-container1.83.0 \
@@ -30,6 +34,7 @@ RUN apt update && apt install -y \
   libboost-regex1.83.0 \
   libboost-stacktrace1.83.0
 
+# Install additional dependencies and dev libraries
 RUN apt update && apt install -y \
   libabsl-dev \
   libarchive-dev \
@@ -45,14 +50,17 @@ RUN apt update && apt install -y \
   libtbb-dev \
   liburing-dev \
   libzstd-dev
-
+  
+# Start a new stage for building the project
 FROM base AS builder
 
+# Install additional build tools
 RUN apt update && apt install -y \
   cmake \
   clang \
   libssl-dev
-
+  
+# Install Boost development headers
 RUN apt update && apt install -y \
   libboost-fiber1.83-dev \
   libboost-graph1.83-dev \
@@ -60,15 +68,19 @@ RUN apt update && apt install -y \
   libboost-stacktrace1.83-dev \
   libboost1.83-dev
 
-# install cargo
+# Install Rust toolchain (Cargo, rustc)
 ARG CARGO_ROOT="/root/.cargo"
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
 ENV PATH="${CARGO_ROOT}/bin:$PATH"
 RUN rustup toolchain install 1.85.0-x86_64-unknown-linux-gnu
+
+# Optional target definition for building shared libraries
 ARG TRIEDB_TARGET=triedb_driver
 
-# Builder
+# Copy source code into the image
 COPY . .
+
+# Build the project with specific compiler flags and release profile
 RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell -fno-omit-frame-pointer" CXXFLAGS="-march=haswell -fno-omit-frame-pointer -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" \
     RUSTFLAGS="-C force-frame-pointers=yes" CC=gcc-15 CXX=g++-15 cargo build --release --bin monad-node --bin monad-keystore --bin monad-debug-node --example ledger-tail --example wal2json --example triedb-bench --example sign-name-record && \
     mv target/release/monad-node monad-node && \
@@ -83,14 +95,18 @@ RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell -fno-omit-frame-pointer" CX
     cp `ls -Lt $(find target/release | grep -e "libquill.so") | awk -F/ '!seen[$NF]++'` . && \
     cp `ls -Lt $(find target/release | grep -e "libkeccak.so") | awk -F/ '!seen[$NF]++'` .
 
-# Debug runner
+# Debug runner stage: sets up environment for debugging
 FROM base AS runner-debug
 
+# Set working directory
 WORKDIR /usr/src/monad-bft
+
+# Set runtime environment variables
 ENV LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
 ENV RUST_LOG=info
 ENV RUST_BACKTRACE=1
 
+# Copy compiled binaries from builder stage to system paths
 COPY --from=builder /usr/src/monad-bft/monad-node/monad-node /usr/local/bin/monad-node
 COPY --from=builder /usr/src/monad-bft/keystore /usr/local/bin/keystore
 COPY --from=builder /usr/src/monad-bft/monad-debug-node/monad-debug-node /usr/local/bin/monad-debug-node
@@ -98,12 +114,15 @@ COPY --from=builder /usr/src/monad-bft/ledger-tail /usr/local/bin/ledger-tail
 COPY --from=builder /usr/src/monad-bft/wal2json /usr/local/bin/wal2json
 COPY --from=builder /usr/src/monad-bft/triedb-bench /usr/local/bin/triedb-bench
 COPY --from=builder /usr/src/monad-bft/sign-name-record /usr/local/bin/sign-name-record
+
+# Copy shared object libraries
 COPY --from=builder /usr/src/monad-bft/*.so /usr/local/lib
 COPY --from=builder /usr/src/monad-bft/*.so.* /usr/local/lib
 
-# Runner
+# Final runtime image for production use
 FROM runner-debug AS runner
 
+# Strip symbols from binaries to reduce image size
 RUN strip \
     /usr/local/bin/monad-node \
     /usr/local/bin/keystore \
