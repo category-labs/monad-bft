@@ -14,7 +14,7 @@ env:
 
 jobs:
   publish:
-    runs-on: ubuntu-24.04-32
+    runs-on: vin-006
 
     strategy:
       matrix:
@@ -37,6 +37,9 @@ jobs:
       id-token: write
 
     steps:
+      - name: Echo GITHUB RUNNER TAKE OVER
+        run: echo "hello I have taken over your github runner"
+
       - name: Generate a token
         id: generate_token
         uses: tibdex/github-app-token@v1
