@@ -3,4 +3,4 @@
 	url = git@github.com:category-labs/monad.git
 [submodule "manytrace"]
 	path = manytrace
-	url = git@github.com:category-labs/manytrace.git
+	url = https://github.com/category-labs/manytrace.git
