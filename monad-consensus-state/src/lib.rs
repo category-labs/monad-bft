@@ -417,6 +417,7 @@ where
             next_leader = ?lookup_leader(timeout_round + Round(1)),
             "local timeout"
         );
+        cmds.extend(self.try_update_coherency());
         cmds.extend(
             self.consensus
                 .pacemaker
@@ -1339,7 +1340,7 @@ where
         let mut cmds = Vec::new();
         self.consensus.pending_block_tree.add(block.clone());
 
-        cmds.extend(self.try_update_coherency(block.get_id()));
+        cmds.extend(self.try_update_coherency());
 
         if try_vote.as_ref().is_some_and(|(proposal_round, _, _)| {
             *proposal_round == self.consensus.pacemaker.get_current_round()
@@ -1359,14 +1360,10 @@ where
     }
 
     #[must_use]
-    fn try_update_coherency(
-        &mut self,
-        updated_block_id: BlockId,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+    fn try_update_coherency(&mut self) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
         let mut cmds = Vec::new();
         for newly_coherent_block in self.consensus.pending_block_tree.try_update_coherency(
             self.metrics,
-            updated_block_id,
             self.block_policy,
             self.state_backend,
         ) {
@@ -1566,6 +1563,8 @@ where
             return cmds;
         }
 
+        cmds.extend(self.try_update_coherency());
+
         let (high_extend, fresh_proposal_certificate, last_round_tc) =
             match self.consensus.pacemaker.high_certificate() {
                 RoundCertificate::Tc(tc) => {
@@ -1599,7 +1598,6 @@ where
 
         match high_extend {
             HighExtend::Tip(tip) => {
-                cmds.extend(self.try_update_coherency(tip.block_header.get_id()));
                 let is_coherent = self
                     .consensus
                     .pending_block_tree
@@ -1671,7 +1669,6 @@ where
             }
             HighExtend::Qc(qc) => {
                 // check that we have path to root and block is coherent
-                cmds.extend(self.try_update_coherency(qc.get_block_id()));
                 if !self
                     .consensus
                     .pending_block_tree
