@@ -18,14 +18,11 @@ pub enum EthTxPoolEventAction {
         tracked: bool,
     },
 
-    /// The tx was dropped for the attached reason.
-    Drop { reason: EthTxPoolDropReason },
-
-    /// The tx was promoted from the txpool's pending tx list to it's tracked tx list.
-    Promoted,
-
     /// The tx was committed and is thus finalized.
     Commit,
+
+    /// The tx was dropped for the attached reason.
+    Drop { reason: EthTxPoolDropReason },
 
     /// The tx timed out and was evicted.
     Evict { reason: EthTxPoolEvictReason },
