@@ -1026,8 +1026,14 @@ impl<PT: PubKey> ValidatorPubKey for PT {
         validators: &BTreeMap<NodeId<Self::NodeIdPubKey>, Stake>,
     ) -> Result<Self, Error> {
         match validators.get(&NodeId::new(self)) {
-            Some(stake) if stake.0 > 0 => Ok(self),
-            _ => Err(Error::InsufficientStake),
+            Some(stake) => {
+                if stake.0 > 0 {
+                    Ok(self)
+                } else {
+                    Err(Error::InsufficientStake)
+                }
+            },
+            _ => Err(Error::InvalidAuthor),
         }
     }
 }
