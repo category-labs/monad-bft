@@ -661,6 +661,10 @@ where
 {
     /// A valid timeout message is well-formed, and carries valid QC/TC
     pub fn validate(&self, epoch_manager: &EpochManager) -> Result<(), Error> {
+        if self.signature.validate().is_err() {
+            return Err(Error::InvalidSignature);
+        }
+
         self.well_formed_no_endorsement()?;
         self.verify_epoch(epoch_manager)?;
 
