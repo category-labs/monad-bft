@@ -19,7 +19,7 @@ LICENSE_HEADER_LEN=$(("${#LICENSE_HEADER}" + 2))
 
 exit_code=0
 
-for file in $(git ls-files '*.rs'); do
+for file in $(git ls-files -- '*.rs' '*.h' '*.hpp' '*.c' '*.cpp'); do
     contents=$(head -c $LICENSE_HEADER_LEN "$file")
 
     if [ "$contents" == "$LICENSE_HEADER" ]; then
