@@ -49,7 +49,7 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EventRing")
             .field("raw", &self.raw)
-            .field("type", &D::ring_ctype())
+            .field("type", &D::ring_content_ctype())
             .finish()
     }
 }

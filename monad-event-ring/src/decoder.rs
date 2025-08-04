@@ -17,8 +17,9 @@ use std::ffi::CStr;
 
 use crate::{
     ffi::{
-        g_monad_event_ring_type_names, monad_event_ring, monad_event_ring_check_type,
-        monad_event_ring_type, MONAD_EVENT_RING_TYPE_COUNT, MONAD_EVENT_RING_TYPE_NONE,
+        g_monad_event_content_type_names, monad_event_content_type, monad_event_ring,
+        monad_event_ring_check_content_type, MONAD_EVENT_CONTENT_TYPE_COUNT,
+        MONAD_EVENT_CONTENT_TYPE_NONE,
     },
     EventDescriptorInfo,
 };
@@ -32,21 +33,21 @@ use crate::{
 /// [`EventDecoder::Event`] itself along with its zero-copy variant [`EventDecoder::EventRef`]. This
 /// enables the [`EventReader`](crate::EventReader) to produce typed events.
 pub trait EventDecoder: 'static {
-    /// An integer specifying the event ring type.
-    fn ring_ctype() -> monad_event_ring_type;
+    /// An integer specifying the event ring content type.
+    fn ring_content_ctype() -> monad_event_content_type;
     /// A human-readable name for the `ring_ctype`.
     ///
     /// # Panics
     ///
     /// Panics if [`ring_ctype()`](EventDecoder::ring_ctype) is invalid.
     fn ring_ctype_name() -> String {
-        let ring_ctype = Self::ring_ctype();
+        let content_ctype = Self::ring_content_ctype();
 
-        assert!(MONAD_EVENT_RING_TYPE_NONE < ring_ctype);
-        assert!(ring_ctype < MONAD_EVENT_RING_TYPE_COUNT);
+        assert!(MONAD_EVENT_CONTENT_TYPE_NONE < content_ctype);
+        assert!(content_ctype < MONAD_EVENT_CONTENT_TYPE_COUNT);
 
         let description_cstr =
-            unsafe { CStr::from_ptr(g_monad_event_ring_type_names[ring_ctype as usize]) };
+            unsafe { CStr::from_ptr(g_monad_event_content_type_names[content_ctype as usize]) };
 
         description_cstr.to_str().unwrap().to_string()
     }
@@ -55,11 +56,15 @@ pub trait EventDecoder: 'static {
     ///
     /// This hash is used for versioning control and enforces that event ingested through
     /// [`EventReader`](crate::EventReader) have the same underlying ABI as the event ring writer.
-    fn ring_metadata_hash() -> &'static [u8; 32];
+    fn ring_schema_hash() -> &'static [u8; 32];
 
     /// Used to check that the event ring matches this [`EventDecoder`].
-    fn check_ring_type(c_event_ring: &monad_event_ring) -> Result<(), String> {
-        monad_event_ring_check_type(c_event_ring, Self::ring_ctype(), Self::ring_metadata_hash())
+    fn check_ring_content_type(c_event_ring: &monad_event_ring) -> Result<(), String> {
+        monad_event_ring_check_content_type(
+            c_event_ring,
+            Self::ring_content_ctype(),
+            Self::ring_schema_hash(),
+        )
     }
 
     /// The metadata associated with each [`Event`](EventDecoder::Event).
@@ -96,7 +101,7 @@ pub trait EventDecoder: 'static {
 pub struct BytesDecoder;
 
 impl EventDecoder for BytesDecoder {
-    fn ring_ctype() -> monad_event_ring_type {
+    fn ring_content_ctype() -> monad_event_content_type {
         unreachable!()
     }
 
@@ -104,11 +109,11 @@ impl EventDecoder for BytesDecoder {
         "raw".to_string()
     }
 
-    fn ring_metadata_hash() -> &'static [u8; 32] {
+    fn ring_schema_hash() -> &'static [u8; 32] {
         unreachable!()
     }
 
-    fn check_ring_type(_: &monad_event_ring) -> Result<(), String> {
+    fn check_ring_content_type(_: &monad_event_ring) -> Result<(), String> {
         Ok(())
     }
 
