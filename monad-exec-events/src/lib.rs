@@ -70,11 +70,11 @@
 //!
 //! # Block-Oriented Updates
 //!
-//! The [`ExecEventRingType`] enables an `EventRing` to produce individual `monad` execution events.
-//! While many applications may benefit from operating on individual events or by observing them
-//! as quickly as possible, many would prefer to process entire blocks. This library provides the
-//! [`ExecutedBlockBuilder`] utility to reconstruct blocks from an event stream produced by an
-//! [`ExecEventRing`]. See [`ExecutedBlockBuilder`] for more details.
+//! `EventRing`s using an [`ExecEventDecoder`] (primarily [`ExecEventRing`]) can produce individual
+//! `monad` execution events. While many applications may benefit from operating on individual
+//! events or by observing them as quickly as possible, many would prefer to process entire blocks.
+//! This library provides the [`ExecutedBlockBuilder`] utility to reconstruct blocks from an event
+//! stream produced by an [`ExecEventRing`]. See [`ExecutedBlockBuilder`] for more details.
 //!
 //! This utility however produces all blocks that are executed, which could be in any
 //! [`BlockCommitState`]. For applications interested in consuming blocks once they have reached a
