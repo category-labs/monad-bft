@@ -39,7 +39,7 @@ pub trait EventDecoder: 'static {
     ///
     /// # Panics
     ///
-    /// Panics if [`ring_ctype()`](EventDecoder::ring_ctype) is invalid.
+    /// Panics if [`ring_content_ctype()`](EventDecoder::ring_content_ctype) is invalid.
     fn ring_ctype_name() -> String {
         let content_ctype = Self::ring_content_ctype();
 
