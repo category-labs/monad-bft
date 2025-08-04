@@ -16,7 +16,7 @@
 //! This module contains low-level bindings to the monad execution client event types.
 
 pub(crate) use self::bindings::{
-    g_monad_exec_event_metadata_hash, MONAD_EXEC_ACCOUNT_ACCESS,
+    g_monad_exec_event_schema_hash, MONAD_EXEC_ACCOUNT_ACCESS,
     MONAD_EXEC_ACCOUNT_ACCESS_LIST_HEADER, MONAD_EXEC_BLOCK_END, MONAD_EXEC_BLOCK_FINALIZED,
     MONAD_EXEC_BLOCK_PERF_EVM_ENTER, MONAD_EXEC_BLOCK_PERF_EVM_EXIT, MONAD_EXEC_BLOCK_QC,
     MONAD_EXEC_BLOCK_REJECT, MONAD_EXEC_BLOCK_START, MONAD_EXEC_BLOCK_VERIFIED,
@@ -35,7 +35,13 @@ pub use self::bindings::{
     MONAD_TXN_EIP2930, MONAD_TXN_LEGACY,
 };
 
-#[allow(dead_code, missing_docs, non_camel_case_types, non_upper_case_globals)]
+#[allow(
+    dead_code,
+    missing_docs,
+    non_camel_case_types,
+    non_upper_case_globals,
+    rustdoc::broken_intra_doc_links
+)]
 mod bindings {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }

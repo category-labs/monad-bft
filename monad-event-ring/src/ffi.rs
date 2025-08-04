@@ -22,12 +22,12 @@ use std::{
 };
 
 pub(crate) use self::bindings::{
-    g_monad_event_ring_type_names, monad_event_descriptor, monad_event_iter_result,
-    monad_event_iterator, monad_event_ring, MONAD_EVENT_GAP, MONAD_EVENT_NOT_READY,
-    MONAD_EVENT_RING_TYPE_COUNT, MONAD_EVENT_RING_TYPE_NONE, MONAD_EVENT_SUCCESS,
+    g_monad_event_content_type_names, monad_event_descriptor, monad_event_iter_result,
+    monad_event_iterator, monad_event_ring, MONAD_EVENT_CONTENT_TYPE_COUNT,
+    MONAD_EVENT_CONTENT_TYPE_NONE, MONAD_EVENT_GAP, MONAD_EVENT_NOT_READY, MONAD_EVENT_SUCCESS,
 };
 pub use self::bindings::{
-    monad_event_ring_type, MONAD_EVENT_RING_TYPE_EXEC, MONAD_EVENT_RING_TYPE_TEST,
+    monad_event_content_type, MONAD_EVENT_CONTENT_TYPE_EXEC, MONAD_EVENT_CONTENT_TYPE_TEST,
 };
 
 #[allow(dead_code, non_camel_case_types, non_upper_case_globals)]
@@ -78,16 +78,16 @@ pub(crate) fn monad_event_ring_mmap(
     get_last_ring_library_error(r).map(|()| c_event_ring)
 }
 
-pub(crate) fn monad_event_ring_check_type(
+pub(crate) fn monad_event_ring_check_content_type(
     c_event_ring: &monad_event_ring,
-    c_event_ring_type: monad_event_ring_type,
-    metadata_hash: &[u8; 32],
+    c_event_content_type: monad_event_content_type,
+    schema_hash: &[u8; 32],
 ) -> Result<(), String> {
     let r = unsafe {
-        self::bindings::monad_event_ring_check_type(
+        self::bindings::monad_event_ring_check_content_type(
             c_event_ring,
-            c_event_ring_type,
-            metadata_hash.as_ptr(),
+            c_event_content_type,
+            schema_hash.as_ptr(),
         )
     };
 

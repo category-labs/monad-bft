@@ -34,7 +34,6 @@ fn main() {
 
     let client_target = "monad_event";
     let client_dst = cmake::Config::new("../monad-cxx/monad-execution/category/event")
-        .define("CMAKE_BUILD_TARGET", client_target)
         .build_target(client_target)
         .build();
 
