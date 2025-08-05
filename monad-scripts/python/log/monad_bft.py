@@ -142,7 +142,7 @@ class BftLog:
         print("Missing voting rounds:", missing_rounds)
 
 
-    # collect duration between a local timeout to receving next proposal
+    # collect duration between a local timeout to receiving next proposal
     def timeout_df(self):
         df = self.df[
             (
