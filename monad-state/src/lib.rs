@@ -1318,8 +1318,8 @@ mod test {
     use monad_testutil::validators::create_keys_w_validators;
     use monad_types::{BlockId, Hash, NodeId, Round, SeqNum, Stake};
     use monad_validator::{
-        signature_collection::SignatureCollection,
-        validator_set::ValidatorSetFactory, weighted_round_robin::WeightedRoundRobin,
+        signature_collection::SignatureCollection, validator_set::ValidatorSetFactory,
+        weighted_round_robin::WeightedRoundRobin,
     };
 
     use super::*;
@@ -1372,11 +1372,17 @@ mod test {
 
         let forkpoint: Forkpoint<_, _, _> = Checkpoint {
             root: qc.get_block_id(),
-            high_certificate: RoundCertificate::Qc(qc.clone()),
-            validator_sets: vec![LockedEpoch {
-                epoch: Epoch(3),
-                round: Round(3050),
-            }],
+            high_certificate: RoundCertificate::Qc(qc),
+            validator_sets: vec![
+                LockedEpoch {
+                    epoch: Epoch(3),
+                    round: Round(3050),
+                },
+                LockedEpoch {
+                    epoch: Epoch(4),
+                    round: Round(4050),
+                },
+            ],
         }
         .into();
 
@@ -1418,8 +1424,10 @@ mod test {
     #[test]
     fn test_forkpoint_validate_1() {
         let (mut forkpoint, mut locked_validator_sets, election) = get_forkpoint();
-        let popped_1 = forkpoint.0.validator_sets.pop().unwrap();
-        let popped_2 = locked_validator_sets.pop().unwrap();
+        let locked_epoch_1 = forkpoint.0.validator_sets.pop().unwrap();
+        let locked_val_set_1 = locked_validator_sets.pop().unwrap();
+        let _ = forkpoint.0.validator_sets.pop().unwrap();
+        let _ = locked_validator_sets.pop().unwrap();
 
         assert_eq!(
             forkpoint.validate(
@@ -1430,12 +1438,12 @@ mod test {
             Err(ForkpointValidationError::TooFewValidatorSets)
         );
 
-        forkpoint.0.validator_sets.push(popped_1.clone());
-        forkpoint.0.validator_sets.push(popped_1.clone());
-        forkpoint.0.validator_sets.push(popped_1);
-        locked_validator_sets.push(popped_2.clone());
-        locked_validator_sets.push(popped_2.clone());
-        locked_validator_sets.push(popped_2);
+        forkpoint.0.validator_sets.push(locked_epoch_1.clone());
+        forkpoint.0.validator_sets.push(locked_epoch_1.clone());
+        forkpoint.0.validator_sets.push(locked_epoch_1);
+        locked_validator_sets.push(locked_val_set_1.clone());
+        locked_validator_sets.push(locked_val_set_1.clone());
+        locked_validator_sets.push(locked_val_set_1);
         assert_eq!(
             forkpoint.validate(
                 &ValidatorSetFactory::default(),
@@ -1468,6 +1476,10 @@ mod test {
     #[test]
     fn test_forkpoint_validate_3() {
         let (mut forkpoint, locked_validator_sets, election) = get_forkpoint();
+
+        let RoundCertificate::Qc(qc) = &mut forkpoint.0.high_certificate else {
+            unreachable!();
+        };
         // change qc content so signature collection is invalid
         qc.info.round = qc.info.round - Round(1);
 

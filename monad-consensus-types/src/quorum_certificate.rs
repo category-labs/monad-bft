@@ -4,8 +4,6 @@ use monad_crypto::{
     signing_domain,
 };
 use monad_types::*;
-use serde::{Deserialize, Serialize};
-
 use monad_validator::{
     signature_collection::{
         deserialize_signature_collection, serialize_signature_collection, SignatureCollection,
@@ -14,8 +12,7 @@ use monad_validator::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::block::ConsensusBlockHeader;
-use crate::voting::Vote;
+use crate::{block::ConsensusBlockHeader, voting::Vote};
 
 #[non_exhaustive]
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodable, RlpDecodable)]

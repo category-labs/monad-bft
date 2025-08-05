@@ -4,7 +4,7 @@ use alloy_consensus::{
     transaction::{Recovered, Transaction},
     TxEnvelope,
 };
-use alloy_primitives::{Address, TxHash, U256};
+use alloy_primitives::{hex, Address, TxHash, U256};
 use itertools::Itertools;
 use monad_consensus_types::{
     block::{BlockPolicy, BlockPolicyError, ConsensusFullBlock},
@@ -14,12 +14,17 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_txpool_types::TransactionError;
-use monad_eth_types::{Balance, EthAccount, EthExecutionProtocol, EthHeader, Nonce};
+use monad_eth_types::{
+    Balance, EthAccount, EthExecutionProtocol, EthHeader, Nonce, BASE_FEE_PER_GAS,
+};
 use monad_state_backend::{StateBackend, StateBackendError};
-use monad_validator::signature_collection::SignatureCollection;
 use monad_types::{BlockId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_SEQ_NUM};
+use monad_validator::signature_collection::SignatureCollection;
 use sorted_vector_map::SortedVectorMap;
 use tracing::{trace, warn};
+
+const SYSTEM_TRANSACTIONS_ETH_ADDRESS: Address =
+    Address::new(hex!("0x6f49a8F621353f12378d0046E7d7e4b9B249DC9e"));
 
 /// Retriever trait for account nonces from block(s)
 pub trait AccountNonceRetrievable {
@@ -65,17 +70,33 @@ fn compute_intrinsic_gas(tx: &TxEnvelope) -> u64 {
     intrinsic_gas
 }
 
+pub fn get_base_fee_per_gas(txn: &Recovered<TxEnvelope>) -> u128 {
+    if txn.signer() == SYSTEM_TRANSACTIONS_ETH_ADDRESS {
+        return 0;
+    }
+
+    BASE_FEE_PER_GAS.into()
+}
+
+pub fn get_max_fee_per_gas(txn: &Recovered<TxEnvelope>) -> u128 {
+    if txn.signer() == SYSTEM_TRANSACTIONS_ETH_ADDRESS {
+        return 0;
+    }
+
+    txn.max_fee_per_gas()
+}
+
 #[allow(clippy::unnecessary_fallible_conversions)]
-pub fn compute_txn_max_value(txn: &TxEnvelope) -> U256 {
+pub fn compute_txn_max_value(txn: &Recovered<TxEnvelope>) -> U256 {
     let txn_value = U256::try_from(txn.value()).unwrap();
-    let gas_cost = U256::from(txn.gas_limit() as u128 * txn.max_fee_per_gas());
+    let gas_cost = U256::from(txn.gas_limit() as u128 * get_max_fee_per_gas(txn));
 
     txn_value.saturating_add(gas_cost)
 }
 
 /// Stateless helper function to check validity of an Ethereum transaction
 pub fn static_validate_transaction(
-    tx: &TxEnvelope,
+    tx: &Recovered<TxEnvelope>,
     chain_id: u64,
     proposal_gas_limit: u64,
     max_code_size: usize,
@@ -826,9 +847,12 @@ mod test {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MockSignatures<SignatureType>;
 
+    const SIGNER_SECRET_KEY: B256 = B256::repeat_byte(0xAu8);
+    const SIGNER_ADDRESS: Address =
+        Address::new(hex!("0xC171033d5CBFf7175f29dfD3A63dDa3d6F8F385E"));
+
     fn sign_tx(signature_hash: &FixedBytes<32>) -> PrimitiveSignature {
-        let secret_key = B256::repeat_byte(0xAu8).to_string();
-        let signer = &secret_key.parse::<PrivateKeySigner>().unwrap();
+        let signer = PrivateKeySigner::from_bytes(&SIGNER_SECRET_KEY).unwrap();
         signer.sign_hash_sync(signature_hash).unwrap()
     }
 
@@ -1014,8 +1038,9 @@ mod test {
         };
         let signature = sign_tx(&tx_no_chain_id.signature_hash());
         let txn = tx_no_chain_id.into_signed(signature);
+        let recovered = Recovered::new_unchecked(TxEnvelope::from(txn), SIGNER_ADDRESS);
 
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
+        let result = static_validate_transaction(&recovered, CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
         assert!(matches!(result, Ok(())));
 
         // transaction with incorrect chain id
@@ -1030,8 +1055,9 @@ mod test {
         };
         let signature = sign_tx(&tx_invalid_chain_id.signature_hash());
         let txn = tx_invalid_chain_id.into_signed(signature);
+        let recovered = Recovered::new_unchecked(TxEnvelope::from(txn), SIGNER_ADDRESS);
 
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
+        let result = static_validate_transaction(&recovered, CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
         assert!(matches!(result, Err(TransactionError::InvalidChainId)));
 
         // contract deployment transaction with input data larger than 2 * 0x6000 (initcode limit)
@@ -1048,8 +1074,9 @@ mod test {
         };
         let signature = sign_tx(&tx_over_initcode_limit.signature_hash());
         let txn = tx_over_initcode_limit.into_signed(signature);
+        let recovered = Recovered::new_unchecked(TxEnvelope::from(txn), SIGNER_ADDRESS);
 
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
+        let result = static_validate_transaction(&recovered, CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
         assert!(matches!(
             result,
             Err(TransactionError::InitCodeLimitExceeded)
@@ -1068,8 +1095,9 @@ mod test {
         };
         let signature = sign_tx(&tx_priority_fee_too_high.signature_hash());
         let txn = tx_priority_fee_too_high.into_signed(signature);
+        let recovered = Recovered::new_unchecked(TxEnvelope::from(txn), SIGNER_ADDRESS);
 
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
+        let result = static_validate_transaction(&recovered, CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
         assert!(matches!(
             result,
             Err(TransactionError::MaxPriorityFeeTooHigh)
@@ -1088,8 +1116,9 @@ mod test {
         };
         let signature = sign_tx(&tx_gas_limit_too_low.signature_hash());
         let txn = tx_gas_limit_too_low.into_signed(signature);
+        let recovered = Recovered::new_unchecked(TxEnvelope::from(txn), SIGNER_ADDRESS);
 
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
+        let result = static_validate_transaction(&recovered, CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
         assert!(matches!(result, Err(TransactionError::GasLimitTooLow)));
 
         // transaction with gas limit higher than block gas limit
@@ -1105,8 +1134,9 @@ mod test {
         };
         let signature = sign_tx(&tx_gas_limit_too_high.signature_hash());
         let txn = tx_gas_limit_too_high.into_signed(signature);
+        let recovered = Recovered::new_unchecked(TxEnvelope::from(txn), SIGNER_ADDRESS);
 
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
+        let result = static_validate_transaction(&recovered, CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
         assert!(matches!(result, Err(TransactionError::GasLimitTooHigh)));
     }
 

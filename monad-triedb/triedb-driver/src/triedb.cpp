@@ -6,22 +6,20 @@
 #include <optional>
 #include <vector>
 
-#include <category/config.hpp>
+#include <category/core/config.hpp>
 #include <category/core/byte_string.hpp>
-#include <category/core/int.hpp>
 #include <category/core/nibble.h>
-#include <category/db/trie_db.hpp>
-#include <category/db/util.hpp>
-#include <category/execution/staking/types.hpp>
-#include <category/execution/staking_contract.hpp>
+#include <category/execution/ethereum/db/trie_db.hpp>
+#include <category/execution/ethereum/db/util.hpp>
+#include <category/execution/ethereum/state2/block_state.hpp>
+#include <category/execution/ethereum/state3/state.hpp>
+#include <category/execution/ethereum/types/incarnation.hpp>
+#include <category/execution/monad/staking/staking_contract.hpp>
+#include <category/execution/monad/staking/util/constants.hpp>
 #include <category/mpt/db.hpp>
 #include <category/mpt/ondisk_db_config.hpp>
 #include <category/mpt/traverse.hpp>
 #include <category/mpt/traverse_util.hpp>
-#include <category/state2/block_state.hpp>
-#include <category/state3/state.hpp>
-#include <category/types/incarnation.hpp>
-#include <category/vm/vm.hpp>
 
 #include "triedb.h"
 
@@ -467,7 +465,7 @@ monad_read_valset(triedb *db, size_t const block_num, bool get_next)
         auto const stake = val.stake().load();
         std::memcpy(output.valset[i].secp_pubkey, keys.secp_pubkey.data(), 33);
         std::memcpy(output.valset[i].bls_pubkey, keys.bls_pubkey.data(), 48);
-        std::memcpy(output.valset[i].stake, stake.buf, 32);
+        std::memcpy(output.valset[i].stake, stake.bytes, 32);
     }
     return output;
 }

@@ -29,7 +29,6 @@ use monad_consensus_types::{
     no_endorsement::{FreshProposalCertificate, NoEndorsement},
     payload::{ConsensusBlockBody, RoundSignature},
     quorum_certificate::QuorumCertificate,
-    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighExtend, HighExtendVote, NoTipCertificate, TimeoutCertificate},
     tip::ConsensusTip,
     voting::Vote,
@@ -1854,7 +1853,7 @@ mod test {
         payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
         quorum_certificate::QuorumCertificate,
         tip::ConsensusTip,
-        voting::{ValidatorMapping, Vote},
+        voting::Vote,
         RoundCertificate,
     };
     use monad_crypto::{
@@ -1894,7 +1893,7 @@ mod test {
 
     use crate::{
         timestamp::BlockTimestamp, ConsensusCommand, ConsensusConfig, ConsensusState,
-        ConsensusStateWrapper, OutgoingVoteStatus, Role,
+        ConsensusStateWrapper, OutgoingVoteStatus,
     };
 
     const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;

@@ -5804,12 +5804,8 @@ dependencies = [
 name = "monad-testground"
 version = "0.1.0"
 dependencies = [
-<<<<<<< HEAD
  "alloy-primitives",
- "clap 4.5.40",
-=======
  "clap 4.5.41",
->>>>>>> master
  "futures-util",
  "monad-bls",
  "monad-chain-config",
@@ -5923,8 +5919,10 @@ dependencies = [
  "clap 4.5.41",
  "futures",
  "hex",
+ "monad-bls",
  "monad-eth-testutil",
  "monad-eth-types",
+ "monad-secp",
  "monad-state-backend",
  "monad-triedb",
  "monad-types",

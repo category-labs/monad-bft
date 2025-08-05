@@ -37,9 +37,9 @@ const SYSTEM_TRANSACTIONS_ETH_ADDRESS: Address =
 // System transactions related to staking precompile
 const STAKING_CONTRACT_ADDRESS: Address =
     Address::new(hex!("0x0000000000000000000000000000000000001000"));
-const EPOCH_CHANGE_IDENTIFIER: FixedBytes<4> = FixedBytes::new(hex!("0x00000000"));
-const SNAPSHOT_IDENTIFIER: FixedBytes<4> = FixedBytes::new(hex!("0x00000001"));
-const REWARD_IDENTIFIER: FixedBytes<4> = FixedBytes::new(hex!("0x00000002"));
+const EPOCH_CHANGE_FUNCTION_SELECTOR: FixedBytes<4> = FixedBytes::new(hex!("0x00000000"));
+const SNAPSHOT_FUNCTION_SELECTOR: FixedBytes<4> = FixedBytes::new(hex!("0x00000001"));
+const REWARD_FUNCTION_SELECTOR: FixedBytes<4> = FixedBytes::new(hex!("0x00000002"));
 
 // This constants controls the maximum number of addresses that get promoted during the tx insertion
 // process. It was set based on intuition and should be changed once we have more data on txpool
@@ -273,17 +273,14 @@ where
         // u64::MAX seconds is ~500 Billion years
         assert!(timestamp_seconds < u64::MAX.into());
 
-        let mut system_transactions = Vec::new();
-        if proposed_seq_num.is_epoch_end(self.val_set_update_interval) {
-            system_transactions.push(self.generate_snapshot_tx());
-        } else if extending_blocks
-            .last()
-            .is_some_and(|parent_block| parent_block.block.get_epoch() != epoch)
-        {
-            system_transactions.push(self.generate_epoch_change_tx(epoch));
-        }
-        system_transactions.push(self.generate_reward_tx(&beneficiary));
-
+        let system_transactions = self.generate_system_txs(
+            proposed_seq_num,
+            epoch,
+            &beneficiary, // FIXME should be block author's eth address
+            &extending_blocks.iter().collect(),
+            block_policy,
+            state_backend,
+        )?;
         let transactions = self.tracked.create_proposal(
             event_tracker,
             proposed_seq_num,
@@ -301,11 +298,6 @@ where
             transactions: transactions.into_iter().map(|tx| tx.into_tx()).collect(),
             ommers: Vec::new(),
             withdrawals: Vec::new(),
-        };
-        let extra_data = if proposed_seq_num.is_epoch_end(self.val_set_update_interval) {
-            [u8::MAX; 32]
-        } else {
-            [0_u8; 32]
         };
 
         let header = ProposedEthHeader {
@@ -328,7 +320,7 @@ where
             timestamp: timestamp_seconds as u64,
             mix_hash: round_signature.get_hash().0,
             nonce: [0_u8; 8],
-            extra_data,
+            extra_data: [0_u8; 32],
             base_fee_per_gas: BASE_FEE_PER_GAS,
             blob_gas_used: 0,
             excess_blob_gas: 0,
@@ -413,24 +405,22 @@ where
 
     fn sign_system_tx(tx: TxLegacy) -> Recovered<TxEnvelope> {
         let signer = PrivateKeySigner::from_bytes(&SYSTEM_TRANSACTIONS_PRIV_KEY).unwrap();
-        let signature = signer
-            .sign_hash_sync(&tx.signature_hash())
-            .unwrap();
+        let signature = signer.sign_hash_sync(&tx.signature_hash()).unwrap();
         let signed = tx.into_signed(signature);
 
         Recovered::new_unchecked(TxEnvelope::Legacy(signed), SYSTEM_TRANSACTIONS_ETH_ADDRESS)
     }
 
-    fn generate_epoch_change_tx(&self, new_epoch: Epoch) -> Recovered<TxEnvelope> {
+    fn generate_epoch_change_tx(&self, nonce: u64, new_epoch: Epoch) -> Recovered<TxEnvelope> {
         let mut input = [0_u8; 12];
-        input[0..4].copy_from_slice(EPOCH_CHANGE_IDENTIFIER.as_slice());
-        input[5..12].copy_from_slice(&new_epoch.0.to_be_bytes());
+        input[0..4].copy_from_slice(EPOCH_CHANGE_FUNCTION_SELECTOR.as_slice());
+        input[4..12].copy_from_slice(&new_epoch.0.to_be_bytes());
 
         let transaction = TxLegacy {
             chain_id: Some(self.chain_id),
-            nonce: 0,
+            nonce,
             gas_price: 0,
-            gas_limit: 0,
+            gas_limit: 25_000,
             to: TxKind::Call(STAKING_CONTRACT_ADDRESS),
             value: Default::default(),
             input: input.into(),
@@ -439,35 +429,74 @@ where
         Self::sign_system_tx(transaction)
     }
 
-    fn generate_snapshot_tx(&self) -> Recovered<TxEnvelope> {
+    fn generate_snapshot_tx(&self, nonce: u64) -> Recovered<TxEnvelope> {
         let transaction = TxLegacy {
             chain_id: Some(self.chain_id),
-            nonce: 0,
+            nonce,
             gas_price: 0,
-            gas_limit: 0,
+            gas_limit: 25_000,
             to: TxKind::Call(STAKING_CONTRACT_ADDRESS),
             value: Default::default(),
-            input: SNAPSHOT_IDENTIFIER.into(),
+            input: SNAPSHOT_FUNCTION_SELECTOR.into(),
         };
 
         Self::sign_system_tx(transaction)
     }
 
-    fn generate_reward_tx(&self, beneficiary: &[u8; 20]) -> Recovered<TxEnvelope> {
+    fn generate_reward_tx(&self, nonce: u64, block_author: &[u8; 20]) -> Recovered<TxEnvelope> {
         let mut input = [0_u8; 24];
-        input[0..4].copy_from_slice(REWARD_IDENTIFIER.as_slice());
-        input[5..24].copy_from_slice(beneficiary);
+        input[0..4].copy_from_slice(REWARD_FUNCTION_SELECTOR.as_slice());
+        input[4..24].copy_from_slice(block_author);
 
         let transaction = TxLegacy {
             chain_id: Some(self.chain_id),
-            nonce: 0,
+            nonce,
             gas_price: 0,
-            gas_limit: 0,
+            gas_limit: 25_000,
             to: TxKind::Call(STAKING_CONTRACT_ADDRESS),
             value: Default::default(),
             input: input.into(),
         };
 
         Self::sign_system_tx(transaction)
+    }
+
+    fn generate_system_txs(
+        &self,
+        proposed_seq_num: SeqNum,
+        epoch: Epoch,
+        block_author: &[u8; 20],
+        extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
+        block_policy: &EthBlockPolicy<ST, SCT>,
+        state_backend: &SBT,
+    ) -> Result<Vec<Recovered<TxEnvelope>>, StateBackendError> {
+        let mut system_address_nonce = *block_policy
+            .get_account_base_nonces(
+                proposed_seq_num,
+                state_backend,
+                extending_blocks,
+                [SYSTEM_TRANSACTIONS_ETH_ADDRESS].iter(),
+            )?
+            .get(&SYSTEM_TRANSACTIONS_ETH_ADDRESS)
+            .ok_or(StateBackendError::NotAvailableYet)?;
+
+        let mut system_transactions = Vec::new();
+
+        if proposed_seq_num.is_epoch_end(self.val_set_update_interval) {
+            // Create a snapshot of the validators in the staking contract for next epoch
+            system_transactions.push(self.generate_snapshot_tx(system_address_nonce));
+            system_address_nonce += 1;
+        } else if extending_blocks
+            .last()
+            .is_some_and(|parent_block| parent_block.block.get_epoch() != epoch)
+        {
+            // Advance to a new epoch
+            system_transactions.push(self.generate_epoch_change_tx(system_address_nonce, epoch));
+            system_address_nonce += 1;
+        }
+        // Reward for the consensus block author
+        system_transactions.push(self.generate_reward_tx(system_address_nonce, block_author));
+
+        Ok(system_transactions)
     }
 }

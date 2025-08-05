@@ -17,7 +17,8 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{
-    compute_txn_max_value, static_validate_transaction, EthBlockPolicy, EthValidatedBlock,
+    compute_txn_max_value, get_base_fee_per_gas, get_max_fee_per_gas, static_validate_transaction,
+    EthBlockPolicy, EthValidatedBlock,
 };
 use monad_eth_types::{
     EthBlockBody, EthExecutionProtocol, Nonce, ProposedEthHeader, BASE_FEE_PER_GAS,
@@ -116,7 +117,7 @@ where
 
             // TODO(kai): currently block base fee is hardcoded
             // update this when base fee is included in consensus proposal
-            if eth_txn.max_fee_per_gas() < BASE_FEE_PER_GAS.into() {
+            if get_max_fee_per_gas(eth_txn) < get_base_fee_per_gas(eth_txn) {
                 return Err(BlockValidationError::TxnError);
             }
 
@@ -214,9 +215,9 @@ where
         if nonce != &[0_u8; 8] {
             return Err(BlockValidationError::HeaderError);
         }
-        // if extra_data != &[0_u8; 32] {
-        //     return Err(BlockValidationError::HeaderError);
-        // }
+        if extra_data != &[0_u8; 32] {
+            return Err(BlockValidationError::HeaderError);
+        }
         if base_fee_per_gas != &BASE_FEE_PER_GAS {
             return Err(BlockValidationError::HeaderError);
         }

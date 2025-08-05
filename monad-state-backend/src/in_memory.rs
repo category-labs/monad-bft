@@ -80,9 +80,9 @@ where
             proposals: Default::default(),
             max_account_balance,
             execution_delay,
-            
+
             extra_data: 0,
-            
+
             _phantom: PhantomData,
         }))
     }

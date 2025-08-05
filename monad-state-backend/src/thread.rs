@@ -8,7 +8,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_types::{EthAccount, EthHeader};
-use monad_types::{BlockId, SeqNum};
+use monad_types::{BlockId, SeqNum, Stake};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use tracing::warn;
 

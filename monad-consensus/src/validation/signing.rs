@@ -18,9 +18,9 @@ use monad_crypto::{
 use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, Stake, GENESIS_ROUND};
 use monad_validator::{
     epoch_manager::EpochManager,
+    leader_election::LeaderElection,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     validator_mapping::ValidatorMapping,
-    leader_election::LeaderElection,
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
@@ -1016,10 +1016,7 @@ impl<PT: PubKey> ValidatorPubKey for PT {
 
 #[cfg(test)]
 mod test {
-    use std::marker::PhantomData;
-
     use alloy_primitives::U256;
-
     use monad_bls::{BlsSignature, BlsSignatureCollection};
     use monad_consensus_types::{
         block::{

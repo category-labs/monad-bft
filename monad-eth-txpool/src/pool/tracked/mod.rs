@@ -2,6 +2,7 @@ use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
 
 use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use alloy_primitives::Address;
+use alloy_rlp::Encodable;
 use indexmap::{map::Entry as IndexMapEntry, IndexMap};
 use itertools::Itertools;
 use monad_consensus_types::block::ConsensusBlockHeader;
@@ -137,7 +138,7 @@ where
         pending: &mut PendingTxMap,
     ) -> Result<Vec<Recovered<TxEnvelope>>, StateBackendError> {
         let Some(last_commit) = &self.last_commit else {
-            return Ok(Vec::new());
+            return Ok(system_transactions);
         };
         let last_commit_seq_num = last_commit.seq_num;
 
@@ -153,7 +154,7 @@ where
                 "last commit update does not match block policy last commit"
             );
 
-            return Ok(Vec::new());
+            return Ok(system_transactions);
         }
 
         let _timer = DropTimer::start(Duration::ZERO, |elapsed| {
@@ -172,7 +173,7 @@ where
         }
 
         if self.txs.is_empty() || tx_limit == 0 {
-            return Ok(Vec::new());
+            return Ok(system_transactions);
         }
 
         let tx_heap = TrackedTxHeap::new(&self.txs, &extending_blocks);
@@ -359,7 +360,7 @@ where
 
         let mut txs = system_transactions;
         let mut total_gas = 0u64;
-        let mut total_size = 0u64;
+        let mut total_size: u64 = txs.iter().map(|tx| tx.length() as u64).sum();
 
         tx_heap.drain_in_order_while(|sender, tx| {
             if total_gas

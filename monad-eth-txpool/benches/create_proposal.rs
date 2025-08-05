@@ -3,7 +3,7 @@ use monad_consensus_types::{block::GENESIS_TIMESTAMP, payload::RoundSignature};
 use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::EthTxPoolEventTracker;
-use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
+use monad_types::{Epoch, Round, SeqNum, GENESIS_SEQ_NUM};
 
 use self::common::{run_txpool_benches, BenchController, EXECUTION_DELAY};
 
@@ -39,6 +39,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 GENESIS_TIMESTAMP
                     + block_policy.get_last_commit().0 as u128
                     + pending_blocks.len() as u128,
+                Epoch(1),
                 RoundSignature::new(Round(0), &mock_keypair),
                 pending_blocks.to_owned(),
                 block_policy,

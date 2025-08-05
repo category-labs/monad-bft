@@ -37,7 +37,6 @@ use monad_validator::{
     signature_collection::SignatureCollection, simple_round_robin::SimpleRoundRobin,
     validator_set::ValidatorSetFactory,
 };
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Layer};
 
 pub enum RouterConfig<ST, SCT, EPT>

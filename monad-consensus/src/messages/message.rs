@@ -6,6 +6,7 @@ use monad_consensus_types::{
     payload::ConsensusBlockBody,
     timeout::{HighExtend, Timeout, TimeoutCertificate, TimeoutInfo},
     tip::ConsensusTip,
+    voting::Vote,
 };
 use monad_crypto::{
     certificate_signature::{

@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, HashMap};
 
 use alloy_rlp::{BytesMut, Decodable, Encodable, RlpDecodable, RlpEncodable};
-use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
+use monad_crypto::{
+    certificate_signature::CertificateSignatureRecoverable, signing_domain::SigningDomain,
+};
 use monad_types::NodeId;
 use monad_validator::{
     signature_collection::{
@@ -10,10 +12,6 @@ use monad_validator::{
     },
     validator_mapping::ValidatorMapping,
 };
-use monad_crypto::{
-    certificate_signature::CertificateSignatureRecoverable, signing_domain::SigningDomain,
-};
-use monad_types::NodeId;
 use tracing::{error, warn};
 
 #[derive(Clone, Debug, PartialEq, Eq, RlpDecodable, RlpEncodable)]

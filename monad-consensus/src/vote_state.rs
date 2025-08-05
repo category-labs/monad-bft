@@ -1,7 +1,10 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use monad_consensus_types::{quorum_certificate::QuorumCertificate, voting::Vote};
-use monad_crypto::certificate_signature::{CertificateSignature, PubKey};
+use monad_crypto::{
+    certificate_signature::{CertificateSignature, PubKey},
+    signing_domain,
+};
 use monad_types::{NodeId, Round};
 use monad_validator::{
     signature_collection::{
@@ -10,12 +13,6 @@ use monad_validator::{
     validator_mapping::ValidatorMapping,
     validator_set::ValidatorSetType,
 };
-use monad_crypto::{
-    certificate_signature::{CertificateSignature, PubKey},
-    signing_domain,
-};
-use monad_types::{NodeId, Round};
-use monad_validator::validator_set::ValidatorSetType;
 use tracing::{debug, error, info, warn};
 
 use crate::messages::message::VoteMessage;

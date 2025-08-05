@@ -12,18 +12,11 @@ use alloy_rlp::Decodable;
 use futures::{channel::oneshot, executor::block_on, future::join_all, FutureExt};
 use key::Version;
 use monad_bls::{BlsPubKey, BlsSignatureCollection};
-use monad_consensus_types::block::ConsensusBlockHeader;
-use monad_crypto::{
-    certificate_signature::CertificateSignaturePubKey,
-    hasher::{Hasher, HasherType},
-};
 use monad_eth_types::{EthAccount, EthHeader};
 use monad_secp::{PubKey, SecpSignature};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_triedb::TriedbHandle;
-use monad_types::{
-    BlockId, Round, SeqNum, Stake,
-};
+use monad_types::{BlockId, Hash, SeqNum, Stake};
 use tracing::{debug, trace, warn};
 
 use crate::{

@@ -253,6 +253,7 @@ where
             } => consensus.handle_block_sync(block_range, full_blocks),
             ConsensusEvent::SendVote(round) => consensus.handle_vote_timer(round),
         };
+        consensus.update_role();
         let filtered_cmds = consensus_cmds
             .into_iter()
             .filter(|cmd| consensus.filter_cmd(cmd))
