@@ -100,35 +100,35 @@ where
     }
 
     // Called from UpdateCurrentRound
-    pub fn enter_round(&mut self, curr_round: Round) {
+    pub fn enter_round(&mut self, new_round: Round) {
         // Sanity check on curr_round
-        if curr_round < self.curr_round {
+        if new_round < self.curr_round {
             error!(
                 "RaptorCastSecondary ignoring backwards round \
                 {:?} -> {:?}",
-                self.curr_round, curr_round
+                self.curr_round, new_round
             );
             return;
-        } else if curr_round > self.curr_round + Round(1) {
+        } else if new_round > self.curr_round + Round(1) {
             debug!(
                 "RaptorCastSecondary detected round gap \
                 {:?} -> {:?}",
-                self.curr_round, curr_round
+                self.curr_round, new_round
             );
         }
 
-        self.curr_round = curr_round;
+        self.curr_round = new_round;
         self.last_round_heartbeat = Instant::now();
 
         // Clean up old invitations.
-        self.pending_confirms.retain(|&key, _| key > curr_round);
+        self.pending_confirms.retain(|&key, _| key > new_round);
 
         // Send out group information to the Primary instance, so that it can
         // re-broadcast raptorcast chunks. This is the normal path when we are
         // receiving proposals and thus the round increases.
-        let consume_end = curr_round + Round(1);
+        let consume_end = new_round + Round(1);
         let mut current_group_count = 0;
-        for group in self.confirmed_groups.values(curr_round..consume_end) {
+        for group in self.confirmed_groups.values(new_round..consume_end) {
             current_group_count += 1;
             if let Err(error) = self.group_sink_channel.send(group.clone()) {
                 error!(
@@ -184,12 +184,12 @@ where
             && self.is_receiving_proposals()
         {
             warn!(
+                curr_round =? self.curr_round,
+                ?invite_msg,
                 "RaptorCastSecondary rejecting invite outside bounds \
-                        [{:?}, {:?}], curr_round {:?}, invite = {:?}",
+                        [{:?}, {:?}]",
                 self.config.invite_future_dist_min,
                 self.config.invite_future_dist_max,
-                self.curr_round,
-                invite_msg
             );
             return false;
         }
@@ -201,9 +201,10 @@ where
 
         let log_bandwidth_overflow = || {
             debug!(
+                validator_id =? invite_msg.validator_id,
                 "RaptorCastSecondary rejected invite for rounds \
-                        [{:?}, {:?}) from validator {:?} due to low bandwidth",
-                invite_msg.start_round, invite_msg.end_round, invite_msg.validator_id
+                        [{:?}, {:?}) due to low bandwidth",
+                invite_msg.start_round, invite_msg.end_round,
             );
         };
 
@@ -224,9 +225,10 @@ where
             // e.g. [30, 40)->validator3 + [25, 35)->validator4
             if group.get_validator_id() == &invite_msg.validator_id {
                 warn!(
+                validator_id =? invite_msg.validator_id,
                     "RaptorCastSecondary received self-overlapping \
-                            invite for rounds [{:?}, {:?}) from validator {:?}",
-                    invite_msg.start_round, invite_msg.end_round, invite_msg.validator_id
+                            invite for rounds [{:?}, {:?})",
+                    invite_msg.start_round, invite_msg.end_round
                 );
                 return false;
             }
@@ -298,8 +300,8 @@ where
             confirm_msg.prepare.end_round,
         ) else {
             warn!(
-                "RaptorCastSecondary ignoring invalid round span, confirm = {:?}",
-                confirm_msg
+                ?confirm_msg,
+                "RaptorCastSecondary ignoring invalid round span"
             );
             return;
         };
@@ -307,9 +309,9 @@ where
         // Drop the group if we've already entered the round
         if start_round <= &self.curr_round {
             warn!(
-                "RaptorCastSecondary ignoring late confirm, curr_round \
-                        {:?}, confirm = {:?}",
-                self.curr_round, confirm_msg
+                curr_round =? self.curr_round,
+                ?confirm_msg,
+                "RaptorCastSecondary ignoring late confirm"
             );
             return;
         }
@@ -317,9 +319,9 @@ where
         let is_receiving_proposals = self.is_receiving_proposals();
         let Some(invites) = self.pending_confirms.get_mut(start_round) else {
             warn!(
+                ?confirm_msg,
                 "RaptorCastSecondary Ignoring confirmation message \
-                        for unrecognized start round: {:?}",
-                confirm_msg
+                        for unrecognized start round"
             );
             return;
         };
@@ -327,39 +329,39 @@ where
         let maybe_entry = invites.get(&confirm_msg.prepare.validator_id);
         let Some(old_invite) = maybe_entry else {
             warn!(
+                ?confirm_msg,
                 "RaptorCastSecondary ignoring ConfirmGroup from \
-                            unrecognized validator id: {:?}",
-                confirm_msg
+                            unrecognized validator id"
             );
             return;
         };
 
         if old_invite != &confirm_msg.prepare {
             warn!(
+                expected_old_invite =? old_invite,
+                received_msg =? confirm_msg.prepare,
                 "RaptorCastSecondary ignoring ConfirmGroup that \
-                                doesn't match the original invite. Expected: {:?}, got: {:?}",
-                old_invite, confirm_msg.prepare
+                                doesn't match the original invite"
             );
             return;
         }
 
         if confirm_msg.peers.len() > confirm_msg.prepare.max_group_size {
             warn!(
+                actual_size =? confirm_msg.peers.len(),
+                max_group_size =? confirm_msg.prepare.max_group_size,
+                ?confirm_msg,
                 "RaptorCastSecondary ignoring ConfirmGroup that \
-                                is larger ({}) than the promised max_group_size ({}). \
-                                Message details: {:?}",
-                confirm_msg.peers.len(),
-                confirm_msg.prepare.max_group_size,
-                confirm_msg
+                                is larger than the promised max_group_size"
             );
             return;
         }
 
         if !confirm_msg.peers.contains(&self.client_node_id) {
             warn!(
+                ?confirm_msg,
                 "RaptorCastSecondary ignoring ConfirmGroup \
-                                with a group that does not contain our node_id: {:?}",
-                confirm_msg
+                                with a group that does not contain our node_id"
             );
             return;
         }
@@ -381,9 +383,9 @@ where
         if !is_receiving_proposals {
             if let Err(error) = self.group_sink_channel.send(group.clone()) {
                 tracing::error!(
+                    ?error,
                     "RaptorCastSecondary failed to send group to primary \
-                                        Raptorcast instance: {}",
-                    error
+                                        Raptorcast instance"
                 );
             }
             // Pulse a heartbeat, giving the new group above some time to be
@@ -397,11 +399,10 @@ where
 
         self.metrics[CLIENT_RECEIVED_CONFIRMS] += 1;
         debug!(
-            "RaptorCastSecondary Client confirmed group for \
-             rounds [{:?}, {:?}) from validator {:?}",
-            confirm_msg.prepare.start_round,
-            confirm_msg.prepare.end_round,
-            confirm_msg.prepare.validator_id,
+            start_round =? confirm_msg.prepare.start_round,
+            end_round =? confirm_msg.prepare.end_round,
+            validator =? confirm_msg.prepare.validator_id,
+            "RaptorCastSecondary Client confirmed group"
         );
 
         self.confirmed_groups

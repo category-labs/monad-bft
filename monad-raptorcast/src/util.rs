@@ -220,7 +220,7 @@ where
         all_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
         self_id: &NodeId<CertificateSignaturePubKey<ST>>,
     ) -> Self {
-        // We will call `check_author_node_id()` often, so sorting here will
+        // We will call `check_sender_node_id()` often, so sorting here will
         // allow us to use binary search instead of linear search.
         let sorted_other_peers: Vec<_> = all_peers
             .into_iter()
@@ -245,7 +245,7 @@ where
         validator_id: NodeId<CertificateSignaturePubKey<ST>>,
         round_span: RoundSpan,
     ) -> Self {
-        // We will call `check_author_node_id()` often, so sorting here will
+        // We will call `check_sender_node_id()` often, so sorting here will
         // allow us to use binary search instead of linear search.
         let mut sorted_other_peers = all_peers;
         if self_id != &validator_id {
@@ -292,7 +292,7 @@ where
         GroupIterator {
             group: self,
             num_consumed: usize::MAX,
-            author_id_ix: usize::MAX,
+            sender_id_ix: usize::MAX,
             start_ix: 0,
         }
     }
@@ -302,22 +302,22 @@ where
     // proposals to the same node.
     // The iteration will start from index `seed % self.sorted_other_peers.len()`.
     // Yields NodeIds.
-    pub fn iter_skip_self_and_author(
+    pub fn iter_skip_self_and_sender(
         &self,
-        author_id: &NodeId<CertificateSignaturePubKey<ST>>,
+        sender_id: &NodeId<CertificateSignaturePubKey<ST>>,
         seed: usize,
     ) -> GroupIterator<ST> {
-        // Hint for the index of author_id within self.sorted_other_peers.
+        // Hint for the index of sender_id within self.sorted_other_peers.
         // We want to skip it when iterating the peers for broadcasting.
-        let author_id_ix = if let Some(root_vid) = self.validator_id {
-            // Case for full-node raptorcasting. Lets check that the author_id
+        let sender_id_ix = if let Some(root_vid) = self.validator_id {
+            // Case for full-node raptorcasting. Lets check that the sender_id
             // (in the inbound message) is the same as expected for this group.
             // Note that AuthorID is a validator and we will not find it among
             // the full-node ids in the group.
-            if author_id != &root_vid {
+            if sender_id != &root_vid {
                 tracing::warn!(
                     "Author {} does not match raptorcast group validator id {}",
-                    author_id,
+                    sender_id,
                     root_vid
                 );
                 return self.empty_iterator();
@@ -326,14 +326,14 @@ where
         } else {
             // Case for validator-to-validator raptorcasting.
             // We are a validator and we are re-raptorcasting to full-nodes.
-            // We do a scan for author ID upfront because we don't want to yield
-            // any nodeID before we know for sure the author_id is among them.
-            let maybe_pos_author_id = self.sorted_other_peers.binary_search(author_id);
-            if maybe_pos_author_id.is_err() {
-                tracing::warn!("Author {} is not a member of raptorcast group", author_id);
+            // We do a scan for sender ID upfront because we don't want to yield
+            // any nodeID before we know for sure the sender_id is among them.
+            let maybe_pos_sender_id = self.sorted_other_peers.binary_search(sender_id);
+            if maybe_pos_sender_id.is_err() {
+                tracing::warn!("Author {} is not a member of raptorcast group", sender_id);
                 return self.empty_iterator();
             }
-            maybe_pos_author_id.unwrap()
+            maybe_pos_sender_id.unwrap()
         };
         // Avoid div by zero and also overflow when adding `num_consumed` later`
         let start_ix = if self.sorted_other_peers.is_empty() {
@@ -344,33 +344,33 @@ where
         GroupIterator {
             group: self,
             num_consumed: 0,
-            author_id_ix,
+            sender_id_ix,
             start_ix,
         }
     }
 
     // There are cases where we need to check that the source node is valid
-    // before we get to call iter_skip_self_and_author()
-    pub fn check_author_node_id(&self, author_id: &NodeId<CertificateSignaturePubKey<ST>>) -> bool {
+    // before we get to call iter_skip_self_and_sender()
+    pub fn check_sender_node_id(&self, sender_id: &NodeId<CertificateSignaturePubKey<ST>>) -> bool {
         if let Some(root_vid) = self.validator_id {
             // Case for full-node raptorcasting
-            let good = &root_vid == author_id;
+            let good = &root_vid == sender_id;
             if !good {
-                tracing::debug!(?author_id, ?root_vid, "check_author_node_id (fn) failed");
+                tracing::debug!(?sender_id, ?root_vid, "check_sender_node_id (fn) failed");
             }
             good
         } else {
             // Case for validator-to-validator
-            let good = self.sorted_other_peers.binary_search(author_id).is_ok();
+            let good = self.sorted_other_peers.binary_search(sender_id).is_ok();
             if !good {
-                tracing::debug!(?author_id, ?self.sorted_other_peers, "check_author_node_id (v2v) failed");
+                tracing::debug!(?sender_id, ?self.sorted_other_peers, "check_sender_node_id (v2v) failed");
             }
             good
         }
     }
 }
 
-// The responsibility of this class is to simply skip self and author node_id
+// The responsibility of this class is to simply skip self and sender node_id
 // without copying or rebuilding vectors.
 // Intended to be used in the recv leg of re-raptorcasting to validators, or for
 // both the recv & send leg of (re-) raptorcasting to fullnodes, as these do
@@ -381,7 +381,7 @@ where
 {
     group: &'a Group<ST>,
     num_consumed: usize,
-    author_id_ix: usize,
+    sender_id_ix: usize,
     start_ix: usize,
 }
 
@@ -395,7 +395,7 @@ where
         while self.num_consumed < self.group.sorted_other_peers.len() {
             let index = (self.num_consumed + self.start_ix) % self.group.sorted_other_peers.len();
             self.num_consumed += 1;
-            if index != self.author_id_ix {
+            if index != self.sender_id_ix {
                 return Some(&self.group.sorted_other_peers[index]);
             }
         }
@@ -448,25 +448,25 @@ where
     pub fn check_source(
         &self,
         msg_epoch: Epoch,
-        author_node_id: &NodeId<CertificateSignaturePubKey<ST>>,
+        sender_node_id: &NodeId<CertificateSignaturePubKey<ST>>,
     ) -> bool {
         if self.is_dynamic_fullnode {
             // Source node id (validator) is already the key to the map, so
             // we don't need to look into the group itself.
-            let author_found = self.fullnode_map.contains_key(author_node_id);
-            if !author_found {
-                tracing::debug!(?author_node_id, ?self.fullnode_map,
-                    "Validator author for v2fn group not found in fullnode_map");
+            let sender_found = self.fullnode_map.contains_key(sender_node_id);
+            if !sender_found {
+                tracing::debug!(?sender_node_id, ?self.fullnode_map,
+                    "Validator sender for v2fn group not found in fullnode_map");
             }
-            return author_found;
+            return sender_found;
         }
         if let Some(group) = self.validator_map.get(&msg_epoch) {
-            let author_found = group.check_author_node_id(author_node_id);
-            if !author_found {
-                tracing::debug!(?author_node_id, ?self.validator_map,
-                    "Validator author for v2v group not found in validator_map");
+            let sender_found = group.check_sender_node_id(sender_node_id);
+            if !sender_found {
+                tracing::debug!(?sender_node_id, ?self.validator_map,
+                    "Validator sender for v2v group not found in validator_map");
             }
-            author_found
+            sender_found
         } else {
             tracing::debug!(?msg_epoch, ?self.validator_map,
                 "Epoch not found in validator_map");
@@ -474,18 +474,48 @@ where
         }
     }
 
+    // Once we receive a message, we want to verify that the round referenced in
+    // the message matches the current group.
+    pub fn check_round(
+        &self,
+        msg_round: Option<Round>,
+        sender_node_id: &NodeId<CertificateSignaturePubKey<ST>>,
+    ) -> bool {
+        if !self.is_dynamic_fullnode {
+            return true;
+        }
+        if let Some(group) = self.fullnode_map.get(sender_node_id) {
+            if let Some(round) = msg_round {
+                if !group.round_span.contains(round) {
+                    tracing::debug!(
+                        ?group, ?round, ?sender_node_id,
+                        "Current group for sender does not contain the round referenced in the message");
+                    return false;
+                }
+            }
+            return true;
+        } else {
+            tracing::debug!(
+                ?sender_node_id,
+                ?msg_round,
+                "There is no raptorcast group keyed on message sender's node id"
+            );
+        }
+        false
+    }
+
     // Intended to be used by UdpState::handle_message()
     // When receiving a raptorcast chunk, this method will help determine which
     // peers (validators or full-nodes) to re-broadcast chunks to, given the
     // inbound chunk's epoch field (for validator-to-validator raptorcasting)
-    // and author field (for validator-to-fullnodes raptorcasting)
+    // and sender field (for validator-to-fullnodes raptorcasting)
     pub fn iterate_rebroadcast_peers(
         &self,
         msg_epoch: Epoch, // for validator-to-validator re-raptorcasting only
-        msg_author: &NodeId<CertificateSignaturePubKey<ST>>, // skipped when iterating RaptorCast group
+        msg_sender: &NodeId<CertificateSignaturePubKey<ST>>, // skipped when iterating RaptorCast group
     ) -> Option<GroupIterator<ST>> {
         let maybe_group = if self.is_dynamic_fullnode {
-            self.fullnode_map.get(msg_author)
+            self.fullnode_map.get(msg_sender)
         } else {
             self.validator_map.get(&msg_epoch)
         };
@@ -494,7 +524,7 @@ where
             if group.size_excl_self() == 0 {
                 return None;
             }
-            return Some(group.iter_skip_self_and_author(msg_author, 0)); // this validates author
+            return Some(group.iter_skip_self_and_sender(msg_sender, 0)); // this validates sender
         }
         None
     }
@@ -648,21 +678,21 @@ mod tests {
         assert!(empty_iter.is_empty());
 
         let it: Vec<_> = group
-            .iter_skip_self_and_author(&nid(3), 0)
+            .iter_skip_self_and_sender(&nid(3), 0)
             .cloned()
             .collect();
         assert_eq!(&it, &vec![nid(0), nid(2)]);
 
         // Calling a second time should not change anything
         let it: Vec<_> = group
-            .iter_skip_self_and_author(&nid(3), 0)
+            .iter_skip_self_and_sender(&nid(3), 0)
             .cloned()
             .collect();
         assert_eq!(&it, &vec![nid(0), nid(2)]);
 
-        // Invalid author id: should return empty iterator
+        // Invalid sender id: should return empty iterator
         let it: Vec<_> = group
-            .iter_skip_self_and_author(&nid(5), 0)
+            .iter_skip_self_and_sender(&nid(5), 0)
             .cloned()
             .collect();
         assert!(it.is_empty());
@@ -687,14 +717,14 @@ mod tests {
         assert!(empty_iter.is_empty());
 
         let it: Vec<_> = group
-            .iter_skip_self_and_author(&nid(3), 0)
+            .iter_skip_self_and_sender(&nid(3), 0)
             .cloned()
             .collect();
         assert_eq!(&it, &vec![nid(0), nid(1), nid(2)]);
 
-        // Invalid author id: should return empty iterator
+        // Invalid sender id: should return empty iterator
         let it: Vec<_> = group
-            .iter_skip_self_and_author(&nid(5), 0)
+            .iter_skip_self_and_sender(&nid(5), 0)
             .cloned()
             .collect();
         assert!(it.is_empty());
@@ -719,13 +749,13 @@ mod tests {
         assert!(empty_iter.is_empty());
 
         let it: Vec<_> = group
-            .iter_skip_self_and_author(&nid(3), 0)
+            .iter_skip_self_and_sender(&nid(3), 0)
             .cloned()
             .collect();
         assert!(it.is_empty());
-        // Invalid author id: should return empty iterator
+        // Invalid sender id: should return empty iterator
         let it: Vec<_> = group
-            .iter_skip_self_and_author(&nid(5), 0)
+            .iter_skip_self_and_sender(&nid(5), 0)
             .cloned()
             .collect();
         assert!(it.is_empty());
@@ -743,15 +773,15 @@ mod tests {
         let empty_iter: Vec<_> = group.empty_iterator().collect();
         assert!(empty_iter.is_empty());
 
-        // Invalid author id: should return empty iterator
+        // Invalid sender id: should return empty iterator
         let it: Vec<_> = group
-            .iter_skip_self_and_author(&nid(5), 0)
+            .iter_skip_self_and_sender(&nid(5), 0)
             .cloned()
             .collect();
         assert!(it.is_empty());
 
         let it: Vec<_> = group
-            .iter_skip_self_and_author(&nid(2), 0)
+            .iter_skip_self_and_sender(&nid(2), 0)
             .cloned()
             .collect();
         assert_eq!(&it, &vec![nid(0)]);
@@ -768,7 +798,7 @@ mod tests {
 
         // Non-"randomized" iteration (but sorted)
         let it: Vec<_> = group
-            .iter_skip_self_and_author(&nid(100), 0)
+            .iter_skip_self_and_sender(&nid(100), 0)
             .cloned()
             .collect();
         let mut org_nodes = vec![nid(1), nid(2), nid(3), nid(4)];
@@ -779,7 +809,7 @@ mod tests {
         let mut permutations_seen = HashSet::<Vec<NodeId<CertificateSignaturePubKey<ST>>>>::new();
         for seed in 1..10 {
             let it: Vec<_> = group
-                .iter_skip_self_and_author(&nid(100), seed)
+                .iter_skip_self_and_sender(&nid(100), seed)
                 .cloned()
                 .collect();
             permutations_seen.insert(it);

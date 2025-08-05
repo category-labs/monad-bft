@@ -364,14 +364,28 @@ impl DataplaneReader {
 
     pub async fn tcp_read(&mut self) -> RecvTcpMsg {
         match self.tcp_ingress_rx.recv().await {
-            Some(msg) => msg,
+            Some(msg) => {
+                tracing::trace!(
+                    "Dataplane TCP RX {} bytes from {:?}",
+                    msg.payload.len(),
+                    msg.src_addr
+                );
+                msg
+            }
             None => panic!("tcp_ingress_rx channel closed"),
         }
     }
 
     pub async fn udp_read(&mut self) -> RecvUdpMsg {
         match self.udp_ingress_rx.recv().await {
-            Some(msg) => msg,
+            Some(msg) => {
+                tracing::trace!(
+                    "Dataplane UDP RX {} bytes from {:?}",
+                    msg.payload.len(),
+                    msg.src_addr
+                );
+                msg
+            }
             None => panic!("udp_ingress_rx channel closed"),
         }
     }
@@ -390,7 +404,14 @@ pub struct UdpReader(mpsc::Receiver<RecvUdpMsg>);
 impl TcpReader {
     pub async fn read(&mut self) -> RecvTcpMsg {
         match self.0.recv().await {
-            Some(msg) => msg,
+            Some(msg) => {
+                tracing::trace!(
+                    "Dataplane TCP RX {} bytes from {:?}",
+                    msg.payload.len(),
+                    msg.src_addr
+                );
+                msg
+            }
             None => panic!("tcp_ingress_rx channel closed"),
         }
     }
@@ -399,7 +420,14 @@ impl TcpReader {
 impl UdpReader {
     pub async fn read(&mut self) -> RecvUdpMsg {
         match self.0.recv().await {
-            Some(msg) => msg,
+            Some(msg) => {
+                tracing::trace!(
+                    "Dataplane UDP RX {} bytes from {:?}",
+                    msg.payload.len(),
+                    msg.src_addr
+                );
+                msg
+            }
             None => panic!("udp_ingress_rx channel closed"),
         }
     }
@@ -430,6 +458,7 @@ impl DataplaneWriter {
     pub fn tcp_write(&self, addr: SocketAddr, msg: TcpMsg) {
         let msg_length = msg.msg.len();
 
+        tracing::trace!("Dataplane TCP TX {} bytes to {:?}", msg_length, addr);
         match self.inner.tcp_egress_tx.try_send((addr, msg)) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
@@ -457,6 +486,7 @@ impl DataplaneWriter {
         let msg_len = msg.payload.len();
 
         for (dst, udp_msg) in msg.into_iter() {
+            tracing::trace!("Dataplane UDP TX bcast {} bytes to {:?}", msg_len, dst);
             match self.inner.udp_egress_tx.try_send((dst, udp_msg)) {
                 Ok(()) => {
                     pending_count -= 1;
@@ -494,6 +524,11 @@ impl DataplaneWriter {
         let mut pending_count = msg.msg_count();
 
         for (dst, udp_msg) in msg.into_iter() {
+            tracing::trace!(
+                "Dataplane UDP TX unicast {} bytes to {:?}",
+                udp_msg.payload.len(),
+                dst
+            );
             match self.inner.udp_egress_tx.try_send((dst, udp_msg)) {
                 Ok(()) => {
                     pending_count -= 1;

@@ -203,7 +203,6 @@ where
         let start_round = *next_group.key();
         assert!(start_round >= round);
         assert!(start_round == next_group.get().start_round);
-
         if start_round > round {
             // The next group is not yet scheduled to start. This can happen
             // when there are gaps in the round sequence.

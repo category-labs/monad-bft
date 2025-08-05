@@ -111,6 +111,11 @@ pub trait Message: Clone + Send + Sync {
 
     // TODO-3 NodeId -> &NodeId
     fn event(self, from: NodeId<Self::NodeIdPubKey>) -> Self::Event;
+
+    // Fetches the round associated with this message, for extra validation
+    fn associated_round(&self) -> Option<Round> {
+        None
+    }
 }
 
 /// TimeoutVariant distinguishes the source of the timer scheduled

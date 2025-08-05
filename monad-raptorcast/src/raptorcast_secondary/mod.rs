@@ -44,7 +44,7 @@ use publisher::Publisher;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tracing::{error, trace, warn};
+use tracing::{debug, error, trace, warn};
 
 use super::{
     config::RaptorCastConfig,
@@ -385,7 +385,7 @@ where
                         Role::Publisher(publisher) => {
                             match publisher.get_current_raptorcast_group() {
                                 Some(group) => {
-                                    trace!(?group, size_excl_self =? group.size_excl_self(),
+                                    debug!(?group, size_excl_self =? group.size_excl_self(),
                                         "RaptorCastSecondary PublishToFullNodes");
                                     group
                                 }
@@ -398,7 +398,7 @@ where
                     };
 
                     if curr_group.size_excl_self() < 1 {
-                        trace!("RaptorCastSecondary PublishToFullNodes; Not sending anything because size_excl_self = 0");
+                        debug!("RaptorCastSecondary PublishToFullNodes; Not sending anything because size_excl_self = 0");
                         continue;
                     }
 
