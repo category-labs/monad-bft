@@ -262,7 +262,7 @@ pub async fn monad_eth_sendRawTransaction<T: Triedb>(
 
             match tokio::time::timeout(Duration::from_secs(1), tx_status_recv).await {
                 Ok(Ok(tx_status)) => match tx_status {
-                    TxStatus::Evicted { reason: _ } | TxStatus::Replaced => {
+                    TxStatus::Evicted { reason: _ } => {
                         return Err(JsonRpcError::custom("rejected".to_string()))
                     }
                     TxStatus::Dropped { reason } => {
