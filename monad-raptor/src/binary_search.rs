@@ -30,7 +30,7 @@ pub fn smallest_integer_satisfying(
             // condition must be in the interval [lower, pivot].
             upper = pivot;
         } else {
-            // If `pivot` does not satisfy the condition, the smallest integer satifying
+            // If `pivot` does not satisfy the condition, the smallest integer satisfying
             // the condition, if it exists, must be in the interval [pivot + 1, upper].
             lower = pivot + 1;
         }

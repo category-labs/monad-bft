@@ -171,7 +171,7 @@ where
 
     fn get_round_timer(&self, round: Round) -> Duration {
         // worse case time is round timer and vote delay start at effectively the same time and so
-        // the round needs to accomdate the full vote-delay time and a local processing time
+        // the round needs to accommodate the full vote-delay time and a local processing time
         // estimate
         let vote_delay = self
             .chain_config

@@ -689,7 +689,7 @@ mod test {
                 fetch_metric!(consensus_events.created_vote),
                 max_ledger_blocks as u64,
             )
-            // initial TC + account for TC whenever emmitted messages
+            // initial TC + account for TC whenever emitted messages
             // are dropped during `step_until`
             .metric_maximum(&node_ids, fetch_metric!(consensus_events.local_timeout), 4);
 
@@ -763,7 +763,7 @@ mod test {
         // TODO: all the metrics here should be equal to happy path metrics
         // but since validator switching is mimicked using unstaked validators,
         // there are extra messages sent from unstaked validators which are
-        // ignored. should change it back to happy path once they are seperated
+        // ignored. should change it back to happy path once they are separated
         verifier
             .metric_exact(&node_ids, fetch_metric!(consensus_events.local_timeout), 1)
             .metric_exact(
