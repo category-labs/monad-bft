@@ -33,11 +33,14 @@ pub(crate) mod buffer_ext;
 pub mod tcp;
 pub mod udp;
 
+pub use udp::UdpMessageType;
+
 pub struct DataplaneBuilder {
     local_addr: SocketAddr,
     /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
     up_bandwidth_mbps: u64,
     udp_buffer_size: Option<usize>,
+    direct_socket_port: Option<u16>,
 }
 
 impl DataplaneBuilder {
@@ -46,6 +49,7 @@ impl DataplaneBuilder {
             local_addr: *local_addr,
             up_bandwidth_mbps,
             udp_buffer_size: None,
+            direct_socket_port: None,
         }
     }
 
@@ -56,11 +60,18 @@ impl DataplaneBuilder {
         self
     }
 
+    /// with_direct_socket configures an additional UDP socket for direct peer communication
+    pub fn with_direct_socket(mut self, port: u16) -> Self {
+        self.direct_socket_port = Some(port);
+        self
+    }
+
     pub fn build(self) -> Dataplane {
         let DataplaneBuilder {
             local_addr,
             up_bandwidth_mbps,
             udp_buffer_size: buffer_size,
+            direct_socket_port,
         } = self;
 
         let (tcp_ingress_tx, tcp_ingress_rx) = mpsc::channel(TCP_INGRESS_CHANNEL_SIZE);
@@ -83,6 +94,7 @@ impl DataplaneBuilder {
 
                         udp::spawn_tasks(
                             local_addr,
+                            direct_socket_port,
                             udp_ingress_tx,
                             udp_egress_rx,
                             up_bandwidth_mbps,
@@ -155,6 +167,7 @@ impl BroadcastMsg {
                 UdpMsg {
                     payload: payload.clone(),
                     stride,
+                    msg_type: UdpMessageType::Broadcast,
                 },
             )
         })
@@ -174,8 +187,16 @@ impl UnicastMsg {
 
     fn into_iter(self) -> impl Iterator<Item = (SocketAddr, UdpMsg)> {
         let Self { msgs, stride } = self;
-        msgs.into_iter()
-            .map(move |(dst, payload)| (dst, UdpMsg { payload, stride }))
+        msgs.into_iter().map(move |(dst, payload)| {
+            (
+                dst,
+                UdpMsg {
+                    payload,
+                    stride,
+                    msg_type: UdpMessageType::Broadcast,
+                },
+            )
+        })
     }
 }
 
@@ -184,6 +205,7 @@ pub struct RecvUdpMsg {
     pub src_addr: SocketAddr,
     pub payload: Bytes,
     pub stride: u16,
+    pub msg_type: UdpMessageType,
 }
 
 #[derive(Clone)]
@@ -200,6 +222,7 @@ pub struct TcpMsg {
 pub struct UdpMsg {
     pub payload: Bytes,
     pub stride: u16,
+    pub msg_type: UdpMessageType,
 }
 
 const TCP_INGRESS_CHANNEL_SIZE: usize = 1024;
@@ -230,6 +253,10 @@ impl Dataplane {
 
     pub fn udp_write_unicast(&self, msg: UnicastMsg) {
         self.writer.udp_write_unicast(msg);
+    }
+
+    pub fn udp_write_direct(&self, dst: SocketAddr, payload: Bytes, stride: u16) {
+        self.writer.udp_write_direct(dst, payload, stride);
     }
 
     pub fn ready(&self) -> bool {
@@ -410,5 +437,30 @@ impl DataplaneWriter {
             total_udp_msgs_dropped = udp_msgs_dropped,
             "udp_egress_tx channel full, dropping message"
         );
+    }
+
+    pub fn udp_write_direct(&self, dst: SocketAddr, payload: Bytes, stride: u16) {
+        let msg_length = payload.len();
+        let udp_msg = UdpMsg {
+            payload,
+            stride,
+            msg_type: UdpMessageType::Direct,
+        };
+
+        match self.inner.udp_egress_tx.try_send((dst, udp_msg)) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                let udp_msgs_dropped = self.inner.udp_msgs_dropped.fetch_add(1, Ordering::Relaxed);
+
+                warn!(
+                    num_msgs_dropped = 1,
+                    total_udp_msgs_dropped = udp_msgs_dropped,
+                    ?dst,
+                    msg_length,
+                    "udp_egress_tx channel full, dropping direct message"
+                );
+            }
+            Err(TrySendError::Closed(_)) => panic!("udp_egress_tx channel closed"),
+        }
     }
 }

@@ -21,7 +21,7 @@ use futures::{channel::oneshot, executor, FutureExt};
 use monad_dataplane::{
     tcp::tx::{MSG_WAIT_TIMEOUT, QUEUED_MESSAGE_LIMIT},
     udp::DEFAULT_SEGMENT_SIZE,
-    BroadcastMsg, DataplaneBuilder, RecvUdpMsg, TcpMsg, UnicastMsg,
+    BroadcastMsg, DataplaneBuilder, RecvUdpMsg, TcpMsg, UdpMessageType, UnicastMsg,
 };
 use ntest::timeout;
 use rand::Rng;
@@ -106,6 +106,67 @@ fn udp_unicast() {
         assert_eq!(msg.src_addr, tx_addr);
         assert_eq!(msg.payload, payload);
     }
+}
+
+#[test]
+#[timeout(1000)]
+fn udp_direct_socket() {
+    once_setup();
+
+    let rx_addr = "127.0.0.1:9030".parse().unwrap();
+    let rx_direct_port = 9031;
+    let tx_addr = "127.0.0.1:9032".parse().unwrap();
+    let tx_direct_port = 9033;
+    let num_msgs = 10;
+
+    let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS)
+        .with_direct_socket(rx_direct_port)
+        .build();
+    let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS)
+        .with_direct_socket(tx_direct_port)
+        .build();
+
+    // Allow Dataplane threads to set themselves up.
+    sleep(Duration::from_millis(10));
+
+    let payload: Vec<u8> = (0..DEFAULT_SEGMENT_SIZE)
+        .map(|_| rand::thread_rng().gen_range(0..255))
+        .collect();
+
+    tx.udp_write_broadcast(BroadcastMsg {
+        targets: vec![rx_addr; num_msgs / 2],
+        payload: payload.clone().into(),
+        stride: DEFAULT_SEGMENT_SIZE,
+    });
+
+    let mut rx_direct_addr = rx_addr;
+    rx_direct_addr.set_port(rx_direct_port);
+
+    for _ in 0..num_msgs / 2 {
+        tx.udp_write_direct(rx_direct_addr, payload.clone().into(), DEFAULT_SEGMENT_SIZE);
+    }
+
+    let mut broadcast_count = 0;
+    let mut direct_count = 0;
+
+    for _ in 0..num_msgs {
+        let msg: RecvUdpMsg = executor::block_on(rx.udp_read());
+
+        match msg.msg_type {
+            UdpMessageType::Broadcast => {
+                assert_eq!(msg.src_addr, tx_addr);
+                broadcast_count += 1;
+            }
+            UdpMessageType::Direct => {
+                assert_eq!(msg.src_addr.ip(), tx_addr.ip());
+                direct_count += 1;
+            }
+        }
+        assert_eq!(msg.payload, payload);
+    }
+
+    assert_eq!(broadcast_count, num_msgs / 2);
+    assert_eq!(direct_count, num_msgs / 2);
 }
 
 // This verifies that the TCP transmit task recovers from a peer transmit
