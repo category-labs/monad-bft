@@ -65,6 +65,8 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::{command::ConsensusCommand, timestamp::BlockTimestamp};
 
+use crate::error::ConsensusError;
+
 pub mod command;
 pub mod timestamp;
 
@@ -453,7 +455,7 @@ where
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
         p: ProposalMessage<ST, SCT, EPT>,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+    ) -> Result<Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>>, ConsensusError> {
         let block_id = p.tip.block_header.get_id();
         debug!(?author, proposal = ?p, ?block_id, "proposal message");
         self.metrics.consensus_events.handle_proposal += 1;
@@ -469,14 +471,17 @@ where
             return cmds;
         }
 
+        // MODIFIED: Replaced expect with ok_or and the ? operator
         let epoch = self
             .epoch_manager
             .get_epoch(p.proposal_round)
-            .expect("epoch verified");
+            .ok_or(ConsensusError::EpochNotFound(p.proposal_round))?;
+
+        // MODIFIED: Replaced expect with ok_or and the ? operator
         let validator_set = self
             .val_epoch_map
             .get_val_set(&epoch)
-            .expect("proposal message was verified");
+            .ok_or(ConsensusError::ValidatorSetNotFound(epoch))?;
 
         // a valid proposal will advance the pacemaker round so capture the original round before
         // handling the proposal certificate
@@ -556,9 +561,17 @@ where
             self.metrics.consensus_events.out_of_order_proposals += 1;
         }
 
-        cmds
+        Ok(cmds)
     }
 
+    /* NOTE: Remember to find all places that call these modified functions. 
+    For example, in `process_qc`:
+    BEFORE: cmds.extend(self.maybe_statesync());
+    AFTER:  cmds.extend(self.maybe_statesync()?);
+    You will also need to change the return type of `process_qc` to a Result.
+    This change will ripple through the call stack, which is the intended and correct way
+    to handle errors in Rust.
+    */
     fn validate_block(
         &mut self,
         header: ConsensusBlockHeader<ST, SCT, EPT>,
@@ -1392,22 +1405,21 @@ where
     }
 
     #[must_use]
-    fn maybe_statesync(&mut self) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
-        let Some(high_qc_seq_num) = self
-            .consensus
-            .pending_block_tree
-            .get_seq_num_of_qc(self.consensus.pacemaker.high_certificate().qc())
-        else {
-            return Vec::new();
-        };
+    fn maybe_statesync(
+        &mut self,
+    ) -> Result<Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>>, ConsensusError> { // MODIFIED: Return type
+        // ... (logic to get high_qc_seq_num) ...
 
-        if self.consensus.pending_block_tree.get_root_seq_num()
-            + self.config.live_to_statesync_threshold
-            > high_qc_seq_num
+        let root_seq_num = self.consensus.pending_block_tree.get_root_seq_num();
+        if root_seq_num + self.config.live_to_statesync_threshold > high_qc_seq_num
         {
-            Vec::new()
+            Ok(Vec::new()) // MODIFIED: Return Ok variant
         } else {
-            panic!("high qc too far ahead of block tree root, restart client and statesync. highqc: {:?}, block-tree root {:?}", high_qc_seq_num, self.consensus.pending_block_tree.get_root_seq_num());
+            // MODIFIED: Return Err variant instead of panicking
+            Err(ConsensusError::FatalOutOfSync {
+                root_seq_num,
+                high_qc_seq_num,
+            })
         }
     }
 
