@@ -33,7 +33,7 @@ pub struct EthTxPoolIpcStream {
     // context, so the next best option is to have the stream live on a tokio
     // thread for now ...
     // TODO(andr-dev): Remove tokio_util and write a custom sync framer/codec
-    // implementation simlar to LengthDelimnitedCodec
+    // implementation similar to LengthDelimnitedCodec
     tx: mpsc::Sender<Vec<EthTxPoolEvent>>,
     rx: ReceiverStream<TxEnvelope>,
 
@@ -159,7 +159,7 @@ impl EthTxPoolIpcClient {
         let snapshot_bytes = stream.next().await.ok_or_else(|| {
             io::Error::new(
                 ErrorKind::InvalidData,
-                "EthTxPoolIpcClient must recieve snapshot on connectino",
+                "EthTxPoolIpcClient must receive snapshot on connection",
             )
         })??;
 
