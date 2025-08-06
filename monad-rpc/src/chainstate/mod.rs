@@ -1077,3 +1077,319 @@ async fn get_receipt_from_triedb<T: Triedb>(
         None => Ok(None),
     }
 }
+
+/// Retrieves the block header for a given block identifier (`BlockTagOrHash`).
+///
+/// This method first attempts to fetch the block header from the in-memory buffer, if available.
+/// If the buffer is present and contains the block at the specified height (for `BlockTags`),
+/// it returns the inner header of the block.
+///
+/// # Arguments
+/// * `block` - The block identifier, which can be a block tag (e.g., latest, finalized, or a specific number)
+///             or a block hash.
+///
+/// # Returns
+/// * `Result<RlpHeader, ChainStateError>` - Returns the block header on success, or a `ChainStateError` if not found.
+///
+/// # Example
+/// ```ignore
+/// let header = chainstate.get_block_header(BlockTagOrHash::BlockTags(BlockTags::Latest)).await?;
+/// ```
+/// Standalone helper for retrieving a block header given a block identifier.
+/// Tries to fetch from buffer first, then falls back to triedb and archive.
+/// Standalone helper for retrieving a block header given a block identifier.
+/// Tries to fetch from buffer first, then falls back to triedb and archive.
+/// Standalone helper for retrieving a block header given a block identifier.
+/// Tries to fetch from buffer first, then falls back to triedb and archive.
+/// Returns the block header on success, or a `ChainStateError` if not found.
+pub async fn get_block_header<T: Triedb>(
+    buffer: Option<&Arc<ChainStateBuffer>>,
+    triedb_env: &T,
+    archive_reader: Option<&ArchiveReader>,
+    block: BlockTagOrHash,
+) -> Result<RlpHeader, ChainStateError> {
+    // Try buffer first
+    match &block {
+        BlockTagOrHash::BlockTags(tag) => {
+            if let Some(buffer) = buffer {
+                let height = block_height_from_tag(buffer, tag);
+                if let Some(block) = buffer.get_block_by_height(height) {
+                    return Ok(block.header.inner);
+                }
+            }
+        }
+        BlockTagOrHash::Hash(hash) => {
+            if let Some(buffer) = buffer {
+                if let Some(block) = buffer.get_block_by_hash(hash) {
+                    return Ok(block.header.inner);
+                }
+            }
+        }
+    }
+
+    // Try triedb
+    let block_key = match block {
+        BlockTagOrHash::BlockTags(tag) => get_block_key_from_tag(triedb_env, tag),
+        BlockTagOrHash::Hash(hash) => {
+            let latest_block_key = get_block_key_from_tag(triedb_env, BlockTags::Latest);
+            match triedb_env
+                .get_block_number_by_hash(latest_block_key, hash.0)
+                .await
+                .map_err(ChainStateError::Triedb)?
+            {
+                Some(block_num) => triedb_env.get_block_key(SeqNum(block_num)),
+                None => return Err(ChainStateError::ResourceNotFound),
+            }
+        }
+    };
+
+    if let Some(header) = triedb_env
+        .get_block_header(block_key)
+        .await
+        .map_err(ChainStateError::Triedb)?
+    {
+        return Ok(header.header);
+    }
+
+    // Try archive
+    if let (Some(archive_reader), BlockKey::Finalized(FinalizedBlockKey(block_num))) =
+        (archive_reader, block_key)
+    {
+        if let Ok(block) = archive_reader.get_block_by_number(block_num.0).await {
+            return Ok(block.header);
+        }
+    }
+
+    Err(ChainStateError::ResourceNotFound)
+}
+
+/// Helper to get a transaction from triedb.
+pub async fn get_transaction<T: Triedb>(
+    triedb_env: &T,
+    block_key: BlockKey,
+    tx_index: u64,
+) -> Result<Option<Transaction>, ChainStateError> {
+    get_transaction_from_triedb(triedb_env, block_key, tx_index).await
+}
+
+/// Helper to get a transaction receipt from triedb.
+pub async fn get_receipt<T: Triedb>(
+    triedb_env: &T,
+    block_key: BlockKey,
+    tx_index: u64,
+) -> Result<Option<TransactionReceipt>, ChainStateError> {
+    get_receipt_from_triedb(triedb_env, block_key, tx_index).await
+}
+
+// Implementation for ChainState<()> for buffer-only access, falling back to main ChainState.
+impl ChainState<()> {
+    /// Retrieves a block by its tag or hash.
+    /// Tries buffer first, then persistent storage, then archive.
+    pub async fn get_block(
+        &self,
+        block: BlockTagOrHash,
+        return_full_txns: bool,
+    ) -> Result<Block, ChainStateError> {
+        if let Some(buffer) = &self.buffer {
+            match &block {
+                BlockTagOrHash::BlockTags(tag) => {
+                    let height = block_height_from_tag(buffer, tag);
+                    if let Some(mut block) = buffer.get_block_by_height(height) {
+                        if !return_full_txns {
+                            block.transactions = block.transactions.into_hashes();
+                        }
+                        return Ok(block);
+                    }
+                }
+                BlockTagOrHash::Hash(hash) => {
+                    if let Some(mut block) = buffer.get_block_by_hash(hash) {
+                        if !return_full_txns {
+                            block.transactions = block.transactions.into_hashes();
+                        }
+                        return Ok(block);
+                    }
+                }
+            }
+        }
+        // Fallback to main ChainState impl
+        ChainState::get_block(self, block, return_full_txns).await
+    }
+
+    /// Retrieves a transaction by its hash.
+    pub async fn get_transaction(&self, hash: [u8; 32]) -> Result<Transaction, ChainStateError> {
+        if let Some(buffer) = &self.buffer {
+            if let Some(tx) = buffer.get_transaction_by_hash(&FixedData(hash)) {
+                return Ok(tx);
+            }
+        }
+        ChainState::get_transaction(self, hash).await
+    }
+
+    /// Retrieves a transaction receipt by its hash.
+    pub async fn get_transaction_receipt(
+        &self,
+        hash: [u8; 32],
+    ) -> Result<TransactionReceipt, ChainStateError> {
+        ChainState::get_transaction_receipt(self, hash).await
+    }
+
+    /// Returns transaction receipts for a given block.
+    pub async fn get_receipts(
+        &self,
+        block: BlockTagOrHash,
+    ) -> Result<Vec<alloy_consensus::ReceiptEnvelope>, ChainStateError> {
+        // Try buffer first
+        if let Some(buffer) = &self.buffer {
+            match &block {
+                BlockTagOrHash::BlockTags(tag) => {
+                    let height = block_height_from_tag(buffer, tag);
+                    if let Some(block) = buffer.get_block_by_height(height) {
+                        return Ok(block.body.receipts.iter().map(|r| r.inner.clone()).collect());
+                    }
+                }
+                BlockTagOrHash::Hash(hash) => {
+                    if let Some(block) = buffer.get_block_by_hash(hash) {
+                        return Ok(block.body.receipts.iter().map(|r| r.inner.clone()).collect());
+                    }
+                }
+            }
+        }
+
+        // Try triedb
+        if let Ok(block_key) = crate::handlers::eth::block::get_block_key_from_tag_or_hash(
+            &self.triedb_env,
+            block.clone(),
+        )
+        .await
+        {
+            if let Ok(receipts) = self.triedb_env.get_receipts(block_key).await {
+                return Ok(receipts);
+            }
+        }
+
+        // Try archive if receipts not found in triedb and archive reader specified
+        if let Some(archive_reader) = &self.archive_reader {
+            let receipts = match block {
+                BlockTagOrHash::BlockTags(tag) => {
+                    match get_block_key_from_tag(&self.triedb_env, tag) {
+                        BlockKey::Finalized(FinalizedBlockKey(block_num)) => archive_reader
+                            .get_block_receipts(block_num.0)
+                            .await
+                            .inspect_err(|e| {
+                                error!("Error getting block receipts from archive: {e:?}");
+                            })
+                            .ok(),
+                        BlockKey::Proposed(_) => None,
+                    }
+                }
+                BlockTagOrHash::Hash(hash) => archive_reader
+                    .get_block_receipts_by_hash(&hash.0.into())
+                    .await
+                    .inspect_err(|e| {
+                        error!("Error getting block receipts by hash from archive: {e:?}");
+                    })
+                    .ok(),
+            };
+
+            if let Some(receipts) = receipts {
+                return Ok(receipts);
+            }
+        }
+
+        Err(ChainStateError::ResourceNotFound)
+    }
+
+    /// Retrieves transaction receipts for a given block.
+    pub async fn get_block_receipts(
+        &self,
+        block: BlockTagOrHash,
+    ) -> Result<Vec<MonadTransactionReceipt>, ChainStateError> {
+        // Try buffer first
+        if let Some(buffer) = &self.buffer {
+            match &block {
+                BlockTagOrHash::BlockTags(tag) => {
+                    let height = block_height_from_tag(buffer, tag);
+                    if let Some(block) = buffer.get_block_by_height(height) {
+                        return Ok(block.body.receipts.clone());
+                    }
+                }
+                BlockTagOrHash::Hash(hash) => {
+                    if let Some(block) = buffer.get_block_by_hash(hash) {
+                        return Ok(block.body.receipts.clone());
+                    }
+                }
+            }
+        }
+        // Try triedb
+        if let Ok(block_key) = crate::handlers::eth::block::get_block_key_from_tag_or_hash(
+            &self.triedb_env,
+            block.clone(),
+        )
+        .await
+        {
+            if let Ok(receipts) = self.triedb_env.get_receipts(block_key).await {
+                // Use triedb block hash if available
+                let block_hash = match self.triedb_env.get_block_header(block_key).await {
+                    Ok(Some(header)) => header.hash,
+                    _ => alloy_primitives::FixedBytes::<32>::ZERO,
+                };
+                return Ok(crate::handlers::eth::block::map_block_receipts(
+                    block_hash,
+                    receipts,
+                    &self.triedb_env,
+                    MonadTransactionReceipt,
+                ));
+            }
+        }
+        // Try archive
+        if let Some(archive_reader) = &self.archive_reader {
+            let receipts = match block {
+                BlockTagOrHash::BlockTags(tag) => {
+                    match get_block_key_from_tag(&self.triedb_env, tag) {
+                        BlockKey::Finalized(FinalizedBlockKey(block_num)) => archive_reader
+                            .get_block_receipts(block_num.0)
+                            .await
+                            .inspect_err(|e| {
+                                error!("Error getting block receipts from archive: {e:?}");
+                            })
+                            .ok(),
+                        BlockKey::Proposed(_) => None,
+                    }
+                }
+                BlockTagOrHash::Hash(hash) => archive_reader
+                    .get_block_receipts_by_hash(&hash.0.into())
+                    .await
+                    .inspect_err(|e| {
+                        error!("Error getting block receipts by hash from archive: {e:?}");
+                    })
+                    .ok(),
+            };
+
+            if let Some(receipts) = receipts {
+                // Use the block hash from the archive if available, otherwise fallback to hash.0.into()
+                let block_hash = match &block {
+                    BlockTagOrHash::Hash(hash) => hash.0.into(),
+                    BlockTagOrHash::BlockTags(tag) => {
+                        match get_block_key_from_tag(&self.triedb_env, tag) {
+                            BlockKey::Finalized(FinalizedBlockKey(block_num)) => {
+                                if let Ok(block) = archive_reader.get_block_by_number(block_num.0).await {
+                                    block.header.hash_slow()
+                                } else {
+                                    alloy_primitives::FixedBytes::<32>::ZERO
+                                }
+                            }
+                            _ => alloy_primitives::FixedBytes::<32>::ZERO,
+                        }
+                    }
+                };
+                return Ok(crate::handlers::eth::block::map_block_receipts(
+                    block_hash,
+                    receipts,
+                    &self.triedb_env,
+                    MonadTransactionReceipt,
+                ));
+            }
+        }
+        Err(ChainStateError::ResourceNotFound)
+    }
+}
