@@ -334,9 +334,8 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
                     as usize,
             },
             true,
-            // TODO(andr-dev): Add tx_expiry to node config
-            Duration::from_secs(15),
-            Duration::from_secs(5 * 60),
+            Duration::from_secs(node_state.node_config.soft_tx_expiry_secs),
+            Duration::from_secs(node_state.node_config.hard_tx_expiry_secs),
             node_state.chain_config,
             node_state
                 .chain_config
