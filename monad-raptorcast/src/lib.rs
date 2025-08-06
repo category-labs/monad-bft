@@ -67,7 +67,7 @@ pub mod raptorcast_secondary;
 pub mod udp;
 pub mod util;
 
-pub type UdpPriority = monad_dataplane::UdpPriority;
+pub type UdpPriority = monad_executor_glue::UdpPriority;
 
 const SIGNATURE_SIZE: usize = 65;
 
@@ -732,11 +732,14 @@ where
                             })
                             .collect();
 
-                        this.dataplane_writer.udp_write_broadcast(BroadcastMsg {
-                            targets: target_addrs,
-                            payload,
-                            stride: bcast_stride,
-                        });
+                        this.dataplane_writer.udp_write_broadcast_with_priority(
+                            BroadcastMsg {
+                                targets: target_addrs,
+                                payload,
+                                stride: bcast_stride,
+                            },
+                            UdpPriority::High,
+                        );
                     },
                     message,
                 )
