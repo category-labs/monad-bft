@@ -523,9 +523,9 @@ where
             .fullnode_map
             .insert(*group.get_validator_id(), group.clone())
         {
-            tracing::trace!(new_group=?group, old_group=?old_grp, "Group replace");
+            tracing::debug!(new_group=?group, old_group=?old_grp, "Group replace");
         } else {
-            tracing::trace!(new_group=?group, "Group insert");
+            tracing::debug!(new_group=?group, "Group insert");
         }
     }
 
@@ -549,7 +549,7 @@ where
                 .retain(|key, _| *key + Epoch(1) >= curr_epoch);
             new_count = self.validator_map.len();
         }
-        tracing::trace!(
+        tracing::debug!(
             epoch=?curr_epoch,
             round=?curr_round,
             ?old_count,
