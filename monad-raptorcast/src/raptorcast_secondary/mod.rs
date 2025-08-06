@@ -333,32 +333,21 @@ where
                         self.curr_epoch = epoch;
                         // The publisher needs to be periodically informed about new nodes out there,
                         // so that it can randomize when creating new groups.
-                        {
-                            let full_nodes: Vec<_> = self
-                                .peer_discovery_driver
-                                .lock()
-                                .unwrap()
-                                .get_fullnode_addrs()
-                                .keys()
-                                .copied()
-                                .collect();
-                            trace!(
-                                "RaptorCastSecondary updating {} full nodes from PeerDiscovery",
-                                full_nodes.len()
-                            );
-                            publisher.upsert_peer_disc_full_nodes(FullNodes::new(full_nodes));
-                        }
+                        let full_nodes = self
+                            .peer_discovery_driver
+                            .lock()
+                            .unwrap()
+                            .get_fullnode_addrs();
+                        let full_nodes_vec: Vec<_> = full_nodes.keys().copied().collect();
+                        trace!(
+                            "RaptorCastSecondary updating {} full nodes from PeerDiscovery",
+                            full_nodes_vec.len()
+                        );
+                        publisher.upsert_peer_disc_full_nodes(FullNodes::new(full_nodes_vec));
 
                         if let Some((group_msg, full_nodes_set)) =
                             publisher.enter_round_and_step_until(round)
                         {
-                            let known_addresses = {
-                                self.peer_discovery_driver
-                                    .lock()
-                                    .unwrap()
-                                    .get_fullnode_addrs()
-                            };
-
                             // if group_msg is a ConfirmGroup message, update peer discovery with the group information
                             if let FullNodesGroupMessage::ConfirmGroup(confirm_msg) = &group_msg {
                                 self.peer_discovery_driver.lock().unwrap().update(
@@ -369,7 +358,7 @@ where
                                 );
                             }
 
-                            self.send_group_msg(group_msg, full_nodes_set, &known_addresses);
+                            self.send_group_msg(group_msg, full_nodes_set, &full_nodes);
                         }
                     }
                 },
