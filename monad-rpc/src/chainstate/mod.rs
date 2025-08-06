@@ -883,8 +883,8 @@ async fn get_logs_with_index(
 
     let filtered_params = FilteredParams::new(Some(filter.clone()));
 
-    // Note: we an limit returned (and queried!) data by using `query_logs_index_streamed`
-    // and take_while we're under the response size limit
+    // Note: we can limit returned (and queried!) data by using `query_logs_index_streamed`
+    // while we're under the response size limit
     let potential_matches = log_index
         .query_logs(from_block, to_block, filter.address.iter(), &filter.topics)
         .await?;
