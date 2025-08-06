@@ -6001,6 +6001,7 @@ dependencies = [
  "awc",
  "brotli",
  "bytes",
+ "bytestring",
  "clap",
  "criterion",
  "dashmap",
