@@ -196,7 +196,7 @@ where
                 TxPoolCommand::BlockCommit(_) | TxPoolCommand::Reset { .. } => {}
                 TxPoolCommand::InsertForwardedTxs { .. } => {
                     unimplemented!(
-                        "MockTxPoolExecutor should never recieve txs with MockExecutionProtocol"
+                        "MockTxPoolExecutor should never receive txs with MockExecutionProtocol"
                     );
                 }
                 TxPoolCommand::EnterRound { .. } => {}
