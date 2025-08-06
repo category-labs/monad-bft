@@ -195,6 +195,7 @@ pub enum BlockPolicyBlockValidatorError {
 #[derive(Debug, Clone)]
 pub struct TxnFee {
     pub first_txn_value: Balance,
+    pub first_txn_gas: Balance,
     pub max_gas_cost: Balance,
 }
 
@@ -202,6 +203,7 @@ impl Default for TxnFee {
     fn default() -> Self {
         TxnFee {
             first_txn_value: Balance::ZERO,
+            first_txn_gas: Balance::ZERO,
             max_gas_cost: Balance::ZERO,
         }
     }
