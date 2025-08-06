@@ -19,7 +19,7 @@ use std::{
     net::{IpAddr, SocketAddr, ToSocketAddrs},
     process,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use agent::AgentBuilder;
@@ -312,6 +312,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
     });
 
     let mut executor = ParentExecutor {
+        metrics: Default::default(),
         router,
         timer: TokioTimer::default(),
         ledger: MonadBlockFileLedger::new(node_state.ledger_path),
@@ -464,6 +465,8 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
         .map(|provider| provider.meter("opentelemetry"));
 
     let mut gauge_cache = HashMap::new();
+    let mut process_start = Instant::now();
+    let mut total_state_update_elapsed = Duration::ZERO;
 
     let mut sigterm = signal(SignalKind::terminate()).expect("in tokio rt");
     let mut sigint = signal(SignalKind::interrupt()).expect("in tokio rt");
@@ -487,7 +490,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
                 let otel_meter = maybe_otel_meter.as_ref().expect("otel_endpoint must have been set");
                 let state_metrics = state.metrics();
                 let executor_metrics = executor.metrics();
-                send_metrics(otel_meter, &mut gauge_cache, state_metrics, executor_metrics);
+                send_metrics(otel_meter, &mut gauge_cache, state_metrics, executor_metrics, &process_start, &total_state_update_elapsed);
             }
             event = executor.next().instrument(ledger_span.clone()) => {
                 let Some(event) = event else {
@@ -544,7 +547,9 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
                     });
                     let _ledger_span = ledger_span.enter();
                     let _exec_span = tracing::trace_span!("exec_span", num_commands).entered();
+                    let start = Instant::now();
                     executor.exec(commands);
+                    total_state_update_elapsed += start.elapsed();
                 }
 
                 if let Some(ledger_tip) = executor.ledger.last_commit() {
@@ -808,16 +813,29 @@ fn resolve_domain_v4<P: PubKey>(node_id: &NodeId<P>, domain: &String) -> Option<
     None
 }
 
+const GAUGE_TOTAL_UPTIME_US: &str = "monad.total_uptime_us";
+const GAUGE_STATE_TOTAL_UPDATE_US: &str = "monad.state.total_update_us";
+
 fn send_metrics(
     meter: &opentelemetry::metrics::Meter,
     gauge_cache: &mut HashMap<&'static str, opentelemetry::metrics::Gauge<u64>>,
     state_metrics: &Metrics,
     executor_metrics: ExecutorMetricsChain,
+    process_start: &Instant,
+    total_state_update_elapsed: &Duration,
 ) {
     for (k, v) in state_metrics
         .metrics()
         .into_iter()
         .chain(executor_metrics.into_inner())
+        .chain(std::iter::once((
+            GAUGE_TOTAL_UPTIME_US,
+            process_start.elapsed().as_micros() as u64,
+        )))
+        .chain(std::iter::once((
+            GAUGE_STATE_TOTAL_UPDATE_US,
+            total_state_update_elapsed.as_micros() as u64,
+        )))
     {
         let gauge = gauge_cache
             .entry(k)

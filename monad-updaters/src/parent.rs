@@ -18,6 +18,7 @@ use std::{
     ops::DerefMut,
     pin::Pin,
     task::{Context, Poll},
+    time::Instant,
 };
 
 use futures::{FutureExt, Stream, StreamExt};
@@ -25,7 +26,7 @@ use monad_consensus_types::{block::BlockPolicy, signature_collection::SignatureC
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_executor::{Executor, ExecutorMetricsChain};
+use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
     CheckpointCommand, Command, ConfigReloadCommand, ControlPanelCommand, LedgerCommand,
     LoopbackCommand, RouterCommand, StateRootHashCommand, StateSyncCommand, TimerCommand,
@@ -34,10 +35,25 @@ use monad_executor_glue::{
 use monad_state_backend::StateBackend;
 use monad_types::ExecutionProtocol;
 
+const GAUGE_PARENT_TOTAL_EXEC_US: &str = "monad.executor.parent.total_exec_us";
+const GAUGE_LEDGER_TOTAL_EXEC_US: &str = "monad.executor.ledger.total_exec_us";
+const GAUGE_CHECKPOINT_TOTAL_EXEC_US: &str = "monad.executor.checkpoint.total_exec_us";
+const GAUGE_TXPOOL_TOTAL_EXEC_US: &str = "monad.executor.txpool.total_exec_us";
+const GAUGE_ROUTER_TOTAL_EXEC_US: &str = "monad.executor.router.total_exec_us";
+const GAUGE_STATESYNC_TOTAL_EXEC_US: &str = "monad.executor.statesync.total_exec_us";
+
+const GAUGE_PARENT_TOTAL_POLL_US: &str = "monad.executor.parent.total_poll_us";
+const GAUGE_LEDGER_TOTAL_POLL_US: &str = "monad.executor.ledger.total_poll_us";
+const GAUGE_TXPOOL_TOTAL_POLL_US: &str = "monad.executor.txpool.total_poll_us";
+const GAUGE_ROUTER_TOTAL_POLL_US: &str = "monad.executor.router.total_poll_us";
+const GAUGE_STATESYNC_TOTAL_POLL_US: &str = "monad.executor.statesync.total_poll_us";
+
 /// Single top-level executor for all other required by a node.
 /// This executor will distribute commands to the appropriate sub-executor
 /// and will poll them for events
 pub struct ParentExecutor<R, T, L, C, S, TS, TP, CP, LO, SS, CL> {
+    pub metrics: ParentExecutorMetrics,
+
     pub router: R,
     pub timer: T,
     pub ledger: L,
@@ -78,6 +94,7 @@ where
 
     fn exec(&mut self, commands: Vec<Command<E, OM, ST, SCT, EPT, BPT, SBT>>) {
         let _exec_span = tracing::trace_span!("exec_span", num_cmds = commands.len()).entered();
+        let guard = ParentExecutorMetricsGuard::new(&mut self.metrics, GAUGE_PARENT_TOTAL_EXEC_US);
         let (
             router_cmds,
             timer_cmds,
@@ -92,21 +109,32 @@ where
             config_reload_cmds,
         ) = Command::split_commands(commands);
 
-        self.router.exec(router_cmds);
+        guard
+            .metrics
+            .record(GAUGE_ROUTER_TOTAL_EXEC_US, || self.router.exec(router_cmds));
         self.timer.exec(timer_cmds);
-        self.ledger.exec(ledger_cmds);
-        self.checkpoint.exec(checkpoint_cmds);
+        guard
+            .metrics
+            .record(GAUGE_LEDGER_TOTAL_EXEC_US, || self.ledger.exec(ledger_cmds));
+        guard.metrics.record(GAUGE_CHECKPOINT_TOTAL_EXEC_US, || {
+            self.checkpoint.exec(checkpoint_cmds)
+        });
         self.state_root_hash.exec(state_root_hash_cmds);
         self.timestamp.exec(timestamp_cmds);
-        self.txpool.exec(txpool_cmds);
+        guard
+            .metrics
+            .record(GAUGE_TXPOOL_TOTAL_EXEC_US, || self.txpool.exec(txpool_cmds));
         self.control_panel.exec(control_panel_cmds);
         self.loopback.exec(loopback_cmds);
-        self.state_sync.exec(state_sync_cmds);
+        guard.metrics.record(GAUGE_STATESYNC_TOTAL_EXEC_US, || {
+            self.state_sync.exec(state_sync_cmds)
+        });
         self.config_loader.exec(config_reload_cmds);
     }
 
     fn metrics(&self) -> ExecutorMetricsChain {
         ExecutorMetricsChain::default()
+            .push(&self.metrics.0)
             .chain(self.router.metrics())
             .chain(self.timer.metrics())
             .chain(self.ledger.metrics())
@@ -143,28 +171,89 @@ where
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
+        let guard = ParentExecutorMetricsGuard::new(&mut this.metrics, GAUGE_PARENT_TOTAL_POLL_US);
 
-        let item = futures::future::select_all(vec![
-            this.timer.next().boxed_local(),
-            this.control_panel.next().boxed_local(),
-            this.ledger.next().boxed_local(),
-            this.txpool.next().boxed_local(), // TODO: ingesting txs should be deprioritized
-            this.state_root_hash.next().boxed_local(),
-            this.timestamp.next().boxed_local(),
-            this.loopback.next().boxed_local(),
-            this.router.next().boxed_local(), // TODO: consensus msgs should be prioritized
-            this.state_sync.next().boxed_local(),
-            this.config_loader.next().boxed_local(),
-        ])
-        .map(|(event, _, _)| event)
-        .poll_unpin(cx);
+        if let Poll::Ready(Some(e)) = this.timer.next().poll_unpin(cx) {
+            return Poll::Ready(Some(e));
+        }
+        if let Poll::Ready(Some(e)) = this.control_panel.next().poll_unpin(cx) {
+            return Poll::Ready(Some(e));
+        }
+        if let Poll::Ready(Some(e)) = guard.metrics.record(GAUGE_LEDGER_TOTAL_POLL_US, || {
+            this.ledger.next().poll_unpin(cx)
+        }) {
+            return Poll::Ready(Some(e));
+        }
+        // TODO: ingesting txs should be deprioritized
+        if let Poll::Ready(Some(e)) = guard.metrics.record(GAUGE_TXPOOL_TOTAL_POLL_US, || {
+            this.txpool.next().poll_unpin(cx)
+        }) {
+            return Poll::Ready(Some(e));
+        }
+        if let Poll::Ready(Some(e)) = this.state_root_hash.next().poll_unpin(cx) {
+            return Poll::Ready(Some(e));
+        }
+        if let Poll::Ready(Some(e)) = this.timestamp.next().poll_unpin(cx) {
+            return Poll::Ready(Some(e));
+        }
+        if let Poll::Ready(Some(e)) = this.loopback.next().poll_unpin(cx) {
+            return Poll::Ready(Some(e));
+        }
+        // TODO: consensus msgs should be prioritized
+        if let Poll::Ready(Some(e)) = guard.metrics.record(GAUGE_ROUTER_TOTAL_POLL_US, || {
+            this.router.next().poll_unpin(cx)
+        }) {
+            return Poll::Ready(Some(e));
+        }
+        if let Poll::Ready(Some(e)) = guard.metrics.record(GAUGE_STATESYNC_TOTAL_POLL_US, || {
+            this.state_sync.next().poll_unpin(cx)
+        }) {
+            return Poll::Ready(Some(e));
+        }
+        if let Poll::Ready(Some(e)) = this.config_loader.next().poll_unpin(cx) {
+            return Poll::Ready(Some(e));
+        }
 
-        item
+        Poll::Pending
     }
 }
 
 impl<R, T, L, C, S, TS, TP, CP, LO, SS, CL> ParentExecutor<R, T, L, C, S, TS, TP, CP, LO, SS, CL> {
     pub fn ledger(&self) -> &L {
         &self.ledger
+    }
+}
+
+#[derive(Default)]
+pub struct ParentExecutorMetrics(ExecutorMetrics);
+
+impl ParentExecutorMetrics {
+    fn record<T>(&mut self, executor_name: &'static str, f: impl FnOnce() -> T) -> T {
+        let start = Instant::now();
+        let e = f();
+        self.0[executor_name] += start.elapsed().as_micros() as u64;
+        e
+    }
+}
+
+pub struct ParentExecutorMetricsGuard<'a> {
+    metrics: &'a mut ParentExecutorMetrics,
+    guard_metric: &'static str,
+    start: Instant,
+}
+
+impl<'a> ParentExecutorMetricsGuard<'a> {
+    fn new(metrics: &'a mut ParentExecutorMetrics, guard_metric: &'static str) -> Self {
+        Self {
+            metrics,
+            guard_metric,
+            start: Instant::now(),
+        }
+    }
+}
+
+impl<'a> Drop for ParentExecutorMetricsGuard<'a> {
+    fn drop(&mut self) {
+        self.metrics.0[self.guard_metric] += self.start.elapsed().as_micros() as u64;
     }
 }

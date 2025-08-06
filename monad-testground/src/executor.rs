@@ -137,6 +137,7 @@ where
     };
 
     ParentExecutor {
+        metrics: Default::default(),
         router: match config.router_config {
             RouterConfig::Local(router) => Updater::boxed(router),
 
