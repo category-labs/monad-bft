@@ -170,19 +170,19 @@ where
 
     // Populate self.curr_group and clean up expired groups.
     // When we have a real timer, this can be called from UpdateCurrentRound
-    fn enter_round(&mut self, round: Round) {
-        trace!(?round, "enter_round");
-        assert_ne!(round, Round::MAX);
+    fn enter_round(&mut self, new_round: Round) {
+        trace!(?new_round, "enter_round");
+        assert_ne!(new_round, Round::MAX);
 
-        if round < self.curr_group.get_round_span().end {
+        if new_round < self.curr_group.get_round_span().end {
             // We don't need to advance to the next group yet
-            assert!(round >= self.curr_group.get_round_span().start);
+            assert!(new_round >= self.curr_group.get_round_span().start);
             return;
         }
 
         // Remove all groups that have ended.
         self.group_schedule
-            .retain(|_, group| group.end_round >= round);
+            .retain(|_, group| group.end_round >= new_round);
 
         let Some(next_group) = self.group_schedule.first_entry() else {
             // We didn't manage to form a group in time for the new round.
@@ -190,32 +190,42 @@ where
             // We currently have an empty group for some rounds while we
             // allow invites for a future group to complete.
             tracing::debug!(
-                ?round,
+                ?new_round,
                 "No group scheduled for RaptorCastSecondary \
                     round nor any other future round yet.",
             );
             // Not serving any full nodes in current round
             self.metrics[PUBLISHER_CURRENT_GROUP_SIZE] = 0;
-            self.curr_group = self.new_empty_group(round);
+            self.curr_group = self.new_empty_group(new_round);
             return;
         };
 
-        let start_round = *next_group.key();
-        assert!(start_round >= round);
-        assert!(start_round == next_group.get().start_round);
+        // After a round gap, its possible that arg `next_group` lands in the
+        // middle of `next_group`. In this case, the dynamic full-nodes will
+        // also experience round gaps unless they are being broadcast the
+        // missing rounds from other validators.
+        let group_start_round = *next_group.key();
+        if group_start_round < new_round {
+            tracing::debug!(
+                ?new_round,
+                ?group_start_round,
+                "RaptorCastSecondary jumping into middle of future scheduled group after a gap. \
+                Downstream full-nodes might see round gaps as well."
+            );
+        }
 
-        if start_round > round {
+        if group_start_round > new_round {
             // The next group is not yet scheduled to start. This can happen
             // when there are gaps in the round sequence.
             tracing::debug!(
-                ?round,
+                ?new_round,
                 ?next_group,
                 "No group scheduled for RaptorCastSecondary \
                     round, next group is",
             );
             // Not serving any full nodes in current round
             self.metrics[PUBLISHER_CURRENT_GROUP_SIZE] = 0;
-            self.curr_group = self.new_empty_group(round);
+            self.curr_group = self.new_empty_group(new_round);
             return;
         }
 
@@ -1933,5 +1943,206 @@ mod tests {
 
         // Pending confirms are lazily cleaned up after the group starts.
         assert_eq!(clt.num_pending_confirms(), 0);
+    }
+
+    // cargo test -p monad-raptorcast raptorcast_secondary::tests::gap_into_middle_of_scheduled_group -- --nocapture
+    // The validator was seen crashing after seeing a round gap which causes it
+    // to enter the middle of a scheduled group. e.g.
+    // Scheduled groups:  [3, 6)  [6, 9)  [9, 11)
+    // Round gap: 5 -> 10
+    #[test]
+    fn gap_into_middle_of_scheduled_group() {
+        enable_tracer();
+        let sched_cfg = GroupSchedulingConfig {
+            max_group_size: 1,
+            round_span: Round(3),
+            invite_lookahead: Round(100),
+            max_invite_wait: Round(1),
+            deadline_round_dist: Round(1),
+            init_empty_round_span: Round(2), // >= invite_wait + deadline
+        };
+
+        let mut v0_fsm: Publisher<ST> = Publisher::new(
+            nid(0),
+            RaptorCastConfigSecondaryPublisher {
+                full_nodes_prioritized: vec![nid(10)],
+                group_scheduling: sched_cfg,
+            },
+            ChaCha8Rng::seed_from_u64(42),
+        );
+
+        // PREPARE [3, 6)
+        let (group_msg, _invitees) = v0_fsm
+            .enter_round_and_step_until(Round(1))
+            .expect("FSM should have returned invites to be sent");
+
+        if let FullNodesGroupMessage::PrepareGroup(invite_msg) = group_msg {
+            assert_eq!(invite_msg.start_round, Round(3));
+            assert_eq!(invite_msg.end_round, Round(6));
+        } else {
+            panic!(
+                "Expected FullNodesGroupMessage::PrepareGroup, got: {:?}\n\
+                publisher v0: {}",
+                group_msg,
+                dump_pub_sched(&v0_fsm)
+            );
+        }
+
+        // ACCEPT [3, 6)
+        let accept_msg = make_invite_response(nid(0), nid(10), true, Round(3), &sched_cfg);
+        v0_fsm.on_candidate_response(accept_msg);
+
+        // CONFIRM [3, 6)
+        let (group_msg, _invitees) = v0_fsm
+            .enter_round_and_step_until(Round(2))
+            .expect("FSM should have returned invites to be sent");
+
+        if let FullNodesGroupMessage::ConfirmGroup(confirm_msg) = group_msg {
+            assert_eq!(confirm_msg.prepare.start_round, Round(3));
+            assert_eq!(confirm_msg.prepare.end_round, Round(6));
+        } else {
+            panic!(
+                "Expected FullNodesGroupMessage::PrepareGroup, got: {:?}\n\
+                publisher v0: {}",
+                group_msg,
+                dump_pub_sched(&v0_fsm)
+            );
+        }
+
+        // PREPARE [6, 9)
+        let (group_msg, _invitees) = v0_fsm
+            .enter_round_and_step_until(Round(3))
+            .expect("FSM should have returned invites to be sent");
+
+        if let FullNodesGroupMessage::PrepareGroup(invite_msg) = group_msg {
+            assert_eq!(invite_msg.start_round, Round(6));
+            assert_eq!(invite_msg.end_round, Round(9));
+        } else {
+            panic!(
+                "Expected FullNodesGroupMessage::PrepareGroup, got: {:?}\n\
+                publisher v0: {}",
+                group_msg,
+                dump_pub_sched(&v0_fsm)
+            );
+        }
+
+        // ACCEPT [6, 9)
+        let accept_msg = make_invite_response(nid(0), nid(10), true, Round(6), &sched_cfg);
+        v0_fsm.on_candidate_response(accept_msg);
+
+        // CONFIRM [6, 9)
+        let (group_msg, _invitees) = v0_fsm
+            .enter_round_and_step_until(Round(4))
+            .expect("FSM should have returned invites to be sent");
+
+        if let FullNodesGroupMessage::ConfirmGroup(confirm_msg) = group_msg {
+            assert_eq!(confirm_msg.prepare.start_round, Round(6));
+            assert_eq!(confirm_msg.prepare.end_round, Round(9));
+        } else {
+            panic!(
+                "Expected FullNodesGroupMessage::PrepareGroup, got: {:?}\n\
+                publisher v0: {}",
+                group_msg,
+                dump_pub_sched(&v0_fsm)
+            );
+        }
+
+        // PREPARE [9, 12)
+        let (group_msg, _invitees) = v0_fsm
+            .enter_round_and_step_until(Round(4))
+            .expect("FSM should have returned invites to be sent");
+
+        if let FullNodesGroupMessage::PrepareGroup(invite_msg) = group_msg {
+            assert_eq!(invite_msg.start_round, Round(9));
+            assert_eq!(invite_msg.end_round, Round(12));
+        } else {
+            panic!(
+                "Expected FullNodesGroupMessage::PrepareGroup, got: {:?}\n\
+                publisher v0: {}",
+                group_msg,
+                dump_pub_sched(&v0_fsm)
+            );
+        }
+
+        // ACCEPT [9, 12)
+        let accept_msg = make_invite_response(nid(0), nid(10), true, Round(9), &sched_cfg);
+        v0_fsm.on_candidate_response(accept_msg);
+
+        // CONFIRM [9, 12)
+        let (group_msg, _invitees) = v0_fsm
+            .enter_round_and_step_until(Round(5))
+            .expect("FSM should have returned invites to be sent");
+
+        if let FullNodesGroupMessage::ConfirmGroup(confirm_msg) = group_msg {
+            assert_eq!(confirm_msg.prepare.start_round, Round(9));
+            assert_eq!(confirm_msg.prepare.end_round, Round(12));
+        } else {
+            panic!(
+                "Expected FullNodesGroupMessage::PrepareGroup, got: {:?}\n\
+                publisher v0: {}",
+                group_msg,
+                dump_pub_sched(&v0_fsm)
+            );
+        }
+
+        //============================================================================
+        // Now gap 5 -> 11, crossing into the middle of future group [3, 6) -> [9, 11)
+        // Before the fix this would trigger a panic.
+        //============================================================================
+        let (group_msg, _invitees) = v0_fsm
+            .enter_round_and_step_until(Round(10))
+            .expect("FSM should have returned invites to be sent");
+
+        // Make sure the group still is there for use
+        assert!(equal_node_vec(
+            &get_curr_rc_group(&v0_fsm),
+            &node_ids_vec![10]
+        ));
+
+        if let FullNodesGroupMessage::PrepareGroup(invite_msg) = group_msg {
+            assert_eq!(invite_msg.start_round, Round(12));
+            assert_eq!(invite_msg.end_round, Round(15));
+        } else {
+            panic!(
+                "Expected FullNodesGroupMessage::PrepareGroup, got: {:?}\n\
+                publisher v0: {}",
+                group_msg,
+                dump_pub_sched(&v0_fsm)
+            );
+        }
+
+        // Check that group scheduling continues as usual
+        let (group_msg, _invitees) = v0_fsm
+            .enter_round_and_step_until(Round(11))
+            .expect("FSM should have returned invites to be sent");
+
+        if let FullNodesGroupMessage::ConfirmGroup(confirm_msg) = group_msg {
+            assert_eq!(confirm_msg.prepare.start_round, Round(12));
+            assert_eq!(confirm_msg.prepare.end_round, Round(15));
+        } else {
+            panic!(
+                "Expected FullNodesGroupMessage::PrepareGroup, got: {:?}\n\
+                publisher v0: {}",
+                group_msg,
+                dump_pub_sched(&v0_fsm)
+            );
+        }
+
+        // Check that group scheduling continues as usual
+        let (group_msg, _invitees) = v0_fsm
+            .enter_round_and_step_until(Round(12))
+            .expect("FSM should have returned invites to be sent");
+
+        if let FullNodesGroupMessage::PrepareGroup(invite_msg) = group_msg {
+            assert_eq!(invite_msg.start_round, Round(15));
+            assert_eq!(invite_msg.end_round, Round(18));
+        } else {
+            panic!(
+                "Expected FullNodesGroupMessage::PrepareGroup, got: {:?}\n\
+                publisher v0: {}",
+                group_msg,
+                dump_pub_sched(&v0_fsm)
+            );
+        }
     }
 }
