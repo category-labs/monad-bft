@@ -449,6 +449,26 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         let mut cmds = Vec::new();
 
+        if let Some(current_name_record) = self.routing_info.get(&peer) {
+            if self.check_validator_membership(&peer)
+                && current_name_record.seq() != name_record.seq()
+            {
+                debug!(?peer, "validator name record updated");
+                cmds.push(Self::validator_ip_changed_event(
+                    peer,
+                    Some(current_name_record.clone()),
+                    name_record.clone(),
+                ));
+            }
+        } else if self.check_validator_membership(&peer) {
+            debug!(?peer, addr = ?name_record.udp_address(), "new validator added");
+            cmds.push(Self::validator_ip_changed_event(
+                peer,
+                None,
+                name_record.clone(),
+            ));
+        }
+
         self.routing_info.insert(peer, name_record);
         self.participation_info
             .entry(peer)
@@ -607,6 +627,18 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
     // a helper function to check if a node is a validator or a pinned full node
     fn is_pinned_node(&self, peer_id: &NodeId<CertificateSignaturePubKey<ST>>) -> bool {
         self.check_validator_membership(peer_id) || self.pinned_full_nodes.contains(peer_id)
+    }
+
+    fn validator_ip_changed_event(
+        node_id: NodeId<CertificateSignaturePubKey<ST>>,
+        old_name_record: Option<MonadNameRecord<ST>>,
+        new_name_record: MonadNameRecord<ST>,
+    ) -> PeerDiscoveryCommand<ST> {
+        PeerDiscoveryCommand::Event(PeerDiscoveryEvent::ValidatorIpChanged {
+            node_id,
+            old_name_record,
+            new_name_record,
+        })
     }
 }
 

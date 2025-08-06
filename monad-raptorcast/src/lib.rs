@@ -482,18 +482,16 @@ where
 
                         {
                             let pd_driver = self.peer_discovery_driver.lock().unwrap();
-                            let added: Vec<_> = self
+                            let added = self
                                 .epoch_validators
                                 .get(&epoch)
-                                .into_iter()
-                                .flat_map(|val| iter_ips(val, &*pd_driver))
-                                .collect();
-                            let removed: Vec<_> = self
+                                .map(|val| iter_ips(val, &*pd_driver))
+                                .unwrap_or_default();
+                            let removed = self
                                 .epoch_validators
                                 .get(&self.current_epoch)
-                                .into_iter()
-                                .flat_map(|val| iter_ips(val, &*pd_driver))
-                                .collect();
+                                .map(|val| iter_ips(val, &*pd_driver))
+                                .unwrap_or_default();
                             drop(pd_driver);
                             self.dataplane_writer.update_trusted(added, removed);
                         }
@@ -683,15 +681,17 @@ where
     }
 }
 
-fn iter_ips<'a, ST: CertificateSignatureRecoverable, PD: PeerDiscoveryAlgo<SignatureType = ST>>(
-    validators: &'a EpochValidators<ST>,
-    peer_discovery: &'a PeerDiscoveryDriver<PD>,
-) -> impl Iterator<Item = IpAddr> + 'a {
+fn iter_ips<ST: CertificateSignatureRecoverable, PD: PeerDiscoveryAlgo<SignatureType = ST>>(
+    validators: &EpochValidators<ST>,
+    peer_discovery: &PeerDiscoveryDriver<PD>,
+) -> Vec<IpAddr> {
+    let name_records = peer_discovery.get_name_records();
     validators
         .validators
         .iter()
-        .filter_map(|(node_id, _)| peer_discovery.get_addr(node_id))
-        .map(|socket| socket.ip())
+        .filter_map(|(node_id, _)| name_records.get(node_id))
+        .map(|record| IpAddr::V4(*record.tcp_address().ip()))
+        .collect()
 }
 
 impl<ST, M, OM, E, PD> Stream for RaptorCast<ST, M, OM, E, PD>
@@ -979,6 +979,28 @@ where
                     }
                     PeerDiscoveryEmit::MetricsCommand(executor_metrics) => {
                         this.peer_discovery_metrics = executor_metrics;
+                    }
+                    PeerDiscoveryEmit::Event(event) => {
+                        if let PeerDiscoveryEvent::ValidatorIpChanged {
+                            node_id,
+                            old_name_record,
+                            new_name_record,
+                        } = event
+                        {
+                            if let Some(validators) = this.epoch_validators.get(&this.current_epoch)
+                            {
+                                if validators.validators.contains_key(&node_id) {
+                                    let old_ip = old_name_record
+                                        .as_ref()
+                                        .map(|record| IpAddr::V4(*record.tcp_address().ip()))
+                                        .into_iter()
+                                        .collect::<Vec<_>>();
+                                    let new_ip =
+                                        vec![IpAddr::V4(*new_name_record.tcp_address().ip())];
+                                    this.dataplane_writer.update_trusted(new_ip, old_ip);
+                                }
+                            }
+                        }
                     }
                 }
             }

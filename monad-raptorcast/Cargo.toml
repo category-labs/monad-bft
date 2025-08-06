@@ -53,7 +53,7 @@ rand_distr = { workspace = true }
 rstest = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 tikv-jemallocator = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "io-util", "net"] }
 toml = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
