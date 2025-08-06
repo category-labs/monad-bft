@@ -167,6 +167,7 @@ pub fn generate_block_with_txs(
 
     EthValidatedBlock {
         block: ConsensusFullBlock::new(header, body).expect("header doesn't match body"),
+        system_txns: Vec::new(),
         validated_txns: txs,
         nonces,
         txn_fees,

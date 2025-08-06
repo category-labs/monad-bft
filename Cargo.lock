@@ -5052,6 +5052,7 @@ dependencies = [
  "monad-eth-types",
  "monad-secp",
  "monad-state-backend",
+ "monad-system-calls",
  "monad-testutil",
  "rayon",
  "tracing",
@@ -5142,6 +5143,7 @@ dependencies = [
  "monad-executor",
  "monad-perf-util",
  "monad-state-backend",
+ "monad-system-calls",
  "monad-testutil",
  "monad-types",
  "rand 0.8.5",
@@ -5814,6 +5816,17 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "monad-system-calls"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-primitives",
+ "alloy-signer",
+ "alloy-signer-local",
 ]
 
 [[package]]

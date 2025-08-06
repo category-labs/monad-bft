@@ -1,0 +1,13 @@
+[package]
+name = "monad-system-calls"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+alloy-consensus = { workspace = true }
+alloy-primitives = { workspace = true }
+alloy-signer = { workspace = true }
+alloy-signer-local = { workspace = true }
+
+[dev-dependencies]
+alloy-eips = { workspace = true }
