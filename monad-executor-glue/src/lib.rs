@@ -47,7 +47,7 @@ use monad_crypto::certificate_signature::{
 use monad_state_backend::StateBackend;
 use monad_types::{
     deserialize_pubkey, serialize_pubkey, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget,
-    SeqNum, Stake,
+    SeqNum, Stake, UdpPriority,
 };
 use monad_validator::signature_collection::SignatureCollection;
 use serde::{Deserialize, Serialize};
@@ -64,7 +64,7 @@ pub enum RouterCommand<ST: CertificateSignatureRecoverable, OM> {
         // NOTE(dshulyak) priority for tcp messages is ignored
         target: RouterTarget<CertificateSignaturePubKey<ST>>,
         message: OM,
-        priority: monad_types::UdpPriority,
+        priority: UdpPriority,
     },
     PublishToFullNodes {
         epoch: Epoch, // Epoch gets embedded into the raptorcast message

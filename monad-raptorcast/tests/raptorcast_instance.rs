@@ -783,3 +783,127 @@ async fn test_priority_messages() {
         );
     }
 }
+
+#[tokio::test]
+async fn test_raptorcast_forwarding_priority() {
+    let validator1_addr: SocketAddrV4 = "127.0.0.1:12000".parse().unwrap();
+    let validator2_addr: SocketAddrV4 = "127.0.0.1:12001".parse().unwrap();
+    let validator_fullnode_addr: SocketAddrV4 = "127.0.0.1:12002".parse().unwrap();
+
+    let mut validator1_secret = [1u8; 32];
+    let mut validator2_secret = [2u8; 32];
+    let mut validator_fullnode_secret = [3u8; 32];
+
+    let validator1_key = Arc::new(KeyPair::from_bytes(&mut validator1_secret).unwrap());
+    let validator2_key = Arc::new(KeyPair::from_bytes(&mut validator2_secret).unwrap());
+    let validator_fullnode_key =
+        Arc::new(KeyPair::from_bytes(&mut validator_fullnode_secret).unwrap());
+
+    let validator1_nodeid = NodeId::new(validator1_key.pubkey());
+    let validator2_nodeid = NodeId::new(validator2_key.pubkey());
+    let validator_fullnode_nodeid = NodeId::new(validator_fullnode_key.pubkey());
+
+    let known_addresses = HashMap::from([
+        (validator1_nodeid, validator1_addr),
+        (validator2_nodeid, validator2_addr),
+        (validator_fullnode_nodeid, validator_fullnode_addr),
+    ]);
+
+    let mut validator1_rc = new_defaulted_raptorcast_for_tests::<
+        SignatureType,
+        MockMessage,
+        MockMessage,
+        MockEvent<PubKeyType>,
+    >(
+        SocketAddr::V4(validator1_addr),
+        known_addresses.clone(),
+        validator1_key.clone(),
+    );
+
+    let mut validator2_rc = new_defaulted_raptorcast_for_tests::<
+        SignatureType,
+        MockMessage,
+        MockMessage,
+        MockEvent<PubKeyType>,
+    >(
+        SocketAddr::V4(validator2_addr),
+        known_addresses.clone(),
+        validator2_key.clone(),
+    );
+
+    let mut validator_fullnode_rc = new_defaulted_raptorcast_for_tests::<
+        SignatureType,
+        MockMessage,
+        MockMessage,
+        MockEvent<PubKeyType>,
+    >(
+        SocketAddr::V4(validator_fullnode_addr),
+        known_addresses.clone(),
+        validator_fullnode_key.clone(),
+    );
+
+    let epoch = Epoch(0);
+    let validator_set = vec![
+        (validator1_nodeid, Stake::ONE),
+        (validator2_nodeid, Stake::ONE),
+        (validator_fullnode_nodeid, Stake::ONE),
+    ];
+
+    validator1_rc.exec(vec![RouterCommand::AddEpochValidatorSet {
+        epoch,
+        validator_set: validator_set.clone(),
+    }]);
+
+    validator2_rc.exec(vec![RouterCommand::AddEpochValidatorSet {
+        epoch,
+        validator_set: validator_set.clone(),
+    }]);
+
+    validator_fullnode_rc.exec(vec![RouterCommand::AddEpochValidatorSet {
+        epoch,
+        validator_set: validator_set.clone(),
+    }]);
+
+    validator2_rc.exec(vec![RouterCommand::UpdateFullNodes {
+        dedicated_full_nodes: vec![validator_fullnode_nodeid],
+        prioritized_full_nodes: vec![],
+    }]);
+
+    const MESSAGE_SIZE: usize = 128 << 20;
+
+    let high_priority_msg = MockMessage::new(0xAA, MESSAGE_SIZE);
+    validator1_rc.exec(vec![RouterCommand::PublishWithPriority {
+        target: monad_types::RouterTarget::Broadcast(epoch),
+        message: high_priority_msg,
+        priority: UdpPriority::High,
+    }]);
+
+    let regular_priority_msg = MockMessage::new(0xBB, MESSAGE_SIZE);
+    validator1_rc.exec(vec![RouterCommand::PublishWithPriority {
+        target: monad_types::RouterTarget::Broadcast(epoch),
+        message: regular_priority_msg,
+        priority: UdpPriority::Regular,
+    }]);
+
+    let mut received_messages = Vec::new();
+    let timeout = Duration::from_secs(2);
+    let start = std::time::Instant::now();
+
+    while received_messages.len() < 2 && start.elapsed() < timeout {
+        if let Some(event) = validator_fullnode_rc.next().await {
+            let MockEvent((from, msg_id)) = event;
+            received_messages.push((from, msg_id));
+        }
+    }
+
+    assert_eq!(received_messages.len(), 2);
+
+    assert_eq!(
+        received_messages[0].1, 0xAA,
+        "high priority message (0xAA) should be received first"
+    );
+    assert_eq!(
+        received_messages[1].1, 0xBB,
+        "regular priority message (0xBB) should be received second"
+    );
+}

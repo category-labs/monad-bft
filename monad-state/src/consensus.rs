@@ -656,9 +656,10 @@ where
                 }))
             }
             ConsensusCommand::Publish { target, message } => {
-                parent_cmds.push(Command::RouterCommand(RouterCommand::Publish {
+                parent_cmds.push(Command::RouterCommand(RouterCommand::PublishWithPriority {
                     target,
                     message: VerifiedMonadMessage::Consensus(message),
+                    priority: monad_types::UdpPriority::High,
                 }))
             }
             ConsensusCommand::PublishToFullNodes { epoch, message } => {
