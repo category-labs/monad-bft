@@ -851,6 +851,27 @@ where
                     PeerDiscoveryEmit::MetricsCommand(executor_metrics) => {
                         this.peer_discovery_metrics = executor_metrics;
                     }
+                    PeerDiscoveryEmit::Event(event) => {
+                        if let PeerDiscoveryEvent::ValidatorIpChanged {
+                            node_id,
+                            old_name_record,
+                            new_name_record,
+                        } = event
+                        {
+                            if let Some(validators) = this.epoch_validators.get(&this.current_epoch)
+                            {
+                                if validators.validators.contains_key(&node_id) {
+                                    let old_ip = old_name_record
+                                        .as_ref()
+                                        .map(|record| IpAddr::V4(*record.address().ip()))
+                                        .into_iter()
+                                        .collect::<Vec<_>>();
+                                    let new_ip = vec![IpAddr::V4(*new_name_record.address().ip())];
+                                    this.dataplane_writer.update_trusted(new_ip, old_ip);
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

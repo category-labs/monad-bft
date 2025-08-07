@@ -297,31 +297,43 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
             return vec![];
         }
 
-        // insert name record
+        let mut cmds = Vec::new();
+
         if let Some(current_name_record) = self.routing_info.get_mut(&peer_id) {
             if name_record.seq() > current_name_record.seq() {
-                // update name record
                 debug!(?peer_id, ?name_record, "name record updated");
+                let old_name_record = *current_name_record;
                 *current_name_record = name_record;
+
+                if self.is_validator(&peer_id) && old_name_record.address() != name_record.address()
+                {
+                    debug!(?peer_id, old_addr = ?old_name_record.address(), new_addr = ?name_record.address(), "validator ip changed");
+                    cmds.push(Self::validator_ip_changed_event(
+                        peer_id,
+                        Some(old_name_record),
+                        name_record,
+                    ));
+                }
             } else {
-                // exit if seq num is not incremented
                 return vec![];
             }
         } else {
-            // peer is not present, insert peer
             debug!(?peer_id, ?name_record, "name record inserted");
             self.routing_info.insert(peer_id, name_record);
+
+            if self.is_validator(&peer_id) {
+                debug!(?peer_id, addr = ?name_record.address(), "new validator added");
+                cmds.push(Self::validator_ip_changed_event(peer_id, None, name_record));
+            }
         }
 
         self.metrics[GAUGE_PEER_DISC_NUM_PEERS] = self.routing_info.len() as u64;
 
-        // full nodes only need to connect to a few validators so they don't need to connect to other full nodes
         if self.self_role == Role::FullNode {
             if self.is_validator(&peer_id) {
-                // look for upstream validator if insufficient
-                return self.look_for_upstream_validators();
+                cmds.extend(self.look_for_upstream_validators());
+                return cmds;
             } else {
-                // no need to send ping to other full nodes but still record last participation
                 self.connection_info
                     .entry(peer_id)
                     .and_modify(|connection_entry| {
@@ -334,12 +346,13 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
                         unresponsive_pings: 0,
                         last_participation: self.current_round,
                     });
-                return vec![];
+                return cmds;
             }
         }
 
         // validators send pings to newly modified/added peers
-        self.send_ping(peer_id)
+        cmds.extend(self.send_ping(peer_id));
+        cmds
     }
 
     fn remove_peer(
@@ -418,6 +431,18 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
     // a helper function to check if a node is a validator or a pinned full node
     fn is_pinned_node(&self, node_id: &NodeId<CertificateSignaturePubKey<ST>>) -> bool {
         self.is_validator(node_id) || self.pinned_full_nodes.contains(node_id)
+    }
+
+    fn validator_ip_changed_event(
+        node_id: NodeId<CertificateSignaturePubKey<ST>>,
+        old_name_record: Option<MonadNameRecord<ST>>,
+        new_name_record: MonadNameRecord<ST>,
+    ) -> PeerDiscoveryCommand<ST> {
+        PeerDiscoveryCommand::Event(PeerDiscoveryEvent::ValidatorIpChanged {
+            node_id,
+            old_name_record,
+            new_name_record,
+        })
     }
 }
 
@@ -1262,6 +1287,17 @@ mod tests {
             .collect::<Vec<_>>()
     }
 
+    fn extract_events(
+        cmds: Vec<PeerDiscoveryCommand<SignatureType>>,
+    ) -> Vec<PeerDiscoveryEvent<SignatureType>> {
+        cmds.into_iter()
+            .filter_map(|c| match c {
+                PeerDiscoveryCommand::Event(event) => Some(event),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    }
+
     #[test]
     fn test_check_peer_connection() {
         let keys = create_keys::<SignatureType>(3);
@@ -1843,5 +1879,76 @@ mod tests {
         } else {
             assert!(cmds.is_empty());
         }
+    }
+
+    #[test]
+    fn test_validator_ip_change_event() {
+        let keys = create_keys::<SignatureType>(3);
+        let peer0 = &keys[0];
+        let peer0_pubkey = NodeId::new(peer0.pubkey());
+        let peer1 = &keys[1];
+        let peer1_pubkey = NodeId::new(peer1.pubkey());
+        let peer2 = &keys[2];
+        let peer2_pubkey = NodeId::new(peer2.pubkey());
+
+        let mut state = generate_test_state(peer0, vec![]);
+        state
+            .epoch_validators
+            .insert(Epoch(1), BTreeSet::from([peer0_pubkey, peer1_pubkey]));
+
+        let create_ping = |id: u32, addr: [u8; 4], seq: u64, keypair: &KeyPairType| Ping {
+            id,
+            local_name_record: Some(MonadNameRecord::new(
+                NameRecord {
+                    address: SocketAddrV4::new(Ipv4Addr::from(addr), 8000),
+                    seq,
+                },
+                keypair,
+            )),
+        };
+
+        let assert_validator_ip_changed =
+            |event: &PeerDiscoveryEvent<SignatureType>,
+             expected_node_id: NodeId<CertificateSignaturePubKey<SignatureType>>,
+             expected_old_addr: Option<[u8; 4]>,
+             expected_new_addr: [u8; 4]| {
+                match event {
+                    PeerDiscoveryEvent::ValidatorIpChanged {
+                        node_id,
+                        old_name_record,
+                        new_name_record,
+                    } => {
+                        assert_eq!(*node_id, expected_node_id);
+                        if let Some(old_addr) = expected_old_addr {
+                            assert_eq!(
+                                old_name_record.as_ref().unwrap().address(),
+                                SocketAddrV4::new(Ipv4Addr::from(old_addr), 8000)
+                            );
+                        } else {
+                            assert!(old_name_record.is_none());
+                        }
+                        assert_eq!(
+                            new_name_record.address(),
+                            SocketAddrV4::new(Ipv4Addr::from(expected_new_addr), 8000)
+                        );
+                    }
+                    _ => panic!("Expected ValidatorIpChanged event"),
+                }
+            };
+
+        let cmds = state.handle_ping(peer1_pubkey, create_ping(1, [10, 0, 0, 1], 1, peer1));
+        let events = extract_events(cmds);
+        assert_eq!(events.len(), 1);
+        assert_validator_ip_changed(&events[0], peer1_pubkey, None, [10, 0, 0, 1]);
+        let cmds = state.handle_ping(peer1_pubkey, create_ping(2, [10, 0, 0, 2], 2, peer1));
+        let events = extract_events(cmds);
+        assert_eq!(events.len(), 1);
+        assert_validator_ip_changed(&events[0], peer1_pubkey, Some([10, 0, 0, 1]), [10, 0, 0, 2]);
+        let cmds = state.handle_ping(peer2_pubkey, create_ping(3, [10, 0, 0, 3], 1, peer2));
+        let events = extract_events(cmds);
+        assert_eq!(events.len(), 0);
+        let cmds = state.handle_ping(peer1_pubkey, create_ping(4, [10, 0, 0, 2], 3, peer1));
+        let events = extract_events(cmds);
+        assert_eq!(events.len(), 0);
     }
 }

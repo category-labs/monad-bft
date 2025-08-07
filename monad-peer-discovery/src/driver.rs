@@ -41,6 +41,7 @@ pub enum PeerDiscoveryEmit<ST: CertificateSignatureRecoverable> {
         message: PeerDiscoveryMessage<ST>,
     },
     MetricsCommand(ExecutorMetrics),
+    Event(PeerDiscoveryEvent<ST>),
 }
 
 struct PeerDiscTimers<ST: CertificateSignatureRecoverable> {
@@ -206,6 +207,7 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
                 self.pd.update_peer_participation(end_round, peers)
             }
             PeerDiscoveryEvent::Refresh => self.pd.refresh(),
+            PeerDiscoveryEvent::ValidatorIpChanged { .. } => vec![],
         };
 
         self.exec(cmds);
@@ -232,6 +234,14 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
                         .push_back(PeerDiscoveryEmit::MetricsCommand(
                             peer_discovery_metrics_command.0,
                         ));
+
+                    if let Some(waker) = self.waker.take() {
+                        waker.wake();
+                    }
+                }
+                PeerDiscoveryCommand::Event(event) => {
+                    self.pending_emits
+                        .push_back(PeerDiscoveryEmit::Event(event));
 
                     if let Some(waker) = self.waker.take() {
                         waker.wake();

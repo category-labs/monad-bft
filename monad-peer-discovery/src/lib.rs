@@ -156,6 +156,11 @@ pub enum PeerDiscoveryEvent<ST: CertificateSignatureRecoverable> {
         end_round: Round,
         peers: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
     },
+    ValidatorIpChanged {
+        node_id: NodeId<CertificateSignaturePubKey<ST>>,
+        old_name_record: Option<MonadNameRecord<ST>>,
+        new_name_record: MonadNameRecord<ST>,
+    },
     Refresh,
 }
 
@@ -192,6 +197,7 @@ pub enum PeerDiscoveryCommand<ST: CertificateSignatureRecoverable> {
     },
     TimerCommand(PeerDiscoveryTimerCommand<PeerDiscoveryEvent<ST>, ST>),
     MetricsCommand(PeerDiscoveryMetricsCommand),
+    Event(PeerDiscoveryEvent<ST>),
 }
 
 pub trait PeerDiscoveryAlgo {

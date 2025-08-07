@@ -44,7 +44,8 @@ rstest = { workspace = true }
 criterion = { workspace = true }
 futures-util = { workspace = true }
 insta = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
+serial_test = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "io-util", "net"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [[bench]]

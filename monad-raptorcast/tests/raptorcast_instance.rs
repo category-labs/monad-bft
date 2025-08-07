@@ -16,7 +16,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     io::ErrorKind,
-    net::{SocketAddr, SocketAddrV4, UdpSocket},
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket},
     num::ParseIntError,
     sync::{Arc, Once},
     time::Duration,
@@ -29,22 +29,85 @@ use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
     CertificateSignatureRecoverable, PubKey,
 };
-use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
+use monad_dataplane::{udp::DEFAULT_SEGMENT_SIZE, DataplaneBuilder};
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
+use monad_peer_discovery::{
+    discovery::{PeerDiscovery, PeerDiscoveryBuilder},
+    driver::PeerDiscoveryDriver,
+    MonadNameRecord, NameRecord,
+};
 use monad_raptor::SOURCE_SYMBOLS_MAX;
 use monad_raptorcast::{
+    config::{
+        RaptorCastConfig, RaptorCastConfigPrimary, RaptorCastConfigSecondary,
+        SecondaryRaptorCastModeConfig,
+    },
+    message::OutboundRouterMessage,
     new_defaulted_raptorcast_for_tests,
     udp::{build_messages, build_messages_with_length, MAX_REDUNDANCY},
     util::{BuildTarget, EpochValidators, FullNodes, Redundancy, Validator},
-    RaptorCastEvent,
+    RaptorCast, RaptorCastEvent,
 };
 use monad_secp::{KeyPair, SecpSignature};
-use monad_types::{Deserializable, Epoch, NodeId, Serializable, Stake};
+use monad_types::{Deserializable, Epoch, NodeId, Round, Serializable, Stake};
+use rand_chacha::{rand_core::SeedableRng, ChaCha8Rng};
+use serial_test::serial;
 use tracing_subscriber::fmt::format::FmtSpan;
 
 type SignatureType = SecpSignature;
 type PubKeyType = CertificateSignaturePubKey<SignatureType>;
+
+fn init_test_logger() {
+    let _ = tracing_subscriber::fmt::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_span_events(FmtSpan::CLOSE)
+        .try_init();
+}
+
+fn create_keypair(seed: u8) -> KeyPair {
+    <<SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::from_bytes(
+        &mut [seed; 32],
+    )
+    .unwrap()
+}
+
+fn create_raptorcast_config(keypair: Arc<KeyPair>) -> RaptorCastConfig<SignatureType> {
+    RaptorCastConfig {
+        shared_key: keypair,
+        mtu: 1450,
+        udp_message_max_age_ms: 5000,
+        primary_instance: RaptorCastConfigPrimary::default(),
+        secondary_instance: RaptorCastConfigSecondary {
+            raptor10_redundancy: 2,
+            mode: SecondaryRaptorCastModeConfig::None,
+        },
+    }
+}
+
+fn create_peer_discovery_builder(
+    self_id: NodeId<PubKeyType>,
+    self_record: MonadNameRecord<SignatureType>,
+    routing_info: BTreeMap<NodeId<PubKeyType>, MonadNameRecord<SignatureType>>,
+) -> PeerDiscoveryBuilder<SignatureType> {
+    PeerDiscoveryBuilder {
+        self_id,
+        self_record,
+        current_round: Round(0),
+        current_epoch: Epoch(0),
+        epoch_validators: std::collections::BTreeMap::new(),
+        pinned_full_nodes: std::collections::BTreeSet::new(),
+        routing_info,
+        ping_period: Duration::from_millis(1000),
+        refresh_period: Duration::from_millis(5000),
+        request_timeout: Duration::from_millis(500),
+        unresponsive_prune_threshold: 5,
+        last_participation_prune_threshold: Round(100),
+        min_num_peers: 3,
+        max_num_peers: 50,
+        rng: ChaCha8Rng::from_seed([0u8; 32]),
+    }
+}
 
 // Try to crash the R10 managed decoder by feeding it encoded symbols of different sizes.
 // A previous version of the R10 managed decoder did not handle this correctly and would panic.
@@ -500,4 +563,159 @@ where
             }
         }
     }
+}
+
+async fn assert_tcp_write_fails(addr: SocketAddr) {
+    if let Ok(stream) = tokio::net::TcpStream::connect(addr).await {
+        for _ in 0..10 {
+            if stream.try_write(b"test").is_err() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("tcp write should fail with 0 connection limit");
+    }
+}
+
+async fn assert_tcp_write_succeeds(addr: SocketAddr) {
+    for _ in 0..10 {
+        let stream = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("tcp connection should succeed");
+
+        stream.try_write(b"test").expect("tcp write should succeed");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn wait_for_tcp_write_success(addr: SocketAddr) {
+    for _ in 0..20 {
+        if let Ok(stream) = tokio::net::TcpStream::connect(addr).await {
+            if stream.try_write(b"test").is_ok() {
+                assert_tcp_write_succeeds(addr).await;
+                return;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("tcp connection should succeed after trusted IP update");
+}
+
+async fn send_peer_discovery_ping(
+    from_keypair: &KeyPair,
+    to_nodeid: NodeId<PubKeyType>,
+    to_addr: SocketAddr,
+    updated_record: MonadNameRecord<SignatureType>,
+) {
+    let ping = monad_peer_discovery::message::Ping {
+        id: 1,
+        local_name_record: Some(updated_record),
+    };
+
+    let discovery_msg = monad_peer_discovery::PeerDiscoveryMessage::Ping(ping);
+    let router_msg =
+        OutboundRouterMessage::<MockMessage, SignatureType>::PeerDiscoveryMessage(discovery_msg);
+    let serialized_msg = router_msg.try_serialize().unwrap();
+
+    let messages = build_messages::<SignatureType>(
+        from_keypair,
+        DEFAULT_SEGMENT_SIZE,
+        serialized_msg,
+        Redundancy::from_u8(2),
+        0,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64,
+        BuildTarget::PointToPoint(&to_nodeid),
+        &HashMap::from([(to_nodeid, to_addr)]),
+    );
+
+    let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    for (dest, payload) in messages {
+        for chunk in payload.chunks(usize::from(DEFAULT_SEGMENT_SIZE)) {
+            socket.send_to(chunk, dest).await.unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn test_trusted_ip_tcp_update() {
+    init_test_logger();
+
+    let rx_addr: SocketAddr = "127.0.0.1:10040".parse().unwrap();
+    let tx_addr: SocketAddr = "127.0.0.1:10041".parse().unwrap();
+    let untrusted_ip = Ipv4Addr::new(168, 0, 0, 1);
+    let trusted_ip = Ipv4Addr::new(127, 0, 0, 1);
+
+    let tx_keypair = create_keypair(70);
+    let rx_keypair = create_keypair(71);
+    let tx_nodeid = NodeId::new(tx_keypair.pubkey());
+    let rx_nodeid = NodeId::new(rx_keypair.pubkey());
+
+    let tx_name_record = NameRecord {
+        address: SocketAddrV4::new(untrusted_ip, tx_addr.port()),
+        seq: 0,
+    };
+
+    let rx_name_record = NameRecord {
+        address: SocketAddrV4::new(trusted_ip, rx_addr.port()),
+        seq: 0,
+    };
+
+    let routing_info = BTreeMap::from([
+        (tx_nodeid, MonadNameRecord::new(tx_name_record, &tx_keypair)),
+        (rx_nodeid, MonadNameRecord::new(rx_name_record, &rx_keypair)),
+    ]);
+
+    let dataplane = DataplaneBuilder::new(&rx_addr, 1_000)
+        .with_tcp_connections_limit(0, 0)
+        .build();
+    assert!(dataplane.block_until_ready(Duration::from_secs(2)));
+    let (dataplane_reader, dataplane_writer) = dataplane.split();
+
+    let pd = PeerDiscoveryDriver::new(create_peer_discovery_builder(
+        rx_nodeid,
+        MonadNameRecord::new(rx_name_record, &rx_keypair),
+        routing_info,
+    ));
+
+    let mut rx_service = RaptorCast::<
+        SignatureType,
+        MockMessage,
+        MockMessage,
+        <MockMessage as Message>::Event,
+        PeerDiscovery<SignatureType>,
+    >::new(
+        create_raptorcast_config(Arc::new(rx_keypair)),
+        dataplane_reader,
+        dataplane_writer,
+        Arc::new(std::sync::Mutex::new(pd)),
+    );
+
+    rx_service.exec(vec![RouterCommand::AddEpochValidatorSet {
+        epoch: Epoch(0),
+        validator_set: vec![(tx_nodeid, Stake(1)), (rx_nodeid, Stake(1))],
+    }]);
+
+    let _handle = tokio::spawn(async move {
+        loop {
+            let _ = rx_service.next().await;
+        }
+    });
+
+    assert_tcp_write_fails(rx_addr).await;
+
+    let updated_record = MonadNameRecord::new(
+        NameRecord {
+            address: SocketAddrV4::new(trusted_ip, tx_addr.port()),
+            seq: 1,
+        },
+        &tx_keypair,
+    );
+
+    send_peer_discovery_ping(&tx_keypair, rx_nodeid, rx_addr, updated_record).await;
+
+    wait_for_tcp_write_success(rx_addr).await;
 }

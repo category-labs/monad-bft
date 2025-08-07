@@ -182,6 +182,7 @@ rstest = "0.25.0"
 schemars = "0.8.21"
 scrypt = { version = "0.11", default-features = false }
 secp256k1 = "0.26"
+serial_test = "3.0"
 serde = "1.0"
 serde_json = "1.0"
 sha2 = "0.10"
