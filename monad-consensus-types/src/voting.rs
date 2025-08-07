@@ -21,6 +21,7 @@ use monad_types::*;
 use serde::{Deserialize, Serialize};
 
 /// Map validator NodeId to its Certificate PubKey
+#[derive(Clone)]
 pub struct ValidatorMapping<PT: PubKey, VKT: CertificateKeyPair> {
     pub map: BTreeMap<NodeId<PT>, VKT::PubKeyType>,
 }

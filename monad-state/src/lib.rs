@@ -1282,6 +1282,8 @@ where
         // (N-delay, N] roots have been requested
         let consensus = ConsensusState::new(
             &self.epoch_manager,
+            &self.val_epoch_map,
+            &self.nodeid,
             &self.consensus_config,
             root_info,
             high_certificate.clone(),
