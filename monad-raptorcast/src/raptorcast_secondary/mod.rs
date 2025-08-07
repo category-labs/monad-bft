@@ -18,7 +18,7 @@ use std::{
     marker::PhantomData,
     net::SocketAddr,
     pin::{pin, Pin},
-    sync::{Arc, Mutex},
+    sync::Arc,
     task::{Context, Poll},
     time::Duration,
 };
@@ -36,9 +36,9 @@ use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_dataplane::{udp::segment_size_for_mtu, DataplaneWriter, UnicastMsg};
-use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
+use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{Message, PeerEntry, RouterCommand};
-use monad_peer_discovery::{driver::PeerDiscoveryDriver, PeerDiscoveryAlgo, PeerDiscoveryEvent};
+use monad_peer_discovery::{PeerDiscoveryEvent, PeerDiscoveryHandle, PeerLookup};
 use monad_types::{DropTimer, Epoch, NodeId};
 use publisher::Publisher;
 use rand::SeedableRng;
@@ -57,6 +57,7 @@ use super::{
 // We're planning to merge monad-node (validator binary) and monad-full-node
 // (full node binary), so it's possible for a node to switch between roles at
 // runtime.
+#[expect(clippy::large_enum_variant)]
 enum Role<ST>
 where
     ST: CertificateSignatureRecoverable,
@@ -65,12 +66,11 @@ where
     Client(Client<ST>),
 }
 
-pub struct RaptorCastSecondary<ST, M, OM, SE, PD>
+pub struct RaptorCastSecondary<ST, M, OM, SE>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
     OM: Encodable + Into<M> + Clone,
-    PD: PeerDiscoveryAlgo<SignatureType = ST>,
 {
     // Main state machine, depending on wether we are playing the publisher role
     // (i.e. we are a validator) or a client role (full-node raptor-casted to)
@@ -84,24 +84,22 @@ where
 
     mtu: u16,
     dataplane_writer: DataplaneWriter,
-    peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
+    peer_discovery_handle: PeerDiscoveryHandle<ST>,
 
     channel_from_primary: UnboundedReceiver<FullNodesGroupMessage<ST>>,
-    metrics: ExecutorMetrics,
     _phantom: PhantomData<(OM, SE, M)>,
 }
 
-impl<ST, M, OM, SE, PD> RaptorCastSecondary<ST, M, OM, SE, PD>
+impl<ST, M, OM, SE> RaptorCastSecondary<ST, M, OM, SE>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
     OM: Encodable + Into<M> + Clone,
-    PD: PeerDiscoveryAlgo<SignatureType = ST>,
 {
     pub fn new(
         config: RaptorCastConfig<ST>,
         dataplane_writer: DataplaneWriter,
-        peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
+        peer_discovery_handle: PeerDiscoveryHandle<ST>,
         channel_from_primary: UnboundedReceiver<FullNodesGroupMessage<ST>>,
         channel_to_primary: UnboundedSender<Group<ST>>,
     ) -> Self {
@@ -146,9 +144,8 @@ where
             curr_epoch: Epoch(0),
             mtu: config.mtu,
             dataplane_writer,
-            peer_discovery_driver,
+            peer_discovery_handle,
             channel_from_primary,
-            metrics: Default::default(),
             _phantom: PhantomData,
         }
     }
@@ -259,12 +256,7 @@ where
         dest_node_ids: &FullNodes<CertificateSignaturePubKey<ST>>,
     ) -> FullNodesGroupMessage<ST> {
         if let FullNodesGroupMessage::ConfirmGroup(confirm_msg) = &group_msg {
-            let name_records = {
-                self.peer_discovery_driver
-                    .lock()
-                    .unwrap()
-                    .get_name_records()
-            };
+            let name_records = self.peer_discovery_handle.name_records();
             let mut filled_confirm_msg = confirm_msg.clone();
             filled_confirm_msg.name_records = Vec::default();
             for node_id in &dest_node_ids.list {
@@ -284,12 +276,11 @@ where
     }
 }
 
-impl<ST, M, OM, SE, PD> Executor for RaptorCastSecondary<ST, M, OM, SE, PD>
+impl<ST, M, OM, SE> Executor for RaptorCastSecondary<ST, M, OM, SE>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
     OM: Encodable + Into<M> + Clone,
-    PD: PeerDiscoveryAlgo<SignatureType = ST>,
 {
     type Command = RouterCommand<ST, OM>;
 
@@ -334,12 +325,7 @@ where
                         // The publisher needs to be periodically informed about new nodes out there,
                         // so that it can randomize when creating new groups.
                         {
-                            let known_addresses = {
-                                self.peer_discovery_driver
-                                    .lock()
-                                    .unwrap()
-                                    .get_known_addresses()
-                            };
+                            let known_addresses = self.peer_discovery_handle.known_addrs_v4();
                             let nodes: Vec<_> = known_addresses.keys().copied().collect();
                             trace!(
                                 "RaptorCastSecondary updating {} full nodes from PeerDiscovery",
@@ -351,16 +337,11 @@ where
                         if let Some((group_msg, full_nodes_set)) =
                             publisher.enter_round_and_step_until(round)
                         {
-                            let known_addresses = {
-                                self.peer_discovery_driver
-                                    .lock()
-                                    .unwrap()
-                                    .get_known_addresses()
-                            };
+                            let known_addresses = self.peer_discovery_handle.known_addrs();
 
                             // if group_msg is a ConfirmGroup message, update peer discovery with the group information
                             if let FullNodesGroupMessage::ConfirmGroup(confirm_msg) = &group_msg {
-                                self.peer_discovery_driver.lock().unwrap().update(
+                                self.peer_discovery_handle.send_event(
                                     PeerDiscoveryEvent::UpdateConfirmGroup {
                                         end_round: confirm_msg.prepare.end_round,
                                         peers: confirm_msg.peers.clone().into_iter().collect(),
@@ -404,11 +385,7 @@ where
 
                     let build_target = BuildTarget::FullNodeRaptorCast(curr_group);
 
-                    let known_addresses = self
-                        .peer_discovery_driver
-                        .lock()
-                        .unwrap()
-                        .get_known_addresses();
+                    let known_addresses = self.peer_discovery_handle.known_addrs();
 
                     let outbound_message = match OutboundRouterMessage::<OM, ST>::AppMessage(
                         message,
@@ -449,13 +426,12 @@ where
     }
 }
 
-impl<ST, M, OM, E, PD> Stream for RaptorCastSecondary<ST, M, OM, E, PD>
+impl<ST, M, OM, E> Stream for RaptorCastSecondary<ST, M, OM, E>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
     OM: Encodable + Into<M> + Clone,
     E: From<RaptorCastEvent<M::Event, ST>>,
-    PD: PeerDiscoveryAlgo<SignatureType = ST>,
     Self: Unpin,
 {
     type Item = E;
@@ -501,12 +477,10 @@ where
                             };
                             peers.push(peer_entry);
                         }
-                        this.peer_discovery_driver
-                            .lock()
-                            .unwrap()
-                            .update(PeerDiscoveryEvent::UpdatePeers { peers });
+                        this.peer_discovery_handle
+                            .send_event(PeerDiscoveryEvent::UpdatePeers { peers });
 
-                        this.peer_discovery_driver.lock().unwrap().update(
+                        this.peer_discovery_handle.send_event(
                             PeerDiscoveryEvent::UpdateConfirmGroup {
                                 end_round: confirm_msg.prepare.end_round,
                                 peers: confirm_msg.peers.clone().into_iter().collect(),
@@ -526,13 +500,7 @@ where
                     // Send back a response to the validator
                     trace!("RaptorCastSecondary sending back response for group message");
 
-                    let known_addresses = {
-                        this.peer_discovery_driver
-                            .lock()
-                            .unwrap()
-                            .get_known_addresses()
-                    };
-
+                    let known_addresses = this.peer_discovery_handle.known_addrs();
                     this.send_single_msg(response_msg, &validator_id, &known_addresses);
                 }
             }

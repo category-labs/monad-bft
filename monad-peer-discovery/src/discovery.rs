@@ -32,7 +32,8 @@ use tracing::{debug, info, trace, warn};
 use crate::{
     MonadNameRecord, NameRecord, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryCommand,
     PeerDiscoveryEvent, PeerDiscoveryMessage, PeerDiscoveryMetricsCommand,
-    PeerDiscoveryTimerCommand, PeerLookupRequest, PeerLookupResponse, Ping, Pong, TimerKind,
+    PeerDiscoveryTimerCommand, PeerLookup, PeerLookupRequest, PeerLookupResponse, PeerTable, Ping,
+    Pong, TimerKind,
 };
 
 /// Maximum number of peers to be included in a PeerLookupResponse
@@ -156,9 +157,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
         self,
     ) -> (
         Self::PeerDiscoveryAlgoType,
-        Vec<
-            PeerDiscoveryCommand<<Self::PeerDiscoveryAlgoType as PeerDiscoveryAlgo>::SignatureType>,
-        >,
+        Vec<PeerDiscoveryCommand<<Self::PeerDiscoveryAlgoType as PeerLookup>::SignatureType>>,
     ) {
         debug!("initializing peer discovery");
         assert!(self.ping_period > self.request_timeout);
@@ -421,12 +420,37 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
     }
 }
 
+impl<ST: CertificateSignatureRecoverable> PeerLookup for PeerDiscovery<ST> {
+    type SignatureType = ST;
+
+    fn lookup_name_record(
+        &self,
+        id: &NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+    ) -> Option<MonadNameRecord<Self::SignatureType>> {
+        self.routing_info.get(id).cloned()
+    }
+
+    fn known_addrs_v4(&self) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4> {
+        self.routing_info
+            .iter()
+            .map(|(id, name_record)| (*id, name_record.address()))
+            .collect()
+    }
+
+    fn name_records(
+        &self,
+    ) -> HashMap<
+        NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+        MonadNameRecord<Self::SignatureType>,
+    > {
+        self.routing_info.clone().into_iter().collect()
+    }
+}
+
 impl<ST> PeerDiscoveryAlgo for PeerDiscovery<ST>
 where
     ST: CertificateSignatureRecoverable,
 {
-    type SignatureType = ST;
-
     fn send_ping(
         &mut self,
         to: NodeId<CertificateSignaturePubKey<ST>>,
@@ -1109,26 +1133,8 @@ where
         &self.metrics
     }
 
-    fn get_addr_by_id(&self, id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<SocketAddrV4> {
-        self.routing_info
-            .get(id)
-            .map(|name_record| name_record.address())
-    }
-
-    fn get_known_addrs(&self) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4> {
-        self.routing_info
-            .iter()
-            .map(|(id, name_record)| (*id, name_record.address()))
-            .collect()
-    }
-
-    fn get_name_records(
-        &self,
-    ) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<ST>> {
-        self.routing_info
-            .iter()
-            .map(|(id, name_record)| (*id, *name_record))
-            .collect()
+    fn peer_table(&self) -> crate::PeerTable<ST> {
+        PeerTable::from(self.name_records())
     }
 }
 

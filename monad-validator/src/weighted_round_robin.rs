@@ -41,6 +41,7 @@ fn randomize(x: u64, m: u64) -> u64 {
     gen.gen_range(0..m)
 }
 
+#[expect(unused)]
 fn randomize_256(x: U256, m: U256) -> U256 {
     let mut gen = ChaCha20Rng::from_seed(x.to_be_bytes());
     let max = U256::MAX - (U256::MAX - m + U256::from(1)) % m;
