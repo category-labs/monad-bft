@@ -42,7 +42,9 @@ use monad_raptorcast::{
     RaptorCast, RaptorCastEvent,
 };
 use monad_secp::{KeyPair, SecpSignature};
-use monad_types::{Deserializable, Epoch, NodeId, Round, RoundSpan, Serializable, Stake};
+use monad_types::{
+    Deserializable, Epoch, NodeId, Round, RoundSpan, Serializable, Stake, UdpPriority,
+};
 use tokio::sync::mpsc::unbounded_channel;
 use tracing_subscriber::fmt::format::FmtSpan;
 
@@ -669,4 +671,115 @@ async fn delete_expired_groups() {
 
     // expired group should be deleted
     assert!(rebroadcast_map.is_empty(), "Expected empty rebroadcast map");
+}
+
+#[tokio::test]
+async fn test_priority_messages() {
+    let tx_addr: SocketAddrV4 = "127.0.0.1:11000".parse().unwrap();
+    let rx_addr: SocketAddrV4 = "127.0.0.1:11001".parse().unwrap();
+
+    let mut tx_secret = [1u8; 32];
+    let mut rx_secret = [2u8; 32];
+    let tx_key = Arc::new(KeyPair::from_bytes(&mut tx_secret).unwrap());
+    let rx_key = Arc::new(KeyPair::from_bytes(&mut rx_secret).unwrap());
+
+    let tx_nodeid = NodeId::new(tx_key.pubkey());
+    let rx_nodeid = NodeId::new(rx_key.pubkey());
+
+    let known_addresses = HashMap::from([(tx_nodeid, tx_addr), (rx_nodeid, rx_addr)]);
+
+    let mut tx_rc = new_defaulted_raptorcast_for_tests::<
+        SignatureType,
+        MockMessage,
+        MockMessage,
+        MockEvent<PubKeyType>,
+    >(
+        SocketAddr::V4(tx_addr),
+        known_addresses.clone(),
+        tx_key.clone(),
+    );
+
+    let mut rx_rc = new_defaulted_raptorcast_for_tests::<
+        SignatureType,
+        MockMessage,
+        MockMessage,
+        MockEvent<PubKeyType>,
+    >(
+        SocketAddr::V4(rx_addr),
+        known_addresses.clone(),
+        rx_key.clone(),
+    );
+
+    let epoch = Epoch(0);
+    let validator_set = vec![(tx_nodeid, Stake::ONE), (rx_nodeid, Stake::ONE)];
+
+    tx_rc.exec(vec![RouterCommand::AddEpochValidatorSet {
+        epoch,
+        validator_set: validator_set.clone(),
+    }]);
+
+    rx_rc.exec(vec![RouterCommand::AddEpochValidatorSet {
+        epoch,
+        validator_set: validator_set.clone(),
+    }]);
+
+    const HIGH_PRIORITY_START: u32 = 1000;
+    const REGULAR_PRIORITY_START: u32 = 2000;
+    const MESSAGE_COUNT: usize = 100;
+    const MESSAGE_SIZE: usize = 10000;
+
+    for i in 0..MESSAGE_COUNT {
+        let high_priority_msg = MockMessage::new(HIGH_PRIORITY_START + i as u32, MESSAGE_SIZE);
+        tx_rc.exec(vec![RouterCommand::PublishWithPriority {
+            target: monad_types::RouterTarget::PointToPoint(rx_nodeid),
+            message: high_priority_msg,
+            priority: UdpPriority::High,
+        }]);
+    }
+
+    for i in 0..MESSAGE_COUNT {
+        let regular_priority_msg =
+            MockMessage::new(REGULAR_PRIORITY_START + i as u32, MESSAGE_SIZE);
+        tx_rc.exec(vec![RouterCommand::PublishWithPriority {
+            target: monad_types::RouterTarget::PointToPoint(rx_nodeid),
+            message: regular_priority_msg,
+            priority: UdpPriority::Regular,
+        }]);
+    }
+
+    let mut received_messages = Vec::new();
+    let timeout = Duration::from_secs(5);
+    let start = std::time::Instant::now();
+
+    while received_messages.len() < MESSAGE_COUNT * 2 && start.elapsed() < timeout {
+        if let Some(event) = rx_rc.next().await {
+            let MockEvent((_, msg_id)) = event;
+            received_messages.push(msg_id);
+        }
+    }
+
+    assert_eq!(
+        received_messages.len(),
+        MESSAGE_COUNT * 2,
+        "Should receive all messages"
+    );
+
+    let high_priority_received = received_messages[0..MESSAGE_COUNT].to_vec();
+    let regular_priority_received = received_messages[MESSAGE_COUNT..].to_vec();
+
+    for (i, msg_id) in high_priority_received.iter().enumerate() {
+        assert_eq!(
+            *msg_id,
+            HIGH_PRIORITY_START + i as u32,
+            "High priority messages should be received first and in order"
+        );
+    }
+
+    for (i, msg_id) in regular_priority_received.iter().enumerate() {
+        assert_eq!(
+            *msg_id,
+            REGULAR_PRIORITY_START + i as u32,
+            "Regular priority messages should be received after high priority"
+        );
+    }
 }

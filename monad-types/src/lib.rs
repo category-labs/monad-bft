@@ -620,6 +620,25 @@ pub enum RouterTarget<P: PubKey> {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(usize)]
+pub enum UdpPriority {
+    High = 0,
+    Regular = 1,
+}
+
+impl TryFrom<usize> for UdpPriority {
+    type Error = &'static str;
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(UdpPriority::High),
+            1 => Ok(UdpPriority::Regular),
+            _ => Err("invalid priority index"),
+        }
+    }
+}
+
 /// Trait for use in tests to populate structs where the value of the fields is not relevant
 pub trait DontCare {
     fn dont_care() -> Self;

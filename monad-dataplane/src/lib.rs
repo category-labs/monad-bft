@@ -27,6 +27,7 @@ use std::{
 use addrlist::Addrlist;
 use bytes::Bytes;
 use futures::channel::oneshot;
+use monad_types::UdpPriority;
 use monoio::{spawn, time::Instant, IoUringDriver, RuntimeBuilder};
 use tcp::{TcpConfig, TcpControl, TcpRateLimit};
 use tokio::sync::mpsc::{self, error::TrySendError};
@@ -39,13 +40,6 @@ pub mod tcp;
 pub mod udp;
 
 pub(crate) use udp::UdpMessageType;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(usize)]
-pub enum UdpPriority {
-    High = 0,
-    Regular = 1,
-}
 
 pub struct DataplaneBuilder {
     local_addr: SocketAddr,

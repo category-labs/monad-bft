@@ -400,6 +400,13 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
                 RouterCommand::PublishToFullNodes { .. } => {
                     // TODO
                 }
+                RouterCommand::PublishWithPriority {
+                    target,
+                    message,
+                    priority: _,
+                } => {
+                    self.router.send_outbound(self.tick, target, message);
+                }
             }
         }
     }

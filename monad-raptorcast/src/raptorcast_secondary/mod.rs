@@ -308,6 +308,9 @@ where
                 Self::Command::Publish { .. } => {
                     panic!("Command routed to secondary RaptorCast: Publish")
                 }
+                Self::Command::PublishWithPriority { .. } => {
+                    panic!("Command routed to secondary RaptorCast: PublishWithPriority")
+                }
                 Self::Command::AddEpochValidatorSet { .. } => {
                     panic!("Command routed to secondary RaptorCast: AddEpochValidatorSet")
                 }

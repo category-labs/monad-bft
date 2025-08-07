@@ -26,8 +26,9 @@ use futures::{channel::oneshot, executor, FutureExt};
 use monad_dataplane::{
     tcp::tx::{MSG_WAIT_TIMEOUT, QUEUED_MESSAGE_LIMIT},
     udp::DEFAULT_SEGMENT_SIZE,
-    BroadcastMsg, DataplaneBuilder, RecvUdpMsg, TcpMsg, UdpPriority, UnicastMsg,
+    BroadcastMsg, DataplaneBuilder, RecvUdpMsg, TcpMsg, UnicastMsg,
 };
+use monad_types::UdpPriority;
 use ntest::timeout;
 use rand::Rng;
 use rstest::*;

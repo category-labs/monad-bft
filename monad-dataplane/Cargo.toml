@@ -9,6 +9,8 @@ edition = "2021"
 bench = false
 
 [dependencies]
+monad-types = { workspace = true }
+
 bytes = { workspace = true }
 env_logger = { workspace = true }
 futures = { workspace = true }

@@ -148,6 +148,11 @@ impl<S: PeerDiscSwarmRelation> Executor for MockPeerDiscExecutor<S> {
                 RouterCommand::Publish { target, message } => {
                     self.router.send_outbound(self.tick, target, message)
                 }
+                RouterCommand::PublishWithPriority {
+                    target,
+                    message,
+                    priority: _,
+                } => self.router.send_outbound(self.tick, target, message),
                 RouterCommand::AddEpochValidatorSet { .. } => {}
                 RouterCommand::UpdateCurrentRound(..) => {}
                 RouterCommand::GetPeers => {}

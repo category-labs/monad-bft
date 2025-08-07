@@ -163,6 +163,35 @@ where
                             .unwrap();
                     }
                 },
+                RouterCommand::PublishWithPriority {
+                    target,
+                    message,
+                    priority: _,
+                } => match target {
+                    RouterTarget::Broadcast(_) | RouterTarget::Raptorcast(_) => {
+                        let message = message.into();
+                        for tx in self.txs.values() {
+                            tx.send((now, self.me, message.clone())).unwrap();
+                        }
+                    }
+                    RouterTarget::PointToPoint(peer) => {
+                        self.txs
+                            .get(&peer)
+                            .unwrap()
+                            .send((now, self.me, message.into()))
+                            .unwrap();
+                    }
+                    RouterTarget::TcpPointToPoint { to, completion } => {
+                        if let Some(completion) = completion {
+                            let _ = completion.send(());
+                        }
+                        self.txs
+                            .get(&to)
+                            .unwrap()
+                            .send((now, self.me, message.into()))
+                            .unwrap();
+                    }
+                },
                 RouterCommand::GetPeers => {}
                 RouterCommand::UpdatePeers { .. } => {}
                 RouterCommand::GetFullNodes => {}

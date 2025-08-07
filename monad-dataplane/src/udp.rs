@@ -27,25 +27,13 @@ use monoio::{net::udp::UdpSocket, spawn, time};
 use tokio::sync::mpsc;
 use tracing::{debug, error, trace, warn};
 
-use super::{RecvUdpMsg, UdpMsg, UdpPriority};
+use super::{RecvUdpMsg, UdpMsg};
 use crate::buffer_ext::SocketBufferExt;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum UdpMessageType {
     Broadcast,
     Direct,
-}
-
-impl TryFrom<usize> for UdpPriority {
-    type Error = &'static str;
-
-    fn try_from(value: usize) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(UdpPriority::High),
-            1 => Ok(UdpPriority::Regular),
-            _ => Err("invalid priority index"),
-        }
-    }
 }
 
 struct PriorityQueues {
