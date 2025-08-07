@@ -446,6 +446,18 @@ where
 
                 account_balance.remaining_reserve_balance =
                     estimated_balance.min(account_balance.max_reserve_balance);
+                debug!(
+                    "Block has emptying txn. updated balance: {:?} \
+                        first txn value {:?} \
+                        first txn gas {:?} \
+                        block seq_num {:?} \
+                        address: {:?}",
+                    account_balance,
+                    block_txn_fees.first_txn_value,
+                    block_txn_fees.first_txn_gas,
+                    self.block_seq_num,
+                    eth_address,
+                );
             } else {
                 block_gas_cost = block_txn_fees
                     .max_gas_cost
@@ -526,6 +538,20 @@ where
             let estimated_balance = account_balance.balance.saturating_sub(txn_max_cost);
             let reserve_balance = account_balance.max_reserve_balance.min(estimated_balance);
 
+            debug!(
+                "New emptying txn. balance: {:?} \
+                    txn_max_cost {:?} \
+                    estimated_balance {:?} \
+                    new reserve balance {:?} \
+                    block seq_num {:?} \
+                    address: {:?}",
+                account_balance,
+                txn_max_cost,
+                estimated_balance,
+                reserve_balance,
+                self.block_seq_num,
+                eth_address,
+            );
             account_balance.balance = estimated_balance;
             account_balance.remaining_reserve_balance = reserve_balance;
             account_balance.block_seqnum_of_latest_txn = self.block_seq_num;
