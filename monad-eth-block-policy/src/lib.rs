@@ -84,13 +84,15 @@ fn compute_intrinsic_gas(tx: &TxEnvelope) -> u64 {
 }
 
 pub fn compute_txn_max_value(txn: &TxEnvelope) -> U256 {
-    let txn_value = U256::try_from(txn.value()).unwrap();
+    let txn_value = txn.value();
     let gas_cost = compute_txn_max_gas_cost(txn);
     txn_value.saturating_add(gas_cost)
 }
 
 pub fn compute_txn_max_gas_cost(txn: &TxEnvelope) -> U256 {
-    U256::from(txn.gas_limit() as u128 * txn.max_fee_per_gas())
+    let gas_limit = U256::from(txn.gas_limit());
+    let max_fee = U256::from(txn.max_fee_per_gas());
+    gas_limit.checked_mul(max_fee).expect("no overflow")
 }
 
 /// Stateless helper function to check validity of an Ethereum transaction
@@ -459,6 +461,18 @@ where
 
                 account_balance.remaining_reserve_balance =
                     estimated_balance.min(account_balance.max_reserve_balance);
+                debug!(
+                    "Block has emptying txn. updated balance: {:?} \
+                        first txn value {:?} \
+                        first txn gas {:?} \
+                        block seq_num {:?} \
+                        address: {:?}",
+                    account_balance,
+                    block_txn_fees.first_txn_value,
+                    block_txn_fees.first_txn_gas,
+                    self.block_seq_num,
+                    eth_address,
+                );
             } else {
                 block_gas_cost = block_txn_fees
                     .max_gas_cost
@@ -539,6 +553,20 @@ where
             let estimated_balance = account_balance.balance.saturating_sub(txn_max_cost);
             let reserve_balance = account_balance.max_reserve_balance.min(estimated_balance);
 
+            debug!(
+                "New emptying txn. balance: {:?} \
+                    txn_max_cost {:?} \
+                    estimated_balance {:?} \
+                    new reserve balance {:?} \
+                    block seq_num {:?} \
+                    address: {:?}",
+                account_balance,
+                txn_max_cost,
+                estimated_balance,
+                reserve_balance,
+                self.block_seq_num,
+                eth_address,
+            );
             account_balance.balance = estimated_balance;
             account_balance.remaining_reserve_balance = reserve_balance;
             account_balance.block_seqnum_of_latest_txn = self.block_seq_num;
