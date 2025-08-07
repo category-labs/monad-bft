@@ -116,7 +116,7 @@ where
             let locked_epoch = seq_num.get_locked_epoch(self.val_set_update_interval);
             assert_eq!(
                 locked_epoch,
-                seq_num.to_epoch(self.val_set_update_interval) + Epoch(2)
+                seq_num.to_epoch(self.val_set_update_interval) + Epoch(1)
             );
             self.next_val_data = Some(ValidatorSetDataWithEpoch {
                 epoch: locked_epoch,
@@ -250,14 +250,14 @@ where
         let mut val_data_1 = genesis_validator_data.0.clone();
         let mut val_data_2 = val_data_1.clone();
 
-        for validator in val_data_1.iter_mut().take(num_validators / 2) {
-            validator.stake = Stake(0);
-        }
-        for validator in val_data_2
+        for validator in val_data_1
             .iter_mut()
             .take(num_validators)
             .skip(num_validators / 2)
         {
+            validator.stake = Stake(0);
+        }
+        for validator in val_data_2.iter_mut().take(num_validators / 2) {
             validator.stake = Stake(0);
         }
 
@@ -283,7 +283,7 @@ where
             let locked_epoch = seq_num.get_locked_epoch(self.val_set_update_interval);
             assert_eq!(
                 locked_epoch,
-                seq_num.to_epoch(self.val_set_update_interval) + Epoch(2)
+                seq_num.to_epoch(self.val_set_update_interval) + Epoch(1)
             );
             self.next_val_data = if locked_epoch.0 % 2 == 0 {
                 Some(ValidatorSetDataWithEpoch {
