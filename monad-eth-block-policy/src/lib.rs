@@ -28,7 +28,6 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_txpool_types::TransactionError;
 use monad_eth_types::{Balance, EthAccount, EthExecutionProtocol, EthHeader, Nonce};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_system_calls::SystemTransaction;
@@ -36,6 +35,8 @@ use monad_types::{BlockId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_SEQ_NUM};
 use monad_validator::signature_collection::SignatureCollection;
 use sorted_vector_map::SortedVectorMap;
 use tracing::{trace, warn};
+
+pub mod validation;
 
 /// Retriever trait for account nonces from block(s)
 pub trait AccountNonceRetrievable {
@@ -47,97 +48,12 @@ pub enum ReserveBalanceCheck {
     Validate,
 }
 
-fn compute_intrinsic_gas(tx: &TxEnvelope) -> u64 {
-    // base stipend
-    let mut intrinsic_gas = 21000;
-
-    // YP, Eqn. 60, first summation
-    // 4 gas for each zero byte and 16 gas for each non zero byte
-    let zero_data_len = tx.input().iter().filter(|v| **v == 0).count() as u64;
-    let non_zero_data_len = tx.input().len() as u64 - zero_data_len;
-    intrinsic_gas += zero_data_len * 4;
-    // EIP-2028: Transaction data gas cost reduction (was originally 64 for non zero byte)
-    intrinsic_gas += non_zero_data_len * 16;
-
-    if tx.kind().is_create() {
-        // adds 32000 to intrinsic gas if transaction is contract creation
-        intrinsic_gas += 32000;
-        // EIP-3860: Limit and meter initcode
-        // Init code stipend for bytecode analysis
-        intrinsic_gas += ((tx.input().len() as u64 + 31) / 32) * 2;
-    }
-
-    // EIP-2930
-    let access_list = tx
-        .access_list()
-        .map(|list| list.0.as_slice())
-        .unwrap_or(&[]);
-    let accessed_slots: usize = access_list.iter().map(|item| item.storage_keys.len()).sum();
-    // each address in access list costs 2400 gas
-    intrinsic_gas += access_list.len() as u64 * 2400;
-    // each storage key in access list costs 1900 gas
-    intrinsic_gas += accessed_slots as u64 * 1900;
-
-    intrinsic_gas
-}
-
 pub fn compute_txn_max_value(txn: &TxEnvelope) -> U256 {
     let txn_value = txn.value();
     let gas_limit = U256::from(txn.gas_limit());
     let max_fee = U256::from(txn.max_fee_per_gas());
     let gas_cost = gas_limit.checked_mul(max_fee).expect("no overflow");
     txn_value.saturating_add(gas_cost)
-}
-
-/// Stateless helper function to check validity of an Ethereum transaction
-pub fn static_validate_transaction(
-    tx: &TxEnvelope,
-    chain_id: u64,
-    proposal_gas_limit: u64,
-    max_code_size: usize,
-) -> Result<(), TransactionError> {
-    // EIP-2 - verify that s is in the lower half of the curve
-    if tx.signature().normalize_s().is_some() {
-        return Err(TransactionError::UnsupportedTransactionType);
-    }
-
-    // EIP-155
-    // We allow legacy transactions without chain_id specified to pass through
-    if let Some(tx_chain_id) = tx.chain_id() {
-        if tx_chain_id != chain_id {
-            return Err(TransactionError::InvalidChainId);
-        }
-    }
-
-    // EIP-1559
-    if let Some(max_priority_fee) = tx.max_priority_fee_per_gas() {
-        if max_priority_fee > tx.max_fee_per_gas() {
-            return Err(TransactionError::MaxPriorityFeeTooHigh);
-        }
-    }
-
-    // EIP-3860
-    // max init_code is (2 * max_code_size)
-    let max_init_code_size: usize = 2 * max_code_size;
-    if tx.kind().is_create() && tx.input().len() > max_init_code_size {
-        return Err(TransactionError::InitCodeLimitExceeded);
-    }
-
-    // YP eq. 62 - intrinsic gas validation
-    let intrinsic_gas = compute_intrinsic_gas(tx);
-    if tx.gas_limit() < intrinsic_gas {
-        return Err(TransactionError::GasLimitTooLow);
-    }
-
-    if tx.gas_limit() > proposal_gas_limit {
-        return Err(TransactionError::GasLimitTooHigh);
-    }
-
-    if tx.is_eip4844() || tx.is_eip7702() {
-        return Err(TransactionError::UnsupportedTransactionType);
-    }
-
-    Ok(())
 }
 
 struct BlockLookupIndex {
@@ -849,10 +765,8 @@ where
 
 #[cfg(test)]
 mod test {
-    use std::str::FromStr;
-
-    use alloy_consensus::{SignableTransaction, TxEip1559, TxLegacy};
-    use alloy_primitives::{Address, Bytes, FixedBytes, PrimitiveSignature, TxKind, B256};
+    use alloy_consensus::{SignableTransaction, TxEip1559};
+    use alloy_primitives::{Address, FixedBytes, PrimitiveSignature, TxKind, B256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use monad_crypto::NopSignature;
@@ -1034,139 +948,6 @@ mod test {
             buffer.compute_txn_fee(SeqNum(0), &address3).txn_fee,
             U256::MAX
         );
-    }
-
-    #[test]
-    fn test_static_validate_transaction() {
-        let address = Address(FixedBytes([0x11; 20]));
-        const CHAIN_ID: u64 = 1337;
-        const PROPOSAL_GAS_LIMIT: u64 = 300_000_000;
-
-        // pre EIP-155 transaction with no chain id is allowed
-        let tx_no_chain_id = TxLegacy {
-            chain_id: None,
-            nonce: 0,
-            to: TxKind::Call(address),
-            gas_price: 1000,
-            gas_limit: 1_000_000,
-            ..Default::default()
-        };
-        let signature = sign_tx(&tx_no_chain_id.signature_hash());
-        let txn = tx_no_chain_id.into_signed(signature);
-
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
-        assert!(matches!(result, Ok(())));
-
-        // transaction with incorrect chain id
-        let tx_invalid_chain_id = TxEip1559 {
-            chain_id: CHAIN_ID - 1,
-            nonce: 0,
-            to: TxKind::Call(address),
-            max_fee_per_gas: 1000,
-            max_priority_fee_per_gas: 10,
-            gas_limit: 1_000_000,
-            ..Default::default()
-        };
-        let signature = sign_tx(&tx_invalid_chain_id.signature_hash());
-        let txn = tx_invalid_chain_id.into_signed(signature);
-
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
-        assert!(matches!(result, Err(TransactionError::InvalidChainId)));
-
-        // contract deployment transaction with input data larger than 2 * 0x6000 (initcode limit)
-        let input = vec![0; 2 * 0x6000 + 1];
-        let tx_over_initcode_limit = TxEip1559 {
-            chain_id: CHAIN_ID,
-            nonce: 0,
-            to: TxKind::Create,
-            max_fee_per_gas: 10000,
-            max_priority_fee_per_gas: 10,
-            gas_limit: 1_000_000,
-            input: input.into(),
-            ..Default::default()
-        };
-        let signature = sign_tx(&tx_over_initcode_limit.signature_hash());
-        let txn = tx_over_initcode_limit.into_signed(signature);
-
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
-        assert!(matches!(
-            result,
-            Err(TransactionError::InitCodeLimitExceeded)
-        ));
-
-        // transaction with larger max priority fee than max fee per gas
-        let tx_priority_fee_too_high = TxEip1559 {
-            chain_id: CHAIN_ID,
-            nonce: 0,
-            to: TxKind::Call(address),
-            max_fee_per_gas: 1000,
-            max_priority_fee_per_gas: 10000,
-            gas_limit: 1_000_000,
-            input: vec![].into(),
-            ..Default::default()
-        };
-        let signature = sign_tx(&tx_priority_fee_too_high.signature_hash());
-        let txn = tx_priority_fee_too_high.into_signed(signature);
-
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
-        assert!(matches!(
-            result,
-            Err(TransactionError::MaxPriorityFeeTooHigh)
-        ));
-
-        // transaction with gas limit lower than intrinsic gas
-        let tx_gas_limit_too_low = TxEip1559 {
-            chain_id: CHAIN_ID,
-            nonce: 0,
-            to: TxKind::Call(address),
-            max_fee_per_gas: 1000,
-            max_priority_fee_per_gas: 10,
-            gas_limit: 20_000,
-            input: vec![].into(),
-            ..Default::default()
-        };
-        let signature = sign_tx(&tx_gas_limit_too_low.signature_hash());
-        let txn = tx_gas_limit_too_low.into_signed(signature);
-
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
-        assert!(matches!(result, Err(TransactionError::GasLimitTooLow)));
-
-        // transaction with gas limit higher than block gas limit
-        let tx_gas_limit_too_high = TxEip1559 {
-            chain_id: CHAIN_ID,
-            nonce: 0,
-            to: TxKind::Call(address),
-            max_fee_per_gas: 1000,
-            max_priority_fee_per_gas: 10,
-            gas_limit: PROPOSAL_GAS_LIMIT + 1,
-            input: vec![].into(),
-            ..Default::default()
-        };
-        let signature = sign_tx(&tx_gas_limit_too_high.signature_hash());
-        let txn = tx_gas_limit_too_high.into_signed(signature);
-
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
-        assert!(matches!(result, Err(TransactionError::GasLimitTooHigh)));
-    }
-
-    #[test]
-    fn test_compute_intrinsic_gas() {
-        const CHAIN_ID: u64 = 1337;
-        let tx = TxEip1559 {
-            chain_id: CHAIN_ID,
-            nonce: 0,
-            to: TxKind::Create,
-            max_fee_per_gas: 1000,
-            max_priority_fee_per_gas: 10,
-            gas_limit: 1_000_000,
-            input: Bytes::from_str("0x6040608081523462000414").unwrap(),
-            ..Default::default()
-        };
-        let signature = sign_tx(&tx.signature_hash());
-        let tx = tx.into_signed(signature);
-
-        let result = compute_intrinsic_gas(&tx.into());
-        assert_eq!(result, 53166);
     }
 
     proptest! {

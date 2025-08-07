@@ -760,7 +760,7 @@ fn test_nonce_exists_in_pending_block() {
 
     // generate two transactions, both with nonce = 0
     let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
-    let tx2 = make_legacy_tx(S1, BASE_FEE + 1, GAS_LIMIT, 0, 1000);
+    let tx2 = make_legacy_tx(S1, BASE_FEE + 1, GAS_LIMIT, 0, 500);
 
     let tx3 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
 
