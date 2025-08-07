@@ -278,10 +278,11 @@ impl<'ring> ExecEventRef<'ring> {
 }
 
 /// Flow info for execution events.
+#[allow(missing_docs)]
 pub struct ExecEventRingFlowInfo {
-    block_seqno: u64,
-    txn_idx: Option<usize>,
-    account_idx: u64,
+    pub block_seqno: u64,
+    pub txn_idx: Option<usize>,
+    pub account_idx: u64,
 }
 
 impl EventDecoder for ExecEventDecoder {
