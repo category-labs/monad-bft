@@ -16,9 +16,11 @@
 use std::time::Duration;
 
 use alloy_consensus::{
-    constants::EMPTY_WITHDRAWALS, transaction::Recovered, TxEnvelope, EMPTY_OMMER_ROOT_HASH,
+    constants::EMPTY_WITHDRAWALS, transaction::Recovered, Transaction, TxEnvelope,
+    EMPTY_OMMER_ROOT_HASH,
 };
 use alloy_primitives::Address;
+use alloy_rlp::Encodable;
 use itertools::Itertools;
 use monad_consensus_types::{
     block::ProposedExecutionInputs, payload::RoundSignature,
@@ -31,6 +33,7 @@ use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason, EthTxPoolSnapshot};
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader, BASE_FEE_PER_GAS};
 use monad_state_backend::{StateBackend, StateBackendError};
+use monad_system_calls::generate_system_transactions;
 use monad_types::SeqNum;
 use tracing::{info, warn};
 
@@ -262,12 +265,19 @@ where
         // u64::MAX seconds is ~500 Billion years
         assert!(timestamp_seconds < u64::MAX.into());
 
+        let system_transactions = self.get_system_transactions();
+        let system_txs_gas_limit: u64 = system_transactions.iter().map(|tx| tx.gas_limit()).sum();
+        let system_txs_length: u64 = system_transactions
+            .iter()
+            .map(|tx| tx.length() as u64)
+            .sum();
+
         let transactions = self.tracked.create_proposal(
             event_tracker,
             proposed_seq_num,
-            tx_limit,
-            proposal_gas_limit,
-            proposal_byte_limit,
+            tx_limit - system_transactions.len(),
+            proposal_gas_limit - system_txs_gas_limit,
+            proposal_byte_limit - system_txs_length,
             block_policy,
             extending_blocks.iter().collect(),
             state_backend,
@@ -380,5 +390,12 @@ where
             .chain(self.pending.iter_txs().map(ValidEthTransaction::signer))
             .unique()
             .collect()
+    }
+
+    fn get_system_transactions(&self) -> Vec<Recovered<TxEnvelope>> {
+        // TODO populate this
+        let sys_calls = Vec::new();
+
+        generate_system_transactions(sys_calls)
     }
 }

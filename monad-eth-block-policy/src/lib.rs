@@ -154,6 +154,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     pub block: ConsensusFullBlock<ST, SCT, EthExecutionProtocol>,
+    pub system_txns: Vec<Recovered<TxEnvelope>>,
     pub validated_txns: Vec<Recovered<TxEnvelope>>,
     pub nonces: BTreeMap<Address, Nonce>,
     pub txn_fees: BTreeMap<Address, Balance>,
@@ -706,6 +707,9 @@ where
             );
             return Err(BlockPolicyError::ExecutionResultMismatch);
         }
+
+        // TODO check system transation input data here
+        assert!(block.system_txns.is_empty());
 
         // TODO fix this unnecessary copy into a new vec to generate an owned Address
         let tx_signers = block
