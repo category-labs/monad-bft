@@ -81,8 +81,8 @@ pub fn different_symbol_sizes() {
 
         let mut validators = EpochValidators {
             validators: BTreeMap::from([
-                (rx_nodeid, Validator { stake: Stake(1) }),
-                (tx_nodeid, Validator { stake: Stake(1) }),
+                (rx_nodeid, Validator { stake: Stake::ONE }),
+                (tx_nodeid, Validator { stake: Stake::ONE }),
             ]),
         };
 
@@ -145,8 +145,8 @@ pub fn buffer_count_overflow() {
 
     let mut validators = EpochValidators {
         validators: BTreeMap::from([
-            (rx_nodeid, Validator { stake: Stake(1) }),
-            (tx_nodeid, Validator { stake: Stake(1) }),
+            (rx_nodeid, Validator { stake: Stake::ONE }),
+            (tx_nodeid, Validator { stake: Stake::ONE }),
         ]),
     };
 
@@ -200,8 +200,8 @@ pub fn oversized_message() {
 
     let mut validators = EpochValidators {
         validators: BTreeMap::from([
-            (rx_nodeid, Validator { stake: Stake(1) }),
-            (tx_nodeid, Validator { stake: Stake(1) }),
+            (rx_nodeid, Validator { stake: Stake::ONE }),
+            (tx_nodeid, Validator { stake: Stake::ONE }),
         ]),
     };
 
@@ -281,8 +281,8 @@ pub fn valid_rebroadcast() {
 
     let mut validators = EpochValidators {
         validators: BTreeMap::from([
-            (rx_nodeid, Validator { stake: Stake(1) }),
-            (tx_nodeid, Validator { stake: Stake(1) }),
+            (rx_nodeid, Validator { stake: Stake::ONE }),
+            (tx_nodeid, Validator { stake: Stake::ONE }),
         ]),
     };
 
@@ -375,7 +375,7 @@ pub fn set_up_test(
     let mut known_addresses: HashMap<NodeId<PubKeyType>, SocketAddr> =
         HashMap::from([(tx_nodeid, *tx_addr), (rx_nodeid, *rx_addr)]);
 
-    let mut validator_set = vec![(tx_nodeid, Stake(1)), (rx_nodeid, Stake(1))];
+    let mut validator_set = vec![(tx_nodeid, Stake::ONE), (rx_nodeid, Stake::ONE)];
 
     if let Some(rebroadcast_addr) = rebroadcast_addr {
         let rebroadcast_keypair = {
@@ -388,7 +388,7 @@ pub fn set_up_test(
 
         known_addresses.insert(rebroadcast_nodeid, *rebroadcast_addr);
 
-        validator_set.push((rebroadcast_nodeid, Stake(1)));
+        validator_set.push((rebroadcast_nodeid, Stake::ONE));
     }
 
     {

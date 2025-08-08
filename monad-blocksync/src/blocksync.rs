@@ -15,6 +15,7 @@
 
 use std::collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap};
 
+use alloy_primitives::U256;
 use alloy_rlp::{encode_list, Decodable, Encodable, Header};
 use bytes::BufMut;
 use itertools::Itertools;
@@ -29,13 +30,13 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_state_backend::StateBackend;
-use monad_types::{Epoch, ExecutionProtocol, NodeId, SeqNum};
+use monad_types::{Epoch, ExecutionProtocol, NodeId, SeqNum, Stake};
 use monad_validator::{
     epoch_manager::EpochManager,
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
-use rand::{seq::SliceRandom, SeedableRng};
+use rand::{seq::SliceRandom, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use tracing::debug;
 
@@ -405,6 +406,41 @@ where
         cmds
     }
 
+    fn choose_weighted(
+        stakes: Vec<(&NodeId<CertificateSignaturePubKey<ST>>, &Stake)>,
+    ) -> NodeId<CertificateSignaturePubKey<ST>> {
+        let mut running_stake = U256::ZERO;
+        let stake_bounds = stakes
+            .into_iter()
+            .filter_map(|(node_id, stake)| {
+                if stake.0 > U256::ZERO {
+                    running_stake += stake.0;
+                    Some((node_id, running_stake))
+                } else {
+                    None
+                }
+            })
+            .collect_vec();
+
+        let max = U256::MAX - (U256::MAX - running_stake + U256::from(1)) % running_stake;
+        let mut stake_index = U256::MAX;
+        while stake_index > max {
+            stake_index = rand::thread_rng().gen();
+        }
+        stake_index %= running_stake;
+
+        let upper_bound = stake_bounds
+            .binary_search_by(|&(_, stake_bound)| {
+                if stake_bound > stake_index {
+                    std::cmp::Ordering::Greater
+                } else {
+                    std::cmp::Ordering::Less
+                }
+            })
+            .unwrap_err();
+        *stake_bounds[upper_bound].0
+    }
+
     fn pick_peer(
         self_node_id: &NodeId<CertificateSignaturePubKey<ST>>,
         current_epoch: Epoch,
@@ -433,10 +469,7 @@ where
                 .filter(|(peer, _)| peer != &self_node_id)
                 .collect_vec();
             assert!(!members.is_empty(), "no nodes to blocksync from");
-            *members
-                .choose_weighted(rng, |(_peer, weight)| weight.0)
-                .expect("nonempty")
-                .0
+            Self::choose_weighted(members)
         }
     }
 

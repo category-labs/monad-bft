@@ -4795,6 +4795,7 @@ dependencies = [
 name = "monad-blocksync"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "alloy-rlp",
  "bytes",
  "itertools 0.10.5",
@@ -5579,6 +5580,7 @@ dependencies = [
 name = "monad-raptorcast"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "alloy-rlp",
  "bitvec",
  "bytes",
@@ -5980,6 +5982,7 @@ dependencies = [
 name = "monad-types"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "alloy-rlp",
  "futures",
  "hex",
