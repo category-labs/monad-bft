@@ -43,7 +43,8 @@ use monad_validator::{
 use crate::messages::{
     consensus_message::{ConsensusMessage, ProtocolMessage},
     message::{
-        NoEndorsementMessage, ProposalMessage, RoundRecoveryMessage, TimeoutMessage, VoteMessage,
+        AdvanceRoundMessage, NoEndorsementMessage, ProposalMessage, RoundRecoveryMessage,
+        TimeoutMessage, VoteMessage,
     },
 };
 
@@ -359,6 +360,9 @@ where
             }
             ProtocolMessage::NoEndorsement(m) => {
                 m.validate(epoch_manager)?;
+            }
+            ProtocolMessage::AdvanceRound(m) => {
+                m.validate(epoch_manager, val_epoch_map, election)?;
             }
         }
 
@@ -677,6 +681,33 @@ where
             Some(epoch) if epoch == self.msg.epoch => Ok(()),
             _ => Err(Error::InvalidEpoch),
         }
+    }
+}
+
+impl<SCT> AdvanceRoundMessage<SCT>
+where
+    SCT: SignatureCollection,
+{
+    /// A valid timeout message is well-formed, and carries valid QC/TC
+    pub fn validate<VTF, VT, LT>(
+        &self,
+        epoch_manager: &EpochManager,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
+        election: &LT,
+    ) -> Result<(), Error>
+    where
+        VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
+        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+        LT: LeaderElection<NodeIdPubKey = SCT::NodeIdPubKey>,
+    {
+        verify_qc(
+            &|epoch, round| {
+                epoch_to_validators(epoch_manager, val_epoch_map, election, epoch, round)
+            },
+            &self.last_round_qc,
+        )?;
+
+        Ok(())
     }
 }
 

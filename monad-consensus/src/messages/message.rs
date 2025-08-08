@@ -19,6 +19,7 @@ use alloy_rlp::{RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWra
 use monad_consensus_types::{
     no_endorsement::NoEndorsement,
     payload::ConsensusBlockBody,
+    quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighExtend, Timeout, TimeoutCertificate, TimeoutInfo},
     tip::ConsensusTip,
@@ -147,6 +148,17 @@ where
     pub block_body: ConsensusBlockBody<EPT>,
 
     pub last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
+}
+
+/// This message is broadcasted upon locally constructing QC(r)
+/// This helps other nodes advance their round faster
+#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[rlp(trailing)]
+pub struct AdvanceRoundMessage<SCT>
+where
+    SCT: SignatureCollection,
+{
+    pub last_round_qc: QuorumCertificate<SCT>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
