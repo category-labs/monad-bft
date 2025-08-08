@@ -131,6 +131,21 @@ where
         file_path.push(block_id_to_hex_prefix(&body_id.0));
         file_path
     }
+
+    pub fn read_proposed_head_bft_header(
+        &self,
+    ) -> std::io::Result<ConsensusBlockHeader<ST, SCT, EPT>> {
+        let mut file = File::open(&self.proposed_head_path)?;
+        let size = file.metadata()?.len();
+        let mut buf = vec![0; size as usize];
+        file.read_exact(&mut buf)?;
+
+        // TODO maybe expect is too strict
+        let block =
+            alloy_rlp::decode_exact(&buf).expect("local ledger consensus header decode failed");
+
+        Ok(block)
+    }
 }
 
 impl<ST, SCT, EPT> BlockPersist<ST, SCT, EPT> for FileBlockPersist<ST, SCT, EPT>
