@@ -37,7 +37,7 @@ use monad_validator::{
 };
 use rand::{seq::SliceRandom, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::messages::message::{
     BlockSyncBodyResponse, BlockSyncHeadersResponse, BlockSyncRequestMessage,
@@ -270,6 +270,15 @@ where
         requester: BlockSyncSelfRequester,
         block_range: BlockRange,
     ) -> Vec<BlockSyncCommand<ST, SCT, EPT>> {
+        if block_range.num_blocks == SeqNum(0) {
+            warn!(
+                ?requester,
+                ?block_range,
+                "blocksync: received invalid self request"
+            );
+            return Vec::new();
+        }
+
         debug!(?requester, ?block_range, "blocksync: self request");
         if requester != self.block_sync.self_request_mode {
             self.block_sync.clear_self_requests();
@@ -329,6 +338,15 @@ where
 
         match request {
             BlockSyncRequestMessage::Headers(block_range) => {
+                if block_range.num_blocks == SeqNum(0) {
+                    debug!(
+                        ?sender,
+                        ?block_range,
+                        "received invalid block range request"
+                    );
+                    return cmds;
+                }
+
                 self.metrics.blocksync_events.peer_headers_request += 1;
                 debug!(?sender, ?block_range, "blocksync: peer headers request");
 
@@ -2280,6 +2298,28 @@ mod test {
         assert_eq!(response_cmds.len(), 1);
         assert_eq!(response_cmds[0], &expected_response_command);
 
+        context.assert_empty_block_sync_state();
+    }
+
+    #[test]
+    fn test_invalid_block_range_requests() {
+        // Reject blocksync header requests with num_blocks = 0
+        let mut context = setup();
+
+        let requester = BlockSyncSelfRequester::Consensus;
+        let invalid_block_range = BlockRange {
+            last_block_id: BlockId(Hash([0x00_u8; 32])),
+            num_blocks: SeqNum(0),
+        };
+
+        let cmds = context.handle_self_request(requester, invalid_block_range);
+        assert!(cmds.is_empty());
+        context.assert_empty_block_sync_state();
+
+        let invalid_request_msg = BlockSyncRequestMessage::Headers(invalid_block_range);
+        let cmds = context.handle_peer_request(context.peer_id, invalid_request_msg);
+
+        assert!(cmds.is_empty());
         context.assert_empty_block_sync_state();
     }
 }
