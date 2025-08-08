@@ -1491,7 +1491,8 @@ mod tests {
         // RaptorCast group from v0 should be down now, as it only covered rounds [5, 7)
         // Here we should see a group gap
         group_map.update(&clt);
-        assert!(group_map.is_empty(&clt));
+        let rc_grp = &group_map.get_rc_group_peers(&clt, &nid(0));
+        assert!(group_map.is_empty(&clt)); // nid_18, nid_10
 
         //-------------------------------------------------------------------[8]
         clt.enter_round(Round(8));

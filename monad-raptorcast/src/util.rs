@@ -403,9 +403,9 @@ where
     }
 }
 
-// This is an abstraction of a peer list that interfaces receive-side of RaptorCast
-// The send side, i.e. initiating a RaptorCast proposal, is represented with
-// struct `EpochValidators` instead.
+// This is an abstraction of a peer list that interfaces receive-side of RaptorCast.
+// The peer list for the send side, i.e. the side initiating a RaptorCast proposal,
+// is instead represented with a struct `EpochValidators`.
 #[derive(Debug)]
 pub struct ReBroadcastGroupMap<ST>
 where

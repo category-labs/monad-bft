@@ -124,15 +124,16 @@ where
         self.pending_confirms.retain(|&key, _| key > curr_round);
 
         // Send out group information to the Primary instance, so that it can
-        // re-broadcast raptorcast chunks. This is the normal path when we are
+        // re-broadcast RaptorCast chunks. This is the normal path when we are
         // receiving proposals and thus the round increases.
-        let consume_end = curr_round + Round(1);
+        let next_round = curr_round + Round(1);
+        let consume_end = next_round + Round(1);
         let mut current_group_count = 0;
-        for group in self.confirmed_groups.values(curr_round..consume_end) {
+        for group in self.confirmed_groups.values(next_round..consume_end) {
             current_group_count += 1;
             if let Err(error) = self.group_sink_channel.send(group.clone()) {
                 error!(
-                    "Failed to send group to secondary Raptorcast instance: {}",
+                    "Failed to send group to RaptorCastSecondary instance: {}",
                     error
                 );
             }
