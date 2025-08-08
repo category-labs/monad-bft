@@ -33,6 +33,7 @@ use crate::{
     },
     tip::ConsensusTip,
     voting::{ValidatorMapping, Vote},
+    RoundCertificate,
 };
 
 /// Timeout message to broadcast to other nodes after a local timeout
@@ -49,9 +50,9 @@ where
 
     pub high_extend: HighExtendVote<ST, SCT, EPT>,
 
-    /// if the high qc round != tminfo.round-1, then this must be the
-    /// TC for tminfo.round-1. Otherwise it must be None
-    pub last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
+    /// if the high_extend.qc round != tminfo.round-1, then this must be the
+    /// TC or QC from r-1
+    pub last_round_certificate: Option<RoundCertificate<ST, SCT, EPT>>,
 }
 
 impl<ST, SCT, EPT> Timeout<ST, SCT, EPT>
@@ -64,7 +65,7 @@ where
         cert_keypair: &SignatureCollectionKeyPairType<SCT>,
         timeout: TimeoutInfo,
         high_extend: HighExtend<ST, SCT, EPT>,
-        last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
+        last_round_certificate: Option<RoundCertificate<ST, SCT, EPT>>,
     ) -> Self {
         let timeout_digest = alloy_rlp::encode(&timeout);
         let timeout_signature = <SCT::SignatureType as CertificateSignature>::sign::<
@@ -89,7 +90,7 @@ where
         Self {
             tminfo: timeout,
             high_extend,
-            last_round_tc,
+            last_round_certificate,
 
             timeout_signature,
         }

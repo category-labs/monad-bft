@@ -129,7 +129,7 @@ where
             PacemakerCommand::EnterRound(epoch, round) => {
                 ConsensusCommand::EnterRound(epoch, round)
             }
-            PacemakerCommand::PrepareTimeout(timeout, high_extend, last_round_tc) => {
+            PacemakerCommand::PrepareTimeout(timeout, high_extend, last_round_certificate) => {
                 ConsensusCommand::Publish {
                     // TODO should this be sent to epoch of next round?
                     target: RouterTarget::Broadcast(timeout.epoch),
@@ -139,7 +139,7 @@ where
                             cert_keypair,
                             timeout,
                             high_extend,
-                            last_round_tc,
+                            last_round_certificate,
                         )),
                     }
                     .sign(keypair),

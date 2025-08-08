@@ -23,6 +23,7 @@ use monad_consensus_types::{
     timeout::{HighExtend, Timeout, TimeoutCertificate, TimeoutInfo},
     tip::ConsensusTip,
     voting::Vote,
+    RoundCertificate,
 };
 use monad_crypto::{
     certificate_signature::{
@@ -85,13 +86,13 @@ where
         cert_keypair: &SignatureCollectionKeyPairType<SCT>,
         timeout: TimeoutInfo,
         high_extend: HighExtend<ST, SCT, EPT>,
-        last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
+        last_round_certificate: Option<RoundCertificate<ST, SCT, EPT>>,
     ) -> Self {
         TimeoutMessage(Timeout::new(
             cert_keypair,
             timeout,
             high_extend,
-            last_round_tc,
+            last_round_certificate,
         ))
     }
 }
@@ -231,7 +232,7 @@ mod tests {
             c.high_extend,
             HighExtendVote::Qc(QuorumCertificate::genesis_qc())
         );
-        assert!(c.last_round_tc.is_none());
+        assert!(c.last_round_certificate.is_none());
     }
 
     #[test]
@@ -259,6 +260,6 @@ mod tests {
             c.high_extend,
             HighExtendVote::Qc(QuorumCertificate::genesis_qc())
         );
-        assert!(c.last_round_tc.is_none());
+        assert!(c.last_round_certificate.is_none());
     }
 }
