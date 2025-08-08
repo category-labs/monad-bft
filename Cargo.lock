@@ -5675,6 +5675,7 @@ dependencies = [
  "arbitrary",
  "awc",
  "bytes",
+ "bytestring",
  "clap 4.5.40",
  "criterion",
  "dashmap",
