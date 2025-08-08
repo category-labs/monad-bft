@@ -625,6 +625,7 @@ where
                 // FIXME: pass dataplane as arg to handle_message
                 this.udp_state.handle_message(
                     &this.rebroadcast_map, // contains the NodeIds for all the RC participants for each epoch
+                    &this.epoch_validators,
                     |targets, payload, bcast_stride| {
                         // Callback for re-broadcasting raptorcast chunks to other RaptorCast participants (validator peers)
                         let target_addrs: Vec<SocketAddr> = targets
