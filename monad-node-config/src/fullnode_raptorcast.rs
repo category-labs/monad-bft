@@ -50,4 +50,5 @@ pub struct FullNodeRaptorCastConfig<P: PubKey> {
     pub invite_future_dist_min: Round,
     pub invite_future_dist_max: Round,
     pub invite_accept_heartbeat_ms: u64,
+    pub invite_round_span_max: Round,
 }
