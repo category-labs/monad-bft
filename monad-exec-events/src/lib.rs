@@ -90,6 +90,7 @@ mod block;
 mod block_builder;
 mod events;
 pub mod ffi;
+mod reader;
 
 /// A type alias for an event ring that produces monad execution events.
 pub type ExecEventRing = EventRing<ExecEventDecoder>;

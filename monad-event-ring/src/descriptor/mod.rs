@@ -17,7 +17,10 @@ use std::marker::PhantomData;
 
 pub(crate) use self::raw::RawEventDescriptor;
 use self::raw::RawEventDescriptorInfo;
-use crate::{EventDecoder, EventDescriptorPayload};
+use crate::{
+    ffi::{monad_event_descriptor, monad_event_ring},
+    EventDecoder, EventDescriptorPayload,
+};
 
 mod raw;
 
@@ -108,6 +111,14 @@ where
 
             f(info, bytes)
         })
+    }
+
+    /// Exposes the underlying c-types.
+    pub fn with_raw<R>(
+        &self,
+        f: impl FnOnce(&monad_event_ring, &monad_event_descriptor) -> R,
+    ) -> R {
+        f(&self.raw.ring.inner, &self.raw.inner)
     }
 }
 

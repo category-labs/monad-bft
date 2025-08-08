@@ -16,7 +16,7 @@
 //! This module contains low-level bindings to the monad execution client event types.
 
 pub(crate) use self::bindings::{
-    g_monad_exec_event_metadata_hash, MONAD_EXEC_ACCOUNT_ACCESS,
+    g_monad_exec_event_metadata_hash, monad_exec_event_type, MONAD_EXEC_ACCOUNT_ACCESS,
     MONAD_EXEC_ACCOUNT_ACCESS_LIST_HEADER, MONAD_EXEC_BLOCK_END, MONAD_EXEC_BLOCK_FINALIZED,
     MONAD_EXEC_BLOCK_PERF_EVM_ENTER, MONAD_EXEC_BLOCK_PERF_EVM_EXIT, MONAD_EXEC_BLOCK_QC,
     MONAD_EXEC_BLOCK_REJECT, MONAD_EXEC_BLOCK_START, MONAD_EXEC_BLOCK_VERIFIED,
@@ -37,5 +37,95 @@ pub use self::bindings::{
 
 #[allow(dead_code, missing_docs, non_camel_case_types, non_upper_case_globals)]
 mod bindings {
+    use ::monad_event_ring::ffi::{monad_event_descriptor, monad_event_iterator, monad_event_ring};
+
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+}
+
+use ::monad_event_ring::ffi::{monad_event_descriptor, monad_event_iterator, monad_event_ring};
+
+pub(crate) fn monad_exec_ring_get_block_number(
+    c_event_ring: &monad_event_ring,
+    c_event_descriptor: &monad_event_descriptor,
+) -> Option<u64> {
+    let mut block_number = 0;
+
+    let success = unsafe {
+        self::bindings::monad_exec_ring_get_block_number(
+            c_event_ring,
+            c_event_descriptor,
+            &mut block_number,
+        )
+    };
+
+    success.then_some(block_number)
+}
+
+pub(crate) fn monad_exec_ring_block_id_matches(
+    c_event_ring: &monad_event_ring,
+    c_event_descriptor: &monad_event_descriptor,
+    block_id: &monad_c_bytes32,
+) -> bool {
+    unsafe {
+        self::bindings::monad_exec_ring_block_id_matches(c_event_ring, c_event_descriptor, block_id)
+    }
+}
+
+pub(crate) fn monad_exec_iter_consensus_prev(
+    c_event_iterator: &mut monad_event_iterator,
+    c_exec_event_filter: monad_exec_event_type,
+) -> Option<monad_event_descriptor> {
+    let mut c_event_descriptor: monad_event_descriptor = unsafe { std::mem::zeroed() };
+
+    let success = unsafe {
+        self::bindings::monad_exec_iter_consensus_prev(
+            c_event_iterator,
+            c_exec_event_filter,
+            &mut c_event_descriptor,
+        )
+    };
+
+    success.then_some(c_event_descriptor)
+}
+
+pub(crate) fn monad_exec_iter_block_number_prev(
+    c_event_iterator: &mut monad_event_iterator,
+    c_event_ring: &monad_event_ring,
+    block_number: u64,
+    c_exec_event_filter: monad_exec_event_type,
+) -> Option<monad_event_descriptor> {
+    let mut c_event_descriptor: monad_event_descriptor = unsafe { std::mem::zeroed() };
+
+    let success = unsafe {
+        self::bindings::monad_exec_iter_block_number_prev(
+            c_event_iterator,
+            c_event_ring,
+            block_number,
+            c_exec_event_filter,
+            &mut c_event_descriptor,
+        )
+    };
+
+    success.then_some(c_event_descriptor)
+}
+
+pub(crate) fn monad_exec_iter_block_id_prev(
+    c_event_iterator: &mut monad_event_iterator,
+    c_event_ring: &monad_event_ring,
+    block_id: &monad_c_bytes32,
+    c_exec_event_filter: monad_exec_event_type,
+) -> Option<monad_event_descriptor> {
+    let mut c_event_descriptor: monad_event_descriptor = unsafe { std::mem::zeroed() };
+
+    let success = unsafe {
+        self::bindings::monad_exec_iter_block_id_prev(
+            c_event_iterator,
+            c_event_ring,
+            block_id,
+            c_exec_event_filter,
+            &mut c_event_descriptor,
+        )
+    };
+
+    success.then_some(c_event_descriptor)
 }
