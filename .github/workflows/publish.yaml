@@ -21,8 +21,6 @@ jobs:
         dockerfile:
           - { name: "monad-bft", file: "docker/devnet/Dockerfile" }
           - { name: "monad-bft", file: "docker/devnet/Dockerfile", target_postfix: -debug }
-          - { name: "monad-full-node", file: "docker/devnet/fullnode.Dockerfile" }
-          - { name: "monad-full-node", file: "docker/devnet/fullnode.Dockerfile", target_postfix: -debug }
           - { name: "monad-rpc", file: "docker/rpc/Dockerfile" }
           - { name: "monad-rpc", file: "docker/rpc/Dockerfile", target_postfix: -debug }
           - { name: "monad-execution", file: "monad-cxx/monad-execution/docker/release.Dockerfile", context: "monad-cxx/monad-execution" }

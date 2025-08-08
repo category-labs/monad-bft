@@ -246,9 +246,6 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
         )
         .await;
 
-        #[cfg(feature = "full-node")]
-        let raptor_router = monad_router_filter::FullNodeRouterFilter::new(raptor_router);
-
         <_ as Updater<_>>::boxed(raptor_router)
     };
 
@@ -598,12 +595,7 @@ where
     tracing::debug!(
         ?bind_address,
         ?name_record_address,
-        "Monad-node ({}) starting, pid: {}",
-        if cfg!(feature = "full-node") {
-            "full-node"
-        } else {
-            "validator"
-        },
+        "Monad-node starting, pid: {}",
         process::id()
     );
 
