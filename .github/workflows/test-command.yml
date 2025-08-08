@@ -1,0 +1,166 @@
+name: Test Command
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  check-command:
+    if: |
+      github.event.issue.pull_request && 
+      contains(github.event.comment.body, '/test all') &&
+      (github.event.comment.author_association == 'MEMBER' || 
+       github.event.comment.author_association == 'OWNER' ||
+       github.event.comment.author_association == 'COLLABORATOR')
+    runs-on: ubuntu-latest
+    outputs:
+      pr_number: ${{ steps.get-pr.outputs.pr_number }}
+    steps:
+      - name: Get PR number
+        id: get-pr
+        run: |
+          echo "pr_number=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
+      
+      - name: React to comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'rocket'
+            });
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `Starting full test suite... :hourglass_flowing_sand:`
+            });
+
+  run-tests:
+    needs: check-command
+    runs-on: self-hosted
+    container:
+      image: peach10.devcore4.com/category-labs/builder
+      options: --privileged
+    steps:
+      - name: Generate token
+        id: generate_token
+        uses: tibdex/github-app-token@v1
+        with:
+          app_id: ${{ secrets.REPO_READONLY_GITHUB_APP_ID }}
+          private_key: ${{ secrets.REPO_READONLY_GITHUB_APP_KEY }}
+          permissions: >-
+            {"contents": "read"}
+
+      - name: Get PR info
+        id: pr-info
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: ${{ needs.check-command.outputs.pr_number }}
+            });
+            core.setOutput('ref', pr.data.head.sha);
+
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr-info.outputs.ref }}
+          submodules: recursive
+          token: ${{ steps.generate_token.outputs.token }}
+
+      - run: rustup toolchain install nightly-2024-12-10 --profile minimal --component rustfmt
+      - run: rustup toolchain install 1.85.0-x86_64-unknown-linux-gnu --profile minimal --component clippy
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+      
+      - name: Install cargo-shear
+        run: cargo binstall --no-confirm cargo-shear
+
+      - name: Verify lockfile
+        run: cargo update --workspace --locked
+
+      - name: Lint unused dependencies
+        run: cargo shear
+
+      - name: Format
+        run: cargo +nightly-2024-12-10 fmt --all --check
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Lint
+        run: |
+          cargo clippy --all-targets --all-features -- \
+            -D clippy::suspicious \
+            -D clippy::style \
+            -D clippy::clone_on_copy \
+            -D clippy::redundant_clone \
+            -D clippy::iter_kv_map \
+            -D clippy::iter_nth \
+            -D clippy::unnecessary_cast \
+            -D clippy::filter_next \
+            -D clippy::needless_lifetimes \
+            -D clippy::useless_conversion \
+            -D clippy::useless_vec \
+            -D clippy::needless_question_mark \
+            -D clippy::bool_comparison \
+            -D unused_imports \
+            -D unused_parens \
+            -D deprecated \
+            -A clippy::type_complexity \
+            -A clippy::int_plus_one \
+            -A clippy::uninlined-format-args \
+            -A clippy::enum-variant-names \
+            -A clippy::mutable_key_type \
+            -A clippy::large_enum_variant \
+            -A clippy::doc-overindented-list-items
+
+      - name: Check
+        run: cargo check --all-targets --all-features
+
+      - name: Run tests
+        run: cargo test --release --all-targets --all-features
+
+      - name: Build docs
+        run: cargo doc -p monad-event-ring -p monad-exec-events
+
+      - name: Run doc tests
+        run: cargo test --release --doc --all-features
+
+      - run: rustup target add wasm32-unknown-unknown
+      
+      - name: Check WASM
+        run: cargo check --target wasm32-unknown-unknown -p monad-debugger
+
+      - name: Post results
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const status = '${{ job.status }}';
+            const emoji = status === 'success' ? '✅' : '❌';
+            const prNumber = ${{ needs.check-command.outputs.pr_number }};
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: `${emoji} Full test suite completed: **${status}**
+              
+              [View detailed results](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+              
+              Triggered by: @${{ github.event.comment.user.login }}
+              Commit tested: \`${{ steps.pr-info.outputs.ref }}\``
+            });
