@@ -25,7 +25,8 @@ fn main() {
         let target = "triedb_driver";
 
         let dst = cmake::Config::new("triedb-driver")
-            .define("CMAKE_BUILD_TARGET", target)
+            .define("BUILD_SHARED_LIBS", "ON")
+            .generator("Ninja")
             .build_target(target)
             .build();
 
