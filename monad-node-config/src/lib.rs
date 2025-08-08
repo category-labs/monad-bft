@@ -14,15 +14,10 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use alloy_primitives::Address;
-#[cfg(feature = "crypto")]
-use monad_bls::BlsSignatureCollection;
-#[cfg(feature = "crypto")]
-use monad_consensus_types::checkpoint::Checkpoint;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_types::{serde::deserialize_eth_address_from_str, EthExecutionProtocol};
-use monad_secp::SecpSignature;
 use serde::Deserialize;
 
 pub use self::{
@@ -82,12 +77,17 @@ pub struct NodeConfig<ST: CertificateSignatureRecoverable> {
     pub chain_id: u64,
 }
 
-pub type SignatureType = SecpSignature;
+#[cfg(feature = "crypto")]
+pub type SignatureType = monad_secp::SecpSignature;
 #[cfg(feature = "crypto")]
 pub type SignatureCollectionType =
-    BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>;
+    monad_bls::BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>;
 pub type ExecutionProtocolType = EthExecutionProtocol;
 #[cfg(feature = "crypto")]
-pub type ForkpointConfig =
-    Checkpoint<SignatureType, SignatureCollectionType, ExecutionProtocolType>;
+pub type ForkpointConfig = monad_consensus_types::checkpoint::Checkpoint<
+    SignatureType,
+    SignatureCollectionType,
+    ExecutionProtocolType,
+>;
+#[cfg(feature = "crypto")]
 pub type MonadNodeConfig = NodeConfig<SignatureType>;

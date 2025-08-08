@@ -18,5 +18,17 @@ export default defineConfig({
   },
   build: {
     target: 'esnext',
+    rollupOptions: {
+      output: {
+        inlineDynamicImports: true,
+        // // Single file output
+        // entryFileNames: '[name].js',
+        // chunkFileNames: '[name].js',
+        // assetFileNames: '[name][extname]'
+      }
+    },
+    // Inline CSS and other assets
+    cssCodeSplit: false,
+    assetsInlineLimit: 100000000, // Inline everything
   },
 });

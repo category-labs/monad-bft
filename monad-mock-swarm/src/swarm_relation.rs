@@ -179,7 +179,11 @@ impl SwarmRelation for DebugSwarmRelation {
     type ChainConfigType = MockChainConfig;
     type ChainRevisionType = MockChainRevision;
 
-    type TransportMessage = Bytes;
+    type TransportMessage = VerifiedMonadMessage<
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+        Self::ExecutionProtocolType,
+    >;
 
     type BlockValidator = Box<
         dyn BlockValidator<

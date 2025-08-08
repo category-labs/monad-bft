@@ -1,14 +1,22 @@
-import { Component, createMemo, For, Show } from "solid-js";
+import { Component, createEffect, createMemo, For, Show } from "solid-js";
 import { GraphDocument } from "../generated/graphql";
 import { Simulation } from "../wasm";
-import { formatNodeId } from "../utils";
+import Message from "./Message";
+import Node from "./Node";
+import { createStore, reconcile } from "solid-js/store";
 
 const Graph: Component<{
+    vizTick: number,
     simulation: Simulation,
 }> = (props) => {
-    const graph = createMemo(() => props.simulation.fetchUnchecked(GraphDocument));
-    const currentTick = () => graph().currentTick;
-    const nodes = () => graph().nodes;
+    const fetchGraph = () => props.simulation.fetchUnchecked(GraphDocument);
+    const [graph, setGraph] = createStore(fetchGraph())
+    createEffect(() => {
+        setGraph(reconcile(fetchGraph(), { merge: true }));
+    });
+
+    const currentTick = () => props.vizTick;
+    const nodes = () => graph.nodes;
     const unitPositions = createMemo(() => {
         const positions: {
             [id: string]: [number, number]
@@ -24,8 +32,9 @@ const Graph: Component<{
 
     const positionTransform = (unitPosition: [number, number]) => {
         // cqw/cqh is a new feature that lets you size based on parent container-type
-        const scale = (value: number) => `calc(max(-40cqw, -40cqh) * ${value})`;
-        return `transform: translate(${scale(unitPosition[0])}, ${scale(unitPosition[1])})`;
+        const scaleX = (value: number) => `calc(-31cqw * ${value})`;
+        const scaleY = (value: number) => `calc(-33cqh * ${value})`;
+        return `transform: translate(${scaleX(unitPosition[0])}, ${scaleY(unitPosition[1])})`;
     };
 
     const interpolatePosition = (scale: number, pos1: [number, number], pos2: [number, number]) => {
@@ -36,34 +45,33 @@ const Graph: Component<{
     }
 
     return (
-        <div class="h-full grow" style="container-type: size">
-            <For each={nodes()}>{node =>
+        <div class="h-full overflow-hidden grow relative" style="container-type: size">
+            <For each={nodes()}>{(node, idx) =>
                 <div class="absolute left-1/2 top-1/2">
-                    <div class="absolute" style={positionTransform(unitPositions()[node.id])}>
-                        <div class="-translate-x-1/2 -translate-y-1/2 border">
-                            <div>
-                                Node {formatNodeId(node.id)}
-                            </div>
-                            <div>
-                                # pending: {node.pendingMessages.length}
-                            </div>
+                    <div class="absolute z-10" style={positionTransform(unitPositions()[node.id])}>
+                        <div class="-translate-x-1/2 -translate-y-1/2">
+                            <Node
+                                currentTick={currentTick()}
+                                node={node}
+                                idx={idx()}
+                                isCurrentLeader={graph.currentLeader === node.id}
+                                isNextLeader={graph.nextLeader === node.id}
+                            />
                         </div>
                     </div>
                     <For each={node.pendingMessages}>{message =>
                         <Show when={node.id != message.fromId}>
-                            <div class="absolute" style={
+                            <div class="absolute z-0" style={
                                 positionTransform(
                                     interpolatePosition(
-                                        (currentTick() - message.fromTick) / (message.rxTick - message.fromTick),
+                                        Math.max(0, Math.min(1, (currentTick() - message.fromTick) / (message.rxTick - message.fromTick))),
                                         unitPositions()[message.fromId],
                                         unitPositions()[node.id]
                                     )
                                 )
                             }>
-                                <div class="-translate-x-1/2 -translate-y-1/2 border rounded-full" style ={
-                                    `font-size: ${Math.log(message.size) / 5}rem`
-                                }>
-                                    {message.size}
+                                <div class="-translate-x-1/2 -translate-y-1/2">
+                                    <Message message={message.message} />
                                 </div>
                             </div>
                         </Show>

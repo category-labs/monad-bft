@@ -15,12 +15,14 @@ bench = false
 
 [dependencies]
 monad-chain-config = { workspace = true }
+monad-consensus = { workspace = true }
 monad-consensus-types = { workspace = true }
 monad-crypto = { workspace = true }
-monad-eth-types = { path = "../monad-eth-types" }
+monad-eth-types = { workspace = true }
 monad-executor-glue = { workspace = true }
 monad-mock-swarm = { workspace = true }
 monad-router-scheduler = { workspace = true }
+monad-state = { workspace = true }
 monad-state-backend = { workspace = true }
 monad-testutil = { workspace = true }
 monad-transformer = { workspace = true }
@@ -29,6 +31,7 @@ monad-updaters = { workspace = true }
 monad-validator = { workspace = true }
 
 async-graphql = { workspace = true }
+bytes = { workspace = true }
 console_error_panic_hook = { workspace = true }
 futures = { workspace = true }
 getrandom = { workspace = true, features = ["js"] }

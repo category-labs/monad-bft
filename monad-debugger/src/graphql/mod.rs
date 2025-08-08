@@ -13,9 +13,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{ops::Deref, time::Duration};
+use std::{
+    hash::{DefaultHasher, Hash, Hasher},
+    ops::Deref,
+    time::Duration,
+};
 
 use async_graphql::{Context, NewType, Object, Union};
+use bytes::Bytes;
 use monad_consensus_types::metrics::Metrics;
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_executor_glue::{
@@ -27,9 +32,9 @@ use monad_mock_swarm::{
     swarm_relation::{DebugSwarmRelation, SwarmRelation},
 };
 use monad_transformer::ID;
-use monad_types::NodeId;
+use monad_types::{NodeId, Round, SeqNum, Serializable, GENESIS_ROUND, GENESIS_SEQ_NUM};
 
-use crate::simulation::Simulation;
+use crate::{graphql::message::GraphQLMonadMessage, simulation::Simulation};
 
 type SwarmRelationType = DebugSwarmRelation;
 type SignatureType = <SwarmRelationType as SwarmRelation>::SignatureType;
@@ -37,6 +42,8 @@ type SignatureCollectionType = <SwarmRelationType as SwarmRelation>::SignatureCo
 type ExecutionProtocolType = <SwarmRelationType as SwarmRelation>::ExecutionProtocolType;
 type TransportMessage = <SwarmRelationType as SwarmRelation>::TransportMessage;
 type MonadEventType = MonadEvent<SignatureType, SignatureCollectionType, ExecutionProtocolType>;
+
+mod message;
 
 #[derive(NewType)]
 struct GraphQLNodeId(String);
@@ -60,6 +67,22 @@ pub struct GraphQLTimestamp(i32);
 impl GraphQLTimestamp {
     pub fn new(duration: Duration) -> Self {
         Self(duration.as_millis().try_into().unwrap())
+    }
+}
+
+#[derive(NewType)]
+pub struct GraphQLRound(i64);
+impl GraphQLRound {
+    pub fn new(round: Round) -> Self {
+        Self(round.0.try_into().unwrap())
+    }
+}
+
+#[derive(NewType)]
+pub struct GraphQLSeqNum(i64);
+impl GraphQLSeqNum {
+    pub fn new(seq_num: SeqNum) -> Self {
+        Self(seq_num.0.try_into().unwrap())
     }
 }
 
@@ -90,6 +113,80 @@ impl GraphQLRoot {
         let simulation = ctx.data_unchecked::<GraphQLSimulation>();
         let tick = simulation.swarm.peek_tick()?;
         Some(GraphQLTimestamp::new(tick))
+    }
+
+    async fn current_leader<'ctx>(&self, ctx: &Context<'ctx>) -> Option<GraphQLNodeId> {
+        let simulation = ctx.data_unchecked::<GraphQLSimulation>();
+        let live_states = simulation.swarm.states().values().filter_map(|node| {
+            if node
+                .outbound_pipeline
+                .is_outbound_blocked(simulation.current_tick, node.id.get_peer_id())
+            {
+                return None; // Skip blocked nodes
+            }
+            let consensus = node.state.consensus()?;
+            Some((
+                node.state.leader_election(),
+                node.state.validators_epoch_mapping(),
+                node.state.epoch_manager(),
+                consensus,
+            ))
+        });
+        let mut max_round = GENESIS_ROUND;
+        let mut leader = None;
+        for (election, validators, epoch_manager, state) in live_states {
+            if state.get_current_round() <= max_round {
+                continue;
+            }
+            max_round = state.get_current_round();
+
+            let leader_round = state.get_current_round();
+            let Some(leader_epoch) = epoch_manager.get_epoch(leader_round) else {
+                continue;
+            };
+            let Some(val_set) = validators.get_val_set(&leader_epoch) else {
+                continue;
+            };
+            leader = Some(election.get_leader(leader_round, val_set.get_members()));
+        }
+        leader.as_ref().map(Into::into)
+    }
+
+    async fn next_leader<'ctx>(&self, ctx: &Context<'ctx>) -> Option<GraphQLNodeId> {
+        let simulation = ctx.data_unchecked::<GraphQLSimulation>();
+        let live_states = simulation.swarm.states().values().filter_map(|node| {
+            if node
+                .outbound_pipeline
+                .is_outbound_blocked(simulation.current_tick, node.id.get_peer_id())
+            {
+                return None; // Skip blocked nodes
+            }
+            let consensus = node.state.consensus()?;
+            Some((
+                node.state.leader_election(),
+                node.state.validators_epoch_mapping(),
+                node.state.epoch_manager(),
+                consensus,
+            ))
+        });
+        let mut max_round = GENESIS_ROUND;
+        let mut leader = None;
+        for (election, validators, epoch_manager, state) in live_states {
+            if state.get_current_round() <= max_round {
+                continue;
+            }
+            max_round = state.get_current_round();
+
+            let leader_round = state.get_current_round() + Round(1);
+            let Some(leader_epoch) = epoch_manager.get_epoch(leader_round) else {
+                continue;
+            };
+            let Some(val_set) = validators.get_val_set(&leader_epoch) else {
+                continue;
+            };
+            leader = Some(election.get_leader(leader_round, val_set.get_members()));
+        }
+        leader.as_ref().map(Into::into)
     }
 
     async fn nodes<'ctx>(
@@ -135,6 +232,38 @@ impl<'s> GraphQLNode<'s> {
     async fn metrics(&self) -> GraphQLMetrics<'s> {
         GraphQLMetrics(self.0.state.metrics())
     }
+    async fn root(&self) -> GraphQLSeqNum {
+        let Some(state) = self.0.state.consensus() else {
+            return GraphQLSeqNum::new(GENESIS_SEQ_NUM);
+        };
+        let root = state.blocktree().root().seq_num;
+        GraphQLSeqNum::new(root)
+    }
+
+    async fn is_blocked<'ctx>(&self, ctx: &Context<'ctx>) -> bool {
+        let simulation = ctx.data_unchecked::<GraphQLSimulation>();
+        self.0
+            .outbound_pipeline
+            .is_outbound_blocked(simulation.current_tick, self.0.id.get_peer_id())
+    }
+
+    async fn current_round(&self) -> GraphQLRound {
+        let Some(state) = self.0.state.consensus() else {
+            return GraphQLRound::new(GENESIS_ROUND);
+        };
+        let round = state.get_current_round();
+        GraphQLRound::new(round)
+    }
+
+    async fn round_timer_started_at(&self) -> Option<GraphQLTimestamp> {
+        let round_timeout = self.0.executor.next_round_timeout()?;
+        Some(GraphQLTimestamp::new(round_timeout.was_scheduled_at))
+    }
+    async fn round_timer_ends_at(&self) -> Option<GraphQLTimestamp> {
+        let round_timeout = self.0.executor.next_round_timeout()?;
+        Some(GraphQLTimestamp::new(round_timeout.times_out_at))
+    }
+
     async fn pending_messages(&self) -> Vec<GraphQLPendingMessage<'s>> {
         self.0
             .pending_inbound_messages
@@ -145,6 +274,7 @@ impl<'s> GraphQLNode<'s> {
                     from_tick: &message.from_tick,
                     rx_tick,
                     message: &message.message,
+                    message_nonce: &message.nonce,
                 })
             })
             .collect()
@@ -191,10 +321,16 @@ struct GraphQLPendingMessage<'s> {
     from_tick: &'s Duration,
     rx_tick: &'s Duration,
     message: &'s TransportMessage,
+    message_nonce: &'s usize,
 }
 
 #[Object]
-impl GraphQLPendingMessage<'_> {
+impl<'s> GraphQLPendingMessage<'s> {
+    async fn id(&self) -> i64 {
+        let mut s = DefaultHasher::new();
+        (self.from, self.from_tick, self.rx_tick, self.message_nonce).hash(&mut s);
+        s.finish() as i64
+    }
     async fn from_id(&self) -> GraphQLNodeId {
         self.from.get_peer_id().into()
     }
@@ -205,7 +341,11 @@ impl GraphQLPendingMessage<'_> {
         GraphQLTimestamp::new(*self.rx_tick)
     }
     async fn size(&self) -> i64 {
-        self.message.len().try_into().unwrap()
+        let serialized: Bytes = self.message.serialize();
+        serialized.len() as i64
+    }
+    async fn message(&self) -> GraphQLMonadMessage<'s> {
+        self.message.into()
     }
 }
 

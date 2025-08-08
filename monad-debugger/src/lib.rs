@@ -21,12 +21,15 @@ use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_eth_types::Balance;
 use monad_mock_swarm::{
     mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
-    swarm_relation::BytesSwarm,
+    swarm_relation::NoSerSwarm,
 };
-use monad_router_scheduler::{BytesRouterConfig, RouterSchedulerBuilder};
+use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
 use monad_state_backend::InMemoryStateInner;
 use monad_testutil::swarm::make_state_configs;
-use monad_transformer::{GenericTransformer, LatencyTransformer, ID};
+use monad_transformer::{
+    DropTransformer, GenericTransformer, LatencyTransformer, PeriodicTransformer,
+    RandLatencyTransformer, ID,
+};
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
     ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
@@ -55,7 +58,7 @@ static CHAIN_PARAMS: ChainParams = ChainParams {
 #[wasm_bindgen]
 pub fn simulation_make() -> *mut Simulation {
     let config = || {
-        let state_configs = make_state_configs::<BytesSwarm>(
+        let state_configs = make_state_configs::<NoSerSwarm>(
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
@@ -63,7 +66,7 @@ pub fn simulation_make() -> *mut Simulation {
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(Balance::MAX, SeqNum(4)),
             SeqNum(4),                           // execution_delay
-            Duration::from_millis(20),           // delta
+            Duration::from_millis(50),           // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
             SeqNum(2000),                        // val_set_update_interval
             Round(50),                           // epoch_start_delay
@@ -73,17 +76,17 @@ pub fn simulation_make() -> *mut Simulation {
             .iter()
             .map(|state_config| NodeId::new(state_config.key.pubkey()))
             .collect();
-        let swarm_config = SwarmBuilder::<BytesSwarm>(
+        let swarm_config = SwarmBuilder::<NoSerSwarm>(
             state_configs
                 .into_iter()
                 .enumerate()
                 .map(|(seed, state_builder)| {
                     let state_backend = state_builder.state_backend.clone();
                     let validators = state_builder.locked_epoch_validators[0].clone();
-                    NodeBuilder::<BytesSwarm>::new(
+                    NodeBuilder::<NoSerSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
-                        BytesRouterConfig::new(all_peers.clone()).build(),
+                        NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
                         MockTxPoolExecutor::default(),
                         MockLedger::new(state_backend.clone()),
@@ -96,9 +99,22 @@ pub fn simulation_make() -> *mut Simulation {
                                 .map(|v| v.node_id)
                                 .collect(),
                         ),
-                        vec![GenericTransformer::Latency(LatencyTransformer::new(
-                            Duration::from_millis(10),
-                        ))],
+                        vec![
+                            GenericTransformer::Latency(LatencyTransformer::new(
+                                Duration::from_millis(10),
+                            )),
+                            GenericTransformer::RandLatency(RandLatencyTransformer::new(
+                                0,
+                                Duration::from_millis(40),
+                            )),
+                            GenericTransformer::Periodic(PeriodicTransformer::new(
+                                Duration::from_millis(1_000),
+                                Duration::MAX,
+                            )),
+                            GenericTransformer::Drop(
+                                DropTransformer::new().drop_only_from(*all_peers.last().unwrap()),
+                            ),
+                        ],
                         vec![],
                         TimestamperConfig::default(),
                         seed.try_into().unwrap(),

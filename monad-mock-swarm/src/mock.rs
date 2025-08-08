@@ -73,6 +73,7 @@ pub struct MockExecutor<S: SwarmRelation> {
 pub struct TimerEvent<E> {
     pub variant: TimeoutVariant,
     pub callback: Option<E>,
+    pub was_scheduled_at: Duration,
 }
 
 impl<E> TimerEvent<E> {
@@ -81,11 +82,18 @@ impl<E> TimerEvent<E> {
             variant,
             // you don't need callback to perform indexing
             callback: None,
+            // you don't need scheduled to perform indexing
+            was_scheduled_at: Duration::ZERO,
         }
     }
 
     pub fn with_call_back(mut self, callback: E) -> Self {
         self.callback = Some(callback);
+        self
+    }
+
+    pub fn was_scheduled_at(mut self, at: Duration) -> Self {
+        self.was_scheduled_at = at;
         self
     }
 }
@@ -179,6 +187,11 @@ enum ExecutorEventType {
     StateSync,
 }
 
+pub struct RoundTimer {
+    pub was_scheduled_at: Duration,
+    pub times_out_at: Duration,
+}
+
 impl<S: SwarmRelation> MockExecutor<S> {
     pub fn new(
         router: S::RouterScheduler,
@@ -213,6 +226,17 @@ impl<S: SwarmRelation> MockExecutor<S> {
             .checkpoint
             .as_ref()
             .map(|c| c.checkpoint.clone())
+    }
+
+    pub fn next_round_timeout(&self) -> Option<RoundTimer> {
+        self.timer
+            .iter()
+            .filter(|(event, _)| matches!(event.variant, TimeoutVariant::Pacemaker))
+            .map(|(event, &Reverse(times_out_at))| RoundTimer {
+                was_scheduled_at: event.was_scheduled_at,
+                times_out_at,
+            })
+            .next()
     }
 
     pub fn tick(&self) -> Duration {
@@ -329,7 +353,9 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
                     // one
                     self.timer.remove(&TimerEvent::new(variant));
                     self.timer.push(
-                        TimerEvent::new(variant).with_call_back(on_timeout),
+                        TimerEvent::new(variant)
+                            .with_call_back(on_timeout)
+                            .was_scheduled_at(self.tick),
                         Reverse(self.tick + duration),
                     );
                 }

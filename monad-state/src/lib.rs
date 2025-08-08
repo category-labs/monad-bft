@@ -434,6 +434,10 @@ where
         &self.val_epoch_map
     }
 
+    pub fn leader_election(&self) -> &LT {
+        &self.leader_election
+    }
+
     pub fn pubkey(&self) -> SCT::NodeIdPubKey {
         self.nodeid.pubkey()
     }

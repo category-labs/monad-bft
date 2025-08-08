@@ -65,6 +65,7 @@ pub mod test_tool {
             to: ID::new(NodeId::new(keys[1].pubkey())),
             message: "Dummy Message".to_string(),
             from_tick: Duration::from_millis(10),
+            nonce: rand::random(),
         }
     }
 

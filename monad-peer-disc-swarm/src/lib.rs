@@ -123,6 +123,7 @@ where
     rng: ChaCha8Rng,
     current_seed: usize,
     outbound_pipeline: S::Pipeline,
+    message_nonce: usize,
 }
 
 pub struct MockPeerDiscExecutor<S: PeerDiscSwarmRelation> {
@@ -246,6 +247,7 @@ where
             rng,
             current_seed,
             outbound_pipeline,
+            message_nonce: 0,
         }
     }
 
@@ -331,7 +333,9 @@ where
                                         message: ser,
 
                                         from_tick: tick,
+                                        nonce: self.message_nonce,
                                     };
+                                    self.message_nonce += 1;
                                     let outbound_transformed = self.outbound_pipeline.process(lm);
                                     for (delay, msg) in outbound_transformed {
                                         let sched_tick = tick + delay;
