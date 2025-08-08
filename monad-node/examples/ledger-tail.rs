@@ -26,18 +26,22 @@ use lru::LruCache;
 use monad_block_persist::{BlockPersist, FileBlockPersist, BLOCKDB_HEADERS_PATH};
 use monad_consensus_types::{
     block::{ConsensusBlockHeader, ConsensusFullBlock},
+    quorum_certificate::QuorumCertificate,
     validator_data::ValidatorsConfig,
+    RoundCertificate,
 };
 use monad_node_config::{
-    ExecutionProtocolType, MonadNodeConfig, SignatureCollectionType, SignatureType,
+    ExecutionProtocolType, ForkpointConfig, MonadNodeConfig, SignatureCollectionType, SignatureType,
 };
-use monad_types::{BlockId, Hash, Round, GENESIS_ROUND};
+use monad_types::{BlockId, Round};
 use monad_validator::{leader_election::LeaderElection, weighted_round_robin::WeightedRoundRobin};
 use tracing::{error, info, warn};
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer},
     layer::SubscriberExt,
 };
+
+const MAX_REWIND_QUEUE_LEN: usize = 100;
 
 #[tokio::main]
 async fn main() {
@@ -57,12 +61,13 @@ async fn main() {
         ConsensusBlockHeader<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
     > = LruCache::new(NonZero::new(100).unwrap());
 
+    let forkpoint_path: PathBuf = PathBuf::from("/monad/config/forkpoint");
     let ledger_path: PathBuf = PathBuf::from("/monad/ledger");
     let node_config: MonadNodeConfig = toml::from_str(
         &std::fs::read_to_string("/monad/config/node.toml").expect("node.toml not found"),
     )
     .unwrap();
-    let node_dns: HashMap<_, _> = node_config
+    let addresses: HashMap<_, _> = node_config
         .bootstrap
         .peers
         .iter()
@@ -77,81 +82,122 @@ async fn main() {
         ExecutionProtocolType,
     > = FileBlockPersist::new(ledger_path.clone());
 
-    let mut last_round = GENESIS_ROUND;
-    let mut block_stream = Box::pin(new_blocks(&ledger_path));
-    while let Some(mut next_block) = block_stream.next().await {
-        let mut block_queue = Vec::new();
-        loop {
-            let next_block_id = next_block.get_id();
-            if visited_blocks.contains(&next_block_id) {
-                break;
-            }
-            block_queue.push(next_block.clone());
-            if let Some(next_block_parent) =
-                read_full_block(&block_persist, &next_block.get_parent_id())
-            {
-                next_block = next_block_parent;
-            } else {
-                break;
-            }
-        }
+    let mut last_high_certificate = RoundCertificate::Qc(QuorumCertificate::genesis_qc());
+    let mut tip_stream = Box::pin(latest_tip_stream(&forkpoint_path, &ledger_path));
+    while let Some((high_certificate, proposed_head)) = tip_stream.next().await {
+        let now_ts = std::time::UNIX_EPOCH.elapsed().unwrap();
 
-        for block in block_queue.into_iter().rev() {
-            let now_ts = std::time::UNIX_EPOCH.elapsed().unwrap();
-
-            let validators = epoch_validators
-                .entry(block.get_epoch())
+        if last_high_certificate != high_certificate {
+            if let RoundCertificate::Tc(tc) = &high_certificate {
+                let validators = epoch_validators
+                .entry(tc.epoch)
                 .or_insert_with(|| {
                     let validators: ValidatorsConfig<SignatureCollectionType> =
                         ValidatorsConfig::read_from_path("/monad/config/validators.toml")
                             .unwrap_or_else(|err| panic!("failed to read validators.toml, or validators.toml corrupt. was this edited manually? err={:?}", err));
                     validators
-                        .get_validator_set(&block.get_epoch())
+                        .get_validator_set(&tc.epoch)
                         .get_stakes()
                         .into_iter()
                         .collect()
                 });
 
-            for skipped_round in (last_round.0 + 1)
-                .max(block.get_block_round().0 - 5)
-                .min(block.get_block_round().0)
-                ..block.get_block_round().0
-            {
+                let skipped_round = tc.round;
                 let skipped_leader =
-                    WeightedRoundRobin::default().get_leader(Round(skipped_round), validators);
+                    WeightedRoundRobin::default().get_leader(skipped_round, validators);
                 info!(
                     round =? skipped_round,
                     author =? skipped_leader,
                     now_ts_ms =? now_ts.as_millis(),
-                    author_dns = node_dns.get(&skipped_leader.pubkey()).cloned().unwrap_or_default(),
-                    "skipped_block"
+                    author_address = addresses.get(&skipped_leader.pubkey()).cloned().unwrap_or_default(),
+                    "timeout"
                 );
             }
-            last_round = block.get_block_round();
+        }
+
+        let mut block_queue = Vec::new();
+        let mut next_block_id = if high_certificate.qc().get_round() >= proposed_head.block_round {
+            high_certificate.qc().get_block_id()
+        } else {
+            proposed_head.get_id()
+        };
+        loop {
+            if visited_blocks.contains(&next_block_id) || block_queue.len() > MAX_REWIND_QUEUE_LEN {
+                break;
+            }
+            if let Ok(next_block_header) = block_persist.read_bft_header(&next_block_id) {
+                next_block_id = next_block_header.get_parent_id();
+                block_queue.push(next_block_header);
+            } else {
+                break;
+            }
+        }
+
+        for block_header in block_queue.into_iter().rev() {
+            let Ok(block_body) = block_persist.read_bft_body(&block_header.block_body_id) else {
+                // no body for block header, so skip and move on
+                continue;
+            };
+            let block = ConsensusFullBlock::new(block_header, block_body).expect("block is valid");
+
             visited_blocks.put(block.get_id(), block.header().clone());
 
             info!(
                 round =? block.get_block_round().0,
+                parent_round =? block.get_qc().get_round().0,
                 epoch =? block.header().epoch.0,
                 seq_num =? block.header().seq_num.0,
                 num_tx =? block.body().execution_body.transactions.len(),
                 author =? block.header().author,
                 block_ts_ms =? block.header().timestamp_ns / 1_000_000,
                 now_ts_ms =? now_ts.as_millis(),
-                author_dns = node_dns.get(&block.header().author.pubkey()).cloned().unwrap_or_default(),
+                author_address = addresses.get(&block.header().author.pubkey()).cloned().unwrap_or_default(),
                 "proposed_block"
             );
         }
+
+        if last_high_certificate != high_certificate {
+            if let RoundCertificate::Qc(qc) = &high_certificate {
+                if let Some(parent_block) = visited_blocks.get(&qc.get_block_id()) {
+                    let parent_qc = parent_block.qc.clone();
+                    if qc.get_round() == parent_qc.get_round() + Round(1) {
+                        // commit rule passed
+                        if let Some(finalized_block_header) =
+                            visited_blocks.get(&parent_qc.get_block_id())
+                        {
+                            info!(
+                                round =? finalized_block_header.block_round.0,
+                                parent_round =? finalized_block_header.qc.get_round().0,
+                                epoch =? finalized_block_header.epoch.0,
+                                seq_num =? finalized_block_header.seq_num.0,
+                                author =? finalized_block_header.author,
+                                block_ts_ms =? finalized_block_header.timestamp_ns / 1_000_000,
+                                now_ts_ms =? now_ts.as_millis(),
+                                author_address = addresses.get(&finalized_block_header.author.pubkey()).cloned().unwrap_or_default(),
+                                "finalized_block"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        last_high_certificate = high_certificate.clone();
         while epoch_validators.len() > 1_000 {
             epoch_validators.pop_first();
         }
     }
 }
 
-pub fn new_blocks(
+pub fn latest_tip_stream(
+    forkpoint_path: &Path,
     ledger_path: &Path,
-) -> impl Stream<Item = ConsensusFullBlock<SignatureType, SignatureCollectionType, ExecutionProtocolType>>
-{
+) -> impl Stream<
+    Item = (
+        RoundCertificate<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
+        ConsensusBlockHeader<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
+    ),
+> {
     let inotify = Inotify::init().expect("error initializing inotify");
     inotify
         .watches()
@@ -163,7 +209,11 @@ pub fn new_blocks(
             },
             WatchMask::CLOSE_WRITE,
         )
-        .expect("failed to watch bft_block_header_path");
+        .expect("failed to watch ledger path");
+    inotify
+        .watches()
+        .add(forkpoint_path, WatchMask::CLOSE_WRITE | WatchMask::MOVE)
+        .expect("failed to watch forkpoint path");
 
     let inotify_buffer = [0; 1024];
     let inotify_events = inotify
@@ -176,37 +226,29 @@ pub fn new_blocks(
         ExecutionProtocolType,
     > = FileBlockPersist::new(ledger_path.to_owned());
 
+    let mut forkpoint_path = forkpoint_path.to_owned();
+    forkpoint_path.push("forkpoint.toml");
+
     inotify_events.filter_map(move |maybe_event| {
-        // hack because filter_map takes in an impl Future<Option<_>>
-        let result = (|| {
-            let event = match maybe_event {
-                Ok(event) => event,
-                Err(err) if err.kind() == ErrorKind::InvalidInput => {
-                    warn!(
-                        ?err,
-                        "ErrorKind::InvalidInput, are blocks being produced faster than indexer?"
-                    );
-                    return None;
-                }
-                Err(err) => {
-                    error!(?err, "inotify error while reading events");
-                    panic!("inotify error while reading events")
-                }
-            };
-            let event_name = event.name?;
-            let filename = event_name.to_str()?;
-            let block_id = BlockId(Hash(hex::decode(filename).ok()?.try_into().ok()?));
-            read_full_block(&block_persist, &block_id)
+        let result = (|| match maybe_event {
+            Ok(_event) => {
+                let forkpoint_config: ForkpointConfig =
+                    toml::from_str(&std::fs::read_to_string(&forkpoint_path).ok()?).ok()?;
+                let proposed_head = block_persist.read_proposed_head_bft_header().ok()?;
+                Some((forkpoint_config.high_certificate, proposed_head))
+            }
+            Err(err) if err.kind() == ErrorKind::InvalidInput => {
+                warn!(
+                    ?err,
+                    "ErrorKind::InvalidInput, are files being produced faster than indexer?"
+                );
+                None
+            }
+            Err(err) => {
+                error!(?err, "inotify error while reading events");
+                panic!("inotify error while reading events")
+            }
         })();
         async move { result }
     })
-}
-
-fn read_full_block(
-    block_persist: &FileBlockPersist<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
-    block_id: &BlockId,
-) -> Option<ConsensusFullBlock<SignatureType, SignatureCollectionType, ExecutionProtocolType>> {
-    let header = block_persist.read_bft_header(block_id).ok()?;
-    let body = block_persist.read_bft_body(&header.block_body_id).ok()?;
-    ConsensusFullBlock::new(header, body).ok()
 }
