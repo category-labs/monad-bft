@@ -114,7 +114,7 @@ where
         Some(root.get_execution_results())
     }
 
-    /// returns a new sync_target is applicable.
+    /// returns a new sync_target if applicable.
     ///
     /// concretely, if new_root > current_root + resync_threshold
     pub fn handle_proposal(

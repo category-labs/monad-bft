@@ -1304,10 +1304,6 @@ where
             ))),
         );
         for (sender, proposal) in cached_proposals {
-            // handle proposals in reverse order because later blocks are more likely to pass
-            // timestamp validation
-            //
-            // earlier proposals will then get short-circuited via blocksync codepath if certified
             let mut consensus = ConsensusChildState::new(self);
             commands.extend(
                 consensus
