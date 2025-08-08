@@ -49,7 +49,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         let mut validators = EpochValidators {
             validators: keys
                 .iter()
-                .map(|key| (NodeId::new(key.pubkey()), Validator { stake: Stake(1) }))
+                .map(|key| (NodeId::new(key.pubkey()), Validator { stake: Stake::ONE }))
                 .collect(),
         };
 
@@ -93,7 +93,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         let mut validators = EpochValidators {
             validators: keys
                 .iter()
-                .map(|key| (NodeId::new(key.pubkey()), Validator { stake: Stake(1) }))
+                .map(|key| (NodeId::new(key.pubkey()), Validator { stake: Stake::ONE }))
                 .collect(),
         };
         let epoch_validators = validators.view_without(vec![&NodeId::new(keys[0].pubkey())]);

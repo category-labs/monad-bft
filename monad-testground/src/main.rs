@@ -283,7 +283,7 @@ where
             .iter()
             .map(|(keypair, _, cert_keypair)| ValidatorData {
                 node_id: NodeId::new(keypair.pubkey()),
-                stake: Stake(1),
+                stake: Stake::ONE,
                 cert_pubkey: cert_keypair.pubkey(),
             })
             .collect::<Vec<_>>(),
