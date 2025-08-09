@@ -1322,7 +1322,7 @@ where
                 };
                 consensus.request_blocks_if_missing_ancestor()
             };
-            let consensus = ConsensusChildState::new(self);
+            let mut consensus = ConsensusChildState::new(self);
             commands.extend(
                 blocksync_cmds
                     .into_iter()

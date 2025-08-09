@@ -15,6 +15,7 @@
 
 use std::{collections::BTreeMap, fmt::Debug, marker::PhantomData, time::Duration};
 
+use itertools::Itertools;
 use monad_blocktree::blocktree::BlockTree;
 use monad_chain_config::{
     execution_revision::ExecutionChainParams,
@@ -67,6 +68,10 @@ use crate::{command::ConsensusCommand, timestamp::BlockTimestamp};
 
 pub mod command;
 pub mod timestamp;
+
+// TODO(andr-dev): Make configurable
+const NUM_LEADERS_FORWARD_TXS: usize = 3;
+const NUM_LEADERS_SELF_UPCOMING: usize = 3;
 
 /// core consensus algorithm
 pub struct ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>
@@ -1782,11 +1787,53 @@ where
 
         cmds
     }
+
+    fn compute_upcoming_leader_round_pairs<
+        'a,
+        const INCLUDE_CURRENT_ROUND: bool,
+        const NUM_ROUNDS: usize,
+    >(
+        &'a self,
+    ) -> impl Iterator<Item = (NodeId<CertificateSignaturePubKey<ST>>, Round)> + 'a {
+        (self.consensus.get_current_round().0 + (if INCLUDE_CURRENT_ROUND { 0 } else { 1 })..)
+            .take(NUM_ROUNDS)
+            .map(Round)
+            .map(|round| {
+                let epoch = self.epoch_manager.get_epoch(round).expect("epoch exists");
+
+                let Some(next_validator_set) = self.val_epoch_map.get_val_set(&epoch) else {
+                    todo!("handle non-existent validatorset for next k round epoch");
+                };
+
+                let leader = self
+                    .election
+                    .get_leader(round, next_validator_set.get_members());
+
+                (leader, round)
+            })
+    }
+
+    pub fn iter_upcoming_self_leader_rounds<'a>(&'a self) -> impl Iterator<Item = Round> + 'a {
+        self.compute_upcoming_leader_round_pairs::<true, NUM_LEADERS_SELF_UPCOMING>()
+            .filter_map(|(nodeid, round)| (nodeid == *self.nodeid).then_some(round))
+    }
+
+    pub fn iter_future_other_leaders<'a>(
+        &'a self,
+    ) -> impl Iterator<Item = NodeId<CertificateSignaturePubKey<ST>>> + 'a {
+        self.compute_upcoming_leader_round_pairs::<false, NUM_LEADERS_FORWARD_TXS>()
+            .filter_map(|(nodeid, _)| (nodeid != *self.nodeid).then_some(nodeid))
+            .unique()
+    }
 }
 
 #[cfg(test)]
 mod test {
-    use std::{collections::BTreeMap, ops::Deref, time::Duration};
+    use std::{
+        collections::{BTreeMap, HashSet},
+        ops::Deref,
+        time::Duration,
+    };
 
     use alloy_consensus::{
         constants::{EMPTY_TRANSACTIONS, EMPTY_WITHDRAWALS},
@@ -1855,7 +1902,8 @@ mod test {
 
     use crate::{
         timestamp::BlockTimestamp, ConsensusCommand, ConsensusConfig, ConsensusState,
-        ConsensusStateWrapper, OutgoingVoteStatus,
+        ConsensusStateWrapper, OutgoingVoteStatus, NUM_LEADERS_FORWARD_TXS,
+        NUM_LEADERS_SELF_UPCOMING,
     };
 
     const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;
@@ -5023,5 +5071,178 @@ mod test {
             .get_entry(&block_3_id)
             .expect("should be in the blocktree");
         assert!(block_3_blocktree_entry.is_coherent);
+    }
+
+    const EXPECTED_FUTURE_LEADER_IDXS: &[usize] = &[2, 3, 1];
+
+    #[test]
+    fn test_iter_upcoming_self_leader_rounds() {
+        let num_states = 4;
+        let execution_delay = SeqNum::MAX;
+        let (_, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            BlockPolicyType,
+            StateBackendType,
+            BlockValidatorType,
+            _,
+            _,
+        >(
+            num_states as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || EthValidator::new(0),
+            execution_delay,
+        );
+
+        // Since we are using SimpleRoundRobin, we can determine the round modulo for each node
+        let leader_expected_round_modulo = {
+            let epoch = ctx[0]
+                .epoch_manager
+                .get_epoch(ctx[0].consensus_state.get_current_round())
+                .expect("epoch exists for local round");
+
+            let validator_set = ctx[0]
+                .val_epoch_map
+                .get_val_set(&epoch)
+                .expect("validator set exists for local epoch");
+
+            validator_set
+                .get_members()
+                .iter()
+                .enumerate()
+                .map(|(idx, n)| (*n.0, idx))
+                .collect::<BTreeMap<_, _>>()
+        };
+
+        for idx in 0..ctx.len() {
+            assert_eq!(ctx[idx].consensus_state.get_current_round(), Round(1));
+
+            let leader_expected_round_modulo = leader_expected_round_modulo
+                .get(&ctx[idx].nodeid)
+                .cloned()
+                .unwrap();
+
+            let upcoming_self_leader_rounds = ctx[idx]
+                .wrapped_state()
+                .iter_upcoming_self_leader_rounds()
+                .collect::<HashSet<_>>();
+
+            for upcoming_self_leader_round in upcoming_self_leader_rounds.iter() {
+                assert!(upcoming_self_leader_round >= &Round(1));
+                assert!(
+                    upcoming_self_leader_round < &Round((1 + NUM_LEADERS_SELF_UPCOMING) as u64)
+                );
+
+                assert_eq!(
+                    (upcoming_self_leader_round.0 as usize) % ctx.len(),
+                    leader_expected_round_modulo
+                );
+            }
+
+            let other_upcoming_leader_rounds = ctx
+                .iter_mut()
+                .enumerate()
+                .filter(|(n_idx, _)| n_idx != &idx)
+                .flat_map(|(_, n)| {
+                    n.wrapped_state()
+                        .iter_upcoming_self_leader_rounds()
+                        .collect_vec()
+                })
+                .collect::<HashSet<_>>();
+
+            assert_eq!(
+                upcoming_self_leader_rounds.len() + other_upcoming_leader_rounds.len(),
+                NUM_LEADERS_SELF_UPCOMING
+            );
+
+            assert_eq!(
+                upcoming_self_leader_rounds
+                    .intersection(&other_upcoming_leader_rounds)
+                    .count(),
+                0
+            );
+
+            assert_eq!(
+                upcoming_self_leader_rounds
+                    .union(&other_upcoming_leader_rounds)
+                    .sorted()
+                    .map(|round| round.0 as usize)
+                    .collect_vec(),
+                (1..).take(NUM_LEADERS_SELF_UPCOMING).collect_vec()
+            );
+        }
+    }
+
+    #[test]
+    fn test_iter_future_other_leaders() {
+        let num_states = 4;
+        let execution_delay = SeqNum::MAX;
+        let (_, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            BlockPolicyType,
+            StateBackendType,
+            BlockValidatorType,
+            _,
+            _,
+        >(
+            num_states as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || EthValidator::new(0),
+            execution_delay,
+        );
+
+        // Since we are using SimpleRoundRobin, we can determine the round modulo for each node
+        let round_modulo_expected_leader = {
+            let epoch = ctx[0]
+                .epoch_manager
+                .get_epoch(ctx[0].consensus_state.get_current_round())
+                .expect("epoch exists for local round");
+
+            let validator_set = ctx[0]
+                .val_epoch_map
+                .get_val_set(&epoch)
+                .expect("validator set exists for local epoch");
+
+            validator_set
+                .get_members()
+                .iter()
+                .map(|n| *n.0)
+                .enumerate()
+                .collect::<BTreeMap<_, _>>()
+        };
+
+        for idx in 0..ctx.len() {
+            eprintln!("{idx}: {:?}", ctx[idx].nodeid);
+
+            assert_eq!(ctx[idx].consensus_state.get_current_round(), Round(1));
+
+            let future_other_leaders = ctx[idx]
+                .wrapped_state()
+                .iter_future_other_leaders()
+                .sorted()
+                .collect_vec();
+
+            let expected_future_other_leaders = (2..)
+                .take(NUM_LEADERS_FORWARD_TXS)
+                .map(|round| {
+                    round_modulo_expected_leader
+                        .get(&(round % ctx.len()))
+                        .unwrap()
+                })
+                .filter(|n| *n != &ctx[idx].nodeid)
+                .unique()
+                .sorted()
+                .cloned()
+                .collect_vec();
+
+            assert_eq!(future_other_leaders, expected_future_other_leaders);
+        }
     }
 }

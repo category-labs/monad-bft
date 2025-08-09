@@ -19,6 +19,7 @@ monad-state-backend = { workspace = true }
 monad-types = { workspace = true }
 monad-validator = { workspace = true }
 
+itertools = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
@@ -28,6 +29,5 @@ monad-multi-sig = { workspace = true }
 monad-testutil = { workspace = true }
 
 alloy-consensus = { workspace = true }
-itertools = { workspace = true }
 test-case = { workspace = true }
 tracing-test = { workspace = true }

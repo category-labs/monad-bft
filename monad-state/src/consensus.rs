@@ -41,12 +41,10 @@ use monad_executor_glue::{
     TimerCommand, TimestampCommand, TxPoolCommand,
 };
 use monad_state_backend::StateBackend;
-use monad_types::{ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum};
+use monad_types::{ExecutionProtocol, NodeId, Round, RouterTarget};
 use monad_validator::{
-    epoch_manager::EpochManager,
-    leader_election::LeaderElection,
-    validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
-    validators_epoch_mapping::ValidatorsEpochMapping,
+    epoch_manager::EpochManager, leader_election::LeaderElection,
+    validator_set::ValidatorSetTypeFactory, validators_epoch_mapping::ValidatorsEpochMapping,
 };
 use tracing::{debug_span, info};
 
@@ -54,10 +52,6 @@ use crate::{
     handle_validation_error, BlockTimestamp, ConsensusMode, MonadState, MonadVersion,
     VerifiedMonadMessage,
 };
-
-// TODO configurable
-const NUM_LEADERS_FORWARD_TXS: usize = 3;
-const NUM_LEADERS_UPCOMING: usize = 3;
 
 pub(super) struct ConsensusChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
 where
@@ -274,6 +268,35 @@ where
             .collect::<Vec<_>>()
     }
 
+    fn try_build_state_wrapper<'b>(
+        &'b mut self,
+    ) -> Option<ConsensusStateWrapper<'b, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>> {
+        match self.consensus {
+            ConsensusMode::Sync { .. } => None,
+            ConsensusMode::Live(consensus) => Some(ConsensusStateWrapper {
+                consensus,
+
+                metrics: self.metrics,
+                epoch_manager: self.epoch_manager,
+                block_policy: self.block_policy,
+                state_backend: self.state_backend,
+
+                val_epoch_map: self.val_epoch_map,
+                election: self.leader_election,
+                version: self.version.protocol_version,
+
+                block_timestamp: self.block_timestamp,
+                block_validator: self.block_validator,
+                beneficiary: self.beneficiary,
+                nodeid: self.nodeid,
+                config: self.consensus_config,
+
+                keypair: self.keypair,
+                cert_keypair: self.cert_keypair,
+            }),
+        }
+    }
+
     pub(super) fn handle_mempool_event(
         &mut self,
         event: MempoolEvent<ST, SCT, EPT>,
@@ -288,7 +311,7 @@ where
             SBT,
         >,
     > {
-        let ConsensusMode::Live(consensus) = self.consensus else {
+        let Some(consensus) = self.try_build_state_wrapper() else {
             match event {
                 MempoolEvent::Proposal { .. } => {
                     unreachable!("txpool should never emit proposal while not live!")
@@ -297,27 +320,6 @@ where
                     return Vec::default()
                 }
             }
-        };
-        let consensus = ConsensusStateWrapper {
-            consensus,
-
-            metrics: self.metrics,
-            epoch_manager: self.epoch_manager,
-            block_policy: self.block_policy,
-            state_backend: self.state_backend,
-
-            val_epoch_map: self.val_epoch_map,
-            election: self.leader_election,
-            version: self.version.protocol_version,
-
-            block_timestamp: self.block_timestamp,
-            block_validator: self.block_validator,
-            beneficiary: self.beneficiary,
-            nodeid: self.nodeid,
-            config: self.consensus_config,
-
-            keypair: self.keypair,
-            cert_keypair: self.cert_keypair,
         };
 
         match event {
@@ -381,9 +383,9 @@ where
                 })]
             }
             MempoolEvent::ForwardTxs(txs) => {
-                self.compute_upcoming_leader_round_pairs::<false, true, NUM_LEADERS_FORWARD_TXS>()
-                    .into_iter()
-                    .map(|(target, _)| {
+                consensus
+                    .iter_future_other_leaders()
+                    .map(|target| {
                         // TODO ideally we could batch these all as one RouterCommand(PointToPoint) so
                         // that we can:
                         // 1. avoid cloning txns
@@ -510,55 +512,15 @@ where
         Ok(validated_message)
     }
 
-    fn compute_upcoming_leader_round_pairs<
-        const INCLUDE_CURRENT_ROUND: bool,
-        const SKIP_SELF: bool,
-        const NUM: usize,
-    >(
-        &self,
-    ) -> Vec<(NodeId<CertificateSignaturePubKey<ST>>, Round)> {
-        let ConsensusMode::Live(mode) = &self.consensus else {
-            return Vec::default();
-        };
-
-        (mode.get_current_round().0 + (if INCLUDE_CURRENT_ROUND { 0 } else { 1 })..)
-            .take(NUM)
-            .map(Round)
-            .filter_map(|round| {
-                let epoch = self.epoch_manager.get_epoch(round).expect("epoch exists");
-
-                let Some(next_validator_set) = self.val_epoch_map.get_val_set(&epoch) else {
-                    todo!("handle non-existent validatorset for next k round epoch");
-                };
-
-                let leader = self
-                    .leader_election
-                    .get_leader(round, next_validator_set.get_members());
-
-                if SKIP_SELF {
-                    (&leader != self.nodeid).then_some((leader, round))
-                } else {
-                    Some((leader, round))
-                }
-            })
-            .unique_by(|(nodeid, _)| *nodeid)
-            .collect()
-    }
-
-    fn get_upcoming_leader_rounds(&self) -> Vec<Round> {
-        self.compute_upcoming_leader_round_pairs::<true, false, NUM_LEADERS_UPCOMING>()
-            .into_iter()
-            .map(|(_, round)| round)
-            .collect()
-    }
-
     pub(super) fn wrap(
-        &self,
+        &mut self,
         command: ConsensusCommand<ST, SCT, EPT, BPT, SBT>,
     ) -> WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT> {
         WrappedConsensusCommand {
-            state_root_delay: self.consensus_config.execution_delay,
-            upcoming_leader_rounds: self.get_upcoming_leader_rounds(),
+            upcoming_leader_rounds: self
+                .try_build_state_wrapper()
+                .map(|consensus| consensus.iter_upcoming_self_leader_rounds().collect())
+                .unwrap_or_default(),
             command,
         }
     }
@@ -572,7 +534,6 @@ where
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
 {
-    state_root_delay: SeqNum,
     upcoming_leader_rounds: Vec<Round>,
     pub command: ConsensusCommand<ST, SCT, EPT, BPT, SBT>,
 }
@@ -598,7 +559,6 @@ where
 {
     fn from(wrapped: WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT>) -> Self {
         let WrappedConsensusCommand {
-            state_root_delay,
             upcoming_leader_rounds,
             command,
         } = wrapped;
