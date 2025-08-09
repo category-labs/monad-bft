@@ -82,12 +82,26 @@ struct Args {
     /// how long to run the simulation for, in seconds
     #[arg(short, long)]
     simulation_length_s: Option<u64>,
+    /// delta between consensus rounds in milliseconds
+    #[arg(long, default_value = "4000")]
+    delta_ms: u64,
+    /// validator set update interval
+    #[arg(long, default_value = "2000")]
+    val_set_update_interval: u64,
+    /// epoch start delay
+    #[arg(long, default_value = "50")]
+    epoch_start_delay: u64,
+    /// router type: local or raptorcast
+    #[arg(long, default_value = "raptorcast")]
+    router: String,
+    /// external latency in ms (when using local router)
+    #[arg(long, default_value = "0")]
+    external_latency_ms: u64,
 }
 
 struct TestgroundArgs {
     simulation_length_s: u64,
     delta_ms: u64,
-    proposal_size: usize,
     val_set_update_interval: u64,
     epoch_start_delay: u64,
 
@@ -122,6 +136,31 @@ static CHAIN_PARAMS: ChainParams = ChainParams {
     vote_pace: Duration::from_millis(0),
 };
 
+/// Parse CLI arguments into TestgroundArgs
+fn parse_testground_args(args: Args) -> TestgroundArgs {
+    let router = match args.router.as_str() {
+        "local" => RouterArgs::Local {
+            external_latency_ms: args.external_latency_ms,
+        },
+        "raptorcast" => RouterArgs::RaptorCast,
+        _ => panic!(
+            "Invalid router type: {}. Use 'local' or 'raptorcast'",
+            args.router
+        ),
+    };
+
+    TestgroundArgs {
+        simulation_length_s: args.simulation_length_s.unwrap_or(3600),
+        delta_ms: args.delta_ms,
+        val_set_update_interval: args.val_set_update_interval,
+        epoch_start_delay: args.epoch_start_delay,
+        router,
+
+        // Only ledger remains hardcoded (only one option exists)
+        ledger: LedgerArgs::Mock,
+    }
+}
+
 //==============================================================================
 // Metrics
 //==============================================================================
@@ -154,8 +193,9 @@ fn make_provider(
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
+    let otel_endpoint = args.otel_endpoint.clone();
 
-    let context = args.otel_endpoint.as_ref().map(|endpoint| {
+    let context = otel_endpoint.as_ref().map(|endpoint| {
         let provider = make_provider(endpoint.to_owned(), "monad-coordinator".to_owned());
         use opentelemetry::trace::TracerProvider;
 
@@ -171,80 +211,68 @@ async fn main() {
     type SignatureTypeConfig = SecpSignature;
     type SignatureCollectionTypeConfig =
         BlsSignatureCollection<CertificateSignaturePubKey<SignatureTypeConfig>>;
-    // TODO parse this from CLI args
-    let testground_args = TestgroundArgs {
-        simulation_length_s: args.simulation_length_s.unwrap_or(3600),
-        delta_ms: 4000,
-        proposal_size: 5_000,
-        val_set_update_interval: 2_000,
-        epoch_start_delay: 50,
 
-        ledger: LedgerArgs::Mock,
+    let addresses = args.addresses.clone();
+    let testground_args = parse_testground_args(args);
 
-        router: RouterArgs::RaptorCast,
-    };
-
-    let (wg_tx, _) = tokio::sync::broadcast::channel::<()>(args.addresses.len());
+    let (wg_tx, _) = tokio::sync::broadcast::channel::<()>(addresses.len());
     futures_util::future::join_all(
-        testnet::<SignatureTypeConfig, SignatureCollectionTypeConfig>(
-            &args.addresses,
-            &testground_args,
-        )
-        .into_iter()
-        .enumerate()
-        .map(|(index, config)| {
-            let maybe_provider = args.otel_endpoint.as_ref().map(|endpoint| {
-                make_provider(
-                    endpoint.to_owned(),
-                    format!("monad-testground-{:?}", &config.state_config.key.pubkey()),
-                )
-            });
+        testnet::<SignatureTypeConfig, SignatureCollectionTypeConfig>(&addresses, &testground_args)
+            .into_iter()
+            .enumerate()
+            .map(|(index, config)| {
+                let maybe_provider = otel_endpoint.as_ref().map(|endpoint| {
+                    make_provider(
+                        endpoint.to_owned(),
+                        format!("monad-testground-{:?}", &config.state_config.key.pubkey()),
+                    )
+                });
 
-            let context = context.clone();
-            let (wg_tx, wg_rx) = (wg_tx.clone(), wg_tx.subscribe());
-            let fut = async move {
-                //--------------------------------------------------------------
-                // Run and do telemetry
-                //--------------------------------------------------------------
-                let fut = run(index, context, wg_tx, wg_rx, config);
-                if let Some(provider) = &maybe_provider {
-                    fut.with_subscriber({
-                        use opentelemetry::trace::TracerProvider;
-                        use tracing_subscriber::layer::SubscriberExt;
+                let context = context.clone();
+                let (wg_tx, wg_rx) = (wg_tx.clone(), wg_tx.subscribe());
+                let fut = async move {
+                    //--------------------------------------------------------------
+                    // Run and do telemetry
+                    //--------------------------------------------------------------
+                    let fut = run(index, context, wg_tx, wg_rx, config);
+                    if let Some(provider) = &maybe_provider {
+                        fut.with_subscriber({
+                            use opentelemetry::trace::TracerProvider;
+                            use tracing_subscriber::layer::SubscriberExt;
 
-                        let tracer = provider.tracer("opentelemetry");
-                        let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
+                            let tracer = provider.tracer("opentelemetry");
+                            let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
 
-                        let log_dest = std::io::stdout;
-                        let log_name = format!("testground_node_{}.log", index);
-                        let _ = std::fs::remove_file(&log_name);
-                        let log_dest = RollingFileAppender::new(Rotation::NEVER, ".", log_name);
+                            let log_dest = std::io::stdout;
+                            let log_name = format!("testground_node_{}.log", index);
+                            let _ = std::fs::remove_file(&log_name);
+                            let log_dest = RollingFileAppender::new(Rotation::NEVER, ".", log_name);
 
-                        Registry::default()
-                            .with(EnvFilter::from_default_env())
-                            .with(
-                                FmtLayer::default()
-                                    .with_writer(log_dest)
-                                    .with_span_events(FmtSpan::CLOSE)
-                                    .with_ansi(false)
-                                    .without_time(),
-                            )
-                            .with(telemetry)
-                    })
-                    .boxed()
-                } else {
-                    fut.boxed()
-                }
-                .await;
+                            Registry::default()
+                                .with(EnvFilter::from_default_env())
+                                .with(
+                                    FmtLayer::default()
+                                        .with_writer(log_dest)
+                                        .with_span_events(FmtSpan::CLOSE)
+                                        .with_ansi(false)
+                                        .without_time(),
+                                )
+                                .with(telemetry)
+                        })
+                        .boxed()
+                    } else {
+                        fut.boxed()
+                    }
+                    .await;
 
-                // sleep to flush remaining traces
-                tokio::time::sleep(Duration::from_secs(2)).await;
-                // destructor is blocking forever for some reason...
-                std::mem::forget(maybe_provider);
-            };
-            Box::pin(fut)
-        })
-        .map(tokio::spawn),
+                    // sleep to flush remaining traces
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    // destructor is blocking forever for some reason...
+                    std::mem::forget(maybe_provider);
+                };
+                Box::pin(fut)
+            })
+            .map(tokio::spawn),
     )
     .await
     .into_iter()
@@ -453,4 +481,69 @@ async fn run<ST, SCT>(
         }
     }
     eprintln!("exited runloop");
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+
+    #[test]
+    fn test_cli_args_end_to_end() {
+        // CLI args → final config behavior
+        let args = Args::try_parse_from([
+            "testground",
+            "--addresses",
+            "127.0.0.1:8000",
+            "--simulation-length-s",
+            "999",
+            "--delta-ms",
+            "1337",
+            "--val-set-update-interval",
+            "4444",
+            "--epoch-start-delay",
+            "123",
+        ])
+        .expect("CLI parsing failed");
+
+        let addresses = args.addresses.clone();
+        let testground_args = parse_testground_args(args);
+        let configs = testnet::<
+            monad_secp::SecpSignature,
+            monad_bls::BlsSignatureCollection<
+                monad_crypto::certificate_signature::CertificateSignaturePubKey<
+                    monad_secp::SecpSignature,
+                >,
+            >,
+        >(&addresses, &testground_args);
+
+        let config = &configs[0];
+
+        // Verify CLI args actually control final system behavior
+        assert_eq!(config.simulation_length.as_secs(), 999);
+        assert_eq!(config.state_config.consensus_config.delta.as_millis(), 1337);
+        assert_eq!(config.state_config.val_set_update_interval.0, 4444);
+        assert_eq!(config.state_config.epoch_start_delay.0, 123);
+
+        // Test router configuration
+        let args_local = Args::try_parse_from([
+            "testground",
+            "--addresses",
+            "127.0.0.1:8000",
+            "--router",
+            "local",
+            "--external-latency-ms",
+            "50",
+        ])
+        .expect("CLI parsing failed");
+
+        let testground_args_local = parse_testground_args(args_local);
+        assert!(matches!(
+            testground_args_local.router,
+            RouterArgs::Local {
+                external_latency_ms: 50
+            }
+        ));
+    }
 }
