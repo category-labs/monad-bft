@@ -23,6 +23,8 @@ pub enum Error {
     InvalidSignature,
     /// There are high qc rounds larger than the TC round
     InvalidTcRound,
+    /// There are duplicate (tip_round, high_qc_round) in the TC
+    DuplicateTcTipRound,
     /// The SignatureCollection doesn't have supermajority of the stake signed
     InsufficientStake,
     /// Required validator set (or cert pubkeys) not in validators epoch mapping

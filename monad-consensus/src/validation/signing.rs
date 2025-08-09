@@ -13,7 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeMap, ops::Deref};
+use std::{
+    collections::{BTreeMap, HashSet},
+    ops::Deref,
+};
 
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use monad_consensus_types::{
@@ -745,9 +748,17 @@ where
     let mut node_ids = Vec::new();
     let mut highest_qc_round = GENESIS_ROUND;
     let mut highest_tip_round = GENESIS_ROUND;
+    let mut seen_tip_rounds = HashSet::new();
+    let mut seen_node_ids = HashSet::new();
     for t in tc.tip_rounds.iter() {
         if t.high_qc_round >= tc.round {
             return Err(Error::InvalidTcRound);
+        }
+
+        let is_new_tip_round = seen_tip_rounds.insert((t.high_qc_round, t.high_tip_round));
+        if !is_new_tip_round {
+            // duplicate tip round - TC isn't bundled correctly
+            return Err(Error::DuplicateTcTipRound);
         }
 
         if t.high_qc_round > highest_qc_round {
@@ -770,6 +781,13 @@ where
             .sigs
             .verify::<signing_domain::Timeout>(validator_mapping, msg.as_ref())
             .map_err(|_| Error::InvalidSignature)?;
+
+        for signer in &signers {
+            let is_new_node_id = seen_node_ids.insert(*signer);
+            if !is_new_node_id {
+                return Err(Error::SignaturesDuplicateNode);
+            }
+        }
 
         node_ids.extend(signers);
     }
@@ -1326,6 +1344,58 @@ mod test {
                 &tc
             ),
             Err(Error::InsufficientStake)
+        ));
+    }
+
+    #[test]
+    fn test_tc_duplicate_tip_rounds() {
+        let (keypairs, certkeys, vset, vmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(2, ValidatorSetFactory::default());
+
+        let epoch = Epoch(1);
+        let round = Round(5);
+
+        // TC includes two HighTipRoundSigColTuples with the same (high_qc_round, high_tc_round)
+        let tip_rounds = keypairs[..2].iter()
+        .zip(certkeys[..2].iter())
+        .map(|(keypair, certkey)| {
+            let td = TimeoutInfo {
+                epoch: Epoch(1),
+                round: Round(5),
+                high_qc_round: GENESIS_ROUND,
+                high_tip_round: GENESIS_ROUND,
+            };
+            let msg = alloy_rlp::encode(td);
+
+            let sigs = vec![(NodeId::new(keypair.pubkey()), <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign::<signing_domain::Timeout>(msg.as_ref(), certkey))];
+
+            let sigcol = <SignatureCollectionType as SignatureCollection>::new::<signing_domain::Timeout>(sigs, &vmap, msg.as_ref()).unwrap();
+
+            HighTipRoundSigColTuple {
+                high_qc_round: GENESIS_ROUND,
+                high_tip_round: GENESIS_ROUND,
+                sigs: sigcol,
+            }
+        })
+        .collect();
+
+        let tc: TimeoutCertificate<SignatureType, SignatureCollectionType, ExecutionProtocolType> =
+            TimeoutCertificate {
+                epoch,
+                round,
+                tip_rounds,
+                high_extend: HighExtend::Qc(QuorumCertificate::genesis_qc()),
+            };
+
+        assert!(matches!(
+            verify_tc(
+                &|_epoch, _round| Ok((&vset, &vmap, NodeId::new(keypairs[0].pubkey()))),
+                &tc
+            ),
+            Err(Error::DuplicateTcTipRound)
         ));
     }
 
