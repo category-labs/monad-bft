@@ -21,7 +21,7 @@ mod test {
 
     use itertools::Itertools;
     use monad_chain_config::{
-        revision::{ChainParams, MockChainRevision},
+        revision::{ChainParams, MockChainRevision, RESERVE_BALANCE},
         MockChainConfig,
     };
     use monad_consensus_types::{
@@ -130,6 +130,7 @@ mod test {
         tx_limit: 10_000,
         proposal_gas_limit: 300_000_000,
         proposal_byte_limit: 4_000_000,
+        max_reserve_balance: RESERVE_BALANCE,
         vote_pace: Duration::from_millis(0),
     };
 

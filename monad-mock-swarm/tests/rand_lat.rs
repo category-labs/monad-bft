@@ -20,7 +20,10 @@ use std::{
 };
 
 use itertools::Itertools;
-use monad_chain_config::{revision::ChainParams, MockChainConfig};
+use monad_chain_config::{
+    revision::{ChainParams, RESERVE_BALANCE},
+    MockChainConfig,
+};
 use monad_consensus_types::{
     block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
 };
@@ -52,6 +55,7 @@ static CHAIN_PARAMS: ChainParams = ChainParams {
     tx_limit: 10_000,
     proposal_gas_limit: 300_000_000,
     proposal_byte_limit: 4_000_000,
+    max_reserve_balance: RESERVE_BALANCE,
     vote_pace: Duration::from_millis(10),
 };
 

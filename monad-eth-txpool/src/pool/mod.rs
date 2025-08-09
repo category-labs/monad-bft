@@ -27,7 +27,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
+use monad_eth_block_policy::{AccountBalanceState, EthBlockPolicy, EthValidatedBlock};
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason, EthTxPoolSnapshot};
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader, BASE_FEE_PER_GAS};
 use monad_state_backend::{StateBackend, StateBackendError};
@@ -182,9 +182,20 @@ where
             let account_balance = account_balances
                 .get(tx.signer_ref())
                 .cloned()
-                .unwrap_or_default();
+                .unwrap_or(AccountBalanceState::new(block_policy.max_reserve_balance()));
 
-            let Some(_new_account_balance) = tx.apply_max_value(account_balance) else {
+            // allow charging into reserve
+            let Some(_new_account_balance) =
+                ValidEthTransaction::apply_max_value(&tx, account_balance.balance)
+            else {
+                event_tracker.drop(tx.hash(), EthTxPoolDropReason::InsufficientBalance);
+                continue;
+            };
+
+            let Some(_new_reserve_balance) = ValidEthTransaction::apply_max_gas_cost(
+                &tx,
+                account_balance.remaining_reserve_balance,
+            ) else {
                 event_tracker.drop(tx.hash(), EthTxPoolDropReason::InsufficientBalance);
                 continue;
             };

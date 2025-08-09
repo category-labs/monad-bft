@@ -50,6 +50,7 @@ pub struct InMemoryBlockState {
     round: Round,
     parent_id: BlockId,
     nonces: BTreeMap<Address, Nonce>,
+    balances: Option<BTreeMap<Address, Balance>>,
 }
 
 impl InMemoryBlockState {
@@ -60,6 +61,7 @@ impl InMemoryBlockState {
             round: GENESIS_ROUND,
             parent_id: GENESIS_BLOCK_ID,
             nonces,
+            balances: None,
         }
     }
 }
@@ -147,6 +149,7 @@ impl StateBackendTest for InMemoryStateInner {
                 round,
                 parent_id,
                 nonces: last_state_nonces,
+                balances: None,
             },
         );
     }
@@ -215,16 +218,20 @@ impl StateBackend for InMemoryStateInner {
             proposal
         };
 
-        Ok(addresses
-            .map(|address| {
-                let nonce = state.nonces.get(address)?;
-                Some(EthAccount {
-                    nonce: *nonce,
-                    balance: self.max_account_balance,
-                    code_hash: None,
+        if let Some(balances) = state.balances {
+        }
+        else {
+            Ok(addresses
+                .map(|address| {
+                    let nonce = state.nonces.get(address)?;
+                    Some(EthAccount {
+                        nonce: *nonce,
+                        balance: self.max_account_balance,
+                        code_hash: None,
+                    })
                 })
-            })
-            .collect())
+                .collect())
+        }
     }
 
     fn get_execution_result(

@@ -24,7 +24,7 @@ mod test {
     use alloy_primitives::{Address, B256};
     use itertools::Itertools;
     use monad_chain_config::{
-        revision::{ChainParams, MockChainRevision},
+        revision::{ChainParams, MockChainRevision, RESERVE_BALANCE},
         MockChainConfig,
     };
     use monad_crypto::{
@@ -135,6 +135,7 @@ mod test {
         tx_limit: 10_000,
         proposal_gas_limit: 300_000_000,
         proposal_byte_limit: 4_000_000,
+        max_reserve_balance: RESERVE_BALANCE,
         vote_pace: Duration::from_millis(0),
     };
 
@@ -147,7 +148,14 @@ mod test {
         let existing_nonces: BTreeMap<_, _> =
             existing_accounts.into_iter().map(|acc| (acc, 0)).collect();
 
-        let create_block_policy = || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337);
+        let create_block_policy = || {
+            EthBlockPolicy::new(
+                GENESIS_SEQ_NUM,
+                execution_delay.0,
+                1337,
+                CHAIN_PARAMS.max_reserve_balance,
+            )
+        };
 
         let state_configs = make_state_configs::<EthSwarm>(
             num_nodes,

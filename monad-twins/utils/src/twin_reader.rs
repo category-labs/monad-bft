@@ -25,7 +25,7 @@ use std::{
 use alloy_primitives::U256;
 use itertools::{izip, Itertools};
 use monad_chain_config::{
-    revision::{ChainParams, ChainRevision, MockChainRevision},
+    revision::{ChainParams, ChainRevision, MockChainRevision, RESERVE_BALANCE},
     ChainConfig, MockChainConfig,
 };
 use monad_consensus_state::ConsensusConfig;
@@ -272,6 +272,7 @@ static CHAIN_PARAMS: ChainParams = ChainParams {
     tx_limit: 10_000,
     proposal_gas_limit: 300_000_000,
     proposal_byte_limit: 4_000_000,
+    max_reserve_balance: RESERVE_BALANCE,
     vote_pace: Duration::from_millis(5),
 };
 

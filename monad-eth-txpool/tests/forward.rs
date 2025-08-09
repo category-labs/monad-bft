@@ -16,6 +16,7 @@
 use std::collections::BTreeMap;
 
 use alloy_primitives::{hex, B256};
+use monad_chain_config::revision::RESERVE_BALANCE;
 use monad_crypto::NopSignature;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, recover_tx};
@@ -44,8 +45,12 @@ fn with_txpool(
     ),
 ) {
     let tx = recover_tx(make_legacy_tx(S1, BASE_FEE_PER_GAS.into(), 100_000, 0, 10));
-    let eth_block_policy =
-        EthBlockPolicy::<SignatureType, SignatureCollectionType>::new(GENESIS_SEQ_NUM, 4, 1337);
+    let eth_block_policy = EthBlockPolicy::<SignatureType, SignatureCollectionType>::new(
+        GENESIS_SEQ_NUM,
+        4,
+        1337,
+        RESERVE_BALANCE,
+    );
     let state_backend = InMemoryStateInner::new(
         Balance::MAX,
         SeqNum(4),

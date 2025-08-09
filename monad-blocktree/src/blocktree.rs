@@ -266,10 +266,14 @@ where
                 self.root.info,
                 state_backend,
             ) {
-                Ok(()) => {
-                    let next_block = next_block.clone();
+                Ok(next_block) => {
                     self.tree
                         .set_coherent(&next_block_id, true)
+                        .expect("should be in tree");
+
+                    // TODO add an indicator when block fees changed
+                    self.tree
+                        .replace_coherent_block(&next_block)
                         .expect("should be in tree");
 
                     retval.push(next_block);

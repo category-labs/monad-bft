@@ -5136,6 +5136,7 @@ dependencies = [
  "criterion",
  "indexmap 2.9.0",
  "itertools 0.10.5",
+ "monad-chain-config",
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-block-policy",
