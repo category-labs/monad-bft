@@ -27,7 +27,7 @@ use monad_mock_swarm::{
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
 use monad_state_backend::InMemoryStateInner;
 use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
-use monad_transformer::{GenericTransformer, LatencyTransformer, ID};
+use monad_transformer::{DropTransformer, GenericTransformer, LatencyTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
     ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
@@ -108,4 +108,84 @@ fn many_nodes_noser() {
     verifier.metrics_happy_path(&node_ids, &swarm);
 
     assert!(verifier.verify(&swarm));
+}
+
+#[test]
+fn many_nodes_noser_one_offline() {
+    let delta = Duration::from_millis(20);
+    let num_nodes = 10;
+    let num_offline_nodes = 1;
+
+    let state_configs = make_state_configs::<NoSerSwarm>(
+        num_nodes,
+        ValidatorSetFactory::default,
+        SimpleRoundRobin::default,
+        || MockValidator,
+        || PassthruBlockPolicy,
+        || InMemoryStateInner::genesis(Balance::MAX, SeqNum(4)),
+        SeqNum(4),                           // execution_delay
+        delta,                               // delta
+        MockChainConfig::new(&CHAIN_PARAMS), // chain config
+        SeqNum(2000),                        // val_set_update_interval
+        Round(50),                           // epoch_start_delay
+        SeqNum(100),                         // state_sync_threshold
+    );
+    let all_peers: BTreeSet<_> = state_configs
+        .iter()
+        .map(|state_config| NodeId::new(state_config.key.pubkey()))
+        .collect();
+    let swarm_config = SwarmBuilder::<NoSerSwarm>(
+        state_configs
+            .into_iter()
+            .enumerate()
+            .map(|(seed, state_builder)| {
+                let state_backend = state_builder.state_backend.clone();
+                let validators = state_builder.locked_epoch_validators[0].clone();
+                NodeBuilder::<NoSerSwarm>::new(
+                    ID::new(NodeId::new(state_builder.key.pubkey())),
+                    state_builder,
+                    NoSerRouterConfig::new(all_peers.clone()).build(),
+                    MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
+                    MockTxPoolExecutor::default(),
+                    MockLedger::new(state_backend.clone()),
+                    MockStateSyncExecutor::new(
+                        state_backend,
+                        validators
+                            .validators
+                            .0
+                            .into_iter()
+                            .map(|v| v.node_id)
+                            .collect(),
+                    ),
+                    vec![
+                        GenericTransformer::Latency(LatencyTransformer::new(delta)),
+                        GenericTransformer::Drop(
+                            DropTransformer::new().drop_only_from(*all_peers.first().unwrap()),
+                        ),
+                    ],
+                    vec![],
+                    TimestamperConfig::default(),
+                    seed.try_into().unwrap(),
+                )
+            })
+            .collect(),
+    );
+
+    let mut swarm = swarm_config.build();
+
+    let num_rounds = 100;
+    swarm.batch_step_until(&mut UntilTerminator::new().until_round(Round(num_rounds)));
+    let mut max_observed_local_timeouts = swarm
+        .states()
+        .values()
+        .map(|node| node.state.metrics().consensus_events.local_timeout)
+        .max()
+        .unwrap();
+    // subtract 1 for the initial timeout on startup
+    max_observed_local_timeouts -= 1;
+
+    let max_allowed_local_timeouts =
+        (2 * num_rounds * num_offline_nodes as u64).div_ceil(num_nodes.into());
+
+    assert!(max_observed_local_timeouts <= max_allowed_local_timeouts);
 }
