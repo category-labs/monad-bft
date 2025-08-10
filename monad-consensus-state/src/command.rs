@@ -18,7 +18,7 @@ use std::time::Duration;
 use monad_consensus::{
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
-        message::TimeoutMessage,
+        message::{AdvanceRoundMessage, TimeoutMessage},
     },
     pacemaker::PacemakerCommand,
     validation::signing::{Validated, Verified},
@@ -124,13 +124,25 @@ where
         cert_keypair: &SignatureCollectionKeyPairType<SCT>,
         version: u32,
         cmd: PacemakerCommand<ST, SCT, EPT>,
-    ) -> Self {
+    ) -> Vec<Self> {
         match cmd {
-            PacemakerCommand::EnterRound(epoch, round) => {
-                ConsensusCommand::EnterRound(epoch, round)
+            PacemakerCommand::EnterRound(epoch, round, high_certificate) => {
+                let mut cmds = Vec::new();
+                cmds.push(ConsensusCommand::EnterRound(epoch, round));
+                cmds.push(ConsensusCommand::PublishToFullNodes {
+                    epoch,
+                    message: ConsensusMessage {
+                        version,
+                        message: ProtocolMessage::AdvanceRound(AdvanceRoundMessage {
+                            last_round_certificate: high_certificate,
+                        }),
+                    }
+                    .sign(keypair),
+                });
+                cmds
             }
             PacemakerCommand::PrepareTimeout(timeout, high_extend, last_round_certificate) => {
-                ConsensusCommand::Publish {
+                vec![ConsensusCommand::Publish {
                     // TODO should this be sent to epoch of next round?
                     target: RouterTarget::Broadcast(timeout.epoch),
                     message: ConsensusMessage {
@@ -143,12 +155,12 @@ where
                         )),
                     }
                     .sign(keypair),
-                }
+                }]
             }
             PacemakerCommand::Schedule { round, duration } => {
-                ConsensusCommand::Schedule { round, duration }
+                vec![ConsensusCommand::Schedule { round, duration }]
             }
-            PacemakerCommand::ScheduleReset => ConsensusCommand::ScheduleReset,
+            PacemakerCommand::ScheduleReset => vec![ConsensusCommand::ScheduleReset],
         }
     }
 }
@@ -161,8 +173,8 @@ where
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
 {
-    fn from(_value: VoteStateCommand) -> Self {
+    fn from(value: VoteStateCommand) -> Self {
         //TODO-3 VoteStateCommand used for evidence collection
-        todo!()
+        match value {}
     }
 }

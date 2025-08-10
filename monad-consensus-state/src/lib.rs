@@ -427,7 +427,7 @@ where
                 .pacemaker
                 .process_local_timeout(&mut self.consensus.safety)
                 .into_iter()
-                .map(|cmd| {
+                .flat_map(|cmd| {
                     ConsensusCommand::from_pacemaker_command(
                         self.keypair,
                         self.cert_keypair,
@@ -855,7 +855,7 @@ where
                 author,
                 timeout_message,
             );
-        cmds.extend(remote_timeout_cmds.into_iter().map(|cmd| {
+        cmds.extend(remote_timeout_cmds.into_iter().flat_map(|cmd| {
             ConsensusCommand::from_pacemaker_command(
                 self.keypair,
                 self.cert_keypair,
@@ -1208,7 +1208,7 @@ where
                     RoundCertificate::Qc(qc.clone()),
                 )
                 .into_iter()
-                .map(|cmd| {
+                .flat_map(|cmd| {
                     ConsensusCommand::from_pacemaker_command(
                         self.keypair,
                         self.cert_keypair,
@@ -1249,7 +1249,7 @@ where
                 RoundCertificate::Tc(tc.clone()),
             )
             .into_iter()
-            .map(|cmd| {
+            .flat_map(|cmd| {
                 ConsensusCommand::from_pacemaker_command(
                     self.keypair,
                     self.cert_keypair,
@@ -3317,16 +3317,20 @@ mod test {
 
         // the proposal still gets processed: the node enters a new round, and
         // issues a request for the block it skipped over
-        assert_eq!(cmds.len(), 3);
+        assert_eq!(cmds.len(), 4);
         assert!(matches!(cmds[0], ConsensusCommand::EnterRound(_, _)));
         assert!(matches!(
             cmds[1],
+            ConsensusCommand::PublishToFullNodes { .. }
+        ));
+        assert!(matches!(
+            cmds[2],
             ConsensusCommand::Schedule {
                 round: _,
                 duration: _
             }
         ));
-        assert!(matches!(cmds[2], ConsensusCommand::RequestSync { .. }));
+        assert!(matches!(cmds[3], ConsensusCommand::RequestSync { .. }));
     }
 
     /// Test consensus behavior with mismatching eth header
@@ -3398,7 +3402,7 @@ mod test {
         assert_eq!(wrapped_state.metrics.consensus_events.rx_bad_state_root, 1);
 
         assert_eq!(wrapped_state.consensus.get_current_round(), Round(6));
-        assert_eq!(cmds.len(), 3);
+        assert_eq!(cmds.len(), 4);
         assert!(matches!(
             cmds[0],
             ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Finalized(_))
@@ -3406,6 +3410,10 @@ mod test {
         assert!(matches!(cmds[1], ConsensusCommand::EnterRound(_, _)));
         assert!(matches!(
             cmds[2],
+            ConsensusCommand::PublishToFullNodes { .. }
+        ));
+        assert!(matches!(
+            cmds[3],
             ConsensusCommand::Schedule {
                 round: _,
                 duration: _

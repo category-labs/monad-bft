@@ -98,7 +98,7 @@ where
     EPT: ExecutionProtocol,
 {
     /// event emitted whenever round changes. this is used by the router
-    EnterRound(Epoch, Round),
+    EnterRound(Epoch, Round, RoundCertificate<ST, SCT, EPT>),
 
     /// create the Timeout which can be signed to create a TimeoutMessage
     /// this should be broadcast to all other nodes
@@ -207,7 +207,11 @@ where
         self.pending_timeouts.clear();
 
         vec![
-            PacemakerCommand::EnterRound(self.current_epoch, self.get_current_round()),
+            PacemakerCommand::EnterRound(
+                self.current_epoch,
+                self.get_current_round(),
+                self.high_certificate.clone(),
+            ),
             PacemakerCommand::Schedule {
                 round: self.get_current_round(),
                 duration: self.get_round_timer(self.get_current_round()),
@@ -606,7 +610,11 @@ mod test {
         assert_eq!(
             cmds,
             vec![
-                PacemakerCommand::EnterRound(Epoch(1), Round(2)),
+                PacemakerCommand::EnterRound(
+                    Epoch(1),
+                    Round(2),
+                    pacemaker.high_certificate.clone()
+                ),
                 PacemakerCommand::Schedule {
                     round: Round(2),
                     duration: Duration::from_secs(3),
@@ -861,7 +869,11 @@ mod test {
         assert_eq!(
             cmds,
             vec![
-                PacemakerCommand::EnterRound(Epoch(1), Round(2)),
+                PacemakerCommand::EnterRound(
+                    Epoch(1),
+                    Round(2),
+                    pacemaker.high_certificate.clone()
+                ),
                 PacemakerCommand::Schedule {
                     round: Round(2),
                     duration: Duration::from_secs(3),
