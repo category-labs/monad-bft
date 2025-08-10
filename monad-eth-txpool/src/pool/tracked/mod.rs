@@ -15,7 +15,7 @@
 
 use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
 
-use alloy_consensus::{transaction::Recovered, TxEnvelope};
+use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
 use alloy_primitives::Address;
 use indexmap::{map::Entry as IndexMapEntry, IndexMap};
 use itertools::Itertools;
@@ -401,10 +401,16 @@ where
                 return TrackedTxHeapDrainAction::Skip;
             }
 
-            if validator
-                .try_add_transaction(&mut balances, tx.raw())
-                .is_err()
-            {
+            let res = validator.try_add_transaction(&mut balances, tx.raw());
+
+            if res.is_err() {
+                debug!(
+                    err = ?res,
+                    signer = ?tx.raw().signer(),
+                    gas_limit = ?tx.gas_limit(),
+                    value = ?tx.raw().value(),
+                    gas_fee = ?tx.raw().max_fee_per_gas(),
+                    "insufficient balance");
                 return TrackedTxHeapDrainAction::Skip;
             }
 

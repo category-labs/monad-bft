@@ -84,13 +84,15 @@ fn compute_intrinsic_gas(tx: &TxEnvelope) -> u64 {
 }
 
 pub fn compute_txn_max_value(txn: &TxEnvelope) -> U256 {
-    let txn_value = U256::try_from(txn.value()).unwrap();
+    let txn_value = txn.value();
     let gas_cost = compute_txn_max_gas_cost(txn);
     txn_value.saturating_add(gas_cost)
 }
 
 pub fn compute_txn_max_gas_cost(txn: &TxEnvelope) -> U256 {
-    U256::from(txn.gas_limit() as u128 * txn.max_fee_per_gas())
+    let gas_limit = U256::from(txn.gas_limit());
+    let max_fee = U256::from(txn.max_fee_per_gas());
+    gas_limit.checked_mul(max_fee).expect("no overflow")
 }
 
 /// Stateless helper function to check validity of an Ethereum transaction
@@ -434,6 +436,8 @@ where
 
             let has_emptying_transaction =
                 blocks_since_latest_txn >= self.min_blocks_since_latest_txn;
+
+            let mut block_gas_cost = block_txn_fees.max_gas_cost;
             if has_emptying_transaction {
                 if account_balance.balance < block_txn_fees.first_txn_value {
                     debug!(
@@ -450,21 +454,38 @@ where
                         BlockPolicyBlockValidatorError::InsufficientBalance,
                     ));
                 }
-                let estimated_balance = account_balance
-                    .balance
-                    .saturating_sub(block_txn_fees.first_txn_value); // not including txn cost which is included later
+                let first_txn_cost = block_txn_fees
+                    .first_txn_value
+                    .saturating_add(block_txn_fees.first_txn_gas);
+                let estimated_balance = account_balance.balance.saturating_sub(first_txn_cost); // not including txn cost which is included later
 
                 account_balance.remaining_reserve_balance =
                     estimated_balance.min(account_balance.max_reserve_balance);
+                debug!(
+                    "Block has emptying txn. updated balance: {:?} \
+                        first txn value {:?} \
+                        first txn gas {:?} \
+                        block seq_num {:?} \
+                        address: {:?}",
+                    account_balance,
+                    block_txn_fees.first_txn_value,
+                    block_txn_fees.first_txn_gas,
+                    self.block_seq_num,
+                    eth_address,
+                );
+            } else {
+                block_gas_cost = block_txn_fees
+                    .max_gas_cost
+                    .saturating_add(block_txn_fees.first_txn_gas);
             }
 
-            if account_balance.remaining_reserve_balance < block_txn_fees.max_gas_cost {
+            if account_balance.remaining_reserve_balance < block_gas_cost {
                 debug!(
                     "Block with insufficient reserve balance: {:?} \
                             max gas cost {:?} \
                             block seq_num {:?} \
                             address: {:?}",
-                    account_balance, block_txn_fees.max_gas_cost, self.block_seq_num, eth_address,
+                    account_balance, block_gas_cost, self.block_seq_num, eth_address,
                 );
                 return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
                     BlockPolicyBlockValidatorError::InsufficientReserveBalance,
@@ -472,7 +493,7 @@ where
             }
             account_balance.remaining_reserve_balance = account_balance
                 .remaining_reserve_balance
-                .saturating_sub(block_txn_fees.max_gas_cost);
+                .saturating_sub(block_gas_cost);
         }
         if account_balance.block_seqnum_of_latest_txn < self.block_seq_num {
             account_balance.block_seqnum_of_latest_txn = self.block_seq_num;
@@ -532,6 +553,20 @@ where
             let estimated_balance = account_balance.balance.saturating_sub(txn_max_cost);
             let reserve_balance = account_balance.max_reserve_balance.min(estimated_balance);
 
+            debug!(
+                "New emptying txn. balance: {:?} \
+                    txn_max_cost {:?} \
+                    estimated_balance {:?} \
+                    new reserve balance {:?} \
+                    block seq_num {:?} \
+                    address: {:?}",
+                account_balance,
+                txn_max_cost,
+                estimated_balance,
+                reserve_balance,
+                self.block_seq_num,
+                eth_address,
+            );
             account_balance.balance = estimated_balance;
             account_balance.remaining_reserve_balance = reserve_balance;
             account_balance.block_seqnum_of_latest_txn = self.block_seq_num;
@@ -1053,14 +1088,16 @@ mod test {
                         address1,
                         TxnFee {
                             first_txn_value: Balance::from(100),
-                            max_gas_cost: Balance::from(100),
+                            first_txn_gas: Balance::from(10),
+                            max_gas_cost: Balance::from(90),
                         },
                     ),
                     (
                         address2,
                         TxnFee {
                             first_txn_value: Balance::from(200),
-                            max_gas_cost: Balance::from(200),
+                            first_txn_gas: Balance::from(10),
+                            max_gas_cost: Balance::from(190),
                         },
                     ),
                 ]),
@@ -1079,14 +1116,16 @@ mod test {
                         address1,
                         TxnFee {
                             first_txn_value: Balance::from(150),
-                            max_gas_cost: Balance::from(150),
+                            first_txn_gas: Balance::from(10),
+                            max_gas_cost: Balance::from(140),
                         },
                     ),
                     (
                         address3,
                         TxnFee {
                             first_txn_value: Balance::from(300),
-                            max_gas_cost: Balance::from(300),
+                            first_txn_gas: Balance::from(10),
+                            max_gas_cost: Balance::from(290),
                         },
                     ),
                 ]),
@@ -1105,13 +1144,15 @@ mod test {
                         address2,
                         TxnFee {
                             first_txn_value: Balance::from(250),
-                            max_gas_cost: Balance::from(250),
+                            first_txn_gas: Balance::from(10),
+                            max_gas_cost: Balance::from(240),
                         },
                     ),
                     (
                         address3,
                         TxnFee {
                             first_txn_value: Balance::from(350),
+                            first_txn_gas: Balance::from(0),
                             max_gas_cost: Balance::from(350),
                         },
                     ),
@@ -1131,6 +1172,7 @@ mod test {
                         address2,
                         TxnFee {
                             first_txn_value: Balance::from(1250),
+                            first_txn_gas: Balance::from(0),
                             max_gas_cost: Balance::from(0),
                         },
                     ),
@@ -1138,6 +1180,7 @@ mod test {
                         address4,
                         TxnFee {
                             first_txn_value: Balance::from(1350),
+                            first_txn_gas: Balance::from(0),
                             max_gas_cost: Balance::from(0),
                         },
                     ),
@@ -1858,5 +1901,139 @@ mod test {
         recover_tx(make_eip1559_tx_with_value(
             signer, value, 1_u128, 0, gas_limit, nonce, 0,
         ))
+    }
+
+    fn make_txn_fees(first_txn_value: u64, first_txn_gas: u64, max_gas_cost: u64) -> TxnFee {
+        TxnFee {
+            first_txn_value: Balance::from(first_txn_value),
+            first_txn_gas: Balance::from(first_txn_gas),
+            max_gas_cost: Balance::from(max_gas_cost),
+        }
+    }
+
+    fn apply_block_fees_helper(
+        block_seq_num: SeqNum,
+        account_balance: &mut AccountBalanceState,
+        fees: &TxnFee,
+        eth_address: &Address,
+        only_seqnum: bool,
+        expected_remaining_reserve: Balance,
+        expect: Result<(), BlockPolicyError>,
+    ) {
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, min_blocks_since_latest_txn())
+                .unwrap();
+
+        assert_eq!(
+            validator.try_apply_block_fees(account_balance, fees, eth_address, only_seqnum),
+            expect,
+        );
+        assert_eq!(
+            account_balance.remaining_reserve_balance,
+            expected_remaining_reserve
+        );
+    }
+
+    #[rstest]
+    #[case( // Has emptying txn, insufficient balance
+        Balance::from(100),
+        Balance::from(10),
+        Balance::from(10),
+        SeqNum(1),
+        vec![(101, 1, 100)],
+        vec![SeqNum(4)],
+        vec![false],
+        vec![Balance::from(10)], // fails before updating state
+        vec![BALANCE_FAIL],
+    )]
+    #[case( // Has emptying txn, insufficient reserve
+        Balance::from(100),
+        Balance::from(10),
+        Balance::from(10),
+        SeqNum(1),
+        vec![(100, 1, 100)],
+        vec![SeqNum(4)],
+        vec![false],
+        vec![Balance::ZERO],
+        vec![RESERVE_FAIL],
+    )]
+    #[case( // Has emptying txn, insufficient reserve
+        Balance::from(100),
+        Balance::from(10),
+        Balance::from(10),
+        SeqNum(1),
+        vec![(90, 1, 4), (5, 1, 5)],
+        vec![SeqNum(4), SeqNum(5)],
+        vec![false, false],
+        vec![Balance::from(5), Balance::from(5)],
+        vec![Ok(()), RESERVE_FAIL],
+    )]
+    #[case( // Has emptying txn, pass 
+        Balance::from(100),
+        Balance::from(10),
+        Balance::from(10),
+        SeqNum(1),
+        vec![(90, 1, 4), (5, 1, 4)],
+        vec![SeqNum(4), SeqNum(5)],
+        vec![false, false],
+        vec![Balance::from(5), Balance::from(0)],
+        vec![Ok(()), Ok(())],
+    )]
+    #[case( // reserve balance fail
+        Balance::from(100),
+        Balance::from(10),
+        Balance::from(10),
+        SeqNum(0),
+        vec![(50, 1, 9), (0, 0, 0), (500, 1, 1)],
+        vec![SeqNum(1), SeqNum(2), SeqNum(3)],
+        vec![false, false],
+        vec![Balance::from(0), Balance::from(0)],
+        vec![Ok(()), Ok(()), RESERVE_FAIL],
+    )]
+    fn test_try_apply_block_fees(
+        #[case] account_balance: Balance,
+        #[case] reserve_balance: Balance,
+        #[case] max_reserve_balance: Balance,
+        #[case] block_seqnum_of_latest_txn: SeqNum,
+        #[case] blk_fees: Vec<(u64, u64, u64)>, // (first_txn_value, first_txn_gas, max_gas_cost)
+        #[case] txn_block_num: Vec<SeqNum>,
+        #[case] only_seqnum: Vec<bool>,
+        #[case] expected_remaining_reserve: Vec<Balance>,
+        #[case] expected: Vec<Result<(), BlockPolicyError>>,
+    ) {
+        assert_eq!(blk_fees.len(), expected.len());
+        assert_eq!(blk_fees.len(), txn_block_num.len());
+
+        let address = Address(FixedBytes([0x11; 20]));
+
+        let mut account_balance = AccountBalanceState {
+            balance: account_balance,
+            remaining_reserve_balance: reserve_balance,
+            block_seqnum_of_latest_txn,
+            max_reserve_balance,
+        };
+
+        let blk_fees = blk_fees
+            .into_iter()
+            .map(|x| make_txn_fees(x.0, x.1, x.2))
+            .collect_vec();
+
+        for ((((fees, expect), seqnum), only_seqnum), expected_remaining_reserve) in blk_fees
+            .into_iter()
+            .zip(expected)
+            .zip(txn_block_num)
+            .zip(only_seqnum)
+            .zip(expected_remaining_reserve)
+        {
+            apply_block_fees_helper(
+                seqnum,
+                &mut account_balance,
+                &fees,
+                &address,
+                only_seqnum,
+                expected_remaining_reserve,
+                expect,
+            );
+        }
     }
 }

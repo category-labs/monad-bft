@@ -193,6 +193,7 @@ pub fn generate_block_with_txs(
                     .entry(address)
                     .or_insert(TxnFee {
                         first_txn_value: Balance::ZERO,
+                        first_txn_gas: Balance::ZERO,
                         max_gas_cost: Balance::ZERO,
                     })
                     .max_gas_cost += max_gas_cost;

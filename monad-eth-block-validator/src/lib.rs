@@ -116,7 +116,7 @@ where
         let mut nonces = BTreeMap::new();
         let mut txn_fees: TxnFees = TxnFees::default();
 
-        for eth_txn in &eth_txns {
+        for (i, eth_txn) in eth_txns.iter().enumerate() {
             if static_validate_transaction(
                 eth_txn,
                 self.chain_id,
@@ -146,13 +146,16 @@ where
 
             let txn_fee_entry = txn_fees.entry(eth_txn.signer()).or_insert(TxnFee {
                 first_txn_value: Balance::ZERO,
+                first_txn_gas: Balance::ZERO,
                 max_gas_cost: Balance::ZERO,
             });
-            txn_fee_entry.max_gas_cost = txn_fee_entry
-                .max_gas_cost
-                .saturating_add(compute_txn_max_gas_cost(eth_txn));
-            if txn_fee_entry.first_txn_value == Balance::ZERO {
+            if i == 0 {
                 txn_fee_entry.first_txn_value = eth_txn.value();
+                txn_fee_entry.first_txn_gas = compute_txn_max_gas_cost(eth_txn);
+            } else {
+                txn_fee_entry.max_gas_cost = txn_fee_entry
+                    .max_gas_cost
+                    .saturating_add(compute_txn_max_gas_cost(eth_txn));
             }
         }
 
