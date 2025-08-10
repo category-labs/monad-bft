@@ -33,7 +33,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_txpool_types::TransactionError;
-use monad_eth_types::{EthAccount, EthExecutionProtocol, EthHeader};
+use monad_eth_types::{EthAccount, EthExecutionProtocol, EthHeader, BASE_FEE_PER_GAS};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{Balance, BlockId, Nonce, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_SEQ_NUM};
 use sorted_vector_map::SortedVectorMap;
@@ -92,7 +92,10 @@ pub fn compute_txn_max_value(txn: &TxEnvelope) -> U256 {
 pub fn compute_txn_max_gas_cost(txn: &TxEnvelope) -> U256 {
     let gas_limit = U256::from(txn.gas_limit());
     let max_fee = U256::from(txn.max_fee_per_gas());
-    gas_limit.checked_mul(max_fee).expect("no overflow")
+    let priority_fee = U256::from(txn.max_priority_fee_per_gas().unwrap_or(0));
+    let base_fee = U256::from(BASE_FEE_PER_GAS); //TODO: Use actual value once implented
+    let gas_bid = max_fee.min(base_fee.saturating_add(priority_fee));
+    gas_limit.checked_mul(gas_bid).expect("no overflow")
 }
 
 /// Stateless helper function to check validity of an Ethereum transaction
@@ -439,14 +442,16 @@ where
 
             let mut block_gas_cost = block_txn_fees.max_gas_cost;
             if has_emptying_transaction {
-                if account_balance.balance < block_txn_fees.first_txn_value {
+                if account_balance.balance < block_txn_fees.first_txn_gas {
                     debug!(
                         "Block with insufficient balance: {:?} \
                             first txn value {:?} \
+                            first txn gas {:?} \
                             block seq_num {:?} \
                             address: {:?}",
                         account_balance,
                         block_txn_fees.first_txn_value,
+                        block_txn_fees.first_txn_gas,
                         self.block_seq_num,
                         eth_address,
                     );
@@ -457,7 +462,7 @@ where
                 let first_txn_cost = block_txn_fees
                     .first_txn_value
                     .saturating_add(block_txn_fees.first_txn_gas);
-                let estimated_balance = account_balance.balance.saturating_sub(first_txn_cost); // not including txn cost which is included later
+                let estimated_balance = account_balance.balance.saturating_sub(first_txn_cost);
 
                 account_balance.remaining_reserve_balance =
                     estimated_balance.min(account_balance.max_reserve_balance);
@@ -538,30 +543,34 @@ where
         let is_emptying_transaction = blocks_since_latest_txn >= self.min_blocks_since_latest_txn;
 
         if is_emptying_transaction {
-            let txn_max_cost = compute_txn_max_value(txn);
-            if account_balance.balance < txn_max_cost {
+            let txn_max_gas = compute_txn_max_gas_cost(txn);
+            if account_balance.balance < txn_max_gas {
                 warn!(
                     seq_num =?self.block_seq_num,
                     ?account_balance,
-                    ?txn_max_cost,
+                    ?txn_max_gas,
                     "Incoherent block with insufficient balance"
                 );
                 return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
                     BlockPolicyBlockValidatorError::InsufficientBalance,
                 ));
             }
+
+            let txn_max_cost = compute_txn_max_value(txn);
             let estimated_balance = account_balance.balance.saturating_sub(txn_max_cost);
             let reserve_balance = account_balance.max_reserve_balance.min(estimated_balance);
 
             debug!(
                 "New emptying txn. balance: {:?} \
                     txn_max_cost {:?} \
+                    txn_max_gas {:?} \
                     estimated_balance {:?} \
                     new reserve balance {:?} \
                     block seq_num {:?} \
                     address: {:?}",
                 account_balance,
                 txn_max_cost,
+                txn_max_gas,
                 estimated_balance,
                 reserve_balance,
                 self.block_seq_num,
@@ -571,12 +580,12 @@ where
             account_balance.remaining_reserve_balance = reserve_balance;
             account_balance.block_seqnum_of_latest_txn = self.block_seq_num;
         } else {
-            let txn_max_gas_cost = compute_txn_max_gas_cost(txn);
-            if account_balance.remaining_reserve_balance < txn_max_gas_cost {
+            let txn_max_gas = compute_txn_max_gas_cost(txn);
+            if account_balance.remaining_reserve_balance < txn_max_gas {
                 warn!(
                     seq_num =?self.block_seq_num,
                     ?account_balance,
-                    ?txn_max_gas_cost,
+                    ?txn_max_gas,
                     "Incoherent block with insufficient reserve balance"
                 );
                 return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
@@ -585,7 +594,7 @@ where
             }
             let reserve_balance = account_balance
                 .remaining_reserve_balance
-                .saturating_sub(txn_max_gas_cost);
+                .saturating_sub(txn_max_gas);
 
             account_balance.remaining_reserve_balance = reserve_balance;
             account_balance.block_seqnum_of_latest_txn = self.block_seq_num;
@@ -1311,14 +1320,9 @@ mod test {
             SeqNum(EXEC_DELAY),
             false,
         );
-        assert_eq!(
-            res,
-            Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-                BlockPolicyBlockValidatorError::InsufficientBalance
-            ))
-        );
-        assert_eq!(next_seq_num, SeqNum(3));
-        assert_eq!(account_balance.block_seqnum_of_latest_txn, GENESIS_SEQ_NUM);
+        assert!(res.is_ok());
+        assert_eq!(next_seq_num, SeqNum(5));
+        assert_eq!(account_balance.block_seqnum_of_latest_txn, SeqNum(4));
     }
 
     #[test]
@@ -1769,7 +1773,7 @@ mod test {
         SeqNum(3),
         7_u128,
         2_u64,
-        BALANCE_FAIL
+        Ok(())
     )]
     #[case(
         Balance::from(100),
@@ -1940,11 +1944,11 @@ mod test {
         Balance::from(10),
         Balance::from(10),
         SeqNum(1),
-        vec![(101, 1, 100)],
+        vec![(1001, 1, 100)], // value is not checked
         vec![SeqNum(4)],
         vec![false],
-        vec![Balance::from(10)], // fails before updating state
-        vec![BALANCE_FAIL],
+        vec![Balance::ZERO],
+        vec![RESERVE_FAIL],
     )]
     #[case( // Has emptying txn, insufficient reserve
         Balance::from(100),

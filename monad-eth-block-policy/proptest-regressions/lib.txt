@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 5e5cac39f4372ef673af64153568f082b9ff0fa017d62ac53a46eb79a3f255db # shrinks to gas_limit = 2, max_fee_per_gas = 170141183460469231731687303715884105728, value = 0
