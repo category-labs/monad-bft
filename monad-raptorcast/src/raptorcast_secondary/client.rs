@@ -84,6 +84,10 @@ where
         group_sink_channel: UnboundedSender<GroupAsClient<ST>>,
         config: RaptorCastConfigSecondaryClient,
     ) -> Self {
+        assert!(
+            config.max_num_group > 0,
+            "max_num_group must be greater than 0"
+        );
         // There's no Instant::zero(). Use a value such that we will accept the
         // first invite, even though its far off `curr_round`.
         let last_round_heartbeat = Instant::now() - config.invite_accept_heartbeat;
@@ -194,23 +198,24 @@ where
             return false;
         }
 
-        let mut bandwidth = BandwidthAggregator::new(
-            self.config.bandwidth_capacity,
-            self.config.bandwidth_cost_per_group_member,
-        );
+        // Check doesn't exceed max group size
+        if invite_msg.max_group_size > self.config.max_group_size {
+            warn!(
+                "RaptorCastSecondary rejecting invite with group size \
+                        {} that exceeds max group size {}",
+                invite_msg.max_group_size, self.config.max_group_size
+            );
+            return false;
+        }
 
-        let log_bandwidth_overflow = || {
+        let log_exceed_max_num_group = || {
             debug!(
                 "RaptorCastSecondary rejected invite for rounds \
-                        [{:?}, {:?}) from validator {:?} due to low bandwidth",
+                        [{:?}, {:?}) from validator {:?} due to exceeding number of active groups",
                 invite_msg.start_round, invite_msg.end_round, invite_msg.validator_id
             );
         };
-
-        if bandwidth.add_and_check(invite_msg.max_group_size).is_none() {
-            log_bandwidth_overflow();
-            return false;
-        };
+        let mut num_current_groups = 0;
 
         // Check confirmed groups
         for group in self
@@ -231,9 +236,10 @@ where
                 return false;
             }
 
-            // Check that we'll have enough bandwidth during round span
-            if bandwidth.add_and_check(group.size_excl_self()).is_none() {
-                log_bandwidth_overflow();
+            // Check that it doesn't exceed max number of groups during round span
+            num_current_groups += 1;
+            if num_current_groups + 1 > self.config.max_num_group {
+                log_exceed_max_num_group();
                 return false;
             }
         }
@@ -250,8 +256,9 @@ where
                     continue;
                 }
 
-                if bandwidth.add_and_check(other.max_group_size).is_none() {
-                    log_bandwidth_overflow();
+                num_current_groups += 1;
+                if num_current_groups + 1 > self.config.max_num_group {
+                    log_exceed_max_num_group();
                     return false;
                 }
             }
@@ -466,34 +473,6 @@ where
     }
 }
 
-struct BandwidthAggregator {
-    cap: u64,
-    sum: u64,
-    cost_per_node: u64,
-}
-
-impl BandwidthAggregator {
-    fn new(cap: u64, cost_per_node: u64) -> Self {
-        Self {
-            cap,
-            cost_per_node,
-            sum: 0,
-        }
-    }
-
-    fn add_and_check(&mut self, group_size: usize) -> Option<()> {
-        let group_size = group_size as u64;
-        let group_bandwidth = group_size.checked_mul(self.cost_per_node)?;
-        let updated_sum = self.sum.checked_add(group_bandwidth)?;
-        if updated_sum > self.cap {
-            return None;
-        }
-
-        self.sum = updated_sum;
-        Some(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -522,9 +501,8 @@ mod tests {
             self_id,
             clt_tx,
             RaptorCastConfigSecondaryClient {
-                // we can broadcast to most 5 peers
-                bandwidth_cost_per_group_member: u64::MAX / 5,
-                bandwidth_capacity: u64::MAX,
+                max_num_group: 5,
+                max_group_size: 10,
                 invite_future_dist_min: Round(1),
                 invite_future_dist_max: Round(100),
                 invite_accept_heartbeat: Duration::from_secs(10),
@@ -544,7 +522,7 @@ mod tests {
         let malformed_messages = [
             // group size overflow
             PrepareGroup {
-                max_group_size: usize::MAX,
+                max_group_size: 11,
                 validator_id: nid(2),
                 start_round: Round(5),
                 end_round: Round(6),
@@ -563,6 +541,55 @@ mod tests {
             let resp = clt.handle_prepare_group_message(message);
             assert!(!resp.accept)
         }
+    }
+
+    #[test]
+    fn exceed_max_num_group() {
+        let (clt_tx, _clt_rx): RcToRcChannelGrp<ST> = unbounded_channel();
+        let self_id = nid(1);
+        let mut clt = Client::<ST>::new(
+            self_id,
+            clt_tx,
+            RaptorCastConfigSecondaryClient {
+                max_num_group: 2,
+                max_group_size: 50,
+                invite_future_dist_min: Round(1),
+                invite_future_dist_max: Round(100),
+                invite_accept_heartbeat: Duration::from_secs(10),
+            },
+        );
+
+        clt.confirmed_groups.insert(
+            Round(1)..Round(5),
+            GroupAsClient::new_fullnode_group(
+                vec![self_id, nid(3), nid(4), nid(5)],
+                &self_id,
+                nid(2),
+                RoundSpan::new(Round(1), Round(5)).unwrap(),
+            ),
+        );
+
+        clt.pending_confirms.insert(
+            Round(4),
+            BTreeMap::from([(
+                nid(2),
+                PrepareGroup {
+                    max_group_size: 1,
+                    validator_id: nid(2),
+                    start_round: Round(4),
+                    end_round: Round(7),
+                },
+            )]),
+        );
+
+        let malformed_message = PrepareGroup {
+            max_group_size: 1,
+            validator_id: nid(2),
+            start_round: Round(3),
+            end_round: Round(6),
+        };
+        let resp = clt.handle_prepare_group_message(malformed_message);
+        assert!(!resp.accept);
     }
 
     // Creates a node id that we can refer to just from its seed
