@@ -86,7 +86,7 @@ impl<T: Triedb> ChainState<T> {
 
     pub fn get_latest_block_number(&self) -> u64 {
         if let Some(buffer) = &self.buffer {
-            buffer.get_latest_voted_block_num()
+            buffer.get_latest_safe_voted_block_num()
         } else {
             self.triedb_env.get_latest_voted_block_key().seq_num().0
         }
