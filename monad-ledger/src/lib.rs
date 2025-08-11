@@ -72,6 +72,8 @@ const GAUGE_EXECUTION_LEDGER_NUM_COMMITS: &str = "monad.execution_ledger.num_com
 const GAUGE_EXECUTION_LEDGER_NUM_TX_COMMITS: &str = "monad.execution_ledger.num_tx_commits";
 const GAUGE_EXECUTION_LEDGER_BLOCK_NUM: &str = "monad.execution_ledger.block_num";
 
+const BLOCKSYNC_MAX_NUM_HEADERS: u64 = 800;
+
 impl<ST, SCT> MonadBlockFileLedger<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
@@ -167,11 +169,15 @@ where
         &self,
         block_range: BlockRange,
     ) -> BlockSyncHeadersResponse<ST, SCT, EthExecutionProtocol> {
+        if block_range.num_blocks.0 > BLOCKSYNC_MAX_NUM_HEADERS {
+            warn!(?block_range, "requested blocksync header range too large");
+            return BlockSyncHeadersResponse::NotAvailable(block_range);
+        }
+
         let mut next_block_id = block_range.last_block_id;
 
         let mut headers = VecDeque::new();
         while (headers.len() as u64) < block_range.num_blocks.0 {
-            // TODO add max number of headers to read
             let block_header = if let Some(cached_block) = self.block_cache.get(&next_block_id) {
                 cached_block.header().clone()
             } else if let Ok(block) = self.bft_block_persist.read_bft_header(&next_block_id) {
