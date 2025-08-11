@@ -212,22 +212,6 @@ impl EthTxPoolBridgeState {
                         .or_default()
                         .insert(tx_hash);
                 }
-                EthTxPoolEvent::Replace {
-                    old_tx_hash,
-                    new_tx_hash,
-                    new_owned: _,
-                    tracked,
-                } => {
-                    insert(old_tx_hash, TxStatus::Replaced);
-                    insert(
-                        new_tx_hash,
-                        if tracked {
-                            TxStatus::Tracked
-                        } else {
-                            TxStatus::Pending
-                        },
-                    );
-                }
                 EthTxPoolEvent::Drop { tx_hash, reason } => {
                     insert(tx_hash, TxStatus::Dropped { reason });
                 }
@@ -360,7 +344,6 @@ mod test {
             InsertPendingSnapshot,
             InsertTracked,
             InsertTrackedSnapshot,
-            Replace,
             Drop,
             Promote,
             PromoteSnapshot,
@@ -375,7 +358,6 @@ mod test {
             TestCases::InsertPendingSnapshot,
             TestCases::InsertTracked,
             TestCases::InsertTrackedSnapshot,
-            TestCases::Replace,
             TestCases::Drop,
             TestCases::Promote,
             TestCases::PromoteSnapshot,
@@ -455,47 +437,6 @@ mod test {
                     );
                     assert_eq!(
                         state_view.get_status_by_hash(tx.tx_hash()),
-                        Some(TxStatus::Tracked)
-                    );
-                }
-                TestCases::Replace => {
-                    state.handle_events(
-                        &mut eviction_queue,
-                        vec![EthTxPoolEvent::Insert {
-                            tx_hash: tx.tx_hash().to_owned(),
-                            address: tx.recover_signer().unwrap(),
-                            owned: true,
-                            tracked: false,
-                        }],
-                    );
-                    assert_eq!(
-                        state_view.get_status_by_hash(tx.tx_hash()),
-                        Some(TxStatus::Pending)
-                    );
-
-                    let new_tx = make_legacy_tx(
-                        S1,
-                        2u128 * Into::<u128>::into(BASE_FEE_PER_GAS),
-                        100_000,
-                        0,
-                        0,
-                    );
-
-                    state.handle_events(
-                        &mut eviction_queue,
-                        vec![EthTxPoolEvent::Replace {
-                            old_tx_hash: tx.tx_hash().to_owned(),
-                            new_tx_hash: new_tx.tx_hash().to_owned(),
-                            new_owned: true,
-                            tracked: true,
-                        }],
-                    );
-                    assert_eq!(
-                        state_view.get_status_by_hash(tx.tx_hash()),
-                        Some(TxStatus::Replaced)
-                    );
-                    assert_eq!(
-                        state_view.get_status_by_hash(new_tx.tx_hash()),
                         Some(TxStatus::Tracked)
                     );
                 }

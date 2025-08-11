@@ -79,7 +79,12 @@ impl PendingTxList {
                     return None;
                 }
 
-                event_tracker.replace_pending(existing_tx.hash(), tx.hash(), tx.is_owned());
+                event_tracker.replace_pending(
+                    tx.signer_ref(),
+                    existing_tx.hash(),
+                    tx.hash(),
+                    tx.is_owned(),
+                );
                 entry.insert(tx);
                 Some((entry.into_mut(), false))
             }
