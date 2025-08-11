@@ -1385,8 +1385,8 @@ mod tests {
             nid(10),
             clt_tx,
             RaptorCastConfigSecondaryClient {
-                bandwidth_cost_per_group_member: 1,
-                bandwidth_capacity: 5,
+                max_num_group: 5,
+                max_group_size: 50,
                 invite_future_dist_min: Round(1),
                 invite_future_dist_max: Round(100),
                 invite_accept_heartbeat: Duration::from_secs(10),
@@ -1512,8 +1512,8 @@ mod tests {
             nid(10),
             clt_tx,
             RaptorCastConfigSecondaryClient {
-                bandwidth_cost_per_group_member: 1,
-                bandwidth_capacity: 5,
+                max_num_group: 5,
+                max_group_size: 50,
                 invite_future_dist_min: Round(1),
                 invite_future_dist_max: Round(100),
                 invite_accept_heartbeat: Duration::from_secs(10),
@@ -1654,8 +1654,8 @@ mod tests {
             nid(me),
             clt_tx,
             RaptorCastConfigSecondaryClient {
-                bandwidth_cost_per_group_member: 1,
-                bandwidth_capacity: 6,
+                max_num_group: 5,
+                max_group_size: 50,
                 invite_future_dist_min: Round(1),
                 invite_future_dist_max: Round(100),
                 invite_accept_heartbeat: Duration::from_secs(10),
