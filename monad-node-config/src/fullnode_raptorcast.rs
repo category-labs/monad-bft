@@ -45,8 +45,7 @@ pub struct FullNodeRaptorCastConfig<P: PubKey> {
     pub init_empty_round_span: Round,
 
     // RaptorCastConfigSecondaryClient
-    pub bandwidth_cost_per_group_member: u64,
-    pub bandwidth_capacity: u64,
+    pub max_num_group: usize,
     pub invite_future_dist_min: Round,
     pub invite_future_dist_max: Round,
     pub invite_accept_heartbeat_ms: u64,
