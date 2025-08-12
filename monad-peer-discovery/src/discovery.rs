@@ -1056,7 +1056,11 @@ where
             // verify signature of name record
             let name_record = MonadNameRecord {
                 name_record: NameRecord {
-                    address: peer.addr,
+                    ip: *peer.addr.ip(),
+                    tcp_port: peer.addr.port(),
+                    udp_port: peer.addr.port(),
+                    direct_udp_port: None,
+                    capabilities: 0,
                     seq: peer.record_seq_num,
                 },
                 signature: peer.signature,
@@ -1170,7 +1174,11 @@ mod tests {
 
     fn generate_name_record(keypair: &KeyPairType, seq_num: u64) -> MonadNameRecord<SignatureType> {
         let name_record = NameRecord {
-            address: DUMMY_ADDR,
+            ip: *DUMMY_ADDR.ip(),
+            tcp_port: DUMMY_ADDR.port(),
+            udp_port: DUMMY_ADDR.port(),
+            direct_udp_port: None,
+            capabilities: 0,
             seq: seq_num,
         };
         let mut encoded = Vec::new();
@@ -1806,11 +1814,22 @@ mod tests {
     const OLD_ADDR: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(7, 7, 7, 7), 8000);
     const NEW_ADDR: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(8, 8, 8, 8), 8000);
 
-    #[test_case(None, NameRecord { address: NEW_ADDR, seq: 1 }, true, NameRecord { address: NEW_ADDR, seq: 1 }, true; "first record")]
-    #[test_case(Some(NameRecord { address: OLD_ADDR, seq: 1 }), NameRecord { address: NEW_ADDR, seq: 2 }, true, NameRecord { address: NEW_ADDR, seq: 2 }, true; "newer record")]
-    #[test_case(Some(NameRecord { address: OLD_ADDR, seq: 1 }), NameRecord { address: OLD_ADDR, seq: 1 }, true, NameRecord { address: OLD_ADDR, seq: 1 }, false; "same record")]
-    #[test_case(Some(NameRecord { address: NEW_ADDR, seq: 2 }), NameRecord { address: OLD_ADDR, seq: 1 }, false, NameRecord { address: NEW_ADDR, seq: 2 }, false; "older record")]
-    #[test_case(Some(NameRecord { address: OLD_ADDR, seq: 1 }), NameRecord { address: NEW_ADDR, seq: 1 }, false, NameRecord { address: OLD_ADDR, seq: 1 }, false; "conflicting record")]
+    fn make_name_record(addr: SocketAddrV4, seq: u64) -> NameRecord {
+        NameRecord {
+            ip: *addr.ip(),
+            tcp_port: addr.port(),
+            udp_port: addr.port(),
+            direct_udp_port: None,
+            capabilities: 0,
+            seq,
+        }
+    }
+
+    #[test_case(None, make_name_record(NEW_ADDR, 1), true, make_name_record(NEW_ADDR, 1), true; "first record")]
+    #[test_case(Some(make_name_record(OLD_ADDR, 1)), make_name_record(NEW_ADDR, 2), true, make_name_record(NEW_ADDR, 2), true; "newer record")]
+    #[test_case(Some(make_name_record(OLD_ADDR, 1)), make_name_record(OLD_ADDR, 1), true, make_name_record(OLD_ADDR, 1), false; "same record")]
+    #[test_case(Some(make_name_record(NEW_ADDR, 2)), make_name_record(OLD_ADDR, 1), false, make_name_record(NEW_ADDR, 2), false; "older record")]
+    #[test_case(Some(make_name_record(OLD_ADDR, 1)), make_name_record(NEW_ADDR, 1), false, make_name_record(OLD_ADDR, 1), false; "conflicting record")]
     fn test_ping_record(
         known_record: Option<NameRecord>,
         incoming_record: NameRecord,

@@ -30,6 +30,7 @@ use monad_crypto::{
 use monad_executor::ExecutorMetrics;
 use monad_executor_glue::PeerEntry;
 use monad_types::{Epoch, NodeId, Round};
+use smallvec::SmallVec;
 use tracing::warn;
 
 pub mod discovery;
@@ -39,35 +40,184 @@ pub mod mock;
 
 pub use message::PeerDiscoveryMessage;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PortTag {
+    TCP = 0,
+    UDP = 1,
+    DirectUdp = 2,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+pub struct Port {
+    pub tag: u8,
+    pub port: u16,
+}
+
+impl Port {
+    pub fn new(tag: PortTag, port: u16) -> Self {
+        Self {
+            tag: tag as u8,
+            port,
+        }
+    }
+
+    pub fn tag_enum(&self) -> Option<PortTag> {
+        match self.tag {
+            0 => Some(PortTag::TCP),
+            1 => Some(PortTag::UDP),
+            2 => Some(PortTag::DirectUdp),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WireNameRecord {
+    pub ip: Ipv4Addr,
+    pub ports: SmallVec<[Port; 3]>,
+    pub capabilities: u64,
+    pub seq: u64,
+}
+
+impl Encodable for WireNameRecord {
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        let ports_vec: Vec<Port> = self.ports.to_vec();
+        let enc: [&dyn Encodable; 4] =
+            [&self.ip.octets(), &ports_vec, &self.capabilities, &self.seq];
+        encode_list::<_, dyn Encodable>(&enc, out);
+    }
+}
+
+fn decode_smallvec_with_limit<T: Decodable, const N: usize>(
+    buf: &mut &[u8],
+    limit: usize,
+) -> alloy_rlp::Result<SmallVec<[T; N]>> {
+    let mut bytes = alloy_rlp::Header::decode_bytes(buf, true)?;
+    let mut vec = SmallVec::new();
+    let payload_view = &mut bytes;
+    while !payload_view.is_empty() {
+        if vec.len() >= limit {
+            return Err(alloy_rlp::Error::Custom("Too many items in vector"));
+        }
+        vec.push(T::decode(payload_view)?);
+    }
+    Ok(vec)
+}
+
+impl Decodable for WireNameRecord {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let buf = &mut alloy_rlp::Header::decode_bytes(buf, true)?;
+
+        let Ok(ip_bytes) = <[u8; 4]>::decode(buf) else {
+            warn!("ip address decode failed: {:?}", buf);
+            return Err(alloy_rlp::Error::Custom("Invalid IPv4 address"));
+        };
+        let ip = Ipv4Addr::from(ip_bytes);
+        let ports = decode_smallvec_with_limit::<Port, 3>(buf, 8)?;
+        let capabilities = u64::decode(buf)?;
+        let seq = u64::decode(buf)?;
+
+        Ok(Self {
+            ip,
+            ports,
+            capabilities,
+            seq,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NameRecord {
-    pub address: SocketAddrV4,
+    pub ip: Ipv4Addr,
+    pub tcp_port: u16,
+    pub udp_port: u16,
+    pub direct_udp_port: Option<u16>,
+    pub capabilities: u64,
     pub seq: u64,
 }
 
 impl Encodable for NameRecord {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-        let enc: [&dyn Encodable; 3] =
-            [&self.address.ip().octets(), &self.address.port(), &self.seq];
-        encode_list::<_, dyn Encodable>(&enc, out);
+        let mut ports = SmallVec::new();
+        ports.push(Port::new(PortTag::TCP, self.tcp_port));
+        ports.push(Port::new(PortTag::UDP, self.udp_port));
+
+        if let Some(direct_udp_port) = self.direct_udp_port {
+            ports.push(Port::new(PortTag::DirectUdp, direct_udp_port));
+        }
+
+        let wire = WireNameRecord {
+            ip: self.ip,
+            ports,
+            capabilities: self.capabilities,
+            seq: self.seq,
+        };
+
+        wire.encode(out);
     }
 }
 
 impl Decodable for NameRecord {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let buf = &mut alloy_rlp::Header::decode_bytes(buf, true)?;
+        let wire = WireNameRecord::decode(buf)?;
 
-        let Ok(ip) = <[u8; 4]>::decode(buf) else {
-            warn!("ip address decode failed: {:?}", buf);
-            return Err(alloy_rlp::Error::Custom("Invalid IPv4 address"));
-        };
-        let port = u16::decode(buf)?;
-        let addr = SocketAddrV4::new(Ipv4Addr::from(ip), port);
-        let seq = u64::decode(buf)?;
+        let mut tcp_port = None;
+        let mut udp_port = None;
+        let mut direct_udp_port = None;
+        let mut seen_tags = std::collections::HashSet::new();
 
-        Ok(Self { address: addr, seq })
+        for port in &wire.ports {
+            if !seen_tags.insert(port.tag) {
+                return Err(alloy_rlp::Error::Custom("duplicate port tag"));
+            }
+
+            match port.tag_enum() {
+                Some(PortTag::TCP) => tcp_port = Some(port.port),
+                Some(PortTag::UDP) => udp_port = Some(port.port),
+                Some(PortTag::DirectUdp) => direct_udp_port = Some(port.port),
+                None => return Err(alloy_rlp::Error::Custom("Invalid port tag")),
+            }
+        }
+
+        let tcp_port = tcp_port.ok_or(alloy_rlp::Error::Custom("Missing TCP port"))?;
+        let udp_port = udp_port.ok_or(alloy_rlp::Error::Custom("Missing UDP port"))?;
+
+        Ok(NameRecord {
+            ip: wire.ip,
+            tcp_port,
+            udp_port,
+            direct_udp_port,
+            capabilities: wire.capabilities,
+            seq: wire.seq,
+        })
     }
 }
+
+impl NameRecord {
+    pub fn tcp_socket(&self) -> SocketAddrV4 {
+        SocketAddrV4::new(self.ip, self.tcp_port)
+    }
+
+    pub fn udp_socket(&self) -> SocketAddrV4 {
+        SocketAddrV4::new(self.ip, self.udp_port)
+    }
+
+    pub fn direct_udp_socket(&self) -> Option<SocketAddrV4> {
+        self.direct_udp_port
+            .map(|port| SocketAddrV4::new(self.ip, port))
+    }
+
+    pub fn check_capability(&self, capability: Capability) -> bool {
+        (self.capabilities & (1u64 << (capability as u8))) != 0
+    }
+
+    pub fn set_capability(&mut self, capability: Capability) {
+        self.capabilities |= 1u64 << (capability as u8);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Capability {}
 
 #[derive(Debug, Clone, Copy, PartialEq, RlpEncodable, RlpDecodable, Eq)]
 pub struct MonadNameRecord<ST: CertificateSignatureRecoverable> {
@@ -75,7 +225,7 @@ pub struct MonadNameRecord<ST: CertificateSignatureRecoverable> {
     pub signature: ST,
 }
 
-impl<ST: CertificateSignatureRecoverable> MonadNameRecord<ST> {
+impl<ST: CertificateSignatureRecoverable + Copy> MonadNameRecord<ST> {
     pub fn new(name_record: NameRecord, key: &ST::KeyPairType) -> Self {
         let mut encoded = Vec::new();
         name_record.encode(&mut encoded);
@@ -98,7 +248,7 @@ impl<ST: CertificateSignatureRecoverable> MonadNameRecord<ST> {
     }
 
     pub fn address(&self) -> SocketAddrV4 {
-        self.name_record.address
+        self.name_record.tcp_socket()
     }
 
     pub fn seq(&self) -> u64 {
@@ -316,7 +466,11 @@ mod tests {
     #[test]
     fn test_name_record_v4_rlp() {
         let name_record = NameRecord {
-            address: SocketAddrV4::from_str("1.1.1.1:8000").unwrap(),
+            ip: Ipv4Addr::from_str("1.1.1.1").unwrap(),
+            tcp_port: 8000,
+            udp_port: 8001,
+            direct_udp_port: None,
+            capabilities: 0,
             seq: 2,
         };
 
@@ -326,5 +480,152 @@ mod tests {
         let result = NameRecord::decode(&mut encoded.as_slice());
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), name_record);
+    }
+
+    #[test]
+    fn test_name_record_validation() {
+        let name_record = NameRecord {
+            ip: Ipv4Addr::from_str("1.1.1.1").unwrap(),
+            tcp_port: 8000,
+            udp_port: 8001,
+            direct_udp_port: None,
+            capabilities: 0,
+            seq: 1,
+        };
+
+        assert_eq!(
+            name_record.tcp_socket(),
+            SocketAddrV4::from_str("1.1.1.1:8000").unwrap()
+        );
+        assert_eq!(
+            name_record.udp_socket(),
+            SocketAddrV4::from_str("1.1.1.1:8001").unwrap()
+        );
+        assert_eq!(name_record.direct_udp_socket(), None);
+
+        let name_record_with_direct = NameRecord {
+            ip: Ipv4Addr::from_str("1.1.1.1").unwrap(),
+            tcp_port: 8000,
+            udp_port: 8001,
+            direct_udp_port: Some(8002),
+            capabilities: 0,
+            seq: 1,
+        };
+        assert_eq!(
+            name_record_with_direct.direct_udp_socket(),
+            Some(SocketAddrV4::from_str("1.1.1.1:8002").unwrap())
+        );
+    }
+
+    #[test]
+    fn test_name_record_duplicate_port_validation() {
+        let wire = WireNameRecord {
+            ip: Ipv4Addr::from_str("1.1.1.1").unwrap(),
+            ports: smallvec::smallvec![
+                Port::new(PortTag::TCP, 8000),
+                Port::new(PortTag::UDP, 8001),
+                Port::new(PortTag::TCP, 8002),
+            ],
+            capabilities: 0,
+            seq: 1,
+        };
+
+        let mut encoded = Vec::new();
+        wire.encode(&mut encoded);
+
+        let decoded = NameRecord::decode(&mut encoded.as_slice());
+        assert!(decoded.is_err());
+    }
+
+    #[test]
+    fn test_name_record_missing_port_validation() {
+        let wire = WireNameRecord {
+            ip: Ipv4Addr::from_str("1.1.1.1").unwrap(),
+            ports: smallvec::smallvec![Port::new(PortTag::TCP, 8000)],
+            capabilities: 0,
+            seq: 1,
+        };
+
+        let mut encoded = Vec::new();
+        wire.encode(&mut encoded);
+
+        let decoded = NameRecord::decode(&mut encoded.as_slice());
+        assert!(decoded.is_err());
+    }
+
+    #[test]
+    fn test_name_record_encode_snapshot() {
+        let name_record = NameRecord {
+            ip: Ipv4Addr::from_str("192.168.1.1").unwrap(),
+            tcp_port: 8080,
+            udp_port: 8081,
+            direct_udp_port: None,
+            capabilities: 0,
+            seq: 42,
+        };
+
+        let mut encoded = Vec::new();
+        name_record.encode(&mut encoded);
+        let hex_encoded = hex::encode(&encoded);
+        insta::assert_snapshot!(hex_encoded);
+    }
+
+    #[test]
+    fn test_name_record_with_direct_udp_encode_snapshot() {
+        let name_record = NameRecord {
+            ip: Ipv4Addr::from_str("10.0.0.1").unwrap(),
+            tcp_port: 9000,
+            udp_port: 9001,
+            direct_udp_port: Some(9002),
+            capabilities: 1,
+            seq: 100,
+        };
+
+        let mut encoded = Vec::new();
+        name_record.encode(&mut encoded);
+        let hex_encoded = hex::encode(&encoded);
+        insta::assert_snapshot!(hex_encoded);
+    }
+
+    #[test]
+    fn test_name_record_roundtrip() {
+        let original = NameRecord {
+            ip: Ipv4Addr::from_str("172.16.0.1").unwrap(),
+            tcp_port: 7000,
+            udp_port: 7001,
+            direct_udp_port: Some(7002),
+            capabilities: 255,
+            seq: 999,
+        };
+
+        let mut encoded = Vec::new();
+        original.encode(&mut encoded);
+
+        let decoded = NameRecord::decode(&mut encoded.as_slice()).unwrap();
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_wire_name_record_compatibility() {
+        let name_record = NameRecord {
+            ip: Ipv4Addr::from_str("127.0.0.1").unwrap(),
+            tcp_port: 8000,
+            udp_port: 8001,
+            direct_udp_port: Some(8002),
+            capabilities: 0,
+            seq: 1,
+        };
+
+        let mut encoded = Vec::new();
+        name_record.encode(&mut encoded);
+
+        let wire = WireNameRecord::decode(&mut encoded.as_slice()).unwrap();
+        assert_eq!(wire.ports.len(), 3);
+        assert_eq!(wire.ports[0].tag, PortTag::TCP as u8);
+        assert_eq!(wire.ports[0].port, 8000);
+        assert_eq!(wire.ports[1].tag, PortTag::UDP as u8);
+        assert_eq!(wire.ports[1].port, 8001);
+        assert_eq!(wire.ports[2].tag, PortTag::DirectUdp as u8);
+        assert_eq!(wire.ports[2].port, 8002);
     }
 }
