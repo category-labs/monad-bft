@@ -59,6 +59,10 @@ pub enum MetricNames {
     START_BLOCK_NUMBER,
 
     BFT_BLOCKS_UPLOADED,
+    BFT_BLOCK_FILES_DISCOVERED,
+    BFT_BLOCK_FILES_ALREADY_IN_S3,
+    BFT_BLOCK_FILES_UPLOADED,
+    BFT_BLOCK_FILES_FAILED_TO_PROCESS,
 
     // Archive Checker
     LATEST_TO_CHECK,
@@ -122,6 +126,10 @@ impl MetricNames {
             MetricNames::FAULTS_MISSING_TXHASH => "faults_missing_txhash",
             MetricNames::FAULTS_INCORRECT_TX_DATA => "faults_incorrect_tx_data",
             MetricNames::FAULTS_MISSING_ALL_TXHASH => "faults_missing_all_txhash",
+            MetricNames::BFT_BLOCK_FILES_DISCOVERED => "bft_block_files_discovered",
+            MetricNames::BFT_BLOCK_FILES_ALREADY_IN_S3 => "bft_block_files_already_in_s3",
+            MetricNames::BFT_BLOCK_FILES_UPLOADED => "bft_block_files_uploaded",
+            MetricNames::BFT_BLOCK_FILES_FAILED_TO_PROCESS => "bft_block_files_failed_to_process",
         }
     }
 }

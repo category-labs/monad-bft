@@ -20,7 +20,7 @@ use monad_archive::{
     cli::set_source_and_sink_metrics,
     prelude::*,
     workers::{
-        bft_block_archiver::bft_block_archive_worker, block_archive_worker::archive_worker,
+        bft_archive_worker::bft_block_archive_worker, block_archive_worker::archive_worker,
         file_checkpointer::file_checkpoint_worker,
     },
 };
@@ -73,6 +73,7 @@ async fn main() -> Result<()> {
             path,
             Duration::from_secs(args.bft_block_poll_freq_secs),
             metrics.clone(),
+            Some(Duration::from_secs(args.bft_block_min_age_secs)),
         ));
     }
 
