@@ -109,6 +109,57 @@ fn udp_unicast() {
     }
 }
 
+#[test]
+#[timeout(1000)]
+fn udp_direct_socket() {
+    once_setup();
+
+    let rx_addr = "127.0.0.1:9030".parse().unwrap();
+    let rx_direct_port = 9031;
+    let tx_addr = "127.0.0.1:9032".parse().unwrap();
+    let tx_direct_port = 9033;
+    let num_msgs = 10;
+
+    let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS)
+        .with_direct_socket(rx_direct_port)
+        .build();
+    let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS)
+        .with_direct_socket(tx_direct_port)
+        .build();
+
+    assert!(rx.block_until_ready(Duration::from_secs(2)));
+    assert!(tx.block_until_ready(Duration::from_secs(2)));
+
+    let payload: Vec<u8> = (0..DEFAULT_SEGMENT_SIZE)
+        .map(|_| rand::thread_rng().gen_range(0..255))
+        .collect();
+
+    tx.udp_write_broadcast(BroadcastMsg {
+        targets: vec![rx_addr; num_msgs / 2],
+        payload: payload.clone().into(),
+        stride: DEFAULT_SEGMENT_SIZE,
+    });
+
+    let mut rx_direct_addr = rx_addr;
+    rx_direct_addr.set_port(rx_direct_port);
+
+    for _ in 0..num_msgs / 2 {
+        tx.udp_write_direct(rx_direct_addr, payload.clone().into(), DEFAULT_SEGMENT_SIZE);
+    }
+
+    for _ in 0..num_msgs / 2 {
+        let msg: RecvUdpMsg = executor::block_on(rx.udp_read());
+        assert_eq!(msg.src_addr, tx_addr);
+        assert_eq!(msg.payload, payload);
+    }
+
+    for _ in 0..num_msgs / 2 {
+        let msg: RecvUdpMsg = executor::block_on(rx.udp_direct_read());
+        assert_eq!(msg.src_addr.ip(), tx_addr.ip());
+        assert_eq!(msg.payload, payload);
+    }
+}
+
 // This verifies that the TCP transmit task recovers from a peer transmit
 // task exiting after a timeout.
 #[test]
