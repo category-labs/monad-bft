@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     marker::PhantomData,
     net::SocketAddr,
     pin::{pin, Pin},
@@ -337,7 +337,7 @@ where
                             .peer_discovery_driver
                             .lock()
                             .unwrap()
-                            .get_fullnode_addrs();
+                            .get_secondary_fullnode_addrs();
                         let full_nodes_vec: Vec<_> = full_nodes.keys().copied().collect();
                         trace!(
                             "RaptorCastSecondary updating {} full nodes from PeerDiscovery",
@@ -350,10 +350,14 @@ where
                         {
                             // if group_msg is a ConfirmGroup message, update peer discovery with the group information
                             if let FullNodesGroupMessage::ConfirmGroup(confirm_msg) = &group_msg {
+                                let mut participated_nodes: BTreeSet<
+                                    NodeId<CertificateSignaturePubKey<ST>>,
+                                > = confirm_msg.peers.clone().into_iter().collect();
+                                participated_nodes.insert(confirm_msg.prepare.validator_id);
                                 self.peer_discovery_driver.lock().unwrap().update(
                                     PeerDiscoveryEvent::UpdateConfirmGroup {
                                         end_round: confirm_msg.prepare.end_round,
-                                        peers: confirm_msg.peers.clone().into_iter().collect(),
+                                        peers: participated_nodes,
                                     },
                                 );
                             }
@@ -496,10 +500,14 @@ where
                             .unwrap()
                             .update(PeerDiscoveryEvent::UpdatePeers { peers });
 
+                        let mut participated_nodes: BTreeSet<
+                            NodeId<CertificateSignaturePubKey<ST>>,
+                        > = confirm_msg.peers.clone().into_iter().collect();
+                        participated_nodes.insert(confirm_msg.prepare.validator_id);
                         this.peer_discovery_driver.lock().unwrap().update(
                             PeerDiscoveryEvent::UpdateConfirmGroup {
                                 end_round: confirm_msg.prepare.end_round,
-                                peers: confirm_msg.peers.clone().into_iter().collect(),
+                                peers: participated_nodes,
                             },
                         );
                     } else if num_mappings > 0 {

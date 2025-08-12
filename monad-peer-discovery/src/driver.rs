@@ -203,6 +203,15 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
                 target,
                 lookup_id,
             } => self.pd.handle_peer_lookup_timeout(to, target, lookup_id),
+            PeerDiscoveryEvent::SendFullNodeRaptorcastRequest { to } => {
+                self.pd.send_full_node_raptorcast_request(to)
+            }
+            PeerDiscoveryEvent::FullNodeRaptorcastRequest { from } => {
+                self.pd.handle_full_node_raptorcast_request(from)
+            }
+            PeerDiscoveryEvent::FullNodeRaptorcastResponse { from } => {
+                self.pd.handle_full_node_raptorcast_response(from)
+            }
             PeerDiscoveryEvent::UpdateCurrentRound { round, epoch } => {
                 self.pd.update_current_round(round, epoch)
             }
@@ -284,11 +293,11 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
             .collect()
     }
 
-    pub fn get_fullnode_addrs(
+    pub fn get_secondary_fullnode_addrs(
         &self,
     ) -> HashMap<NodeId<CertificateSignaturePubKey<PD::SignatureType>>, SocketAddr> {
         self.pd
-            .get_fullnode_addrs()
+            .get_secondary_fullnode_addrs()
             .into_iter()
             .map(|(k, v)| (k, SocketAddr::V4(v)))
             .collect()
