@@ -43,6 +43,13 @@ pub enum PeerDiscoveryEmit<ST: CertificateSignatureRecoverable> {
     MetricsCommand(ExecutorMetrics),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddressType {
+    DirectUdp,
+    RegularUdp,
+    Tcp,
+}
+
 struct PeerDiscTimers<ST: CertificateSignatureRecoverable> {
     timers: DelayQueue<(NodeId<CertificateSignaturePubKey<ST>>, TimerKind)>,
     events:
@@ -277,6 +284,13 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
         MonadNameRecord<PD::SignatureType>,
     > {
         self.pd.get_name_records()
+    }
+
+    pub fn get_name_record(
+        &self,
+        node_id: &NodeId<CertificateSignaturePubKey<PD::SignatureType>>,
+    ) -> Option<MonadNameRecord<PD::SignatureType>> {
+        self.pd.get_name_records().get(node_id).copied()
     }
 
     pub fn metrics(&self) -> &ExecutorMetrics {

@@ -16,7 +16,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     io::ErrorKind,
-    net::{SocketAddr, SocketAddrV4, UdpSocket},
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket},
     num::ParseIntError,
     sync::{Arc, Once},
     time::Duration,
@@ -29,22 +29,114 @@ use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
     CertificateSignatureRecoverable, PubKey,
 };
-use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
+use monad_dataplane::{udp::DEFAULT_SEGMENT_SIZE, DataplaneBuilder};
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
+use monad_peer_discovery::{
+    discovery::{PeerDiscovery, PeerDiscoveryBuilder},
+    driver::PeerDiscoveryDriver,
+    MonadNameRecord, NameRecord, Port, PortTag,
+};
 use monad_raptor::SOURCE_SYMBOLS_MAX;
 use monad_raptorcast::{
+    config::{
+        RaptorCastConfig, RaptorCastConfigPrimary, RaptorCastConfigSecondary,
+        SecondaryRaptorCastModeConfig,
+    },
+    message::OutboundRouterMessage,
     new_defaulted_raptorcast_for_tests,
     udp::{build_messages, build_messages_with_length, MAX_REDUNDANCY},
     util::{BuildTarget, EpochValidators, FullNodes, Redundancy, Validator},
-    RaptorCastEvent,
+    RaptorCast, RaptorCastEvent,
 };
 use monad_secp::{KeyPair, SecpSignature};
-use monad_types::{Deserializable, Epoch, NodeId, Serializable, Stake};
+use monad_types::{Deserializable, Epoch, NodeId, Round, RouterTarget, Serializable, Stake};
+use rand_chacha::{rand_core::SeedableRng, ChaCha8Rng};
+use serial_test::serial;
+use tokio::{net::UdpSocket as TokioUdpSocket, time::timeout};
 use tracing_subscriber::fmt::format::FmtSpan;
 
 type SignatureType = SecpSignature;
 type PubKeyType = CertificateSignaturePubKey<SignatureType>;
+
+fn init_test_logger() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .try_init();
+}
+
+fn create_keypair(seed: u8) -> Arc<KeyPair> {
+    Arc::new(
+        <<SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::from_bytes(
+            &mut [seed; 32],
+        )
+        .unwrap(),
+    )
+}
+
+fn create_name_record(ip: Ipv4Addr, ports: Vec<Port>) -> NameRecord {
+    let mut tcp_port = None;
+    let mut udp_port = None;
+    let mut direct_udp_port = None;
+
+    for port in ports {
+        match port.tag_enum() {
+            Some(PortTag::TCP) => tcp_port = Some(port.port),
+            Some(PortTag::UDP) => udp_port = Some(port.port),
+            Some(PortTag::DirectUdp) => direct_udp_port = Some(port.port),
+            _ => {}
+        }
+    }
+
+    NameRecord {
+        ip,
+        tcp_port: tcp_port.unwrap_or(0),
+        udp_port: udp_port.unwrap_or(0),
+        direct_udp_port,
+        capabilities: 0,
+        seq: 0,
+    }
+}
+
+fn create_peer_discovery_builder<ST: CertificateSignatureRecoverable>(
+    self_id: NodeId<CertificateSignaturePubKey<ST>>,
+    self_record: MonadNameRecord<ST>,
+    routing_info: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<ST>>,
+) -> PeerDiscoveryBuilder<ST> {
+    PeerDiscoveryBuilder {
+        self_id,
+        self_record,
+        current_round: Round(0),
+        current_epoch: Epoch(0),
+        epoch_validators: std::collections::BTreeMap::new(),
+        pinned_full_nodes: std::collections::BTreeSet::new(),
+        routing_info,
+        ping_period: Duration::from_millis(1000),
+        refresh_period: Duration::from_millis(5000),
+        request_timeout: Duration::from_millis(500),
+        unresponsive_prune_threshold: 5,
+        last_participation_prune_threshold: Round(100),
+        min_num_peers: 3,
+        max_num_peers: 50,
+        rng: ChaCha8Rng::from_seed([0u8; 32]),
+    }
+}
+
+fn create_raptorcast_config(shared_key: Arc<KeyPair>) -> RaptorCastConfig<SignatureType> {
+    RaptorCastConfig {
+        shared_key,
+        mtu: 1450,
+        udp_message_max_age_ms: 5000,
+        primary_instance: RaptorCastConfigPrimary::default(),
+        secondary_instance: RaptorCastConfigSecondary {
+            raptor10_redundancy: 2,
+            mode: SecondaryRaptorCastModeConfig::None,
+        },
+    }
+}
 
 // Try to crash the R10 managed decoder by feeding it encoded symbols of different sizes.
 // A previous version of the R10 managed decoder did not handle this correctly and would panic.
@@ -499,5 +591,241 @@ where
                 unimplemented!()
             }
         }
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn test_direct_udp_support() {
+    init_test_logger();
+
+    let tx_addr: SocketAddr = "127.0.0.1:10020".parse().unwrap();
+    let direct_udp_port = 11021u16;
+
+    let direct_udp_socket = TokioUdpSocket::bind(("127.0.0.1", direct_udp_port))
+        .await
+        .unwrap();
+
+    let non_direct_udp_socket = TokioUdpSocket::bind(("127.0.0.1", 10022)).await.unwrap();
+
+    let tx_keypair = create_keypair(50);
+    let rx_with_direct_keypair = create_keypair(51);
+    let rx_no_direct_keypair = create_keypair(52);
+
+    let tx_nodeid = NodeId::new(tx_keypair.pubkey());
+    let rx_with_direct_nodeid = NodeId::new(rx_with_direct_keypair.pubkey());
+    let rx_no_direct_nodeid = NodeId::new(rx_no_direct_keypair.pubkey());
+
+    let tx_name_record = create_name_record(
+        Ipv4Addr::new(127, 0, 0, 1),
+        vec![
+            Port::new(PortTag::TCP, 10020),
+            Port::new(PortTag::UDP, 10020),
+        ],
+    );
+
+    let rx_with_direct_name_record = create_name_record(
+        Ipv4Addr::new(127, 0, 0, 1),
+        vec![
+            Port::new(PortTag::TCP, 10021),
+            Port::new(PortTag::UDP, 10021),
+            Port::new(PortTag::DirectUdp, direct_udp_port),
+        ],
+    );
+
+    let rx_no_direct_name_record = create_name_record(
+        Ipv4Addr::new(127, 0, 0, 1),
+        vec![
+            Port::new(PortTag::TCP, 10022),
+            Port::new(PortTag::UDP, 10022),
+        ],
+    );
+
+    let mut routing_info = std::collections::BTreeMap::new();
+    routing_info.insert(
+        tx_nodeid,
+        MonadNameRecord::new(tx_name_record.clone(), &*tx_keypair),
+    );
+    routing_info.insert(
+        rx_with_direct_nodeid,
+        MonadNameRecord::new(rx_with_direct_name_record.clone(), &*rx_with_direct_keypair),
+    );
+    routing_info.insert(
+        rx_no_direct_nodeid,
+        MonadNameRecord::new(rx_no_direct_name_record.clone(), &*rx_no_direct_keypair),
+    );
+
+    let self_record = MonadNameRecord::new(tx_name_record, &*tx_keypair);
+
+    let up_bandwidth_mbps = 1_000;
+    let dp_builder = DataplaneBuilder::new(&tx_addr, up_bandwidth_mbps);
+    let dataplane = dp_builder.build();
+    let (dataplane_reader, dataplane_writer) = dataplane.split();
+
+    let peer_discovery_builder =
+        create_peer_discovery_builder(tx_nodeid.clone(), self_record, routing_info);
+
+    let config = create_raptorcast_config(tx_keypair.clone());
+
+    let pd = PeerDiscoveryDriver::new(peer_discovery_builder);
+    let shared_pd = Arc::new(std::sync::Mutex::new(pd));
+
+    let mut tx_service = RaptorCast::<
+        SignatureType,
+        MockMessage,
+        MockMessage,
+        <MockMessage as Message>::Event,
+        PeerDiscovery<SignatureType>,
+    >::new(config, dataplane_reader, dataplane_writer, shared_pd);
+
+    tx_service.exec(vec![RouterCommand::AddEpochValidatorSet {
+        epoch: Epoch(0),
+        validator_set: vec![
+            (tx_nodeid, Stake(1)),
+            (rx_with_direct_nodeid, Stake(1)),
+            (rx_no_direct_nodeid, Stake(1)),
+        ],
+    }]);
+
+    let message_to_direct = MockMessage::new(1, 100);
+    let message_to_no_direct = MockMessage::new(2, 100);
+
+    tx_service.exec(vec![RouterCommand::Publish {
+        target: RouterTarget::PointToPoint(rx_with_direct_nodeid),
+        message: message_to_direct,
+    }]);
+
+    tx_service.exec(vec![RouterCommand::Publish {
+        target: RouterTarget::PointToPoint(rx_no_direct_nodeid),
+        message: message_to_no_direct,
+    }]);
+
+    let mut buf = [0u8; 2048];
+    match timeout(
+        Duration::from_secs(2),
+        direct_udp_socket.recv_from(&mut buf),
+    )
+    .await
+    {
+        Ok(Ok((_size, from))) => {
+            assert_eq!(from, tx_addr);
+        }
+        Ok(Err(e)) => panic!("Error receiving on direct UDP socket: {}", e),
+        Err(_) => {
+            panic!("FAILED: Should receive data on direct UDP socket when name record has DirectUdp port");
+        }
+    }
+
+    match timeout(
+        Duration::from_secs(2),
+        non_direct_udp_socket.recv_from(&mut buf),
+    )
+    .await
+    {
+        Ok(Ok((_size, from))) => {
+            assert_eq!(from, tx_addr);
+        }
+        Ok(Err(e)) => panic!("Error receiving on non-direct UDP socket: {}", e),
+        Err(_) => {
+            panic!("FAILED: Should receive data for non-direct node on regular UDP socket");
+        }
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn test_direct_udp_data_reception() {
+    init_test_logger();
+
+    let rx_addr: SocketAddr = "127.0.0.1:10030".parse().unwrap();
+    let direct_udp_port = 11030u16;
+
+    let tx_keypair = create_keypair(60);
+    let rx_keypair = create_keypair(61);
+
+    let tx_nodeid = NodeId::new(tx_keypair.pubkey());
+    let rx_nodeid = NodeId::new(rx_keypair.pubkey());
+
+    let rx_name_record = create_name_record(
+        Ipv4Addr::new(127, 0, 0, 1),
+        vec![
+            Port::new(PortTag::TCP, rx_addr.port()),
+            Port::new(PortTag::UDP, rx_addr.port()),
+            Port::new(PortTag::DirectUdp, direct_udp_port),
+        ],
+    );
+
+    let rx_name_record_clone = rx_name_record.clone();
+    let rx_keypair_clone = rx_keypair.clone();
+
+    let routing_info = std::collections::BTreeMap::new();
+    let self_record = MonadNameRecord::new(rx_name_record_clone.clone(), &*rx_keypair_clone);
+
+    let up_bandwidth_mbps = 1_000;
+    let mut dp_builder = DataplaneBuilder::new(&rx_addr, up_bandwidth_mbps);
+    dp_builder = dp_builder.with_direct_socket(direct_udp_port);
+    let dataplane = dp_builder.build();
+    assert!(dataplane.block_until_ready(Duration::from_secs(1)));
+    let (dataplane_reader, dataplane_writer) = dataplane.split();
+    let peer_discovery_builder =
+        create_peer_discovery_builder(rx_nodeid.clone(), self_record, routing_info);
+
+    let config = create_raptorcast_config(rx_keypair_clone.clone());
+
+    let pd = PeerDiscoveryDriver::new(peer_discovery_builder);
+    let shared_pd = Arc::new(std::sync::Mutex::new(pd));
+
+    let mut rx_service = RaptorCast::<
+        SignatureType,
+        MockMessage,
+        MockMessage,
+        <MockMessage as Message>::Event,
+        PeerDiscovery<SignatureType>,
+    >::new(config, dataplane_reader, dataplane_writer, shared_pd);
+
+    let external_tx_socket = TokioUdpSocket::bind("127.0.0.1:10032").await.unwrap();
+
+    let test_message = MockMessage::new(42, 200);
+    let outbound_msg =
+        OutboundRouterMessage::<MockMessage, SignatureType>::AppMessage(test_message);
+    let test_message_bytes = match outbound_msg.try_serialize() {
+        Ok(bytes) => bytes,
+        Err(e) => panic!("Failed to serialize message: {:?}", e),
+    };
+
+    let mut direct_known_addresses = HashMap::new();
+    direct_known_addresses.insert(
+        rx_nodeid,
+        SocketAddr::V4(rx_name_record.direct_udp_socket().unwrap()),
+    );
+
+    let messages = build_messages::<SignatureType>(
+        &tx_keypair,
+        DEFAULT_SEGMENT_SIZE,
+        test_message_bytes,
+        Redundancy::from_u8(2),
+        0,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64,
+        BuildTarget::PointToPoint(&rx_nodeid),
+        &direct_known_addresses,
+    );
+
+    for (_, (dest, payload)) in messages.iter().enumerate() {
+        for chunk in payload.chunks(usize::from(DEFAULT_SEGMENT_SIZE)) {
+            external_tx_socket.send_to(chunk, dest).await.unwrap();
+        }
+    }
+
+    match timeout(Duration::from_secs(2), rx_service.next()).await {
+        Ok(Some(event)) => {
+            let MockEvent((from, msg_id)) = event;
+            assert_eq!(from, tx_nodeid);
+            assert_eq!(msg_id, 42);
+        }
+        Ok(None) => panic!("terminated unexpectedly"),
+        Err(_) => panic!("timed out"),
     }
 }

@@ -1147,6 +1147,13 @@ where
             .map(|(id, name_record)| (*id, *name_record))
             .collect()
     }
+
+    fn get_name_record(
+        &self,
+        node_id: &NodeId<CertificateSignaturePubKey<ST>>,
+    ) -> Option<MonadNameRecord<ST>> {
+        self.routing_info.get(node_id).copied()
+    }
 }
 
 #[cfg(test)]

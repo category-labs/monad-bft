@@ -622,13 +622,16 @@ where
             network_config.tcp_rate_limit_rps,
             network_config.tcp_rate_limit_burst,
         );
+    if let Some(direct_port) = network_config.direct_udp_port {
+        dp_builder = dp_builder.with_direct_socket(direct_port);
+    }
 
     let self_id = NodeId::new(identity.pubkey());
     let self_record = NameRecord {
         ip: name_record_address.ip().clone(),
         tcp_port: name_record_address.port(),
         udp_port: name_record_address.port(),
-        direct_udp_port: None,
+        direct_udp_port: network_config.direct_udp_port,
         capabilities: 0,
         seq: peer_discovery_config.self_record_seq_num,
     };

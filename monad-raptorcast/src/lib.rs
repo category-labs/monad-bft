@@ -39,8 +39,8 @@ use monad_crypto::{
 };
 use monad_dataplane::{
     udp::{segment_size_for_mtu, DEFAULT_MTU},
-    BroadcastMsg, DataplaneBuilder, DataplaneReader, DataplaneWriter, RecvTcpMsg, TcpMsg,
-    UnicastMsg,
+    BroadcastMsg, DataplaneBuilder, DataplaneReader, DataplaneWriter, RecvTcpMsg, RecvUdpMsg,
+    TcpMsg, UnicastMsg,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
@@ -272,6 +272,118 @@ where
             stride: segment_size,
         }
     }
+
+    fn handle_udp_message(
+        &mut self,
+        message: RecvUdpMsg,
+        full_node_addrs: &[SocketAddr],
+        source: &str,
+    ) {
+        tracing::trace!(
+            "RaptorCastPrimary rx {} message len {} from: {}",
+            source,
+            message.payload.len(),
+            message.src_addr
+        );
+
+        let decoded_app_messages = {
+            self.udp_state.handle_message(
+                &self.rebroadcast_map,
+                |targets, payload, bcast_stride| {
+                    let target_addrs: Vec<SocketAddr> = targets
+                        .into_iter()
+                        .filter_map(|target| {
+                            self.peer_discovery_driver.lock().unwrap().get_addr(&target)
+                        })
+                        .collect();
+
+                    self.dataplane_writer.udp_write_broadcast(BroadcastMsg {
+                        targets: target_addrs,
+                        payload,
+                        stride: bcast_stride,
+                    });
+                },
+                |payload, bcast_stride| {
+                    self.dataplane_writer.udp_write_broadcast(BroadcastMsg {
+                        targets: full_node_addrs.to_vec(),
+                        payload,
+                        stride: bcast_stride,
+                    });
+                },
+                message,
+            )
+        };
+
+        tracing::trace!(
+            "RaptorCastPrimary rx decoded {} {} messages, sized: {:?}",
+            decoded_app_messages.len(),
+            source,
+            decoded_app_messages
+                .iter()
+                .map(|(_node_id, bytes)| bytes.len())
+                .collect_vec()
+        );
+
+        for (from, decoded) in decoded_app_messages {
+            match InboundRouterMessage::<M, ST>::try_deserialize(&decoded) {
+                Ok(inbound) => match inbound {
+                    InboundRouterMessage::AppMessage(app_message) => {
+                        tracing::trace!(
+                            "RaptorCastPrimary rx deserialized AppMessage from {}",
+                            source
+                        );
+                        self.pending_events
+                            .push_back(RaptorCastEvent::Message(app_message.event(from)));
+                    }
+                    InboundRouterMessage::PeerDiscoveryMessage(peer_disc_message) => {
+                        tracing::trace!(
+                            "RaptorCastPrimary rx deserialized PeerDiscoveryMessage from {}: {:?}",
+                            source,
+                            peer_disc_message
+                        );
+                        self.peer_discovery_driver
+                            .lock()
+                            .unwrap()
+                            .update(peer_disc_message.event(from));
+                    }
+                    InboundRouterMessage::FullNodesGroup(full_nodes_group_message) => {
+                        tracing::trace!(
+                            "RaptorCastPrimary rx deserialized from {} {:?}",
+                            source,
+                            full_nodes_group_message
+                        );
+                        match &self.channel_to_secondary {
+                            Some(channel) => {
+                                if channel.send(full_nodes_group_message).is_err() {
+                                    tracing::error!(
+                                        "Could not send InboundRouterMessage to \
+                                secondary Raptorcast instance: channel closed",
+                                    );
+                                }
+                            }
+                            None => {
+                                tracing::debug!(
+                                    ?from,
+                                    "Received FullNodesGroup message but the primary \
+                            Raptorcast instance is not setup to forward messages \
+                            to a secondary instance."
+                                );
+                            }
+                        }
+                    }
+                },
+                Err(err) => {
+                    warn!(
+                        ?from,
+                        ?err,
+                        decoded = hex::encode(&decoded),
+                        "failed to deserialize message from {}",
+                        source
+                    );
+                }
+            }
+        }
+    }
 }
 
 pub fn new_defaulted_raptorcast_for_tests<ST, M, OM, SE>(
@@ -498,16 +610,48 @@ where
                                             continue;
                                         }
                                     };
-                                let rc_chunks: UnicastMsg = Self::udp_build(
-                                    &self.current_epoch,
-                                    BuildTarget::<ST>::PointToPoint(&to),
-                                    outbound_message,
-                                    self.mtu,
-                                    &self.signing_key,
-                                    self.redundancy,
-                                    &known_addresses,
-                                );
-                                self.dataplane_writer.udp_write_unicast(rc_chunks);
+
+                                let direct_socket = self
+                                    .peer_discovery_driver
+                                    .lock()
+                                    .unwrap()
+                                    .get_name_record(&to)
+                                    .and_then(|nr| nr.name_record.direct_udp_socket());
+
+                                if let Some(direct_socket) = direct_socket {
+                                    let mut direct_known_addresses = HashMap::new();
+                                    direct_known_addresses
+                                        .insert(to, SocketAddr::V4(direct_socket));
+
+                                    let rc_chunks: UnicastMsg = Self::udp_build(
+                                        &self.current_epoch,
+                                        BuildTarget::<ST>::PointToPoint(&to),
+                                        outbound_message,
+                                        self.mtu,
+                                        &self.signing_key,
+                                        self.redundancy,
+                                        &direct_known_addresses,
+                                    );
+
+                                    for (_, payload) in rc_chunks.msgs {
+                                        self.dataplane_writer.udp_write_direct(
+                                            SocketAddr::V4(direct_socket),
+                                            payload,
+                                            rc_chunks.stride,
+                                        );
+                                    }
+                                } else {
+                                    let rc_chunks: UnicastMsg = Self::udp_build(
+                                        &self.current_epoch,
+                                        BuildTarget::<ST>::PointToPoint(&to),
+                                        outbound_message,
+                                        self.mtu,
+                                        &self.signing_key,
+                                        self.redundancy,
+                                        &known_addresses,
+                                    );
+                                    self.dataplane_writer.udp_write_unicast(rc_chunks);
+                                }
                             }
                         }
 
@@ -638,112 +782,20 @@ where
                 break;
             };
 
-            tracing::trace!(
-                "RaptorCastPrimary rx message len {} from: {}",
-                message.payload.len(),
-                message.src_addr
-            );
+            this.handle_udp_message(message, &full_node_addrs, "regular");
 
-            // Enter the received raptorcast chunk into the udp_state for reassembly.
-            // If the field "first-hop recipient" in the chunk has our node Id, then
-            // we are responsible for broadcasting this chunk to other validators.
-            // Once we have enough (redundant) raptorcast chunks, recreate the
-            // decoded (AKA parsed, original) message.
-            // Stream the chunks to our dedicated full-nodes as we receive them.
-            let decoded_app_messages = {
-                // FIXME: pass dataplane as arg to handle_message
-                this.udp_state.handle_message(
-                    &this.rebroadcast_map, // contains the NodeIds for all the RC participants for each epoch
-                    |targets, payload, bcast_stride| {
-                        // Callback for re-broadcasting raptorcast chunks to other RaptorCast participants (validator peers)
-                        let target_addrs: Vec<SocketAddr> = targets
-                            .into_iter()
-                            .filter_map(|target| {
-                                this.peer_discovery_driver.lock().unwrap().get_addr(&target)
-                            })
-                            .collect();
+            if let Some(event) = this.pending_events.pop_front() {
+                return Poll::Ready(Some(event.into()));
+            }
+        }
 
-                        this.dataplane_writer.udp_write_broadcast(BroadcastMsg {
-                            targets: target_addrs,
-                            payload,
-                            stride: bcast_stride,
-                        });
-                    },
-                    |payload, bcast_stride| {
-                        // Callback for forwarding chunks to full nodes
-                        this.dataplane_writer.udp_write_broadcast(BroadcastMsg {
-                            targets: full_node_addrs.clone(),
-                            payload,
-                            stride: bcast_stride,
-                        });
-                    },
-                    message,
-                )
+        loop {
+            let dataplane = &mut this.dataplane_reader;
+            let Poll::Ready(message) = pin!(dataplane.udp_direct_read()).poll_unpin(cx) else {
+                break;
             };
 
-            tracing::trace!(
-                "RaptorCastPrimary rx decoded {} messages, sized: {:?}",
-                decoded_app_messages.len(),
-                decoded_app_messages
-                    .iter()
-                    .map(|(_node_id, bytes)| bytes.len())
-                    .collect_vec()
-            );
-
-            for (from, decoded) in decoded_app_messages {
-                match InboundRouterMessage::<M, ST>::try_deserialize(&decoded) {
-                    Ok(inbound) => match inbound {
-                        InboundRouterMessage::AppMessage(app_message) => {
-                            tracing::trace!("RaptorCastPrimary rx deserialized AppMessage");
-                            this.pending_events
-                                .push_back(RaptorCastEvent::Message(app_message.event(from)));
-                        }
-                        InboundRouterMessage::PeerDiscoveryMessage(peer_disc_message) => {
-                            tracing::trace!(
-                                "RaptorCastPrimary rx deserialized PeerDiscoveryMessage: {:?}",
-                                peer_disc_message
-                            );
-                            // handle peer discovery message in driver
-                            this.peer_discovery_driver
-                                .lock()
-                                .unwrap()
-                                .update(peer_disc_message.event(from));
-                        }
-                        InboundRouterMessage::FullNodesGroup(full_nodes_group_message) => {
-                            tracing::trace!(
-                                "RaptorCastPrimary rx deserialized {:?}",
-                                full_nodes_group_message
-                            );
-                            match &this.channel_to_secondary {
-                                Some(channel) => {
-                                    if channel.send(full_nodes_group_message).is_err() {
-                                        tracing::error!(
-                                            "Could not send InboundRouterMessage to \
-                                    secondary Raptorcast instance: channel closed",
-                                        );
-                                    }
-                                }
-                                None => {
-                                    tracing::debug!(
-                                        ?from,
-                                        "Received FullNodesGroup message but the primary \
-                                Raptorcast instance is not setup to forward messages \
-                                to a secondary instance."
-                                    );
-                                }
-                            }
-                        }
-                    },
-                    Err(err) => {
-                        warn!(
-                            ?from,
-                            ?err,
-                            decoded = hex::encode(&decoded),
-                            "failed to deserialize message"
-                        );
-                    }
-                }
-            }
+            this.handle_udp_message(message, &full_node_addrs, "direct");
 
             if let Some(event) = this.pending_events.pop_front() {
                 return Poll::Ready(Some(event.into()));

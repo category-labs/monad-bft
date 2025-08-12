@@ -15,6 +15,7 @@
 
 use std::{
     collections::VecDeque,
+    fmt::Display,
     io::{Error, ErrorKind},
     net::SocketAddr,
     os::fd::{AsRawFd, FromRawFd},
@@ -24,7 +25,7 @@ use std::{
 use bytes::{Bytes, BytesMut};
 use monoio::{net::udp::UdpSocket, spawn, time};
 use tokio::sync::mpsc;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, trace, warn};
 
 use super::{RecvUdpMsg, UdpMsg};
 use crate::buffer_ext::SocketBufferExt;
@@ -33,6 +34,16 @@ use crate::buffer_ext::SocketBufferExt;
 pub(crate) enum UdpMessageType {
     Broadcast,
     Direct,
+}
+
+impl Display for UdpMessageType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            &UdpMessageType::Broadcast => write!(f, "broadcast")?,
+            &UdpMessageType::Direct => write!(f, "direct")?,
+        }
+        Ok(())
+    }
 }
 
 // When running in docker with vpnkit, the maximum safe MTU is 1480, as per:
@@ -164,9 +175,10 @@ async fn rx(
 async fn rx_single_socket(socket: UdpSocket, udp_ingress_tx: mpsc::Sender<RecvUdpMsg>) {
     loop {
         let buf = BytesMut::with_capacity(ETHERNET_SEGMENT_SIZE.into());
-
+        let local_addr = socket.local_addr().unwrap();
         match socket.recv_from(buf).await {
             (Ok((len, src_addr)), buf) => {
+                trace!(%local_addr, %src_addr, "received on socket");
                 let payload = buf.freeze();
 
                 let msg = RecvUdpMsg {

@@ -46,6 +46,9 @@ pub struct NodeNetworkConfig {
 
     #[serde(default = "default_tcp_rate_limit_burst")]
     pub tcp_rate_limit_burst: u32,
+
+    #[serde(default = "default_direct_udp_port")]
+    pub direct_udp_port: Option<u16>,
 }
 
 // When running in docker with vpnkit, the maximum safe MTU is 1480, as per:
@@ -77,4 +80,8 @@ fn default_tcp_rate_limit_rps() -> u32 {
 
 fn default_tcp_rate_limit_burst() -> u32 {
     200
+}
+
+fn default_direct_udp_port() -> Option<u16> {
+    Some(30101)
 }

@@ -24,6 +24,8 @@ use monad_secp::{KeyPair, SecpSignature};
 /// Example command to run the following program:
 /// sign-name-record -- --address 0.0.0.0:8888 --node-config <...> --keystore-path <...> --password ""
 /// sign-name-record -- --address 0.0.0.0:8888 --direct-udp-port 9999 --node-config <...> --keystore-path <...> --password ""
+/// Note: If --direct-udp-port is not specified, it will default to the value in network config,
+/// or 30101 if not configured
 #[derive(Debug, Parser)]
 #[command(name = "monad-peer-discovery", about)]
 struct Args {
@@ -34,9 +36,9 @@ struct Args {
     /// Sequence number for the name record
     #[arg(long)]
     self_record_seq_num: Option<u64>,
-    
+
     /// Direct UDP port (optional)
-    #[arg(long)]
+    #[arg(long, default_value_t = 30101)]
     direct_udp_port: Option<u16>,
 
     /// Set the node config path
@@ -64,22 +66,32 @@ fn main() {
         }
     };
 
-    let self_record_seq_num = if let Some(node_config_path) = args.node_config {
+    let (self_record_seq_num, direct_udp_port) = if let Some(node_config_path) = args.node_config {
         let contents =
             std::fs::read_to_string(node_config_path).expect("Failed to read node toml file");
         let node_config: MonadNodeConfig =
             toml::from_str(&contents).expect("Invalid format in node toml file");
-        node_config.peer_discovery.self_record_seq_num + 1
+        let seq_num = node_config.peer_discovery.self_record_seq_num + 1;
+
+        // Use direct_udp_port from args, or from network config, or default to 30101
+        let direct_port = args
+            .direct_udp_port
+            .or(node_config.network.direct_udp_port)
+            .or(Some(30101));
+
+        (seq_num, direct_port)
     } else {
-        args.self_record_seq_num
-            .unwrap_or_else(|| panic!("Either node_config or self_record_seq_num must be provided"))
+        let seq_num = args.self_record_seq_num.unwrap_or_else(|| {
+            panic!("Either node_config or self_record_seq_num must be provided")
+        });
+        (seq_num, args.direct_udp_port.or(Some(30101)))
     };
     let self_address = args.address;
     let name_record = NameRecord {
         ip: self_address.ip().clone(),
         tcp_port: self_address.port(),
         udp_port: self_address.port(),
-        direct_udp_port: args.direct_udp_port,
+        direct_udp_port,
         capabilities: 0,
         seq: self_record_seq_num,
     };
@@ -88,8 +100,8 @@ fn main() {
         MonadNameRecord::new(name_record, &keypair);
 
     println!("self_address = {:?}", self_address.to_string());
-    if let Some(direct_udp_port) = args.direct_udp_port {
-        println!("direct_udp_port = {}", direct_udp_port);
+    if let Some(port) = direct_udp_port {
+        println!("direct_udp_port = {}", port);
     }
     println!("self_record_seq_num = {}", self_record_seq_num);
     println!(
