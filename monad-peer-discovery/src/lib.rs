@@ -143,6 +143,15 @@ pub enum PeerDiscoveryEvent<ST: CertificateSignatureRecoverable> {
         target: NodeId<CertificateSignaturePubKey<ST>>,
         lookup_id: u32,
     },
+    SendFullNodeRaptorcastRequest {
+        to: NodeId<CertificateSignaturePubKey<ST>>,
+    },
+    FullNodeRaptorcastRequest {
+        from: NodeId<CertificateSignaturePubKey<ST>>,
+    },
+    FullNodeRaptorcastResponse {
+        from: NodeId<CertificateSignaturePubKey<ST>>,
+    },
     UpdateCurrentRound {
         round: Round,
         epoch: Epoch,
@@ -167,6 +176,7 @@ pub enum TimerKind {
     PingTimeout,
     RetryPeerLookup { lookup_id: u32 },
     Refresh,
+    FullNodeRaptorcastRequest,
 }
 
 #[derive(Debug, Clone)]
@@ -255,6 +265,21 @@ pub trait PeerDiscoveryAlgo {
         lookup_id: u32,
     ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
+    fn send_full_node_raptorcast_request(
+        &mut self,
+        to: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+    ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
+
+    fn handle_full_node_raptorcast_request(
+        &mut self,
+        from: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+    ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
+
+    fn handle_full_node_raptorcast_response(
+        &mut self,
+        from: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+    ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
+
     fn refresh(&mut self) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
     fn update_current_round(
@@ -296,7 +321,7 @@ pub trait PeerDiscoveryAlgo {
         &self,
     ) -> HashMap<NodeId<CertificateSignaturePubKey<Self::SignatureType>>, SocketAddrV4>;
 
-    fn get_fullnode_addrs(
+    fn get_secondary_fullnode_addrs(
         &self,
     ) -> HashMap<NodeId<CertificateSignaturePubKey<Self::SignatureType>>, SocketAddrV4>;
 

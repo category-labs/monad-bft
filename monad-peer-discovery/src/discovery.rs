@@ -40,7 +40,7 @@ const MAX_PEER_IN_RESPONSE: usize = 16;
 /// Number of peers to send lookup request to
 const NUM_LOOKUP_PEERS: usize = 3;
 /// Number of validators to connect to if self is a full node
-// TODO: this should be configurable (e.g. a dedicated full node does not need to have 3 upstream validators)
+// TODO: this should be configurable
 const NUM_UPSTREAM_VALIDATORS: usize = 3;
 
 /// Metrics constant
@@ -62,17 +62,28 @@ pub const GAUGE_PEER_DISC_SEND_LOOKUP_RESPONSE: &str = "monad.peer_disc.send_loo
 pub const GAUGE_PEER_DISC_RECV_LOOKUP_RESPONSE: &str = "monad.peer_disc.recv_lookup_response";
 pub const GAUGE_PEER_DISC_DROP_LOOKUP_RESPONSE: &str = "monad.peer_disc.drop_lookup_response";
 pub const GAUGE_PEER_DISC_LOOKUP_TIMEOUT: &str = "monad.peer_disc.lookup_timeout";
+pub const GAUGE_PEER_DISC_SEND_RAPTORCAST_REQUEST: &str = "monad.peer_disc.send_raptorcast_request";
+pub const GAUGE_PEER_DISC_RECV_RAPTORCAST_REQUEST: &str = "monad.peer_disc.recv_raptorcast_request";
+pub const GAUGE_PEER_DISC_SEND_RAPTORCAST_RESPONSE: &str =
+    "monad.peer_disc.send_raptorcast_response";
+pub const GAUGE_PEER_DISC_RECV_RAPTORCAST_RESPONSE: &str =
+    "monad.peer_disc.recv_raptorcast_response";
 pub const GAUGE_PEER_DISC_REFRESH: &str = "monad.peer_disc.refresh";
 pub const GAUGE_PEER_DISC_NUM_PEERS: &str = "monad.peer_disc.num_peers";
 pub const GAUGE_PEER_DISC_NUM_PENDING_PEERS: &str = "monad.peer_disc.num_pending_peers";
+pub const GAUGE_PEER_DISC_NUM_UPSTREAM_VALIDATORS: &str = "monad.peer_disc.num_upstream_validators";
+pub const GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES: &str =
+    "monad.peer_disc.num_downstream_fullnodes";
 
 /// validator role is given if the node is a validator in the current or next epoch.
 /// this is to ensure the node starts connecting to other validators even if joining
 /// as a validator only in the next epoch
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Role {
-    Validator,
-    FullNode,
+pub enum PeerDiscoveryRole {
+    ValidatorNone,      // validator set as None in secondary raptorcast
+    ValidatorPublisher, // validator set as Publisher in secondary raptorcast
+    FullNodeNone,       // full node set as None in secondary raptorcast
+    FullNodeClient,     // full node set as Client in secondary raptorcast
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +91,20 @@ pub struct ConnectionInfo<ST: CertificateSignatureRecoverable> {
     pub last_ping: Ping<ST>,
     pub unresponsive_pings: u32,
     pub name_record: MonadNameRecord<ST>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecondaryRaptorcastConnectionStatus {
+    Connected,
+    Pending,
+    None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SecondaryRaptorcastInfo {
+    pub status: SecondaryRaptorcastConnectionStatus,
+    pub num_retries: u32,
+    pub last_active: Round,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -96,7 +121,7 @@ pub struct PeerDiscovery<ST: CertificateSignatureRecoverable> {
     pub self_id: NodeId<CertificateSignaturePubKey<ST>>,
     pub self_record: MonadNameRecord<ST>,
     // role of the node in the current epoch
-    self_role: Role,
+    self_role: PeerDiscoveryRole,
     pub current_round: Round,
     pub current_epoch: Epoch,
     // mapping of epoch to validators in that epoch
@@ -105,9 +130,9 @@ pub struct PeerDiscovery<ST: CertificateSignatureRecoverable> {
     pub pinned_full_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
     // mapping of node IDs to their corresponding name records
     pub routing_info: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<ST>>,
-    // TODO: do we want to fold this into routing_info?
-    // mapping of node IDs to their participation info, used to track last participation in raptorcast
-    pub participation_info: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Round>,
+    // mapping of node IDs to their participation info, used to track participation in raptorcast
+    pub participation_info:
+        BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, SecondaryRaptorcastInfo>,
     // mapping of node IDs to their connection info, used to track ping status
     // a node is inserted into pending_queue and only promoted to routing_info upon a successful ping pong roundtrip
     // this is to ensure the node is reachable at its ip address and port
@@ -135,6 +160,7 @@ pub struct PeerDiscovery<ST: CertificateSignatureRecoverable> {
 
 pub struct PeerDiscoveryBuilder<ST: CertificateSignatureRecoverable> {
     pub self_id: NodeId<CertificateSignaturePubKey<ST>>,
+    pub self_role: PeerDiscoveryRole,
     pub self_record: MonadNameRecord<ST>,
     pub current_round: Round,
     pub current_epoch: Epoch,
@@ -163,14 +189,12 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
         >,
     ) {
         debug!("initializing peer discovery");
-        assert!(self.ping_period > self.request_timeout);
         assert!(self.max_num_peers > self.min_num_peers);
 
-        let self_role = Role::FullNode;
         let mut state = PeerDiscovery {
             self_id: self.self_id,
             self_record: self.self_record,
-            self_role,
+            self_role: self.self_role,
             current_round: self.current_round,
             current_epoch: self.current_epoch,
             epoch_validators: self.epoch_validators,
@@ -190,9 +214,14 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
             rng: self.rng,
         };
 
-        // if self is a validator in the current or next epoch, update self role
-        if state.check_validator_membership(&self.self_id) {
-            state.self_role = Role::Validator;
+        // if self initializes config as a validator, make sure it's indeed in the validator set
+        if state.self_role == PeerDiscoveryRole::ValidatorNone
+            || state.self_role == PeerDiscoveryRole::ValidatorPublisher
+        {
+            assert!(
+                state.check_validator_membership(&self.self_id),
+                "incorrectly set as validator"
+            );
         }
 
         let mut cmds = Vec::new();
@@ -254,6 +283,25 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
         ]
     }
 
+    // schedule for full node raptorcast request
+    fn schedule_full_node_raptorcast_timeout(
+        &self,
+        to: NodeId<CertificateSignaturePubKey<ST>>,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
+        vec![
+            PeerDiscoveryCommand::TimerCommand(PeerDiscoveryTimerCommand::ScheduleReset {
+                node_id: to,
+                timer_kind: TimerKind::FullNodeRaptorcastRequest,
+            }),
+            PeerDiscoveryCommand::TimerCommand(PeerDiscoveryTimerCommand::Schedule {
+                node_id: to,
+                timer_kind: TimerKind::FullNodeRaptorcastRequest,
+                duration: self.request_timeout,
+                on_timeout: PeerDiscoveryEvent::SendFullNodeRaptorcastRequest { to },
+            }),
+        ]
+    }
+
     // schedule for lookup request timeout
     fn schedule_lookup_timeout(
         &self,
@@ -307,10 +355,9 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
         }
 
         // insert into pending queue and send ping
-        // TODO: use connection heuristics to decide if attaching local_name_record
         let ping_msg = Ping {
             id: self.rng.next_u32(),
-            local_name_record: Some(self.self_record),
+            local_name_record: self.self_record,
         };
         self.pending_queue.insert(peer_id, ConnectionInfo {
             last_ping: ping_msg,
@@ -334,6 +381,105 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
         cmds.extend(self.clear_ping_timeout(peer_id));
 
         self.metrics[GAUGE_PEER_DISC_NUM_PENDING_PEERS] = self.pending_queue.len() as u64;
+
+        cmds
+    }
+
+    fn promote_peer_to_routing_info(
+        &mut self,
+        peer: NodeId<CertificateSignaturePubKey<ST>>,
+        name_record: MonadNameRecord<ST>,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
+        let mut cmds = Vec::new();
+
+        self.routing_info.insert(peer, name_record);
+        self.participation_info
+            .entry(peer)
+            .and_modify(|info| {
+                if info.last_active < self.current_round {
+                    info.last_active = self.current_round;
+                }
+            })
+            .or_insert_with(|| SecondaryRaptorcastInfo {
+                status: SecondaryRaptorcastConnectionStatus::None,
+                num_retries: 0,
+                last_active: self.current_round,
+            });
+        cmds.extend(self.remove_peer_from_pending(peer));
+        self.metrics[GAUGE_PEER_DISC_NUM_PEERS] = self.routing_info.len() as u64;
+
+        if self.self_role == PeerDiscoveryRole::FullNodeClient {
+            cmds.extend(self.look_for_upstream_validators());
+        }
+
+        cmds
+    }
+
+    // for a public full node to look for upstream validators running as Publisher
+    fn look_for_upstream_validators(&mut self) -> Vec<PeerDiscoveryCommand<ST>> {
+        let mut cmds = Vec::new();
+
+        // connected upstream validators that have not participated beyond threshold is set to None
+        for (id, info) in self.participation_info.iter_mut() {
+            if info.status == SecondaryRaptorcastConnectionStatus::Connected
+                && self.current_round.max(info.last_active) - info.last_active
+                    >= self.last_participation_prune_threshold
+            {
+                info.status = SecondaryRaptorcastConnectionStatus::None;
+                debug!(
+                    ?id,
+                    "upstream validator has not participated, marking as None"
+                );
+            }
+        }
+
+        // full node will try to connect to NUM_UPSTREAM_VALIDATORS
+        // if insufficient connected upstream validators, try to send pings to new validators
+        let connected_validators = self
+            .participation_info
+            .iter()
+            .filter(|(_, info)| info.status != SecondaryRaptorcastConnectionStatus::None)
+            .map(|(id, _)| id)
+            .collect::<HashSet<_>>();
+
+        self.metrics[GAUGE_PEER_DISC_NUM_UPSTREAM_VALIDATORS] = connected_validators.len() as u64;
+
+        let slots_to_fill = NUM_UPSTREAM_VALIDATORS.saturating_sub(connected_validators.len());
+        if slots_to_fill > 0 {
+            // when selecting new upstream validators, make sure they are not already currently connected validators
+            // TODO: we should also prioritize validators that are not recently pruned for connection info for better heuristics
+            let available_validators = self
+                .routing_info
+                .keys()
+                .filter(|&node_id| {
+                    !connected_validators.contains(node_id)
+                        && self.check_validator_membership(node_id)
+                        && node_id != &self.self_id
+                })
+                .copied()
+                .collect::<Vec<_>>();
+
+            let new_upstream_validators = available_validators
+                .iter()
+                .choose_multiple(&mut self.rng, slots_to_fill);
+
+            debug!(
+                ?new_upstream_validators,
+                "looking for upstream validators to connect to",
+            );
+
+            for validator in new_upstream_validators {
+                // send ping to advertise name record and send full node raptorcast request
+                cmds.push(PeerDiscoveryCommand::RouterCommand {
+                    target: *validator,
+                    message: PeerDiscoveryMessage::Ping(Ping {
+                        id: self.rng.next_u32(),
+                        local_name_record: self.self_record,
+                    }),
+                });
+                cmds.extend(self.send_full_node_raptorcast_request(*validator));
+            }
+        }
 
         cmds
     }
@@ -407,62 +553,54 @@ where
         }
 
         if !peer_list_full {
-            if let Some(peer_name_record) = ping_msg.local_name_record {
-                if self
-                    .routing_info
-                    .get(&from)
-                    .is_none_or(|local| peer_name_record.seq() > local.seq())
-                {
-                    let verified = peer_name_record
-                        .recover_pubkey()
-                        .is_ok_and(|recovered_node_id| recovered_node_id == from);
+            let peer_name_record = ping_msg.local_name_record;
+            if self
+                .routing_info
+                .get(&from)
+                .is_none_or(|local| peer_name_record.seq() > local.seq())
+            {
+                let verified = peer_name_record
+                    .recover_pubkey()
+                    .is_ok_and(|recovered_node_id| recovered_node_id == from);
 
-                    if verified {
-                        cmds.extend(self.insert_peer_to_pending(from, peer_name_record));
-                    } else {
-                        debug!("invalid signature in ping.local_name_record");
-                        return cmds;
-                    }
-                } else if self
-                    .routing_info
-                    .get(&from)
-                    .is_some_and(|local| peer_name_record.seq() < local.seq())
-                {
-                    warn!(
-                        ?from,
-                        "peer updated name record sequence number went backwards"
-                    );
-                    return cmds;
-                } else if self.routing_info.get(&from).is_some_and(|local| {
-                    peer_name_record.seq() == local.seq() && peer_name_record != *local
-                }) {
-                    warn!(
-                        ?from,
-                        "peer updated name record without bumping sequence number"
-                    );
+                if verified {
+                    cmds.extend(self.insert_peer_to_pending(from, peer_name_record));
+                } else {
+                    debug!("invalid signature in ping.local_name_record");
                     return cmds;
                 }
+            } else if self
+                .routing_info
+                .get(&from)
+                .is_some_and(|local| peer_name_record.seq() < local.seq())
+            {
+                warn!(
+                    ?from,
+                    "peer updated name record sequence number went backwards"
+                );
+                return cmds;
+            } else if self.routing_info.get(&from).is_some_and(|local| {
+                peer_name_record.seq() == local.seq() && peer_name_record != *local
+            }) {
+                warn!(
+                    ?from,
+                    "peer updated name record without bumping sequence number"
+                );
+                return cmds;
             }
         }
 
         // respond to ping
-        if let Some(socket_address) = ping_msg
-            .local_name_record
-            .as_ref()
-            .map(|record| record.address())
-            .or_else(|| self.routing_info.get(&from).map(|info| info.address()))
-        {
-            let pong_msg = Pong {
-                ping_id: ping_msg.id,
-                local_record_seq: self.self_record.name_record.seq,
-            };
-            cmds.push(PeerDiscoveryCommand::PingPongCommand {
-                target: from,
-                socket_address,
-                message: PeerDiscoveryMessage::Pong(pong_msg),
-            });
-            self.metrics[GAUGE_PEER_DISC_SEND_PONG] += 1;
-        }
+        let pong_msg = Pong {
+            ping_id: ping_msg.id,
+            local_record_seq: self.self_record.name_record.seq,
+        };
+        cmds.push(PeerDiscoveryCommand::PingPongCommand {
+            target: from,
+            socket_address: ping_msg.local_name_record.address(),
+            message: PeerDiscoveryMessage::Pong(pong_msg),
+        });
+        self.metrics[GAUGE_PEER_DISC_SEND_PONG] += 1;
 
         cmds
     }
@@ -475,23 +613,13 @@ where
         debug!(?from, ?pong_msg, "handling pong response");
         self.metrics[GAUGE_PEER_DISC_RECV_PONG] += 1;
 
-        let cmds = Vec::new();
+        let mut cmds = Vec::new();
 
-        if let Some(info) = self.pending_queue.get_mut(&from) {
+        if let Some(info) = self.pending_queue.get(&from) {
             if info.last_ping.id == pong_msg.ping_id {
                 // if ping id matches, promote peer to routing_info
                 debug!(?from, ?info.name_record, "promoting peer to routing info");
-                self.routing_info.insert(from, info.name_record);
-                self.participation_info
-                    .entry(from)
-                    .and_modify(|last_participation_round| {
-                        if *last_participation_round < self.current_round {
-                            *last_participation_round = self.current_round;
-                        }
-                    })
-                    .or_insert_with(|| self.current_round);
-                self.remove_peer_from_pending(from);
-                self.metrics[GAUGE_PEER_DISC_NUM_PEERS] = self.routing_info.len() as u64;
+                cmds.extend(self.promote_peer_to_routing_info(from, info.name_record));
             } else {
                 debug!(?from, "dropping pong, ping id does not match");
                 self.metrics[GAUGE_PEER_DISC_DROP_PONG] += 1;
@@ -541,7 +669,7 @@ where
                 let socket_address = info.name_record.address();
                 let ping = Ping {
                     id: self.rng.next_u32(),
-                    local_name_record: Some(self.self_record),
+                    local_name_record: self.self_record,
                 };
                 info.last_ping = ping;
                 cmds.extend(self.send_ping(to, socket_address, ping));
@@ -778,6 +906,131 @@ where
         cmds
     }
 
+    // a full node sends raptorcast request to a validator to get connected
+    fn send_full_node_raptorcast_request(
+        &mut self,
+        to: NodeId<CertificateSignaturePubKey<ST>>,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
+        debug!(?to, "sending full node raptorcast request");
+
+        let mut cmds = Vec::new();
+
+        // only a full node running as Client mode should send request
+        if self.self_role != PeerDiscoveryRole::FullNodeClient {
+            debug!("not running as FullNodeClient, skipping full node raptorcast request");
+            return cmds;
+        }
+
+        // record participation info
+        if let Some(info) = self.participation_info.get_mut(&to) {
+            match info.status {
+                SecondaryRaptorcastConnectionStatus::None => {
+                    info.status = SecondaryRaptorcastConnectionStatus::Pending;
+                    info.num_retries = 0;
+                }
+                SecondaryRaptorcastConnectionStatus::Pending => {
+                    info.num_retries += 1;
+                    if info.num_retries >= self.unresponsive_prune_threshold {
+                        debug!(
+                            ?to,
+                            "full node raptorcast request exceeded number of retries, dropping..."
+                        );
+                        info.status = SecondaryRaptorcastConnectionStatus::None;
+                        info.num_retries = 0;
+                        return cmds;
+                    }
+                }
+                SecondaryRaptorcastConnectionStatus::Connected => {
+                    debug!(?to, "already connected, skip sending request");
+                    return cmds;
+                }
+            }
+        } else {
+            debug!("no participation info found");
+            return cmds;
+        }
+
+        self.metrics[GAUGE_PEER_DISC_SEND_RAPTORCAST_REQUEST] += 1;
+        cmds.push(PeerDiscoveryCommand::RouterCommand {
+            target: to,
+            message: PeerDiscoveryMessage::FullNodeRaptorcastRequest,
+        });
+
+        cmds.extend(self.schedule_full_node_raptorcast_timeout(to));
+
+        cmds
+    }
+
+    fn handle_full_node_raptorcast_request(
+        &mut self,
+        from: NodeId<CertificateSignaturePubKey<ST>>,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
+        debug!(?from, "handling full node raptorcast request");
+
+        let mut cmds = Vec::new();
+        self.metrics[GAUGE_PEER_DISC_RECV_RAPTORCAST_REQUEST] += 1;
+
+        // drop request if not running as Publisher
+        if self.self_role != PeerDiscoveryRole::ValidatorPublisher {
+            debug!(
+                ?from,
+                "not running as ValidatorPublisher but receiving raptorcast request"
+            );
+            return cmds;
+        }
+
+        if let Some(info) = self.participation_info.get_mut(&from) {
+            info.status = SecondaryRaptorcastConnectionStatus::Connected;
+        } else {
+            debug!("no participation info found for full node");
+            return cmds;
+        }
+
+        // respond to full node raptorcast request
+        self.metrics[GAUGE_PEER_DISC_SEND_RAPTORCAST_RESPONSE] += 1;
+        cmds.push(PeerDiscoveryCommand::RouterCommand {
+            target: from,
+            message: PeerDiscoveryMessage::FullNodeRaptorcastResponse,
+        });
+
+        cmds
+    }
+
+    fn handle_full_node_raptorcast_response(
+        &mut self,
+        from: NodeId<CertificateSignaturePubKey<ST>>,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
+        debug!(?from, "handling full node raptorcast response");
+
+        let cmds = Vec::new();
+
+        // only a full node running as Client mode should receive response
+        if self.self_role != PeerDiscoveryRole::FullNodeClient {
+            debug!("not running as FullNodeClient, dropping full node raptorcast response");
+            return cmds;
+        }
+
+        self.metrics[GAUGE_PEER_DISC_RECV_RAPTORCAST_RESPONSE] += 1;
+
+        // update secondary raptorcast node status
+        if let Some(info) = self.participation_info.get_mut(&from) {
+            if info.status == SecondaryRaptorcastConnectionStatus::Pending {
+                debug!(
+                    ?from,
+                    "received full node raptorcast response, marking as connected"
+                );
+                info.status = SecondaryRaptorcastConnectionStatus::Connected;
+                info.num_retries = 0;
+            } else {
+                debug!(?from, "unexpected full node raptorcast response");
+            }
+        } else {
+            debug!("no participation info found for validator");
+        }
+
+        cmds
+    }
+
     fn refresh(&mut self) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!("refreshing peer discovery");
 
@@ -788,8 +1041,8 @@ where
         let non_participating_nodes: Vec<_> = self
             .participation_info
             .iter()
-            .filter_map(|(node_id, last_participation_round)| {
-                if self.current_round.max(*last_participation_round) - *last_participation_round
+            .filter_map(|(node_id, info)| {
+                if self.current_round.max(info.last_active) - info.last_active
                     >= self.last_participation_prune_threshold
                     && !self.is_pinned_node(node_id)
                 {
@@ -878,7 +1131,20 @@ where
             }
         }
 
-        // TODO: if self is a full node, try to connect to a few current validators if not already connected
+        // if self is a full node, try to connect to a few current validators if not already connected
+        // collect metrics
+        if self.self_role == PeerDiscoveryRole::FullNodeClient {
+            cmds.extend(self.look_for_upstream_validators());
+        } else if self.self_role == PeerDiscoveryRole::ValidatorPublisher {
+            let connected_public_full_nodes = self
+                .participation_info
+                .iter()
+                .filter(|(_, info)| info.status == SecondaryRaptorcastConnectionStatus::Connected)
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>();
+            self.metrics[GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES] =
+                connected_public_full_nodes.len() as u64;
+        }
 
         self.metrics[GAUGE_PEER_DISC_NUM_PEERS] = self.routing_info.len() as u64;
         self.metrics[GAUGE_PEER_DISC_NUM_PENDING_PEERS] = self.pending_queue.len() as u64;
@@ -911,8 +1177,11 @@ where
             self.current_epoch = epoch;
 
             // if a full node gets promoted to a validator, advertise name records to all validators in the current and next epoch
-            if self.self_role == Role::FullNode && self.check_validator_membership(&self.self_id) {
-                self.self_role = Role::Validator;
+            if (self.self_role == PeerDiscoveryRole::FullNodeNone
+                || self.self_role == PeerDiscoveryRole::FullNodeClient)
+                && self.check_validator_membership(&self.self_id)
+            {
+                self.self_role = PeerDiscoveryRole::ValidatorNone;
 
                 let current_validators = self.epoch_validators.get(&epoch);
                 let next_validators = self.epoch_validators.get(&(epoch + Epoch(1)));
@@ -930,9 +1199,11 @@ where
                 }
             }
 
-            if self.self_role == Role::Validator && !self.check_validator_membership(&self.self_id)
+            if (self.self_role == PeerDiscoveryRole::ValidatorNone
+                || self.self_role == PeerDiscoveryRole::ValidatorPublisher)
+                && !self.check_validator_membership(&self.self_id)
             {
-                self.self_role = Role::FullNode;
+                self.self_role = PeerDiscoveryRole::FullNodeNone;
             }
         }
 
@@ -1004,12 +1275,16 @@ where
             }
             self.participation_info
                 .entry(peer)
-                .and_modify(|last_participation_round| {
-                    if *last_participation_round < round {
-                        *last_participation_round = round;
+                .and_modify(|info| {
+                    if info.last_active < round {
+                        info.last_active = round;
                     }
                 })
-                .or_insert_with(|| round);
+                .or_insert_with(|| SecondaryRaptorcastInfo {
+                    status: SecondaryRaptorcastConnectionStatus::None,
+                    num_retries: 0,
+                    last_active: round,
+                });
         }
 
         cmds
@@ -1041,7 +1316,9 @@ where
             .collect()
     }
 
-    fn get_fullnode_addrs(&self) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4> {
+    fn get_secondary_fullnode_addrs(
+        &self,
+    ) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4> {
         let empty = BTreeSet::new();
         let curr_validators = self
             .epoch_validators
@@ -1049,7 +1326,14 @@ where
             .unwrap_or(&empty);
         self.routing_info
             .iter()
-            .filter(|(id, _)| !curr_validators.contains(id))
+            .filter(|(id, _)| {
+                !curr_validators.contains(id)
+                    && self
+                        .participation_info
+                        .get(id)
+                        .map(|p| p.status == SecondaryRaptorcastConnectionStatus::Connected)
+                        .unwrap_or(false)
+            })
             .map(|(id, name_record)| (*id, name_record.address()))
             .collect()
     }
@@ -1106,6 +1390,7 @@ mod tests {
         peer_keys: Vec<&KeyPairType>,
     ) -> PeerDiscovery<SignatureType> {
         let routing_info = peer_keys
+            .clone()
             .into_iter()
             .map(|key| {
                 let node_id = NodeId::new(key.pubkey());
@@ -1113,17 +1398,29 @@ mod tests {
                 (node_id, name_record)
             })
             .collect::<BTreeMap<_, _>>();
+        let participation_info = peer_keys
+            .into_iter()
+            .map(|key| {
+                let node_id = NodeId::new(key.pubkey());
+                let status = SecondaryRaptorcastConnectionStatus::None;
+                (node_id, SecondaryRaptorcastInfo {
+                    status,
+                    num_retries: 0,
+                    last_active: Round(0),
+                })
+            })
+            .collect::<BTreeMap<_, _>>();
 
         PeerDiscovery {
             self_id: NodeId::new(self_key.pubkey()),
             self_record: generate_name_record(self_key, 0),
-            self_role: Role::FullNode,
+            self_role: PeerDiscoveryRole::FullNodeNone,
             current_round: Round(1),
             current_epoch: Epoch(1),
             epoch_validators: BTreeMap::new(),
             pinned_full_nodes: BTreeSet::new(),
             routing_info,
-            participation_info: BTreeMap::new(),
+            participation_info,
             pending_queue: BTreeMap::new(),
             outstanding_lookup_requests: HashMap::new(),
             metrics: ExecutorMetrics::default(),
@@ -1209,7 +1506,7 @@ mod tests {
         // send ping to peer1
         let ping = Ping {
             id: 12345,
-            local_name_record: Some(state.self_record),
+            local_name_record: state.self_record,
         };
         let cmds = state.send_ping(peer1_pubkey, DUMMY_ADDR, ping);
 
@@ -1239,7 +1536,7 @@ mod tests {
         let mut state = generate_test_state(peer0, vec![peer1]);
         let last_ping = Ping {
             id: 12345,
-            local_name_record: Some(generate_name_record(peer0, 0)),
+            local_name_record: generate_name_record(peer0, 0),
         };
         state.pending_queue.insert(peer1_pubkey, ConnectionInfo {
             last_ping,
@@ -1269,7 +1566,7 @@ mod tests {
         let name_record = generate_name_record(peer1, 0);
         let ping = Ping {
             id: 12345,
-            local_name_record: Some(name_record),
+            local_name_record: name_record,
         };
         let cmds = state.handle_ping(peer1_pubkey, ping);
 
@@ -1279,7 +1576,7 @@ mod tests {
         let ping = extract_ping(cmds.clone());
         assert_eq!(ping.len(), 1);
         assert_eq!(ping[0].0, peer1_pubkey);
-        assert_eq!(ping[0].1.local_name_record, Some(state.self_record));
+        assert_eq!(ping[0].1.local_name_record, state.self_record);
 
         let pong = extract_pong(cmds);
         assert_eq!(pong.len(), 1);
@@ -1377,7 +1674,7 @@ mod tests {
         let ping = extract_ping(cmds);
         assert_eq!(ping.len(), 1);
         assert_eq!(ping[0].0, peer2_pubkey);
-        assert_eq!(ping[0].1.local_name_record, Some(state.self_record));
+        assert_eq!(ping[0].1.local_name_record, state.self_record);
 
         // peer2 should be added to routing_info after receiving corresponding pong
         state.handle_pong(peer2_pubkey, Pong {
@@ -1402,7 +1699,7 @@ mod tests {
 
         // routing_info contains peer1 and peer2
         let mut state = generate_test_state(peer0, vec![peer1, peer2]);
-        state.self_role = Role::Validator;
+        state.self_role = PeerDiscoveryRole::ValidatorNone;
         state
             .epoch_validators
             .insert(Epoch(1), BTreeSet::from([peer1_pubkey, peer2_pubkey]));
@@ -1455,7 +1752,7 @@ mod tests {
         let pings = extract_ping(cmds);
         assert_eq!(pings.len(), 1);
         assert_eq!(pings[0].0, peer1_pubkey);
-        assert_eq!(pings[0].1.local_name_record, Some(state.self_record));
+        assert_eq!(pings[0].1.local_name_record, state.self_record);
         assert_eq!(
             state.pending_queue.get(&peer1_pubkey).unwrap(),
             &ConnectionInfo {
@@ -1549,7 +1846,7 @@ mod tests {
         let pending_queue = BTreeMap::from([(peer1_pubkey, ConnectionInfo {
             last_ping: Ping {
                 id: ping_id,
-                local_name_record: Some(state.self_record),
+                local_name_record: state.self_record,
             },
             unresponsive_pings: 5,
             name_record: generate_name_record(peer1, 0),
@@ -1576,9 +1873,9 @@ mod tests {
         assert!(state.outstanding_lookup_requests.is_empty());
     }
 
-    #[test_case(Role::FullNode; "peer full node")]
-    #[test_case(Role::Validator; "peer validator")]
-    fn test_non_participating_full_node(role: Role) {
+    #[test_case(PeerDiscoveryRole::FullNodeNone; "peer full node")]
+    #[test_case(PeerDiscoveryRole::ValidatorNone; "peer validator")]
+    fn test_non_participating_full_node(role: PeerDiscoveryRole) {
         let keys = create_keys::<SignatureType>(2);
         let peer0 = &keys[0];
         let peer1 = &keys[1];
@@ -1586,12 +1883,18 @@ mod tests {
 
         let mut state = generate_test_state(peer0, vec![peer1]);
         state.last_participation_prune_threshold = Round(10);
-        if role == Role::Validator {
+        if role == PeerDiscoveryRole::ValidatorNone {
             state
                 .epoch_validators
                 .insert(Epoch(1), BTreeSet::from([peer1_pubkey]));
         }
-        state.participation_info.insert(peer1_pubkey, Round(1));
+        state
+            .participation_info
+            .insert(peer1_pubkey, SecondaryRaptorcastInfo {
+                status: SecondaryRaptorcastConnectionStatus::None,
+                num_retries: 0,
+                last_active: Round(1),
+            });
 
         state.refresh();
         assert!(state.routing_info.contains_key(&peer1_pubkey));
@@ -1601,16 +1904,17 @@ mod tests {
         state.update_current_round(Round(15), Epoch(1));
         state.refresh();
         match role {
-            Role::FullNode => {
+            PeerDiscoveryRole::FullNodeNone => {
                 // full node should be pruned
                 assert!(!state.routing_info.contains_key(&peer1_pubkey));
                 assert!(!state.participation_info.contains_key(&peer1_pubkey));
             }
-            Role::Validator => {
+            PeerDiscoveryRole::ValidatorNone => {
                 // validator should not be pruned
                 assert!(state.routing_info.contains_key(&peer1_pubkey));
                 assert!(state.participation_info.contains_key(&peer1_pubkey));
             }
+            _ => {}
         }
     }
 
@@ -1693,7 +1997,7 @@ mod tests {
         // peer2 is a validator, it is added to pending queue although already exceeding max number of peers
         let cmds = state.handle_ping(peer2_pubkey, Ping {
             id: 2,
-            local_name_record: Some(generate_name_record(peer2, 0)),
+            local_name_record: generate_name_record(peer2, 0),
         });
         assert!(state.pending_queue.contains_key(&peer2_pubkey));
         let cmds = extract_ping(cmds);
@@ -1703,7 +2007,7 @@ mod tests {
         // peer3 is a pinned full node, it is also added to pending queue
         let cmds = state.handle_ping(peer3_pubkey, Ping {
             id: 3,
-            local_name_record: Some(generate_name_record(peer3, 0)),
+            local_name_record: generate_name_record(peer3, 0),
         });
         assert!(state.pending_queue.contains_key(&peer3_pubkey));
         let cmds = extract_ping(cmds);
@@ -1713,7 +2017,7 @@ mod tests {
         // peer4 is a full node, it is not added to pending queue
         let cmds = state.handle_ping(peer4_pubkey, Ping {
             id: 4,
-            local_name_record: Some(generate_name_record(peer4, 0)),
+            local_name_record: generate_name_record(peer4, 0),
         });
         assert!(!state.pending_queue.contains_key(&peer4_pubkey));
         let cmds = extract_ping(cmds);
@@ -1746,12 +2050,12 @@ mod tests {
         };
 
         let mut state = generate_test_state(peer0, vec![]);
-        state.self_role = Role::Validator;
+        state.self_role = PeerDiscoveryRole::ValidatorNone;
         state.routing_info = routing_info;
 
         let cmds = state.handle_ping(peer1_pubkey, Ping {
             id: 7,
-            local_name_record: Some(MonadNameRecord::new(incoming_record, peer1)),
+            local_name_record: MonadNameRecord::new(incoming_record, peer1),
         });
 
         if expected_pong {
@@ -1778,22 +2082,70 @@ mod tests {
     }
 
     #[test]
-    fn test_get_fullnode_addrs() {
-        let keys = create_keys::<SignatureType>(3);
+    fn test_publisher_participation_info() {
+        let keys = create_keys::<SignatureType>(2);
         let peer0 = &keys[0];
         let peer1 = &keys[1];
-        let peer2 = &keys[2];
         let peer1_pubkey = NodeId::new(peer1.pubkey());
-        let peer2_pubkey = NodeId::new(peer2.pubkey());
 
-        let mut state = generate_test_state(peer0, vec![peer1, peer2]);
+        let mut state = generate_test_state(peer0, vec![peer1]);
+
+        // do not respond to full node raptorcast request if self is not a validator publisher
+        state.self_role = PeerDiscoveryRole::ValidatorNone;
+        let cmds = state.handle_full_node_raptorcast_request(peer1_pubkey);
+        assert_eq!(cmds.len(), 0);
+        assert_eq!(state.get_secondary_fullnode_addrs(), HashMap::new());
+
+        // after receiving a full node raptorcast request from peer1,
+        // it should mark it as connected
+        state.self_role = PeerDiscoveryRole::ValidatorPublisher;
+        let cmds = state.handle_full_node_raptorcast_request(peer1_pubkey);
+        assert!(state.participation_info.contains_key(&peer1_pubkey));
+        assert_eq!(
+            state.participation_info.get(&peer1_pubkey).unwrap().status,
+            SecondaryRaptorcastConnectionStatus::Connected
+        );
+        assert_eq!(cmds.len(), 1);
+        assert!(matches!(cmds[0], PeerDiscoveryCommand::RouterCommand {
+            target: _,
+            message: PeerDiscoveryMessage::FullNodeRaptorcastResponse
+        }));
+        assert_eq!(
+            state.get_secondary_fullnode_addrs(),
+            HashMap::from([(peer1_pubkey, generate_name_record(peer1, 0).address())])
+        );
+    }
+
+    #[test]
+    fn test_client_participation_info() {
+        let keys = create_keys::<SignatureType>(2);
+        let peer0 = &keys[0];
+        let peer1 = &keys[1];
+        let peer1_pubkey = NodeId::new(peer1.pubkey());
+
+        let mut state = generate_test_state(peer0, vec![peer1]);
         state
             .epoch_validators
-            .insert(Epoch(1), BTreeSet::from([peer1_pubkey]));
+            .insert(state.current_epoch, BTreeSet::from([peer1_pubkey]));
 
-        let addrs = state.get_fullnode_addrs();
-        assert_eq!(addrs.len(), 1);
-        assert!(!addrs.contains_key(&peer1_pubkey));
-        assert!(addrs.contains_key(&peer2_pubkey));
+        // do not look for upstream validator if running as None in secondary raptorcast
+        state.self_role = PeerDiscoveryRole::FullNodeNone;
+        let cmds = state.refresh();
+        assert_eq!(cmds.len(), 3); // 2 timer commands and 1 metrics command
+
+        // look for upstream validator if running as a Client in secondary raptorcast
+        state.self_role = PeerDiscoveryRole::FullNodeClient;
+        state.refresh();
+        assert_eq!(
+            state.participation_info.get(&peer1_pubkey).unwrap().status,
+            SecondaryRaptorcastConnectionStatus::Pending
+        );
+
+        // when it receives the response, the status becomes connected
+        state.handle_full_node_raptorcast_response(peer1_pubkey);
+        assert_eq!(
+            state.participation_info.get(&peer1_pubkey).unwrap().status,
+            SecondaryRaptorcastConnectionStatus::Connected
+        );
     }
 }

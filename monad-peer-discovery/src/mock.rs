@@ -163,6 +163,33 @@ where
         Vec::new()
     }
 
+    fn send_full_node_raptorcast_request(
+        &mut self,
+        to: NodeId<CertificateSignaturePubKey<ST>>,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
+        debug!(?to, "sending full node raptorcast request");
+
+        Vec::new()
+    }
+
+    fn handle_full_node_raptorcast_request(
+        &mut self,
+        from: NodeId<CertificateSignaturePubKey<ST>>,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
+        debug!(?from, "handling full node raptorcast request");
+
+        Vec::new()
+    }
+
+    fn handle_full_node_raptorcast_response(
+        &mut self,
+        from: NodeId<CertificateSignaturePubKey<ST>>,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
+        debug!(?from, "handling full node raptorcast response");
+
+        Vec::new()
+    }
+
     fn refresh(&mut self) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!("pruning unresponsive peer nodes");
 
@@ -229,7 +256,9 @@ where
         self.known_addresses.clone()
     }
 
-    fn get_fullnode_addrs(&self) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4> {
+    fn get_secondary_fullnode_addrs(
+        &self,
+    ) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4> {
         HashMap::new()
     }
 
