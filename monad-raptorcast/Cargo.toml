@@ -21,7 +21,6 @@ monad-secp = { workspace = true }
 monad-types = { workspace = true }
 monad-validator = { workspace = true }
 
-alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 bitvec = { workspace = true }
 bytes = { workspace = true }

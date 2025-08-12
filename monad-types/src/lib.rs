@@ -584,6 +584,14 @@ impl SubAssign for Stake {
     }
 }
 
+impl Div<Stake> for Stake {
+    type Output = f64;
+
+    fn div(self, rhs: Stake) -> f64 {
+        f64::from(self.0) / f64::from(rhs.0)
+    }
+}
+
 impl std::iter::Sum for Stake {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
         iter.fold(Stake::ZERO, |a, b| a + b)

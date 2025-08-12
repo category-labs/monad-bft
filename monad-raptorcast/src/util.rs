@@ -13,7 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeMap, fmt};
+use std::{
+    collections::{BTreeMap, HashSet},
+    fmt,
+};
 
 use fixed::{types::extra::U11, FixedU16};
 use itertools::Itertools;
@@ -23,12 +26,12 @@ use monad_crypto::{
 };
 use monad_types::{Epoch, NodeId, Round, RoundSpan, Stake};
 
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct EpochValidators<ST>
 where
     ST: CertificateSignatureRecoverable,
 {
-    pub validators: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Validator>,
+    pub validators: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Stake>,
 }
 
 impl<ST> EpochValidators<ST>
@@ -38,47 +41,69 @@ where
     /// Returns a view of the validator set without a given node. On ValidatorsView being dropped,
     /// the validator set is reverted back to normal.
     pub fn view_without(
-        &mut self,
+        &self,
         without: Vec<&NodeId<CertificateSignaturePubKey<ST>>>,
-    ) -> ValidatorsView<ST> {
-        let mut removed = Vec::new();
-        for without in without {
-            if let Some(removed_validator) = self.validators.remove(without) {
-                removed.push((*without, removed_validator));
-            }
-        }
+    ) -> ValidatorsView<'_, ST> {
         ValidatorsView {
-            view: &mut self.validators,
-            removed,
+            view: &self.validators,
+            without: without.into_iter().cloned().collect(),
         }
+    }
+
+    pub fn get(&self, node_id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<Stake> {
+        self.validators.get(node_id).copied()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.validators.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.validators.len()
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ValidatorsView<'a, ST>
 where
     ST: CertificateSignatureRecoverable,
 {
-    view: &'a mut BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Validator>,
-    removed: Vec<(NodeId<CertificateSignaturePubKey<ST>>, Validator)>,
+    view: &'a BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Stake>,
+    without: HashSet<NodeId<CertificateSignaturePubKey<ST>>>,
 }
+
 impl<ST> ValidatorsView<'_, ST>
 where
     ST: CertificateSignatureRecoverable,
 {
-    pub fn view(&self) -> &BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Validator> {
+    pub fn iter(
+        &self,
+    ) -> impl Iterator<Item = (&NodeId<CertificateSignaturePubKey<ST>>, Stake)> + '_ {
         self.view
+            .iter()
+            .filter(|(id, _)| !self.without.contains(id))
+            .map(|(id, stake)| (id, *stake))
     }
-}
 
-impl<ST> Drop for ValidatorsView<'_, ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
-    fn drop(&mut self) {
-        while let Some((without, removed_validator)) = self.removed.pop() {
-            self.view.insert(without, removed_validator);
+    pub fn iter_nodes(&self) -> impl Iterator<Item = &NodeId<CertificateSignaturePubKey<ST>>> + '_ {
+        self.view
+            .keys()
+            .filter(move |id| !self.without.contains(id))
+    }
+
+    pub fn len(&self) -> usize {
+        if self.without.is_empty() {
+            return self.view.len();
         }
+        self.iter().count()
+    }
+
+    pub fn total_stake(&self) -> Stake {
+        self.iter().map(|(_, stake)| stake).sum()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.view.is_empty() || self.len() == 0
     }
 }
 
@@ -109,33 +134,89 @@ impl<P: PubKey> FullNodes<P> {
 pub struct FullNodesView<'a, P: PubKey>(&'a Vec<NodeId<P>>);
 
 impl<P: PubKey> FullNodesView<'_, P> {
-    pub fn view(&self) -> &Vec<NodeId<P>> {
-        self.0
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &NodeId<P>> + '_ {
+        self.0.iter()
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct Validator {
-    pub stake: Stake,
+pub enum NodesView<'a, ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    Validators(ValidatorsView<'a, ST>),
+    FullNodes(FullNodesView<'a, CertificateSignaturePubKey<ST>>),
+}
+
+impl<'a, ST> From<ValidatorsView<'a, ST>> for NodesView<'a, ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    fn from(view: ValidatorsView<'a, ST>) -> Self {
+        NodesView::Validators(view)
+    }
+}
+
+impl<'a, ST> From<FullNodesView<'a, CertificateSignaturePubKey<ST>>> for NodesView<'a, ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    fn from(view: FullNodesView<'a, CertificateSignaturePubKey<ST>>) -> Self {
+        NodesView::FullNodes(view)
+    }
+}
+
+impl<'a, ST> NodesView<'a, ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    pub fn len(&self) -> usize {
+        match self {
+            NodesView::Validators(view) => view.len(),
+            NodesView::FullNodes(view) => view.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        match self {
+            NodesView::Validators(view) => view.is_empty(),
+            NodesView::FullNodes(view) => view.is_empty(),
+        }
+    }
+
+    pub fn iter(&self) -> Box<dyn Iterator<Item = &NodeId<CertificateSignaturePubKey<ST>>> + '_> {
+        match self {
+            NodesView::Validators(view) => Box::new(view.iter_nodes()),
+            NodesView::FullNodes(view) => Box::new(view.iter()),
+        }
+    }
 }
 
 // Argument for raptorcast send
 #[derive(Debug)]
 pub enum BuildTarget<'a, ST: CertificateSignatureRecoverable> {
+    // raptorcast to a set of nodes without stake-based distribution
+    // of chunks.
     Broadcast(
         // validator stakes for given epoch_no, not including self
         // this MUST NOT BE EMPTY
-        ValidatorsView<'a, ST>,
+        NodesView<'a, ST>,
     ),
+    // raptorcast to a set of validators, chunks distributed by their
+    // proportion of stakes.
     Raptorcast(
-        (
-            // validator stakes for given epoch_no, not including self
-            // this MUST NOT BE EMPTY
-            // Contains Stake information per validator node id
-            ValidatorsView<'a, ST>,
-            // Dedicated full-nodes (rather than priority nodes)
-            FullNodesView<'a, CertificateSignaturePubKey<ST>>,
-        ),
+        // validator stakes for given epoch_no, not including self
+        // this MUST NOT BE EMPTY
+        // Contains Stake information per validator node id
+        ValidatorsView<'a, ST>,
     ),
     // sharded raptor-aware broadcast
     PointToPoint(&'a NodeId<CertificateSignaturePubKey<ST>>),
@@ -161,6 +242,12 @@ impl<const N: usize> std::fmt::Debug for HexBytes<N> {
             write!(f, "{:02x}", byte)?;
         }
         Ok(())
+    }
+}
+
+impl<const N: usize> HexBytes<N> {
+    pub fn as_slice(&self) -> &[u8; N] {
+        &self.0
     }
 }
 

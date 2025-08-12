@@ -56,9 +56,7 @@ use monad_validator::signature_collection::SignatureCollection;
 use raptorcast_secondary::group_message::FullNodesGroupMessage;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, debug_span, error, warn};
-use util::{
-    BuildTarget, EpochValidators, FullNodes, Group, ReBroadcastGroupMap, Redundancy, Validator,
-};
+use util::{BuildTarget, EpochValidators, FullNodes, Group, ReBroadcastGroupMap, Redundancy};
 
 pub mod config;
 pub mod message;
@@ -185,6 +183,10 @@ where
             self.channel_from_secondary = Some(channel_from_secondary);
         }
         self
+    }
+
+    pub fn set_dedicated_full_nodes(&mut self, nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>) {
+        self.dedicated_full_nodes = FullNodes::new(nodes);
     }
 
     fn enqueue_message_to_self(
@@ -366,31 +368,20 @@ where
                     self.rebroadcast_map
                         .push_group_validator_set(validator_set.clone(), epoch);
                     if let Some(epoch_validators) = self.epoch_validators.get(&epoch) {
-                        assert_eq!(validator_set.len(), epoch_validators.validators.len());
-                        assert!(validator_set.clone().into_iter().all(
-                            |(validator_key, validator_stake)| epoch_validators
-                                .validators
-                                .get(&validator_key)
-                                .map(|v| v.stake)
-                                == Some(validator_stake)
-                        ));
+                        assert_eq!(validator_set.len(), epoch_validators.len());
+
+                        assert!(validator_set
+                            .iter()
+                            .all(|(validator_key, validator_stake)| {
+                                epoch_validators.get(validator_key) == Some(*validator_stake)
+                            }));
+
                         warn!("duplicate validator set update (this is safe but unexpected)")
                     } else {
                         let removed = self.epoch_validators.insert(
                             epoch,
                             EpochValidators {
-                                validators: validator_set
-                                    .clone()
-                                    .into_iter()
-                                    .map(|(validator_key, validator_stake)| {
-                                        (
-                                            validator_key,
-                                            Validator {
-                                                stake: validator_stake,
-                                            },
-                                        )
-                                    })
-                                    .collect(),
+                                validators: validator_set.clone().into_iter().collect(),
                             },
                         );
                         assert!(removed.is_none());
@@ -398,7 +389,7 @@ where
                     self.peer_discovery_driver.lock().unwrap().update(
                         PeerDiscoveryEvent::UpdateValidatorSet {
                             epoch,
-                            validators: validator_set.into_iter().map(|(id, _)| id).collect(),
+                            validators: validator_set.iter().map(|(id, _)| *id).collect(),
                         },
                     );
                 }
@@ -437,11 +428,8 @@ where
                             }
                             let epoch_validators_without_self =
                                 epoch_validators.view_without(vec![&self_id]);
-                            let full_nodes_view = self.dedicated_full_nodes.view();
 
-                            if epoch_validators_without_self.view().is_empty()
-                                && full_nodes_view.view().is_empty()
-                            {
+                            if epoch_validators_without_self.is_empty() {
                                 // this is degenerate case where the only
                                 // validator is self and we have no full nodes
                                 // to forward
@@ -450,12 +438,11 @@ where
 
                             let build_target = match &target {
                                 RouterTarget::Broadcast(_) => {
-                                    BuildTarget::Broadcast(epoch_validators_without_self)
+                                    BuildTarget::Broadcast(epoch_validators_without_self.into())
                                 }
-                                RouterTarget::Raptorcast(_) => BuildTarget::Raptorcast((
-                                    epoch_validators_without_self,
-                                    full_nodes_view,
-                                )),
+                                RouterTarget::Raptorcast(_) => {
+                                    BuildTarget::Raptorcast(epoch_validators_without_self)
+                                }
                                 _ => unreachable!(),
                             };
                             let outbound_message =
@@ -535,7 +522,56 @@ where
                         }
                     };
                 }
-                RouterCommand::PublishToFullNodes { .. } => {}
+                RouterCommand::PublishToFullNodes { epoch, message } => {
+                    let full_nodes_view = self.dedicated_full_nodes.view();
+                    if self.is_dynamic_fullnode {
+                        debug!("self is dynamic full node, skipping publishing to full nodes");
+                        continue;
+                    }
+
+                    // self as a dedicated full node will have empty
+                    // full_nodes_view, so it won't attempt to
+                    // publish.
+                    if full_nodes_view.is_empty() {
+                        debug!("full_nodes view empty, skipping publishing to full nodes");
+                        continue;
+                    }
+
+                    let app_message =
+                        OutboundRouterMessage::<OM, ST>::AppMessage(message).try_serialize();
+                    let outbound_message = match app_message {
+                        Ok(msg) => msg,
+                        Err(err) => {
+                            error!(?err, "failed to serialize a message");
+                            continue;
+                        }
+                    };
+
+                    let node_addrs = self
+                        .peer_discovery_driver
+                        .lock()
+                        .unwrap()
+                        .get_known_addresses();
+                    for node in full_nodes_view.iter() {
+                        if !node_addrs.contains_key(node) {
+                            continue;
+                        }
+
+                        // TODO: optimize the build of copies of the
+                        // same message to multiple recipients.
+                        let build_target = BuildTarget::PointToPoint(node);
+                        let rc_chunks: UnicastMsg = Self::udp_build(
+                            &epoch,
+                            build_target,
+                            outbound_message.clone(),
+                            self.mtu,
+                            &self.signing_key,
+                            self.redundancy,
+                            &node_addrs,
+                        );
+                        self.dataplane_writer.udp_write_unicast(rc_chunks);
+                    }
+                }
                 RouterCommand::GetPeers => {
                     let name_records = self
                         .peer_discovery_driver
@@ -666,14 +702,6 @@ where
 
                         this.dataplane_writer.udp_write_broadcast(BroadcastMsg {
                             targets: target_addrs,
-                            payload,
-                            stride: bcast_stride,
-                        });
-                    },
-                    |payload, bcast_stride| {
-                        // Callback for forwarding chunks to full nodes
-                        this.dataplane_writer.udp_write_broadcast(BroadcastMsg {
-                            targets: full_node_addrs.clone(),
                             payload,
                             stride: bcast_stride,
                         });
