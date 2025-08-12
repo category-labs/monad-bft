@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{fmt::Debug, ops::Deref};
+use std::{fmt::Debug, hash::BuildHasher, ops::Deref};
 
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use auto_impl::auto_impl;
@@ -72,6 +72,11 @@ where
     pub execution_inputs: EPT::ProposedHeader,
     /// identifier for the transaction payload of this block
     pub block_body_id: ConsensusBlockBodyId,
+
+    // Base fee update rule
+    pub base_fee: u64,
+    pub base_fee_trend: u64,
+    pub base_fee_moment: u64,
 }
 
 impl<ST, SCT, EPT> ConsensusBlockHeader<ST, SCT, EPT>
@@ -107,6 +112,9 @@ where
             .field("seq_num", &self.seq_num)
             .field("timestamp_ns", &self.timestamp_ns)
             .field("id", &self.get_id())
+            .field("base_fee", &f64::from_bits(self.base_fee))
+            .field("base_fee_trend", &f64::from_bits(self.base_fee_trend))
+            .field("base_fee_moment", &f64::from_bits(self.base_fee_moment))
             .finish_non_exhaustive()
     }
 }
@@ -129,6 +137,9 @@ where
         seq_num: SeqNum,
         timestamp_ns: u128,
         round_signature: RoundSignature<SCT::SignatureType>,
+        base_fee: u64,
+        base_fee_trend: u64,
+        base_fee_moment: u64,
     ) -> Self {
         Self {
             author,
@@ -141,6 +152,9 @@ where
             seq_num,
             timestamp_ns,
             round_signature,
+            base_fee,
+            base_fee_trend,
+            base_fee_moment,
         }
     }
 }
@@ -370,6 +384,15 @@ where
     }
     pub fn get_timestamp(&self) -> u128 {
         self.header.timestamp_ns
+    }
+    pub fn get_base_fee(&self) -> u64 {
+        self.header.base_fee
+    }
+    pub fn get_base_fee_trend(&self) -> u64 {
+        self.header.base_fee_trend
+    }
+    pub fn get_base_fee_moment(&self) -> u64 {
+        self.header.base_fee_moment
     }
     pub fn get_author(&self) -> &NodeId<CertificateSignaturePubKey<ST>> {
         &self.header.author

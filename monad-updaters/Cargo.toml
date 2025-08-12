@@ -30,6 +30,7 @@ sorted-vec = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"], optional = true }
 toml = { workspace = true }
 tracing = { workspace = true }
+monad-tfm.workspace = true
 
 [dev-dependencies]
 ntest = { workspace = true }

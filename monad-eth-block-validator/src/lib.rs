@@ -35,9 +35,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_block_policy::{
     compute_txn_max_value, static_validate_transaction, EthBlockPolicy, EthValidatedBlock,
 };
-use monad_eth_types::{
-    EthBlockBody, EthExecutionProtocol, Nonce, ProposedEthHeader, BASE_FEE_PER_GAS,
-};
+use monad_eth_types::{EthBlockBody, EthExecutionProtocol, Nonce, ProposedEthHeader};
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -81,6 +79,7 @@ where
         tx_limit: usize,
         proposal_gas_limit: u64,
         proposal_byte_limit: u64,
+        base_fee: u64,
         max_code_size: usize,
     ) -> Result<(ValidatedTxns, NonceMap, TxnFeeMap), BlockValidationError> {
         let EthBlockBody {
@@ -130,9 +129,7 @@ where
                 return Err(BlockValidationError::TxnError);
             }
 
-            // TODO(kai): currently block base fee is hardcoded
-            // update this when base fee is included in consensus proposal
-            if eth_txn.max_fee_per_gas() < BASE_FEE_PER_GAS.into() {
+            if eth_txn.max_fee_per_gas() < base_fee.into() {
                 return Err(BlockValidationError::TxnError);
             }
 
@@ -240,9 +237,6 @@ where
         if extra_data != &[0_u8; 32] {
             return Err(BlockValidationError::HeaderError);
         }
-        if base_fee_per_gas != &BASE_FEE_PER_GAS {
-            return Err(BlockValidationError::HeaderError);
-        }
         if blob_gas_used != &0 {
             return Err(BlockValidationError::HeaderError);
         }
@@ -295,6 +289,7 @@ where
             tx_limit,
             proposal_gas_limit,
             proposal_byte_limit,
+            header.base_fee,
             max_code_size,
         ) {
             let block = ConsensusFullBlock::new(header, body)?;

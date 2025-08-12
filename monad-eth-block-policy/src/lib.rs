@@ -271,6 +271,11 @@ struct CommittedBlock {
 
     nonces: BlockAccountNonce,
     fees: BlockTxnFees,
+
+    base_fee: u64,
+    base_fee_trend: u64,
+    base_fee_moment: u64,
+    block_tx_gas_limit: u64,
 }
 
 #[derive(Debug)]
@@ -356,6 +361,12 @@ where
             assert_eq!(self.blocks.len(), self.size);
         }
 
+        let block_tx_gas_limit = block
+            .validated_txns
+            .iter()
+            .map(|txn| txn.gas_limit())
+            .sum::<u64>();
+
         assert!(self
             .blocks
             .insert(
@@ -368,7 +379,12 @@ where
                     },
                     fees: BlockTxnFees {
                         txn_fees: block.txn_fees.clone()
-                    }
+                    },
+
+                    base_fee: block.block.header().base_fee,
+                    base_fee_trend: block.block.header().base_fee_trend,
+                    base_fee_moment: block.block.header().base_fee_moment,
+                    block_tx_gas_limit,
                 },
             )
             .is_none());
@@ -634,6 +650,88 @@ where
         Ok(account_balances)
     }
 
+    fn get_parent_base_fee_fields(
+        &self,
+        extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
+    ) -> (u64, u64, u64, u64) {
+        // parent block is last block in extending_blocks or last_committed
+        // block if there's no extending branch
+        let (parent_base_fee, parent_trend, parent_moment, parent_tx_gas_limit) =
+            if let Some(parent_block) = extending_blocks.last() {
+                let parent_tx_gas_limit = parent_block
+                    .validated_txns
+                    .iter()
+                    .map(|txn| txn.gas_limit())
+                    .sum::<u64>();
+                (
+                    parent_block.header().base_fee,
+                    parent_block.header().base_fee_trend,
+                    parent_block.header().base_fee_moment,
+                    parent_tx_gas_limit,
+                )
+            } else {
+                // genesis block doesn't exist in committed_cache
+                // when upgrading, we treat the fork block as genesis block
+                if self.last_commit == GENESIS_SEQ_NUM {
+                    // genesis block
+                    (
+                        monad_tfm::base_fee::GENESIS_BASE_FEE,
+                        monad_tfm::base_fee::GENESIS_BASE_FEE_TREND,
+                        monad_tfm::base_fee::GENESIS_BASE_FEE_MOMENT,
+                        0,
+                    )
+                } else {
+                    let parent_block = self
+                        .committed_cache
+                        .blocks
+                        .get(&self.last_commit)
+                        .expect("last committed block must exist");
+                    (
+                        parent_block.base_fee,
+                        parent_block.base_fee_trend,
+                        parent_block.base_fee_moment,
+                        parent_block.block_tx_gas_limit,
+                    )
+                }
+            };
+
+        (
+            parent_base_fee,
+            parent_trend,
+            parent_moment,
+            parent_tx_gas_limit,
+        )
+    }
+
+    // TODO: introduce chain config to block policy to make parameters
+    // configurable
+    const BLOCK_GAS_LIMIT: u64 = 150_000_000;
+
+    /// return value
+    ///
+    /// base_fee
+    ///
+    /// base_fee_trend, base_fee_moment: floating value bit representation. It
+    /// should not be operated on outside of tfm module
+    ///
+    /// unit: MON-wei
+    pub fn compute_base_fee(
+        &self,
+        extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
+    ) -> (u64, u64, u64) {
+        let (parent_base_fee, parent_trend, parent_moment, parent_tx_gas_limit) =
+            self.get_parent_base_fee_fields(extending_blocks);
+
+        // TODO: base fee fields are optional in header (empty pre fork)
+        monad_tfm::base_fee::compute_base_fee(
+            Self::BLOCK_GAS_LIMIT,
+            parent_tx_gas_limit,
+            parent_base_fee,
+            parent_trend,
+            parent_moment,
+        )
+    }
+
     pub fn get_chain_id(&self) -> u64 {
         self.chain_id
     }
@@ -705,6 +803,33 @@ where
                 "block not coherent, execution result mismatch"
             );
             return Err(BlockPolicyError::ExecutionResultMismatch);
+        }
+
+        // verify base_fee fields
+        let (base_fee, base_fee_trend, base_fee_moment) = self.compute_base_fee(&extending_blocks);
+        if base_fee != block.header().base_fee {
+            warn!(
+                seq_num =? block.header().seq_num,
+                round =? block.header().block_round,
+                "block not coherent, base_fee mismatch"
+            );
+            return Err(BlockPolicyError::BlockNotCoherent);
+        }
+        if base_fee_trend != block.header().base_fee_trend {
+            warn!(
+                seq_num =? block.header().seq_num,
+                round =? block.header().block_round,
+                "block not coherent, base_fee_trend mismatch"
+            );
+            return Err(BlockPolicyError::BlockNotCoherent);
+        }
+        if base_fee_moment != block.header().base_fee_moment {
+            warn!(
+                seq_num =? block.header().seq_num,
+                round =? block.header().block_round,
+                "block not coherent, base_fee_moment mismatch"
+            );
+            return Err(BlockPolicyError::BlockNotCoherent);
         }
 
         // TODO fix this unnecessary copy into a new vec to generate an owned Address

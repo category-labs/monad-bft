@@ -157,6 +157,9 @@ where
             seq_num,
             self.timestamp,
             round_signature,
+            monad_tfm::base_fee::MIN_BASE_FEE,
+            monad_tfm::base_fee::GENESIS_BASE_FEE_TREND,
+            monad_tfm::base_fee::GENESIS_BASE_FEE_MOMENT,
         );
 
         let validator_cert_pubkeys = val_epoch_map

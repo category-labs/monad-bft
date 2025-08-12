@@ -23,7 +23,7 @@ use monad_types::{ExecutionProtocol, FinalizedHeader, SeqNum};
 pub mod serde;
 
 pub const EMPTY_RLP_TX_LIST: u8 = 0xc0;
-pub const BASE_FEE_PER_GAS: u64 = 50_000_000_000;
+// pub const BASE_FEE_PER_GAS: u64 = 50_000_000_000;
 
 pub type Nonce = u64;
 pub type Balance = U256;

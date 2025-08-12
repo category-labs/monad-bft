@@ -1744,6 +1744,7 @@ where
 
                 // building a proposal off the pending branch or against the root of the blocktree if
                 // there is no branch
+                // FIXME: base fee fields are optional
                 let (try_propose_seq_num, timestamp_ns) =
                     if let Some(extending_block) = pending_blocktree_blocks.last() {
                         (
@@ -1752,8 +1753,9 @@ where
                                 .get_valid_block_timestamp(extending_block.get_timestamp()),
                         )
                     } else {
+                        let root = self.consensus.pending_block_tree.root();
                         (
-                            self.consensus.pending_block_tree.root().seq_num + SeqNum(1),
+                            root.seq_num + SeqNum(1),
                             self.block_timestamp.get_valid_block_timestamp(
                                 self.consensus.pending_block_tree.root().timestamp_ns,
                             ),
@@ -1820,6 +1822,7 @@ where
 
                     beneficiary: *self.beneficiary,
                     timestamp_ns,
+
                     extending_blocks: pending_blocktree_blocks.into_iter().cloned().collect(),
                     delayed_execution_results,
                 });
@@ -1918,7 +1921,7 @@ mod test {
     use monad_eth_block_policy::EthBlockPolicy;
     use monad_eth_block_validator::EthValidator;
     use monad_eth_types::{
-        Balance, EthBlockBody, EthExecutionProtocol, EthHeader, ProposedEthHeader, BASE_FEE_PER_GAS,
+        Balance, EthBlockBody, EthExecutionProtocol, EthHeader, ProposedEthHeader,
     };
     use monad_multi_sig::MultiSig;
     use monad_state_backend::{InMemoryState, InMemoryStateInner, StateBackend, StateBackendTest};
@@ -1947,7 +1950,7 @@ mod test {
         NUM_LEADERS_SELF_UPCOMING,
     };
 
-    const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;
+    const BASE_FEE: u128 = 50_000_000_000;
     const GAS_LIMIT: u64 = 30000;
 
     static CHAIN_PARAMS: ChainParams = ChainParams {
@@ -2145,7 +2148,7 @@ mod test {
                     mix_hash: round_signature.get_hash().0,
                     nonce: [0_u8; 8],
                     extra_data: [0_u8; 32],
-                    base_fee_per_gas: BASE_FEE_PER_GAS,
+                    base_fee_per_gas: BASE_FEE,
                     blob_gas_used: 0,
                     excess_blob_gas: 0,
                     parent_beacon_block_root: [0_u8; 32],
@@ -2176,7 +2179,7 @@ mod test {
                     mix_hash: round_signature.get_hash().0,
                     nonce: [0_u8; 8],
                     extra_data: [0_u8; 32],
-                    base_fee_per_gas: BASE_FEE_PER_GAS,
+                    base_fee_per_gas: BASE_FEE,
                     blob_gas_used: 0,
                     excess_blob_gas: 0,
                     parent_beacon_block_root: [0_u8; 32],
@@ -2208,7 +2211,7 @@ mod test {
                     mix_hash: round_signature.get_hash().0,
                     nonce: [0_u8; 8],
                     extra_data: [0_u8; 32],
-                    base_fee_per_gas: BASE_FEE_PER_GAS,
+                    base_fee_per_gas: BASE_FEE,
                     blob_gas_used: 0,
                     excess_blob_gas: 0,
                     parent_beacon_block_root: [0_u8; 32],

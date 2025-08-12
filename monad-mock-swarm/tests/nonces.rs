@@ -35,7 +35,7 @@ mod test {
     use monad_eth_block_validator::EthValidator;
     use monad_eth_ledger::MockEthLedger;
     use monad_eth_testutil::{make_legacy_tx, secret_to_eth_address};
-    use monad_eth_types::{Balance, EthExecutionProtocol, BASE_FEE_PER_GAS};
+    use monad_eth_types::{Balance, EthExecutionProtocol};
     use monad_mock_swarm::{
         mock::TimestamperConfig,
         mock_swarm::{Nodes, SwarmBuilder},
@@ -128,7 +128,7 @@ mod test {
     }
 
     const CONSENSUS_DELTA: Duration = Duration::from_millis(100);
-    const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;
+    const BASE_FEE: u128 = monad_tfm::base_fee::MIN_BASE_FEE as u128;
     const GAS_LIMIT: u64 = 30000;
 
     static CHAIN_PARAMS: ChainParams = ChainParams {
