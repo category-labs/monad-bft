@@ -21,7 +21,8 @@ use alloy_consensus::{
 use alloy_primitives::Address;
 use itertools::Itertools;
 use monad_consensus_types::{
-    block::ProposedExecutionInputs, payload::RoundSignature,
+    block::{AccountBalanceState, BlockPolicyError, ProposedExecutionInputs},
+    payload::RoundSignature,
     signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
@@ -30,7 +31,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason, EthTxPoolSnapshot};
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader, BASE_FEE_PER_GAS};
-use monad_state_backend::{StateBackend, StateBackendError};
+use monad_state_backend::StateBackend;
 use monad_types::SeqNum;
 use tracing::{info, warn};
 
@@ -182,9 +183,11 @@ where
             let account_balance = account_balances
                 .get(tx.signer_ref())
                 .cloned()
-                .unwrap_or_default();
+                .unwrap_or(AccountBalanceState::new(block_policy.max_reserve_balance()));
 
-            let Some(_new_account_balance) = tx.apply_max_value(account_balance) else {
+            let Some(_new_reserve_balance) =
+                tx.apply_max_gas_cost(account_balance.remaining_reserve_balance)
+            else {
                 event_tracker.drop(tx.hash(), EthTxPoolDropReason::InsufficientBalance);
                 continue;
             };
@@ -247,7 +250,7 @@ where
 
         block_policy: &EthBlockPolicy<ST, SCT>,
         state_backend: &SBT,
-    ) -> Result<ProposedExecutionInputs<EthExecutionProtocol>, StateBackendError> {
+    ) -> Result<ProposedExecutionInputs<EthExecutionProtocol>, BlockPolicyError> {
         info!(
             ?proposed_seq_num,
             ?tx_limit,

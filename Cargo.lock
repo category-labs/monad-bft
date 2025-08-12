@@ -4912,6 +4912,7 @@ dependencies = [
 name = "monad-consensus-types"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "alloy-rlp",
  "auto_impl",
  "bytes",
@@ -5005,7 +5006,6 @@ dependencies = [
  "monad-consensus",
  "monad-consensus-types",
  "monad-crypto",
- "monad-eth-types",
  "monad-executor-glue",
  "monad-mock-swarm",
  "monad-router-scheduler",
@@ -5031,12 +5031,14 @@ dependencies = [
  "itertools 0.10.5",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-testutil",
  "monad-eth-txpool-types",
  "monad-eth-types",
  "monad-state-backend",
  "monad-testutil",
  "monad-types",
  "proptest",
+ "rstest",
  "sorted_vector_map",
  "tracing",
 ]
@@ -5056,6 +5058,7 @@ dependencies = [
  "monad-secp",
  "monad-state-backend",
  "monad-testutil",
+ "monad-types",
  "rayon",
  "tracing",
 ]
@@ -5555,7 +5558,6 @@ dependencies = [
  "monad-chain-config",
  "monad-consensus-types",
  "monad-crypto",
- "monad-eth-types",
  "monad-mock-swarm",
  "monad-router-scheduler",
  "monad-state-backend",
@@ -5832,7 +5834,6 @@ dependencies = [
  "monad-control-panel",
  "monad-crypto",
  "monad-dataplane",
- "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
  "monad-peer-discovery",
@@ -5980,6 +5981,7 @@ dependencies = [
 name = "monad-types"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "alloy-rlp",
  "futures",
  "hex",
