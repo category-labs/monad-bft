@@ -19,7 +19,6 @@ use actix_web::{web, App, HttpServer};
 use agent::AgentBuilder;
 use clap::Parser;
 use monad_archive::archive_reader::ArchiveReader;
-use monad_eth_types::BASE_FEE_PER_GAS;
 use monad_ethcall::EthCallExecutor;
 use monad_event_ring::EventRing;
 use monad_node_config::MonadNodeConfig;
@@ -35,7 +34,7 @@ use monad_rpc::{
     metrics,
     timing::TimingMiddleware,
     txpool::EthTxPoolBridge,
-    websocket,
+    websocket, BASE_FEE_PER_GAS,
 };
 use monad_tracing_timing::TimingsLayer;
 use monad_triedb_utils::triedb_env::TriedbEnv;

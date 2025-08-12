@@ -200,6 +200,10 @@ mod test {
         },
     };
 
+    const BASE_FEE: u64 = 100_000_000_000;
+    const BASE_FEE_TREND: u64 = 0;
+    const BASE_FEE_MOMENT: u64 = 0;
+
     #[test]
     fn test_invalid_sender() {
         let tx = get_valid_system_transaction();
@@ -317,6 +321,9 @@ mod test {
             GENESIS_SEQ_NUM + SeqNum(1),
             1,
             RoundSignature::new(Round(1), &nop_keypair),
+            BASE_FEE,
+            BASE_FEE_TREND,
+            BASE_FEE_MOMENT,
         );
 
         let result = SystemTransactionValidator::validate_and_extract_system_transactions(

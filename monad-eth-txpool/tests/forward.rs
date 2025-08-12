@@ -20,7 +20,7 @@ use monad_crypto::NopSignature;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, recover_tx};
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
-use monad_eth_types::{Balance, BASE_FEE_PER_GAS};
+use monad_eth_types::Balance;
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
@@ -35,6 +35,7 @@ const S1: B256 = B256::new(hex!(
 
 const FORWARD_MIN_SEQ_NUM_DIFF: u64 = 3;
 const FORWARD_MAX_RETRIES: usize = 2;
+const BASE_FEE: u64 = 100_000_000_000;
 
 fn with_txpool(
     insert_tx_owned: bool,
@@ -47,7 +48,7 @@ fn with_txpool(
         &mut EthTxPoolEventTracker,
     ),
 ) {
-    let tx = recover_tx(make_legacy_tx(S1, BASE_FEE_PER_GAS.into(), 100_000, 0, 10));
+    let tx = recover_tx(make_legacy_tx(S1, BASE_FEE.into(), 100_000, 0, 10));
     let eth_block_policy =
         EthBlockPolicy::<SignatureType, SignatureCollectionType>::new(GENESIS_SEQ_NUM, 4, 1337);
     let state_backend = InMemoryStateInner::new(

@@ -15,6 +15,7 @@ monad-consensus-types = { workspace = true }
 monad-crypto = { workspace = true }
 monad-mock-swarm = { workspace = true }
 monad-state = { workspace = true }
+monad-tfm = { workspace = true }
 monad-types = { workspace = true }
 monad-updaters = { workspace = true }
 monad-validator = { workspace = true }

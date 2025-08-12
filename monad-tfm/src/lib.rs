@@ -13,24 +13,4 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub mod chainstate;
-pub mod comparator;
-pub mod docs;
-pub mod eth_json_types;
-pub mod event;
-pub mod fee;
-pub mod gas_oracle;
-pub mod handlers;
-pub mod hex;
-pub mod jsonrpc;
-pub mod metrics;
-pub mod serialize;
-pub mod timing;
-pub mod txpool;
-pub mod vpool;
-pub mod websocket;
-
-pub const WEB3_RPC_CLIENT_VERSION: &str = concat!("Monad/", env!("VERGEN_GIT_DESCRIBE"));
-
-// FIXME:
-pub const BASE_FEE_PER_GAS: u64 = monad_tfm::base_fee::MIN_BASE_FEE;
+pub mod base_fee;

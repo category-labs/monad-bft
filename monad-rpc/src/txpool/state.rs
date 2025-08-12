@@ -272,13 +272,17 @@ mod test {
         EthTxPoolDropReason, EthTxPoolEvent, EthTxPoolEventType, EthTxPoolEvictReason,
         EthTxPoolSnapshot,
     };
-    use monad_eth_types::BASE_FEE_PER_GAS;
     use tokio::time::Instant;
 
     use super::EthTxPoolBridgeStateView;
-    use crate::txpool::{
-        state::{EthTxPoolBridgeEvictionQueue, EthTxPoolBridgeState, TX_EVICT_DURATION_SECONDS},
-        TxStatus,
+    use crate::{
+        txpool::{
+            state::{
+                EthTxPoolBridgeEvictionQueue, EthTxPoolBridgeState, TX_EVICT_DURATION_SECONDS,
+            },
+            TxStatus,
+        },
+        BASE_FEE_PER_GAS,
     };
 
     // pubkey starts with AAA

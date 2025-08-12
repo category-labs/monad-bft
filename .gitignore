@@ -18,3 +18,4 @@ test-keys
 .devcontainer
 /venv
 /logs
+**/proptest-regressions/

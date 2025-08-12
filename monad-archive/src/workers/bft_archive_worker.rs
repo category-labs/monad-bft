@@ -33,6 +33,7 @@ const BFT_BLOCK_BODY_FILE_PATH: &str = "bodies/";
 // Number of concurrent uploads
 const UPLOAD_CONCURRENCY: usize = 10;
 
+#[allow(clippy::doc_overindented_list_items)]
 /// Worker that archives BFT consensus block files to durable storage.
 /// Simple algorithm:
 /// - Keep a set of known-in-S3 keys across iterations (starts empty).

@@ -460,7 +460,7 @@ fn tcp_accept_max_size_message() {
 fn tcp_rx_reject_oversized_header() {
     once_setup();
 
-    let rx_addr = "127.0.0.1:9022".parse().unwrap();
+    let rx_addr = "127.0.0.1:19022".parse().unwrap();
 
     let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS).build();
     assert!(rx.block_until_ready(Duration::from_secs(1)));
