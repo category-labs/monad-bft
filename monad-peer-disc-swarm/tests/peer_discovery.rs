@@ -40,6 +40,7 @@ use monad_peer_discovery::{
         GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST, GAUGE_PEER_DISC_RECV_PING, GAUGE_PEER_DISC_RECV_PONG,
         GAUGE_PEER_DISC_RECV_TARGETED_LOOKUP_REQUEST, GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST,
         GAUGE_PEER_DISC_SEND_PING, GAUGE_PEER_DISC_SEND_PONG, PeerDiscovery, PeerDiscoveryBuilder,
+        Role, SecondaryRaptorcastConnectionStatus,
     },
 };
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
@@ -87,6 +88,7 @@ struct TestConfig {
     pub current_epoch: Epoch,
     pub epoch_validators: BTreeMap<Epoch, BTreeSet<usize>>,
     pub pinned_full_nodes: BTreeMap<usize, BTreeSet<usize>>,
+    pub roles: BTreeMap<usize, Role>,
     pub bootstrap_peers: BTreeMap<usize, BTreeSet<usize>>,
     pub ping_period: Duration,
     pub refresh_period: Duration,
@@ -107,6 +109,7 @@ impl Default for TestConfig {
             current_epoch: Epoch(1),
             epoch_validators: BTreeMap::from([(Epoch(1), BTreeSet::from([0, 1]))]),
             pinned_full_nodes: BTreeMap::default(),
+            roles: BTreeMap::from([(0, Role::Validator), (1, Role::Validator)]),
             bootstrap_peers: BTreeMap::from([(0, BTreeSet::from([1])), (1, BTreeSet::from([0]))]),
             ping_period: Duration::from_secs(5),
             refresh_period: Duration::from_secs(30),
@@ -151,7 +154,7 @@ fn setup_keys_and_swarm_builder(
         .iter()
         .map(|k| (NodeId::new(k.pubkey()), generate_name_record(k)))
         .collect();
-    let epoch_validators = config
+    let epoch_validators: BTreeMap<Epoch, BTreeSet<NodeId<NopPubKey>>> = config
         .epoch_validators
         .iter()
         .map(|(epoch, validators)| {
@@ -171,6 +174,21 @@ fn setup_keys_and_swarm_builder(
             .enumerate()
             .map(|(i, key)| {
                 let self_id = NodeId::new(key.pubkey());
+                let self_role = if epoch_validators
+                    .get(&config.current_epoch)
+                    .map(|validators| validators.contains(&self_id))
+                    .unwrap_or(false)
+                {
+                    if config.roles.get(&i) == Some(&Role::ValidatorPublisher) {
+                        Role::ValidatorPublisher
+                    } else {
+                        Role::Validator
+                    }
+                } else if config.roles.get(&i) == Some(&Role::FullNodeClient) {
+                    Role::FullNodeClient
+                } else {
+                    Role::FullNode
+                };
                 let bootstrap_peers = config
                     .bootstrap_peers
                     .get(&i)
@@ -197,6 +215,7 @@ fn setup_keys_and_swarm_builder(
                     addr: generate_name_record(key).address(),
                     algo_builder: PeerDiscoveryBuilder {
                         self_id,
+                        self_role,
                         self_record: generate_name_record(key),
                         current_round: config.current_round,
                         current_epoch: config.current_epoch,
@@ -372,6 +391,7 @@ fn test_update_name_record() {
         addr: new_name_record.address(),
         algo_builder: PeerDiscoveryBuilder {
             self_id: node_0,
+            self_role: Role::FullNode,
             self_record: new_name_record,
             current_round: config.current_round,
             current_epoch: config.current_epoch,
@@ -760,7 +780,154 @@ fn test_max_watermark() {
     }
 }
 
-// TODO: test full nodes connection
+#[traced_test]
+#[test]
+fn test_full_nodes_connections() {
+    // 3 nodes: Node0, Node1, Node2
+    // Node0 is a Validator, Node1 is a ValidatorPublisher, Node2 is a FullNodeClient
+    let config = TestConfig {
+        num_nodes: 3,
+        epoch_validators: BTreeMap::from([(Epoch(1), BTreeSet::from([0, 1]))]),
+        roles: BTreeMap::from([
+            (0, Role::Validator),
+            (1, Role::ValidatorPublisher),
+            (2, Role::FullNodeClient),
+        ]),
+        bootstrap_peers: BTreeMap::from([
+            (0, BTreeSet::from([1])),
+            (1, BTreeSet::from([0])),
+            (2, BTreeSet::from([0, 1])),
+        ]),
+        last_participation_prune_threshold: Round(5),
+        ping_period: Duration::from_secs(2),
+        refresh_period: Duration::from_secs(30),
+        ..Default::default()
+    };
+    let (keys, swarm_builder) = setup_keys_and_swarm_builder(config);
+    let node_ids = keys
+        .iter()
+        .map(|k| NodeId::new(k.pubkey()))
+        .collect::<Vec<_>>();
+    let mut nodes = swarm_builder.build();
+
+    while nodes.step_until(Duration::from_secs(0)) {}
+
+    for state in nodes.states().values() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
+        // all nodes should have other nodes in routing info
+        for peer_id in node_ids.iter() {
+            if peer_id == &state.self_id {
+                continue;
+            }
+            assert!(state.routing_info.contains_key(peer_id));
+        }
+
+        if state.self_id == node_ids[0] {
+            // Node0 is a validator, no connected secondary raptorcast full nodes
+            assert_eq!(
+                state.participation_info.get(&node_ids[1]).unwrap().status,
+                SecondaryRaptorcastConnectionStatus::None
+            );
+            assert_eq!(
+                state.participation_info.get(&node_ids[2]).unwrap().status,
+                SecondaryRaptorcastConnectionStatus::None
+            );
+        } else if state.self_id == node_ids[1] {
+            // Node1 is a validator publisher, should be connected to Node2 which is a full node client
+            assert_eq!(
+                state.participation_info.get(&node_ids[0]).unwrap().status,
+                SecondaryRaptorcastConnectionStatus::None
+            );
+            assert_eq!(
+                state.participation_info.get(&node_ids[2]).unwrap().status,
+                SecondaryRaptorcastConnectionStatus::Connected
+            );
+        } else if state.self_id == node_ids[2] {
+            // Node2 is a full node client, should be connected to Node1 which is a validator publisher
+            assert_eq!(
+                state.participation_info.get(&node_ids[0]).unwrap().status,
+                SecondaryRaptorcastConnectionStatus::Pending
+            );
+            assert_eq!(
+                state.participation_info.get(&node_ids[1]).unwrap().status,
+                SecondaryRaptorcastConnectionStatus::Connected
+            );
+        }
+    }
+
+    // round increases, non participating full node is pruned
+    let round_change_event = PeerDiscoveryEvent::UpdateCurrentRound {
+        round: Round(10),
+        epoch: Epoch(1),
+    };
+    for node_id in &node_ids {
+        nodes.insert_test_event(node_id, Duration::from_secs(10), round_change_event.clone());
+    }
+    while nodes.step_until(Duration::from_secs(10)) {}
+    for state in nodes.states().values() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
+
+        if state.self_id == node_ids[0] {
+            assert!(state.routing_info.contains_key(&node_ids[1]));
+            assert_eq!(
+                state.participation_info.get(&node_ids[1]).unwrap().status,
+                SecondaryRaptorcastConnectionStatus::None
+            );
+            assert!(!state.routing_info.contains_key(&node_ids[2]));
+            assert!(!state.participation_info.contains_key(&node_ids[2]));
+        } else if state.self_id == node_ids[1] {
+            assert!(state.routing_info.contains_key(&node_ids[0]));
+            assert_eq!(
+                state.participation_info.get(&node_ids[0]).unwrap().status,
+                SecondaryRaptorcastConnectionStatus::None
+            );
+            assert!(!state.routing_info.contains_key(&node_ids[2]));
+            assert!(!state.participation_info.contains_key(&node_ids[2]));
+        } else if state.self_id == node_ids[2] {
+            assert!(state.routing_info.contains_key(&node_ids[0]));
+            assert_eq!(
+                state.participation_info.get(&node_ids[0]).unwrap().status,
+                SecondaryRaptorcastConnectionStatus::None
+            );
+            assert!(state.routing_info.contains_key(&node_ids[1]));
+            assert_eq!(
+                state.participation_info.get(&node_ids[1]).unwrap().status,
+                SecondaryRaptorcastConnectionStatus::Connected
+            );
+        }
+    }
+
+    // during refresh, full node will try to look for upstream again
+    while nodes.step_until(Duration::from_secs(35)) {}
+    for state in nodes.states().values() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
+
+        if state.self_id == node_ids[0] {
+            assert!(state.routing_info.contains_key(&node_ids[2]));
+            assert_eq!(
+                state.participation_info.get(&node_ids[2]).unwrap().status,
+                SecondaryRaptorcastConnectionStatus::None
+            );
+        } else if state.self_id == node_ids[1] {
+            assert!(state.routing_info.contains_key(&node_ids[2]));
+            assert_eq!(
+                state.participation_info.get(&node_ids[2]).unwrap().status,
+                SecondaryRaptorcastConnectionStatus::Connected
+            );
+        } else if state.self_id == node_ids[2] {
+            assert!(state.routing_info.contains_key(&node_ids[0]));
+            assert_eq!(
+                state.participation_info.get(&node_ids[0]).unwrap().status,
+                SecondaryRaptorcastConnectionStatus::None
+            );
+            assert!(state.routing_info.contains_key(&node_ids[1]));
+            assert_eq!(
+                state.participation_info.get(&node_ids[1]).unwrap().status,
+                SecondaryRaptorcastConnectionStatus::Connected
+            );
+        }
+    }
+}
 
 #[traced_test]
 #[test]
@@ -863,6 +1030,7 @@ fn test_validator_demoted_to_full_node() {
         ]),
         ping_period: Duration::from_secs(2),
         refresh_period: Duration::from_secs(5),
+        last_participation_prune_threshold: Round(5),
         min_num_peers: 3,
         max_num_peers: 10,
         ..Default::default()
@@ -902,7 +1070,6 @@ fn test_validator_demoted_to_full_node() {
     for (node_id, state) in nodes.states() {
         let state = state.peer_disc_driver.get_peer_disc_state();
 
-        // TODO: check connected upstream
         if node_id == &node_ids[4] {
             assert_eq!(state.routing_info.len(), 4);
             continue;
@@ -916,6 +1083,30 @@ fn test_validator_demoted_to_full_node() {
             }
             assert!(state.routing_info.contains_key(peer_id));
         }
+    }
+
+    // round increases, non participating full node is pruned
+    let round_change_event = PeerDiscoveryEvent::UpdateCurrentRound {
+        round: Round(10),
+        epoch: Epoch(2),
+    };
+    for node_id in &node_ids {
+        nodes.insert_test_event(node_id, Duration::from_secs(15), round_change_event.clone());
+    }
+
+    // Node0, Node1, Node2, and Node3 prunes Node4
+    while nodes.step_until(Duration::from_secs(20)) {}
+
+    for (node_id, state) in nodes.states() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
+
+        if node_id == &node_ids[4] {
+            assert_eq!(state.routing_info.len(), 4);
+            continue;
+        }
+
+        // other nodes do not have routing info of Node4
+        assert!(!state.routing_info.contains_key(&node_ids[4]));
     }
 }
 

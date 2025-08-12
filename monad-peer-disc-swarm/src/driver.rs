@@ -171,6 +171,15 @@ where
                 target,
                 lookup_id,
             } => self.algo.handle_peer_lookup_timeout(to, target, lookup_id),
+            PeerDiscoveryEvent::SendFullNodeRaptorcastRequest { to } => {
+                self.algo.send_full_node_raptorcast_request(to)
+            }
+            PeerDiscoveryEvent::FullNodeRaptorcastRequest { from } => {
+                self.algo.handle_full_node_raptorcast_request(from)
+            }
+            PeerDiscoveryEvent::FullNodeRaptorcastResponse { from } => {
+                self.algo.handle_full_node_raptorcast_response(from)
+            }
             PeerDiscoveryEvent::UpdateCurrentRound { round, epoch } => {
                 self.algo.update_current_round(round, epoch)
             }

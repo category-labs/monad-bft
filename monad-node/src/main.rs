@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     marker::PhantomData,
     net::{IpAddr, SocketAddr, ToSocketAddrs},
     process,
@@ -53,7 +53,7 @@ use monad_node_config::{
     PeerDiscoveryConfig, SignatureCollectionType, SignatureType,
 };
 use monad_peer_discovery::{
-    discovery::{PeerDiscovery, PeerDiscoveryBuilder},
+    discovery::{PeerDiscovery, PeerDiscoveryBuilder, Role},
     MonadNameRecord, NameRecord,
 };
 use monad_pprof::start_pprof_server;
@@ -677,25 +677,33 @@ where
         })
         .collect();
 
-    let epoch_validators = locked_epoch_validators
-        .iter()
-        .map(|epoch_validators| {
-            (
-                epoch_validators.epoch,
-                epoch_validators
-                    .validators
-                    .0
-                    .iter()
-                    .map(|validator| validator.node_id)
-                    .collect(),
-            )
-        })
-        .collect();
+    let epoch_validators: BTreeMap<Epoch, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>> =
+        locked_epoch_validators
+            .iter()
+            .map(|epoch_validators| {
+                (
+                    epoch_validators.epoch,
+                    epoch_validators
+                        .validators
+                        .0
+                        .iter()
+                        .map(|validator| validator.node_id)
+                        .collect(),
+                )
+            })
+            .collect();
     let mut pinned_full_nodes: BTreeSet<_> = full_nodes
         .iter()
         .map(|full_node| NodeId::new(full_node.secp256k1_pubkey))
         .collect();
 
+    let mut self_role = match epoch_validators
+        .get(&current_epoch)
+        .map(|validators| validators.get(&self_id))
+    {
+        Some(_) => Role::Validator,
+        None => Role::FullNode,
+    };
     let secondary_instance: RaptorCastConfigSecondary<ST> = {
         if let Some(cfg_2nd) = node_config.fullnode_raptorcast {
             match cfg_2nd.mode {
@@ -706,6 +714,7 @@ where
 
                 monad_node_config::fullnode_raptorcast::SecondaryRaptorCastModeConfig::Client => {
                     debug!("Configured with Secondary RaptorCast instance: Client");
+                    self_role = Role::FullNodeClient;
                     RaptorCastConfigSecondary {
                         raptor10_redundancy: cfg_2nd.raptor10_fullnode_redundancy_factor,
                         mode: SecondaryRaptorCastModeConfig::Client(RaptorCastConfigSecondaryClient {
@@ -720,6 +729,7 @@ where
 
                 monad_node_config::fullnode_raptorcast::SecondaryRaptorCastModeConfig::Publisher => {
                     debug!("Configured with Secondary RaptorCast instance: Publisher");
+                    self_role = Role::ValidatorPublisher;
                     let full_nodes_prioritized: Vec<NodeId<CertificateSignaturePubKey<ST>>> = cfg_2nd
                         .full_nodes_prioritized
                         .identities
@@ -752,6 +762,7 @@ where
 
     let peer_discovery_builder = PeerDiscoveryBuilder {
         self_id,
+        self_role,
         self_record,
         current_round,
         current_epoch,
