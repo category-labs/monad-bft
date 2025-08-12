@@ -22,8 +22,8 @@ use alloy_primitives::Address;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_types::{EthAccount, EthHeader, Nonce};
-use monad_types::{BlockId, Round, SeqNum, Stake};
+use monad_eth_types::{EthAccount, EthHeader};
+use monad_types::{BlockId, Nonce, Round, SeqNum, Stake};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 
 pub use self::{

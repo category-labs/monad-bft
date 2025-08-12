@@ -20,14 +20,14 @@ use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::EthTxPoolEventTracker;
 use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
 
-use self::common::{run_txpool_benches, BenchController, EXECUTION_DELAY};
+use self::common::{run_txpool_benches, BenchController, EXECUTION_DELAY, RESERVE_BALANCE};
 
 mod common;
 
 fn criterion_benchmark(c: &mut Criterion) {
     // TODO: change this to something more meaningful, i.e. what's is the block
     // policy state we want to benchmark
-    let block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY, 1337);
+    let block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY, 1337, RESERVE_BALANCE);
 
     let mock_keypair = NopKeyPair::from_bytes(&mut [5_u8; 32]).unwrap();
     run_txpool_benches(

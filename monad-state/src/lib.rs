@@ -1262,6 +1262,7 @@ where
                     tx_limit,
                     proposal_gas_limit,
                     proposal_byte_limit,
+                    max_reserve_balance: _,
                     vote_pace: _,
                 } = self
                     .consensus_config
