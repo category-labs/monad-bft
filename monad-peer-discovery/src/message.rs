@@ -30,6 +30,8 @@ pub enum PeerDiscoveryMessage<ST: CertificateSignatureRecoverable> {
     Pong(Pong),
     PeerLookupRequest(PeerLookupRequest<ST>),
     PeerLookupResponse(PeerLookupResponse<ST>),
+    FullNodeRaptorcastRequest,
+    FullNodeRaptorcastResponse,
 }
 
 impl<ST: CertificateSignatureRecoverable> Message for PeerDiscoveryMessage<ST> {
@@ -45,6 +47,12 @@ impl<ST: CertificateSignatureRecoverable> Message for PeerDiscoveryMessage<ST> {
             }
             PeerDiscoveryMessage::PeerLookupResponse(response) => {
                 PeerDiscoveryEvent::PeerLookupResponse { from, response }
+            }
+            PeerDiscoveryMessage::FullNodeRaptorcastRequest => {
+                PeerDiscoveryEvent::FullNodeRaptorcastRequest { from }
+            }
+            PeerDiscoveryMessage::FullNodeRaptorcastResponse => {
+                PeerDiscoveryEvent::FullNodeRaptorcastResponse { from }
             }
         }
     }
@@ -71,6 +79,14 @@ impl<ST: CertificateSignatureRecoverable> Encodable for PeerDiscoveryMessage<ST>
                 let enc: [&dyn Encodable; 3] = [&version, &4_u8, peer_lookup_response];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
+            PeerDiscoveryMessage::FullNodeRaptorcastRequest => {
+                let enc: [&dyn Encodable; 2] = [&version, &5_u8];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            PeerDiscoveryMessage::FullNodeRaptorcastResponse => {
+                let enc: [&dyn Encodable; 2] = [&version, &6_u8];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
         }
     }
 }
@@ -89,6 +105,8 @@ impl<ST: CertificateSignatureRecoverable> Decodable for PeerDiscoveryMessage<ST>
             4 => Ok(Self::PeerLookupResponse(PeerLookupResponse::decode(
                 &mut payload,
             )?)),
+            5 => Ok(Self::FullNodeRaptorcastRequest),
+            6 => Ok(Self::FullNodeRaptorcastResponse),
             _ => Err(alloy_rlp::Error::Custom(
                 "failed to decode unknown PeerDiscoveryMessage",
             )),
@@ -100,7 +118,7 @@ impl<ST: CertificateSignatureRecoverable> Decodable for PeerDiscoveryMessage<ST>
 #[rlp(trailing)]
 pub struct Ping<ST: CertificateSignatureRecoverable> {
     pub id: u32,
-    pub local_name_record: Option<MonadNameRecord<ST>>,
+    pub local_name_record: MonadNameRecord<ST>,
 }
 
 impl<ST: CertificateSignatureRecoverable> Eq for Ping<ST> {}
@@ -138,31 +156,17 @@ mod test {
     type SignatureType = SecpSignature;
 
     #[test]
-    fn test_ping_with_record_rlp_roundtrip() {
+    fn test_ping_rlp_roundtrip() {
         let key = get_key::<SignatureType>(37);
         let ping = Ping {
             id: 257,
-            local_name_record: Some(MonadNameRecord::<SignatureType>::new(
+            local_name_record: MonadNameRecord::<SignatureType>::new(
                 NameRecord {
                     address: SocketAddrV4::from_str("127.0.0.1:8000").unwrap(),
                     seq: 2,
                 },
                 &key,
-            )),
-        };
-
-        let mut encoded = Vec::new();
-        ping.encode(&mut encoded);
-
-        let decoded = Ping::<SignatureType>::decode(&mut encoded.as_slice()).unwrap();
-        assert_eq!(ping, decoded);
-    }
-
-    #[test]
-    fn test_ping_without_record_rlp_roundtrip() {
-        let ping = Ping {
-            id: 257,
-            local_name_record: None,
+            ),
         };
 
         let mut encoded = Vec::new();
