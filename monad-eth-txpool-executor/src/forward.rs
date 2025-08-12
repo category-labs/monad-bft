@@ -209,7 +209,6 @@ mod test {
     use futures::task::noop_waker_ref;
     use itertools::Itertools;
     use monad_eth_testutil::{make_legacy_tx, recover_tx};
-    use monad_eth_types::BASE_FEE_PER_GAS;
 
     use crate::forward::{
         EthTxPoolForwardingManager, EGRESS_MAX_SIZE_BYTES, INGRESS_CHUNK_INTERVAL_MS,
@@ -220,6 +219,7 @@ mod test {
     const S1: B256 = B256::new(hex!(
         "0ed2e19e3aca1a321349f295837988e9c6f95d4a6fc54cfab6befd5ee82662ad"
     ));
+    const BASE_FEE_PER_GAS: u128 = 100_000_000_000; // 100 Gwei
 
     fn setup<'a>() -> (EthTxPoolForwardingManager, Context<'a>) {
         (
@@ -229,7 +229,7 @@ mod test {
     }
 
     fn generate_tx(nonce: u64) -> TxEnvelope {
-        make_legacy_tx(S1, BASE_FEE_PER_GAS as u128, 100_000, nonce, 0)
+        make_legacy_tx(S1, BASE_FEE_PER_GAS, 100_000, nonce, 0)
     }
 
     fn generate_recovered_tx(nonce: u64) -> Recovered<TxEnvelope> {

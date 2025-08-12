@@ -1220,6 +1220,10 @@ mod test {
         },
     };
 
+    const BASE_FEE: u64 = 100_000_000_000;
+    const BASE_FEE_TREND: u64 = 0;
+    const BASE_FEE_MOMENT: u64 = 0;
+
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<SignatureType>;
     type ExecutionProtocolType = MockExecutionProtocol;
@@ -1799,6 +1803,9 @@ mod test {
             GENESIS_SEQ_NUM + SeqNum(1),
             1,
             RoundSignature::new(Round(1), author_cert_key),
+            BASE_FEE,
+            BASE_FEE_TREND,
+            BASE_FEE_MOMENT,
         );
         let unvalidated_proposal: ProposalMessage<
             SignatureType,

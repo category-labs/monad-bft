@@ -65,7 +65,6 @@ impl MonadRpcResources {
         eth_call_executor: Option<Arc<Mutex<EthCallExecutor>>>,
         eth_call_executor_fibers: usize,
         archive_reader: Option<ArchiveReader>,
-        fixed_base_fee: u128,
         chain_id: u64,
         chain_state: Option<ChainState<TriedbEnv>>,
         batch_request_limit: u16,

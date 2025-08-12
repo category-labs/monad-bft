@@ -24,8 +24,9 @@ use monad_eth_block_policy::{
     compute_txn_max_value, validation::static_validate_transaction, EthBlockPolicy,
 };
 use monad_eth_txpool_types::EthTxPoolDropReason;
-use monad_eth_types::{Balance, EthExecutionProtocol, Nonce, BASE_FEE_PER_GAS};
+use monad_eth_types::{Balance, EthExecutionProtocol, Nonce};
 use monad_system_calls::validator::SystemTransactionValidator;
+use monad_tfm::base_fee::MIN_BASE_FEE;
 use monad_types::SeqNum;
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::trace;
@@ -63,9 +64,8 @@ impl ValidEthTransaction {
             return None;
         }
 
-        // TODO(andr-dev): Block base fee is hardcoded we need to update
-        // this logic once its included in the consensus proposal
-        if tx.max_fee_per_gas() < BASE_FEE_PER_GAS.into() {
+        // TODO(andr-dev): Adjust minimum dynamically using current base fee.
+        if tx.max_fee_per_gas() < MIN_BASE_FEE.into() {
             event_tracker.drop(tx.tx_hash().to_owned(), EthTxPoolDropReason::FeeTooLow);
             return None;
         }

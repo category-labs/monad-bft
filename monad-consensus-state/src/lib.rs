@@ -1814,6 +1814,7 @@ where
 
                     beneficiary: *self.beneficiary,
                     timestamp_ns,
+
                     extending_blocks: pending_blocktree_blocks.into_iter().cloned().collect(),
                     delayed_execution_results,
                 });
@@ -1911,7 +1912,7 @@ mod test {
     use monad_eth_block_policy::EthBlockPolicy;
     use monad_eth_block_validator::EthValidator;
     use monad_eth_types::{
-        Balance, EthBlockBody, EthExecutionProtocol, EthHeader, ProposedEthHeader, BASE_FEE_PER_GAS,
+        Balance, EthBlockBody, EthExecutionProtocol, EthHeader, ProposedEthHeader,
     };
     use monad_multi_sig::MultiSig;
     use monad_state_backend::{InMemoryState, InMemoryStateInner, StateBackend, StateBackendTest};
@@ -1934,7 +1935,6 @@ mod test {
         validators_epoch_mapping::ValidatorsEpochMapping,
     };
     use test_case::test_case;
-    use tracing_test::traced_test;
 
     use crate::{
         timestamp::BlockTimestamp, ConsensusCommand, ConsensusConfig, ConsensusState,
@@ -1942,8 +1942,9 @@ mod test {
         NUM_LEADERS_SELF_UPCOMING,
     };
 
-    const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;
-    const GAS_LIMIT: u64 = 30000;
+    const BASE_FEE: u64 = 100_000_000_000;
+    const BASE_FEE_TREND: u64 = 0;
+    const BASE_FEE_MOMENT: u64 = 0;
 
     static CHAIN_PARAMS: ChainParams = ChainParams {
         tx_limit: 10_000,
@@ -2141,7 +2142,7 @@ mod test {
                     mix_hash: round_signature.get_hash().0,
                     nonce: [0_u8; 8],
                     extra_data: [0_u8; 32],
-                    base_fee_per_gas: BASE_FEE_PER_GAS,
+                    base_fee_per_gas: BASE_FEE,
                     blob_gas_used: 0,
                     excess_blob_gas: 0,
                     parent_beacon_block_root: [0_u8; 32],
@@ -2173,7 +2174,7 @@ mod test {
                     mix_hash: round_signature.get_hash().0,
                     nonce: [0_u8; 8],
                     extra_data: [0_u8; 32],
-                    base_fee_per_gas: BASE_FEE_PER_GAS,
+                    base_fee_per_gas: BASE_FEE,
                     blob_gas_used: 0,
                     excess_blob_gas: 0,
                     parent_beacon_block_root: [0_u8; 32],
@@ -2206,7 +2207,7 @@ mod test {
                     mix_hash: round_signature.get_hash().0,
                     nonce: [0_u8; 8],
                     extra_data: [0_u8; 32],
-                    base_fee_per_gas: BASE_FEE_PER_GAS,
+                    base_fee_per_gas: BASE_FEE,
                     blob_gas_used: 0,
                     excess_blob_gas: 0,
                     parent_beacon_block_root: [0_u8; 32],
@@ -2559,7 +2560,6 @@ mod test {
     }
 
     // 2f+1 votes for a Vote leads to a QC locking -- ie, high_qc is set to that QC.
-    #[traced_test]
     #[test]
     fn lock_qc_high() {
         let num_state = 4;
@@ -3772,7 +3772,6 @@ mod test {
     /// 2. state[0] processes an invalid proposal `invalid_p2`. It's rejected
     ///    and not added to the block tree. It emits an event for
     ///    `invalid_proposal_round_leader`
-    #[traced_test]
     #[test]
     fn test_reject_non_leader_proposal() {
         let num_state = 4;
@@ -3831,6 +3830,9 @@ mod test {
             p2.tip.block_header.seq_num,
             p2.tip.block_header.timestamp_ns,
             p2.tip.block_header.round_signature,
+            BASE_FEE,
+            BASE_FEE_TREND,
+            BASE_FEE_MOMENT,
         );
         let invalid_p2 = ProposalMessage {
             proposal_epoch: invalid_bh2.epoch,

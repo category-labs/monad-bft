@@ -284,6 +284,10 @@ mod tests {
 
     #[test]
     fn high_extend_vote_serde() {
+        const BASE_FEE: u64 = 100_000_000_000;
+        const BASE_FEE_TREND: u64 = 0;
+        const BASE_FEE_MOMENT: u64 = 0;
+
         let key = get_certificate_key::<MockSignatureCollectionType>(22354);
 
         let header: ConsensusBlockHeader<
@@ -301,6 +305,9 @@ mod tests {
             SeqNum(1),
             0,
             RoundSignature::new(Round(10), &key),
+            BASE_FEE,
+            BASE_FEE_TREND,
+            BASE_FEE_MOMENT,
         );
         let tip = ConsensusTip::new(&key, header, None);
 

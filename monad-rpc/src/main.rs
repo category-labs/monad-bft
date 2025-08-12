@@ -19,7 +19,6 @@ use actix_web::{web, App, HttpServer};
 use agent::AgentBuilder;
 use clap::Parser;
 use monad_archive::archive_reader::ArchiveReader;
-use monad_eth_types::BASE_FEE_PER_GAS;
 use monad_ethcall::EthCallExecutor;
 use monad_event_ring::EventRing;
 use monad_node_config::MonadNodeConfig;
@@ -331,7 +330,6 @@ async fn main() -> std::io::Result<()> {
         eth_call_executor,
         args.eth_call_executor_fibers as usize,
         archive_reader,
-        BASE_FEE_PER_GAS.into(),
         node_config.chain_id,
         chain_state,
         args.batch_request_limit,

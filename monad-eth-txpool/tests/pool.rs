@@ -41,7 +41,7 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing_test::traced_test;
 
 const EXECUTION_DELAY: u64 = 4;
-const BASE_FEE_PER_GAS: u64 = monad_eth_types::BASE_FEE_PER_GAS;
+const BASE_FEE_PER_GAS: u64 = 100_000_000_000;
 const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;
 const GAS_LIMIT: u64 = 30000;
 const PROPOSAL_GAS_LIMIT: u64 = 300_000_000;
@@ -1004,8 +1004,8 @@ fn test_tx_invalid_chain_id() {
 
 #[test]
 fn test_same_account_priority_fee_ordering() {
-    let tx_higher = make_eip1559_tx(S1, (BASE_FEE_PER_GAS + 50).into(), 20, GAS_LIMIT, 0, 10);
-    let tx_lower = make_eip1559_tx(S1, (BASE_FEE_PER_GAS + 100).into(), 10, GAS_LIMIT, 0, 10);
+    let tx_higher = make_eip1559_tx(S1, BASE_FEE + 50, 20, GAS_LIMIT, 0, 10);
+    let tx_lower = make_eip1559_tx(S1, BASE_FEE + 100, 10, GAS_LIMIT, 0, 10);
 
     for (tx1, tx2) in [(&tx_higher, &tx_lower), (&tx_lower, &tx_higher)] {
         run_simple([
@@ -1027,10 +1027,8 @@ fn test_same_account_priority_fee_ordering() {
 #[test]
 fn test_different_account_priority_fee_ordering() {
     for (addr1, addr2) in [(S1, S2), (S2, S1)] {
-        let tx_higher =
-            make_eip1559_tx(addr1, (BASE_FEE_PER_GAS + 50).into(), 20, GAS_LIMIT, 0, 10);
-        let tx_lower =
-            make_eip1559_tx(addr2, (BASE_FEE_PER_GAS + 100).into(), 10, GAS_LIMIT, 0, 10);
+        let tx_higher = make_eip1559_tx(addr1, BASE_FEE + 50, 20, GAS_LIMIT, 0, 10);
+        let tx_lower = make_eip1559_tx(addr2, BASE_FEE + 100, 10, GAS_LIMIT, 0, 10);
 
         for (tx1, tx2) in [(&tx_higher, &tx_lower), (&tx_lower, &tx_higher)] {
             run_simple([

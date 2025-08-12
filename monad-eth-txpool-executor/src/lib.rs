@@ -35,7 +35,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker};
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolEventType};
-use monad_eth_types::{EthExecutionProtocol, BASE_FEE_PER_GAS};
+use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_secp::RecoverableAddress;
@@ -270,10 +270,13 @@ where
 
                     let create_proposal_start = Instant::now();
 
+                    let (base_fee, base_fee_trend, base_fee_moment) =
+                        self.block_policy.compute_base_fee(&extending_blocks);
+
                     match self.pool.create_proposal(
                         &mut event_tracker,
                         seq_num,
-                        BASE_FEE_PER_GAS,
+                        base_fee,
                         tx_limit,
                         proposal_gas_limit,
                         proposal_byte_limit,
@@ -300,6 +303,9 @@ where
                                     high_qc,
                                     timestamp_ns,
                                     round_signature,
+                                    base_fee,
+                                    base_fee_trend,
+                                    base_fee_moment,
                                     delayed_execution_results,
                                     proposed_execution_inputs,
                                     last_round_tc,

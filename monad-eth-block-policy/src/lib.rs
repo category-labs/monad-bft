@@ -77,6 +77,16 @@ where
     pub txn_fees: BTreeMap<Address, Balance>,
 }
 
+impl<ST, SCT> AsRef<EthValidatedBlock<ST, SCT>> for EthValidatedBlock<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    fn as_ref(&self) -> &EthValidatedBlock<ST, SCT> {
+        self
+    }
+}
+
 impl<ST, SCT> Deref for EthValidatedBlock<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
@@ -189,6 +199,11 @@ struct CommittedBlock {
 
     nonces: BlockAccountNonce,
     fees: BlockTxnFees,
+
+    base_fee: u64,
+    base_fee_trend: u64,
+    base_fee_moment: u64,
+    block_gas_usage: u64,
 }
 
 #[derive(Debug)]
@@ -274,6 +289,8 @@ where
             assert_eq!(self.blocks.len(), self.size);
         }
 
+        let block_gas_usage = block.get_total_gas();
+
         assert!(self
             .blocks
             .insert(
@@ -286,7 +303,12 @@ where
                     },
                     fees: BlockTxnFees {
                         txn_fees: block.txn_fees.clone()
-                    }
+                    },
+
+                    base_fee: block.block.header().base_fee,
+                    base_fee_trend: block.block.header().base_fee_trend,
+                    base_fee_moment: block.block.header().base_fee_moment,
+                    block_gas_usage,
                 },
             )
             .is_none());
@@ -552,6 +574,85 @@ where
         Ok(account_balances)
     }
 
+    fn get_parent_base_fee_fields<B>(&self, extending_blocks: &[B]) -> (u64, u64, u64, u64)
+    where
+        B: AsRef<EthValidatedBlock<ST, SCT>>,
+    {
+        // parent block is last block in extending_blocks or last_committed
+        // block if there's no extending branch
+        let (parent_base_fee, parent_trend, parent_moment, parent_gas_usage) =
+            if let Some(parent_block) = extending_blocks.last() {
+                let parent_gas_usage = parent_block
+                    .as_ref()
+                    .validated_txns
+                    .iter()
+                    .map(|txn| txn.gas_limit())
+                    .sum::<u64>();
+                (
+                    parent_block.as_ref().header().base_fee,
+                    parent_block.as_ref().header().base_fee_trend,
+                    parent_block.as_ref().header().base_fee_moment,
+                    parent_gas_usage,
+                )
+            } else {
+                // genesis block doesn't exist in committed_cache
+                // when upgrading, we treat the fork block as genesis block
+                if self.last_commit == GENESIS_SEQ_NUM {
+                    // genesis block
+                    (
+                        monad_tfm::base_fee::GENESIS_BASE_FEE,
+                        monad_tfm::base_fee::GENESIS_BASE_FEE_TREND,
+                        monad_tfm::base_fee::GENESIS_BASE_FEE_MOMENT,
+                        0,
+                    )
+                } else {
+                    let parent_block = self
+                        .committed_cache
+                        .blocks
+                        .get(&self.last_commit)
+                        .expect("last committed block must exist");
+                    (
+                        parent_block.base_fee,
+                        parent_block.base_fee_trend,
+                        parent_block.base_fee_moment,
+                        parent_block.block_gas_usage,
+                    )
+                }
+            };
+
+        (
+            parent_base_fee,
+            parent_trend,
+            parent_moment,
+            parent_gas_usage,
+        )
+    }
+
+    // TODO: introduce chain config to block policy to make parameters
+    // configurable
+    const BLOCK_GAS_LIMIT: u64 = 150_000_000;
+
+    /// return value
+    ///
+    /// (base_fee, base_fee_trend, base_fee_moment)
+    ///
+    /// base_fee unit: MON-wei
+    pub fn compute_base_fee<B>(&self, extending_blocks: &[B]) -> (u64, u64, u64)
+    where
+        B: AsRef<EthValidatedBlock<ST, SCT>>,
+    {
+        let (parent_base_fee, parent_trend, parent_moment, parent_gas_usage) =
+            self.get_parent_base_fee_fields(extending_blocks);
+
+        monad_tfm::base_fee::compute_base_fee(
+            Self::BLOCK_GAS_LIMIT,
+            parent_gas_usage,
+            parent_base_fee,
+            parent_trend,
+            parent_moment,
+        )
+    }
+
     pub fn get_chain_id(&self) -> u64 {
         self.chain_id
     }
@@ -623,6 +724,39 @@ where
                 "block not coherent, execution result mismatch"
             );
             return Err(BlockPolicyError::ExecutionResultMismatch);
+        }
+
+        // verify base_fee fields
+        let (base_fee, base_fee_trend, base_fee_moment) = self.compute_base_fee(&extending_blocks);
+        if base_fee != block.header().base_fee {
+            warn!(
+                seq_num =? block.header().seq_num,
+                round =? block.header().block_round,
+                ?base_fee,
+                block_base_fee =? block.header().base_fee,
+                "block not coherent, base_fee mismatch"
+            );
+            return Err(BlockPolicyError::BaseFeeError);
+        }
+        if base_fee_trend != block.header().base_fee_trend {
+            warn!(
+                seq_num =? block.header().seq_num,
+                round =? block.header().block_round,
+                ?base_fee_trend,
+                block_base_fee_trend =? block.header().base_fee_trend,
+                "block not coherent, base_fee_trend mismatch"
+            );
+            return Err(BlockPolicyError::BaseFeeError);
+        }
+        if base_fee_moment != block.header().base_fee_moment {
+            warn!(
+                seq_num =? block.header().seq_num,
+                round =? block.header().block_round,
+                ?base_fee_moment,
+                block_base_fee_moment =? block.header().base_fee_moment,
+                "block not coherent, base_fee_moment mismatch"
+            );
+            return Err(BlockPolicyError::BaseFeeError);
         }
 
         let system_tx_signers = block.system_txns.iter().map(|txn| txn.signer());
@@ -776,6 +910,10 @@ mod test {
 
     use super::*;
 
+    const BASE_FEE: u64 = 100_000_000_000;
+    const BASE_FEE_TREND: u64 = 0;
+    const BASE_FEE_MOMENT: u64 = 0;
+
     type SignatureType = NopSignature;
     type SignatureCollectionType = MockSignatures<SignatureType>;
 
@@ -807,6 +945,10 @@ mod test {
                     (address2, Balance::from(200)),
                 ]),
             },
+            base_fee: BASE_FEE,
+            base_fee_trend: BASE_FEE_TREND,
+            base_fee_moment: BASE_FEE_MOMENT,
+            block_gas_usage: 0, // not used in this test
         };
 
         let block2 = CommittedBlock {
@@ -821,6 +963,10 @@ mod test {
                     (address3, Balance::from(300)),
                 ]),
             },
+            base_fee: BASE_FEE,
+            base_fee_trend: BASE_FEE_TREND,
+            base_fee_moment: BASE_FEE_MOMENT,
+            block_gas_usage: 0, // not used in this test
         };
 
         let block3 = CommittedBlock {
@@ -835,6 +981,10 @@ mod test {
                     (address3, Balance::from(350)),
                 ]),
             },
+            base_fee: BASE_FEE,
+            base_fee_trend: BASE_FEE_TREND,
+            base_fee_moment: BASE_FEE_MOMENT,
+            block_gas_usage: 0, // not used in this test
         };
 
         buffer.blocks.insert(SeqNum(1), block1);
@@ -892,6 +1042,10 @@ mod test {
                     (address2, U256::MAX),
                 ]),
             },
+            base_fee: BASE_FEE,
+            base_fee_trend: BASE_FEE_TREND,
+            base_fee_moment: BASE_FEE_MOMENT,
+            block_gas_usage: 0, // not used in this test
         };
 
         let block2 = CommittedBlock {
@@ -906,6 +1060,10 @@ mod test {
                     (address3, U256::MAX.div_ceil(U256::from(2))),
                 ]),
             },
+            base_fee: BASE_FEE,
+            base_fee_trend: BASE_FEE_TREND,
+            base_fee_moment: BASE_FEE_MOMENT,
+            block_gas_usage: 0, // not used in this test
         };
 
         let block3 = CommittedBlock {
@@ -920,6 +1078,10 @@ mod test {
                     (address3, U256::MAX.div_ceil(U256::from(2)) + U256::from(1)),
                 ]),
             },
+            base_fee: BASE_FEE,
+            base_fee_trend: BASE_FEE_TREND,
+            base_fee_moment: BASE_FEE_MOMENT,
+            block_gas_usage: 0, // not used in this test
         };
 
         buffer.blocks.insert(SeqNum(1), block1);

@@ -54,8 +54,11 @@ where
 {
     epoch: Epoch,
     round: Round,
+    // None for genesis
+    qc_block_header: Option<ConsensusBlockHeader<ST, SCT, EPT>>,
     qc: QuorumCertificate<SCT>,
     qc_seq_num: SeqNum,
+    high_qc_block_header: Option<ConsensusBlockHeader<ST, SCT, EPT>>,
     high_qc: QuorumCertificate<SCT>,
     high_qc_seq_num: SeqNum,
     last_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
@@ -85,8 +88,10 @@ where
         ProposalGen {
             epoch: Epoch(1),
             round: Round(0),
+            qc_block_header: None,
             qc: genesis_qc.clone(),
             qc_seq_num: SeqNum(0),
+            high_qc_block_header: None,
             high_qc: genesis_qc,
             high_qc_seq_num: SeqNum(0),
             last_tc: None,
@@ -99,6 +104,8 @@ where
         self
     }
 
+    // this test utility doesn't populate base_fee fields correctly.
+    // specifically it ignores parent gas usage
     pub fn next_proposal<
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -117,13 +124,17 @@ where
         delayed_execution_results: Vec<EPT::FinalizedHeader>,
     ) -> Verified<ST, ProposalMessage<ST, SCT, EPT>> {
         // high_qc is the highest qc seen in a proposal
-        let (qc, last_seq_num) = if self.last_tc.is_some() {
-            (&self.high_qc, self.high_qc_seq_num)
+        let (qc, last_seq_num, parent_header) = if self.last_tc.is_some() {
+            (
+                &self.high_qc,
+                self.high_qc_seq_num,
+                &self.high_qc_block_header,
+            )
         } else {
             // entering new round from qc
             self.round += Round(1);
             self.epoch = epoch_manager.get_epoch(self.round).expect("epoch exists");
-            (&self.qc, self.qc_seq_num)
+            (&self.qc, self.qc_seq_num, &self.qc_block_header)
         };
         self.timestamp += 1;
 
@@ -147,6 +158,31 @@ where
         let block_body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EPT::Body::default(),
         });
+
+        let (parent_base_fee, parent_base_fee_trend, parent_base_fee_moment) =
+            if let Some(parent_block) = &parent_header {
+                (
+                    parent_block.base_fee,
+                    parent_block.base_fee_trend,
+                    parent_block.base_fee_moment,
+                )
+            } else {
+                (
+                    monad_tfm::base_fee::GENESIS_BASE_FEE,
+                    monad_tfm::base_fee::GENESIS_BASE_FEE_TREND,
+                    monad_tfm::base_fee::GENESIS_BASE_FEE_MOMENT,
+                )
+            };
+
+        // FIXME: this uses hardcoded constants for gas usage and gas limit
+        let (base_fee, base_fee_trend, base_fee_moment) = monad_tfm::base_fee::compute_base_fee(
+            150_000_000,
+            0,
+            parent_base_fee,
+            parent_base_fee_trend,
+            parent_base_fee_moment,
+        );
+
         let block_header = ConsensusBlockHeader::new(
             NodeId::new(leader_key.pubkey()),
             self.epoch,
@@ -158,14 +194,19 @@ where
             seq_num,
             self.timestamp,
             round_signature,
+            base_fee,
+            base_fee_trend,
+            base_fee_moment,
         );
 
         let validator_cert_pubkeys = val_epoch_map
             .get_cert_pubkeys(&epoch_manager.get_epoch(self.round).expect("epoch exists"))
             .expect("should have the current validator certificate pubkeys");
+        self.high_qc_block_header = self.qc_block_header.clone();
         self.high_qc = self.qc.clone();
         self.high_qc_seq_num = self.qc_seq_num;
         self.qc = self.get_next_qc(certkeys, &block_header, validator_cert_pubkeys);
+        self.qc_block_header = Some(block_header.clone());
         self.qc_seq_num = seq_num;
 
         let proposal = ProposalMessage {

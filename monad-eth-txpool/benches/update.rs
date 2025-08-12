@@ -19,12 +19,13 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::generate_block_with_txs;
 use monad_eth_txpool::{EthTxPoolEventTracker, EthTxPoolMetrics};
-use monad_eth_types::BASE_FEE_PER_GAS;
 use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
 
 use self::common::{run_txpool_benches, BenchController, EXECUTION_DELAY};
 
 mod common;
+
+const BASE_FEE_PER_GAS: u64 = 100_000_000_000;
 
 fn criterion_benchmark(c: &mut Criterion) {
     // TODO: change this to something more meaningful, i.e. what's is the block

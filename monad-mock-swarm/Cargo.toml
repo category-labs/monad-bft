@@ -21,6 +21,7 @@ monad-multi-sig = { workspace = true }
 monad-router-scheduler = { workspace = true }
 monad-state = { workspace = true }
 monad-state-backend = { workspace = true }
+monad-tfm = { workspace = true }
 monad-transformer = { workspace = true }
 monad-types = { workspace = true }
 monad-updaters = { workspace = true }

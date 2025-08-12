@@ -20,12 +20,13 @@ use monad_consensus_types::{block::GENESIS_TIMESTAMP, payload::RoundSignature};
 use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::EthTxPoolEventTracker;
-use monad_eth_types::BASE_FEE_PER_GAS;
 use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
 
 use self::common::{run_txpool_benches, BenchController, EXECUTION_DELAY};
 
 mod common;
+
+const BASE_FEE: u64 = 100_000_000_000;
 
 fn criterion_benchmark(c: &mut Criterion) {
     // TODO: change this to something more meaningful, i.e. what's is the block
@@ -50,7 +51,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             pool.create_proposal(
                 &mut EthTxPoolEventTracker::new(metrics, &mut BTreeMap::default()),
                 block_policy.get_last_commit() + SeqNum(pending_blocks.len() as u64),
-                BASE_FEE_PER_GAS,
+                BASE_FEE,
                 *proposal_tx_limit,
                 *proposal_gas_limit,
                 *proposal_byte_limit,

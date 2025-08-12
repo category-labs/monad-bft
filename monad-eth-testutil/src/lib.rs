@@ -144,6 +144,9 @@ pub fn generate_block_with_txs(
         seq_num,
         0,
         RoundSignature::new(Round(1), &keypair),
+        monad_tfm::base_fee::MIN_BASE_FEE,
+        monad_tfm::base_fee::GENESIS_BASE_FEE_TREND,
+        monad_tfm::base_fee::GENESIS_BASE_FEE_MOMENT,
     );
 
     let nonces = txs.iter().map(|t| (t.signer(), t.nonce())).fold(

@@ -38,9 +38,7 @@ use monad_eth_block_policy::{
     compute_txn_max_value, validation::static_validate_transaction, EthBlockPolicy,
     EthValidatedBlock,
 };
-use monad_eth_types::{
-    EthBlockBody, EthExecutionProtocol, Nonce, ProposedEthHeader, BASE_FEE_PER_GAS,
-};
+use monad_eth_types::{EthBlockBody, EthExecutionProtocol, Nonce, ProposedEthHeader};
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
 use monad_system_calls::{validator::SystemTransactionValidator, SystemTransaction};
@@ -88,6 +86,7 @@ where
         tx_limit: usize,
         proposal_gas_limit: u64,
         proposal_byte_limit: u64,
+        base_fee: u64,
         max_code_size: usize,
     ) -> Result<(SystemTransactions, ValidatedTxns, NonceMap, TxnFeeMap), BlockValidationError>
     {
@@ -164,9 +163,7 @@ where
                 return Err(BlockValidationError::TxnError);
             }
 
-            // TODO(kai): currently block base fee is hardcoded
-            // update this when base fee is included in consensus proposal
-            if eth_txn.max_fee_per_gas() < BASE_FEE_PER_GAS.into() {
+            if eth_txn.max_fee_per_gas() < base_fee.into() {
                 return Err(BlockValidationError::TxnError);
             }
 
@@ -277,9 +274,6 @@ where
         if extra_data != &[0_u8; 32] {
             return Err(BlockValidationError::HeaderError);
         }
-        if base_fee_per_gas != &BASE_FEE_PER_GAS {
-            return Err(BlockValidationError::HeaderError);
-        }
         if blob_gas_used != &0 {
             return Err(BlockValidationError::HeaderError);
         }
@@ -336,6 +330,7 @@ where
             tx_limit,
             proposal_gas_limit,
             proposal_byte_limit,
+            header.base_fee,
             max_code_size,
         ) {
             let block = ConsensusFullBlock::new(header, body)?;
@@ -368,7 +363,9 @@ mod test {
 
     use super::*;
 
-    const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;
+    const BASE_FEE: u128 = 100_000_000_000;
+    const BASE_FEE_TREND: u64 = 0;
+    const BASE_FEE_MOMENT: u64 = 0;
 
     const PROPOSAL_GAS_LIMIT: u64 = 300_000_000;
     const PROPOSAL_SIZE_LIMIT: u64 = 4_000_000;
@@ -389,6 +386,9 @@ mod test {
             GENESIS_SEQ_NUM + SeqNum(1),
             1,
             RoundSignature::new(Round(1), &nop_keypair),
+            BASE_FEE as u64,
+            BASE_FEE_TREND,
+            BASE_FEE_MOMENT,
         )
     }
 
@@ -422,6 +422,7 @@ mod test {
             10,
             PROPOSAL_GAS_LIMIT,
             PROPOSAL_SIZE_LIMIT,
+            BASE_FEE as u64,
             0x6000,
         );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
@@ -457,6 +458,7 @@ mod test {
             10,
             PROPOSAL_GAS_LIMIT,
             PROPOSAL_SIZE_LIMIT,
+            BASE_FEE as u64,
             0x6000,
         );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
@@ -492,6 +494,7 @@ mod test {
             1,
             PROPOSAL_GAS_LIMIT,
             PROPOSAL_SIZE_LIMIT,
+            BASE_FEE as u64,
             0x6000,
         );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
@@ -532,6 +535,7 @@ mod test {
             10,
             PROPOSAL_GAS_LIMIT,
             PROPOSAL_SIZE_LIMIT,
+            BASE_FEE as u64,
             0x6000,
         );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
@@ -565,6 +569,7 @@ mod test {
             10,
             PROPOSAL_GAS_LIMIT,
             PROPOSAL_SIZE_LIMIT,
+            BASE_FEE as u64,
             0x6000,
         );
         assert!(result.is_ok());
@@ -613,6 +618,7 @@ mod test {
             10,
             PROPOSAL_GAS_LIMIT,
             PROPOSAL_SIZE_LIMIT,
+            BASE_FEE as u64,
             0x6000,
         );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));

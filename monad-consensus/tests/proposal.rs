@@ -57,6 +57,10 @@ use monad_validator::{
 };
 use test_case::test_case;
 
+const BASE_FEE: u64 = 100_000_000_000;
+const BASE_FEE_TREND: u64 = 0;
+const BASE_FEE_MOMENT: u64 = 0;
+
 type SignatureType = NopSignature;
 type PubKeyType = CertificateSignaturePubKey<SignatureType>;
 type MockSignatureCollectionType = MockSignatures<SignatureType>;
@@ -125,6 +129,9 @@ fn setup_block(
                 block_round,
                 &NopKeyPair::from_bytes(&mut [1_u8; 32]).unwrap(),
             ),
+            BASE_FEE,
+            BASE_FEE_TREND,
+            BASE_FEE_MOMENT,
         ),
         payload,
     )
@@ -1236,6 +1243,9 @@ fn test_validate_tc_invalid_tc_signature() {
                 block_round,
                 &NopKeyPair::from_bytes(&mut [1_u8; 32]).unwrap(),
             ),
+            BASE_FEE,
+            BASE_FEE_TREND,
+            BASE_FEE_MOMENT,
         );
 
     let proposal = ProposalMessage {

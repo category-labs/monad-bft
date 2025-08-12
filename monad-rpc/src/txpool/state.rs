@@ -272,7 +272,6 @@ mod test {
         EthTxPoolDropReason, EthTxPoolEvent, EthTxPoolEventType, EthTxPoolEvictReason,
         EthTxPoolSnapshot,
     };
-    use monad_eth_types::BASE_FEE_PER_GAS;
     use tokio::time::Instant;
 
     use super::EthTxPoolBridgeStateView;
@@ -281,6 +280,7 @@ mod test {
         TxStatus,
     };
 
+    const BASE_FEE_PER_GAS: u64 = 100_000_000_000;
     // pubkey starts with AAA
     const S1: B256 = B256::new(hex!(
         "0ed2e19e3aca1a321349f295837988e9c6f95d4a6fc54cfab6befd5ee82662ad"

@@ -31,7 +31,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
-use monad_eth_types::{EthExecutionProtocol, BASE_FEE_PER_GAS};
+use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_state_backend::StateBackend;
@@ -178,6 +178,9 @@ where
                         high_qc,
                         timestamp_ns,
                         round_signature,
+                        base_fee: monad_tfm::base_fee::MIN_BASE_FEE,
+                        base_fee_trend: monad_tfm::base_fee::GENESIS_BASE_FEE_TREND,
+                        base_fee_moment: monad_tfm::base_fee::GENESIS_BASE_FEE_MOMENT,
                         delayed_execution_results,
                         proposed_execution_inputs: ProposedExecutionInputs {
                             header: MockExecutionProposedHeader::default(),
@@ -240,11 +243,14 @@ where
                     extending_blocks,
                     delayed_execution_results,
                 } => {
+                    let (base_fee, base_fee_trend, base_fee_moment) =
+                        block_policy.compute_base_fee(&extending_blocks);
+
                     let proposed_execution_inputs = pool
                         .create_proposal(
                             &mut event_tracker,
                             seq_num,
-                            BASE_FEE_PER_GAS,
+                            base_fee,
                             tx_limit,
                             proposal_gas_limit,
                             proposal_byte_limit,
@@ -264,6 +270,9 @@ where
                         high_qc,
                         timestamp_ns,
                         round_signature,
+                        base_fee,
+                        base_fee_trend,
+                        base_fee_moment,
                         delayed_execution_results,
                         proposed_execution_inputs,
                         last_round_tc,
