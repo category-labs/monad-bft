@@ -13,9 +13,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use monad_consensus::messages::{
-    consensus_message::{ConsensusMessage, ProtocolMessage},
-    message::ProposalMessage,
+use monad_consensus::{
+    messages::{
+        consensus_message::{ConsensusMessage, ProtocolMessage},
+        message::ProposalMessage,
+    },
+    validation::certificate_cache::CertificateCache,
 };
 use monad_consensus_types::{
     block::{
@@ -549,7 +552,12 @@ fn test_validate_missing_tc(qc_round: Round) {
     };
 
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map, &FakeLeaderElection(author)),
+        proposal.validate(
+            &mut CertificateCache::default(),
+            &epoch_manager,
+            &val_epoch_map,
+            &FakeLeaderElection(author)
+        ),
         Err(Error::NotWellFormed)
     );
 }
@@ -599,7 +607,12 @@ fn test_validate_incorrect_block_epoch(known_epoch: Epoch, block_epoch: Epoch) {
     };
 
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map, &FakeLeaderElection(author)),
+        proposal.validate(
+            &mut CertificateCache::default(),
+            &epoch_manager,
+            &val_epoch_map,
+            &FakeLeaderElection(author)
+        ),
         Err(Error::InvalidEpoch)
     );
 }
@@ -648,7 +661,12 @@ fn test_validate_qc_epoch() {
     };
 
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map, &FakeLeaderElection(author)),
+        proposal.validate(
+            &mut CertificateCache::default(),
+            &epoch_manager,
+            &val_epoch_map,
+            &FakeLeaderElection(author)
+        ),
         Err(Error::ValidatorSetDataUnavailable)
     );
 }
@@ -697,7 +715,12 @@ fn test_validate_mismatch_qc_epoch() {
     };
 
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map, &FakeLeaderElection(author)),
+        proposal.validate(
+            &mut CertificateCache::default(),
+            &epoch_manager,
+            &val_epoch_map,
+            &FakeLeaderElection(author)
+        ),
         Err(Error::InvalidEpoch)
     );
 }
@@ -746,7 +769,12 @@ fn test_proposal_invalid_qc_validator_set() {
     };
 
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map, &FakeLeaderElection(author)),
+        proposal.validate(
+            &mut CertificateCache::default(),
+            &epoch_manager,
+            &val_epoch_map,
+            &FakeLeaderElection(author)
+        ),
         Err(Error::ValidatorSetDataUnavailable)
     );
 }
@@ -791,7 +819,12 @@ fn test_validate_insufficient_qc_stake() {
     };
 
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map, &FakeLeaderElection(author)),
+        proposal.validate(
+            &mut CertificateCache::default(),
+            &epoch_manager,
+            &val_epoch_map,
+            &FakeLeaderElection(author)
+        ),
         Err(Error::InsufficientStake)
     );
 }
@@ -841,7 +874,12 @@ fn test_validate_qc_happy() {
     };
 
     assert!(proposal
-        .validate(&epoch_manager, &val_epoch_map, &FakeLeaderElection(author))
+        .validate(
+            &mut CertificateCache::default(),
+            &epoch_manager,
+            &val_epoch_map,
+            &FakeLeaderElection(author)
+        )
         .is_ok());
 }
 
@@ -891,7 +929,12 @@ fn test_validate_tc_invalid_round_block(block_round: Round, tc_round: Round) {
     );
 
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map, &election),
+        proposal.validate(
+            &mut CertificateCache::default(),
+            &epoch_manager,
+            &val_epoch_map,
+            &election
+        ),
         Err(Error::InvalidEpoch)
     );
 }
@@ -930,7 +973,12 @@ fn test_validate_tc_invalid_epoch() {
     );
 
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map, &election),
+        proposal.validate(
+            &mut CertificateCache::default(),
+            &epoch_manager,
+            &val_epoch_map,
+            &election
+        ),
         Err(Error::InvalidEpoch)
     );
 }
@@ -969,7 +1017,12 @@ fn test_validate_tc_incorrect_epoch() {
     );
 
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map, &election),
+        proposal.validate(
+            &mut CertificateCache::default(),
+            &epoch_manager,
+            &val_epoch_map,
+            &election
+        ),
         Err(Error::InvalidEpoch)
     );
 }
@@ -1008,7 +1061,12 @@ fn test_validate_tc_invalid_val_set() {
     );
 
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map, &election),
+        proposal.validate(
+            &mut CertificateCache::default(),
+            &epoch_manager,
+            &val_epoch_map,
+            &election
+        ),
         Err(Error::ValidatorSetDataUnavailable)
     );
 }
@@ -1047,7 +1105,12 @@ fn test_validate_tc_invalid_round() {
     );
 
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map, &election),
+        proposal.validate(
+            &mut CertificateCache::default(),
+            &epoch_manager,
+            &val_epoch_map,
+            &election
+        ),
         Err(Error::InvalidTcRound)
     );
 }
@@ -1086,7 +1149,12 @@ fn test_validate_tc_happy() {
     );
 
     assert!(proposal
-        .validate(&epoch_manager, &val_epoch_map, &election)
+        .validate(
+            &mut CertificateCache::default(),
+            &epoch_manager,
+            &val_epoch_map,
+            &election
+        )
         .is_ok());
 }
 
@@ -1179,7 +1247,12 @@ fn test_validate_tc_invalid_tc_signature() {
     };
 
     assert!(matches!(
-        proposal.validate(&epoch_manager, &val_epoch_map, &FakeLeaderElection(author),),
+        proposal.validate(
+            &mut CertificateCache::default(),
+            &epoch_manager,
+            &val_epoch_map,
+            &FakeLeaderElection(author),
+        ),
         Err(Error::InvalidSignature)
     ));
 }
@@ -1219,7 +1292,12 @@ fn test_validate_genesis_sig() {
         tc_round,
     );
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map, &election),
+        proposal.validate(
+            &mut CertificateCache::default(),
+            &epoch_manager,
+            &val_epoch_map,
+            &election
+        ),
         Err(Error::InvalidSignature)
     );
 }

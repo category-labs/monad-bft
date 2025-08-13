@@ -21,7 +21,10 @@ use monad_consensus::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
         message::ProposalMessage,
     },
-    validation::signing::{Unvalidated, Unverified, Validated, Verified},
+    validation::{
+        certificate_cache::CertificateCache,
+        signing::{Unvalidated, Unverified, Validated, Verified},
+    },
 };
 use monad_consensus_state::{command::ConsensusCommand, ConsensusConfig, ConsensusStateWrapper};
 use monad_consensus_types::{
@@ -67,6 +70,7 @@ where
     CRT: ChainRevision,
 {
     consensus: &'a mut ConsensusMode<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
+    certificate_cache: &'a mut CertificateCache<ST, SCT, EPT>,
 
     metrics: &'a mut Metrics,
     epoch_manager: &'a mut EpochManager,
@@ -106,6 +110,7 @@ where
     ) -> Self {
         Self {
             consensus: &mut monad_state.consensus,
+            certificate_cache: &mut monad_state.certificate_cache,
 
             metrics: &mut monad_state.metrics,
             epoch_manager: &mut monad_state.epoch_manager,
@@ -146,6 +151,7 @@ where
                 {
                     // skip evidence collection in sync mode
                     if let Ok(verified_message) = Self::verify_and_validate_consensus_message(
+                        self.certificate_cache,
                         self.epoch_manager,
                         self.val_epoch_map,
                         self.leader_election,
@@ -210,6 +216,7 @@ where
                 unverified_message,
             } => {
                 match Self::verify_and_validate_consensus_message(
+                    self.certificate_cache,
                     consensus.epoch_manager,
                     consensus.val_epoch_map,
                     consensus.election,
@@ -478,6 +485,7 @@ where
 
     #[tracing::instrument(level = "debug", skip_all)]
     fn verify_and_validate_consensus_message(
+        certificate_cache: &mut CertificateCache<ST, SCT, EPT>,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
@@ -501,6 +509,7 @@ where
         // Validated message according to consensus protocol spec
         let validated_message = verified_message
             .validate(
+                certificate_cache,
                 epoch_manager,
                 val_epoch_map,
                 election,

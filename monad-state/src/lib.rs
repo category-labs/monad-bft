@@ -30,7 +30,10 @@ use monad_chain_config::{
 };
 use monad_consensus::{
     messages::consensus_message::ConsensusMessage,
-    validation::signing::{verify_qc, verify_tc, Unvalidated, Unverified, Validated, Verified},
+    validation::{
+        certificate_cache::CertificateCache,
+        signing::{verify_qc, verify_tc, Unvalidated, Unverified, Validated, Verified},
+    },
 };
 use monad_consensus_state::{
     command::ConsensusCommand, timestamp::BlockTimestamp, ConsensusConfig, ConsensusState,
@@ -276,13 +279,14 @@ where
             Ok((vset, vmap, leader))
         };
 
+        let mut cert_cache = CertificateCache::default();
         match &self.high_certificate {
             RoundCertificate::Qc(qc) => {
-                verify_qc(&epoch_to_validators, qc)
+                verify_qc(&mut cert_cache, &epoch_to_validators, qc)
                     .map_err(|_| ForkpointValidationError::InvalidQC)?;
             }
             RoundCertificate::Tc(tc) => {
-                verify_tc(&epoch_to_validators, tc)
+                verify_tc(&mut cert_cache, &epoch_to_validators, tc)
                     .map_err(|_| ForkpointValidationError::InvalidHighCertificate)?;
             }
         };
@@ -382,6 +386,8 @@ where
 
     /// Core consensus algorithm state machine
     consensus: ConsensusMode<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
+    /// Cache used for quorum certificates (QC, TC, NEC)
+    certificate_cache: CertificateCache<ST, SCT, EPT>,
     /// Handles blocksync servicing
     block_sync: BlockSync<ST, SCT, EPT>,
 
@@ -818,6 +824,7 @@ where
                     statesync_to_live_threshold,
                 ),
             ),
+            certificate_cache: CertificateCache::default(),
             block_sync: BlockSync::new(self.block_sync_override_peers),
 
             leader_election: self.leader_election,

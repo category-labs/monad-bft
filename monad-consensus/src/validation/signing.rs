@@ -44,12 +44,15 @@ use monad_validator::{
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
-use crate::messages::{
-    consensus_message::{ConsensusMessage, ProtocolMessage},
-    message::{
-        AdvanceRoundMessage, NoEndorsementMessage, ProposalMessage, RoundRecoveryMessage,
-        TimeoutMessage, VoteMessage,
+use crate::{
+    messages::{
+        consensus_message::{ConsensusMessage, ProtocolMessage},
+        message::{
+            AdvanceRoundMessage, NoEndorsementMessage, ProposalMessage, RoundRecoveryMessage,
+            TimeoutMessage, VoteMessage,
+        },
     },
+    validation::certificate_cache::CertificateCache,
 };
 
 /// A verified message carries a valid signature created by the author. It's
@@ -319,6 +322,7 @@ where
 {
     pub fn validate<VTF, VT, LT>(
         self,
+        cert_cache: &mut CertificateCache<ST, SCT, EPT>,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
@@ -351,22 +355,22 @@ where
 
         match &message {
             ProtocolMessage::Proposal(m) => {
-                m.validate(epoch_manager, val_epoch_map, election)?;
+                m.validate(cert_cache, epoch_manager, val_epoch_map, election)?;
             }
             ProtocolMessage::Vote(m) => {
                 m.validate(epoch_manager)?;
             }
             ProtocolMessage::Timeout(m) => {
-                m.validate(epoch_manager, val_epoch_map, election)?;
+                m.validate(cert_cache, epoch_manager, val_epoch_map, election)?;
             }
             ProtocolMessage::RoundRecovery(m) => {
-                m.validate(epoch_manager, val_epoch_map, election)?;
+                m.validate(cert_cache, epoch_manager, val_epoch_map, election)?;
             }
             ProtocolMessage::NoEndorsement(m) => {
                 m.validate(epoch_manager)?;
             }
             ProtocolMessage::AdvanceRound(m) => {
-                m.validate(epoch_manager, val_epoch_map, election)?;
+                m.validate(cert_cache, epoch_manager, val_epoch_map, election)?;
             }
         }
 
@@ -398,6 +402,7 @@ where
     // for block.round
     pub fn validate<VTF, VT, LT>(
         &self,
+        cert_cache: &mut CertificateCache<ST, SCT, EPT>,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
@@ -409,6 +414,7 @@ where
     {
         if let Some(tc) = &self.last_round_tc {
             verify_tc(
+                cert_cache,
                 &|epoch, round| {
                     epoch_to_validators(epoch_manager, val_epoch_map, election, epoch, round)
                 },
@@ -421,6 +427,7 @@ where
         }
 
         verify_tip(
+            cert_cache,
             &|epoch, round| {
                 epoch_to_validators(epoch_manager, val_epoch_map, election, epoch, round)
             },
@@ -525,6 +532,7 @@ where
     /// A valid timeout message is well-formed, and carries valid QC/TC
     pub fn validate<VTF, VT, LT>(
         &self,
+        cert_cache: &mut CertificateCache<ST, SCT, EPT>,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
@@ -544,6 +552,7 @@ where
             match round_certificate {
                 RoundCertificate::Tc(tc) => {
                     verify_tc(
+                        cert_cache,
                         &|epoch, round| {
                             epoch_to_validators(
                                 epoch_manager,
@@ -558,6 +567,7 @@ where
                 }
                 RoundCertificate::Qc(qc) => {
                     verify_qc(
+                        cert_cache,
                         &|epoch, round| {
                             epoch_to_validators(
                                 epoch_manager,
@@ -577,6 +587,7 @@ where
             }
         }
         verify_high_extend(
+            cert_cache,
             &|epoch, round| {
                 epoch_to_validators(epoch_manager, val_epoch_map, election, epoch, round)
             },
@@ -644,6 +655,7 @@ where
     /// A valid timeout message is well-formed, and carries valid QC/TC
     pub fn validate<VTF, VT, LT>(
         &self,
+        cert_cache: &mut CertificateCache<ST, SCT, EPT>,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
@@ -654,6 +666,7 @@ where
         LT: LeaderElection<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
         verify_tc(
+            cert_cache,
             &|epoch, round| {
                 epoch_to_validators(epoch_manager, val_epoch_map, election, epoch, round)
             },
@@ -721,6 +734,7 @@ where
     /// A valid timeout message is well-formed, and carries valid QC/TC
     pub fn validate<VTF, VT, LT>(
         &self,
+        cert_cache: &mut CertificateCache<ST, SCT, EPT>,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
@@ -733,6 +747,7 @@ where
         match &self.last_round_certificate {
             RoundCertificate::Tc(tc) => {
                 verify_tc(
+                    cert_cache,
                     &|epoch, round| {
                         epoch_to_validators(epoch_manager, val_epoch_map, election, epoch, round)
                     },
@@ -741,6 +756,7 @@ where
             }
             RoundCertificate::Qc(qc) => {
                 verify_qc(
+                    cert_cache,
                     &|epoch, round| {
                         epoch_to_validators(epoch_manager, val_epoch_map, election, epoch, round)
                     },
@@ -794,6 +810,7 @@ where
 ///
 /// See [monad_consensus_types::timeout::TimeoutInfo::timeout_digest]
 pub fn verify_tc<'a, ST, SCT, EPT, VT>(
+    cert_cache: &mut CertificateCache<ST, SCT, EPT>,
     epoch_to_validators: &impl Fn(
         Epoch,
         Round,
@@ -813,6 +830,10 @@ where
     EPT: ExecutionProtocol,
     VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
 {
+    if cert_cache.tc_is_cached_validated(tc) {
+        return Ok(());
+    }
+
     let (validators, validator_mapping, _leader) = epoch_to_validators(tc.epoch, tc.round)?;
 
     let mut node_ids = Vec::new();
@@ -862,15 +883,13 @@ where
         node_ids.extend(signers);
     }
 
-    match validators.has_super_majority_votes(&node_ids) {
-        Err(ValidatorSetError::DuplicateValidator(_)) => {
-            return Err(Error::SignaturesDuplicateNode)
-        }
-        Ok(false) => return Err(Error::InsufficientStake),
-        Ok(true) => {}
-    }
+    let () = match validators.has_super_majority_votes(&node_ids) {
+        Err(ValidatorSetError::DuplicateValidator(_)) => Err(Error::SignaturesDuplicateNode),
+        Ok(false) => Err(Error::InsufficientStake),
+        Ok(true) => Ok(()),
+    }?;
 
-    verify_high_extend(epoch_to_validators, &tc.high_extend)?;
+    verify_high_extend(cert_cache, epoch_to_validators, &tc.high_extend)?;
     match &tc.high_extend {
         HighExtend::Qc(qc) => {
             if qc.get_round() != highest_qc_round {
@@ -892,13 +911,15 @@ where
         }
     }
 
+    cert_cache.cache_validated_tc(tc);
     Ok(())
 }
 
 /// Verify the quorum certificate
 ///
 /// Verify the signature collection and super majority stake signed
-pub fn verify_qc<'a, SCT, VT>(
+pub fn verify_qc<'a, ST, SCT, EPT, VT>(
+    cert_cache: &mut CertificateCache<ST, SCT, EPT>,
     epoch_to_validators: &impl Fn(
         Epoch,
         Round,
@@ -913,9 +934,15 @@ pub fn verify_qc<'a, SCT, VT>(
     qc: &QuorumCertificate<SCT>,
 ) -> Result<(), Error>
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
     VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
 {
+    if cert_cache.qc_is_cached_validated(qc) {
+        return Ok(());
+    }
+
     let (validators, validator_mapping, _leader) =
         epoch_to_validators(qc.get_epoch(), qc.get_round())?;
 
@@ -932,15 +959,19 @@ where
         .verify::<signing_domain::Vote>(validator_mapping, qc_msg.as_ref())
         .map_err(|_| Error::InvalidSignature)?;
 
-    match validators.has_super_majority_votes(&node_ids) {
+    let () = match validators.has_super_majority_votes(&node_ids) {
         Err(ValidatorSetError::DuplicateValidator(_)) => Err(Error::SignaturesDuplicateNode),
         Ok(false) => Err(Error::InsufficientStake),
         Ok(true) => Ok(()),
-    }
+    }?;
+
+    cert_cache.cache_validated_qc(qc);
+    Ok(())
 }
 
 /// Verify the high_extend
 pub fn verify_high_extend<'a, ST, SCT, EPT, VT>(
+    cert_cache: &mut CertificateCache<ST, SCT, EPT>,
     epoch_to_validators: &impl Fn(
         Epoch,
         Round,
@@ -962,10 +993,10 @@ where
 {
     match high_extend {
         HighExtend::Qc(qc) => {
-            verify_qc(epoch_to_validators, qc)?;
+            verify_qc(cert_cache, epoch_to_validators, qc)?;
         }
         HighExtend::Tip(tip) => {
-            verify_tip(epoch_to_validators, tip)?;
+            verify_tip(cert_cache, epoch_to_validators, tip)?;
         }
     }
 
@@ -974,6 +1005,7 @@ where
 
 /// Verify the tip
 pub fn verify_tip<'a, ST, SCT, EPT, VT>(
+    cert_cache: &mut CertificateCache<ST, SCT, EPT>,
     epoch_to_validators: &impl Fn(
         Epoch,
         Round,
@@ -1002,10 +1034,10 @@ where
         return Err(Error::InvalidAuthor);
     }
 
-    verify_qc(&epoch_to_validators, &tip.block_header.qc)?;
+    verify_qc(cert_cache, epoch_to_validators, &tip.block_header.qc)?;
     match &tip.fresh_certificate {
         Some(FreshProposalCertificate::Nec(nec)) => {
-            verify_nec(&epoch_to_validators, nec)?;
+            verify_nec(cert_cache, epoch_to_validators, nec)?;
         }
         Some(FreshProposalCertificate::NoTip(NoTipCertificate {
             epoch,
@@ -1014,6 +1046,7 @@ where
             high_qc,
         })) => {
             verify_tc(
+                cert_cache,
                 epoch_to_validators,
                 &TimeoutCertificate::<ST, SCT, EPT> {
                     epoch: *epoch,
@@ -1061,8 +1094,9 @@ where
 /// Verify the nec
 ///
 /// Verify the signature collection and super majority stake signed
-pub fn verify_nec<'a, SCT, VT>(
-    epoch_to_validators: impl Fn(
+pub fn verify_nec<'a, ST, SCT, EPT, VT>(
+    cert_cache: &mut CertificateCache<ST, SCT, EPT>,
+    epoch_to_validators: &impl Fn(
         Epoch,
         Round,
     ) -> Result<
@@ -1076,9 +1110,15 @@ pub fn verify_nec<'a, SCT, VT>(
     nec: &NoEndorsementCertificate<SCT>,
 ) -> Result<(), Error>
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
     VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
 {
+    if cert_cache.nec_is_cached_validated(nec) {
+        return Ok(());
+    }
+
     let (validators, validator_mapping, _leader) =
         epoch_to_validators(nec.msg.epoch, nec.msg.round)?;
 
@@ -1088,11 +1128,14 @@ where
         .verify::<signing_domain::NoEndorsement>(validator_mapping, nec_msg.as_ref())
         .map_err(|_| Error::InvalidSignature)?;
 
-    match validators.has_super_majority_votes(&node_ids) {
+    let () = match validators.has_super_majority_votes(&node_ids) {
         Err(ValidatorSetError::DuplicateValidator(_)) => Err(Error::SignaturesDuplicateNode),
         Ok(false) => Err(Error::InsufficientStake),
         Ok(true) => Ok(()),
-    }
+    }?;
+
+    cert_cache.cache_validated_nec(nec);
+    Ok(())
 }
 
 trait ValidatorPubKey {
@@ -1165,7 +1208,10 @@ mod test {
     use super::{verify_qc, verify_tc, Verified};
     use crate::{
         messages::message::{ProposalMessage, TimeoutMessage},
-        validation::signing::{epoch_to_validators, VoteMessage},
+        validation::{
+            certificate_cache::CertificateCache,
+            signing::{epoch_to_validators, VoteMessage},
+        },
     };
 
     type SignatureType = NopSignature;
@@ -1248,7 +1294,9 @@ mod test {
                 high_extend: HighExtend::Qc(qc),
             };
 
+        let mut cert_cache = CertificateCache::default();
         verify_tc(
+            &mut cert_cache,
             &|_epoch, _round| Ok((&vset, &vmap, NodeId::new(keypairs[0].pubkey()))),
             &tc,
         )
@@ -1284,8 +1332,14 @@ mod test {
 
         let qc = QuorumCertificate::new(vote2, sigs);
 
+        let mut cert_cache = CertificateCache::<
+            SignatureType,
+            SignatureCollectionType,
+            ExecutionProtocolType,
+        >::default();
         assert!(matches!(
             verify_qc(
+                &mut cert_cache,
                 &|_epoch, _round| Ok((&vset, &val_mapping, NodeId::new(keypair.pubkey()))),
                 &qc,
             ),
@@ -1328,8 +1382,14 @@ mod test {
 
         let qc = QuorumCertificate::new(vote, sig_col);
 
+        let mut cert_cache = CertificateCache::<
+            SignatureType,
+            SignatureCollectionType,
+            ExecutionProtocolType,
+        >::default();
         assert!(matches!(
             verify_qc(
+                &mut cert_cache,
                 &|_epoch, _round| Ok((&vset, &vmap, NodeId::new(keypairs[0].pubkey()))),
                 &qc,
             ),
@@ -1409,8 +1469,10 @@ mod test {
                 high_extend: HighExtend::Qc(qc),
             };
 
+        let mut cert_cache = CertificateCache::default();
         assert!(matches!(
             verify_tc(
+                &mut cert_cache,
                 &|_epoch, _round| Ok((&vset, &vmap, NodeId::new(keypairs[0].pubkey()))),
                 &tc
             ),
@@ -1461,8 +1523,10 @@ mod test {
                 high_extend: HighExtend::Qc(QuorumCertificate::genesis_qc()),
             };
 
+        let mut cert_cache = CertificateCache::default();
         assert!(matches!(
             verify_tc(
+                &mut cert_cache,
                 &|_epoch, _round| Ok((&vset, &vmap, NodeId::new(keypairs[0].pubkey()))),
                 &tc
             ),
@@ -1513,8 +1577,10 @@ mod test {
                 high_extend: HighExtend::Qc(QuorumCertificate::genesis_qc()),
             };
 
+        let mut cert_cache = CertificateCache::default();
         assert!(matches!(
             verify_tc(
+                &mut cert_cache,
                 &|_epoch, _round| Ok((&vset, &val_mapping, NodeId::new(keypair.pubkey()))),
                 &tc
             ),
@@ -1587,7 +1653,13 @@ mod test {
             vmap,
         );
 
-        let err = unvalidated_tmo_msg.validate(&epoch_manager, &val_epoch_map, &election);
+        let mut cert_cache = CertificateCache::default();
+        let err = unvalidated_tmo_msg.validate(
+            &mut cert_cache,
+            &epoch_manager,
+            &val_epoch_map,
+            &election,
+        );
 
         assert!(matches!(err, Err(Error::InsufficientStake)));
     }
@@ -1649,7 +1721,13 @@ mod test {
             vmap,
         );
 
-        let err = unvalidated_byzantine_tmo_msg.validate(&epoch_manager, &val_epoch_map, &election);
+        let mut cert_cache = CertificateCache::default();
+        let err = unvalidated_byzantine_tmo_msg.validate(
+            &mut cert_cache,
+            &epoch_manager,
+            &val_epoch_map,
+            &election,
+        );
         assert!(matches!(err, Err(Error::NotWellFormed)));
     }
 
@@ -1727,8 +1805,13 @@ mod test {
             tip: ConsensusTip::new(&keys[0], block, None),
         };
 
-        let maybe_validated =
-            unvalidated_proposal.validate(&epoch_manager, &val_epoch_map, &election);
+        let mut cert_cache = CertificateCache::default();
+        let maybe_validated = unvalidated_proposal.validate(
+            &mut cert_cache,
+            &epoch_manager,
+            &val_epoch_map,
+            &election,
+        );
 
         assert_eq!(maybe_validated, Err(Error::InvalidEpoch));
     }
@@ -1830,8 +1913,13 @@ mod test {
             None,
         );
 
-        let maybe_validated =
-            unvalidated_timeout_message.validate(&epoch_manager, &val_epoch_map, &election);
+        let mut cert_cache = CertificateCache::default();
+        let maybe_validated = unvalidated_timeout_message.validate(
+            &mut cert_cache,
+            &epoch_manager,
+            &val_epoch_map,
+            &election,
+        );
         assert_eq!(maybe_validated, Err(Error::InvalidEpoch));
     }
 
@@ -1884,7 +1972,9 @@ mod test {
 
         tmo_msg.0.timeout_signature = BlsSignature::uncompress(&not_in_subgroup_bytes).unwrap();
 
-        let maybe_validated = tmo_msg.validate(&epoch_manager, &val_epoch_map, &election);
+        let mut cert_cache = CertificateCache::default();
+        let maybe_validated =
+            tmo_msg.validate(&mut cert_cache, &epoch_manager, &val_epoch_map, &election);
         assert_eq!(maybe_validated, Err(Error::InvalidSignature));
     }
 
@@ -1927,7 +2017,14 @@ mod test {
         val_epoch_map.insert(Epoch(1), validator_stakes, valmap);
 
         let qc = QuorumCertificate::new(vote, sigcol);
+
+        let mut cert_cache = CertificateCache::<
+            SignatureType,
+            SignatureCollectionType,
+            ExecutionProtocolType,
+        >::default();
         let verify_result = verify_qc(
+            &mut cert_cache,
             &|epoch, round| {
                 epoch_to_validators(&epoch_manager, &val_epoch_map, &election, epoch, round)
             },
@@ -2013,7 +2110,9 @@ mod test {
             ValidatorsEpochMapping::new(ValidatorSetFactory::default());
         val_epoch_map.insert(Epoch(1), validator_stakes, valmap);
 
+        let mut cert_cache = CertificateCache::default();
         let qc_verify_result = verify_qc(
+            &mut cert_cache,
             &|epoch, round| {
                 epoch_to_validators(&epoch_manager, &val_epoch_map, &election, epoch, round)
             },
@@ -2021,6 +2120,7 @@ mod test {
         );
         assert_eq!(qc_verify_result, Ok(()));
         let tc_verify_result = verify_tc(
+            &mut cert_cache,
             &|epoch, round| {
                 epoch_to_validators(&epoch_manager, &val_epoch_map, &election, epoch, round)
             },
