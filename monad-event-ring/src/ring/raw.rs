@@ -45,7 +45,7 @@ impl RawEventRing {
     where
         D: EventDecoder,
     {
-        D::check_ring_type(&self.inner)
+        D::check_ring_content_type(&self.inner)
     }
 }
 

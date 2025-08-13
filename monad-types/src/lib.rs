@@ -22,6 +22,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use alloy_primitives::U256;
 use alloy_rlp::{
     Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper,
 };
@@ -67,6 +68,9 @@ impl Round {
         self.0
     }
 }
+
+pub type Balance = U256;
+pub type Nonce = u64;
 
 impl AsRef<[u8]> for Round {
     fn as_ref(&self) -> &[u8] {

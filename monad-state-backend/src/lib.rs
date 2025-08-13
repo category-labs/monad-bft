@@ -19,8 +19,8 @@ use std::{
 };
 
 use alloy_primitives::Address;
-use monad_eth_types::{EthAccount, EthHeader, Nonce};
-use monad_types::{BlockId, Round, SeqNum};
+use monad_eth_types::{EthAccount, EthHeader};
+use monad_types::{BlockId, Nonce, Round, SeqNum};
 
 pub use self::{
     in_memory::{InMemoryBlockState, InMemoryState, InMemoryStateInner},

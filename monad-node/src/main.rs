@@ -297,6 +297,17 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
             GENESIS_SEQ_NUM, // FIXME: MonadStateBuilder is responsible for updating this to forkpoint root if necessary
             EXECUTION_DELAY,
             node_state.node_config.chain_id,
+            node_state
+                .chain_config
+                .get_chain_revision(
+                    node_state
+                        .forkpoint_config
+                        .high_certificate
+                        .qc()
+                        .get_round(),
+                )
+                .chain_params()
+                .max_reserve_balance,
         )
     };
 

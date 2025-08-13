@@ -21,7 +21,6 @@ use std::{
 use monad_chain_config::{revision::ChainParams, MockChainConfig};
 use monad_consensus_types::{block::PassthruBlockPolicy, block_validator::MockValidator};
 use monad_crypto::certificate_signature::CertificateKeyPair;
-use monad_eth_types::Balance;
 use monad_mock_swarm::{
     mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
     swarm_relation::NoSerSwarm, terminator::UntilTerminator,
@@ -33,7 +32,7 @@ use monad_transformer::{
     GenericTransformer, LatencyTransformer, PartitionTransformer, RandLatencyTransformer,
     ReplayTransformer, TransformerReplayOrder, ID,
 };
-use monad_types::{NodeId, Round, SeqNum};
+use monad_types::{Balance, NodeId, Round, SeqNum};
 use monad_updaters::{
     ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
     txpool::MockTxPoolExecutor,
@@ -46,6 +45,7 @@ static CHAIN_PARAMS: ChainParams = ChainParams {
     tx_limit: 10_000,
     proposal_gas_limit: 300_000_000,
     proposal_byte_limit: 4_000_000,
+    max_reserve_balance: 1_000_000_000_000_000_000,
     vote_pace: Duration::from_millis(100),
 };
 
@@ -114,6 +114,7 @@ static CHAIN_PARAMS_NO_VOTE_PACE: ChainParams = ChainParams {
     tx_limit: 10_000,
     proposal_gas_limit: 300_000_000,
     proposal_byte_limit: 4_000_000,
+    max_reserve_balance: 1_000_000_000_000_000_000,
     vote_pace: Duration::from_millis(0),
 };
 

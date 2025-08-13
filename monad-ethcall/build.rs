@@ -24,9 +24,7 @@ fn main() {
     if build_execution_lib {
         let target = "monad_rpc";
         let dst = cmake::Config::new("../monad-cxx/monad-execution")
-            .define("CMAKE_BUILD_TARGET", target)
-            .define("CMAKE_POSITION_INDEPENDENT_CODE", "ON")
-            .define("BUILD_SHARED_LIBS", "ON")
+            .define("MONAD_RPC_SHARED", "ON")
             .build_target(target)
             .build();
 
