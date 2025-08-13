@@ -1,4 +1,4 @@
-## Overview
+## Overview - Edit
 
 The spec supports a simple peer discovery algorithm. Peers maintain connections by sending periodic pings to each other. A node can specify the desired minimum active connections and maximum active connections, where the node will actively look for new peers or prune unresponsive peers depending on size of current peer list
 
