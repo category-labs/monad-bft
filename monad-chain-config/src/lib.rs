@@ -143,7 +143,7 @@ const MONAD_TESTNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     chain_id: MONAD_TESTNET_CHAIN_ID,
     v_0_7_0_activation: Round::MIN,
     v_0_8_0_activation: Round(3263000),
-    v_0_10_0_activation: Round(32026929),
+    v_0_10_0_activation: Round(32026929), // 2025-08-12T13:30:00.000Z
 
     execution_v_one_activation: 1739559600, // 2025-02-14T19:00:00.000Z
     execution_v_two_activation: 1741978800, // 2025-03-14T19:00:00.000Z
@@ -164,7 +164,7 @@ const MONAD_MAINNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     chain_id: MONAD_MAINNET_CHAIN_ID,
     v_0_7_0_activation: Round::MIN,
     v_0_8_0_activation: Round::MIN,
-    v_0_10_0_activation: Round::MIN, // TODO fill in real round later
+    v_0_10_0_activation: Round(15643179), // 2025-08-13T13:30:00.000Z
 
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
