@@ -170,6 +170,7 @@ pub struct AccountBalanceState {
     pub remaining_reserve_balance: Balance,
     pub max_reserve_balance: Balance,
     pub block_seqnum_of_latest_txn: SeqNum,
+    pub is_delegated: bool,
 }
 
 impl AccountBalanceState {
@@ -179,6 +180,7 @@ impl AccountBalanceState {
             remaining_reserve_balance: Balance::ZERO,
             max_reserve_balance,
             block_seqnum_of_latest_txn: GENESIS_SEQ_NUM,
+            is_delegated: false,
         }
     }
 }
@@ -197,6 +199,7 @@ pub struct TxnFee {
     pub first_txn_value: Balance,
     pub first_txn_gas: Balance,
     pub max_gas_cost: Balance,
+    pub is_delegated: bool,
 }
 
 impl Default for TxnFee {
@@ -205,6 +208,7 @@ impl Default for TxnFee {
             first_txn_value: Balance::ZERO,
             first_txn_gas: Balance::ZERO,
             max_gas_cost: Balance::ZERO,
+            is_delegated: false,
         }
     }
 }

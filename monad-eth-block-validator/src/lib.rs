@@ -23,8 +23,9 @@ use alloy_consensus::{
 };
 use alloy_primitives::Address;
 use alloy_rlp::Encodable;
+use itertools::Itertools;
 use monad_consensus_types::{
-    block::{BlockPolicy, ConsensusBlockHeader, ConsensusFullBlock, TxnFee, TxnFees},
+    block::{BlockPolicy, ConsensusBlockHeader, ConsensusFullBlock, TxnFees},
     block_validator::{BlockValidationError, BlockValidator},
     payload::ConsensusBlockBody,
     signature_collection::{SignatureCollection, SignatureCollectionPubKeyType},
@@ -38,7 +39,7 @@ use monad_eth_block_policy::{
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader, BASE_FEE_PER_GAS};
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
-use monad_types::{Balance, Nonce};
+use monad_types::Nonce;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing::{debug, trace_span, warn};
 
@@ -144,11 +145,7 @@ where
                 }
             }
 
-            let txn_fee_entry = txn_fees.entry(eth_txn.signer()).or_insert(TxnFee {
-                first_txn_value: Balance::ZERO,
-                first_txn_gas: Balance::ZERO,
-                max_gas_cost: Balance::ZERO,
-            });
+            let txn_fee_entry = txn_fees.entry(eth_txn.signer()).or_default();
             if i == 0 {
                 txn_fee_entry.first_txn_value = eth_txn.value();
                 txn_fee_entry.first_txn_gas = compute_txn_max_gas_cost(eth_txn);
@@ -156,6 +153,36 @@ where
                 txn_fee_entry.max_gas_cost = txn_fee_entry
                     .max_gas_cost
                     .saturating_add(compute_txn_max_gas_cost(eth_txn));
+            }
+
+            if eth_txn.is_eip7702() {
+                if let Some(auth_list) = eth_txn.authorization_list() {
+                    let authorities = auth_list
+                        .iter()
+                        .map(|a| (a.recover_authority(), a.nonce(), a.address))
+                        .collect_vec();
+                    for (result, nonce, address) in authorities {
+                        if let Ok(signer) = result {
+                            debug!(signer = ?eth_txn.signer(), ?address, ?nonce, delegating_account = ?signer, "Delegating account");
+                            if let Some(n) = nonces.get(&signer) {
+                                if *n != nonce {
+                                    return Err(BlockValidationError::TxnError);
+                                }
+                            }
+                            // TODO: what if nonces updated later in this block?
+                            nonces
+                                .entry(signer)
+                                .and_modify(|n| *n += 1)
+                                .or_insert(nonce + 1);
+
+                            let txn_fee = txn_fees.entry(signer).or_default();
+                            txn_fee.is_delegated = true;
+                        } else {
+                            debug!("Error recovering authority {:?}", result);
+                            return Err(BlockValidationError::TxnError);
+                        }
+                    }
+                }
             }
         }
 

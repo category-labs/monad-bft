@@ -195,6 +195,7 @@ pub fn generate_block_with_txs(
                         first_txn_value: Balance::ZERO,
                         first_txn_gas: Balance::ZERO,
                         max_gas_cost: Balance::ZERO,
+                        is_delegated: false,
                     })
                     .max_gas_cost += max_gas_cost;
 
