@@ -37,40 +37,12 @@ pub struct Config {
     #[serde(default = "default_root_private_keys")]
     pub root_private_keys: Vec<String>,
 
-    /// Seed used to generate private keys for recipients
-    #[serde(default = "default_recipient_seed")]
-    pub recipient_seed: u64,
-
-    /// Seed used to generate private keys for senders.
-    /// If set the same as recipient seed, the accounts will be the same
-    #[serde(default = "default_sender_seed")]
-    pub sender_seed: u64,
-
-    /// Number of recipient accounts to generate and cycle between
-    #[serde(default = "default_recipients")]
-    pub recipients: usize,
-
-    /// Number of sender accounts to generate and cycle sending from
-    pub senders: Option<usize>,
+    /// Traffic generation configuration
+    pub traffic_gen: TrafficGen,
 
     /// How long to wait before refreshing balances. A function of the execution delay and block speed
     #[serde(default = "default_refresh_delay_secs")]
     pub refresh_delay_secs: f64,
-
-    /// Should the txgen query for erc20 balances
-    /// This introduces many eth_calls which can affect performance and are not strictly needed for the gen to function
-    #[serde(default = "default_erc20_balance_of")]
-    pub erc20_balance_of: bool,
-
-    /// Which generation mode to use. Corresponds to Generator impls
-    pub gen_mode: GenMode,
-
-    /// How many senders should be batched together when cycling between gen -> rpc sender -> refresher -> gen...
-    pub sender_group_size: Option<usize>,
-
-    /// How many txs should be generated per sender per cycle.
-    /// Or put another way, how many txs should be generated before refreshing the nonce from chain state
-    pub tx_per_sender: Option<usize>,
 
     /// Queries rpc for receipts of each sent tx when set. Queries per txhash, prefer `use_receipts_by_block` for efficiency
     #[serde(default = "default_use_receipts")]
@@ -220,10 +192,10 @@ impl Config {
     }
 
     pub fn tx_per_sender(&self) -> usize {
-        if let Some(x) = self.tx_per_sender {
+        if let Some(x) = self.traffic_gen.tx_per_sender {
             return x;
         }
-        match &self.gen_mode {
+        match &self.traffic_gen.gen_mode {
             GenMode::FewToMany(..) => 500,
             GenMode::ManyToMany(..) => 10,
             GenMode::Duplicates(..) => 10,
@@ -240,10 +212,10 @@ impl Config {
     }
 
     pub fn sender_group_size(&self) -> usize {
-        if let Some(x) = self.sender_group_size {
+        if let Some(x) = self.traffic_gen.sender_group_size {
             return x;
         }
-        match &self.gen_mode {
+        match &self.traffic_gen.gen_mode {
             GenMode::FewToMany(..) => 100,
             GenMode::ManyToMany(..) => 100,
             GenMode::Duplicates(..) => 100,
@@ -260,10 +232,10 @@ impl Config {
     }
 
     pub fn senders(&self) -> usize {
-        if let Some(x) = self.senders {
+        if let Some(x) = self.traffic_gen.senders {
             return x;
         }
-        match &self.gen_mode {
+        match &self.traffic_gen.gen_mode {
             GenMode::FewToMany(..) => 1000,
             GenMode::ManyToMany(..) => 2500,
             GenMode::Duplicates(..) => 2500,
@@ -281,7 +253,7 @@ impl Config {
 
     pub fn required_contract(&self) -> RequiredContract {
         use RequiredContract::*;
-        match &self.gen_mode {
+        match &self.traffic_gen.gen_mode {
             GenMode::FewToMany(config) => match config.tx_type {
                 TxType::ERC20 => ERC20,
                 TxType::Native => None,
@@ -312,6 +284,40 @@ impl Config {
     pub fn rpc_url(&self) -> Result<Url> {
         self.rpc_url.parse().map_err(Into::into)
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrafficGen {
+    /// Seed used to generate private keys for recipients
+    #[serde(default = "default_recipient_seed")]
+    pub recipient_seed: u64,
+
+    /// Seed used to generate private keys for senders.
+    /// If set the same as recipient seed, the accounts will be the same
+    #[serde(default = "default_sender_seed")]
+    pub sender_seed: u64,
+
+    /// Number of recipient accounts to generate and cycle between
+    #[serde(default = "default_recipients")]
+    pub recipients: usize,
+
+    /// Number of sender accounts to generate and cycle sending from
+    pub senders: Option<usize>,
+
+    /// Should the txgen query for erc20 balances
+    /// This introduces many eth_calls which can affect performance and are not strictly needed for the gen to function
+    #[serde(default = "default_erc20_balance_of")]
+    pub erc20_balance_of: bool,
+
+    /// Which generation mode to use. Corresponds to Generator impls
+    pub gen_mode: GenMode,
+
+    /// How many senders should be batched together when cycling between gen -> rpc sender -> refresher -> gen...
+    pub sender_group_size: Option<usize>,
+
+    /// How many txs should be generated per sender per cycle.
+    /// Or put another way, how many txs should be generated before refreshing the nonce from chain state
+    pub tx_per_sender: Option<usize>,
 }
 
 pub enum RequiredContract {

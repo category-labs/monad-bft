@@ -81,7 +81,7 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         Arc::clone(&metrics),
         Duration::from_secs_f64(config.refresh_delay_secs),
         deployed_contract,
-        config.erc20_balance_of,
+        config.traffic_gen.erc20_balance_of,
     )?;
 
     let rpc_sender = RpcSender::new(
@@ -98,7 +98,7 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         metrics.clone(),
         config.otel_endpoint,
         config.otel_replica_name,
-        format!("{:?}", config.gen_mode),
+        format!("{:?}", config.traffic_gen.gen_mode),
     )?;
 
     let mut tasks = FuturesUnordered::new();
@@ -148,7 +148,7 @@ async fn critical_task(name: &'static str, task: tokio::task::JoinHandle<()>) ->
 }
 
 fn generate_sender_groups(config: &Config) -> impl Iterator<Item = AccountsWithTime> + '_ {
-    let mut rng = SmallRng::seed_from_u64(config.sender_seed);
+    let mut rng = SmallRng::seed_from_u64(config.traffic_gen.sender_seed);
     let num_groups = config.senders() / config.sender_group_size();
     let mut key_iter = config.root_private_keys.iter();
 

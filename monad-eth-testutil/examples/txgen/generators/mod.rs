@@ -45,9 +45,12 @@ pub fn make_generator(
     config: &Config,
     deployed_contract: DeployedContract,
 ) -> Result<Box<dyn Generator + Send + Sync>> {
-    let recipient_keys = KeyPool::new(config.recipients, config.recipient_seed);
+    let recipient_keys = KeyPool::new(
+        config.traffic_gen.recipients,
+        config.traffic_gen.recipient_seed,
+    );
     let tx_per_sender = config.tx_per_sender();
-    Ok(match &config.gen_mode {
+    Ok(match &config.traffic_gen.gen_mode {
         GenMode::NullGen(_) => Box::new(NullGen),
         GenMode::FewToMany(config) => Box::new(CreateAccountsGenerator {
             recipient_keys,

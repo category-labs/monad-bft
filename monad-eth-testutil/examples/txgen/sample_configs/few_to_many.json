@@ -9,19 +9,21 @@
     "0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a",
     "0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba"
   ],
-  "recipient_seed": 10101,
-  "sender_seed": 10101,
-  "recipients": 100000,
-  "senders": 1000,
-  "refresh_delay_secs": 5.0,
-  "erc20_balance_of": false,
-  "gen_mode": {
-    "few_to_many": {
-      "tx_type": "erc20"
-    }
+  "traffic_gen": {
+    "recipient_seed": 10101,
+    "sender_seed": 10101,
+    "recipients": 100000,
+    "senders": 1000,
+    "erc20_balance_of": false,
+    "gen_mode": {
+      "few_to_many": {
+        "tx_type": "erc20"
+      }
+    },
+    "sender_group_size": 100,
+    "tx_per_sender": 500
   },
-  "sender_group_size": 100,
-  "tx_per_sender": 500,
+  "refresh_delay_secs": 5.0,
   "use_receipts": false,
   "use_receipts_by_block": false,
   "use_get_logs": false,
