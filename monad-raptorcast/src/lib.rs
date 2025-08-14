@@ -14,14 +14,14 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, HashMap},
     future::Future as _,
     marker::PhantomData,
     net::{IpAddr, SocketAddr},
     ops::DerefMut,
     pin::{pin, Pin},
     sync::Arc,
-    task::{Context, Poll, Waker},
+    task::{Context, Poll},
     time::Duration,
 };
 
@@ -91,12 +91,13 @@ where
 
     dataplane_reader: DataplaneReader,
     dataplane_writer: DataplaneWriter,
-    pending_events: VecDeque<RaptorCastEvent<M::Event, ST>>,
+
+    pending_event_tx: UnboundedSender<RaptorCastEvent<M::Event, ST>>,
+    pending_event_rx: UnboundedReceiver<RaptorCastEvent<M::Event, ST>>,
 
     channel_to_secondary: Option<UnboundedSender<FullNodesGroupMessage<ST>>>,
     channel_from_secondary: Option<UnboundedReceiver<Group<ST>>>,
 
-    waker: Option<Waker>,
     metrics: ExecutorMetrics,
     peer_discovery_metrics: ExecutorMetrics,
     _phantom: PhantomData<(OM, SE)>,
@@ -140,6 +141,9 @@ where
         tracing::debug!(
             ?is_dynamic_fullnode, ?self_id, ?config.mtu, "RaptorCast::new",
         );
+
+        let (pending_event_tx, pending_event_rx) = tokio::sync::mpsc::unbounded_channel();
+
         Self {
             is_dynamic_fullnode,
             epoch_validators: Default::default(),
@@ -161,11 +165,11 @@ where
 
             dataplane_reader,
             dataplane_writer,
-            pending_events: Default::default(),
+            pending_event_tx,
+            pending_event_rx,
             channel_to_secondary: None,
             channel_from_secondary: None,
 
-            waker: None,
             metrics: Default::default(),
             peer_discovery_metrics: Default::default(),
             _phantom: PhantomData,
@@ -189,15 +193,13 @@ where
 
     fn enqueue_message_to_self(
         message: OM,
-        pending_events: &mut VecDeque<RaptorCastEvent<M::Event, ST>>,
-        waker: &mut Option<Waker>,
+        pending_event_tx: &UnboundedSender<RaptorCastEvent<M::Event, ST>>,
         self_id: NodeId<CertificateSignaturePubKey<ST>>,
     ) {
         let message: M = message.into();
-        pending_events.push_back(RaptorCastEvent::Message(message.event(self_id)));
-        if let Some(waker) = waker.take() {
-            waker.wake()
-        }
+        pending_event_tx
+            .send(RaptorCastEvent::Message(message.event(self_id)))
+            .expect("pending_event rx dropped");
     }
 
     fn tcp_build_and_send(
@@ -417,8 +419,7 @@ where
                             if epoch_validators.validators.contains_key(&self_id) {
                                 Self::enqueue_message_to_self(
                                     message.clone(),
-                                    &mut self.pending_events,
-                                    &mut self.waker,
+                                    &self.pending_event_tx,
                                     self_id,
                                 );
                             }
@@ -471,8 +472,7 @@ where
                             if to == self_id {
                                 Self::enqueue_message_to_self(
                                     message,
-                                    &mut self.pending_events,
-                                    &mut self.waker,
+                                    &self.pending_event_tx,
                                     self_id,
                                 );
                             } else {
@@ -503,8 +503,7 @@ where
                             if to == self_id {
                                 Self::enqueue_message_to_self(
                                     message,
-                                    &mut self.pending_events,
-                                    &mut self.waker,
+                                    &self.pending_event_tx,
                                     self_id,
                                 );
                             } else {
@@ -535,13 +534,11 @@ where
                             record_seq_num: name_record.seq(),
                         })
                         .collect::<Vec<_>>();
-                    self.pending_events
-                        .push_back(RaptorCastEvent::PeerManagerResponse(
+                    self.pending_event_tx
+                        .send(RaptorCastEvent::PeerManagerResponse(
                             PeerManagerResponse::PeerList(peer_list),
-                        ));
-                    if let Some(waker) = self.waker.take() {
-                        waker.wake();
-                    }
+                        ))
+                        .expect("pending_event rx dropped");
                 }
                 RouterCommand::UpdatePeers(peers) => {
                     self.peer_discovery_handle
@@ -549,13 +546,11 @@ where
                 }
                 RouterCommand::GetFullNodes => {
                     let full_nodes = self.dedicated_full_nodes.list.clone();
-                    self.pending_events
-                        .push_back(RaptorCastEvent::PeerManagerResponse(
+                    self.pending_event_tx
+                        .send(RaptorCastEvent::PeerManagerResponse(
                             PeerManagerResponse::FullNodes(full_nodes),
-                        ));
-                    if let Some(waker) = self.waker.take() {
-                        waker.wake();
-                    }
+                        ))
+                        .expect("pending_event rx dropped");
                 }
                 RouterCommand::UpdateFullNodes(new_full_nodes) => {
                     self.dedicated_full_nodes.list = new_full_nodes;
@@ -596,13 +591,8 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
-        if let Some(waker) = this.waker.as_mut() {
-            waker.clone_from(cx.waker());
-        } else {
-            this.waker = Some(cx.waker().clone());
-        }
-
-        if let Some(event) = this.pending_events.pop_front() {
+        if let Poll::Ready(event) = this.pending_event_rx.poll_recv(cx) {
+            let event = event.expect("raptorcast pending_event_tx dropped");
             return Poll::Ready(Some(event.into()));
         }
 
@@ -674,8 +664,9 @@ where
                     Ok(inbound) => match inbound {
                         InboundRouterMessage::AppMessage(app_message) => {
                             tracing::trace!("RaptorCastPrimary rx deserialized AppMessage");
-                            this.pending_events
-                                .push_back(RaptorCastEvent::Message(app_message.event(from)));
+                            this.pending_event_tx
+                                .send(RaptorCastEvent::Message(app_message.event(from)))
+                                .expect("pending_event rx dropped");
                         }
                         InboundRouterMessage::PeerDiscoveryMessage(peer_disc_message) => {
                             tracing::trace!(
@@ -722,7 +713,8 @@ where
                 }
             }
 
-            if let Some(event) = this.pending_events.pop_front() {
+            if let Poll::Ready(event) = this.pending_event_rx.poll_recv(cx) {
+                let event = event.expect("raptorcast pending_event_tx dropped");
                 return Poll::Ready(Some(event.into()));
             }
         }
