@@ -142,8 +142,19 @@ pub fn static_validate_transaction(
         return Err(TransactionError::GasLimitTooHigh);
     }
 
-    if tx.is_eip4844() || tx.is_eip7702() {
+    if tx.is_eip4844() {
         return Err(TransactionError::UnsupportedTransactionType);
+    }
+
+    if tx.is_eip7702() {
+        match tx.authorization_list() {
+            Some(auth_list) => {
+                if auth_list.is_empty() {
+                    return Err(TransactionError::InvalidSetCodeTx);
+                }
+            }
+            None => return Err(TransactionError::InvalidSetCodeTx),
+        }
     }
 
     Ok(())
@@ -437,8 +448,8 @@ where
                 .max(account_balance.block_seqnum_of_latest_txn)
                 - account_balance.block_seqnum_of_latest_txn;
 
-            let has_emptying_transaction =
-                blocks_since_latest_txn >= self.min_blocks_since_latest_txn;
+            let has_emptying_transaction = !account_balance.is_delegated
+                && (blocks_since_latest_txn >= self.min_blocks_since_latest_txn);
 
             let mut block_gas_cost = block_txn_fees.max_gas_cost;
             if has_emptying_transaction {
@@ -540,7 +551,16 @@ where
             .max(account_balance.block_seqnum_of_latest_txn)
             - account_balance.block_seqnum_of_latest_txn;
 
-        let is_emptying_transaction = blocks_since_latest_txn >= self.min_blocks_since_latest_txn;
+        if account_balance.is_delegated {
+            debug!(
+                seq_num =?self.block_seq_num,
+                ?eth_address,
+                "account is_delegated"
+            );
+        }
+
+        let is_emptying_transaction = !account_balance.is_delegated
+            && (blocks_since_latest_txn >= self.min_blocks_since_latest_txn);
 
         if is_emptying_transaction {
             let txn_max_gas = compute_txn_max_gas_cost(txn);
@@ -798,6 +818,7 @@ where
                             remaining_reserve_balance: status.balance.min(self.max_reserve_balance),
                             max_reserve_balance: self.max_reserve_balance,
                             block_seqnum_of_latest_txn: base_seq_num, // most pessimistic assumption
+                            is_delegated: status.is_delegated,
                         }
                     },
                 )
@@ -944,11 +965,45 @@ where
         }
 
         // TODO fix this unnecessary copy into a new vec to generate an owned Address
-        let tx_signers = block
-            .validated_txns
-            .iter()
-            .map(|txn| txn.signer())
-            .collect_vec();
+        let mut authority_addresses: Vec<Address> = Vec::new();
+        let mut tx_signers: Vec<Address> = Vec::new();
+        let mut authority_nonces = BTreeMap::new();
+
+        for tx_signer in block.validated_txns.iter().map(|txn| {
+            if txn.is_eip7702() {
+                if let Some(auth_list) = txn.authorization_list() {
+                    for (result , nonce, code_address) in auth_list.iter().map(|a| (a.recover_authority(), a.nonce(), a.address())) {
+                        match result {
+                            Ok(authority) => {
+                                debug!(eth_address = ?txn.signer(), ?code_address, ?nonce, ?authority, "Authority");
+                                authority_addresses.push(authority);
+
+                                // First increment than validate against account's nonce+1.
+                                authority_nonces
+                                    .entry(authority)
+                                    .and_modify(|n| *n += 1)
+                                    .or_insert(nonce + 1);
+                            }
+                            Err(error) => {
+                                warn!(?error, "Can not process authorization list");
+                                return Err(BlockPolicyError::Eip7702Error);
+                            }
+                        }
+                    }
+                }
+            };
+
+            Ok(txn.signer())
+        }) {
+            match tx_signer {
+                Ok(address) => tx_signers.push(address),
+                Err(err) => {
+                    return Err(err);
+                }
+            }
+        }
+
+        tx_signers.append(&mut authority_addresses);
 
         // these must be updated as we go through txs in the block
         let mut account_nonces = self.get_account_base_nonces(
@@ -964,6 +1019,15 @@ where
             Some(&extending_blocks),
             tx_signers.iter(),
         )?;
+
+        for authority in &authority_addresses {
+            let account_balance = account_balances
+                .get_mut(authority)
+                .expect("account_balances should have been populated for delegated accounts");
+
+            debug!(?authority, "Setting account to is_delegated: true");
+            account_balance.is_delegated = true;
+        }
 
         let mut validator = EthBlockPolicyBlockValidator::new(
             block.get_seq_num(),
@@ -985,6 +1049,18 @@ where
                     "block not coherent, invalid nonce"
                 );
                 return Err(BlockPolicyError::BlockNotCoherent);
+            }
+
+            let maybe_nonce = authority_nonces.get(&eth_address);
+            match maybe_nonce {
+                Some(n) => {
+                    if *n != txn_nonce + 1 {
+                        return Err(BlockPolicyError::Eip7702Error);
+                    }
+                }
+                None => {
+                    return Err(BlockPolicyError::Eip7702Error);
+                }
             }
 
             validator.try_add_transaction(&mut account_balances, txn)?;
@@ -1099,6 +1175,7 @@ mod test {
                             first_txn_value: Balance::from(100),
                             first_txn_gas: Balance::from(10),
                             max_gas_cost: Balance::from(90),
+                            is_delegated: false,
                         },
                     ),
                     (
@@ -1107,6 +1184,7 @@ mod test {
                             first_txn_value: Balance::from(200),
                             first_txn_gas: Balance::from(10),
                             max_gas_cost: Balance::from(190),
+                            is_delegated: false,
                         },
                     ),
                 ]),
@@ -1127,6 +1205,7 @@ mod test {
                             first_txn_value: Balance::from(150),
                             first_txn_gas: Balance::from(10),
                             max_gas_cost: Balance::from(140),
+                            is_delegated: false,
                         },
                     ),
                     (
@@ -1135,6 +1214,7 @@ mod test {
                             first_txn_value: Balance::from(300),
                             first_txn_gas: Balance::from(10),
                             max_gas_cost: Balance::from(290),
+                            is_delegated: false,
                         },
                     ),
                 ]),
@@ -1155,6 +1235,7 @@ mod test {
                             first_txn_value: Balance::from(250),
                             first_txn_gas: Balance::from(10),
                             max_gas_cost: Balance::from(240),
+                            is_delegated: false,
                         },
                     ),
                     (
@@ -1163,6 +1244,7 @@ mod test {
                             first_txn_value: Balance::from(350),
                             first_txn_gas: Balance::from(0),
                             max_gas_cost: Balance::from(350),
+                            is_delegated: false,
                         },
                     ),
                 ]),
@@ -1183,6 +1265,7 @@ mod test {
                             first_txn_value: Balance::from(1250),
                             first_txn_gas: Balance::from(0),
                             max_gas_cost: Balance::from(0),
+                            is_delegated: false,
                         },
                     ),
                     (
@@ -1191,6 +1274,7 @@ mod test {
                             first_txn_value: Balance::from(1350),
                             first_txn_gas: Balance::from(0),
                             max_gas_cost: Balance::from(0),
+                            is_delegated: false,
                         },
                     ),
                 ]),
@@ -1207,6 +1291,7 @@ mod test {
             block_seqnum_of_latest_txn: GENESIS_SEQ_NUM,
             remaining_reserve_balance: Balance::from(250),
             max_reserve_balance,
+            is_delegated: false,
         };
         let mut next_seq_num = SeqNum(1);
         let res = buffer.update_account_balance(
@@ -1226,6 +1311,7 @@ mod test {
             block_seqnum_of_latest_txn: GENESIS_SEQ_NUM,
             remaining_reserve_balance: Balance::from(249),
             max_reserve_balance,
+            is_delegated: false,
         };
         let mut next_seq_num = SeqNum(1);
         let res = buffer.update_account_balance(
@@ -1247,6 +1333,7 @@ mod test {
             block_seqnum_of_latest_txn: GENESIS_SEQ_NUM,
             remaining_reserve_balance: Balance::from(150),
             max_reserve_balance,
+            is_delegated: false,
         };
         let mut next_seq_num = SeqNum(2);
         let res = buffer.update_account_balance(
@@ -1279,6 +1366,7 @@ mod test {
             block_seqnum_of_latest_txn: GENESIS_SEQ_NUM,
             remaining_reserve_balance: Balance::from(450),
             max_reserve_balance,
+            is_delegated: false,
         };
         let mut next_seq_num = SeqNum(0);
         let res = buffer.update_account_balance(
@@ -1297,6 +1385,7 @@ mod test {
             block_seqnum_of_latest_txn: GENESIS_SEQ_NUM,
             remaining_reserve_balance: Balance::from(650),
             max_reserve_balance,
+            is_delegated: false,
         };
         let mut next_seq_num = SeqNum(0);
         let res = buffer.update_account_balance(
@@ -1510,6 +1599,7 @@ mod test {
                 remaining_reserve_balance: min_balance,
                 block_seqnum_of_latest_txn: latest_seq_num,
                 max_reserve_balance: reserve_balance,
+                is_delegated: false,
             },
         );
 
@@ -1530,6 +1620,7 @@ mod test {
                 remaining_reserve_balance: min_balance,
                 block_seqnum_of_latest_txn: latest_seq_num,
                 max_reserve_balance: reserve_balance,
+                is_delegated: false,
             },
         );
 
@@ -1566,6 +1657,7 @@ mod test {
                 remaining_reserve_balance: min_balance,
                 block_seqnum_of_latest_txn: latest_seq_num,
                 max_reserve_balance: reserve_balance,
+                is_delegated: false,
             },
         );
 
@@ -1586,6 +1678,7 @@ mod test {
                 remaining_reserve_balance: min_balance - Balance::from(1),
                 block_seqnum_of_latest_txn: latest_seq_num,
                 max_reserve_balance: reserve_balance,
+                is_delegated: false,
             },
         );
 
@@ -1623,6 +1716,7 @@ mod test {
                 remaining_reserve_balance: min_balance,
                 block_seqnum_of_latest_txn: latest_seq_num,
                 max_reserve_balance: reserve_balance,
+                is_delegated: false,
             },
         );
 
@@ -1660,6 +1754,7 @@ mod test {
                 remaining_reserve_balance: Balance::ZERO,
                 block_seqnum_of_latest_txn: latest_seq_num,
                 max_reserve_balance: reserve_balance,
+                is_delegated: false,
             },
         );
 
@@ -1683,6 +1778,7 @@ mod test {
                 remaining_reserve_balance: min_reserve,
                 block_seqnum_of_latest_txn: latest_seq_num,
                 max_reserve_balance: reserve_balance,
+                is_delegated: false,
             },
         );
 
@@ -1718,6 +1814,7 @@ mod test {
                 remaining_reserve_balance: Balance::ZERO,
                 block_seqnum_of_latest_txn: latest_seq_num,
                 max_reserve_balance: reserve_balance,
+                is_delegated: false,
             },
         );
 
@@ -1740,6 +1837,7 @@ mod test {
                 remaining_reserve_balance: min_reserve,
                 block_seqnum_of_latest_txn: latest_seq_num,
                 max_reserve_balance: reserve_balance,
+                is_delegated: false,
             },
         );
 
@@ -1798,6 +1896,7 @@ mod test {
             remaining_reserve_balance: reserve_balance,
             block_seqnum_of_latest_txn: SeqNum(0),
             max_reserve_balance,
+            is_delegated: false,
         };
 
         let txn = make_test_eip1559_tx(txn_value, 0, txn_gas_limit, signer());
@@ -1849,6 +1948,7 @@ mod test {
             remaining_reserve_balance: reserve_balance,
             block_seqnum_of_latest_txn: SeqNum(0),
             max_reserve_balance,
+            is_delegated: false,
         };
 
         let txns = txns
@@ -1912,6 +2012,7 @@ mod test {
             first_txn_value: Balance::from(first_txn_value),
             first_txn_gas: Balance::from(first_txn_gas),
             max_gas_cost: Balance::from(max_gas_cost),
+            is_delegated: false,
         }
     }
 
@@ -2015,6 +2116,7 @@ mod test {
             remaining_reserve_balance: reserve_balance,
             block_seqnum_of_latest_txn,
             max_reserve_balance,
+            is_delegated: false,
         };
 
         let blk_fees = blk_fees
