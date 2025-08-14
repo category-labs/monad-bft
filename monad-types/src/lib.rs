@@ -22,12 +22,14 @@ use std::{
     time::{Duration, Instant},
 };
 
+use alloy_primitives::U256;
 use alloy_rlp::{
     Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper,
 };
 use monad_crypto::certificate_signature::{CertificateSignatureRecoverable, PubKey};
 pub use monad_crypto::hasher::Hash;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::Value;
 use zerocopy::AsBytes;
 
 pub const GENESIS_SEQ_NUM: SeqNum = SeqNum(0);
@@ -489,7 +491,62 @@ impl Debug for BlockId {
     RlpEncodableWrapper,
     RlpDecodableWrapper,
 )]
-pub struct Stake(pub u64);
+pub struct Stake(
+    #[serde(serialize_with = "serialize_u256")]
+    #[serde(deserialize_with = "deserialize_u256")]
+    pub U256,
+);
+
+pub fn serialize_u256<S>(num: &U256, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    if num == &U256::ZERO {
+        serializer.serialize_str("0x0")
+    } else {
+        let u256_bytes = num.to_be_bytes::<32>();
+        let hex_str = "0x".to_string() + hex::encode(u256_bytes).trim_start_matches("0");
+        serializer.serialize_str(&hex_str)
+    }
+}
+
+pub fn deserialize_u256<'de, D>(deserializer: D) -> Result<U256, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match <Value as Deserialize>::deserialize(deserializer)? {
+        Value::Number(num) => {
+            if let Some(num_u128) = num.as_u128() {
+                Ok(U256::from(num_u128))
+            } else {
+                Err(serde::de::Error::custom(
+                    "number either negative or too big",
+                ))
+            }
+        }
+        Value::String(string) => {
+            U256::from_str(&string).map_err(<D::Error as serde::de::Error>::custom)
+        }
+        _ => Err(serde::de::Error::custom("invalid u256 type")),
+    }
+}
+
+impl Stake {
+    pub const ZERO: Stake = Stake(U256::ZERO);
+    pub const ONE: Stake = Stake(U256::ONE);
+}
+
+impl From<u64> for Stake {
+    fn from(value: u64) -> Self {
+        Stake(U256::from(value))
+    }
+}
+
+impl From<U256> for Stake {
+    fn from(value: U256) -> Self {
+        Stake(value)
+    }
+}
 
 impl Add for Stake {
     type Output = Self;
@@ -529,7 +586,7 @@ impl SubAssign for Stake {
 
 impl std::iter::Sum for Stake {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        iter.fold(Stake(0), |a, b| a + b)
+        iter.fold(Stake::ZERO, |a, b| a + b)
     }
 }
 
@@ -682,6 +739,11 @@ impl MonadVersion {
 #[cfg(test)]
 mod test {
     use alloy_rlp::Encodable;
+    use serde::de::{
+        value::{Error as SerdeError, StrDeserializer, U64Deserializer},
+        IntoDeserializer,
+    };
+    use serde_test::{assert_ser_tokens, Token};
     use test_case::test_case;
 
     use super::*;
@@ -713,5 +775,59 @@ mod test {
         raw.encode(&mut raw_buf);
 
         assert_eq!(bid_buf, raw_buf);
+    }
+
+    #[test]
+    fn test_serialize_stake() {
+        let zero_stake = Stake::ZERO;
+        let expected_tokens = vec![Token::NewtypeStruct { name: "Stake" }, Token::String("0x0")];
+        assert_ser_tokens(&zero_stake, &expected_tokens);
+
+        let zero_stake = Stake::ONE;
+        let expected_tokens = vec![Token::NewtypeStruct { name: "Stake" }, Token::String("0x1")];
+        assert_ser_tokens(&zero_stake, &expected_tokens);
+
+        let mil_stake = Stake::from(1_000_000);
+        let expected_tokens = vec![
+            Token::NewtypeStruct { name: "Stake" },
+            Token::String("0xf4240"),
+        ];
+        assert_ser_tokens(&mil_stake, &expected_tokens);
+    }
+
+    #[test]
+    fn test_deserialize_u256() {
+        let zero = 0_u64;
+        let deserializer: U64Deserializer<SerdeError> = zero.into_deserializer();
+        assert_eq!(deserialize_u256(deserializer), Ok(U256::ZERO));
+
+        let one = 1_u64;
+        let deserializer: U64Deserializer<SerdeError> = one.into_deserializer();
+        assert_eq!(deserialize_u256(deserializer), Ok(U256::ONE));
+
+        let u64_max = u64::MAX;
+        let deserializer: U64Deserializer<SerdeError> = u64_max.into_deserializer();
+        assert_eq!(deserialize_u256(deserializer), Ok(U256::from(u64_max)));
+
+        let deserializer: StrDeserializer<SerdeError> = "0".into_deserializer();
+        assert_eq!(deserialize_u256(deserializer), Ok(U256::ZERO));
+
+        let deserializer: StrDeserializer<SerdeError> = "0x0".into_deserializer();
+        assert_eq!(deserialize_u256(deserializer), Ok(U256::ZERO));
+
+        let deserializer: StrDeserializer<SerdeError> = "1".into_deserializer();
+        assert_eq!(deserialize_u256(deserializer), Ok(U256::ONE));
+
+        let deserializer: StrDeserializer<SerdeError> = "0x1".into_deserializer();
+        assert_eq!(deserialize_u256(deserializer), Ok(U256::ONE));
+
+        let deserializer: StrDeserializer<SerdeError> = "10".into_deserializer();
+        assert_eq!(deserialize_u256(deserializer), Ok(U256::from(10)));
+
+        let deserializer: StrDeserializer<SerdeError> = "0xA".into_deserializer();
+        assert_eq!(deserialize_u256(deserializer), Ok(U256::from(10)));
+
+        let deserializer: StrDeserializer<SerdeError> = "0x10".into_deserializer();
+        assert_eq!(deserialize_u256(deserializer), Ok(U256::from(16)));
     }
 }

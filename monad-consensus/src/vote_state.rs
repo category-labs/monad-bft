@@ -430,11 +430,11 @@ mod test {
         let mut staking_list = keys
             .iter()
             .map(|k| NodeId::new(k.pubkey()))
-            .zip(std::iter::repeat(Stake(1)))
+            .zip(std::iter::repeat(Stake::ONE))
             .collect::<Vec<_>>();
 
         // node2 has supermajority stake by itself
-        staking_list[2].1 = Stake(10);
+        staking_list[2].1 = Stake::from(10);
 
         let voting_identity = keys
             .iter()

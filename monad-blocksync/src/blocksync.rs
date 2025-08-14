@@ -29,13 +29,14 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_state_backend::StateBackend;
-use monad_types::{Epoch, ExecutionProtocol, NodeId, SeqNum};
+use monad_types::{Epoch, ExecutionProtocol, NodeId, SeqNum, Stake};
 use monad_validator::{
     epoch_manager::EpochManager,
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
+    weighted_round_robin::{generate_random_validator_with_randomizer, randomize_256_with_rng},
 };
-use rand::{seq::SliceRandom, SeedableRng};
+use rand::{seq::SliceRandom, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use tracing::{debug, warn};
 
@@ -423,6 +424,14 @@ where
         cmds
     }
 
+    fn choose_weighted(
+        validators: Vec<(&NodeId<CertificateSignaturePubKey<ST>>, &Stake)>,
+        mut gen: impl Rng,
+    ) -> NodeId<CertificateSignaturePubKey<ST>> {
+        let randomizer = |total_stake| randomize_256_with_rng(&mut gen, total_stake);
+        generate_random_validator_with_randomizer(validators, randomizer)
+    }
+
     fn pick_peer(
         self_node_id: &NodeId<CertificateSignaturePubKey<ST>>,
         current_epoch: Epoch,
@@ -451,10 +460,7 @@ where
                 .filter(|(peer, _)| peer != &self_node_id)
                 .collect_vec();
             assert!(!members.is_empty(), "no nodes to blocksync from");
-            *members
-                .choose_weighted(rng, |(_peer, weight)| weight.0)
-                .expect("nonempty")
-                .0
+            Self::choose_weighted(members, rng)
         }
     }
 

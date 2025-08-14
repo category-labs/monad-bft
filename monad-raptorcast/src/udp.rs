@@ -20,6 +20,7 @@ use std::{
     ops::Range,
 };
 
+use alloy_primitives::U256;
 use bitvec::prelude::*;
 use bytes::{Bytes, BytesMut};
 use itertools::Itertools;
@@ -761,12 +762,12 @@ where
             } else {
                 // generate chunks if epoch validators is not empty
                 // FIXME should self be included in total_stake?
-                let total_stake: u64 = epoch_validators
+                let total_stake: U256 = epoch_validators
                     .view()
                     .values()
                     .map(|validator| validator.stake.0)
                     .sum();
-                let mut running_stake = 0;
+                let mut running_stake = U256::ZERO;
                 let mut chunk_idx = 0_u16;
                 let mut nodes: Vec<_> = epoch_validators.view().iter().collect();
                 // Group shuffling so chunks for small proposals aren't always assigned
@@ -774,10 +775,10 @@ where
                 nodes.shuffle(&mut rand::thread_rng());
                 for (node_id, validator) in &nodes {
                     let start_idx: usize =
-                        (num_packets as u64 * running_stake / total_stake) as usize;
+                        (U256::from(num_packets) * running_stake / total_stake).to::<usize>();
                     running_stake += validator.stake.0;
                     let end_idx: usize =
-                        (num_packets as u64 * running_stake / total_stake) as usize;
+                        (U256::from(num_packets) * running_stake / total_stake).to::<usize>();
 
                     if start_idx == end_idx {
                         continue;
@@ -1490,7 +1491,7 @@ mod tests {
         let validators = EpochValidators {
             validators: keys
                 .iter()
-                .map(|key| (NodeId::new(key.pubkey()), Validator { stake: Stake(1) }))
+                .map(|key| (NodeId::new(key.pubkey()), Validator { stake: Stake::ONE }))
                 .collect(),
         };
 

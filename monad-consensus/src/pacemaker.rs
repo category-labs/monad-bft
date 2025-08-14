@@ -751,16 +751,16 @@ mod test {
         let mut staking_list = keys
             .iter()
             .map(|k| NodeId::new(k.pubkey()))
-            .zip(std::iter::repeat(Stake(1)))
+            .zip(std::iter::repeat(Stake::ONE))
             .collect::<Vec<_>>();
 
         // total stake = 7, f = 2
         // node1 holds f+1 stake
         // node1 + node2 has 2f+1 stake
-        staking_list[0].1 = Stake(1);
-        staking_list[1].1 = Stake(3);
-        staking_list[2].1 = Stake(2);
-        staking_list[3].1 = Stake(1);
+        staking_list[0].1 = Stake::ONE;
+        staking_list[1].1 = Stake::from(3);
+        staking_list[2].1 = Stake::from(2);
+        staking_list[3].1 = Stake::ONE;
 
         let voting_identity = keys
             .iter()

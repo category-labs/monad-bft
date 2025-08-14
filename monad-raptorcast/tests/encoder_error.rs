@@ -53,7 +53,7 @@ pub fn encoder_error() {
     let mut validators = EpochValidators {
         validators: keys
             .iter()
-            .map(|key| (NodeId::new(key.pubkey()), Validator { stake: Stake(1) }))
+            .map(|key| (NodeId::new(key.pubkey()), Validator { stake: Stake::ONE }))
             .collect(),
     };
 

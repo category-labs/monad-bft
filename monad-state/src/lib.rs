@@ -1428,7 +1428,7 @@ mod test {
 
         let mut validators = Vec::new();
         for (key, cert_key) in keys.iter().zip(cert_keys.iter()) {
-            validators.push((key.pubkey(), Stake(7), cert_key.pubkey()));
+            validators.push((key.pubkey(), Stake::from(7), cert_key.pubkey()));
         }
         let validator_data = ValidatorSetData::<SignatureCollectionType>::new(validators);
         let validator_sets = forkpoint
@@ -1565,28 +1565,28 @@ mod test {
 
         let validators_config: ValidatorsConfig<SignatureCollectionType> = ValidatorsConfig {
             validators: vec![
-                (Epoch(1), make_val_set_data(Stake(1))),
-                (Epoch(2), make_val_set_data(Stake(2))),
-                (Epoch(4), make_val_set_data(Stake(3))),
-                (Epoch(10), make_val_set_data(Stake(4))),
+                (Epoch(1), make_val_set_data(Stake::ONE)),
+                (Epoch(2), make_val_set_data(Stake::from(2))),
+                (Epoch(4), make_val_set_data(Stake::from(3))),
+                (Epoch(10), make_val_set_data(Stake::from(4))),
             ]
             .into_iter()
             .collect(),
         };
 
         let expected = vec![
-            (Epoch(1), make_val_set_data(Stake(1))),
-            (Epoch(2), make_val_set_data(Stake(2))),
-            (Epoch(3), make_val_set_data(Stake(2))),
-            (Epoch(4), make_val_set_data(Stake(3))),
-            (Epoch(5), make_val_set_data(Stake(3))),
-            (Epoch(6), make_val_set_data(Stake(3))),
-            (Epoch(7), make_val_set_data(Stake(3))),
-            (Epoch(8), make_val_set_data(Stake(3))),
-            (Epoch(9), make_val_set_data(Stake(3))),
-            (Epoch(10), make_val_set_data(Stake(4))),
-            (Epoch(11), make_val_set_data(Stake(4))),
-            (Epoch(12), make_val_set_data(Stake(4))),
+            (Epoch(1), make_val_set_data(Stake::ONE)),
+            (Epoch(2), make_val_set_data(Stake::from(2))),
+            (Epoch(3), make_val_set_data(Stake::from(2))),
+            (Epoch(4), make_val_set_data(Stake::from(3))),
+            (Epoch(5), make_val_set_data(Stake::from(3))),
+            (Epoch(6), make_val_set_data(Stake::from(3))),
+            (Epoch(7), make_val_set_data(Stake::from(3))),
+            (Epoch(8), make_val_set_data(Stake::from(3))),
+            (Epoch(9), make_val_set_data(Stake::from(3))),
+            (Epoch(10), make_val_set_data(Stake::from(4))),
+            (Epoch(11), make_val_set_data(Stake::from(4))),
+            (Epoch(12), make_val_set_data(Stake::from(4))),
         ];
 
         for (epoch, val_set) in &expected {
