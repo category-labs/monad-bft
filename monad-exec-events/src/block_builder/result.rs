@@ -19,6 +19,7 @@ use crate::ffi::monad_exec_block_start;
 pub type BlockBuilderResult<T> = Result<T, BlockBuilderError>;
 
 /// Error produced by a block builder while attempting to reassemble a block from execution events.
+#[derive(Debug)]
 pub enum BlockBuilderError {
     /// The block was rejected by execution.
     Rejected,
