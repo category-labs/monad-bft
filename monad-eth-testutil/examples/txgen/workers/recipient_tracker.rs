@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use super::*;
 
 pub struct RecipientTracker {
@@ -27,11 +29,15 @@ pub struct RecipientTracker {
 }
 
 impl RecipientTracker {
-    pub async fn run(mut self) {
+    pub async fn run(mut self, shutdown: Arc<AtomicBool>) {
         let mut fetch_interval = tokio::time::interval(Duration::from_millis(10));
         fetch_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         while let Some(AddrsWithTime { mut addrs, sent }) = self.rpc_sender_rx.recv().await {
+            if shutdown.load(Ordering::Relaxed) {
+                warn!("RecipientTracker shutting down");
+                break;
+            }
             debug!(
                 num_accts = addrs.len(),
                 channel_len = self.rpc_sender_rx.len(),

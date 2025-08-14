@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use tokio::time::MissedTickBehavior;
 
 use super::*;
@@ -27,6 +29,8 @@ pub struct Refresher {
     pub erc20: Option<ERC20>,
 
     pub delay: Duration,
+
+    pub shutdown: Arc<AtomicBool>,
 }
 
 impl Refresher {
@@ -41,6 +45,7 @@ impl Refresher {
 
         deployed_contract: DeployedContract,
         refresh_erc20_balance: bool,
+        shutdown: Arc<AtomicBool>,
     ) -> Result<Refresher> {
         let erc20 = if refresh_erc20_balance {
             Some(deployed_contract.erc20().wrap_err("Cannot construct Refresher: refresh_erc20_balance arg requires erc20 contract be deployed or loaded")?)
@@ -54,6 +59,7 @@ impl Refresher {
             metrics,
             delay,
             erc20,
+            shutdown,
         })
     }
 
@@ -63,6 +69,9 @@ impl Refresher {
 
         info!("Starting refresher loop");
         while let Some(AccountsWithTime { accts, sent }) = self.rpc_rx.recv().await {
+            if self.shutdown.load(Ordering::Relaxed) {
+                break;
+            }
             info!(
                 num_accts = accts.len(),
                 channel_len = self.rpc_rx.len(),
@@ -77,6 +86,7 @@ impl Refresher {
 
             self.handle_batch(accts);
         }
+        warn!("Refresher shutting down");
     }
 
     fn handle_batch(&self, mut accts: Accounts) {
@@ -102,7 +112,13 @@ impl Refresher {
             }
 
             debug!("Completed batch refresh, sending to gen...");
-            gen_sender.send(accts).await.expect("gen rx closed");
+            if let Err(e) = gen_sender.send(accts).await {
+                debug!(
+                    "Failed to send accounts to gen (likely during shutdown): {}",
+                    e
+                );
+                return;
+            }
             debug!("Refresher sent batch to gen");
         });
     }

@@ -13,42 +13,83 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::io::Write;
+use std::{
+    io::Write,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 
 use eyre::bail;
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    config::{Config, DeployedContract},
+    config::{Config, DeployedContract, TrafficGen},
     generators::make_generator,
     prelude::*,
     shared::{ecmul::ECMul, erc20::ERC20, eth_json_rpc::EthJsonRpc, uniswap::Uniswap},
 };
 
 pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
+    if config.traffic_gen.is_empty() {
+        bail!("No traffic generation configurations provided");
+    }
+
+    let mut traffic_index = 0;
+
+    loop {
+        let current_traffic_gen = &config.traffic_gen[traffic_index];
+        info!(
+            "Starting traffic generation phase {}: {:?}",
+            traffic_index, current_traffic_gen.gen_mode
+        );
+
+        run_traffic_phase(&client, &config, current_traffic_gen).await?;
+
+        traffic_index = (traffic_index + 1) % config.traffic_gen.len();
+    }
+}
+
+async fn run_traffic_phase(
+    client: &ReqwestClient,
+    config: &Config,
+    traffic_gen: &TrafficGen,
+) -> Result<()> {
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_clone = Arc::clone(&shutdown);
+
     let (rpc_sender, gen_rx) = mpsc::channel(2);
     let (gen_sender, refresh_rx) = mpsc::channel(100);
     let (refresh_sender, rpc_rx) = mpsc::unbounded_channel();
     let (recipient_sender, recipient_gen_rx) = mpsc::unbounded_channel();
 
     // simpler to always deploy erc20 even if not used
-    let deployed_contract = load_or_deploy_contracts(&config, &client).await?;
+    let deployed_contract = load_or_deploy_contracts(config, client).await?;
 
     // kick start cycle by injecting accounts
-    generate_sender_groups(&config).for_each(|group| refresh_sender.send(group).unwrap());
+    generate_sender_groups(config, traffic_gen).for_each(|group| {
+        if let Err(e) = refresh_sender.send(group) {
+            if shutdown.load(Ordering::Relaxed) {
+                debug!("Failed to send account group during shutdown: {}", e);
+            } else {
+                error!("Failed to send account group unexpectedly: {}", e);
+            }
+        }
+    });
 
     // shared state for monitoring
     let metrics = Arc::new(Metrics::default());
-    let sent_txs = Arc::new(DashMap::with_capacity(config.tps as usize * 10));
+    let sent_txs = Arc::new(DashMap::with_capacity(traffic_gen.tps as usize * 10));
 
     // setup metrics and monitoring
     let committed_tx_watcher = CommittedTxWatcher::new(
-        &client,
+        client,
         &sent_txs,
         &metrics,
         Duration::from_secs_f64(config.refresh_delay_secs * 2.),
-        &config,
+        config,
     )
     .await;
 
@@ -61,17 +102,18 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
     };
 
     // primary workers
-    let generator = make_generator(&config, deployed_contract.clone())?;
+    let generator = make_generator(config, traffic_gen, deployed_contract.clone())?;
     let gen = GeneratorHarness::new(
         generator,
         refresh_rx,
         rpc_sender,
-        &client,
+        client,
         U256::from(config.min_native_amount),
         U256::from(config.seed_native_amount),
         &metrics,
         config.base_fee(),
         config.chain_id,
+        Arc::clone(&shutdown),
     );
 
     let refresher = Refresher::new(
@@ -81,7 +123,8 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         Arc::clone(&metrics),
         Duration::from_secs_f64(config.refresh_delay_secs),
         deployed_contract,
-        config.traffic_gen.erc20_balance_of,
+        traffic_gen.erc20_balance_of,
+        Arc::clone(&shutdown),
     )?;
 
     let rpc_sender = RpcSender::new(
@@ -91,14 +134,16 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         client.clone(),
         Arc::clone(&metrics),
         sent_txs,
-        &config,
+        config,
+        traffic_gen,
+        Arc::clone(&shutdown),
     );
 
     let metrics_reporter = MetricsReporter::new(
         metrics.clone(),
-        config.otel_endpoint,
-        config.otel_replica_name,
-        format!("{:?}", config.traffic_gen.gen_mode),
+        config.otel_endpoint.clone(),
+        config.otel_replica_name.clone(),
+        format!("{:?}", traffic_gen.gen_mode),
     )?;
 
     let mut tasks = FuturesUnordered::new();
@@ -109,31 +154,79 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
     tasks.push(critical_task("Refresher", tokio::spawn(refresher.run())).boxed());
 
     // continue working if helper task stops
-    tasks.push(helper_task("Metrics", tokio::spawn(metrics.run())).boxed());
-    tasks.push(helper_task("Otel Reporter", tokio::spawn(metrics_reporter.run())).boxed());
-    tasks.push(helper_task("Recipient Tracker", tokio::spawn(recipient_tracker.run())).boxed());
+    tasks.push(
+        helper_task(
+            "Metrics",
+            tokio::spawn(metrics.run(Arc::clone(&shutdown))),
+            Arc::clone(&shutdown),
+        )
+        .boxed(),
+    );
+    tasks.push(
+        helper_task(
+            "Otel Reporter",
+            tokio::spawn(metrics_reporter.run(Arc::clone(&shutdown))),
+            Arc::clone(&shutdown),
+        )
+        .boxed(),
+    );
+    tasks.push(
+        helper_task(
+            "Recipient Tracker",
+            tokio::spawn(recipient_tracker.run(Arc::clone(&shutdown))),
+            Arc::clone(&shutdown),
+        )
+        .boxed(),
+    );
     tasks.push(
         helper_task(
             "CommittedTx Watcher",
             tokio::spawn(committed_tx_watcher.run()),
+            Arc::clone(&shutdown),
         )
         .boxed(),
     );
 
-    while let Some(res) = tasks.next().await {
-        if let Err(e) = res {
-            error!("Task terminated with error: {e}");
-            return Err(e);
+    let timeout = tokio::time::sleep(Duration::from_secs(traffic_gen.runtime));
+
+    tokio::select! {
+        _ = timeout => {
+            info!("Traffic phase completed after {} seconds", traffic_gen.runtime);
+            shutdown_clone.store(true, Ordering::Relaxed);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            Ok(())
+        }
+        result = tasks.next() => {
+            match result {
+                Some(Ok(_)) => {
+                    info!("Task completed successfully");
+                    Ok(())
+                }
+                Some(Err(e)) => {
+                    info!("Task failed: {e:?}");
+                    Err(e)
+                }
+                None => Ok(()),
+            }
         }
     }
-    Ok(())
 }
 
-async fn helper_task(name: &'static str, task: tokio::task::JoinHandle<()>) -> Result<()> {
+async fn helper_task(
+    name: &'static str,
+    task: tokio::task::JoinHandle<()>,
+    shutdown: Arc<AtomicBool>,
+) -> Result<()> {
     let res = task.await;
     match res {
         Ok(_) => info!("Helper task {name} shut down"),
-        Err(e) => error!("Helper task {name} terminated, continuing. Error: {e}"),
+        Err(e) => {
+            if shutdown.load(Ordering::Relaxed) {
+                info!("Helper task {name} terminated during shutdown. Error: {e}");
+            } else {
+                error!("Helper task {name} terminated unexpectedly. Error: {e}");
+            }
+        }
     }
     Ok(())
 }
@@ -147,14 +240,17 @@ async fn critical_task(name: &'static str, task: tokio::task::JoinHandle<()>) ->
     }
 }
 
-fn generate_sender_groups(config: &Config) -> impl Iterator<Item = AccountsWithTime> + '_ {
-    let mut rng = SmallRng::seed_from_u64(config.traffic_gen.sender_seed);
-    let num_groups = config.senders() / config.sender_group_size();
+fn generate_sender_groups<'a>(
+    config: &'a Config,
+    traffic_gen: &'a TrafficGen,
+) -> impl Iterator<Item = AccountsWithTime> + 'a {
+    let mut rng = SmallRng::seed_from_u64(traffic_gen.sender_seed);
+    let num_groups = config.senders(traffic_gen) / config.sender_group_size(traffic_gen);
     let mut key_iter = config.root_private_keys.iter();
 
     (0..num_groups).map(move |_| AccountsWithTime {
         accts: Accounts {
-            accts: (0..config.sender_group_size())
+            accts: (0..config.sender_group_size(traffic_gen))
                 .map(|_| PrivateKey::new_with_random(&mut rng))
                 .map(SimpleAccount::from)
                 .collect(),
@@ -185,7 +281,12 @@ async fn load_or_deploy_contracts(
 ) -> Result<DeployedContract> {
     use crate::config::RequiredContract;
 
-    let contract_to_ensure = config.required_contract();
+    // Use first contract for now, might want to check all in the future
+    let contract_to_ensure = if !config.traffic_gen.is_empty() {
+        config.required_contract(&config.traffic_gen[0])
+    } else {
+        RequiredContract::None
+    };
     let path = "deployed_contracts.json";
     let deployer = PrivateKey::new(&config.root_private_keys[0]);
     let max_fee_per_gas = config.base_fee() * 2;

@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use super::*;
 use crate::{generators::native_transfer_priority_fee, prelude::*};
 
@@ -43,6 +45,8 @@ pub struct GeneratorHarness {
     pub metrics: Arc<Metrics>,
     pub base_fee: u128,
     pub chain_id: u64,
+
+    pub shutdown: Arc<AtomicBool>,
 }
 
 impl GeneratorHarness {
@@ -56,6 +60,7 @@ impl GeneratorHarness {
         metrics: &Arc<Metrics>,
         base_fee: u128,
         chain_id: u64,
+        shutdown: Arc<AtomicBool>,
     ) -> Self {
         Self {
             generator,
@@ -68,12 +73,16 @@ impl GeneratorHarness {
             seed_native_amt,
             base_fee,
             chain_id,
+            shutdown,
         }
     }
 
     pub async fn run(mut self) {
         info!("Starting main gen loop");
         while let Some(accts) = self.refresh_rx.recv().await {
+            if self.shutdown.load(Ordering::Relaxed) {
+                break;
+            }
             info!(
                 num_accts = accts.len(),
                 channel_len = self.refresh_rx.len(),
@@ -133,12 +142,23 @@ impl GeneratorHarness {
 
             let num_txs: usize = accts_with_txs.txs.len();
 
-            self.rpc_sender
-                .send(accts_with_txs)
-                .await
-                .expect("rpc sender channel closed");
+            if let Err(e) = self.rpc_sender.send(accts_with_txs).await {
+                if self.shutdown.load(Ordering::Relaxed) {
+                    debug!(
+                        "Failed to send accounts with txs to rpc sender during shutdown: {}",
+                        e
+                    );
+                } else {
+                    error!(
+                        "Failed to send accounts with txs to rpc sender unexpectedly: {}",
+                        e
+                    );
+                }
+                break;
+            }
 
             debug!(num_txs, "Gen pushed txs to rpc sender");
         }
+        warn!("GeneratorHarness shutting down");
     }
 }

@@ -1,6 +1,5 @@
 {
   "rpc_url": "http://localhost:8545",
-  "tps": 5000,
   "root_private_keys": [
     "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
     "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
@@ -9,18 +8,22 @@
     "0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a",
     "0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba"
   ],
-  "traffic_gen": {
-    "recipient_seed": 10101,
-    "sender_seed": 10101,
-    "recipients": 10000,
-    "senders": 100,
-    "erc20_balance_of": false,
-    "gen_mode": {
-      "ecmul": {}
-    },
-    "sender_group_size": 10,
-    "tx_per_sender": 10
-  },
+  "traffic_gen": [
+    {
+      "runtime": 30,
+      "tps": 5000,
+      "recipient_seed": 10101,
+      "sender_seed": 10101,
+      "recipients": 10000,
+      "senders": 100,
+      "erc20_balance_of": false,
+      "gen_mode": {
+        "ecmul": {}
+      },
+      "sender_group_size": 10,
+      "tx_per_sender": 10
+    }
+  ],
   "refresh_delay_secs": 5.0,
   "use_receipts": false,
   "use_receipts_by_block": false,

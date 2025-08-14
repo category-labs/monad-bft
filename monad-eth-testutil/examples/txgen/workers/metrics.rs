@@ -13,7 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::sync::RwLock;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    RwLock,
+};
 
 use futures::join;
 use opentelemetry::metrics::{Gauge, MeterProvider};
@@ -47,15 +50,15 @@ pub struct Metrics {
 }
 
 impl Metrics {
-    pub async fn run(self: Arc<Metrics>) {
-        let secs_5 = self.metrics_at_timestep(Duration::from_secs(5));
-        let min_1 = self.metrics_at_timestep(Duration::from_secs(60));
-        let min_60 = self.metrics_at_timestep(Duration::from_secs(60 * 60));
+    pub async fn run(self: Arc<Metrics>, shutdown: Arc<AtomicBool>) {
+        let secs_5 = self.metrics_at_timestep(Duration::from_secs(5), Arc::clone(&shutdown));
+        let min_1 = self.metrics_at_timestep(Duration::from_secs(60), Arc::clone(&shutdown));
+        let min_60 = self.metrics_at_timestep(Duration::from_secs(60 * 60), Arc::clone(&shutdown));
 
         join!(secs_5, min_1, min_60);
     }
 
-    async fn metrics_at_timestep(&self, report_interval: Duration) {
+    async fn metrics_at_timestep(&self, report_interval: Duration, shutdown: Arc<AtomicBool>) {
         let mut report_interval = tokio::time::interval(report_interval);
         report_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut last = Instant::now();
@@ -80,6 +83,11 @@ impl Metrics {
         let mut logs_total = Rate::new(&self.logs_total);
 
         loop {
+            if shutdown.load(Ordering::Relaxed) {
+                warn!("Metrics shutting down");
+                break;
+            }
+
             let now = report_interval.tick().await;
             let elapsed = last.elapsed().as_secs_f64();
 
@@ -235,7 +243,7 @@ impl MetricsReporter {
         Ok(reporter)
     }
 
-    pub async fn run(self) {
+    pub async fn run(self, shutdown: Arc<AtomicBool>) {
         let mut report_interval = tokio::time::interval(Duration::from_secs(5));
         report_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut last = Instant::now();
@@ -250,6 +258,11 @@ impl MetricsReporter {
         };
 
         loop {
+            if shutdown.load(Ordering::Relaxed) {
+                warn!("MetricsReporter shutting down");
+                break;
+            }
+
             let now = report_interval.tick().await;
             let elapsed = last.elapsed().as_secs_f64();
 

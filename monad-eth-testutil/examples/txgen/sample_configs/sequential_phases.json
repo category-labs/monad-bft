@@ -2,15 +2,11 @@
   "rpc_url": "http://localhost:33332",
   "root_private_keys": [
     "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
-    "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
-    "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a",
-    "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6",
-    "0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a",
-    "0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba"
+    "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
   ],
   "traffic_gen": [
     {
-      "runtime": 60,
+      "runtime": 15,
       "tps": 2000,
       "recipient_seed": 10101,
       "sender_seed": 10101,
@@ -24,6 +20,34 @@
       },
       "sender_group_size": 100,
       "tx_per_sender": 500
+    },
+    {
+      "runtime": 15,
+      "tps": 1500,
+      "recipient_seed": 20202,
+      "sender_seed": 20202,
+      "recipients": 50000,
+      "senders": 500,
+      "erc20_balance_of": false,
+      "gen_mode": {
+        "non_deterministic_storage": {}
+      },
+      "sender_group_size": 50,
+      "tx_per_sender": 20
+    },
+    {
+      "runtime": 15,
+      "tps": 2500,
+      "recipient_seed": 30303,
+      "sender_seed": 30303,
+      "recipients": 75000,
+      "senders": 1500,
+      "erc20_balance_of": false,
+      "gen_mode": {
+        "duplicates": {}
+      },
+      "sender_group_size": 75,
+      "tx_per_sender": 15
     }
   ],
   "refresh_delay_secs": 5.0,
@@ -40,4 +64,3 @@
   "otel_endpoint": null,
   "otel_replica_name": "default"
 }
-

@@ -43,14 +43,12 @@ mod uniswap;
 
 pub fn make_generator(
     config: &Config,
+    traffic_gen: &TrafficGen,
     deployed_contract: DeployedContract,
 ) -> Result<Box<dyn Generator + Send + Sync>> {
-    let recipient_keys = KeyPool::new(
-        config.traffic_gen.recipients,
-        config.traffic_gen.recipient_seed,
-    );
-    let tx_per_sender = config.tx_per_sender();
-    Ok(match &config.traffic_gen.gen_mode {
+    let recipient_keys = KeyPool::new(traffic_gen.recipients, traffic_gen.recipient_seed);
+    let tx_per_sender = config.tx_per_sender(traffic_gen);
+    Ok(match &traffic_gen.gen_mode {
         GenMode::NullGen(_) => Box::new(NullGen),
         GenMode::FewToMany(config) => Box::new(CreateAccountsGenerator {
             recipient_keys,

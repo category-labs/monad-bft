@@ -46,14 +46,17 @@ async fn main() {
 
     info!("Config: {config:?}");
 
-    let time_to_send_txs_from_all_senders =
-        (config.tx_per_sender() * config.senders()) as f64 / config.tps as f64;
-    if time_to_send_txs_from_all_senders < config.refresh_delay_secs {
-        warn!(
-            time_to_send_txs_from_all_senders,
-            refresh_delay = config.refresh_delay_secs,
-            "Not enough senders for given tps to prevent stall during refresh"
-        );
+    for traffic_gen in &config.traffic_gen {
+        let time_to_send_txs_from_all_senders = (config.tx_per_sender(traffic_gen)
+            * config.senders(traffic_gen)) as f64
+            / traffic_gen.tps as f64;
+        if time_to_send_txs_from_all_senders < config.refresh_delay_secs {
+            warn!(
+                time_to_send_txs_from_all_senders,
+                refresh_delay = config.refresh_delay_secs,
+                "Not enough senders for given tps to prevent stall during refresh"
+            );
+        }
     }
 
     if let Err(e) = run::run(client, config).await {

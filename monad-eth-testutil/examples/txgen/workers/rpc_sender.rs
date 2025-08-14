@@ -13,7 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::VecDeque;
+use std::{
+    collections::VecDeque,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::hex;
@@ -38,6 +41,8 @@ pub struct RpcSender {
     pub adjustment_interval: Duration,
     pub use_dynamic_adjustment: bool,
     pub window_duration: Duration,
+
+    pub shutdown: Arc<AtomicBool>,
 }
 
 impl RpcSender {
@@ -49,6 +54,8 @@ impl RpcSender {
         metrics: Arc<Metrics>,
         sent_txs: Arc<DashMap<TxHash, Instant>>,
         config: &Config,
+        traffic_gen: &TrafficGen,
+        shutdown: Arc<AtomicBool>,
     ) -> Self {
         Self {
             gen_rx,
@@ -64,7 +71,8 @@ impl RpcSender {
             window_duration: Duration::from_secs(300),
 
             use_dynamic_adjustment: !config.use_static_tps_interval,
-            target_tps: config.tps,
+            target_tps: traffic_gen.tps,
+            shutdown,
         }
     }
 
@@ -83,6 +91,9 @@ impl RpcSender {
         );
 
         while let Some(AccountsWithTxs { accts, txs }) = self.gen_rx.recv().await {
+            if self.shutdown.load(Ordering::Relaxed) {
+                break;
+            }
             info!(
                 num_accts = accts.len(),
                 num_txs = txs.len(),
@@ -107,14 +118,23 @@ impl RpcSender {
             }
 
             debug!("Sending accts to refresher...");
-            self.refresh_sender
-                .send(AccountsWithTime {
-                    accts,
-                    sent: Instant::now(),
-                })
-                .expect("Sender not closed");
+            if let Err(e) = self.refresh_sender.send(AccountsWithTime {
+                accts,
+                sent: Instant::now(),
+            }) {
+                if self.shutdown.load(Ordering::Relaxed) {
+                    debug!(
+                        "Failed to send accounts to refresher during shutdown: {}",
+                        e
+                    );
+                } else {
+                    error!("Failed to send accounts to refresher unexpectedly: {}", e);
+                }
+                break;
+            }
             debug!("Accts sent to refresher...");
         }
+        warn!("RpcSender shutting down");
     }
 
     // Track a batch of transactions and clean up history
@@ -209,6 +229,7 @@ impl RpcSender {
         let client = self.client.clone();
         let metrics = self.metrics.clone();
         let sent_txs = self.sent_txs.clone();
+        let shutdown = self.shutdown.clone();
         let batch = Vec::from_iter(batch.iter().cloned()); // todo: make more performant
 
         tokio::spawn(async move {
@@ -220,12 +241,23 @@ impl RpcSender {
             send_batch(&client, batch.iter().map(|(tx, _)| tx), &metrics).await;
 
             trace!("Tx batch sent, sending accts to recipient tracker...");
-            recipient_sender
-                .send(AddrsWithTime {
-                    addrs: batch.iter().map(|(_, a)| *a).collect(),
-                    sent: Instant::now(),
-                })
-                .expect("recipient tracker rx closed");
+            if let Err(e) = recipient_sender.send(AddrsWithTime {
+                addrs: batch.iter().map(|(_, a)| *a).collect(),
+                sent: Instant::now(),
+            }) {
+                if shutdown.load(Ordering::Relaxed) {
+                    debug!(
+                        "Failed to send addresses to recipient tracker during shutdown: {}",
+                        e
+                    );
+                } else {
+                    error!(
+                        "Failed to send addresses to recipient tracker unexpectedly: {}",
+                        e
+                    );
+                }
+                return;
+            }
 
             trace!("Sent accts to recipient tracker");
         });

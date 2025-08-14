@@ -29,16 +29,12 @@ pub struct Config {
     #[serde(default = "default_rpc_url")]
     pub rpc_url: String,
 
-    /// Target tps of the generator
-    #[serde(default = "default_tps")]
-    pub tps: u64,
-
     /// Funded private keys used to seed native tokens to sender accounts
     #[serde(default = "default_root_private_keys")]
     pub root_private_keys: Vec<String>,
 
-    /// Traffic generation configuration
-    pub traffic_gen: TrafficGen,
+    /// Traffic generation configurations to run sequentially
+    pub traffic_gen: Vec<TrafficGen>,
 
     /// How long to wait before refreshing balances. A function of the execution delay and block speed
     #[serde(default = "default_refresh_delay_secs")]
@@ -191,11 +187,11 @@ impl Config {
         Ok(())
     }
 
-    pub fn tx_per_sender(&self) -> usize {
-        if let Some(x) = self.traffic_gen.tx_per_sender {
+    pub fn tx_per_sender(&self, traffic_gen: &TrafficGen) -> usize {
+        if let Some(x) = traffic_gen.tx_per_sender {
             return x;
         }
-        match &self.traffic_gen.gen_mode {
+        match &traffic_gen.gen_mode {
             GenMode::FewToMany(..) => 500,
             GenMode::ManyToMany(..) => 10,
             GenMode::Duplicates(..) => 10,
@@ -211,11 +207,11 @@ impl Config {
         }
     }
 
-    pub fn sender_group_size(&self) -> usize {
-        if let Some(x) = self.traffic_gen.sender_group_size {
+    pub fn sender_group_size(&self, traffic_gen: &TrafficGen) -> usize {
+        if let Some(x) = traffic_gen.sender_group_size {
             return x;
         }
-        match &self.traffic_gen.gen_mode {
+        match &traffic_gen.gen_mode {
             GenMode::FewToMany(..) => 100,
             GenMode::ManyToMany(..) => 100,
             GenMode::Duplicates(..) => 100,
@@ -231,11 +227,11 @@ impl Config {
         }
     }
 
-    pub fn senders(&self) -> usize {
-        if let Some(x) = self.traffic_gen.senders {
+    pub fn senders(&self, traffic_gen: &TrafficGen) -> usize {
+        if let Some(x) = traffic_gen.senders {
             return x;
         }
-        match &self.traffic_gen.gen_mode {
+        match &traffic_gen.gen_mode {
             GenMode::FewToMany(..) => 1000,
             GenMode::ManyToMany(..) => 2500,
             GenMode::Duplicates(..) => 2500,
@@ -251,9 +247,9 @@ impl Config {
         }
     }
 
-    pub fn required_contract(&self) -> RequiredContract {
+    pub fn required_contract(&self, traffic_gen: &TrafficGen) -> RequiredContract {
         use RequiredContract::*;
-        match &self.traffic_gen.gen_mode {
+        match &traffic_gen.gen_mode {
             GenMode::FewToMany(config) => match config.tx_type {
                 TxType::ERC20 => ERC20,
                 TxType::Native => None,
@@ -288,6 +284,13 @@ impl Config {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrafficGen {
+    /// How long to run this traffic pattern in seconds
+    pub runtime: u64,
+
+    /// Target tps of the generator for this traffic phase
+    #[serde(default = "default_tps")]
+    pub tps: u64,
+
     /// Seed used to generate private keys for recipients
     #[serde(default = "default_recipient_seed")]
     pub recipient_seed: u64,
