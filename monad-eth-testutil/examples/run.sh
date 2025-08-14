@@ -5,6 +5,4 @@ RPC_PORT=$(docker ps --filter "name=node0-rpc" --format "{{.Ports}}" | awk -F'[:
 
 # Construct the base command with the RPC URL
 cargo run --release --example txgen -- \
-    --rpc-url "http://localhost:$RPC_PORT" \
-    few-to-many \
-    "$@"  # Pass all additional arguments
+    --config-file ./monad-eth-testutil/examples/txgen/sample_configs/few_to_many.json

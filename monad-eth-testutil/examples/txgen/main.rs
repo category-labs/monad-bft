@@ -23,6 +23,7 @@ use prelude::*;
 use tracing_subscriber::util::SubscriberInitExt;
 
 pub mod cli;
+pub mod config;
 pub mod generators;
 pub mod prelude;
 pub mod run;
@@ -31,13 +32,17 @@ pub mod workers;
 
 #[tokio::main]
 async fn main() {
-    let config = cli::Config::parse();
+    let cli_config = cli::CliConfig::parse();
+    let config = cli_config
+        .load_config()
+        .expect("Failed to load configuration");
 
     if let Err(e) = setup_logging(config.trace_log_file, config.debug_log_file) {
         error!("Error setting up logging: {e:?}");
     }
 
-    let client: ReqwestClient = ClientBuilder::default().http(config.rpc_url.clone());
+    let client: ReqwestClient =
+        ClientBuilder::default().http(config.rpc_url().expect("Invalid RPC URL"));
 
     info!("Config: {config:?}");
 

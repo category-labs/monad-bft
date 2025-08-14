@@ -13,14 +13,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{io::Write, str::FromStr};
+use std::io::Write;
 
 use eyre::bail;
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    cli::{Config, DeployedContract},
+    config::{Config, DeployedContract},
     generators::make_generator,
     prelude::*,
     shared::{ecmul::ECMul, erc20::ERC20, eth_json_rpc::EthJsonRpc, uniswap::Uniswap},
@@ -183,7 +183,7 @@ async fn load_or_deploy_contracts(
     config: &Config,
     client: &ReqwestClient,
 ) -> Result<DeployedContract> {
-    use crate::cli::RequiredContract;
+    use crate::config::RequiredContract;
 
     let contract_to_ensure = config.required_contract();
     let path = "deployed_contracts.json";
@@ -194,16 +194,6 @@ async fn load_or_deploy_contracts(
     match contract_to_ensure {
         RequiredContract::None => Ok(DeployedContract::None),
         RequiredContract::ERC20 => {
-            // try from commmand line arg
-            if let Some(erc20) = &config.erc20_contract {
-                let erc20 = Address::from_str(erc20)
-                    .wrap_err("Failed to parse erc20 contract string arg")?;
-                if verify_contract_code(client, erc20).await? {
-                    info!("Contract from cmdline args validated");
-                    return Ok(DeployedContract::ERC20(ERC20 { addr: erc20 }));
-                }
-            };
-
             match open_deployed_contracts_file(path) {
                 Ok(DeployedContractFile {
                     erc20: Some(erc20), ..
@@ -233,16 +223,6 @@ async fn load_or_deploy_contracts(
             Ok(DeployedContract::ERC20(erc20))
         }
         RequiredContract::ECMUL => {
-            // try from commmand line arg
-            if let Some(ecmul) = &config.ecmul_contract {
-                let ecmul = Address::from_str(ecmul)
-                    .wrap_err("Failed to parse ecmul contract string arg")?;
-                if verify_contract_code(client, ecmul).await? {
-                    info!("Contract from cmdline args validated");
-                    return Ok(DeployedContract::ECMUL(ECMul { addr: ecmul }));
-                }
-            };
-
             match open_deployed_contracts_file(path) {
                 Ok(DeployedContractFile {
                     ecmul: Some(ecmul), ..
@@ -272,16 +252,6 @@ async fn load_or_deploy_contracts(
             Ok(DeployedContract::ECMUL(ecmul))
         }
         RequiredContract::Uniswap => {
-            // try from commmand line arg
-            if let Some(uniswap) = &config.uniswap_contract {
-                let uniswap = Address::from_str(uniswap)
-                    .wrap_err("Failed to parse uniswap contract string arg")?;
-                if verify_contract_code(client, uniswap).await? {
-                    info!("Contract from cmdline args validated");
-                    return Ok(DeployedContract::Uniswap(Uniswap { addr: uniswap }));
-                }
-            };
-
             match open_deployed_contracts_file(path) {
                 Ok(DeployedContractFile {
                     uniswap: Some(uniswap),

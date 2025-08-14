@@ -20,7 +20,7 @@ use alloy_primitives::hex;
 use tokio::time::MissedTickBehavior;
 
 use super::*;
-use crate::cli::Config;
+use crate::config::Config;
 
 pub struct RpcSender {
     pub gen_rx: mpsc::Receiver<AccountsWithTxs>,

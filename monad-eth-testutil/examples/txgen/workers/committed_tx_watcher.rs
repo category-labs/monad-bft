@@ -20,7 +20,7 @@ use eyre::Context;
 use serde_json::json;
 
 use super::*;
-use crate::{cli::Config, shared::blockstream::BlockStream};
+use crate::{config::Config, shared::blockstream::BlockStream};
 
 pub struct CommittedTxWatcher {
     sent_txs: Arc<DashMap<TxHash, Instant>>,
