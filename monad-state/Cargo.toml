@@ -21,6 +21,7 @@ monad-state-backend = { workspace = true }
 monad-types = { workspace = true }
 monad-validator = { workspace = true }
 
+alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 bytes = { workspace = true }
 itertools = { workspace = true }

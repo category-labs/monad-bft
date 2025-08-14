@@ -72,6 +72,7 @@ macro_rules! metrics {
 }
 
 metrics!(
+    (NodeState, node_state, [self_stake_bps,]),
     (
         ValidationErrors,
         validation_errors,

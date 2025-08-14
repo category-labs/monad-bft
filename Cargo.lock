@@ -5449,7 +5449,6 @@ dependencies = [
  "monad-peer-discovery",
  "monad-pprof",
  "monad-raptorcast",
- "monad-router-filter",
  "monad-router-multi",
  "monad-secp",
  "monad-state",
@@ -5623,20 +5622,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "monad-router-filter"
-version = "0.1.0"
-dependencies = [
- "futures",
- "itertools 0.10.5",
- "monad-consensus-types",
- "monad-crypto",
- "monad-executor",
- "monad-executor-glue",
- "monad-state",
- "monad-types",
-]
-
-[[package]]
 name = "monad-router-multi"
 version = "0.1.0"
 dependencies = [
@@ -5772,6 +5757,7 @@ dependencies = [
 name = "monad-state"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "alloy-rlp",
  "bytes",
  "itertools 0.10.5",

@@ -46,13 +46,15 @@ use monad_executor_glue::{
 use monad_state_backend::StateBackend;
 use monad_types::{ExecutionProtocol, NodeId, Round, RouterTarget};
 use monad_validator::{
-    epoch_manager::EpochManager, leader_election::LeaderElection,
-    validator_set::ValidatorSetTypeFactory, validators_epoch_mapping::ValidatorsEpochMapping,
+    epoch_manager::EpochManager,
+    leader_election::LeaderElection,
+    validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
+    validators_epoch_mapping::ValidatorsEpochMapping,
 };
-use tracing::{debug_span, info};
+use tracing::{debug_span, info, warn};
 
 use crate::{
-    handle_validation_error, BlockTimestamp, ConsensusMode, MonadState, MonadVersion,
+    handle_validation_error, BlockTimestamp, ConsensusMode, MonadState, MonadVersion, Role,
     VerifiedMonadMessage,
 };
 
@@ -272,10 +274,9 @@ where
             } => consensus.handle_block_sync(block_range, full_blocks),
             ConsensusEvent::SendVote(round) => consensus.handle_vote_timer(round),
         };
-        consensus_cmds
-            .into_iter()
+        self.filter_cmds(consensus_cmds.into_iter())
             .map(|cmd| self.wrap(cmd))
-            .collect::<Vec<_>>()
+            .collect_vec()
     }
 
     fn try_build_state_wrapper<'b>(
@@ -445,10 +446,9 @@ where
 
         let consensus_cmds = consensus.handle_proposal_message(author, validated_proposal);
 
-        consensus_cmds
-            .into_iter()
+        self.filter_cmds(consensus_cmds.into_iter())
             .map(|cmd| self.wrap(cmd))
-            .collect::<Vec<_>>()
+            .collect_vec()
     }
 
     pub(super) fn checkpoint(&mut self) -> Option<CheckpointCommand<ST, SCT, EPT>> {
@@ -522,6 +522,57 @@ where
             })?;
 
         Ok(validated_message)
+    }
+
+    pub fn get_role(&self) -> Role {
+        match self.consensus {
+            ConsensusMode::Sync { .. } => Role::FullNode,
+            ConsensusMode::Live(_) => {
+                // - Validator if self is present in the current validator set
+                // - FullNode otherwise
+                let consensus_epoch = self.consensus.current_epoch();
+                let validator_set = self
+                    .val_epoch_map
+                    .get_val_set(&consensus_epoch)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "unknown validator set for current_epoch={:?}",
+                            consensus_epoch
+                        )
+                    });
+
+                if validator_set.is_member(self.nodeid) {
+                    Role::Validator
+                } else {
+                    Role::FullNode
+                }
+            }
+        }
+    }
+
+    fn filter_cmds(
+        &self,
+        consensus_cmds: impl Iterator<Item = ConsensusCommand<ST, SCT, EPT, BPT, SBT>>,
+    ) -> impl Iterator<Item = ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+        let role = self.get_role();
+
+        consensus_cmds.filter(move |cmd| {
+            match role {
+                Role::FullNode => match cmd {
+                    // disable sending votes/timeouts for full node
+                    ConsensusCommand::Publish { .. } => false,
+                    // consensus state logic shouldn't trigger create proposal on a
+                    // full node, but filtering it out to be safe
+                    ConsensusCommand::CreateProposal { .. } => {
+                        warn!("Full node emitting CreateProposal command");
+                        false
+                    }
+                    ConsensusCommand::PublishToFullNodes { .. } => false,
+                    _ => true,
+                },
+                Role::Validator => true,
+            }
+        })
     }
 
     pub(super) fn wrap(

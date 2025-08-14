@@ -63,7 +63,6 @@ monad-perf-util = { path = "./monad-perf-util" }
 monad-pprof = { path = "./monad-pprof" }
 monad-raptor = { path = "./monad-raptor" }
 monad-raptorcast = { path = "./monad-raptorcast" }
-monad-router-filter = { path = "./monad-router-filter" }
 monad-router-multi = { path = "./monad-router-multi" }
 monad-router-scheduler = { path = "./monad-router-scheduler" }
 monad-rpc-docs = { path = "./monad-rpc/monad-rpc-docs" }

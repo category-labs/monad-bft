@@ -15,6 +15,7 @@
 
 use std::{collections::HashMap, fmt::Debug, marker::PhantomData, ops::Deref};
 
+use alloy_primitives::U256;
 use alloy_rlp::{encode_list, Decodable, Encodable, Header};
 use bytes::{Bytes, BytesMut};
 use itertools::Itertools;
@@ -366,6 +367,12 @@ where
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum Role {
+    FullNode,
+    Validator,
+}
+
 pub struct MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
@@ -419,6 +426,7 @@ where
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
+    LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
@@ -455,6 +463,34 @@ where
         match &self.consensus {
             ConsensusMode::Sync { .. } => None,
             ConsensusMode::Live(consensus) => Some(consensus.blocktree()),
+        }
+    }
+
+    // FIXME remove mut
+    pub fn get_role(&mut self) -> Role {
+        ConsensusChildState::new(self).get_role()
+    }
+
+    pub fn get_self_stake_bps(&self) -> u64 {
+        if matches!(self.consensus, ConsensusMode::Sync { .. }) {
+            return 0;
+        }
+
+        let current_epoch = self.consensus.current_epoch();
+        let validator_set = self
+            .val_epoch_map
+            .get_val_set(&current_epoch)
+            .expect("current validator set is populated");
+        if let Some(self_stake) = validator_set.get_members().get(&self.nodeid) {
+            let total_stake = validator_set.get_total_stake();
+
+            // FIXME this returns 0 if stake less than 0.01% of total stake
+            let self_stake_bps = (self_stake.0 * U256::from(10_000)).div_ceil(total_stake.0);
+
+            // safe conversion since it is always < 10,000
+            self_stake_bps.to::<u64>()
+        } else {
+            0
         }
     }
 
@@ -906,6 +942,14 @@ where
                         )
                     })
                     .is_some();
+
+                if consensus_cmds
+                    .iter()
+                    .find(|cmd| matches!(cmd.command, ConsensusCommand::EnterRound(_, _)))
+                    .is_some()
+                {
+                    self.metrics.node_state.self_stake_bps = self.get_self_stake_bps();
+                }
 
                 let mut cmds = consensus_cmds
                     .into_iter()

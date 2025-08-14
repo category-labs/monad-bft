@@ -72,7 +72,7 @@ use monad_types::{DropTimer, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_updaters::{
     checkpoint::FileCheckpoint, config_loader::ConfigLoader, loopback::LoopbackExecutor,
     parent::ParentExecutor, timer::TokioTimer, tokio_timestamp::TokioTimestamp,
-    triedb_state_root_hash::StateRootHashTriedbPoll, BoxUpdater, Updater,
+    triedb_state_root_hash::StateRootHashTriedbPoll,
 };
 use monad_validator::{
     validator_set::ValidatorSetFactory, weighted_round_robin::WeightedRoundRobin,
@@ -228,29 +228,21 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
         .qc()
         .get_round()
         + Round(1);
-    let router: BoxUpdater<_, _> = {
-        let raptor_router = build_raptorcast_router::<
-            SignatureType,
-            SignatureCollectionType,
-            MonadMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
-            VerifiedMonadMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
-        >(
-            node_state.node_config.clone(),
-            node_state.node_config.peer_discovery,
-            node_state.router_identity,
-            node_state.node_config.bootstrap.clone(),
-            &node_state.node_config.fullnode_dedicated.identities,
-            locked_epoch_validators.clone(),
-            current_epoch,
-            current_round,
-        )
-        .await;
-
-        #[cfg(feature = "full-node")]
-        let raptor_router = monad_router_filter::FullNodeRouterFilter::new(raptor_router);
-
-        <_ as Updater<_>>::boxed(raptor_router)
-    };
+    let router = build_raptorcast_router::<
+        SignatureType,
+        SignatureCollectionType,
+        MonadMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
+        VerifiedMonadMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
+    >(
+        node_state.node_config.clone(),
+        node_state.node_config.peer_discovery,
+        node_state.router_identity,
+        node_state.node_config.bootstrap.clone(),
+        &node_state.node_config.fullnode_dedicated.identities,
+        locked_epoch_validators.clone(),
+        current_epoch,
+        current_round,
+    );
 
     let val_set_update_interval = SeqNum(50_000); // TODO configurable
 
@@ -565,7 +557,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
     Ok(())
 }
 
-async fn build_raptorcast_router<ST, SCT, M, OM>(
+fn build_raptorcast_router<ST, SCT, M, OM>(
     node_config: NodeConfig<ST>,
     peer_discovery_config: PeerDiscoveryConfig<ST>,
     identity: ST::KeyPairType,
@@ -603,12 +595,7 @@ where
     tracing::debug!(
         ?bind_address,
         ?name_record_address,
-        "Monad-node ({}) starting, pid: {}",
-        if cfg!(feature = "full-node") {
-            "full-node"
-        } else {
-            "validator"
-        },
+        "Monad-node starting, pid: {}",
         process::id()
     );
 

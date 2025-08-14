@@ -1,7 +1,7 @@
 #!/bin/bash
 
 set -ex
-systemctl stop monad-bft monad-bft-fullnode monad-execution monad-rpc monad-mpt monad-execution-genesis || true
+systemctl stop monad-bft monad-execution monad-rpc monad-mpt monad-execution-genesis || true
 mkdir /home/monad/monad-bft/empty-dir
 rsync -r --delete /home/monad/monad-bft/empty-dir/ /home/monad/monad-bft/ledger/
 rsync -r --delete /home/monad/monad-bft/empty-dir/ /home/monad/monad-bft/config/forkpoint/

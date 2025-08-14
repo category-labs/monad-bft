@@ -30,7 +30,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MonadEvent, StateRootHashCommand};
-use monad_types::{Epoch, ExecutionProtocol, SeqNum, Stake};
+use monad_types::{Epoch, ExecutionProtocol, SeqNum};
 use tracing::error;
 
 pub trait MockableStateRootHash:
@@ -248,18 +248,7 @@ where
     ) -> Self {
         let num_validators = genesis_validator_data.0.len();
         let mut val_data_1 = genesis_validator_data.0.clone();
-        let mut val_data_2 = val_data_1.clone();
-
-        for validator in val_data_1.iter_mut().take(num_validators / 2) {
-            validator.stake = Stake::ZERO;
-        }
-        for validator in val_data_2
-            .iter_mut()
-            .take(num_validators)
-            .skip(num_validators / 2)
-        {
-            validator.stake = Stake::ZERO;
-        }
+        let val_data_2 = val_data_1.split_off(num_validators / 2);
 
         Self {
             epoch: Epoch(1),
@@ -285,7 +274,7 @@ where
                 locked_epoch,
                 seq_num.to_epoch(self.val_set_update_interval) + Epoch(2)
             );
-            self.next_val_data = if locked_epoch.0 % 2 == 0 {
+            self.next_val_data = if locked_epoch.0 % 2 == 1 {
                 Some(ValidatorSetDataWithEpoch {
                     epoch: locked_epoch,
                     validators: self.val_data_1.clone(),

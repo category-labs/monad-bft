@@ -45,7 +45,7 @@ mod test {
     };
     use monad_multi_sig::MultiSig;
     use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
-    use monad_state::{MonadMessage, VerifiedMonadMessage};
+    use monad_state::{MonadMessage, Role, VerifiedMonadMessage};
     use monad_state_backend::{InMemoryState, InMemoryStateInner};
     use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
     use monad_transformer::{
@@ -581,13 +581,21 @@ mod test {
             Epoch(2),
         );
 
-        // terminate well into the second epoch
+        // terminate when epoch 2 starts
         let mut term_in_epoch_2 =
-            UntilTerminator::new().until_round(epoch_2_start_round + Round(10));
+            UntilTerminator::new().until_round(epoch_2_start_round + Round(1));
         while nodes.step_until(&mut term_in_epoch_2).is_some() {}
 
         // all nodes must have advanced to next epoch
         verify_nodes_in_epoch(nodes.states().values().collect_vec(), Epoch(2));
+        for expected_validator in &genesis_validators {
+            let (_, node) = nodes
+                .mut_states()
+                .iter_mut()
+                .find(|(id, _)| id.get_peer_id() == expected_validator)
+                .unwrap();
+            assert_eq!(node.state.get_role(), Role::Validator);
+        }
 
         let update_block_num_end_2 = SeqNum(val_set_update_interval.0 * 2) - SeqNum(1);
 
@@ -603,10 +611,26 @@ mod test {
             Epoch(3),
         );
 
-        // terminate well into the third epoch
+        // terminate when epoch 3 starts
         let mut term_in_epoch_3 =
-            UntilTerminator::new().until_round(epoch_3_start_round + Round(10));
+            UntilTerminator::new().until_round(epoch_3_start_round + Round(1));
         while nodes.step_until(&mut term_in_epoch_3).is_some() {}
+        for expected_validator in validators_epoch_3 {
+            let (_, node) = nodes
+                .mut_states()
+                .iter_mut()
+                .find(|(id, _)| id.get_peer_id() == expected_validator)
+                .unwrap();
+            assert_eq!(node.state.get_role(), Role::Validator);
+        }
+        for expected_full_node in validators_epoch_4 {
+            let (_, node) = nodes
+                .mut_states()
+                .iter_mut()
+                .find(|(id, _)| id.get_peer_id() == expected_full_node)
+                .unwrap();
+            assert_eq!(node.state.get_role(), Role::FullNode);
+        }
 
         // all nodes must have advanced to next epoch
         verify_nodes_in_epoch(nodes.states().values().collect_vec(), Epoch(3));
@@ -625,10 +649,26 @@ mod test {
             Epoch(4),
         );
 
-        // terminate well into the fourth epoch
+        // terminate when epoch 4 starts
         let mut term_in_epoch_4 =
-            UntilTerminator::new().until_round(epoch_4_start_round + Round(10));
+            UntilTerminator::new().until_round(epoch_4_start_round + Round(1));
         while nodes.step_until(&mut term_in_epoch_4).is_some() {}
+        for expected_validator in validators_epoch_4 {
+            let (_, node) = nodes
+                .mut_states()
+                .iter_mut()
+                .find(|(id, _)| id.get_peer_id() == expected_validator)
+                .unwrap();
+            assert_eq!(node.state.get_role(), Role::Validator);
+        }
+        for expected_full_node in validators_epoch_3 {
+            let (_, node) = nodes
+                .mut_states()
+                .iter_mut()
+                .find(|(id, _)| id.get_peer_id() == expected_full_node)
+                .unwrap();
+            assert_eq!(node.state.get_role(), Role::FullNode);
+        }
 
         let ledgers = nodes
             .states()

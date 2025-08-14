@@ -168,6 +168,12 @@ where
         &self.states
     }
 
+    pub fn mut_states(
+        &mut self,
+    ) -> &mut BTreeMap<ID<CertificateSignaturePubKey<S::SignatureType>>, Node<S>> {
+        &mut self.states
+    }
+
     pub fn remove_state(
         &mut self,
         peer_id: &ID<CertificateSignaturePubKey<S::SignatureType>>,
