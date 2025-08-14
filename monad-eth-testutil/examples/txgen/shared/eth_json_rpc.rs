@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use alloy_consensus::TxEnvelope;
 use alloy_eips::eip2718::Encodable2718;
-use alloy_primitives::{Address, Bytes, U256, U64};
+use alloy_primitives::{Address, Bytes, U128, U256, U64};
 use alloy_rpc_client::ReqwestClient;
 use eyre::Result;
 use monad_types::DropTimer;
@@ -31,6 +31,7 @@ pub trait EthJsonRpc {
     async fn get_balance(&self, addr: &Address) -> Result<U256>;
     async fn get_erc20_balance(&self, addr: &Address, erc20: ERC20) -> Result<U256>;
     async fn get_code(&self, addr: &Address) -> Result<String>;
+    async fn get_base_fee(&self) -> Result<u128>;
 
     async fn batch_get_balance(
         &self,
@@ -160,6 +161,13 @@ impl EthJsonRpc for ReqwestClient {
         }
 
         Ok(output)
+    }
+
+    async fn get_base_fee(&self) -> Result<u128> {
+        self.request::<_, U128>("eth_gasPrice", ())
+            .await
+            .map_err(Into::into)
+            .map(|b| b.to())
     }
 }
 
