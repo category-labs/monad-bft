@@ -18,7 +18,6 @@ use std::{
     future::Future as _,
     marker::PhantomData,
     net::{IpAddr, SocketAddr},
-    ops::DerefMut,
     pin::{pin, Pin},
     sync::Arc,
     task::{Context, Poll},
@@ -27,7 +26,7 @@ use std::{
 
 use alloy_rlp::{Decodable, Encodable};
 use bytes::{Bytes, BytesMut};
-use futures::{channel::oneshot, FutureExt, Stream};
+use futures::{channel::oneshot, Stream};
 use itertools::Itertools;
 use message::{InboundRouterMessage, OutboundRouterMessage};
 use monad_consensus_types::signature_collection::SignatureCollection;
@@ -39,8 +38,8 @@ use monad_crypto::{
 };
 use monad_dataplane::{
     udp::{segment_size_for_mtu, DEFAULT_MTU},
-    BroadcastMsg, DataplaneBuilder, DataplaneReader, DataplaneWriter, RecvTcpMsg, TcpMsg,
-    UnicastMsg,
+    BroadcastMsg, DataplaneBuilder, DataplaneReader, DataplaneWriter, RecvTcpMsg, RecvUdpMsg,
+    TcpMsg, TcpReader, UdpReader, UnicastMsg,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
@@ -89,7 +88,8 @@ where
     udp_state: udp::UdpState<ST>,
     mtu: u16,
 
-    dataplane_reader: DataplaneReader,
+    dataplane_tcp_reader: TcpReader,
+    dataplane_udp_reader: UdpReader,
     dataplane_writer: DataplaneWriter,
 
     pending_event_tx: UnboundedSender<RaptorCastEvent<M::Event, ST>>,
@@ -143,6 +143,7 @@ where
         );
 
         let (pending_event_tx, pending_event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (dataplane_tcp_reader, dataplane_udp_reader) = dataplane_reader.split();
 
         Self {
             is_dynamic_fullnode,
@@ -163,7 +164,8 @@ where
             udp_state: udp::UdpState::new(self_id, config.udp_message_max_age_ms),
             mtu: config.mtu,
 
-            dataplane_reader,
+            dataplane_tcp_reader,
+            dataplane_udp_reader,
             dataplane_writer,
             pending_event_tx,
             pending_event_rx,
@@ -274,6 +276,251 @@ where
             msgs: messages,
             stride: segment_size,
         }
+    }
+
+    fn handle_udp_message(&mut self, message: RecvUdpMsg) {
+        tracing::trace!(
+            "RaptorCastPrimary rx message len {} from: {}",
+            message.payload.len(),
+            message.src_addr
+        );
+
+        let full_node_addrs = self
+            .dedicated_full_nodes
+            .list
+            .iter()
+            .filter_map(|node_id| self.peer_discovery_handle.lookup_addr(node_id))
+            .collect::<Vec<_>>();
+
+        // Enter the received raptorcast chunk into the udp_state for reassembly.
+        // If the field "first-hop recipient" in the chunk has our node Id, then
+        // we are responsible for broadcasting this chunk to other validators.
+        // Once we have enough (redundant) raptorcast chunks, recreate the
+        // decoded (AKA parsed, original) message.
+        // Stream the chunks to our dedicated full-nodes as we receive them.
+        let decoded_app_messages = {
+            // FIXME: pass dataplane as arg to handle_message
+            self.udp_state.handle_message(
+                &self.rebroadcast_map, // contains the NodeIds for all the RC participants for each epoch
+                |targets, payload, bcast_stride| {
+                    // Callback for re-broadcasting raptorcast chunks to other RaptorCast participants (validator peers)
+                    let target_addrs: Vec<SocketAddr> = targets
+                        .into_iter()
+                        .filter_map(|target| self.peer_discovery_handle.lookup_addr(&target))
+                        .collect();
+
+                    self.dataplane_writer.udp_write_broadcast(BroadcastMsg {
+                        targets: target_addrs,
+                        payload,
+                        stride: bcast_stride,
+                    });
+                },
+                |payload, bcast_stride| {
+                    // Callback for forwarding chunks to full nodes
+                    self.dataplane_writer.udp_write_broadcast(BroadcastMsg {
+                        targets: full_node_addrs.clone(),
+                        payload,
+                        stride: bcast_stride,
+                    });
+                },
+                message,
+            )
+        };
+
+        tracing::trace!(
+            "RaptorCastPrimary rx decoded {} messages, sized: {:?}",
+            decoded_app_messages.len(),
+            decoded_app_messages
+                .iter()
+                .map(|(_node_id, bytes)| bytes.len())
+                .collect_vec()
+        );
+
+        for (from, decoded) in decoded_app_messages {
+            match InboundRouterMessage::<M, ST>::try_deserialize(&decoded) {
+                Ok(inbound) => match inbound {
+                    InboundRouterMessage::AppMessage(app_message) => {
+                        tracing::trace!("RaptorCastPrimary rx deserialized AppMessage");
+                        self.pending_event_tx
+                            .send(RaptorCastEvent::Message(app_message.event(from)))
+                            .expect("pending_event rx dropped");
+                    }
+                    InboundRouterMessage::PeerDiscoveryMessage(peer_disc_message) => {
+                        tracing::trace!(
+                            "RaptorCastPrimary rx deserialized PeerDiscoveryMessage: {:?}",
+                            peer_disc_message
+                        );
+                        // handle peer discovery message in driver
+                        self.peer_discovery_handle
+                            .send_event(peer_disc_message.event(from));
+                    }
+                    InboundRouterMessage::FullNodesGroup(full_nodes_group_message) => {
+                        tracing::trace!(
+                            "RaptorCastPrimary rx deserialized {:?}",
+                            full_nodes_group_message
+                        );
+                        match &self.channel_to_secondary {
+                            Some(channel) => {
+                                if channel.send(full_nodes_group_message).is_err() {
+                                    tracing::error!(
+                                        "Could not send InboundRouterMessage to \
+                                    secondary Raptorcast instance: channel closed",
+                                    );
+                                }
+                            }
+                            None => {
+                                tracing::debug!(
+                                    ?from,
+                                    "Received FullNodesGroup message but the primary \
+                                Raptorcast instance is not setup to forward messages \
+                                to a secondary instance."
+                                );
+                            }
+                        }
+                    }
+                },
+                Err(err) => {
+                    warn!(
+                        ?from,
+                        ?err,
+                        decoded = hex::encode(&decoded),
+                        "failed to deserialize message"
+                    );
+                }
+            }
+        }
+    }
+
+    fn handle_tcp_message(&mut self, message: RecvTcpMsg) {
+        let RecvTcpMsg { payload, src_addr } = message;
+
+        // check message length to prevent panic during message slicing
+        if payload.len() < SIGNATURE_SIZE {
+            warn!(
+                ?src_addr,
+                "invalid message, message length less than signature size"
+            );
+            self.dataplane_writer.disconnect(src_addr);
+        }
+        let signature_bytes = &payload[..SIGNATURE_SIZE];
+        let signature = match ST::deserialize(signature_bytes) {
+            Ok(signature) => signature,
+            Err(err) => {
+                warn!(?err, ?src_addr, "invalid signature");
+                self.dataplane_writer.disconnect(src_addr);
+                return;
+            }
+        };
+        let app_message_bytes = payload.slice(SIGNATURE_SIZE..);
+        let deserialized_message =
+            match InboundRouterMessage::<M, ST>::try_deserialize(&app_message_bytes) {
+                Ok(message) => message,
+                Err(err) => {
+                    warn!(?err, ?src_addr, "failed to deserialize message");
+                    self.dataplane_writer.disconnect(src_addr);
+                    return;
+                }
+            };
+        let from = match signature
+            .recover_pubkey::<signing_domain::RaptorcastAppMessage>(app_message_bytes.as_ref())
+        {
+            Ok(from) => from,
+            Err(err) => {
+                warn!(?err, ?src_addr, "failed to recover pubkey");
+                self.dataplane_writer.disconnect(src_addr);
+                return;
+            }
+        };
+
+        // Dispatch messages received via TCP
+        match deserialized_message {
+            InboundRouterMessage::AppMessage(message) => {
+                self.pending_event_tx
+                    .send(RaptorCastEvent::Message(message.event(NodeId::new(from))))
+                    .expect("pending_event rx dropped");
+            }
+            InboundRouterMessage::PeerDiscoveryMessage(message) => {
+                // peer discovery message should come through udp
+                debug!(
+                    ?message,
+                    "dropping peer discovery message, should come through udp channel"
+                );
+                self.dataplane_writer.disconnect(src_addr);
+            }
+            InboundRouterMessage::FullNodesGroup(_group_message) => {
+                // pass TCP message to MultiRouter
+                warn!("FullNodesGroup protocol via TCP not implemented");
+                self.dataplane_writer.disconnect(src_addr);
+            }
+        }
+    }
+
+    fn handle_peer_discovery_emit(&mut self, emit: PeerDiscoveryEmit<ST>) {
+        match emit {
+            PeerDiscoveryEmit::RouterCommand { target, message } => {
+                let _span = debug_span!("publish discovery").entered();
+                let router_message =
+                    match OutboundRouterMessage::<OM, ST>::PeerDiscoveryMessage(message)
+                        .try_serialize()
+                    {
+                        Ok(msg) => msg,
+                        Err(err) => {
+                            error!(?err, "failed to serialize peer discovery message");
+                            return;
+                        }
+                    };
+                let unicast_msg = Self::udp_build(
+                    &self.current_epoch,
+                    BuildTarget::<ST>::PointToPoint(&target),
+                    router_message,
+                    self.mtu,
+                    &self.signing_key,
+                    self.redundancy,
+                    &self.peer_discovery_handle.known_addrs(),
+                );
+                self.dataplane_writer.udp_write_unicast(unicast_msg);
+            }
+            PeerDiscoveryEmit::MetricsCommand(executor_metrics) => {
+                self.peer_discovery_metrics = executor_metrics;
+            }
+        }
+    }
+
+    //  This async function always returns Poll::Pending when polled.
+    async fn poll_input_sources(&mut self) -> ! {
+        // keep processing all input sources until there is no
+        // more unprocessed inputs.
+        loop {
+            tokio::select! {
+                biased; // prioritize udp messages
+                udp_msg = self.dataplane_udp_reader.read() => {
+                    self.handle_udp_message(udp_msg);
+                }
+                tcp_msg = self.dataplane_tcp_reader.read() => {
+                    self.handle_tcp_message(tcp_msg);
+                }
+                pd_emit = self.peer_discovery_emit_rx.recv() => {
+                    let pd_emit = pd_emit.expect("raptorcast peer discovery -> raptorcast channel closed");
+                    self.handle_peer_discovery_emit(pd_emit);
+                }
+                group = recv_opt(&mut self.channel_from_secondary) => {
+                    // The secondary Raptorcast instance (Client) will
+                    // be periodically sending us updates about new
+                    // raptorcast groups that we should use when
+                    // re-broadcasting.
+
+                    let group = group.expect("raptorcast secondary->primary channel closed");
+                    self.rebroadcast_map.push_group_fullnodes(group);
+                }
+            }
+        }
+    }
+}
+
+async fn recv_opt<T>(receiver: &mut Option<UnboundedReceiver<T>>) -> Option<T> {
+    match receiver {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
     }
 }
 
@@ -589,258 +836,13 @@ where
     type Item = E;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.deref_mut();
-
-        if let Poll::Ready(event) = this.pending_event_rx.poll_recv(cx) {
-            let event = event.expect("raptorcast pending_event_tx dropped");
-            return Poll::Ready(Some(event.into()));
-        }
-
-        let full_node_addrs = this
-            .dedicated_full_nodes
-            .list
-            .iter()
-            .filter_map(|node_id| this.peer_discovery_handle.lookup_addr(node_id))
-            .collect::<Vec<_>>();
-
-        loop {
-            let dataplane = &mut this.dataplane_reader;
-            let Poll::Ready(message) = pin!(dataplane.udp_read()).poll_unpin(cx) else {
-                break;
-            };
-
-            tracing::trace!(
-                "RaptorCastPrimary rx message len {} from: {}",
-                message.payload.len(),
-                message.src_addr
-            );
-
-            // Enter the received raptorcast chunk into the udp_state for reassembly.
-            // If the field "first-hop recipient" in the chunk has our node Id, then
-            // we are responsible for broadcasting this chunk to other validators.
-            // Once we have enough (redundant) raptorcast chunks, recreate the
-            // decoded (AKA parsed, original) message.
-            // Stream the chunks to our dedicated full-nodes as we receive them.
-            let decoded_app_messages = {
-                // FIXME: pass dataplane as arg to handle_message
-                this.udp_state.handle_message(
-                    &this.rebroadcast_map, // contains the NodeIds for all the RC participants for each epoch
-                    |targets, payload, bcast_stride| {
-                        // Callback for re-broadcasting raptorcast chunks to other RaptorCast participants (validator peers)
-                        let target_addrs: Vec<SocketAddr> = targets
-                            .into_iter()
-                            .filter_map(|target| this.peer_discovery_handle.lookup_addr(&target))
-                            .collect();
-
-                        this.dataplane_writer.udp_write_broadcast(BroadcastMsg {
-                            targets: target_addrs,
-                            payload,
-                            stride: bcast_stride,
-                        });
-                    },
-                    |payload, bcast_stride| {
-                        // Callback for forwarding chunks to full nodes
-                        this.dataplane_writer.udp_write_broadcast(BroadcastMsg {
-                            targets: full_node_addrs.clone(),
-                            payload,
-                            stride: bcast_stride,
-                        });
-                    },
-                    message,
-                )
-            };
-
-            tracing::trace!(
-                "RaptorCastPrimary rx decoded {} messages, sized: {:?}",
-                decoded_app_messages.len(),
-                decoded_app_messages
-                    .iter()
-                    .map(|(_node_id, bytes)| bytes.len())
-                    .collect_vec()
-            );
-
-            for (from, decoded) in decoded_app_messages {
-                match InboundRouterMessage::<M, ST>::try_deserialize(&decoded) {
-                    Ok(inbound) => match inbound {
-                        InboundRouterMessage::AppMessage(app_message) => {
-                            tracing::trace!("RaptorCastPrimary rx deserialized AppMessage");
-                            this.pending_event_tx
-                                .send(RaptorCastEvent::Message(app_message.event(from)))
-                                .expect("pending_event rx dropped");
-                        }
-                        InboundRouterMessage::PeerDiscoveryMessage(peer_disc_message) => {
-                            tracing::trace!(
-                                "RaptorCastPrimary rx deserialized PeerDiscoveryMessage: {:?}",
-                                peer_disc_message
-                            );
-                            // handle peer discovery message in driver
-                            this.peer_discovery_handle
-                                .send_event(peer_disc_message.event(from));
-                        }
-                        InboundRouterMessage::FullNodesGroup(full_nodes_group_message) => {
-                            tracing::trace!(
-                                "RaptorCastPrimary rx deserialized {:?}",
-                                full_nodes_group_message
-                            );
-                            match &this.channel_to_secondary {
-                                Some(channel) => {
-                                    if channel.send(full_nodes_group_message).is_err() {
-                                        tracing::error!(
-                                            "Could not send InboundRouterMessage to \
-                                    secondary Raptorcast instance: channel closed",
-                                        );
-                                    }
-                                }
-                                None => {
-                                    tracing::debug!(
-                                        ?from,
-                                        "Received FullNodesGroup message but the primary \
-                                Raptorcast instance is not setup to forward messages \
-                                to a secondary instance."
-                                    );
-                                }
-                            }
-                        }
-                    },
-                    Err(err) => {
-                        warn!(
-                            ?from,
-                            ?err,
-                            decoded = hex::encode(&decoded),
-                            "failed to deserialize message"
-                        );
-                    }
-                }
-            }
-
-            if let Poll::Ready(event) = this.pending_event_rx.poll_recv(cx) {
-                let event = event.expect("raptorcast pending_event_tx dropped");
-                return Poll::Ready(Some(event.into()));
+        match self.pending_event_rx.poll_recv(cx) {
+            Poll::Ready(event) => Poll::Ready(event.map(|e| e.into())),
+            Poll::Pending => {
+                let Poll::Pending = pin!(self.poll_input_sources()).poll(cx);
+                Poll::Pending
             }
         }
-
-        loop {
-            let dataplane = &mut this.dataplane_reader;
-            let Poll::Ready(msg) = pin!(dataplane.tcp_read()).poll_unpin(cx) else {
-                break;
-            };
-            let RecvTcpMsg { payload, src_addr } = msg;
-            // check message length to prevent panic during message slicing
-            if payload.len() < SIGNATURE_SIZE {
-                warn!(
-                    ?src_addr,
-                    "invalid message, message length less than signature size"
-                );
-                this.dataplane_writer.disconnect(src_addr);
-                continue;
-            }
-            let signature_bytes = &payload[..SIGNATURE_SIZE];
-            let signature = match ST::deserialize(signature_bytes) {
-                Ok(signature) => signature,
-                Err(err) => {
-                    warn!(?err, ?src_addr, "invalid signature");
-                    this.dataplane_writer.disconnect(src_addr);
-                    continue;
-                }
-            };
-            let app_message_bytes = payload.slice(SIGNATURE_SIZE..);
-            let deserialized_message =
-                match InboundRouterMessage::<M, ST>::try_deserialize(&app_message_bytes) {
-                    Ok(message) => message,
-                    Err(err) => {
-                        warn!(?err, ?src_addr, "failed to deserialize message");
-                        this.dataplane_writer.disconnect(src_addr);
-                        continue;
-                    }
-                };
-            let from = match signature
-                .recover_pubkey::<signing_domain::RaptorcastAppMessage>(app_message_bytes.as_ref())
-            {
-                Ok(from) => from,
-                Err(err) => {
-                    warn!(?err, ?src_addr, "failed to recover pubkey");
-                    this.dataplane_writer.disconnect(src_addr);
-                    continue;
-                }
-            };
-
-            // Dispatch messages received via TCP
-            match deserialized_message {
-                InboundRouterMessage::AppMessage(message) => {
-                    return Poll::Ready(Some(
-                        RaptorCastEvent::Message(message.event(NodeId::new(from))).into(),
-                    ));
-                }
-                InboundRouterMessage::PeerDiscoveryMessage(message) => {
-                    // peer discovery message should come through udp
-                    debug!(
-                        ?message,
-                        "dropping peer discovery message, should come through udp channel"
-                    );
-                    this.dataplane_writer.disconnect(src_addr);
-                    continue;
-                }
-                InboundRouterMessage::FullNodesGroup(_group_message) => {
-                    // pass TCP message to MultiRouter
-                    warn!("FullNodesGroup protocol via TCP not implemented");
-                    this.dataplane_writer.disconnect(src_addr);
-                    continue;
-                }
-            }
-        }
-
-        while let Poll::Ready(Some(peer_disc_emit)) = this.peer_discovery_emit_rx.poll_recv(cx) {
-            match peer_disc_emit {
-                PeerDiscoveryEmit::RouterCommand { target, message } => {
-                    let _span = debug_span!("publish discovery").entered();
-                    let router_message =
-                        match OutboundRouterMessage::<OM, ST>::PeerDiscoveryMessage(message)
-                            .try_serialize()
-                        {
-                            Ok(msg) => msg,
-                            Err(err) => {
-                                error!(?err, "failed to serialize peer discovery message");
-                                continue;
-                            }
-                        };
-                    let current_epoch = this.current_epoch;
-                    let unicast_msg = Self::udp_build(
-                        &current_epoch,
-                        BuildTarget::<ST>::PointToPoint(&target),
-                        router_message,
-                        this.mtu,
-                        &this.signing_key,
-                        this.redundancy,
-                        &this.peer_discovery_handle.known_addrs(),
-                    );
-                    this.dataplane_writer.udp_write_unicast(unicast_msg);
-                }
-                PeerDiscoveryEmit::MetricsCommand(executor_metrics) => {
-                    this.peer_discovery_metrics = executor_metrics;
-                }
-            }
-        }
-
-        // The secondary Raptorcast instance (Client) will be periodically sending us
-        // updates about new raptorcast groups that we should use when re-broadcasting
-        if let Some(channel_from_secondary) = this.channel_from_secondary.as_mut() {
-            loop {
-                match pin!(channel_from_secondary.recv()).poll(cx) {
-                    Poll::Ready(Some(group)) => {
-                        this.rebroadcast_map.push_group_fullnodes(group);
-                    }
-                    Poll::Ready(None) => {
-                        tracing::error!("RaptorCast secondary->primary channel disconnected.");
-                        break;
-                    }
-                    Poll::Pending => {
-                        break;
-                    }
-                }
-            }
-        }
-
-        Poll::Pending
     }
 }
 
