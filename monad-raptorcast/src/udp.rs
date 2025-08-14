@@ -46,10 +46,10 @@ use crate::{
     SIGNATURE_SIZE,
 };
 
-pub const PENDING_MESSAGE_CACHE_SIZE: NonZero<usize> = unsafe { NonZero::new_unchecked(1_000) };
+pub const PENDING_MESSAGE_CACHE_SIZE: NonZero<usize> = NonZero::new(1_000).unwrap();
 
-pub const SIGNATURE_CACHE_SIZE: NonZero<usize> = unsafe { NonZero::new_unchecked(10_000) };
-pub const RECENTLY_DECODED_CACHE_SIZE: NonZero<usize> = unsafe { NonZero::new_unchecked(10_000) };
+pub const SIGNATURE_CACHE_SIZE: NonZero<usize> = NonZero::new(10_000).unwrap();
+pub const RECENTLY_DECODED_CACHE_SIZE: NonZero<usize> = NonZero::new(10_000).unwrap();
 
 // We assume an MTU of at least 1280 (the IPv6 minimum MTU), which for the maximum Merkle tree
 // depth of 9 gives a symbol size of 960 bytes, which we will use as the minimum chunk length for
@@ -521,6 +521,7 @@ const CHUNK_HEADER_LEN: u16 = 20 // Chunk recipient hash
             + 1  // reserved
             + 2; // Chunk idx
 
+#[expect(clippy::too_many_arguments)]
 pub fn build_messages<ST>(
     key: &ST::KeyPairType,
     segment_size: u16, // Each chunk in the returned Vec (Bytes element of the tuple) will be limited to this size
@@ -555,6 +556,7 @@ where
 // to verify that the RaptorCast receive path doesn't crash when it receives such a message,
 // as previous versions of the RaptorCast receive path would indeed crash when receiving
 // such a message.
+#[expect(clippy::too_many_arguments)]
 pub fn build_messages_with_length<ST>(
     key: &ST::KeyPairType,
     segment_size: u16,
@@ -752,6 +754,7 @@ where
                 // and have downstream full nodes
                 let self_node_id_hash = compute_hash(&NodeId::new(key.pubkey()));
                 let mut chunk_idx = 0_u16;
+                #[expect(clippy::explicit_counter_loop)]
                 for (chunk_symbol_id, chunk_data) in chunk_datas.iter_mut() {
                     // use self (only validator) as chunk recipient
                     chunk_data[0..20].copy_from_slice(&self_node_id_hash.0);

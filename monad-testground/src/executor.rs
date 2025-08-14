@@ -17,7 +17,6 @@ use std::{
     collections::HashMap,
     marker::PhantomData,
     net::{SocketAddr, SocketAddrV4},
-    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -35,10 +34,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_dataplane::DataplaneBuilder;
 use monad_executor_glue::{Command, MonadEvent, RouterCommand, StateRootHashCommand};
-use monad_peer_discovery::{
-    driver::PeerDiscoveryDriver,
-    mock::{NopDiscovery, NopDiscoveryBuilder},
-};
+use monad_peer_discovery::{driver::PeerDiscoveryDriver, mock::NopDiscoveryBuilder};
 use monad_raptorcast::{config::RaptorCastConfig, RaptorCast};
 use monad_state::{Forkpoint, MonadMessage, MonadState, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::InMemoryState;
@@ -142,17 +138,17 @@ where
             RouterConfig::Local(router) => Updater::boxed(router),
 
             RouterConfig::RaptorCast(cfg) => {
-                let pdd = PeerDiscoveryDriver::new(peer_discovery_builder);
-                let shared_peer_discovery_driver = Arc::new(Mutex::new(pdd));
+                let mut pdd = PeerDiscoveryDriver::new(peer_discovery_builder);
+                let pd_handle = pdd.handle();
+                let pd_emit_rx = pdd.take_emit_rx();
                 let (dp_reader, dp_writer) = dataplane_builder.build().split();
                 Updater::boxed(RaptorCast::<
                     ST,
                     MonadMessage<ST, SCT, MockExecutionProtocol>,
                     VerifiedMonadMessage<ST, SCT, MockExecutionProtocol>,
                     MonadEvent<ST, SCT, MockExecutionProtocol>,
-                    NopDiscovery<ST>,
                 >::new(
-                    cfg, dp_reader, dp_writer, shared_peer_discovery_driver
+                    cfg, dp_reader, dp_writer, pd_handle, pd_emit_rx
                 ))
             }
         },

@@ -341,6 +341,8 @@ pub fn set_up_test(
     NodeId<PubKeyType>,
     HashMap<NodeId<PubKeyType>, SocketAddr>,
 ) {
+    use monad_peer_discovery::{mock::NopDiscoveryBuilder, PeerDiscoveryDriver};
+
     ONCE_SETUP.call_once(|| {
         tracing_subscriber::fmt::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -414,12 +416,20 @@ pub fn set_up_test(
         ));
 
         rt.spawn(async move {
+            let pd_builder = NopDiscoveryBuilder {
+                known_addresses: peer_addresses,
+                ..Default::default()
+            };
+            let mut pd = PeerDiscoveryDriver::new(pd_builder);
+            let pd_handle = pd.handle();
+            let pd_emit_rx = pd.take_emit_rx();
+
             let mut service = new_defaulted_raptorcast_for_tests::<
                 SignatureType,
                 MockMessage,
                 MockMessage,
                 <MockMessage as Message>::Event,
-            >(rx_addr, peer_addresses, Arc::new(rx_keypair));
+            >(rx_addr, pd_handle, pd_emit_rx, Arc::new(rx_keypair));
 
             service.exec(vec![RouterCommand::AddEpochValidatorSet {
                 epoch: Epoch(0),

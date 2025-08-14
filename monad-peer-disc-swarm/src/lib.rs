@@ -27,7 +27,8 @@ use monad_crypto::certificate_signature::{
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
 use monad_peer_discovery::{
-    PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryEvent, PeerDiscoveryMessage,
+    NodeAddrLookup as _, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryEvent,
+    PeerDiscoveryMessage,
 };
 use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_transformer::{ID, LinkMessage, Pipeline};
@@ -500,7 +501,7 @@ where
                     .expect("logic error, should be nonempty")
                     .peer_disc_driver
                     .get_peer_disc_state()
-                    .get_addr_by_id(message.to.get_peer_id())
+                    .lookup_addr_v4(message.to.get_peer_id())
                 else {
                     debug!(to=?message.to.get_peer_id(), "dropping outbound message: peer addr not found");
                     continue;

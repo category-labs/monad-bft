@@ -15,7 +15,6 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    net::SocketAddrV4,
     time::Duration,
 };
 
@@ -30,9 +29,10 @@ use rand_chacha::ChaCha8Rng;
 use tracing::{debug, info, trace, warn};
 
 use crate::{
-    MonadNameRecord, NameRecord, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryCommand,
-    PeerDiscoveryEvent, PeerDiscoveryMessage, PeerDiscoveryMetricsCommand,
-    PeerDiscoveryTimerCommand, PeerLookupRequest, PeerLookupResponse, Ping, Pong, TimerKind,
+    MonadNameRecord, NameRecord, NodeAddrLookup, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder,
+    PeerDiscoveryCommand, PeerDiscoveryEvent, PeerDiscoveryMessage, PeerDiscoveryMetricsCommand,
+    PeerDiscoveryTimerCommand, PeerLookupRequest, PeerLookupResponse, PeerTable, Ping, Pong, Role,
+    TimerKind,
 };
 
 /// Maximum number of peers to be included in a PeerLookupResponse
@@ -65,15 +65,6 @@ pub const GAUGE_PEER_DISC_LOOKUP_TIMEOUT: &str = "monad.peer_disc.lookup_timeout
 pub const GAUGE_PEER_DISC_REFRESH: &str = "monad.peer_disc.refresh";
 pub const GAUGE_PEER_DISC_NUM_PEERS: &str = "monad.peer_disc.num_peers";
 pub const GAUGE_PEER_DISC_NUM_CONNECTED_PEERS: &str = "monad.peer_disc.num_connected_peers";
-
-/// validator role is given if the node is a validator in the current or next epoch.
-/// this is to ensure the node starts connecting to other validators even if joining
-/// as a validator only in the next epoch
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Role {
-    Validator,
-    FullNode,
-}
 
 #[derive(Debug, Clone, Copy)]
 pub struct ConnectionInfo<ST: CertificateSignatureRecoverable> {
@@ -156,9 +147,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
         self,
     ) -> (
         Self::PeerDiscoveryAlgoType,
-        Vec<
-            PeerDiscoveryCommand<<Self::PeerDiscoveryAlgoType as PeerDiscoveryAlgo>::SignatureType>,
-        >,
+        Vec<PeerDiscoveryCommand<<Self::PeerDiscoveryAlgoType as NodeAddrLookup>::SignatureType>>,
     ) {
         debug!("initializing peer discovery");
         assert!(self.ping_period > self.request_timeout);
@@ -421,12 +410,51 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
     }
 }
 
+impl<ST: CertificateSignatureRecoverable> NodeAddrLookup for PeerDiscovery<ST> {
+    type SignatureType = ST;
+
+    fn lookup_name_record(
+        &self,
+        id: &NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+    ) -> Option<MonadNameRecord<Self::SignatureType>> {
+        self.routing_info.get(id).cloned()
+    }
+
+    fn name_records(
+        &self,
+    ) -> HashMap<
+        NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+        MonadNameRecord<Self::SignatureType>,
+    > {
+        self.routing_info.clone().into_iter().collect()
+    }
+
+    fn role(
+        &self,
+        node_id: &NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+    ) -> Option<Role> {
+        let is_validator = self
+            .epoch_validators
+            .get(&self.current_epoch)
+            .and_then(|validators| validators.get(node_id))
+            .is_some();
+
+        if is_validator {
+            Some(Role::Validator)
+        } else if self.pinned_full_nodes.contains(node_id)
+            || self.routing_info.contains_key(node_id)
+        {
+            Some(Role::FullNode)
+        } else {
+            None
+        }
+    }
+}
+
 impl<ST> PeerDiscoveryAlgo for PeerDiscovery<ST>
 where
     ST: CertificateSignatureRecoverable,
 {
-    type SignatureType = ST;
-
     fn send_ping(
         &mut self,
         to: NodeId<CertificateSignaturePubKey<ST>>,
@@ -1109,39 +1137,15 @@ where
         &self.metrics
     }
 
-    fn get_addr_by_id(&self, id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<SocketAddrV4> {
-        self.routing_info
-            .get(id)
-            .map(|name_record| name_record.address())
-    }
-
-    fn get_known_addrs(&self) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4> {
-        self.routing_info
-            .iter()
-            .map(|(id, name_record)| (*id, name_record.address()))
-            .collect()
-    }
-
-    fn get_fullnode_addrs(&self) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4> {
-        let empty = BTreeSet::new();
-        let curr_validators = self
+    fn peer_table(&self) -> crate::PeerTable<ST> {
+        let curr_validators: HashSet<_> = self
             .epoch_validators
             .get(&self.current_epoch)
-            .unwrap_or(&empty);
-        self.routing_info
-            .iter()
-            .filter(|(id, _)| !curr_validators.contains(id))
-            .map(|(id, name_record)| (*id, name_record.address()))
-            .collect()
-    }
-
-    fn get_name_records(
-        &self,
-    ) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<ST>> {
-        self.routing_info
-            .iter()
-            .map(|(id, name_record)| (*id, *name_record))
-            .collect()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        PeerTable::from_name_records_and_validators(self.name_records(), curr_validators)
     }
 }
 
@@ -1671,7 +1675,7 @@ mod tests {
         let mut state = generate_test_state(peer0, vec![peer1]);
         state.min_num_peers = 0;
         state.max_num_peers = 1;
-        state.self_role = role.clone();
+        state.self_role = role;
         state
             .epoch_validators
             .insert(Epoch(1), BTreeSet::from([peer2_pubkey]));
@@ -1859,7 +1863,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_fullnode_addrs() {
+    fn test_full_node_addrs() {
         let keys = create_keys::<SignatureType>(3);
         let peer0 = &keys[0];
         let peer1 = &keys[1];
@@ -1872,9 +1876,17 @@ mod tests {
             .epoch_validators
             .insert(Epoch(1), BTreeSet::from([peer1_pubkey]));
 
-        let addrs = state.get_fullnode_addrs();
-        assert_eq!(addrs.len(), 1);
-        assert!(!addrs.contains_key(&peer1_pubkey));
-        assert!(addrs.contains_key(&peer2_pubkey));
+        let all_addrs = state.known_addrs();
+        let fullnode_addrs: HashSet<_> = all_addrs
+            .keys()
+            .filter(|node| {
+                state
+                    .role(node)
+                    .is_some_and(|role| matches!(role, Role::FullNode))
+            })
+            .collect();
+        assert_eq!(fullnode_addrs.len(), 1);
+        assert!(!fullnode_addrs.contains(&peer1_pubkey));
+        assert!(fullnode_addrs.contains(&peer2_pubkey));
     }
 }

@@ -31,6 +31,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
+use monad_peer_discovery::{mock::NopDiscoveryBuilder, PeerDiscoveryDriver};
 use monad_raptorcast::{new_defaulted_raptorcast_for_tests, RaptorCastEvent};
 use monad_secp::SecpSignature;
 use monad_types::{Deserializable, Epoch, NodeId, RouterTarget, Serializable, Stake};
@@ -128,12 +129,21 @@ fn service(
             let known_addresses = known_addresses.clone();
 
             rt.spawn(async move {
-                let mut service = new_defaulted_raptorcast_for_tests::<
-                    SignatureType,
-                    MockMessage,
-                    MockMessage,
-                    <MockMessage as Message>::Event,
-                >(server_address, known_addresses, Arc::new(key));
+                let pd_builder = NopDiscoveryBuilder {
+                    known_addresses,
+                    ..Default::default()
+                };
+                let mut pd = PeerDiscoveryDriver::new(pd_builder);
+                let pd_handle = pd.handle();
+                let pd_emit_rx = pd.take_emit_rx();
+
+                let mut service =
+                    new_defaulted_raptorcast_for_tests::<
+                        SignatureType,
+                        MockMessage,
+                        MockMessage,
+                        <MockMessage as Message>::Event,
+                    >(server_address, pd_handle, pd_emit_rx, Arc::new(key));
 
                 service.exec(vec![RouterCommand::AddEpochValidatorSet {
                     epoch: Epoch(0),

@@ -14,8 +14,8 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{BTreeSet, HashMap},
-    net::{Ipv4Addr, SocketAddrV4},
+    collections::{BTreeSet, HashMap, HashSet},
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     time::Duration,
 };
 
@@ -37,7 +37,17 @@ pub mod driver;
 pub mod message;
 pub mod mock;
 
+pub use driver::{PeerDiscoveryDriver, PeerDiscoveryEmit, PeerDiscoveryHandle};
 pub use message::PeerDiscoveryMessage;
+
+/// validator role is given if the node is a validator in the current or next epoch.
+/// this is to ensure the node starts connecting to other validators even if joining
+/// as a validator only in the next epoch
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    Validator,
+    FullNode,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NameRecord {
@@ -194,9 +204,55 @@ pub enum PeerDiscoveryCommand<ST: CertificateSignatureRecoverable> {
     MetricsCommand(PeerDiscoveryMetricsCommand),
 }
 
-pub trait PeerDiscoveryAlgo {
+// A trait implemented by types that supports looking up the address of a node by its ID.
+pub trait NodeAddrLookup {
     type SignatureType: CertificateSignatureRecoverable;
 
+    // Required methods: lookup_name_record, name_records, role. Other methods are provided.
+
+    fn lookup_name_record(
+        &self,
+        id: &NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+    ) -> Option<MonadNameRecord<Self::SignatureType>>;
+
+    fn name_records(
+        &self,
+    ) -> HashMap<
+        NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+        MonadNameRecord<Self::SignatureType>,
+    >;
+
+    // return None if the node is unknown.
+    fn role(
+        &self,
+        node_id: &NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+    ) -> Option<Role>;
+
+    fn lookup_addr_v4(
+        &self,
+        id: &NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+    ) -> Option<SocketAddrV4> {
+        self.lookup_name_record(id).map(|rec| rec.address())
+    }
+
+    fn known_addrs(
+        &self,
+    ) -> HashMap<NodeId<CertificateSignaturePubKey<Self::SignatureType>>, SocketAddr> {
+        self.name_records()
+            .into_iter()
+            .map(|(id, rec)| (id, SocketAddr::V4(rec.name_record.address)))
+            .collect()
+    }
+
+    fn lookup_addr(
+        &self,
+        id: &NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+    ) -> Option<SocketAddr> {
+        self.lookup_addr_v4(id).map(SocketAddr::V4)
+    }
+}
+
+pub trait PeerDiscoveryAlgo: NodeAddrLookup {
     fn send_ping(
         &mut self,
         target: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
@@ -273,38 +329,90 @@ pub trait PeerDiscoveryAlgo {
 
     fn metrics(&self) -> &ExecutorMetrics;
 
-    fn get_addr_by_id(
-        &self,
-        id: &NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
-    ) -> Option<SocketAddrV4>;
-
-    fn get_known_addrs(
-        &self,
-    ) -> HashMap<NodeId<CertificateSignaturePubKey<Self::SignatureType>>, SocketAddrV4>;
-
-    fn get_fullnode_addrs(
-        &self,
-    ) -> HashMap<NodeId<CertificateSignaturePubKey<Self::SignatureType>>, SocketAddrV4>;
-
-    fn get_name_records(
-        &self,
-    ) -> HashMap<
-        NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
-        MonadNameRecord<Self::SignatureType>,
-    >;
+    fn peer_table(&self) -> PeerTable<Self::SignatureType>;
 }
 
 pub trait PeerDiscoveryAlgoBuilder {
     type PeerDiscoveryAlgoType: PeerDiscoveryAlgo;
 
+    #[expect(clippy::type_complexity)]
     fn build(
         self,
     ) -> (
         Self::PeerDiscoveryAlgoType,
-        Vec<
-            PeerDiscoveryCommand<<Self::PeerDiscoveryAlgoType as PeerDiscoveryAlgo>::SignatureType>,
-        >,
+        Vec<PeerDiscoveryCommand<<Self::PeerDiscoveryAlgoType as NodeAddrLookup>::SignatureType>>,
     );
+}
+
+#[derive(Debug, Clone)]
+pub struct PeerTable<ST: CertificateSignatureRecoverable> {
+    name_records: HashMap<NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<ST>>,
+    validators: HashSet<NodeId<CertificateSignaturePubKey<ST>>>,
+}
+
+impl<ST> NodeAddrLookup for PeerTable<ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    type SignatureType = ST;
+
+    fn name_records(
+        &self,
+    ) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<Self::SignatureType>> {
+        self.name_records.clone()
+    }
+
+    fn lookup_name_record(
+        &self,
+        id: &NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+    ) -> Option<MonadNameRecord<Self::SignatureType>> {
+        self.name_records.get(id).cloned()
+    }
+
+    fn role(
+        &self,
+        node_id: &NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+    ) -> Option<Role> {
+        if self.validators.contains(node_id) {
+            Some(Role::Validator)
+        } else if self.name_records.contains_key(node_id) {
+            Some(Role::FullNode)
+        } else {
+            None
+        }
+    }
+}
+
+impl<ST: CertificateSignatureRecoverable> PeerTable<ST> {
+    pub fn from_name_records(
+        name_records: HashMap<NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<ST>>,
+    ) -> Self {
+        Self {
+            name_records,
+            validators: Default::default(),
+        }
+    }
+
+    pub fn from_name_records_and_validators(
+        name_records: HashMap<NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<ST>>,
+        validators: HashSet<NodeId<CertificateSignaturePubKey<ST>>>,
+    ) -> Self {
+        Self {
+            name_records,
+            validators,
+        }
+    }
+
+    // The mutation method is currently only used in tests. More can
+    // be add if the main PeerDiscovery switches to using PeerTable
+    // internally.
+    fn insert(
+        &mut self,
+        node_id: NodeId<CertificateSignaturePubKey<ST>>,
+        name_record: MonadNameRecord<ST>,
+    ) {
+        self.name_records.insert(node_id, name_record);
+    }
 }
 
 #[cfg(test)]
