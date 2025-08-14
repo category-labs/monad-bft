@@ -52,12 +52,7 @@ pub fn rlp_decode_account(account_rlp: Vec<u8>) -> Option<EthAccount> {
         None
     } else {
         match <[u8; 32]>::decode(&mut buf) {
-            Ok(x) => {
-                if x.starts_with(b"ef0100") {
-                    is_delegated = true;
-                }
-                Some(x)
-            }
+            Ok(x) => Some(x),
             Err(e) => {
                 warn!("rlp code_hash decode failed: {:?}", e);
                 return None;
