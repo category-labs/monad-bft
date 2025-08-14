@@ -532,7 +532,10 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
                     });
                     let _ledger_span = ledger_span.enter();
                     let _event_span = tracing::trace_span!("event_span", ?event.event).entered();
-                    state.update(event.event)
+                    let start = Instant::now();
+                    let cmds = state.update(event.event);
+                    total_state_update_elapsed += start.elapsed();
+                    cmds
                 };
 
                 if !commands.is_empty() {
@@ -547,9 +550,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
                     });
                     let _ledger_span = ledger_span.enter();
                     let _exec_span = tracing::trace_span!("exec_span", num_commands).entered();
-                    let start = Instant::now();
                     executor.exec(commands);
-                    total_state_update_elapsed += start.elapsed();
                 }
 
                 if let Some(ledger_tip) = executor.ledger.last_commit() {
