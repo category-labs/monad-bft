@@ -295,6 +295,7 @@ where
                 }
                 Err(
                     BlockPolicyError::BlockNotCoherent
+                    | BlockPolicyError::Eip7702Error
                     | BlockPolicyError::TimestampError
                     | BlockPolicyError::StateBackendError(StateBackendError::NeverAvailable),
                 ) => {

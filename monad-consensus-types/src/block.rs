@@ -156,6 +156,7 @@ pub enum BlockPolicyError {
     TimestampError,
     ExecutionResultMismatch,
     BlockPolicyBlockValidatorError(BlockPolicyBlockValidatorError),
+    Eip7702Error,
 }
 
 impl From<StateBackendError> for BlockPolicyError {

@@ -197,15 +197,15 @@ where
         let tx_heap_len = tx_heap.len();
 
         // enrich with delegated EOAs
-        let mut delegated_addresses = Vec::new();
+        let mut authority_addresses = Vec::new();
         let mut addresses = tx_heap
             .txs()
             .map(|txn| {
                 if txn.raw().is_eip7702() {
                     if let Some(auth_list) = txn.raw().authorization_list() {
                         for result in auth_list.iter().map(|a| a.recover_authority()) {
-                            if let Ok(signer) = result {
-                                delegated_addresses.push(signer);
+                            if let Ok(authority) = result {
+                                authority_addresses.push(authority);
                             } else {
                                 event_tracker
                                     .drop(txn.hash(), EthTxPoolDropReason::InvalidSignature);
@@ -217,7 +217,7 @@ where
             })
             .collect_vec();
 
-        addresses.append(&mut delegated_addresses);
+        addresses.append(&mut authority_addresses);
 
         let (mut account_balances, account_balance_lookups) = {
             let _timer = DropTimer::start(Duration::ZERO, |elapsed| {
@@ -240,12 +240,12 @@ where
             )
         };
 
-        for signer in &delegated_addresses {
+        for signer in &authority_addresses {
             let account_balance = account_balances
                 .get_mut(signer)
                 .expect("account_balances should have been populated for delegated accounts");
 
-            debug!(delegated_account = ?signer, "Setting account to is_delegated: true");
+            debug!(authority_account = ?signer, "Setting account to is_delegated: true");
             account_balance.is_delegated = true;
         }
 

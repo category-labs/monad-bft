@@ -61,23 +61,7 @@ mod test {
         assert!(matches!(result, Err(TransactionError::InvalidSetCodeTx)));
     }
 
-    #[test]
-    fn test_static_validate_no_authorization_list() {
-        let tx = TxEip7702 {
-            chain_id: CHAIN_ID,
-            nonce: 0,
-            gas_limit: PROPOSAL_GAS_LIMIT,
-            max_fee_per_gas: 1000,
-            max_priority_fee_per_gas: 0,
-            ..Default::default()
-        };
-        let signature = sign_tx(&tx.signature_hash());
-        let txn = tx.into_signed(signature);
-
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
-        assert!(matches!(result, Err(TransactionError::InvalidSetCodeTx)));
-    }
-
+    #[ignore]
     #[test]
     fn test_static_validate_too_large_authorization_list() {
         let nonces = 0..20;

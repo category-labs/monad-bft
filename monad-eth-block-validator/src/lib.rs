@@ -159,23 +159,11 @@ where
                 if let Some(auth_list) = eth_txn.authorization_list() {
                     let authorities = auth_list
                         .iter()
-                        .map(|a| (a.recover_authority(), a.nonce(), a.address))
+                        .map(|a| a.recover_authority())
                         .collect_vec();
-                    for (result, nonce, address) in authorities {
-                        if let Ok(signer) = result {
-                            debug!(signer = ?eth_txn.signer(), ?address, ?nonce, delegating_account = ?signer, "Delegating account");
-                            if let Some(n) = nonces.get(&signer) {
-                                if *n != nonce {
-                                    return Err(BlockValidationError::TxnError);
-                                }
-                            }
-                            // TODO: what if nonces updated later in this block?
-                            nonces
-                                .entry(signer)
-                                .and_modify(|n| *n += 1)
-                                .or_insert(nonce + 1);
-
-                            let txn_fee = txn_fees.entry(signer).or_default();
+                    for result in authorities {
+                        if let Ok(authority) = result {
+                            let txn_fee = txn_fees.entry(authority).or_default();
                             txn_fee.is_delegated = true;
                         } else {
                             debug!("Error recovering authority {:?}", result);

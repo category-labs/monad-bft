@@ -147,12 +147,13 @@ pub fn static_validate_transaction(
     }
 
     if tx.is_eip7702() {
-        if let Some(auth_list) = tx.authorization_list() {
-            if auth_list.is_empty() || auth_list.len() >= 20 {
-                return Err(TransactionError::InvalidSetCodeTx);
+        match tx.authorization_list() {
+            Some(auth_list) => {
+                if auth_list.is_empty() {
+                    return Err(TransactionError::InvalidSetCodeTx);
+                }
             }
-        } else {
-            return Err(TransactionError::InvalidSetCodeTx);
+            None => return Err(TransactionError::InvalidSetCodeTx),
         }
     }
 
@@ -964,20 +965,28 @@ where
         }
 
         // TODO fix this unnecessary copy into a new vec to generate an owned Address
-        let mut delegated_addresses: Vec<Address> = Vec::new();
+        let mut authority_addresses: Vec<Address> = Vec::new();
         let mut tx_signers: Vec<Address> = Vec::new();
+        let mut authority_nonces = BTreeMap::new();
 
         for tx_signer in block.validated_txns.iter().map(|txn| {
             if txn.is_eip7702() {
                 if let Some(auth_list) = txn.authorization_list() {
-                    for result in auth_list.iter().map(|a| a.recover_authority()) {
+                    for (result , nonce, code_address) in auth_list.iter().map(|a| (a.recover_authority(), a.nonce(), a.address())) {
                         match result {
-                            Ok(address) => {
-                                delegated_addresses.push(address);
+                            Ok(authority) => {
+                                debug!(eth_address = ?txn.signer(), ?code_address, ?nonce, ?authority, "Authority");
+                                authority_addresses.push(authority);
+
+                                // First increment than validate against account's nonce+1.
+                                authority_nonces
+                                    .entry(authority)
+                                    .and_modify(|n| *n += 1)
+                                    .or_insert(nonce + 1);
                             }
                             Err(error) => {
                                 warn!(?error, "Can not process authorization list");
-                                return Err(BlockPolicyError::BlockNotCoherent);
+                                return Err(BlockPolicyError::Eip7702Error);
                             }
                         }
                     }
@@ -994,7 +1003,7 @@ where
             }
         }
 
-        tx_signers.append(&mut delegated_addresses);
+        tx_signers.append(&mut authority_addresses);
 
         // these must be updated as we go through txs in the block
         let mut account_nonces = self.get_account_base_nonces(
@@ -1011,12 +1020,12 @@ where
             tx_signers.iter(),
         )?;
 
-        for signer in &delegated_addresses {
+        for authority in &authority_addresses {
             let account_balance = account_balances
-                .get_mut(signer)
+                .get_mut(authority)
                 .expect("account_balances should have been populated for delegated accounts");
 
-            debug!(delegated_account = ?signer, "Setting account to is_delegated: true");
+            debug!(?authority, "Setting account to is_delegated: true");
             account_balance.is_delegated = true;
         }
 
@@ -1040,6 +1049,18 @@ where
                     "block not coherent, invalid nonce"
                 );
                 return Err(BlockPolicyError::BlockNotCoherent);
+            }
+
+            let maybe_nonce = authority_nonces.get(&eth_address);
+            match maybe_nonce {
+                Some(n) => {
+                    if *n != txn_nonce + 1 {
+                        return Err(BlockPolicyError::Eip7702Error);
+                    }
+                }
+                None => {
+                    return Err(BlockPolicyError::Eip7702Error);
+                }
             }
 
             validator.try_add_transaction(&mut account_balances, txn)?;
