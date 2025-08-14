@@ -83,6 +83,12 @@ where
             <VTF::ValidatorSetType as ValidatorSetType>::NodeIdPubKey,
             SignatureCollectionKeyPairType<SCT>,
         >,
+    ) -> &(
+        VTF::ValidatorSetType,
+        ValidatorMapping<
+            <VTF::ValidatorSetType as ValidatorSetType>::NodeIdPubKey,
+            SignatureCollectionKeyPairType<SCT>,
+        >,
     ) {
         // On consensus restart, the same validator set might be inserted a
         // second time when we commit the same boundary block again. Assert that
@@ -94,16 +100,16 @@ where
             val_cert_pubkeys,
         );
         match self.validator_map.entry(epoch) {
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(value);
-            }
+            std::collections::hash_map::Entry::Vacant(entry) => entry.insert(value),
             std::collections::hash_map::Entry::Occupied(entry) => {
                 assert_eq!(
                     entry.get().0.get_members(),
                     value.0.get_members(),
                     "Validator set mismatch"
                 );
-                assert_eq!(entry.get().1.map, value.1.map, "Validator mapping mismatch")
+                assert_eq!(entry.get().1.map, value.1.map, "Validator mapping mismatch");
+
+                entry.into_mut()
             }
         }
     }

@@ -17,8 +17,8 @@ use std::marker::PhantomData;
 
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::{
-    block::BlockPolicy, block_validator::BlockValidator, signature_collection::SignatureCollection,
-    voting::ValidatorMapping,
+    block::BlockPolicy, block_validator::BlockValidator, metrics::Consensus,
+    signature_collection::SignatureCollection, voting::ValidatorMapping,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
@@ -27,7 +27,8 @@ use monad_executor_glue::{Command, MonadEvent, RouterCommand, ValidatorEvent};
 use monad_state_backend::StateBackend;
 use monad_types::{Epoch, ExecutionProtocol, NodeId, Stake};
 use monad_validator::{
-    validator_set::ValidatorSetTypeFactory, validators_epoch_mapping::ValidatorsEpochMapping,
+    validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
+    validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
 use crate::{MonadState, VerifiedMonadMessage};
@@ -43,6 +44,8 @@ where
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     val_epoch_map: &'a mut ValidatorsEpochMapping<VTF, SCT>,
+    nodeid: &'a NodeId<SCT::NodeIdPubKey>,
+    metrics: &'a mut Consensus,
 
     _phantom: PhantomData<(ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT)>,
 }
@@ -72,6 +75,8 @@ where
     ) -> Self {
         Self {
             val_epoch_map: &mut monad_state.val_epoch_map,
+            nodeid: &monad_state.nodeid,
+            metrics: &mut monad_state.metrics.consensus,
             _phantom: PhantomData,
         }
     }
@@ -81,11 +86,21 @@ where
     ) -> Vec<EpochCommand<SCT::NodeIdPubKey>> {
         match event {
             ValidatorEvent::UpdateValidators(vset) => {
-                self.val_epoch_map.insert(
+                let (validator_set, _) = self.val_epoch_map.insert(
                     vset.epoch,
                     vset.validators.get_stakes(),
                     ValidatorMapping::new(vset.validators.get_cert_pubkeys()),
                 );
+
+                (self.metrics.in_validator_set, self.metrics.stake) =
+                    if validator_set.is_member(&self.nodeid) {
+                        let stake = validator_set.calculate_current_stake(&[*self.nodeid]);
+
+                        (1, if stake.0 >= 0 { stake.0 as u64 } else { 0 })
+                    } else {
+                        (0, 0)
+                    };
+
                 vec![EpochCommand::AddEpochValidatorSet(
                     vset.epoch,
                     vset.validators.get_stakes(),
