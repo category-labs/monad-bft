@@ -27,6 +27,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_block_policy::{compute_txn_max_value, static_validate_transaction, EthBlockPolicy};
 use monad_eth_txpool_types::EthTxPoolDropReason;
 use monad_eth_types::{Balance, EthExecutionProtocol, Nonce, BASE_FEE_PER_GAS};
+use monad_system_calls::validator::SystemTransactionValidator;
 use monad_types::SeqNum;
 use tracing::trace;
 
@@ -56,6 +57,14 @@ impl ValidEthTransaction {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
+        if SystemTransactionValidator::is_system_sender(tx.signer()) {
+            return None;
+        }
+
+        if SystemTransactionValidator::is_restricted_system_call(&tx) {
+            return None;
+        }
+
         // TODO(andr-dev): Block base fee is hardcoded we need to update
         // this logic once its included in the consensus proposal
         if tx.max_fee_per_gas() < BASE_FEE_PER_GAS.into() {

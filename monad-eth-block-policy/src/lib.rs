@@ -32,6 +32,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_txpool_types::TransactionError;
 use monad_eth_types::{Balance, EthAccount, EthExecutionProtocol, EthHeader, Nonce};
 use monad_state_backend::{StateBackend, StateBackendError};
+use monad_system_calls::SystemTransaction;
 use monad_types::{BlockId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_SEQ_NUM};
 use sorted_vector_map::SortedVectorMap;
 use tracing::{trace, warn};
@@ -154,6 +155,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     pub block: ConsensusFullBlock<ST, SCT, EthExecutionProtocol>,
+    pub system_txns: Vec<SystemTransaction>,
     pub validated_txns: Vec<Recovered<TxEnvelope>>,
     pub nonces: BTreeMap<Address, Nonce>,
     pub txn_fees: BTreeMap<Address, Balance>,
@@ -707,11 +709,13 @@ where
             return Err(BlockPolicyError::ExecutionResultMismatch);
         }
 
+        let system_tx_signers = block.system_txns.iter().map(|txn| txn.signer());
         // TODO fix this unnecessary copy into a new vec to generate an owned Address
         let tx_signers = block
             .validated_txns
             .iter()
             .map(|txn| txn.signer())
+            .chain(system_tx_signers)
             .collect_vec();
         // these must be updated as we go through txs in the block
         let mut account_nonces = self.get_account_base_nonces(
@@ -727,6 +731,25 @@ where
             Some(&extending_blocks),
             tx_signers.iter(),
         )?;
+
+        for sys_txn in block.system_txns.iter() {
+            let sys_txn_signer = sys_txn.signer();
+            let sys_txn_nonce = sys_txn.nonce();
+
+            let expected_nonce = account_nonces
+                .get_mut(&sys_txn_signer)
+                .expect("account_nonces should have been populated");
+
+            if &sys_txn_nonce != expected_nonce {
+                warn!(
+                    seq_num =? block.header().seq_num,
+                    round =? block.header().block_round,
+                    "block not coherent, invalid nonce for system transaction"
+                );
+                return Err(BlockPolicyError::BlockNotCoherent);
+            }
+            *expected_nonce += 1;
+        }
 
         for txn in block.validated_txns.iter() {
             let eth_address = txn.signer();

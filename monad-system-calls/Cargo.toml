@@ -1,0 +1,22 @@
+[package]
+name = "monad-system-calls"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+monad-consensus-types = { workspace = true }
+monad-crypto = { workspace = true }
+monad-eth-types = { workspace = true }
+
+alloy-consensus = { workspace = true }
+alloy-primitives = { workspace = true }
+alloy-signer = { workspace = true }
+alloy-signer-local = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+monad-eth-testutil = { workspace = true }
+monad-testutil = { workspace = true }
+monad-types = { workspace = true }
+
+alloy-eips = { workspace = true }

@@ -35,6 +35,7 @@ use crate::{
 // we care enough
 #[derive(Debug)]
 pub enum BlockValidationError {
+    SystemTxnError,
     TxnError,
     RandaoError,
     HeaderError,

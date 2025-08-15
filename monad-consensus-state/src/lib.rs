@@ -625,6 +625,16 @@ where
             *max_code_size,
         ) {
             Ok(block) => block,
+            Err(BlockValidationError::SystemTxnError) => {
+                warn!(
+                    ?block_round,
+                    ?block_author,
+                    ?seq_num,
+                    "dropping proposal, system transaction validation failed"
+                );
+                self.metrics.consensus_events.failed_txn_validation += 1;
+                return None;
+            }
             Err(BlockValidationError::TxnError) => {
                 warn!(
                     ?block_round,

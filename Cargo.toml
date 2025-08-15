@@ -71,6 +71,7 @@ monad-secp = { path = "./monad-secp" }
 monad-state = { path = "./monad-state" }
 monad-state-backend = { path = "./monad-state-backend" }
 monad-statesync = { path = "./monad-statesync" }
+monad-system-calls = { path = "./monad-system-calls" }
 monad-testutil = { path = "./monad-testutil" }
 monad-tracing-timing = { path = "./monad-tracing-timing" }
 monad-transformer = { path = "./monad-transformer" }

@@ -13,7 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeMap, marker::PhantomData};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    marker::PhantomData,
+};
 
 use alloy_consensus::{
     constants::EMPTY_WITHDRAWALS,
@@ -40,11 +43,13 @@ use monad_eth_types::{
 };
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
+use monad_system_calls::{validator::SystemTransactionValidator, SystemTransaction};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing::{debug, trace_span, warn};
 
 type NonceMap = BTreeMap<Address, Nonce>;
 type TxnFeeMap = BTreeMap<Address, U256>;
+type SystemTransactions = Vec<SystemTransaction>;
 type ValidatedTxns = Vec<Recovered<TxEnvelope>>;
 
 /// Validates transactions as valid Ethereum transactions and also validates that
@@ -77,12 +82,14 @@ where
 
     fn validate_block_body(
         &self,
+        header: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
         body: &ConsensusBlockBody<EthExecutionProtocol>,
         tx_limit: usize,
         proposal_gas_limit: u64,
         proposal_byte_limit: u64,
         max_code_size: usize,
-    ) -> Result<(ValidatedTxns, NonceMap, TxnFeeMap), BlockValidationError> {
+    ) -> Result<(SystemTransactions, ValidatedTxns, NonceMap, TxnFeeMap), BlockValidationError>
+    {
         let EthBlockBody {
             transactions,
             ommers,
@@ -104,7 +111,7 @@ where
         }
 
         // recovering the signers verifies that these are valid signatures
-        let eth_txns: Vec<Recovered<TxEnvelope>> = transactions
+        let recovered_txns: VecDeque<Recovered<TxEnvelope>> = transactions
             .into_par_iter()
             .map(|tx| {
                 let _span = trace_span!("validator: recover signer").entered();
@@ -114,8 +121,34 @@ where
             .collect::<Result<_, monad_secp::Error>>()
             .map_err(|_err| BlockValidationError::TxnError)?;
 
-        // recover the account nonces and txn fee usage in this block
+        let (system_txns, eth_txns) =
+            match SystemTransactionValidator::validate_and_extract_system_transactions(
+                header,
+                recovered_txns,
+            ) {
+                Ok((system_txns, eth_txns)) => (system_txns, eth_txns),
+                Err(err) => {
+                    debug!(?err, "system transaction validator error");
+                    return Err(BlockValidationError::SystemTxnError);
+                }
+            };
+
+        // recover the account nonces for system txns
         let mut nonces = BTreeMap::new();
+
+        // duplicate check. this is also done in SystemTransactionValidator
+        for sys_txn in &system_txns {
+            let maybe_old_nonce = nonces.insert(sys_txn.signer(), sys_txn.nonce());
+            // A block is invalid if we see a smaller or equal nonce
+            // after the first or if there is a nonce gap
+            if let Some(old_nonce) = maybe_old_nonce {
+                if sys_txn.nonce() != old_nonce + 1 {
+                    return Err(BlockValidationError::SystemTxnError);
+                }
+            }
+        }
+
+        // recover the account nonces and txn fee for user txns
         let mut txn_fees: BTreeMap<Address, U256> = BTreeMap::new();
 
         for eth_txn in &eth_txns {
@@ -152,7 +185,9 @@ where
         }
 
         let total_gas: u64 = eth_txns.iter().map(|tx| tx.gas_limit()).sum();
-        let proposal_size: usize = eth_txns.iter().map(|tx| tx.length()).sum();
+        let system_txns_size: usize = system_txns.iter().map(|tx| tx.length()).sum();
+        let user_txns_size: usize = eth_txns.iter().map(|tx| tx.length()).sum();
+        let proposal_size = system_txns_size + user_txns_size;
         debug!(
             total_gas,
             proposal_size,
@@ -168,7 +203,7 @@ where
             return Err(BlockValidationError::TxnError);
         }
 
-        Ok((eth_txns, nonces, txn_fees))
+        Ok((system_txns, eth_txns, nonces, txn_fees))
     }
 
     fn validate_block_header(
@@ -290,7 +325,8 @@ where
     >{
         self.validate_block_header(&header, &body, author_pubkey, proposal_gas_limit)?;
 
-        if let Ok((validated_txns, nonces, txn_fees)) = self.validate_block_body(
+        if let Ok((system_txns, validated_txns, nonces, txn_fees)) = self.validate_block_body(
+            &header,
             &body,
             tx_limit,
             proposal_gas_limit,
@@ -300,6 +336,7 @@ where
             let block = ConsensusFullBlock::new(header, body)?;
             Ok(EthValidatedBlock {
                 block,
+                system_txns,
                 validated_txns,
                 nonces,
                 txn_fees,
@@ -314,11 +351,15 @@ where
 mod test {
     use alloy_consensus::Signed;
     use alloy_primitives::{PrimitiveSignature, B256};
-    use monad_consensus_types::payload::ConsensusBlockBodyInner;
-    use monad_crypto::NopSignature;
+    use monad_consensus_types::{
+        payload::{ConsensusBlockBodyId, ConsensusBlockBodyInner, RoundSignature},
+        quorum_certificate::QuorumCertificate,
+    };
+    use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
     use monad_eth_testutil::make_legacy_tx;
     use monad_state_backend::InMemoryState;
     use monad_testutil::signing::MockSignatures;
+    use monad_types::{Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 
     use super::*;
 
@@ -326,6 +367,25 @@ mod test {
 
     const PROPOSAL_GAS_LIMIT: u64 = 300_000_000;
     const PROPOSAL_SIZE_LIMIT: u64 = 4_000_000;
+
+    fn get_header(
+        payload_id: ConsensusBlockBodyId,
+    ) -> ConsensusBlockHeader<NopSignature, MockSignatures<NopSignature>, EthExecutionProtocol>
+    {
+        let nop_keypair = NopKeyPair::from_bytes(&mut [0_u8; 32]).unwrap();
+        ConsensusBlockHeader::new(
+            NodeId::new(nop_keypair.pubkey()),
+            Epoch(1),
+            Round(1),
+            Vec::new(), // delayed_execution_results
+            ProposedEthHeader::default(),
+            payload_id,
+            QuorumCertificate::genesis_qc(),
+            GENESIS_SEQ_NUM + SeqNum(1),
+            1,
+            RoundSignature::new(Round(1), &nop_keypair),
+        )
+    }
 
     #[test]
     fn test_invalid_block_with_nonce_gap() {
@@ -348,9 +408,11 @@ mod test {
                 withdrawals: Vec::new(),
             },
         });
+        let header = get_header(payload.get_id());
 
         // block validation should return error
         let result = block_validator.validate_block_body(
+            &header,
             &payload,
             10,
             PROPOSAL_GAS_LIMIT,
@@ -381,9 +443,11 @@ mod test {
                 withdrawals: Vec::new(),
             },
         });
+        let header = get_header(payload.get_id());
 
         // block validation should return error
         let result = block_validator.validate_block_body(
+            &header,
             &payload,
             10,
             PROPOSAL_GAS_LIMIT,
@@ -414,9 +478,11 @@ mod test {
                 withdrawals: Vec::new(),
             },
         });
+        let header = get_header(payload.get_id());
 
         // block validation should return error
         let result = block_validator.validate_block_body(
+            &header,
             &payload,
             1,
             PROPOSAL_GAS_LIMIT,
@@ -452,9 +518,11 @@ mod test {
                 withdrawals: Vec::new(),
             },
         });
+        let header = get_header(payload.get_id());
 
         // block validation should return error
         let result = block_validator.validate_block_body(
+            &header,
             &payload,
             10,
             PROPOSAL_GAS_LIMIT,
@@ -483,9 +551,11 @@ mod test {
                 withdrawals: Vec::new(),
             },
         });
+        let header = get_header(payload.get_id());
 
         // block validation should return Ok
         let result = block_validator.validate_block_body(
+            &header,
             &payload,
             10,
             PROPOSAL_GAS_LIMIT,
@@ -529,9 +599,11 @@ mod test {
                 withdrawals: Vec::new(),
             },
         });
+        let header = get_header(payload.get_id());
 
         // block validation should return Err
         let result = block_validator.validate_block_body(
+            &header,
             &payload,
             10,
             PROPOSAL_GAS_LIMIT,
