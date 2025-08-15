@@ -19,7 +19,7 @@ use std::{
 };
 
 use eyre::Result;
-use futures::{try_join, StreamExt, TryStreamExt};
+use futures::{join, StreamExt, TryStreamExt};
 use tokio::time::sleep;
 use tracing::{error, info, warn};
 
@@ -176,7 +176,7 @@ async fn archive_block(
 ) -> Result<()> {
     let mut num_txs = None;
 
-    try_join!(
+    let (block, receipts, traces) = join!(
         async {
             let block = match reader.get_block_by_number(block_num).await {
                 Ok(b) => b,
@@ -231,7 +231,21 @@ async fn archive_block(
             };
             archiver.archive_traces(traces, block_num).await
         },
-    )?;
+    );
+
+    // Failing to archive a block or its receipts is a critical error, so we return an error.
+    block?;
+    receipts?;
+
+    // Failing to archive traces is not a critical error, so we log and continue.
+    if let Err(e) = traces {
+        metrics.inc_counter(MetricNames::BLOCK_ARCHIVE_WORKER_TRACES_FAILED);
+        error!(
+            block_num,
+            "Failed to archive traces for block {block_num}. Continuing... Cause: {e:?}"
+        );
+    }
+
     info!(block_num, num_txs, "Successfully archived block");
     Ok(())
 }
