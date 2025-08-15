@@ -3,17 +3,11 @@ name: Rust
 on:
   merge_group:
     branches: ["master"]
-    paths-ignore:
-      - 'debian/**'
   push:
     branches: ["master"]
-    paths-ignore:
-      - 'debian/**'
   pull_request:
     branches: ["master"]
     types: [ opened, synchronize, reopened, edited ]
-    paths-ignore:
-      - 'debian/**'
 
 concurrency:
   group: >

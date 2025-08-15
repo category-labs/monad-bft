@@ -9,6 +9,7 @@ ExecStart=/usr/local/bin/monad \
     --db /dev/triedb \
     --block_db /home/monad/monad-bft/ledger \
     --statesync /home/monad/monad-bft/statesync.sock \
+    --trace_calls \
     --ro_sq_thread_cpu 5 \
     --sq_thread_cpu 6 \
     --log_level INFO
