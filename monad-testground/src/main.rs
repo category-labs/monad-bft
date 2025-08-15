@@ -20,14 +20,13 @@ use std::{
 };
 
 use clap::Parser;
-use executor::{LedgerConfig, StateRootHashConfig};
+use executor::{LedgerConfig, ValSetConfig};
 use futures_util::{FutureExt, StreamExt};
 use monad_bls::BlsSignatureCollection;
 use monad_chain_config::{revision::ChainParams, MockChainConfig};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::MockExecutionProtocol,
-    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     validator_data::{ValidatorData, ValidatorSetData},
 };
 use monad_crypto::certificate_signature::{
@@ -42,6 +41,7 @@ use monad_secp::SecpSignature;
 use monad_state_backend::InMemoryStateInner;
 use monad_types::{NodeId, Round, SeqNum, Stake};
 use monad_updaters::{ledger::MockableLedger, local_router::LocalRouterConfig};
+use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionKeyPairType};
 use opentelemetry::trace::{Span, TraceContextExt, Tracer};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::trace::SdkTracerProvider;
@@ -88,7 +88,7 @@ struct TestgroundArgs {
     simulation_length_s: u64,
     delta_ms: u64,
     proposal_size: usize,
-    val_set_update_interval: u64,
+    epoch_length: u64,
     epoch_start_delay: u64,
 
     router: RouterArgs,
@@ -176,7 +176,7 @@ async fn main() {
         simulation_length_s: args.simulation_length_s.unwrap_or(3600),
         delta_ms: 4000,
         proposal_size: 5_000,
-        val_set_update_interval: 2_000,
+        epoch_length: 2_000,
         epoch_start_delay: 50,
 
         ledger: LedgerArgs::Mock,
@@ -342,9 +342,9 @@ where
                     ledger_config: match args.ledger {
                         LedgerArgs::Mock => LedgerConfig::Mock,
                     },
-                    state_root_hash_config: StateRootHashConfig::Mock {
+                    val_set_config: ValSetConfig::Mock {
                         genesis_validator_data: validators.clone(),
-                        val_set_update_interval: SeqNum(args.val_set_update_interval),
+                        epoch_length: SeqNum(args.epoch_length),
                     },
                     nodeid: me,
                 },
@@ -352,7 +352,7 @@ where
                 state_config: StateConfig {
                     key: keypair2,
                     cert_key: cert_keypair,
-                    val_set_update_interval: SeqNum(args.val_set_update_interval),
+                    epoch_length: SeqNum(args.epoch_length),
                     epoch_start_delay: Round(args.epoch_start_delay),
                     validators: validators.clone(),
                     consensus_config: ConsensusConfig {

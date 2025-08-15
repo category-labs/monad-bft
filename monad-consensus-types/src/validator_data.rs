@@ -20,12 +20,10 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_types::{Epoch, ExecutionProtocol, NodeId, Stake};
+use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::{
-    checkpoint::Checkpoint,
-    signature_collection::{SignatureCollection, SignatureCollectionPubKeyType},
-};
+use crate::checkpoint::Checkpoint;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodable, RlpDecodable)]
 #[rlp(trailing)]

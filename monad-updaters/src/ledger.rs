@@ -28,7 +28,6 @@ use monad_blocksync::messages::message::{
 use monad_consensus_types::{
     block::{BlockRange, ConsensusFullBlock, OptimisticCommit},
     payload::ConsensusBlockBodyId,
-    signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -37,6 +36,7 @@ use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
 use monad_state_backend::{InMemoryState, StateBackendTest};
 use monad_types::{BlockId, ExecutionProtocol, Round, SeqNum};
+use monad_validator::signature_collection::SignatureCollection;
 
 pub trait MockableLedger:
     Executor<
@@ -98,7 +98,7 @@ where
 
     events: VecDeque<BlockSyncEvent<ST, SCT, EPT>>,
 
-    state_backend: InMemoryState,
+    state_backend: InMemoryState<ST, SCT>,
 
     waker: Option<Waker>,
     _phantom: PhantomData<ST>,
@@ -110,7 +110,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    pub fn new(state_backend: InMemoryState) -> Self {
+    pub fn new(state_backend: InMemoryState<ST, SCT>) -> Self {
         Self {
             blocks: Default::default(),
             block_ids: Default::default(),

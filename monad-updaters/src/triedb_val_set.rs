@@ -22,21 +22,19 @@ use std::{
 };
 
 use futures::Stream;
-use monad_consensus_types::{
-    signature_collection::SignatureCollection,
-    validator_data::{ValidatorSetDataWithEpoch, ValidatorsConfig},
-};
+use monad_consensus_types::validator_data::{ValidatorSetDataWithEpoch, ValidatorsConfig};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
-use monad_executor_glue::{MonadEvent, StateRootHashCommand};
+use monad_executor_glue::{MonadEvent, ValSetCommand};
 use monad_types::{Epoch, SeqNum};
+use monad_validator::signature_collection::SignatureCollection;
 use tracing::error;
 
 /// Updater that gets state root hash updates by polling triedb
-pub struct StateRootHashTriedbPoll<ST, SCT>
+pub struct ValSetUpdater<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -45,23 +43,19 @@ where
 
     next_val_data: Option<ValidatorSetDataWithEpoch<SCT>>,
     last_emitted_val_data: Option<SeqNum>,
-    val_set_update_interval: SeqNum,
+    epoch_length: SeqNum,
 
     waker: Option<Waker>,
     metrics: ExecutorMetrics,
     phantom: PhantomData<(ST, SCT)>,
 }
 
-impl<ST, SCT> StateRootHashTriedbPoll<ST, SCT>
+impl<ST, SCT> ValSetUpdater<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    pub fn new(
-        triedb_path: &Path,
-        validators_path: &Path,
-        val_set_update_interval: SeqNum,
-    ) -> Self {
+    pub fn new(triedb_path: &Path, validators_path: &Path, epoch_length: SeqNum) -> Self {
         // assert that validators_path is accessible
         let _: ValidatorsConfig<SCT> = ValidatorsConfig::read_from_path(validators_path)
             .expect("failed to read validators_path");
@@ -74,7 +68,7 @@ where
 
             next_val_data: None,
             last_emitted_val_data: None,
-            val_set_update_interval,
+            epoch_length,
 
             waker: None,
             metrics: Default::default(),
@@ -83,17 +77,12 @@ where
     }
 
     fn valset_update(&mut self, seq_num: SeqNum) {
-        if seq_num.is_epoch_end(self.val_set_update_interval)
-            && self.last_emitted_val_data != Some(seq_num)
-        {
+        if seq_num.is_epoch_end(self.epoch_length) && self.last_emitted_val_data != Some(seq_num) {
             if self.next_val_data.is_some() {
                 error!("Validator set data is not consumed");
             }
-            let locked_epoch = seq_num.get_locked_epoch(self.val_set_update_interval);
-            assert_eq!(
-                locked_epoch,
-                seq_num.to_epoch(self.val_set_update_interval) + Epoch(1)
-            );
+            let locked_epoch = seq_num.get_locked_epoch(self.epoch_length);
+            assert_eq!(locked_epoch, seq_num.to_epoch(self.epoch_length) + Epoch(1));
             self.next_val_data = Some(ValidatorSetDataWithEpoch {
                 epoch: locked_epoch,
                 validators: ValidatorsConfig::read_from_path(&self.validators_path)
@@ -110,7 +99,7 @@ where
     }
 }
 
-impl<ST, SCT> Stream for StateRootHashTriedbPoll<ST, SCT>
+impl<ST, SCT> Stream for ValSetUpdater<ST, SCT>
 where
     Self: Unpin,
     ST: CertificateSignatureRecoverable,
@@ -135,19 +124,19 @@ where
     }
 }
 
-impl<ST, SCT> Executor for StateRootHashTriedbPoll<ST, SCT>
+impl<ST, SCT> Executor for ValSetUpdater<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    type Command = StateRootHashCommand;
+    type Command = ValSetCommand;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut wake = false;
 
         for command in commands {
             match command {
-                StateRootHashCommand::NotifyFinalized(seq_num) => {
+                ValSetCommand::NotifyFinalized(seq_num) => {
                     self.valset_update(seq_num);
                     wake = true;
                 }

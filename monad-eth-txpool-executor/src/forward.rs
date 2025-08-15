@@ -22,12 +22,12 @@ use std::{
 
 use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use bytes::Bytes;
-use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_txpool::EthTxPool;
 use monad_state_backend::StateBackend;
+use monad_validator::signature_collection::SignatureCollection;
 use pin_project::pin_project;
 
 const EGRESS_MIN_COMMITTED_SEQ_NUM_DIFF: u64 = 5;
@@ -156,7 +156,7 @@ impl EthTxPoolForwardingManagerProjected<'_> {
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
     {
         let Some(forwardable_txs) =
             pool.get_forwardable_txs::<EGRESS_MIN_COMMITTED_SEQ_NUM_DIFF, EGRESS_MAX_RETRIES>()

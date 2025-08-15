@@ -18,12 +18,13 @@ use std::{marker::PhantomData, num::NonZero};
 use lru::LruCache;
 use monad_consensus_types::{
     no_endorsement::NoEndorsementCertificate, quorum_certificate::QuorumCertificate,
-    signature_collection::SignatureCollection, timeout::TimeoutCertificate,
+    timeout::TimeoutCertificate,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_types::ExecutionProtocol;
+use monad_validator::signature_collection::SignatureCollection;
 
 pub struct CertificateCache<ST, SCT, EPT>
 where

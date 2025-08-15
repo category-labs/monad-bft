@@ -23,17 +23,17 @@ use monad_crypto::{
     signing_domain,
 };
 use monad_types::*;
-use serde::{Deserialize, Serialize};
-
-use crate::{
-    quorum_certificate::QuorumCertificate,
+use monad_validator::{
     signature_collection::{
         deserialize_signature_collection, serialize_signature_collection, SignatureCollection,
         SignatureCollectionError, SignatureCollectionKeyPairType,
     },
-    tip::ConsensusTip,
-    voting::{ValidatorMapping, Vote},
-    RoundCertificate,
+    validator_mapping::ValidatorMapping,
+};
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    quorum_certificate::QuorumCertificate, tip::ConsensusTip, voting::Vote, RoundCertificate,
 };
 
 /// Timeout message to broadcast to other nodes after a local timeout

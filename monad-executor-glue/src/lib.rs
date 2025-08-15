@@ -37,7 +37,6 @@ use monad_consensus_types::{
     no_endorsement::FreshProposalCertificate,
     payload::{ConsensusBlockBodyId, RoundSignature},
     quorum_certificate::{QuorumCertificate, TimestampAdjustment},
-    signature_collection::SignatureCollection,
     timeout::TimeoutCertificate,
     validator_data::ValidatorSetDataWithEpoch,
 };
@@ -49,6 +48,7 @@ use monad_types::{
     deserialize_certificate_signature, deserialize_pubkey, serialize_certificate_signature,
     serialize_pubkey, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum, Stake,
 };
+use monad_validator::signature_collection::SignatureCollection;
 use serde::{Deserialize, Serialize};
 
 const STATESYNC_NETWORK_MESSAGE_NAME: &str = "StateSyncNetworkMessage";
@@ -196,7 +196,7 @@ where
 }
 
 #[derive(Debug)]
-pub enum StateRootHashCommand {
+pub enum ValSetCommand {
     NotifyFinalized(SeqNum),
 }
 
@@ -438,7 +438,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     /// Used to update the nonces of tracked txs
     BlockCommit(Vec<BPT::ValidatedBlock>),
@@ -485,7 +485,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -553,13 +553,13 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     RouterCommand(RouterCommand<ST, OM>),
     TimerCommand(TimerCommand<E>),
     LedgerCommand(LedgerCommand<ST, SCT, EPT>),
     CheckpointCommand(CheckpointCommand<ST, SCT, EPT>),
-    StateRootHashCommand(StateRootHashCommand),
+    ValSetCommand(ValSetCommand),
     TimestampCommand(TimestampCommand),
 
     TxPoolCommand(TxPoolCommand<ST, SCT, EPT, BPT, SBT>),
@@ -575,7 +575,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -585,9 +585,7 @@ where
             Self::CheckpointCommand(arg0) => {
                 f.debug_tuple("CheckpointCommand").field(arg0).finish()
             }
-            Self::StateRootHashCommand(arg0) => {
-                f.debug_tuple("StateRootHashCommand").field(arg0).finish()
-            }
+            Self::ValSetCommand(arg0) => f.debug_tuple("ValSetCommand").field(arg0).finish(),
             Self::TimestampCommand(arg0) => f.debug_tuple("TimestampCommand").field(arg0).finish(),
             Self::TxPoolCommand(arg0) => f.debug_tuple("TxPoolCommand").field(arg0).finish(),
             Self::ControlPanelCommand(arg0) => {
@@ -608,7 +606,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     pub fn split_commands(
         commands: Vec<Self>,
@@ -617,7 +615,7 @@ where
         Vec<TimerCommand<E>>,
         Vec<LedgerCommand<ST, SCT, EPT>>,
         Vec<CheckpointCommand<ST, SCT, EPT>>,
-        Vec<StateRootHashCommand>,
+        Vec<ValSetCommand>,
         Vec<TimestampCommand>,
         Vec<TxPoolCommand<ST, SCT, EPT, BPT, SBT>>,
         Vec<ControlPanelCommand<ST>>,
@@ -629,7 +627,7 @@ where
         let mut timer_cmds = Vec::new();
         let mut ledger_cmds = Vec::new();
         let mut checkpoint_cmds = Vec::new();
-        let mut state_root_hash_cmds = Vec::new();
+        let mut val_set_cmds = Vec::new();
         let mut timestamp_cmds = Vec::new();
         let mut txpool_cmds = Vec::new();
         let mut control_panel_cmds = Vec::new();
@@ -643,7 +641,7 @@ where
                 Command::TimerCommand(cmd) => timer_cmds.push(cmd),
                 Command::LedgerCommand(cmd) => ledger_cmds.push(cmd),
                 Command::CheckpointCommand(cmd) => checkpoint_cmds.push(cmd),
-                Command::StateRootHashCommand(cmd) => state_root_hash_cmds.push(cmd),
+                Command::ValSetCommand(cmd) => val_set_cmds.push(cmd),
                 Command::TimestampCommand(cmd) => timestamp_cmds.push(cmd),
                 Command::TxPoolCommand(cmd) => txpool_cmds.push(cmd),
                 Command::ControlPanelCommand(cmd) => control_panel_cmds.push(cmd),
@@ -658,7 +656,7 @@ where
             timer_cmds,
             ledger_cmds,
             checkpoint_cmds,
-            state_root_hash_cmds,
+            val_set_cmds,
             timestamp_cmds,
             txpool_cmds,
             control_panel_cmds,

@@ -15,22 +15,33 @@
 
 use std::{
     collections::{BTreeMap, HashMap},
+    marker::PhantomData,
     sync::{Arc, Mutex},
 };
 
 use alloy_consensus::Header;
 use alloy_primitives::Address;
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_eth_types::{Balance, EthAccount, EthHeader, Nonce};
-use monad_types::{BlockId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM};
+use monad_types::{
+    BlockId, Round, SeqNum, Stake, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM,
+};
+use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 
 use crate::{StateBackend, StateBackendError, StateBackendTest};
 
-pub type InMemoryState = Arc<Mutex<InMemoryStateInner>>;
+pub type InMemoryState<ST, SCT> = Arc<Mutex<InMemoryStateInner<ST, SCT>>>;
 
 #[derive(Debug, Clone)]
-pub struct InMemoryStateInner {
+pub struct InMemoryStateInner<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     commits: BTreeMap<SeqNum, InMemoryBlockState>,
     proposals: HashMap<BlockId, InMemoryBlockState>,
     /// InMemoryState doesn't have access to an execution engine. It returns
@@ -41,6 +52,8 @@ pub struct InMemoryStateInner {
 
     /// can be used to mess with eth-header execution results
     pub extra_data: u64,
+
+    _phantom: PhantomData<(ST, SCT)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,8 +77,15 @@ impl InMemoryBlockState {
     }
 }
 
-impl InMemoryStateInner {
-    pub fn genesis(max_account_balance: Balance, execution_delay: SeqNum) -> InMemoryState {
+impl<ST, SCT> InMemoryStateInner<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    pub fn genesis(
+        max_account_balance: Balance,
+        execution_delay: SeqNum,
+    ) -> InMemoryState<ST, SCT> {
         Arc::new(Mutex::new(Self {
             commits: std::iter::once((
                 GENESIS_SEQ_NUM,
@@ -75,20 +95,27 @@ impl InMemoryStateInner {
             proposals: Default::default(),
             max_account_balance,
             execution_delay,
+
             extra_data: 0,
+
+            _phantom: PhantomData,
         }))
     }
+
     pub fn new(
         max_account_balance: Balance,
         execution_delay: SeqNum,
         last_commit: InMemoryBlockState,
-    ) -> InMemoryState {
+    ) -> InMemoryState<ST, SCT> {
         Arc::new(Mutex::new(Self {
             commits: std::iter::once((last_commit.seq_num, last_commit)).collect(),
             proposals: Default::default(),
             max_account_balance,
             execution_delay,
+
             extra_data: 0,
+
+            _phantom: PhantomData,
         }))
     }
 
@@ -102,7 +129,11 @@ impl InMemoryStateInner {
     }
 }
 
-impl StateBackendTest for InMemoryStateInner {
+impl<ST, SCT> StateBackendTest<ST, SCT> for InMemoryStateInner<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     // new_account_nonces is the changeset of nonces from a given block
     // if account A's last tx nonce in a block is N, then new_account_nonces should include A=N+1
     // this is because N+1 is the next valid nonce for A
@@ -182,7 +213,11 @@ impl StateBackendTest for InMemoryStateInner {
     }
 }
 
-impl StateBackend for InMemoryStateInner {
+impl<ST, SCT> StateBackend<ST, SCT> for InMemoryStateInner<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     fn get_account_statuses<'a>(
         &self,
         block_id: &BlockId,
@@ -253,6 +288,13 @@ impl StateBackend for InMemoryStateInner {
             .last_key_value()
             .map(|(block, _)| block)
             .copied()
+    }
+
+    fn read_next_valset(
+        &self,
+        _block_num: SeqNum,
+    ) -> Vec<(SCT::NodeIdPubKey, SignatureCollectionPubKeyType<SCT>, Stake)> {
+        unimplemented!()
     }
 
     fn total_db_lookups(&self) -> u64 {

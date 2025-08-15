@@ -39,7 +39,11 @@ const FORWARD_MAX_RETRIES: usize = 2;
 fn with_txpool(
     insert_tx_owned: bool,
     f: impl FnOnce(
-        EthTxPool<SignatureType, SignatureCollectionType, InMemoryState>,
+        EthTxPool<
+            SignatureType,
+            SignatureCollectionType,
+            InMemoryState<SignatureType, SignatureCollectionType>,
+        >,
         &mut EthTxPoolEventTracker,
     ),
 ) {

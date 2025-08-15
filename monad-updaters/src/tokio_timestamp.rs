@@ -22,13 +22,13 @@ use std::{
 };
 
 use futures::Stream;
-use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MonadEvent, TimestampCommand};
 use monad_types::ExecutionProtocol;
+use monad_validator::signature_collection::SignatureCollection;
 use tokio::time::{Duration, Interval};
 
 use crate::timestamp::TimestampAdjuster;

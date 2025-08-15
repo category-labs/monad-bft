@@ -23,7 +23,7 @@ use monad_crypto::{
 use monad_types::NodeId;
 use serde::{Deserialize, Deserializer, Serializer};
 
-use crate::voting::ValidatorMapping;
+use crate::validator_mapping::ValidatorMapping;
 
 pub type SignatureCollectionKeyPairType<SCT> =
     <<SCT as SignatureCollection>::SignatureType as CertificateSignature>::KeyPairType;

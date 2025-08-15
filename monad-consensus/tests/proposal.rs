@@ -27,7 +27,6 @@ use monad_consensus_types::{
     no_endorsement::FreshProposalCertificate,
     payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
     quorum_certificate::QuorumCertificate,
-    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{
         HighExtend, HighTipRoundSigColTuple, NoTipCertificate, TimeoutCertificate, TimeoutInfo,
     },
@@ -52,6 +51,7 @@ use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, GENESIS_ROUND};
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     validator_set::{ValidatorSetFactory, ValidatorSetType},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };

@@ -20,13 +20,12 @@
 //! added to the block.
 
 use alloy_primitives::{Address, B256, Bytes, hex};
-use monad_consensus_types::{
-    block::ConsensusBlockHeader, signature_collection::SignatureCollection,
-};
+use monad_consensus_types::block::ConsensusBlockHeader;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_types::EthExecutionProtocol;
+use monad_validator::signature_collection::SignatureCollection;
 
 pub mod validator;
 

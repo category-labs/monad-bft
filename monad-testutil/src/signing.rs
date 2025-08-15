@@ -17,12 +17,6 @@ use std::marker::PhantomData;
 
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_consensus::validation::signing::{Unvalidated, Unverified};
-use monad_consensus_types::{
-    signature_collection::{
-        SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
-    },
-    voting::ValidatorMapping,
-};
 use monad_crypto::{
     certificate_signature::{
         CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -31,6 +25,12 @@ use monad_crypto::{
     signing_domain::{self, SigningDomain},
 };
 use monad_types::NodeId;
+use monad_validator::{
+    signature_collection::{
+        SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
+    },
+    validator_mapping::ValidatorMapping,
+};
 
 #[derive(Clone, Default, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct MockSignatures<ST: CertificateSignatureRecoverable> {

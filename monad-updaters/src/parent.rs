@@ -22,18 +22,19 @@ use std::{
 };
 
 use futures::{FutureExt, Stream, StreamExt};
-use monad_consensus_types::{block::BlockPolicy, signature_collection::SignatureCollection};
+use monad_consensus_types::block::BlockPolicy;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
     CheckpointCommand, Command, ConfigReloadCommand, ControlPanelCommand, LedgerCommand,
-    LoopbackCommand, RouterCommand, StateRootHashCommand, StateSyncCommand, TimerCommand,
-    TimestampCommand, TxPoolCommand,
+    LoopbackCommand, RouterCommand, StateSyncCommand, TimerCommand, TimestampCommand,
+    TxPoolCommand, ValSetCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::ExecutionProtocol;
+use monad_validator::signature_collection::SignatureCollection;
 
 const GAUGE_PARENT_TOTAL_EXEC_US: &str = "monad.executor.parent.total_exec_us";
 const GAUGE_LEDGER_TOTAL_EXEC_US: &str = "monad.executor.ledger.total_exec_us";
@@ -51,14 +52,14 @@ const GAUGE_STATESYNC_TOTAL_POLL_US: &str = "monad.executor.statesync.total_poll
 /// Single top-level executor for all other required by a node.
 /// This executor will distribute commands to the appropriate sub-executor
 /// and will poll them for events
-pub struct ParentExecutor<R, T, L, C, S, TS, TP, CP, LO, SS, CL> {
+pub struct ParentExecutor<R, T, L, C, V, TS, TP, CP, LO, SS, CL> {
     pub metrics: ParentExecutorMetrics,
 
     pub router: R,
     pub timer: T,
     pub ledger: L,
     pub checkpoint: C,
-    pub state_root_hash: S,
+    pub val_set: V,
     pub timestamp: TS,
     pub txpool: TP,
     pub control_panel: CP,
@@ -75,7 +76,7 @@ where
     TE: Executor<Command = TimerCommand<E>>,
     LE: Executor<Command = LedgerCommand<ST, SCT, EPT>>,
     CE: Executor<Command = CheckpointCommand<ST, SCT, EPT>>,
-    SE: Executor<Command = StateRootHashCommand>,
+    SE: Executor<Command = ValSetCommand>,
     TSE: Executor<Command = TimestampCommand>,
 
     TPE: Executor<Command = TxPoolCommand<ST, SCT, EPT, BPT, SBT>>,
@@ -88,7 +89,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     type Command = Command<E, OM, ST, SCT, EPT, BPT, SBT>;
 
@@ -100,7 +101,7 @@ where
             timer_cmds,
             ledger_cmds,
             checkpoint_cmds,
-            state_root_hash_cmds,
+            val_set_cmds,
             timestamp_cmds,
             txpool_cmds,
             control_panel_cmds,
@@ -119,7 +120,7 @@ where
         guard.metrics.record(GAUGE_CHECKPOINT_TOTAL_EXEC_US, || {
             self.checkpoint.exec(checkpoint_cmds)
         });
-        self.state_root_hash.exec(state_root_hash_cmds);
+        self.val_set.exec(val_set_cmds);
         self.timestamp.exec(timestamp_cmds);
         guard
             .metrics
@@ -139,7 +140,7 @@ where
             .chain(self.timer.metrics())
             .chain(self.ledger.metrics())
             .chain(self.checkpoint.metrics())
-            .chain(self.state_root_hash.metrics())
+            .chain(self.val_set.metrics())
             .chain(self.timestamp.metrics())
             .chain(self.txpool.metrics())
             .chain(self.control_panel.metrics())
@@ -190,7 +191,7 @@ where
         }) {
             return Poll::Ready(Some(e));
         }
-        if let Poll::Ready(Some(e)) = this.state_root_hash.next().poll_unpin(cx) {
+        if let Poll::Ready(Some(e)) = this.val_set.next().poll_unpin(cx) {
             return Poll::Ready(Some(e));
         }
         if let Poll::Ready(Some(e)) = this.timestamp.next().poll_unpin(cx) {

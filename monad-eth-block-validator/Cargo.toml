@@ -16,6 +16,7 @@ monad-eth-types = { workspace = true }
 monad-secp = { workspace = true }
 monad-state-backend = { workspace = true }
 monad-system-calls = { workspace = true }
+monad-validator = { workspace = true }
 
 alloy-consensus = { workspace = true }
 alloy-primitives = { workspace = true }
