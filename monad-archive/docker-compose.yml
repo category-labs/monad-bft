@@ -14,6 +14,39 @@ services:
       --start-block 0
     restart: no
 
+  mainnet-checker:
+    image: archiver
+    init: true
+    volumes:
+      - ~/.aws:/root/.aws:ro
+    environment:
+      - RUST_LOG=info
+    command: |
+      monad-archive-checker --bucket mainnet-checker-3 checker --init-replicas "aws mainnet-deu-009-0 50,aws mainnet-deu-010-0 50"
+    restart: on-failure
+
+  testnet-checker:
+    image: archiver
+    init: true
+    volumes:
+      - ~/.aws:/root/.aws:ro
+    environment:
+      - RUST_LOG=info
+    command: |
+      monad-archive-checker --bucket testnet-checker-2 checker --disable-rechecker
+    restart: on-failure
+
+  testnet-checker-fixer:
+    image: archiver
+    init: true
+    volumes:
+      - ~/.aws:/root/.aws:ro
+    environment:
+      - RUST_LOG=info
+    command: |
+      monad-archive-checker --bucket testnet-checker-2 fault-fixer  --end 7489000   --commit-changes --verify
+    restart: on-failure
+
   archive-db:
     image: mongo:latest
     command: mongod --bind_ip 0.0.0.0
