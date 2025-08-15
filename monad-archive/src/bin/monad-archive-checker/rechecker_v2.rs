@@ -30,6 +30,7 @@ pub async fn rechecker_v2_worker(
     recheck_freq: Duration,
     model: CheckerModel,
     metrics: Metrics,
+    concurrency: usize,
 ) -> Result<()> {
     info!(
         "Starting rechecker v2 worker with frequency {:?}",
@@ -40,7 +41,7 @@ pub async fn rechecker_v2_worker(
 
     loop {
         info!("Starting recheck cycle for all replicas");
-        recheck_all_faults(&model, &metrics, false, None, None).await?;
+        recheck_all_faults(&model, &metrics, false, None, None, concurrency).await?;
         info!("Recheck cycle completed, waiting for next interval");
 
         interval.tick().await;
@@ -58,6 +59,7 @@ pub async fn rechecker_v2_standalone(
     end_block: Option<u64>,
     force_recheck: bool,
     worker_mode: bool,
+    concurrency: usize,
 ) -> Result<()> {
     info!(
         "Starting standalone rechecker v2 with frequency {:?}, dry_run: {}, start: {:?}, end: {:?}, force_recheck: {}, worker_mode: {}",
@@ -74,9 +76,25 @@ pub async fn rechecker_v2_standalone(
 
             info!("Starting recheck cycle");
             if force_recheck {
-                recheck_all_chunks(&model, &metrics, dry_run, start_block, end_block).await?;
+                recheck_all_chunks(
+                    &model,
+                    &metrics,
+                    dry_run,
+                    start_block,
+                    end_block,
+                    concurrency,
+                )
+                .await?;
             } else {
-                recheck_all_faults(&model, &metrics, dry_run, start_block, end_block).await?;
+                recheck_all_faults(
+                    &model,
+                    &metrics,
+                    dry_run,
+                    start_block,
+                    end_block,
+                    concurrency,
+                )
+                .await?;
             }
             info!("Recheck cycle completed, waiting for next interval");
         }
@@ -84,9 +102,25 @@ pub async fn rechecker_v2_standalone(
         // Run once and exit
         info!("Running single recheck cycle");
         if force_recheck {
-            recheck_all_chunks(&model, &metrics, dry_run, start_block, end_block).await?;
+            recheck_all_chunks(
+                &model,
+                &metrics,
+                dry_run,
+                start_block,
+                end_block,
+                concurrency,
+            )
+            .await?;
         } else {
-            recheck_all_faults(&model, &metrics, dry_run, start_block, end_block).await?;
+            recheck_all_faults(
+                &model,
+                &metrics,
+                dry_run,
+                start_block,
+                end_block,
+                concurrency,
+            )
+            .await?;
         }
         info!("Recheck completed, exiting");
         Ok(())
@@ -100,6 +134,7 @@ async fn recheck_all_faults(
     dry_run: bool,
     start_block: Option<u64>,
     end_block: Option<u64>,
+    concurrency: usize,
 ) -> Result<()> {
     // Collect all chunks that have faults across all replicas
     let mut fault_chunks = collect_fault_chunk_starts(model, start_block, end_block)
@@ -113,13 +148,20 @@ async fn recheck_all_faults(
     }
 
     // Process each fault chunk
-    let mut new_faults_by_replica = HashMap::new();
-    for chunk_start in fault_chunks {
-        info!(chunk_start, dry_run, "Rechecking fault chunk");
-        let (new_faults_by_replica_chunk, _) =
-            recheck_chunk_from_scratch(model, chunk_start, dry_run).await?;
-        new_faults_by_replica.extend(new_faults_by_replica_chunk);
-    }
+    let new_faults_by_replica = futures::stream::iter(fault_chunks)
+        .map(async |chunk_start| {
+            info!(chunk_start, dry_run, "Rechecking fault chunk");
+            let (new_faults_by_replica_chunk, _) =
+                recheck_chunk_from_scratch(model, chunk_start, dry_run, concurrency)
+                    .await
+                    .unwrap();
+            new_faults_by_replica_chunk
+            // futures::stream::iter(new_faults_by_replica_chunk)
+        })
+        .buffered(2)
+        .flat_map(futures::stream::iter)
+        .collect()
+        .await;
 
     // Update metrics after all chunks are rechecked (skip in dry run)
     if !dry_run {
@@ -136,6 +178,7 @@ async fn recheck_all_chunks(
     dry_run: bool,
     start_block: Option<u64>,
     end_block: Option<u64>,
+    concurrency: usize,
 ) -> Result<()> {
     // Collect all chunks in the specified range
     let all_chunks = collect_all_chunk_idxs(model, start_block, end_block).await?;
@@ -152,7 +195,7 @@ async fn recheck_all_chunks(
         let chunk_start = chunk_idx * CHUNK_SIZE;
         info!(chunk_start, dry_run, "Rechecking chunk");
         let (new_faults_by_replica_chunk, old_faults_by_replica_chunk) =
-            recheck_chunk_from_scratch(model, chunk_start, dry_run).await?;
+            recheck_chunk_from_scratch(model, chunk_start, dry_run, concurrency).await?;
         new_faults_by_replica.extend(new_faults_by_replica_chunk);
         old_faults_by_replica.extend(old_faults_by_replica_chunk);
     }
@@ -221,6 +264,7 @@ pub async fn recheck_chunk_from_scratch(
     model: &CheckerModel,
     chunk_start: u64,
     dry_run: bool,
+    concurrency: usize,
 ) -> Result<(HashMap<String, Vec<Fault>>, HashMap<String, Vec<Fault>>)> {
     let end_block = chunk_start + CHUNK_SIZE - 1;
 
@@ -236,7 +280,8 @@ pub async fn recheck_chunk_from_scratch(
         .map(String::as_str)
         .collect::<Vec<&str>>();
 
-    let data_by_block_num = fetch_block_data(model, chunk_start..=end_block, &replicas).await;
+    let data_by_block_num =
+        fetch_block_data(model, chunk_start..=end_block, &replicas, concurrency).await;
 
     // Process blocks to find faults and good blocks using original checker logic
     let (new_faults_by_replica, new_good_blocks) =
@@ -573,7 +618,7 @@ mod tests {
         }
 
         // Run rechecker v2
-        recheck_chunk_from_scratch(&model, chunk_start, false)
+        recheck_chunk_from_scratch(&model, chunk_start, false, 1)
             .await
             .unwrap();
 
@@ -710,7 +755,7 @@ mod tests {
         }
 
         // Run rechecker v2 in DRY RUN mode
-        recheck_chunk_from_scratch(&model, chunk_start, true)
+        recheck_chunk_from_scratch(&model, chunk_start, true, 10)
             .await
             .unwrap();
 
@@ -764,7 +809,7 @@ mod tests {
             .unwrap();
 
         // Run rechecker v2 (all blocks are still missing, so no changes)
-        recheck_chunk_from_scratch(&model, chunk_start, false)
+        recheck_chunk_from_scratch(&model, chunk_start, false, 10)
             .await
             .unwrap();
 
@@ -1049,7 +1094,7 @@ mod tests {
         }
 
         // Run rechecker v2
-        recheck_chunk_from_scratch(&model, chunk_start, false)
+        recheck_chunk_from_scratch(&model, chunk_start, false, 10)
             .await
             .unwrap();
 
@@ -1183,7 +1228,7 @@ mod tests {
         }
 
         // Force recheck all chunks in range 1000-2999
-        recheck_all_chunks(&model, &metrics, false, Some(1000), Some(2999))
+        recheck_all_chunks(&model, &metrics, false, Some(1000), Some(2999), 10)
             .await
             .unwrap();
 

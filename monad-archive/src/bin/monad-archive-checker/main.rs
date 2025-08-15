@@ -101,6 +101,7 @@ async fn main() -> Result<()> {
                 model.clone(),
                 checker_args.min_lag_from_tip,
                 metrics.clone(),
+                checker_args.concurrency,
             ));
 
             // Start the rechecker worker if enabled
@@ -110,6 +111,7 @@ async fn main() -> Result<()> {
                     recheck_freq,
                     model.clone(),
                     metrics.clone(),
+                    checker_args.concurrency,
                 ))
             } else {
                 // Dummy task for type compatibility
@@ -136,6 +138,7 @@ async fn main() -> Result<()> {
                 rechecker_args.end,
                 rechecker_args.force_recheck,
                 rechecker_args.worker,
+                rechecker_args.concurrency,
             ))
             .await??;
         }
@@ -157,6 +160,7 @@ async fn main() -> Result<()> {
                 fixer_args.replicas,
                 fixer_args.start,
                 fixer_args.end,
+                fixer_args.concurrency,
             )
             .await?;
 

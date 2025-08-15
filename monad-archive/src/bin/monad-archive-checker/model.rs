@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use eyre::{Context, Result};
 use futures::future::try_join_all;
@@ -194,7 +194,7 @@ impl CheckerModel {
         replica: &str,
         start: Option<u64>,
         end: Option<u64>,
-    ) -> Result<HashSet<u64>> {
+    ) -> Result<BTreeSet<u64>> {
         // Calculate the common prefix for optimization if possible
         let prefix_suffix = Self::find_chunk_range_prefix(start, end);
         let key_prefix = format!("{}/{}/{}", FAULTS_CHUNK_PREFIX, replica, prefix_suffix);
@@ -233,7 +233,7 @@ impl CheckerModel {
 
                 true
             })
-            .collect::<HashSet<u64>>();
+            .collect::<BTreeSet<u64>>();
 
         Ok(chunks)
     }
@@ -309,7 +309,7 @@ impl CheckerModel {
         }
     }
 
-    pub async fn find_chunk_starts_with_faults(&self) -> Result<HashSet<u64>> {
+    pub async fn find_chunk_starts_with_faults(&self) -> Result<BTreeSet<u64>> {
         let keys = self.store.scan_prefix(FAULTS_CHUNK_PREFIX).await?;
         let chunks = keys
             .into_iter()
@@ -320,7 +320,7 @@ impl CheckerModel {
                     .parse::<u64>()
                     .wrap_err("Failed to parse chunk start")
             })
-            .collect::<Result<HashSet<u64>>>()?;
+            .collect::<Result<BTreeSet<u64>>>()?;
         Ok(chunks)
     }
 

@@ -36,6 +36,7 @@ pub async fn checker_worker(
     model: CheckerModel,
     min_lag_from_tip: u64,
     metrics: Metrics,
+    concurrency: usize,
 ) -> Result<()> {
     info!(min_lag_from_tip, "Starting checker worker");
 
@@ -68,7 +69,7 @@ pub async fn checker_worker(
         info!(next_to_check, end_block, "Processing block batch");
 
         // Process a batch of blocks and update the min_latest_checked
-        next_to_check = process_block_batch(&model, next_to_check, end_block).await?;
+        next_to_check = process_block_batch(&model, next_to_check, end_block, concurrency).await?;
         info!(new_next_to_check = next_to_check, "Block batch processed");
     }
 }
@@ -86,6 +87,7 @@ async fn process_block_batch(
     model: &CheckerModel,
     start_block: u64,
     end_block: u64,
+    concurrency: usize,
 ) -> Result<u64> {
     // Fetch block data from all replicas
     let replicas = model
@@ -99,7 +101,8 @@ async fn process_block_batch(
         "Fetching block data from replicas"
     );
 
-    let data_by_block_num = fetch_block_data(model, start_block..=end_block, &replicas).await;
+    let data_by_block_num =
+        fetch_block_data(model, start_block..=end_block, &replicas, concurrency).await;
 
     debug!("Fetched data for {} blocks", data_by_block_num.len());
 
@@ -137,6 +140,7 @@ pub async fn fetch_block_data(
     model: &CheckerModel,
     block_nums: impl IntoIterator<Item = u64>,
     replicas: &[&str],
+    concurrency: usize,
 ) -> HashMap<u64, HashMap<String, Option<(Block, BlockReceipts, BlockTraces)>>> {
     debug!("Fetching block data for {} replicas", replicas.len());
 
@@ -157,7 +161,7 @@ pub async fn fetch_block_data(
 
             (block_num, block_data)
         })
-        .buffered(100) // Process up to 100 blocks in parallel
+        .buffered(concurrency)
         .collect::<Vec<(
             u64,
             HashMap<String, Option<(Block, BlockReceipts, BlockTraces)>>,
@@ -403,13 +407,7 @@ fn choose_good_replica(
     equivalence_groups: &Vec<Vec<(String, &BlockTraces)>>,
     block_num: u64,
 ) -> Option<Vec<String>> {
-    dbg!(&equivalence_groups.len());
-    dbg!(&equivalence_groups
-        .iter()
-        .map(|group| group.len())
-        .collect::<Vec<_>>());
     let good_group = if equivalence_groups.len() > 1 {
-        dbg!("sorting");
         // Sort by number of non-empty outputs, then by group size, then by lexicographically smallest replica name
         equivalence_groups.iter().min_by_key(|group| {
             let (_replica, traces) = group.first().expect("group is empty");
@@ -417,7 +415,6 @@ fn choose_good_replica(
             let x = match decode_traces(traces) {
                 Ok(x) => x,
                 Err(e) => {
-                    dbg!("decode_traces failed", e);
                     warn!(?e, "decode_traces failed");
                     return (0, 0, None);
                 }
@@ -430,15 +427,14 @@ fn choose_good_replica(
                 .count();
 
             // Take the negative of the values to make the min_by_key function sort in ascending order
-            dbg!((
+            (
                 -(num_non_empty_outputs as isize),
                 -(group.len() as isize),
                 // Take the lexicographically smallest replica name
                 group.iter().map(|(replica, _)| replica).min(),
-            ))
+            )
         })?
     } else {
-        dbg!("no sorting");
         equivalence_groups.first()?
     };
 
@@ -1363,7 +1359,7 @@ pub mod tests {
         populate_test_replicas(&model, start_block..=end_block, false).await;
 
         // Process the batch
-        let next_block = process_block_batch(&model, start_block, end_block)
+        let next_block = process_block_batch(&model, start_block, end_block, 20)
             .await
             .unwrap();
 
@@ -1452,7 +1448,7 @@ pub mod tests {
         }
 
         // Process the batch
-        let next_block = process_block_batch(&model, start_block, end_block)
+        let next_block = process_block_batch(&model, start_block, end_block, 20)
             .await
             .unwrap();
 
@@ -1506,7 +1502,7 @@ pub mod tests {
         };
 
         // Process the batch
-        let next_block = process_block_batch(&model, start_block, end_block)
+        let next_block = process_block_batch(&model, start_block, end_block, 20)
             .await
             .unwrap();
 
@@ -1617,7 +1613,7 @@ pub mod tests {
         }
 
         // Process blocks with checker
-        let next_block = process_block_batch(&model, start_block, end_block)
+        let next_block = process_block_batch(&model, start_block, end_block, 20)
             .await
             .unwrap();
 
