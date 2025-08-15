@@ -28,7 +28,7 @@ class CryptoKeystore:
         decryption_key = self.kdf_module.get_decryption_key(password)
         # Verify the password using the checksum
         if not self.checksum_module.verify_checksum(decryption_key, self.cipher_module.cipher_message):
-            raise ValueError("inalid password")
+            raise ValueError("invalid password")
         # Return the decrypted cipher message
         return self.cipher_module.decrypt(decryption_key)
     
