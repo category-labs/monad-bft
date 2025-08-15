@@ -15,6 +15,7 @@ monad-consensus-types = { workspace = true }
 monad-crypto = { workspace = true }
 monad-state-backend = { workspace = true }
 monad-types = { workspace = true }
+monad-validator = { workspace = true }
 
 alloy-rlp = { workspace = true }
 bincode = { workspace = true }

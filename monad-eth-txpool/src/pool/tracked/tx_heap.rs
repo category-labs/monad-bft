@@ -17,11 +17,11 @@ use std::collections::{BinaryHeap, VecDeque};
 
 use alloy_primitives::Address;
 use indexmap::IndexMap;
-use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{AccountNonceRetrievable, EthValidatedBlock};
+use monad_validator::signature_collection::SignatureCollection;
 
 use super::list::TrackedTxList;
 use crate::pool::transaction::ValidEthTransaction;

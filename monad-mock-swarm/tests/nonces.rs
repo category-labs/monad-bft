@@ -55,8 +55,8 @@ mod test {
     };
     use monad_types::{NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
     use monad_updaters::{
-        ledger::MockableLedger, state_root_hash::MockStateRootHashNop,
-        statesync::MockStateSyncExecutor, txpool::MockTxPoolExecutor,
+        ledger::MockableLedger, statesync::MockStateSyncExecutor, txpool::MockTxPoolExecutor,
+        val_set::MockValSetUpdaterNop,
     };
     use monad_validator::{
         simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory,
@@ -68,7 +68,7 @@ mod test {
         type SignatureType = NopSignature;
         type SignatureCollectionType = MultiSig<Self::SignatureType>;
         type ExecutionProtocolType = EthExecutionProtocol;
-        type StateBackendType = InMemoryState;
+        type StateBackendType = InMemoryState<Self::SignatureType, Self::SignatureCollectionType>;
         type BlockPolicyType = EthBlockPolicy<Self::SignatureType, Self::SignatureCollectionType>;
         type ChainConfigType = MockChainConfig;
         type ChainRevisionType = MockChainRevision;
@@ -108,7 +108,7 @@ mod test {
             Self::TransportMessage,
         >;
 
-        type StateRootHashExecutor = MockStateRootHashNop<
+        type ValSetUpdater = MockValSetUpdaterNop<
             Self::SignatureType,
             Self::SignatureCollectionType,
             Self::ExecutionProtocolType,
@@ -165,7 +165,7 @@ mod test {
             execution_delay,                     // execution_delay
             CONSENSUS_DELTA,                     // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            SeqNum(2000),                        // val_set_update_interval
+            SeqNum(2000),                        // epoch_length
             Round(50),                           // epoch_start_delay
             SeqNum(100),                         // state_sync_threshold
         );
@@ -184,7 +184,7 @@ mod test {
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
+                        MockValSetUpdaterNop::new(validators.validators.clone(), SeqNum(2000)),
                         MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
                         MockEthLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(

@@ -19,7 +19,6 @@ use alloy_rlp::{RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWra
 use monad_consensus_types::{
     no_endorsement::NoEndorsement,
     payload::ConsensusBlockBody,
-    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighExtend, Timeout, TimeoutCertificate, TimeoutInfo},
     tip::ConsensusTip,
     voting::Vote,
@@ -32,6 +31,7 @@ use monad_crypto::{
     signing_domain,
 };
 use monad_types::{Epoch, ExecutionProtocol, Round};
+use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionKeyPairType};
 
 /// Consensus protocol vote message
 ///

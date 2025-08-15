@@ -22,16 +22,16 @@ pub mod checkpoint;
 pub mod ledger;
 pub mod loopback;
 pub mod parent;
-pub mod state_root_hash;
 pub mod statesync;
 pub mod timestamp;
 pub mod txpool;
+pub mod val_set;
 
 #[cfg(feature = "tokio")]
 pub mod config_loader;
 
 #[cfg(all(feature = "tokio", feature = "monad-triedb"))]
-pub mod triedb_state_root_hash;
+pub mod triedb_val_set;
 
 #[cfg(feature = "tokio")]
 pub mod timer;

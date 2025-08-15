@@ -20,6 +20,7 @@ monad-executor-glue = { workspace = true }
 monad-node-config = { workspace = true }
 monad-state-backend = { workspace = true }
 monad-types = { workspace = true }
+monad-validator = { workspace = true }
 
 alloy-consensus = { workspace = true }
 alloy-rlp = { workspace = true }

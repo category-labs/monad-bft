@@ -10,7 +10,6 @@ bench = false
 
 [dependencies]
 monad-compress = { workspace = true }
-monad-consensus-types = { workspace = true }
 monad-crypto = { workspace = true }
 monad-dataplane = { workspace = true }
 monad-executor = { workspace = true }
@@ -20,6 +19,7 @@ monad-peer-discovery = { workspace = true }
 monad-raptor = { workspace = true }
 monad-secp = { workspace = true }
 monad-types = { workspace = true }
+monad-validator = { workspace = true }
 
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }

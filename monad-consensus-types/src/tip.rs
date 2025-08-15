@@ -19,12 +19,10 @@ use monad_crypto::{
     signing_domain,
 };
 use monad_types::ExecutionProtocol;
+use monad_validator::signature_collection::SignatureCollection;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    block::ConsensusBlockHeader, no_endorsement::FreshProposalCertificate,
-    signature_collection::SignatureCollection,
-};
+use crate::{block::ConsensusBlockHeader, no_endorsement::FreshProposalCertificate};
 
 #[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 #[rlp(trailing)]

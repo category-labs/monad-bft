@@ -31,7 +31,7 @@ use alloy_primitives::Address;
 use alloy_rlp::Decodable;
 use futures::Stream;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
-use monad_consensus_types::{block::BlockPolicy, signature_collection::SignatureCollection};
+use monad_consensus_types::block::BlockPolicy;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -45,6 +45,7 @@ use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
 use monad_types::DropTimer;
 use monad_updaters::TokioTaskUpdater;
+use monad_validator::signature_collection::SignatureCollection;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tokio::{sync::mpsc, time::Instant};
 use tracing::{debug, debug_span, error, info, trace_span, warn};
@@ -68,7 +69,7 @@ pub struct EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -97,7 +98,7 @@ impl<ST, SCT, SBT, CCT, CRT> EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend + Send + 'static,
+    SBT: StateBackend<ST, SCT> + Send + 'static,
     CCT: ChainConfig<CRT> + Send + 'static,
     CRT: ChainRevision + Send + 'static,
     Self: Unpin,
@@ -207,7 +208,7 @@ impl<ST, SCT, SBT, CCT, CRT> Executor for EthTxPoolExecutor<ST, SCT, SBT, CCT, C
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -429,7 +430,7 @@ impl<ST, SCT, SBT, CCT, CRT> Stream for EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 
