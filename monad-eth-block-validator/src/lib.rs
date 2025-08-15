@@ -314,10 +314,11 @@ mod test {
     use monad_eth_testutil::make_legacy_tx;
     use monad_state_backend::InMemoryState;
     use monad_testutil::signing::MockSignatures;
+    use monad_tfm::base_fee::MIN_BASE_FEE;
 
     use super::*;
 
-    const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;
+    const BASE_FEE: u128 = MIN_BASE_FEE as u128;
 
     const PROPOSAL_GAS_LIMIT: u64 = 300_000_000;
     const PROPOSAL_SIZE_LIMIT: u64 = 4_000_000;
@@ -350,6 +351,7 @@ mod test {
             10,
             PROPOSAL_GAS_LIMIT,
             PROPOSAL_SIZE_LIMIT,
+            MIN_BASE_FEE,
             0x6000,
         );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
@@ -383,6 +385,7 @@ mod test {
             10,
             PROPOSAL_GAS_LIMIT,
             PROPOSAL_SIZE_LIMIT,
+            MIN_BASE_FEE,
             0x6000,
         );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
@@ -416,6 +419,7 @@ mod test {
             1,
             PROPOSAL_GAS_LIMIT,
             PROPOSAL_SIZE_LIMIT,
+            MIN_BASE_FEE,
             0x6000,
         );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
@@ -454,6 +458,7 @@ mod test {
             10,
             PROPOSAL_GAS_LIMIT,
             PROPOSAL_SIZE_LIMIT,
+            MIN_BASE_FEE,
             0x6000,
         );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
@@ -485,6 +490,7 @@ mod test {
             10,
             PROPOSAL_GAS_LIMIT,
             PROPOSAL_SIZE_LIMIT,
+            MIN_BASE_FEE,
             0x6000,
         );
         assert!(result.is_ok());
@@ -531,6 +537,7 @@ mod test {
             10,
             PROPOSAL_GAS_LIMIT,
             PROPOSAL_SIZE_LIMIT,
+            MIN_BASE_FEE,
             0x6000,
         );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));

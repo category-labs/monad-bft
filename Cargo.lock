@@ -4902,7 +4902,6 @@ dependencies = [
  "monad-multi-sig",
  "monad-state-backend",
  "monad-testutil",
- "monad-tfm",
  "monad-types",
  "monad-validator",
  "test-case",
@@ -5066,6 +5065,7 @@ dependencies = [
  "monad-secp",
  "monad-state-backend",
  "monad-testutil",
+ "monad-tfm",
  "rayon",
  "tracing",
 ]
@@ -5157,6 +5157,7 @@ dependencies = [
  "monad-perf-util",
  "monad-state-backend",
  "monad-testutil",
+ "monad-tfm",
  "monad-types",
  "rand 0.8.5",
  "rand_chacha 0.3.1",

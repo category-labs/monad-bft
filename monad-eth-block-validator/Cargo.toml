@@ -24,4 +24,5 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 monad-eth-testutil = { workspace = true }
+monad-tfm = { workspace = true }
 monad-testutil = { workspace = true }

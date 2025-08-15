@@ -1950,7 +1950,9 @@ mod test {
         NUM_LEADERS_SELF_UPCOMING,
     };
 
-    const BASE_FEE: u128 = 50_000_000_000;
+    const BASE_FEE: u64 = 100_000_000_000;
+    const BASE_FEE_TREND: u64 = 0;
+    const BASE_FEE_MOMENT: u64 = 0;
     const GAS_LIMIT: u64 = 30000;
 
     static CHAIN_PARAMS: ChainParams = ChainParams {
@@ -3843,6 +3845,9 @@ mod test {
             p2.tip.block_header.seq_num,
             p2.tip.block_header.timestamp_ns,
             p2.tip.block_header.round_signature,
+            BASE_FEE,
+            BASE_FEE_TREND,
+            BASE_FEE_MOMENT,
         );
         let invalid_p2 = ProposalMessage {
             proposal_epoch: invalid_bh2.epoch,

@@ -89,7 +89,7 @@ fn compute_base_fee_float(
     );
 
     // trend_{k+1} = beta * trend_k + (1 - beta) * (parent_tx_gas_limit - block_gas_target)
-    let trend = BETA * parent_trend_f64 + (1.0 - BETA) * parent_delta as f64;
+    let trend = BETA * parent_trend_f64 + (1.0 - BETA) * parent_delta;
     // moment_{k+1} = beta * moment_k + (1 - beta) * (block_gas_limit - parent_tx_gas_limit)^2
     let moment = BETA * parent_moment_f64 + (1.0 - BETA) * parent_delta * parent_delta;
 

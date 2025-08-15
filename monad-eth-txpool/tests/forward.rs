@@ -20,9 +20,10 @@ use monad_crypto::NopSignature;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, recover_tx};
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
-use monad_eth_types::{Balance, BASE_FEE_PER_GAS};
+use monad_eth_types::Balance;
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
+use monad_tfm::base_fee::MIN_BASE_FEE;
 use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
 
 type SignatureType = NopSignature;
@@ -35,6 +36,7 @@ const S1: B256 = B256::new(hex!(
 
 const FORWARD_MIN_SEQ_NUM_DIFF: u64 = 3;
 const FORWARD_MAX_RETRIES: usize = 2;
+const BASE_FEE_PER_GAS: u64 = MIN_BASE_FEE;
 
 fn with_txpool(
     insert_tx_owned: bool,
