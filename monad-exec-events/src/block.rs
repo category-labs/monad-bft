@@ -98,13 +98,19 @@ impl ExecutedBlock {
             .txns
             .iter()
             .enumerate()
-            .map(|(tx_idx, tx)| alloy_rpc_types::Transaction {
-                inner: tx.to_alloy(),
-                block_hash: Some(header.hash),
-                block_number: Some(header.number),
-                transaction_index: Some(tx_idx as u64),
-                effective_gas_price: None,
-                from: alloy_primitives::Address::from(tx.sender.bytes),
+            .map(|(tx_idx, tx)| {
+                use alloy_consensus::Transaction;
+
+                let inner = tx.to_alloy();
+                let effective_gas_price = inner.effective_gas_price(header.base_fee_per_gas);
+                alloy_rpc_types::Transaction {
+                    inner,
+                    block_hash: Some(header.hash),
+                    block_number: Some(header.number),
+                    transaction_index: Some(tx_idx as u64),
+                    effective_gas_price: Some(effective_gas_price),
+                    from: alloy_primitives::Address::from(tx.sender.bytes),
+                }
             })
             .collect();
 
