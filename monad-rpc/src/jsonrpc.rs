@@ -66,15 +66,7 @@ impl<'de> Deserialize<'de> for RequestId {
                     Err(serde::de::Error::custom("number must be a valid integer"))
                 }
             }
-            Value::String(s) => {
-                if s.parse::<i64>().is_ok() {
-                    Ok(RequestId::String(s))
-                } else {
-                    Err(serde::de::Error::custom(
-                        "string must represent a valid integer",
-                    ))
-                }
-            }
+            Value::String(s) => Ok(RequestId::String(s)),
             Value::Null => Ok(RequestId::Null),
             _ => Err(serde::de::Error::custom(
                 "id must be a integer, string, or null",
@@ -407,6 +399,39 @@ mod test {
                 method: "foobar".into(),
                 params: Value::Array(vec![Value::Number(42.into()), Value::Number(43.into())]),
                 id: RequestId::Number(1),
+            },
+            req.unwrap()
+        );
+    }
+
+    #[test]
+    fn test_str_request() {
+        let s = r#"
+                {
+                    "jsonrpc": "2.0",
+                    "method": "foobar",
+                    "params": [42, 43],
+                    "id": "string-id"
+                }
+                "#;
+        let req: Result<Request, serde_json::Error> = serde_json::from_str(s);
+        assert_eq!(
+            Request {
+                jsonrpc: "2.0".into(),
+                method: "foobar".into(),
+                params: Value::Array(vec![Value::Number(42.into()), Value::Number(43.into())]),
+                id: RequestId::String("string-id".into()),
+            },
+            req.unwrap()
+        );
+
+        let req: Result<Request, serde_json::Error> = serde_json::from_slice(s.as_bytes());
+        assert_eq!(
+            Request {
+                jsonrpc: "2.0".into(),
+                method: "foobar".into(),
+                params: Value::Array(vec![Value::Number(42.into()), Value::Number(43.into())]),
+                id: RequestId::String("string-id".into()),
             },
             req.unwrap()
         );
