@@ -288,7 +288,7 @@ pub async fn inspect_block(
         .keys()
         .map(String::as_str)
         .collect();
-    let data_by_block = fetch_block_data(model, std::iter::once(block_num), &replicas).await;
+    let data_by_block = fetch_block_data(model, std::iter::once(block_num), &replicas, 1).await;
 
     let block_data = data_by_block
         .get(&block_num)
@@ -317,8 +317,8 @@ pub async fn inspect_block(
     println!("---------------");
 
     for (replica, data_opt) in block_data {
-        let status = match data_opt {
-            None => "Missing".to_string(),
+        let status: String = match data_opt {
+            None => "Missing".into(),
             Some((block, receipts, traces)) => {
                 // Basic validation checks
                 let is_valid = block.header.number == block_num
@@ -327,11 +327,11 @@ pub async fn inspect_block(
 
                 if is_valid {
                     if good_replica.as_ref() == Some(&replica) {
-                        "Valid (Good)".to_string()
+                        "Valid (Good)".into()
                     } else if replica_faults.contains_key(replica) {
                         format!("Inconsistent: {:?}", replica_faults[replica])
                     } else {
-                        "Valid".to_string()
+                        "Valid".into()
                     }
                 } else {
                     let mut issues = vec![];
