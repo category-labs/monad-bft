@@ -116,7 +116,7 @@ where
             let locked_epoch = seq_num.get_locked_epoch(self.val_set_update_interval);
             assert_eq!(
                 locked_epoch,
-                seq_num.to_epoch(self.val_set_update_interval) + Epoch(2)
+                seq_num.to_epoch(self.val_set_update_interval) + Epoch(1)
             );
             self.next_val_data = Some(ValidatorSetDataWithEpoch {
                 epoch: locked_epoch,
@@ -272,9 +272,9 @@ where
             let locked_epoch = seq_num.get_locked_epoch(self.val_set_update_interval);
             assert_eq!(
                 locked_epoch,
-                seq_num.to_epoch(self.val_set_update_interval) + Epoch(2)
+                seq_num.to_epoch(self.val_set_update_interval) + Epoch(1)
             );
-            self.next_val_data = if locked_epoch.0 % 2 == 1 {
+            self.next_val_data = if locked_epoch.0 % 2 == 0 {
                 Some(ValidatorSetDataWithEpoch {
                     epoch: locked_epoch,
                     validators: self.val_data_1.clone(),

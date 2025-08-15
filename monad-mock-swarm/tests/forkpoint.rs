@@ -412,7 +412,7 @@ fn forkpoint_restart_f(
         let failed_node_high_epoch = forkpoint
             .validator_sets
             .iter()
-            .filter_map(|vset| vset.round.map(|round| (round, vset.epoch)))
+            .map(|vset| (vset.round, vset.epoch))
             .max_by(|x, y| x.0.cmp(&y.0))
             .map(|t| t.1)
             .expect("current epoch must be scheduled");

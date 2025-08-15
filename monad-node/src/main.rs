@@ -245,6 +245,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
     );
 
     let val_set_update_interval = SeqNum(50_000); // TODO configurable
+    let epoch_start_delay = Round(5_000); // TODO configurable
 
     let statesync_threshold: usize = node_state.node_config.statesync_threshold.into();
 
@@ -401,7 +402,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
         key: node_state.secp256k1_identity,
         certkey: node_state.bls12_381_identity,
         val_set_update_interval,
-        epoch_start_delay: Round(5000),
+        epoch_start_delay,
         beneficiary: node_state.node_config.beneficiary.into(),
         locked_epoch_validators,
         forkpoint: node_state.forkpoint_config.into(),

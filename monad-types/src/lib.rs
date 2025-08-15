@@ -332,11 +332,11 @@ impl SeqNum {
     /// Get the epoch number whose validator set is locked by this block. Should
     /// only be called on the boundary block sequence number
     ///
-    /// Current design locks the info for epoch n + 2 by the end of epoch n. The
-    /// validators have an entire epoch to prepare themselves for any duties
+    /// Current design locks the info for epoch n + 1 by the end of epoch n. The
+    /// validators have epoch_start_delay to prepare themselves for any duties
     pub fn get_locked_epoch(&self, val_set_update_interval: SeqNum) -> Epoch {
         assert!(self.is_epoch_end(val_set_update_interval));
-        (*self).to_epoch(val_set_update_interval) + Epoch(2)
+        (*self).to_epoch(val_set_update_interval) + Epoch(1)
     }
 
     pub fn as_u64(&self) -> u64 {

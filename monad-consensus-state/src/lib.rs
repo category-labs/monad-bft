@@ -1262,11 +1262,12 @@ where
 
     #[must_use]
     pub fn checkpoint(&self) -> Checkpoint<ST, SCT, EPT> {
-        let val_set_data = |epoch: Epoch| {
+        let get_locked_epoch = |epoch: Epoch| {
             // return early if validator set isn't locked
             let _ = self.val_epoch_map.get_val_set(&epoch)?;
-
-            let round = self.epoch_manager.epoch_starts.get(&epoch).copied();
+            // return early if next epoch isn't scheduled
+            let round = self.epoch_manager.epoch_starts.get(&epoch).copied()?;
+            // this implies that epoch is scheduled and validator set is ready
             Some(LockedEpoch { epoch, round })
         };
 
@@ -1274,16 +1275,12 @@ where
         Checkpoint {
             root: self.consensus.pending_block_tree.root().block_id,
             high_certificate: self.consensus.pacemaker.high_certificate().clone(),
-            validator_sets: vec![
-                val_set_data(base_epoch)
-                    .expect("checkpoint: no validator set populated for base_epoch"),
-                val_set_data(base_epoch + Epoch(1))
-                    .expect("checkpoint: no validator set populated for base_epoch + 1"),
-            ]
+            validator_sets: vec![get_locked_epoch(base_epoch)
+                .expect("checkpoint: no validator set populated for base_epoch")]
             .into_iter()
             .chain(
-                // third val_set might not be ready
-                val_set_data(base_epoch + Epoch(2)),
+                // next val_set might not be ready
+                get_locked_epoch(base_epoch + Epoch(1)),
             )
             .collect(),
         }

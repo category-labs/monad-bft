@@ -50,6 +50,6 @@ where
 pub struct LockedEpoch {
     /// Validator set are active for this epoch
     pub epoch: Epoch,
-    /// By the end of epoch - 1, the next epoch is scheduled to start on round. Otherwise, it's left empty
-    pub round: Option<Round>,
+    /// By the end of epoch - 1, the next epoch is scheduled to start on round.
+    pub round: Round,
 }
