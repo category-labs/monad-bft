@@ -53,6 +53,7 @@ pub enum MetricNames {
     BLOCK_ARCHIVE_WORKER_BLOCK_FALLBACK,
     BLOCK_ARCHIVE_WORKER_RECEIPTS_FALLBACK,
     BLOCK_ARCHIVE_WORKER_TRACES_FALLBACK,
+    BLOCK_ARCHIVE_WORKER_TRACES_FAILED,
 
     SOURCE_LATEST_BLOCK_NUM,
     END_BLOCK_NUMBER,
@@ -130,6 +131,7 @@ impl MetricNames {
             MetricNames::BFT_BLOCK_FILES_ALREADY_IN_S3 => "bft_block_files_already_in_s3",
             MetricNames::BFT_BLOCK_FILES_UPLOADED => "bft_block_files_uploaded",
             MetricNames::BFT_BLOCK_FILES_FAILED_TO_PROCESS => "bft_block_files_failed_to_process",
+            MetricNames::BLOCK_ARCHIVE_WORKER_TRACES_FAILED => "block_archive_worker_traces_failed",
         }
     }
 }
