@@ -334,7 +334,7 @@ where
             block_range = self.blocks.range(start_seq_num..next_seq_num);
         }
         for (&cache_seq_num, block) in block_range {
-            trace!(
+            debug!(
                 ?cache_seq_num,
                 ?eth_address,
                 ?only_seqnum,
@@ -482,6 +482,20 @@ where
                 block_gas_cost = block_txn_fees
                     .max_gas_cost
                     .saturating_add(block_txn_fees.first_txn_gas);
+                debug!(
+                    "Block has non-emptying txn. updated balance: {:?} \
+                        block gas cost{:?} \
+                        txn_fees max gas{:?} \
+                        first txn gas {:?} \
+                        block seq_num {:?} \
+                        address: {:?}",
+                    account_balance,
+                    block_gas_cost,
+                    block_txn_fees.max_gas_cost,
+                    block_txn_fees.first_txn_gas,
+                    self.block_seq_num,
+                    eth_address,
+                );
             }
 
             if account_balance.remaining_reserve_balance < block_gas_cost {
@@ -503,10 +517,11 @@ where
         if account_balance.block_seqnum_of_latest_txn < self.block_seq_num {
             account_balance.block_seqnum_of_latest_txn = self.block_seq_num;
         }
-        trace!(
+        debug!(
             ?account_balance,
             ?self.block_seq_num,
             ?eth_address,
+            ?only_seqnum,
             "try_apply_block_fees updated balance state",
         );
         Ok(())
@@ -596,6 +611,14 @@ where
                 .remaining_reserve_balance
                 .saturating_sub(txn_max_gas);
 
+            debug!(
+                "New non-emptying txn. balance: {:?} \
+                    txn_max_gas {:?} \
+                    new reserve balance {:?} \
+                    block seq_num {:?} \
+                    address: {:?}",
+                account_balance, txn_max_gas, reserve_balance, self.block_seq_num, eth_address,
+            );
             account_balance.remaining_reserve_balance = reserve_balance;
             account_balance.block_seqnum_of_latest_txn = self.block_seq_num;
         }
@@ -810,8 +833,8 @@ where
                 .cloned()
                 .zip_eq(account_balances)
                 .map(|(address, mut balance_state)| {
-                    // Apply Txn Fees for the txns from committed blocks
                     let mut next_seq_num = base_seq_num + SeqNum(1);
+                    // Compute latest block seqnum
                     self.committed_cache.update_account_balance(
                         &mut next_seq_num,
                         &mut balance_state,
@@ -820,6 +843,7 @@ where
                         true,
                     )?;
 
+                    // Apply Txn Fees for the txns from committed blocks
                     self.committed_cache.update_account_balance(
                         &mut next_seq_num,
                         &mut balance_state,
