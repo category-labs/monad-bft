@@ -292,43 +292,58 @@ impl<T: Triedb> ChainState<T> {
             }
         };
 
-        let block_key = match block {
-            BlockTagOrHash::BlockTags(tag) => get_block_key_from_tag(&self.triedb_env, tag),
+        let block_key = match &block {
+            BlockTagOrHash::BlockTags(tag) => {
+                Some(get_block_key_from_tag(&self.triedb_env, tag.clone()))
+            }
             BlockTagOrHash::Hash(hash) => {
                 let latest_block_key = get_block_key_from_tag(&self.triedb_env, BlockTags::Latest);
-                if let Some(block_num) = self
-                    .triedb_env
+
+                self.triedb_env
                     .get_block_number_by_hash(latest_block_key, hash.0)
                     .await
                     .map_err(ChainStateError::Triedb)?
-                {
-                    self.triedb_env.get_block_key(SeqNum(block_num))
-                } else {
-                    return Err(ChainStateError::ResourceNotFound);
-                }
+                    .map(|block_num| self.triedb_env.get_block_key(SeqNum(block_num)))
             }
         };
 
-        if let Some(header) = self
-            .triedb_env
-            .get_block_header(block_key)
-            .await
-            .map_err(ChainStateError::Triedb)?
-        {
-            return Ok(header.header);
-        }
-
-        if let (Some(archive_reader), BlockKey::Finalized(FinalizedBlockKey(block_num))) =
-            (&self.archive_reader, block_key)
-        {
-            if let Ok(block) = archive_reader
-                .get_block_by_number(block_num.0)
+        if let Some(block_key) = block_key {
+            if let Some(header) = self
+                .triedb_env
+                .get_block_header(block_key)
                 .await
-                .inspect_err(|e| {
-                    error!("Error getting block by number from archive: {e:?}");
-                })
+                .map_err(ChainStateError::Triedb)?
             {
-                return Ok(block.header);
+                return Ok(header.header);
+            }
+        };
+
+        if let Some(archive_reader) = &self.archive_reader {
+            match block {
+                BlockTagOrHash::BlockTags(BlockTags::Number(n)) => {
+                    if let Ok(block) =
+                        archive_reader
+                            .get_block_by_number(n.0)
+                            .await
+                            .inspect_err(|e| {
+                                error!("Error getting block by number from archive: {e:?}");
+                            })
+                    {
+                        return Ok(block.header);
+                    }
+                }
+                BlockTagOrHash::Hash(hash) => {
+                    if let Ok(block) = archive_reader
+                        .get_block_by_hash(&FixedBytes(hash.0))
+                        .await
+                        .inspect_err(|e| {
+                            error!("Error getting block by hash from archive: {e:?}");
+                        })
+                    {
+                        return Ok(block.header);
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -363,54 +378,61 @@ impl<T: Triedb> ChainState<T> {
         }
 
         let block_key = match &block {
-            BlockTagOrHash::BlockTags(tag) => get_block_key_from_tag(&self.triedb_env, tag.clone()),
+            BlockTagOrHash::BlockTags(tag) => {
+                Some(get_block_key_from_tag(&self.triedb_env, tag.clone()))
+            }
             BlockTagOrHash::Hash(hash) => {
                 let latest_block_key = get_block_key_from_tag(&self.triedb_env, BlockTags::Latest);
-                if let Some(block_num) = self
-                    .triedb_env
+
+                self.triedb_env
                     .get_block_number_by_hash(latest_block_key, hash.0)
                     .await
                     .map_err(ChainStateError::Triedb)?
-                {
-                    self.triedb_env.get_block_key(SeqNum(block_num))
-                } else {
-                    return Err(ChainStateError::ResourceNotFound);
-                }
+                    .map(|block_num| self.triedb_env.get_block_key(SeqNum(block_num)))
             }
         };
 
-        if let Some(header) = self
-            .triedb_env
-            .get_block_header(block_key)
-            .await
-            .map_err(ChainStateError::Triedb)?
-        {
-            if let Ok(transactions) = self.triedb_env.get_transactions(block_key).await {
-                return Ok(parse_block_content(
-                    header.hash,
-                    header.header,
-                    transactions,
-                    return_full_txns,
-                ));
+        if let Some(block_key) = block_key {
+            if let Some(header) = self
+                .triedb_env
+                .get_block_header(block_key)
+                .await
+                .map_err(ChainStateError::Triedb)?
+            {
+                if let Ok(transactions) = self.triedb_env.get_transactions(block_key).await {
+                    return Ok(parse_block_content(
+                        header.hash,
+                        header.header,
+                        transactions,
+                        return_full_txns,
+                    ));
+                }
             }
         }
 
-        if let (Some(archive_reader), BlockKey::Finalized(FinalizedBlockKey(block_num))) =
-            (&self.archive_reader, block_key)
-        {
-            if let Ok(block) = archive_reader
-                .get_block_by_number(block_num.0)
-                .await
-                .inspect_err(|e| {
-                    error!("Error getting block by number from archive: {e:?}");
-                })
-            {
-                return Ok(parse_block_content(
-                    block.header.hash_slow(),
-                    block.header,
-                    block.body.transactions,
-                    return_full_txns,
-                ));
+        if let Some(archive_reader) = &self.archive_reader {
+            match block {
+                BlockTagOrHash::BlockTags(BlockTags::Number(n)) => {
+                    if let Ok(block) = archive_reader.get_block_by_number(n.0).await {
+                        return Ok(parse_block_content(
+                            block.header.hash_slow(),
+                            block.header,
+                            block.body.transactions,
+                            return_full_txns,
+                        ));
+                    }
+                }
+                BlockTagOrHash::Hash(hash) => {
+                    if let Ok(block) = archive_reader.get_block_by_hash(&FixedBytes(hash.0)).await {
+                        return Ok(parse_block_content(
+                            block.header.hash_slow(),
+                            block.header,
+                            block.body.transactions,
+                            return_full_txns,
+                        ));
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -1075,5 +1097,156 @@ async fn get_receipt_from_triedb<T: Triedb>(
             Ok(Some(receipt))
         }
         None => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy_eips::BlockNumberOrTag;
+    use alloy_rpc_types::{Filter, FilterBlockOption};
+    use monad_archive::{
+        prelude::{ArchiveReader, BlockDataArchive, IndexReaderImpl, TxIndexArchiver},
+        test_utils::{mock_block, mock_rx, mock_tx, MemoryStorage},
+    };
+    use monad_triedb_utils::mock_triedb::MockTriedb;
+
+    use crate::{
+        chainstate::ChainState,
+        eth_json_types::{BlockTagOrHash, BlockTags, FixedData, Quantity},
+    };
+
+    #[tokio::test]
+    async fn test_archive_fallback() {
+        let mut mock_triedb = MockTriedb::default();
+        mock_triedb.set_latest_block(1000);
+
+        let primary = MemoryStorage::new("primary");
+        let fallback = MemoryStorage::new("fallback");
+
+        let primary_bdr = BlockDataArchive::new(primary.clone());
+        let fallback_bdr = BlockDataArchive::new(fallback.clone());
+        let primary = TxIndexArchiver::new(primary, primary_bdr.clone(), 1000);
+
+        let tx = mock_tx(123);
+        let block = mock_block(10, vec![tx.clone()]);
+        let receipts = mock_rx(100, 10);
+
+        primary_bdr.archive_block(block.clone()).await.unwrap();
+        primary_bdr
+            .archive_receipts(vec![receipts.clone()], 10)
+            .await
+            .unwrap();
+        primary
+            .index_block(
+                mock_block(10, vec![tx.clone()]),
+                vec![vec![]],
+                vec![receipts.clone()],
+                None,
+            )
+            .await
+            .unwrap();
+
+        let reader = ArchiveReader::new(primary_bdr.clone(), primary.reader, None, None)
+            .with_fallback(
+                Some(ArchiveReader::new(
+                    fallback_bdr.clone(),
+                    IndexReaderImpl::new(fallback.clone(), fallback_bdr),
+                    None,
+                    None,
+                )),
+                None,
+                None,
+            );
+
+        let chain_state = ChainState::new(None, mock_triedb, Some(reader));
+
+        let block_hash = block.header.hash_slow().0;
+
+        let found = chain_state
+            .get_block(BlockTagOrHash::Hash(FixedData(block_hash)), false)
+            .await;
+        assert!(found.is_ok());
+
+        let found = chain_state
+            .get_block(
+                BlockTagOrHash::BlockTags(BlockTags::Number(Quantity(10))),
+                false,
+            )
+            .await;
+        assert!(found.is_ok());
+
+        chain_state
+            .get_block_header(BlockTagOrHash::Hash(FixedData(block_hash)))
+            .await
+            .unwrap();
+        chain_state
+            .get_block_header(BlockTagOrHash::BlockTags(BlockTags::Number(Quantity(10))))
+            .await
+            .unwrap();
+        assert!(found.is_ok());
+
+        chain_state
+            .get_transaction(tx.tx.tx_hash().0)
+            .await
+            .unwrap();
+
+        chain_state
+            .get_transaction_receipt(tx.tx.tx_hash().0)
+            .await
+            .unwrap();
+
+        chain_state
+            .get_block_receipts(BlockTagOrHash::Hash(FixedData(block_hash)))
+            .await
+            .unwrap();
+
+        chain_state
+            .get_block_receipts(BlockTagOrHash::BlockTags(BlockTags::Number(Quantity(10))))
+            .await
+            .unwrap();
+
+        chain_state
+            .get_transaction_with_block_and_index(
+                BlockTagOrHash::Hash(crate::eth_json_types::FixedData(block_hash)),
+                0,
+            )
+            .await
+            .unwrap();
+
+        chain_state
+            .get_transaction_with_block_and_index(
+                BlockTagOrHash::BlockTags(BlockTags::Number(Quantity(10))),
+                0,
+            )
+            .await
+            .unwrap();
+
+        chain_state
+            .get_raw_receipts(BlockTags::Number(Quantity(10)))
+            .await
+            .unwrap();
+
+        let filter = Filter {
+            block_option: FilterBlockOption::Range {
+                from_block: Some(BlockNumberOrTag::Number(10)),
+                to_block: Some(BlockNumberOrTag::Number(10)),
+            },
+            ..Default::default()
+        };
+        let logs = chain_state
+            .get_logs(filter, 1, false, false, 1)
+            .await
+            .unwrap();
+        assert!(!logs.is_empty());
+
+        let filter = Filter {
+            block_option: FilterBlockOption::AtBlockHash(block_hash.into()),
+            ..Default::default()
+        };
+        let logs = chain_state
+            .get_logs(filter, 1, false, false, 1)
+            .await
+            .unwrap();
+        assert!(!logs.is_empty());
     }
 }
