@@ -491,6 +491,10 @@ impl Debug for BlockId {
 )]
 pub struct Stake(pub u64);
 
+impl Stake {
+    pub const ZERO: Stake = Stake(0);
+}
+
 impl Add for Stake {
     type Output = Self;
 
@@ -524,6 +528,14 @@ impl AddAssign for Stake {
 impl SubAssign for Stake {
     fn sub_assign(&mut self, rhs: Self) {
         *self = *self - rhs
+    }
+}
+
+impl Div<Stake> for Stake {
+    type Output = f64;
+
+    fn div(self, rhs: Stake) -> f64 {
+        self.0 as f64 / rhs.0 as f64
     }
 }
 

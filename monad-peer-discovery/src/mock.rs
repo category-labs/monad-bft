@@ -47,6 +47,17 @@ pub struct NopDiscoveryBuilder<ST: CertificateSignatureRecoverable> {
     pub pd: PhantomData<ST>,
 }
 
+impl<ST: CertificateSignatureRecoverable> NopDiscoveryBuilder<ST> {
+    pub fn new(
+        known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4>,
+    ) -> Self {
+        Self {
+            known_addresses,
+            pd: PhantomData,
+        }
+    }
+}
+
 impl<ST: CertificateSignatureRecoverable> Default for NopDiscoveryBuilder<ST> {
     fn default() -> Self {
         Self {
