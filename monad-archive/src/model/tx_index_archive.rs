@@ -15,7 +15,10 @@
 
 use std::ops::Deref;
 
-use alloy_primitives::{hex::ToHexExt, TxHash};
+use alloy_primitives::{
+    hex::{FromHex, ToHexExt},
+    TxHash,
+};
 use eyre::bail;
 use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 
@@ -109,20 +112,17 @@ impl IndexReader for IndexReaderImpl {
             .iter()
             .map(|h| h.encode_hex())
             .collect::<Vec<String>>();
-        let reprs = self.index_store.bulk_get(&keys).await?;
-
-        let mut output = HashMap::new();
-        for (hash, key) in tx_hashes.iter().zip(keys) {
-            let Some(bytes) = reprs.get(&key) else {
-                continue;
-            };
-
-            let decoded = IndexDataStorageRepr::decode(bytes)?;
-            let converted = decoded.convert(&self.block_data_reader).await?;
-            output.insert(*hash, converted);
-        }
-
-        Ok(output)
+        let reprs = self.index_store.bulk_get(keys).await?;
+        futures::stream::iter(reprs)
+            .map(|(key, bytes)| async move {
+                let decoded = IndexDataStorageRepr::decode(&bytes)?;
+                let converted = decoded.convert(&self.block_data_reader).await?;
+                let hash = TxHash::from_hex(key)?;
+                Ok((hash, converted))
+            })
+            .buffer_unordered(10)
+            .try_collect::<HashMap<TxHash, TxIndexedData>>()
+            .await
     }
 
     async fn get_tx(&self, tx_hash: &TxHash) -> Result<(TxEnvelopeWithSender, HeaderSubset)> {

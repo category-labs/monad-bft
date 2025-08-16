@@ -26,7 +26,7 @@ use futures::future::try_join_all;
 use tokio::sync::Semaphore;
 use tracing::error;
 
-use super::{KVStoreType, MetricsResultExt};
+use super::{metrics::MetricsResultExt, KVStoreType};
 use crate::prelude::*;
 
 #[derive(Clone)]
@@ -39,9 +39,9 @@ pub struct DynamoDBArchive {
 }
 
 impl KVReader for DynamoDBArchive {
-    async fn bulk_get(&self, keys: &[String]) -> Result<HashMap<String, Bytes>> {
+    async fn bulk_get(&self, keys: Vec<String>) -> Result<HashMap<String, Bytes>> {
         let start = Instant::now();
-        self.batch_get(keys).await.write_get_metrics(
+        self.batch_get(&keys).await.write_get_metrics(
             start.elapsed(),
             KVStoreType::AwsDynamoDB,
             &self.metrics,
@@ -49,7 +49,7 @@ impl KVReader for DynamoDBArchive {
     }
 
     async fn get(&self, key: &str) -> Result<Option<Bytes>> {
-        self.bulk_get(&[key.to_owned()])
+        self.batch_get(&[key.to_owned()])
             .await
             .map(|mut v| v.remove(key))
     }
