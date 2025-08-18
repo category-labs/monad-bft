@@ -200,6 +200,13 @@ pub enum DeserializeError {
 
 impl<M: Decodable, ST: CertificateSignatureRecoverable> InboundRouterMessage<M, ST> {
     pub fn try_deserialize(data: &Bytes) -> Result<Self, DeserializeError> {
+        Self::try_deserialize_with_config(data, false)
+    }
+
+    pub fn try_deserialize_with_config(
+        data: &Bytes,
+        allow_zstd: bool,
+    ) -> Result<Self, DeserializeError> {
         if data.len() > MAX_MESSAGE_SIZE {
             return Err(DeserializeError::MessageTooLarge {
                 size: data.len(),
@@ -222,6 +229,11 @@ impl<M: Decodable, ST: CertificateSignatureRecoverable> InboundRouterMessage<M, 
                         Ok(Self::AppMessage(app_message))
                     }
                     CompressionVersion::DefaultZSTDVersion => {
+                        if !allow_zstd {
+                            return Err(DeserializeError::DecompressionError(
+                                "zstd compression is disabled".to_string(),
+                            ));
+                        }
                         let decompressed_message_len = u32::decode(&mut payload)?;
                         if decompressed_message_len as usize > MAX_MESSAGE_SIZE {
                             return Err(DeserializeError::MessageTooLarge {
@@ -392,7 +404,10 @@ mod tests {
             .try_serialize_with_config(version, MAX_MESSAGE_SIZE)
             .unwrap();
         let deserialized =
-            InboundRouterMessage::<SliceMessage, SecpSignature>::try_deserialize(&serialized);
+            InboundRouterMessage::<SliceMessage, SecpSignature>::try_deserialize_with_config(
+                &serialized,
+                true,
+            );
         assert!(deserialized.is_ok());
 
         match deserialized.unwrap() {
@@ -400,6 +415,30 @@ mod tests {
                 assert_eq!(msg.data, random_bytes.data);
             }
             _ => panic!("expected AppMessage"),
+        }
+    }
+
+    #[test]
+    fn test_compressed_message_rejected_by_default() {
+        let data = vec![0x42; 1000];
+        let compressible_msg = SliceMessage { data };
+        let msg = OutboundRouterMessage::<_, SecpSignature>::AppMessage(compressible_msg);
+        let mut version = NetworkMessageVersion::version();
+        version.compression_version = CompressionVersion::DefaultZSTDVersion;
+
+        let serialized = msg
+            .try_serialize_with_config(version, MAX_MESSAGE_SIZE)
+            .unwrap();
+
+        let deserialized =
+            InboundRouterMessage::<SliceMessage, SecpSignature>::try_deserialize(&serialized);
+
+        assert!(deserialized.is_err());
+        match deserialized {
+            Err(DeserializeError::DecompressionError(msg)) => {
+                assert_eq!(msg, "zstd compression is disabled");
+            }
+            _ => panic!("expected DecompressionError with 'zstd compression is disabled' message"),
         }
     }
 
