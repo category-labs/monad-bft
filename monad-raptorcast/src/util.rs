@@ -13,7 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeMap, fmt};
+use std::{
+    cmp::Ordering,
+    collections::{BTreeMap, BinaryHeap},
+    fmt,
+};
 
 use fixed::{types::extra::U11, FixedU16};
 use itertools::Itertools;
@@ -182,6 +186,34 @@ where
     validator_id: Option<NodeId<CertificateSignaturePubKey<ST>>>,
     round_span: RoundSpan,
     sorted_other_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>, // Excludes self
+}
+
+type GroupQueue<ST> = BinaryHeap<Group<ST>>;
+
+// Groups in a GroupQueue should be sorted by start round, earliest round first
+impl<ST> Ord for Group<ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Compare fields other than round_span.start as well, to make the
+        // ordering more consistent and predictable
+        other
+            .round_span
+            .start
+            .cmp(&self.round_span.start)
+            .then_with(|| other.round_span.end.cmp(&self.round_span.end))
+            .then_with(|| other.validator_id.cmp(&self.validator_id))
+    }
+}
+
+impl<ST> PartialOrd for Group<ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl<ST> fmt::Debug for Group<ST>
@@ -418,7 +450,9 @@ where
     validator_map: BTreeMap<Epoch, Group<ST>>,
 
     // For Validator->fullnode re-raptorcasting
-    fullnode_map: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Group<ST>>,
+    // Note that secondary RC instance will eagerly push all confirmed groups
+    // here, so we will end up with multiple future groups in the queue.
+    fullnode_map: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, GroupQueue<ST>>,
 
     // Regarding re-raptorcasting from primary instance, if this.is_fullnode =
     // = true,  then we are a full-node re-raptorcasting to other full-nodes.
@@ -485,7 +519,12 @@ where
         msg_author: &NodeId<CertificateSignaturePubKey<ST>>, // skipped when iterating RaptorCast group
     ) -> Option<GroupIterator<ST>> {
         let maybe_group = if self.is_dynamic_fullnode {
-            self.fullnode_map.get(msg_author)
+            let maybe_group_queue = self.fullnode_map.get(msg_author);
+            if let Some(group_queue) = maybe_group_queue {
+                group_queue.peek() // Take earliest among all future groups for msg_author
+            } else {
+                None
+            }
         } else {
             self.validator_map.get(&msg_epoch)
         };
@@ -519,30 +558,32 @@ where
     // As Full-node: When secondary RaptorCast instance (Client) sends us a Group<>
     pub fn push_group_fullnodes(&mut self, group: Group<ST>) {
         assert!(self.is_dynamic_fullnode);
-        if let Some(old_grp) = self
-            .fullnode_map
-            .insert(*group.get_validator_id(), group.clone())
-        {
-            tracing::debug!(new_group=?group, old_group=?old_grp, "Group replace");
-        } else {
-            tracing::debug!(new_group=?group, "Group insert");
-        }
+        let vid = group.get_validator_id();
+        let prev_group_queue_from_vid = format!("{:?}", self.fullnode_map.get(vid));
+        self.fullnode_map
+            .entry(*vid)
+            .or_insert_with(BinaryHeap::new)
+            .push(group.clone());
+        tracing::debug!(?vid, ?prev_group_queue_from_vid, "RaptorCast Group insert",);
     }
 
     pub fn delete_expired_groups(&mut self, curr_epoch: Epoch, curr_round: Round) {
-        let old_count;
-        let new_count;
+        let mut old_count = 0;
+        let mut new_count = 0;
         if self.is_dynamic_fullnode {
-            old_count = self.fullnode_map.len();
-            // Keep current and future* groups.
-            // Note: normally the client will only send as groups that are
-            // currently active, but it is possible for the client to send us a
-            // group scheduled for the future when we (the non-dedicated full-node)
-            // aren't received proposals yet and hence do not know what the current
-            // round is.
+            for (_vid, group_queue) in self.fullnode_map.iter_mut() {
+                old_count += group_queue.len();
+                // Keep current and future* groups from validator `vid`.
+                // Note that the Client will eagerly send us groups scheduled for
+                // future rounds, so we may have multiple groups in the queue.
+                // This is needed because, essentially, a dynamic full-node does
+                // maybe be unlucky with group invites so it may not know what
+                // the current round is.
+                group_queue.retain(|group| curr_round < group.round_span.end);
+                new_count += group_queue.len();
+            }
             self.fullnode_map
-                .retain(|_, group| curr_round < group.round_span.end);
-            new_count = self.fullnode_map.len();
+                .retain(|_vid, group_queue| !group_queue.is_empty());
         } else {
             old_count = self.validator_map.len();
             self.validator_map
@@ -559,8 +600,14 @@ where
     }
 
     #[cfg(test)]
-    pub fn get_fullnode_map(&self) -> &BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Group<ST>> {
-        &self.fullnode_map
+    pub fn get_fullnode_map(&self) -> BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Group<ST>> {
+        let mut res: BTreeMap<_, _> = BTreeMap::new();
+        for (vid, group_queue) in &self.fullnode_map {
+            if let Some(group) = group_queue.peek() {
+                res.insert(*vid, group.clone());
+            }
+        }
+        res
     }
 }
 
