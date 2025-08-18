@@ -156,6 +156,7 @@ where
         for command in commands {
             match command {
                 TxPoolCommand::CreateProposal {
+                    node_id: _,
                     epoch,
                     round,
                     seq_num,
@@ -225,6 +226,7 @@ where
         for command in commands {
             match command {
                 TxPoolCommand::CreateProposal {
+                    node_id,
                     epoch,
                     round,
                     seq_num,
@@ -249,6 +251,8 @@ where
                             proposal_byte_limit,
                             beneficiary,
                             timestamp_ns,
+                            node_id,
+                            epoch,
                             round_signature.clone(),
                             extending_blocks,
                             block_policy,

@@ -174,6 +174,10 @@ impl Default for RoundSpan {
 )]
 pub struct Epoch(pub u64);
 
+impl Epoch {
+    pub const MAX: Epoch = Epoch(u64::MAX);
+}
+
 impl AsRef<[u8]> for Epoch {
     fn as_ref(&self) -> &[u8] {
         self.0.as_bytes()

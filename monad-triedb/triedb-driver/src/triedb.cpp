@@ -22,11 +22,21 @@
 #include <vector>
 
 #include <category/core/byte_string.hpp>
+#include <category/core/config.hpp>
 #include <category/core/nibble.h>
+#include <category/execution/ethereum/db/trie_db.hpp>
+#include <category/execution/ethereum/db/util.hpp>
+#include <category/execution/ethereum/state2/block_state.hpp>
+#include <category/execution/ethereum/state3/state.hpp>
+#include <category/execution/ethereum/types/incarnation.hpp>
+#include <category/execution/monad/staking/staking_contract.hpp>
+#include <category/execution/monad/staking/util/constants.hpp>
+#include <category/mpt/db.hpp>
 #include <category/mpt/db.hpp>
 #include <category/mpt/ondisk_db_config.hpp>
 #include <category/mpt/traverse.hpp>
 #include <category/mpt/traverse_util.hpp>
+#include <category/vm/vm.hpp>
 
 #include "triedb.h"
 
@@ -426,4 +436,52 @@ uint64_t triedb_earliest_finalized_block(triedb *db)
 {
     uint64_t earliest_finalized_block = db->db_.get_earliest_version();
     return earliest_finalized_block;
+}
+
+monad_validator_set monad_alloc_valset(size_t length)
+{
+    auto *output = new monad_validator[length];
+    return monad_validator_set{.valset = output, .length = length};
+}
+
+void monad_free_valset(monad_validator_set valset)
+{
+    delete[] valset.valset;
+}
+
+monad_validator_set
+monad_read_valset(triedb *db, size_t const block_num, bool get_next)
+{
+    using namespace monad;
+
+    vm::VM vm;
+    TrieDb tdb(db->db_);
+    BlockState block_state{tdb, vm};
+    Incarnation const incarnation{block_num, Incarnation::LAST_TX - 1u};
+    State state{block_state, incarnation};
+    StakingContract contract(state);
+    state.add_to_balance(STAKING_CA, 0);
+
+    if (!contract.vars.in_boundary.load()) {
+        get_next = false;
+    }
+    auto const valset = get_next ? contract.vars._valset_consensus()
+                                 : contract.vars._valset_snapshot();
+    auto get_stake = [&](u64_be const id) {
+        return get_next ? contract.vars._consensus_stake(id)
+                        : contract.vars._snapshot_stake(id);
+    };
+
+    uint64_t const length = valset.length();
+    auto output = monad_alloc_valset(length);
+
+    for (uint64_t i = 0; i < length; i += 1) {
+        auto const val_id = valset.get(i).load();
+        auto const stake = get_stake(val_id).load();
+        auto const keys = contract.vars.val_execution(val_id).keys().load();
+        std::memcpy(output.valset[i].secp_pubkey, keys.secp_pubkey.data(), 33);
+        std::memcpy(output.valset[i].bls_pubkey, keys.bls_pubkey.data(), 48);
+        std::memcpy(output.valset[i].stake, stake.bytes, 32);
+    }
+    return output;
 }

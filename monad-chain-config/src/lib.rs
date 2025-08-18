@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use execution_revision::MonadExecutionRevision;
-use monad_types::Round;
+use monad_types::{Epoch, Round, SeqNum};
 use revision::{ChainParams, ChainRevision, MockChainRevision, MonadChainRevision};
 use serde::Deserialize;
 use thiserror::Error;
@@ -32,6 +32,9 @@ pub const MONAD_TESTNET2_CHAIN_ID: u64 = 30143;
 
 pub trait ChainConfig<CR: ChainRevision>: Copy + Clone {
     fn chain_id(&self) -> u64;
+    fn get_epoch_length(&self) -> SeqNum;
+    fn get_epoch_start_delay(&self) -> Round;
+    fn get_staking_activation(&self) -> Epoch;
     fn get_chain_revision(&self, round: Round) -> CR;
     fn get_execution_chain_revision(&self, execution_timestamp_s: u64) -> MonadExecutionRevision;
 }
@@ -40,9 +43,14 @@ pub trait ChainConfig<CR: ChainRevision>: Copy + Clone {
 #[serde(deny_unknown_fields)]
 pub struct MonadChainConfig {
     pub chain_id: u64,
+    pub epoch_length: SeqNum,
+    pub epoch_start_delay: Round,
+
     pub v_0_7_0_activation: Round,
     pub v_0_8_0_activation: Round,
     pub v_0_10_0_activation: Round,
+
+    pub staking_activation: Epoch,
 
     pub execution_v_one_activation: u64,
     pub execution_v_two_activation: u64,
@@ -105,6 +113,18 @@ impl ChainConfig<MonadChainRevision> for MonadChainConfig {
         self.chain_id
     }
 
+    fn get_epoch_length(&self) -> SeqNum {
+        self.epoch_length
+    }
+
+    fn get_epoch_start_delay(&self) -> Round {
+        self.epoch_start_delay
+    }
+
+    fn get_staking_activation(&self) -> Epoch {
+        self.staking_activation
+    }
+
     #[allow(clippy::if_same_then_else)]
     fn get_chain_revision(&self, round: Round) -> MonadChainRevision {
         if round >= self.v_0_10_0_activation {
@@ -131,9 +151,14 @@ impl ChainConfig<MonadChainRevision> for MonadChainConfig {
 
 const MONAD_DEVNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     chain_id: MONAD_DEVNET_CHAIN_ID,
+    epoch_length: SeqNum(50_000),
+    epoch_start_delay: Round(5_000),
+
     v_0_7_0_activation: Round::MIN,
     v_0_8_0_activation: Round::MIN,
     v_0_10_0_activation: Round::MIN,
+
+    staking_activation: Epoch::MAX,
 
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
@@ -142,8 +167,13 @@ const MONAD_DEVNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
 const MONAD_TESTNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     chain_id: MONAD_TESTNET_CHAIN_ID,
     v_0_7_0_activation: Round::MIN,
+    epoch_length: SeqNum(50_000),
+    epoch_start_delay: Round(5_000),
+
     v_0_8_0_activation: Round(3263000),
     v_0_10_0_activation: Round(32026929), // 2025-08-12T13:30:00.000Z
+
+    staking_activation: Epoch::MAX,
 
     execution_v_one_activation: 1739559600, // 2025-02-14T19:00:00.000Z
     execution_v_two_activation: 1741978800, // 2025-03-14T19:00:00.000Z
@@ -151,9 +181,14 @@ const MONAD_TESTNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
 
 const MONAD_TESTNET2_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     chain_id: MONAD_TESTNET2_CHAIN_ID,
+    epoch_length: SeqNum(50_000),
+    epoch_start_delay: Round(5_000),
+
     v_0_7_0_activation: Round::MIN,
     v_0_8_0_activation: Round::MIN,
     v_0_10_0_activation: Round(6487752), // 2025-07-29T13:30:00.000Z
+
+    staking_activation: Epoch::MAX,
 
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
@@ -162,9 +197,14 @@ const MONAD_TESTNET2_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
 // Mainnet uses latest version of testnet from genesis
 const MONAD_MAINNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     chain_id: MONAD_MAINNET_CHAIN_ID,
+    epoch_length: SeqNum(50_000),
+    epoch_start_delay: Round(5_000),
+
     v_0_7_0_activation: Round::MIN,
     v_0_8_0_activation: Round::MIN,
     v_0_10_0_activation: Round(15643179), // 2025-08-13T13:30:00.000Z
+
+    staking_activation: Epoch::MAX,
 
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
@@ -184,6 +224,18 @@ impl MockChainConfig {
 impl ChainConfig<MockChainRevision> for MockChainConfig {
     fn chain_id(&self) -> u64 {
         20143
+    }
+
+    fn get_epoch_length(&self) -> SeqNum {
+        SeqNum::MAX
+    }
+
+    fn get_epoch_start_delay(&self) -> Round {
+        Round::MAX
+    }
+
+    fn get_staking_activation(&self) -> Epoch {
+        Epoch::MAX
     }
 
     fn get_chain_revision(&self, _round: Round) -> MockChainRevision {

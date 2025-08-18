@@ -9,6 +9,7 @@ edition = "2021"
 bench = false
 
 [dependencies]
+alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true, features = ["derive"] }
 blake3 = { workspace = true }
 hex = { workspace = true }
