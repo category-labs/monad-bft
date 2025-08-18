@@ -33,7 +33,7 @@ const TRANSACTION_SIZE_BYTES: usize = 400;
 pub type SignatureType = NopSignature;
 pub type SignatureCollectionType = MockSignatures<NopSignature>;
 pub type BlockPolicyType = EthBlockPolicy<SignatureType, SignatureCollectionType>;
-pub type StateBackendType = InMemoryState;
+pub type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
 pub type Pool = EthTxPool<SignatureType, SignatureCollectionType, StateBackendType>;
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

@@ -32,8 +32,8 @@ use monad_transformer::{
 };
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
-    ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
-    txpool::MockTxPoolExecutor,
+    ledger::MockLedger, statesync::MockStateSyncExecutor, txpool::MockTxPoolExecutor,
+    val_set::MockValSetUpdaterNop,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use wasm_bindgen::prelude::*;
@@ -68,7 +68,7 @@ pub fn simulation_make() -> *mut Simulation {
             SeqNum(4),                           // execution_delay
             Duration::from_millis(50),           // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            SeqNum(2000),                        // val_set_update_interval
+            SeqNum(2000),                        // epoch_length
             Round(50),                           // epoch_start_delay
             SeqNum(100),                         // state_sync_threshold
         );
@@ -87,7 +87,7 @@ pub fn simulation_make() -> *mut Simulation {
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
+                        MockValSetUpdaterNop::new(validators.validators.clone(), SeqNum(2000)),
                         MockTxPoolExecutor::default(),
                         MockLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(

@@ -31,7 +31,6 @@ use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     metrics::Metrics,
-    signature_collection::SignatureCollection,
     validator_data::{ValidatorSetDataWithEpoch, ValidatorsConfig},
 };
 use monad_control_panel::{ipc::ControlPanelIpcReceiver, TracingReload};
@@ -72,10 +71,11 @@ use monad_types::{DropTimer, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_updaters::{
     checkpoint::FileCheckpoint, config_loader::ConfigLoader, loopback::LoopbackExecutor,
     parent::ParentExecutor, timer::TokioTimer, tokio_timestamp::TokioTimestamp,
-    triedb_state_root_hash::StateRootHashTriedbPoll,
+    triedb_val_set::ValSetUpdater,
 };
 use monad_validator::{
-    validator_set::ValidatorSetFactory, weighted_round_robin::WeightedRoundRobin,
+    signature_collection::SignatureCollection, validator_set::ValidatorSetFactory,
+    weighted_round_robin::WeightedRoundRobin,
 };
 use monad_wal::{wal::WALoggerConfig, PersistenceLoggerBuilder};
 use opentelemetry::metrics::MeterProvider;
@@ -244,7 +244,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
         current_round,
     );
 
-    let val_set_update_interval = SeqNum(50_000); // TODO configurable
+    let epoch_length = SeqNum(50_000); // TODO configurable
     let epoch_start_delay = Round(5_000); // TODO configurable
 
     let statesync_threshold: usize = node_state.node_config.statesync_threshold.into();
@@ -310,10 +310,10 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
         timer: TokioTimer::default(),
         ledger: MonadBlockFileLedger::new(node_state.ledger_path),
         checkpoint: FileCheckpoint::new(node_state.forkpoint_path),
-        state_root_hash: StateRootHashTriedbPoll::new(
+        val_set: ValSetUpdater::new(
             &node_state.triedb_path,
             &node_state.validators_path,
-            val_set_update_interval,
+            epoch_length,
         ),
         timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
         txpool: EthTxPoolExecutor::new(
@@ -401,7 +401,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
         state_backend,
         key: node_state.secp256k1_identity,
         certkey: node_state.bls12_381_identity,
-        val_set_update_interval,
+        epoch_length,
         epoch_start_delay,
         beneficiary: node_state.node_config.beneficiary.into(),
         locked_epoch_validators,

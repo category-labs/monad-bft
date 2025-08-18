@@ -22,11 +22,9 @@ use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use monad_consensus_types::{
     no_endorsement::{FreshProposalCertificate, NoEndorsementCertificate},
     quorum_certificate::QuorumCertificate,
-    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighExtend, HighExtendVote, NoTipCertificate, TimeoutCertificate, TimeoutInfo},
     tip::ConsensusTip,
     validation::Error,
-    voting::ValidatorMapping,
     RoundCertificate,
 };
 use monad_crypto::{
@@ -40,6 +38,8 @@ use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, Stake, GENESIS_ROUND}
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    validator_mapping::ValidatorMapping,
     validator_set::{ValidatorSetError, ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
@@ -1174,11 +1174,10 @@ mod test {
         },
         payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
         quorum_certificate::QuorumCertificate,
-        signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         timeout::{HighExtend, HighTipRoundSigColTuple, TimeoutCertificate, TimeoutInfo},
         tip::ConsensusTip,
         validation::Error,
-        voting::{ValidatorMapping, Vote},
+        voting::Vote,
         RoundCertificate,
     };
     use monad_crypto::{
@@ -1199,6 +1198,8 @@ mod test {
     };
     use monad_validator::{
         epoch_manager::EpochManager,
+        signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+        validator_mapping::ValidatorMapping,
         validator_set::{ValidatorSetFactory, ValidatorSetType, ValidatorSetTypeFactory},
         validators_epoch_mapping::ValidatorsEpochMapping,
         weighted_round_robin::WeightedRoundRobin,

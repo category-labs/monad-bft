@@ -73,7 +73,7 @@ const S5: B256 = B256::new(hex!(
 
 type SignatureType = NopSignature;
 type SignatureCollectionType = MockSignatures<SignatureType>;
-type StateBackendType = InMemoryState;
+type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
 
 fn make_test_block_policy() -> EthBlockPolicy<SignatureType, SignatureCollectionType> {
     EthBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY, 1337)

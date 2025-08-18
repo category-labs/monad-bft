@@ -48,9 +48,9 @@ mod test {
     use monad_types::{NodeId, Round, SeqNum};
     use monad_updaters::{
         ledger::{MockLedger, MockableLedger},
-        state_root_hash::MockStateRootHashNop,
         statesync::MockStateSyncExecutor,
         txpool::MockTxPoolExecutor,
+        val_set::MockValSetUpdaterNop,
     };
     use monad_validator::{
         simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory,
@@ -77,7 +77,7 @@ mod test {
             SeqNum::MAX,                         // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            SeqNum(2000),                        // val_set_update_interval
+            SeqNum(2000),                        // epoch_length
             Round(50),                           // epoch_start_delay
             SeqNum(1000),                        // state_sync_threshold
         );
@@ -109,7 +109,7 @@ mod test {
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
+                        MockValSetUpdaterNop::new(validators.validators.clone(), SeqNum(2000)),
                         MockTxPoolExecutor::default(),
                         MockLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(
@@ -200,7 +200,7 @@ mod test {
             SeqNum::MAX,                         // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            SeqNum(2000),                        // val_set_update_interval
+            SeqNum(2000),                        // epoch_length
             Round(50),                           // epoch_start_delay
             SeqNum(100),                         // state_sync_threshold
         );
@@ -226,7 +226,7 @@ mod test {
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
+                        MockValSetUpdaterNop::new(validators.validators.clone(), SeqNum(2000)),
                         MockTxPoolExecutor::default(),
                         MockLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(
@@ -285,7 +285,7 @@ mod test {
             SeqNum::MAX,                         // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            SeqNum(2000),                        // val_set_update_interval
+            SeqNum(2000),                        // epoch_length
             Round(50),                           // epoch_start_delay
             SeqNum(100),                         // state_sync_threshold
         );
@@ -311,7 +311,7 @@ mod test {
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
+                        MockValSetUpdaterNop::new(validators.validators.clone(), SeqNum(2000)),
                         MockTxPoolExecutor::default(),
                         MockLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(
@@ -425,7 +425,7 @@ mod test {
             SeqNum::MAX,                         // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            SeqNum(2000),                        // val_set_update_interval
+            SeqNum(2000),                        // epoch_length
             Round(50),                           // epoch_start_delay
             SeqNum(2000),                        // state_sync_threshold
         );
@@ -453,7 +453,7 @@ mod test {
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
+                        MockValSetUpdaterNop::new(validators.validators.clone(), SeqNum(2000)),
                         MockTxPoolExecutor::default(),
                         MockLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(

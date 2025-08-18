@@ -21,6 +21,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_state_backend::{InMemoryState, StateBackend};
 use monad_types::ExecutionProtocol;
+use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 
 use crate::{
     block::{
@@ -28,7 +29,6 @@ use crate::{
         PassthruWrappedBlock,
     },
     payload::ConsensusBlockBody,
-    signature_collection::{SignatureCollection, SignatureCollectionPubKeyType},
 };
 
 // TODO these are eth-specific types... we could make these an associated type of BlockValidator if
@@ -51,7 +51,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     // TODO it would be less jank if the BLS pubkey was included in the block payload.
     //
@@ -78,7 +78,7 @@ where
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub struct MockValidator;
 
-impl<ST, SCT, EPT> BlockValidator<ST, SCT, EPT, PassthruBlockPolicy, InMemoryState>
+impl<ST, SCT, EPT> BlockValidator<ST, SCT, EPT, PassthruBlockPolicy, InMemoryState<ST, SCT>>
     for MockValidator
 where
     ST: CertificateSignatureRecoverable,
@@ -95,7 +95,7 @@ where
         _proposal_byte_limit: u64,
         _max_code_size: usize,
     ) -> Result<
-        <PassthruBlockPolicy as BlockPolicy<ST, SCT, EPT, InMemoryState>>::ValidatedBlock,
+        <PassthruBlockPolicy as BlockPolicy<ST, SCT, EPT, InMemoryState<ST, SCT>>>::ValidatedBlock,
         BlockValidationError,
     > {
         let full_block = ConsensusFullBlock::new(header, body)?;

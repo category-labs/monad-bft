@@ -15,8 +15,9 @@
 
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use monad_types::{Epoch, Round};
+use monad_validator::signature_collection::SignatureCollection;
 
-use crate::{signature_collection::SignatureCollection, timeout::NoTipCertificate};
+use crate::timeout::NoTipCertificate;
 
 #[derive(PartialEq, Eq, Clone, Debug, RlpEncodable, RlpDecodable)]
 pub struct NoEndorsement {

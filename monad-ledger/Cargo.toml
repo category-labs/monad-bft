@@ -17,6 +17,7 @@ monad-eth-types = { workspace = true }
 monad-executor = { workspace = true }
 monad-executor-glue = { workspace = true }
 monad-types = { workspace = true }
+monad-validator = { workspace = true }
 
 futures = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "rt", "sync"] }

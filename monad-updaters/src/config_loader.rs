@@ -16,7 +16,6 @@
 use std::{marker::PhantomData, net::SocketAddr, ops::DerefMut, path::PathBuf, task::Poll};
 
 use futures::Stream;
-use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -26,6 +25,7 @@ use monad_executor_glue::{
 };
 use monad_node_config::{NodeBootstrapPeerConfig, NodeConfig};
 use monad_types::{ExecutionProtocol, NodeId};
+use monad_validator::signature_collection::SignatureCollection;
 use tokio::{
     net::lookup_host,
     sync::mpsc::{error::TrySendError, Receiver, Sender},

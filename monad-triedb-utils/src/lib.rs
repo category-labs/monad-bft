@@ -26,10 +26,12 @@ use alloy_primitives::Address;
 use alloy_rlp::Decodable;
 use futures::{channel::oneshot, executor::block_on, future::join_all, FutureExt};
 use key::Version;
+use monad_bls::{BlsPubKey, BlsSignatureCollection};
 use monad_eth_types::{EthAccount, EthHeader};
+use monad_secp::{PubKey, SecpSignature};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_triedb::TriedbHandle;
-use monad_types::{BlockId, Hash, SeqNum};
+use monad_types::{BlockId, Hash, SeqNum, Stake};
 use tracing::{debug, trace, warn};
 
 use crate::{
@@ -196,7 +198,7 @@ impl TriedbReader {
     }
 }
 
-impl StateBackend for TriedbReader {
+impl StateBackend<SecpSignature, BlsSignatureCollection<PubKey>> for TriedbReader {
     fn get_account_statuses<'a>(
         &self,
         block_id: &BlockId,
@@ -286,6 +288,10 @@ impl StateBackend for TriedbReader {
 
     fn raw_read_latest_finalized_block(&self) -> Option<SeqNum> {
         self.get_latest_finalized_block()
+    }
+
+    fn read_next_valset(&self, _block_num: SeqNum) -> Vec<(PubKey, BlsPubKey, Stake)> {
+        unimplemented!()
     }
 
     fn total_db_lookups(&self) -> u64 {

@@ -37,8 +37,8 @@ use monad_state::VerifiedMonadMessage;
 use monad_types::NodeId;
 use monad_updaters::{
     checkpoint::MockCheckpoint, ledger::MockableLedger, loopback::LoopbackExecutor,
-    state_root_hash::MockableStateRootHash, statesync::MockableStateSync,
-    timestamp::TimestampAdjuster, txpool::MockableTxPool,
+    statesync::MockableStateSync, timestamp::TimestampAdjuster, txpool::MockableTxPool,
+    val_set::MockableValSetUpdater,
 };
 use priority_queue::PriorityQueue;
 
@@ -48,7 +48,7 @@ pub struct MockExecutor<S: SwarmRelation> {
     ledger: S::Ledger,
     checkpoint:
         MockCheckpoint<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>,
-    state_root_hash: S::StateRootHashExecutor,
+    val_set: S::ValSetUpdater,
     loopback: LoopbackExecutor<
         MonadEvent<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>,
     >,
@@ -180,7 +180,7 @@ enum ExecutorEventType {
     Router,
     Ledger,
     Timer,
-    StateRootHash,
+    ValSet,
     TxPool,
     Loopback,
     Timestamp,
@@ -195,7 +195,7 @@ pub struct RoundTimer {
 impl<S: SwarmRelation> MockExecutor<S> {
     pub fn new(
         router: S::RouterScheduler,
-        state_root_hash: S::StateRootHashExecutor,
+        val_set: S::ValSetUpdater,
         txpool: S::TxPoolExecutor,
         ledger: S::Ledger,
         statesync: S::StateSyncExecutor,
@@ -205,7 +205,7 @@ impl<S: SwarmRelation> MockExecutor<S> {
         Self {
             checkpoint: Default::default(),
             ledger,
-            state_root_hash,
+            val_set,
             txpool,
             loopback: Default::default(),
             statesync,
@@ -286,9 +286,9 @@ impl<S: SwarmRelation> MockExecutor<S> {
                     .then_some((self.tick, ExecutorEventType::TxPool)),
             )
             .chain(
-                self.state_root_hash
+                self.val_set
                     .ready()
-                    .then_some((self.tick, ExecutorEventType::StateRootHash)),
+                    .then_some((self.tick, ExecutorEventType::ValSet)),
             )
             .chain(
                 self.loopback
@@ -329,7 +329,7 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
             timer_cmds,
             ledger_cmds,
             checkpoint_cmds,
-            state_root_hash_cmds,
+            val_set_cmds,
             timestamp_cmds,
             txpool_cmds,
             _control_panel_cmds,
@@ -371,7 +371,7 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
         self.ledger.exec(ledger_cmds);
         self.txpool.exec(txpool_cmds);
         self.checkpoint.exec(checkpoint_cmds);
-        self.state_root_hash.exec(state_root_hash_cmds);
+        self.val_set.exec(val_set_cmds);
         self.loopback.exec(loopback_cmds);
         self.statesync.exec(statesync_cmds);
 
@@ -453,8 +453,8 @@ impl<S: SwarmRelation> MockExecutor<S> {
                     return futures::executor::block_on(self.ledger.next())
                         .map(MockExecutorEvent::Event)
                 }
-                ExecutorEventType::StateRootHash => {
-                    return futures::executor::block_on(self.state_root_hash.next())
+                ExecutorEventType::ValSet => {
+                    return futures::executor::block_on(self.val_set.next())
                         .map(MockExecutorEvent::Event)
                 }
                 ExecutorEventType::Loopback => {
@@ -486,8 +486,8 @@ impl<S: SwarmRelation> MockExecutor<S> {
         &self.ledger
     }
 
-    pub fn state_root_hash_executor(&self) -> &S::StateRootHashExecutor {
-        &self.state_root_hash
+    pub fn val_set_updater(&self) -> &S::ValSetUpdater {
+        &self.val_set
     }
 }
 

@@ -21,10 +21,7 @@ use alloy_consensus::{
 use alloy_primitives::Address;
 use alloy_rlp::Encodable;
 use itertools::Itertools;
-use monad_consensus_types::{
-    block::ProposedExecutionInputs, payload::RoundSignature,
-    signature_collection::SignatureCollection,
-};
+use monad_consensus_types::{block::ProposedExecutionInputs, payload::RoundSignature};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -34,6 +31,7 @@ use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader, BAS
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_system_calls::generate_system_calls;
 use monad_types::SeqNum;
+use monad_validator::signature_collection::SignatureCollection;
 use tracing::{info, warn};
 
 use self::{pending::PendingTxMap, tracked::TrackedTxMap, transaction::ValidEthTransaction};
@@ -55,7 +53,7 @@ pub struct EthTxPool<ST, SCT, SBT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     do_local_insert: bool,
     pending: PendingTxMap,
@@ -72,7 +70,7 @@ impl<ST, SCT, SBT> EthTxPool<ST, SCT, SBT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     pub fn new(
         do_local_insert: bool,

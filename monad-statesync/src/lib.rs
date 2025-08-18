@@ -24,7 +24,6 @@ use std::{
 use ffi::SyncRequest;
 use futures::{Stream, StreamExt};
 use ipc::StateSyncIpc;
-use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
@@ -32,6 +31,7 @@ use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MonadEvent, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage};
 use monad_types::{NodeId, SeqNum};
+use monad_validator::signature_collection::SignatureCollection;
 
 #[allow(dead_code, non_camel_case_types, non_upper_case_globals)]
 pub mod bindings {

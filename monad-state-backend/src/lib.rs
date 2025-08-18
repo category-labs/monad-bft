@@ -19,8 +19,12 @@ use std::{
 };
 
 use alloy_primitives::Address;
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_eth_types::{EthAccount, EthHeader, Nonce};
-use monad_types::{BlockId, Round, SeqNum};
+use monad_types::{BlockId, Round, SeqNum, Stake};
+use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 
 pub use self::{
     in_memory::{InMemoryBlockState, InMemoryState, InMemoryStateInner},
@@ -39,7 +43,11 @@ pub enum StateBackendError {
 }
 
 /// Backend provider of account data: balance and nonce
-pub trait StateBackend {
+pub trait StateBackend<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     fn get_account_statuses<'a>(
         &self,
         block_id: &BlockId,
@@ -60,10 +68,19 @@ pub trait StateBackend {
     /// Fetches latest block from storage backend
     fn raw_read_latest_finalized_block(&self) -> Option<SeqNum>;
 
+    fn read_next_valset(
+        &self,
+        block_num: SeqNum,
+    ) -> Vec<(SCT::NodeIdPubKey, SignatureCollectionPubKeyType<SCT>, Stake)>;
+
     fn total_db_lookups(&self) -> u64;
 }
 
-pub trait StateBackendTest {
+pub trait StateBackendTest<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     fn ledger_propose(
         &mut self,
         block_id: BlockId,
@@ -76,7 +93,12 @@ pub trait StateBackendTest {
     fn ledger_commit(&mut self, block_id: &BlockId);
 }
 
-impl<T: StateBackend> StateBackend for Arc<Mutex<T>> {
+impl<ST, SCT, T> StateBackend<ST, SCT> for Arc<Mutex<T>>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    T: StateBackend<ST, SCT>,
+{
     fn get_account_statuses<'a>(
         &self,
         block_id: &BlockId,
@@ -108,12 +130,25 @@ impl<T: StateBackend> StateBackend for Arc<Mutex<T>> {
         state.raw_read_latest_finalized_block()
     }
 
+    fn read_next_valset(
+        &self,
+        block_num: SeqNum,
+    ) -> Vec<(SCT::NodeIdPubKey, SignatureCollectionPubKeyType<SCT>, Stake)> {
+        let state = self.lock().unwrap();
+        state.read_next_valset(block_num)
+    }
+
     fn total_db_lookups(&self) -> u64 {
         self.lock().unwrap().total_db_lookups()
     }
 }
 
-impl<T: StateBackendTest> StateBackendTest for Arc<Mutex<T>> {
+impl<ST, SCT, T> StateBackendTest<ST, SCT> for Arc<Mutex<T>>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    T: StateBackendTest<ST, SCT>,
+{
     fn ledger_commit(&mut self, block_id: &BlockId) {
         let mut state = self.lock().unwrap();
         state.ledger_commit(block_id);

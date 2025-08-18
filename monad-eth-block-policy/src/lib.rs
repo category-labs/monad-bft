@@ -24,7 +24,6 @@ use itertools::Itertools;
 use monad_consensus_types::{
     block::{BlockPolicy, BlockPolicyError, ConsensusFullBlock},
     checkpoint::RootInfo,
-    signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -34,6 +33,7 @@ use monad_eth_types::{Balance, EthAccount, EthExecutionProtocol, EthHeader, Nonc
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_system_calls::SystemTransaction;
 use monad_types::{BlockId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_SEQ_NUM};
+use monad_validator::signature_collection::SignatureCollection;
 use sorted_vector_map::SortedVectorMap;
 use tracing::{trace, warn};
 
@@ -419,7 +419,7 @@ where
     pub fn get_account_base_nonces<'a>(
         &self,
         consensus_block_seq_num: SeqNum,
-        state_backend: &impl StateBackend,
+        state_backend: &impl StateBackend<ST, SCT>,
         extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
         addresses: impl Iterator<Item = &'a Address>,
     ) -> Result<BTreeMap<&'a Address, Nonce>, StateBackendError> {
@@ -513,7 +513,7 @@ where
 
     fn get_account_statuses<'a>(
         &self,
-        state_backend: &impl StateBackend,
+        state_backend: &impl StateBackend<ST, SCT>,
         extending_blocks: &Option<&Vec<&EthValidatedBlock<ST, SCT>>>,
         addresses: impl Iterator<Item = &'a Address>,
         base_seq_num: &SeqNum,
@@ -531,7 +531,7 @@ where
     pub fn compute_account_base_balances<'a>(
         &self,
         consensus_block_seq_num: SeqNum,
-        state_backend: &impl StateBackend,
+        state_backend: &impl StateBackend<ST, SCT>,
         extending_blocks: Option<&Vec<&EthValidatedBlock<ST, SCT>>>,
         addresses: impl Iterator<Item = &'a Address>,
     ) -> Result<BTreeMap<&'a Address, Balance>, StateBackendError>
@@ -645,7 +645,7 @@ impl<ST, SCT, SBT> BlockPolicy<ST, SCT, EthExecutionProtocol, SBT> for EthBlockP
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     type ValidatedBlock = EthValidatedBlock<ST, SCT>;
 

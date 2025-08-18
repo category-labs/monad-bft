@@ -19,9 +19,7 @@ use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use alloy_primitives::Address;
 use indexmap::{map::Entry as IndexMapEntry, IndexMap};
 use itertools::Itertools;
-use monad_consensus_types::{
-    block::ConsensusBlockHeader, signature_collection::SignatureCollection,
-};
+use monad_consensus_types::block::ConsensusBlockHeader;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -30,6 +28,7 @@ use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason};
 use monad_eth_types::{Balance, EthExecutionProtocol};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{DropTimer, SeqNum};
+use monad_validator::signature_collection::SignatureCollection;
 use tracing::{debug, error, info, trace, warn};
 use tx_heap::TrackedTxHeapDrainAction;
 
@@ -65,7 +64,7 @@ pub struct TrackedTxMap<ST, SCT, SBT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     last_commit: Option<ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>>,
     soft_tx_expiry: Duration,
@@ -82,7 +81,7 @@ impl<ST, SCT, SBT> TrackedTxMap<ST, SCT, SBT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     pub fn new(soft_tx_expiry: Duration, hard_tx_expiry: Duration) -> Self {
         Self {

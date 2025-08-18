@@ -24,13 +24,13 @@ use monad_consensus_types::{
     metrics::Metrics,
     payload::{ConsensusBlockBody, ConsensusBlockBodyId},
     quorum_certificate::QuorumCertificate,
-    signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{BlockId, ExecutionProtocol, Round, SeqNum};
+use monad_validator::signature_collection::SignatureCollection;
 
 use crate::tree::{BlockTreeEntry, Tree};
 
@@ -46,7 +46,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     /// The round and block_id of last committed block
     root: Root,
@@ -61,7 +61,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BlockTree")
@@ -77,7 +77,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     fn eq(&self, other: &Self) -> bool {
         self.root == other.root && self.tree == other.tree
@@ -90,7 +90,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
 }
 
@@ -100,7 +100,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     pub fn new(root: RootInfo) -> Self {
         Self {
@@ -535,22 +535,23 @@ mod test {
     use crate::blocktree::RootInfo;
 
     type SignatureType = NopSignature;
+    type SignatureCollectionType = MockSignatures<SignatureType>;
     type ExecutionProtocolType = MockExecutionProtocol;
-    type StateBackendType = InMemoryState;
+    type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
     type BlockPolicyType = PassthruBlockPolicy;
     type BlockTreeType = BlockTree<
         SignatureType,
-        MockSignatures<SignatureType>,
+        SignatureCollectionType,
         ExecutionProtocolType,
         BlockPolicyType,
         StateBackendType,
     >;
     type PubKeyType = CertificateSignaturePubKey<SignatureType>;
     type Block =
-        ConsensusBlockHeader<SignatureType, MockSignatures<SignatureType>, ExecutionProtocolType>;
+        ConsensusBlockHeader<SignatureType, SignatureCollectionType, ExecutionProtocolType>;
     type FullBlock =
-        ConsensusFullBlock<SignatureType, MockSignatures<SignatureType>, ExecutionProtocolType>;
-    type QC = QuorumCertificate<MockSignatures<SignatureType>>;
+        ConsensusFullBlock<SignatureType, SignatureCollectionType, ExecutionProtocolType>;
+    type QC = QuorumCertificate<SignatureCollectionType>;
 
     fn node_id() -> NodeId<PubKeyType> {
         let mut privkey: [u8; 32] = [127; 32];
@@ -878,7 +879,11 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let state_backend = InMemoryStateInner::genesis(Balance::MAX, SeqNum(4));
+        let state_backend =
+            InMemoryStateInner::<NopSignature, MockSignatures<NopSignature>>::genesis(
+                Balance::MAX,
+                SeqNum(4),
+            );
         let block_policy = PassthruBlockPolicy;
         blocktree.add(g.into());
         blocktree.add(b1.clone().into());
@@ -1628,7 +1633,11 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let state_backend = InMemoryStateInner::genesis(Balance::MAX, SeqNum(4));
+        let state_backend =
+            InMemoryStateInner::<NopSignature, MockSignatures<NopSignature>>::genesis(
+                Balance::MAX,
+                SeqNum(4),
+            );
         let block_policy = PassthruBlockPolicy;
         blocktree.add(b2.clone().into());
         assert!(blocktree.root.children_blocks.is_empty());

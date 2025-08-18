@@ -15,13 +15,13 @@
 
 use std::{marker::PhantomData, path::PathBuf};
 
-use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::CheckpointCommand;
 use monad_types::ExecutionProtocol;
+use monad_validator::signature_collection::SignatureCollection;
 
 pub struct MockCheckpoint<ST, SCT, EPT>
 where

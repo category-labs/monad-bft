@@ -15,13 +15,12 @@
 
 use std::collections::BTreeSet;
 
-use monad_consensus_types::{
-    signature_collection::SignatureCollection, tip::ConsensusTip, RoundCertificate,
-};
+use monad_consensus_types::{tip::ConsensusTip, RoundCertificate};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_types::{ExecutionProtocol, *};
+use monad_validator::signature_collection::SignatureCollection;
 
 /// Max number of handled proposal_rounds to keep track of
 /// This does not affect correctness; it just helps reduce DOS

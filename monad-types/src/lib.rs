@@ -317,16 +317,16 @@ impl SeqNum {
     /// Compute the epoch that the sequence number belong to. It does NOT mean
     /// that the block is proposed in the epoch
     ///
-    /// [0, val_set_update_interval-1] -> Epoch 1
-    /// [val_set_update_interval, (2 * val_set_update_interval)-1] -> Epoch 2
-    pub fn to_epoch(&self, val_set_update_interval: SeqNum) -> Epoch {
-        Epoch((self.0 / val_set_update_interval.0) + 1)
+    /// [0, epoch_length-1] -> Epoch 1
+    /// [epoch_length, (2 * epoch_length)-1] -> Epoch 2
+    pub fn to_epoch(&self, epoch_length: SeqNum) -> Epoch {
+        Epoch((self.0 / epoch_length.0) + 1)
     }
 
     /// This tells us what the boundary block of the epoch is. Note that this only indicates when
     /// the next epoch's round is scheduled.
-    pub fn is_epoch_end(&self, val_set_update_interval: SeqNum) -> bool {
-        *self % val_set_update_interval == val_set_update_interval - SeqNum(1)
+    pub fn is_epoch_end(&self, epoch_length: SeqNum) -> bool {
+        *self % epoch_length == epoch_length - SeqNum(1)
     }
 
     /// Get the epoch number whose validator set is locked by this block. Should
@@ -334,9 +334,9 @@ impl SeqNum {
     ///
     /// Current design locks the info for epoch n + 1 by the end of epoch n. The
     /// validators have epoch_start_delay to prepare themselves for any duties
-    pub fn get_locked_epoch(&self, val_set_update_interval: SeqNum) -> Epoch {
-        assert!(self.is_epoch_end(val_set_update_interval));
-        (*self).to_epoch(val_set_update_interval) + Epoch(1)
+    pub fn get_locked_epoch(&self, epoch_length: SeqNum) -> Epoch {
+        assert!(self.is_epoch_end(epoch_length));
+        (*self).to_epoch(epoch_length) + Epoch(1)
     }
 
     pub fn as_u64(&self) -> u64 {
@@ -755,12 +755,8 @@ mod test {
     #[test_case(SeqNum(199), Epoch(2), SeqNum(100); "sn_199_epoch_2")]
     #[test_case(SeqNum(200), Epoch(3), SeqNum(100); "sn_200_epoch_3")]
 
-    fn test_epoch_conversion(
-        seq_num: SeqNum,
-        expected_epoch: Epoch,
-        val_set_update_interval: SeqNum,
-    ) {
-        assert_eq!(seq_num.to_epoch(val_set_update_interval), expected_epoch);
+    fn test_epoch_conversion(seq_num: SeqNum, expected_epoch: Epoch, epoch_length: SeqNum) {
+        assert_eq!(seq_num.to_epoch(epoch_length), expected_epoch);
     }
 
     #[test]

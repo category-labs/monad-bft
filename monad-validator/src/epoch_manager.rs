@@ -22,9 +22,8 @@ use tracing::info;
 /// of each epoch
 #[derive(Debug, Clone)]
 pub struct EpochManager {
-    /// validator set is updated every 'val_set_update_interval'
-    /// blocks
-    pub val_set_update_interval: SeqNum,
+    /// validator set is updated every 'epoch_length' blocks
+    pub epoch_length: SeqNum,
     /// The start of next epoch is 'epoch_start_delay' rounds after
     /// the proposed block
     pub epoch_start_delay: Round,
@@ -35,12 +34,12 @@ pub struct EpochManager {
 
 impl EpochManager {
     pub fn new(
-        val_set_update_interval: SeqNum,
+        epoch_length: SeqNum,
         epoch_start_delay: Round,
         known_epochs: &[(Epoch, Round)],
     ) -> Self {
         let mut epoch_manager = Self {
-            val_set_update_interval,
+            epoch_length,
             epoch_start_delay,
             epoch_starts: BTreeMap::new(),
         };
@@ -69,8 +68,8 @@ impl EpochManager {
 
     /// Schedule next epoch start if the committed block is the last one in the current epoch
     pub fn schedule_epoch_start(&mut self, block_num: SeqNum, block_round: Round) {
-        if block_num.is_epoch_end(self.val_set_update_interval) {
-            let next_epoch = block_num.to_epoch(self.val_set_update_interval) + Epoch(1);
+        if block_num.is_epoch_end(self.epoch_length) {
+            let next_epoch = block_num.to_epoch(self.epoch_length) + Epoch(1);
             let epoch_start_round = block_round + self.epoch_start_delay;
             self.insert_epoch_start(next_epoch, epoch_start_round);
             info!(

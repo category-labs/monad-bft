@@ -20,11 +20,7 @@ use std::{
 };
 
 use itertools::Itertools;
-use monad_consensus_types::{
-    signature_collection::SignatureCollection,
-    validator_data::{ValidatorData, ValidatorSetData},
-    voting::ValidatorMapping,
-};
+use monad_consensus_types::validator_data::{ValidatorData, ValidatorSetData};
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
 };
@@ -32,8 +28,10 @@ use monad_executor::Executor;
 use monad_executor_glue::MonadEvent;
 use monad_state::{Forkpoint, MonadStateBuilder};
 use monad_transformer::{LinkMessage, Pipeline, ID};
-use monad_validator::validator_set::{
-    BoxedValidatorSetTypeFactory, ValidatorSetType, ValidatorSetTypeFactory,
+use monad_validator::{
+    signature_collection::SignatureCollection,
+    validator_mapping::ValidatorMapping,
+    validator_set::{BoxedValidatorSetTypeFactory, ValidatorSetType, ValidatorSetTypeFactory},
 };
 use rand::{Rng, SeedableRng};
 use rand_chacha::{ChaCha20Rng, ChaChaRng};
@@ -59,7 +57,7 @@ pub struct NodeBuilder<S: SwarmRelation> {
         S::ChainRevisionType,
     >,
     pub router_scheduler: S::RouterScheduler,
-    pub state_root_executor: S::StateRootHashExecutor,
+    pub val_set_updater: S::ValSetUpdater,
     pub txpool_executor: S::TxPoolExecutor,
     pub ledger: S::Ledger,
     pub statesync_executor: S::StateSyncExecutor,
@@ -84,7 +82,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
             S::ChainRevisionType,
         >,
         router_scheduler: S::RouterScheduler,
-        state_root_executor: S::StateRootHashExecutor,
+        val_set_updater: S::ValSetUpdater,
         txpool_executor: S::TxPoolExecutor,
         ledger: S::Ledger,
         statesync_executor: S::StateSyncExecutor,
@@ -97,7 +95,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
             id,
             state_builder,
             router_scheduler,
-            state_root_executor,
+            val_set_updater,
             txpool_executor,
             ledger,
             statesync_executor,
@@ -136,7 +134,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 state_backend: self.state_builder.state_backend,
                 key: self.state_builder.key,
                 certkey: self.state_builder.certkey,
-                val_set_update_interval: self.state_builder.val_set_update_interval,
+                epoch_length: self.state_builder.epoch_length,
                 epoch_start_delay: self.state_builder.epoch_start_delay,
                 beneficiary: self.state_builder.beneficiary,
                 forkpoint: self.state_builder.forkpoint,
@@ -147,7 +145,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 _phantom: PhantomData,
             },
             router_scheduler: Box::new(self.router_scheduler),
-            state_root_executor: Box::new(self.state_root_executor),
+            val_set_updater: Box::new(self.val_set_updater),
             txpool_executor: Box::new(self.txpool_executor),
             ledger: Box::new(self.ledger),
             statesync_executor: Box::new(self.statesync_executor),
@@ -160,7 +158,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
     pub fn build(self, tick: Duration) -> Node<S> {
         let mut executor: MockExecutor<S> = MockExecutor::new(
             self.router_scheduler,
-            self.state_root_executor,
+            self.val_set_updater,
             self.txpool_executor,
             self.ledger,
             self.statesync_executor,

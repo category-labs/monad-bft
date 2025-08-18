@@ -45,7 +45,6 @@ use monad_consensus_types::{
     no_endorsement::{FreshProposalCertificate, NoEndorsement},
     payload::{ConsensusBlockBody, RoundSignature},
     quorum_certificate::QuorumCertificate,
-    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighExtend, HighExtendVote, NoTipCertificate, TimeoutCertificate},
     tip::ConsensusTip,
     voting::Vote,
@@ -59,6 +58,7 @@ use monad_types::{BlockId, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
@@ -80,7 +80,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     /// Prospective blocks are stored here while they wait to be
     /// committed
@@ -107,7 +107,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     CCT: PartialEq,
     CRT: PartialEq,
 {
@@ -126,7 +126,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     CCT: Debug,
     CRT: Debug,
 {
@@ -162,7 +162,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
@@ -256,7 +256,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -382,7 +382,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
@@ -1913,9 +1913,8 @@ mod test {
         metrics::Metrics,
         payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
         quorum_certificate::QuorumCertificate,
-        signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         tip::ConsensusTip,
-        voting::{ValidatorMapping, Vote},
+        voting::Vote,
         RoundCertificate,
     };
     use monad_crypto::{
@@ -1944,7 +1943,9 @@ mod test {
     use monad_validator::{
         epoch_manager::EpochManager,
         leader_election::LeaderElection,
+        signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         simple_round_robin::SimpleRoundRobin,
+        validator_mapping::ValidatorMapping,
         validator_set::{ValidatorSetFactory, ValidatorSetType, ValidatorSetTypeFactory},
         validators_epoch_mapping::ValidatorsEpochMapping,
     };
@@ -1970,7 +1971,7 @@ mod test {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<SignatureType>;
     type BlockPolicyType = EthBlockPolicy<SignatureType, SignatureCollectionType>;
-    type StateBackendType = InMemoryState;
+    type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
     type BlockValidatorType =
         EthValidator<SignatureType, SignatureCollectionType, StateBackendType>;
 
@@ -1980,7 +1981,7 @@ mod test {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
-        SBT: StateBackend + StateBackendTest,
+        SBT: StateBackend<ST, SCT> + StateBackendTest<ST, SCT>,
         BVT: BlockValidator<ST, SCT, EthExecutionProtocol, BPT, SBT>,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
@@ -2019,7 +2020,7 @@ mod test {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
-        SBT: StateBackend + StateBackendTest,
+        SBT: StateBackend<ST, SCT> + StateBackendTest<ST, SCT>,
         BVT: BlockValidator<ST, SCT, EthExecutionProtocol, BPT, SBT>,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
@@ -2247,7 +2248,7 @@ mod test {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
-        SBT: StateBackend + StateBackendTest,
+        SBT: StateBackend<ST, SCT> + StateBackendTest<ST, SCT>,
         BVT: BlockValidator<ST, SCT, EthExecutionProtocol, BPT, SBT>,
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
@@ -2387,7 +2388,7 @@ mod test {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
     {
         cmds.into_iter()
             .filter_map(|c| match c {
@@ -2410,7 +2411,7 @@ mod test {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
     {
         cmds.into_iter()
             .filter_map(|c| match c {
@@ -2427,7 +2428,7 @@ mod test {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT> + std::fmt::Debug,
-        SBT: StateBackend + std::fmt::Debug,
+        SBT: StateBackend<ST, SCT> + std::fmt::Debug,
     {
         cmds.iter()
             .find_map(|c| match c {
@@ -2444,7 +2445,7 @@ mod test {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
     {
         cmds.into_iter()
             .filter_map(|c| match c {
@@ -2462,7 +2463,7 @@ mod test {
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
         BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
     {
         cmds.iter().find_map(|c| match c {
             ConsensusCommand::Publish {
@@ -2484,7 +2485,7 @@ mod test {
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
         BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
     {
         cmds.iter().find(|c| match c {
             ConsensusCommand::Publish {
@@ -2503,7 +2504,7 @@ mod test {
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
         BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
     {
         cmds.iter()
             .filter_map(|c| match c {
@@ -2523,7 +2524,7 @@ mod test {
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
         BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
     {
         cmds.iter()
             .find(|c| matches!(c, ConsensusCommand::RequestSync { .. }))
@@ -2537,7 +2538,7 @@ mod test {
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
         BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
     {
         cmds.iter()
             .filter_map(|c| match c {
@@ -2557,7 +2558,7 @@ mod test {
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
         BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
     {
         cmds.iter()
             .find(|c| matches!(c, ConsensusCommand::TimestampUpdate(_)))
@@ -3893,12 +3894,12 @@ mod test {
         let mut blocks = vec![];
 
         // Sequence number of the block which updates the validator set
-        let update_block = env.epoch_manager.val_set_update_interval - SeqNum(1);
+        let boundary_block = env.epoch_manager.epoch_length - SeqNum(1);
         // Round number of that block is the same as its sequence number (NO TCs in between)
-        let update_block_round = seqnum_to_round_no_tc(update_block);
+        let boundary_block_round = seqnum_to_round_no_tc(boundary_block);
 
-        // handle update_block + 2 proposals to commit the update_block
-        for _ in 0..(update_block_round.0 + 2) {
+        // handle boundary_block + 2 proposals to commit the boundary_block
+        for _ in 0..(boundary_block_round.0 + 2) {
             let cp = env.next_proposal(Vec::new());
             let (author, _, verified_message) = cp.destructure();
             for node in ctx.iter_mut() {
@@ -3919,7 +3920,7 @@ mod test {
             assert!(current_epoch == Epoch(1));
 
             let expected_epoch_start_round =
-                update_block_round + node.epoch_manager.epoch_start_delay;
+                boundary_block_round + node.epoch_manager.epoch_start_delay;
             // verify that the start of next epoch is scheduled correctly
             assert!(
                 node.epoch_manager
@@ -3960,12 +3961,12 @@ mod test {
         let mut blocks = vec![];
 
         // Sequence number of the block which updates the validator set
-        let update_block = env.epoch_manager.val_set_update_interval - SeqNum(1);
+        let boundary_block = env.epoch_manager.epoch_length - SeqNum(1);
         // Round number of that block is the same as its sequence number (NO TCs in between)
-        let update_block_round = seqnum_to_round_no_tc(update_block);
+        let boundary_block_round = seqnum_to_round_no_tc(boundary_block);
 
-        // commit blocks until update_block
-        for _ in 0..(update_block_round.0 + 2) {
+        // commit blocks until boundary_block
+        for _ in 0..(boundary_block_round.0 + 2) {
             let cp = env.next_proposal(Vec::new());
 
             let (author, _, verified_message) = cp.destructure();
@@ -3978,7 +3979,7 @@ mod test {
             blocks.push(verified_message.tip.block_header);
         }
 
-        let expected_epoch_start_round = update_block_round + env.epoch_manager.epoch_start_delay;
+        let expected_epoch_start_round = boundary_block_round + env.epoch_manager.epoch_start_delay;
 
         for node in ctx.iter_mut() {
             // verify all states are still in epoch 1
@@ -4004,10 +4005,10 @@ mod test {
         }
 
         env.epoch_manager
-            .schedule_epoch_start(update_block, update_block_round);
+            .schedule_epoch_start(boundary_block, boundary_block_round);
 
         // handle proposals until the last round of the epoch
-        for _ in (update_block_round.0 + 2)..(expected_epoch_start_round.0 - 1) {
+        for _ in (boundary_block_round.0 + 2)..(expected_epoch_start_round.0 - 1) {
             let cp = env.next_proposal_empty();
             let (author, _, verified_message) = cp.destructure();
             for node in ctx.iter_mut() {
@@ -4065,12 +4066,12 @@ mod test {
         let mut blocks = vec![];
 
         // Sequence number of the block which updates the validator set
-        let update_block = env.epoch_manager.val_set_update_interval - SeqNum(1);
+        let boundary_block = env.epoch_manager.epoch_length - SeqNum(1);
         // Round number of that block is the same as its sequence number (NO TCs in between)
-        let update_block_round = seqnum_to_round_no_tc(update_block);
+        let boundary_block_round = seqnum_to_round_no_tc(boundary_block);
 
-        // commit blocks until update_block
-        for _ in 0..(update_block_round.0 + 2) {
+        // commit blocks until boundary_block
+        for _ in 0..(boundary_block_round.0 + 2) {
             let cp = env.next_proposal(Vec::new());
             let (author, _, verified_message) = cp.destructure();
             for node in ctx.iter_mut() {
@@ -4082,7 +4083,7 @@ mod test {
             blocks.push(verified_message.tip.block_header);
         }
 
-        let expected_epoch_start_round = update_block_round + env.epoch_manager.epoch_start_delay;
+        let expected_epoch_start_round = boundary_block_round + env.epoch_manager.epoch_start_delay;
 
         for node in ctx.iter_mut() {
             // verify all states are still in epoch 1
@@ -4108,10 +4109,10 @@ mod test {
         }
 
         env.epoch_manager
-            .schedule_epoch_start(update_block, update_block_round);
+            .schedule_epoch_start(boundary_block, boundary_block_round);
 
         // generate TCs until the last round of the epoch
-        for _ in (update_block_round.0 + 1)..(expected_epoch_start_round.0 - 1) {
+        for _ in (boundary_block_round.0 + 1)..(expected_epoch_start_round.0 - 1) {
             let _ = env.next_tc(Epoch(1));
         }
 
@@ -4161,12 +4162,12 @@ mod test {
         let mut blocks = vec![];
 
         // Sequence number of the block which updates the validator set
-        let update_block = env.epoch_manager.val_set_update_interval - SeqNum(1);
+        let boundary_block = env.epoch_manager.epoch_length - SeqNum(1);
         // Round number of that block is the same as its sequence number (NO TCs in between)
-        let update_block_round = seqnum_to_round_no_tc(update_block);
+        let boundary_block_round = seqnum_to_round_no_tc(boundary_block);
 
-        // commit blocks until update_block
-        for _ in 0..(update_block_round.0 + 2) {
+        // commit blocks until boundary_block
+        for _ in 0..(boundary_block_round.0 + 2) {
             let cp = env.next_proposal(Vec::new());
             let (author, _, verified_message) = cp.destructure();
             for node in ctx.iter_mut() {
@@ -4178,7 +4179,7 @@ mod test {
             blocks.push(verified_message.tip.block_header);
         }
 
-        let expected_epoch_start_round = update_block_round + env.epoch_manager.epoch_start_delay;
+        let expected_epoch_start_round = boundary_block_round + env.epoch_manager.epoch_start_delay;
 
         for node in ctx.iter_mut() {
             // verify all states are still in epoch 1
@@ -4204,10 +4205,10 @@ mod test {
         }
 
         env.epoch_manager
-            .schedule_epoch_start(update_block, update_block_round);
+            .schedule_epoch_start(boundary_block, boundary_block_round);
 
         // handle proposals until the last round of the epoch
-        for _ in (update_block_round.0 + 2)..(expected_epoch_start_round.0 - 1) {
+        for _ in (boundary_block_round.0 + 2)..(expected_epoch_start_round.0 - 1) {
             let cp = env.next_proposal(Vec::new());
             let (author, _, verified_message) = cp.destructure();
             for node in ctx.iter_mut() {
@@ -4273,12 +4274,12 @@ mod test {
 
         let mut blocks = vec![];
         // Sequence number of the block which updates the validator set
-        let update_block_num = env.epoch_manager.val_set_update_interval - SeqNum(1);
+        let boundary_block_num = env.epoch_manager.epoch_length - SeqNum(1);
         // Round number of that block is the same as its sequence number (NO TCs in between)
-        let update_block_round = seqnum_to_round_no_tc(update_block_num);
+        let boundary_block_round = seqnum_to_round_no_tc(boundary_block_num);
 
-        // handle blocks until update_block - 1
-        for _ in 0..(update_block_round.0 - 1) {
+        // handle blocks until boundary_block - 1
+        for _ in 0..(boundary_block_round.0 - 1) {
             let proposal = env.next_proposal(Vec::new());
             let (author, _, verified_message) = proposal.destructure();
             for node in ctx.iter_mut() {
@@ -4295,7 +4296,7 @@ mod test {
 
         // let mut block_sync_blocks = Vec::new();
         // handle 3 blocks for only state 0
-        for _ in (update_block_round.0)..(update_block_round.0 + 3) {
+        for _ in (boundary_block_round.0)..(boundary_block_round.0 + 3) {
             let proposal = env.next_proposal(Vec::new());
             println!("proposal seq num {:?}", proposal.tip.block_header.seq_num);
             let (author, _, verified_message) = proposal.destructure();
@@ -4310,9 +4311,9 @@ mod test {
                 verified_message.block_body,
             ));
         }
-        let expected_epoch_start_round = update_block_round + env.epoch_manager.epoch_start_delay;
+        let expected_epoch_start_round = boundary_block_round + env.epoch_manager.epoch_start_delay;
 
-        // state 0 should have committed update_block and scheduled next epoch
+        // state 0 should have committed boundary_block and scheduled next epoch
         // verify state 0 is still in epoch 1
         let state_0_epoch = ctx[0]
             .epoch_manager
@@ -4336,7 +4337,7 @@ mod test {
             Epoch(2)
         );
 
-        // state 1 should still not have scheduled next epoch since it didn't commit update_block
+        // state 1 should still not have scheduled next epoch since it didn't commit boundary_block
         let state_1_epoch = ctx[1]
             .epoch_manager
             .get_epoch(ctx[1].consensus_state.get_current_round())
@@ -4357,7 +4358,7 @@ mod test {
             Epoch(1)
         ); // STILL EPOCH 1
 
-        // generate proposal for update_block + 3
+        // generate proposal for boundary_block + 3
         let proposal = env.next_proposal_empty();
 
         let (author, _, verified_message) = proposal.destructure();
@@ -4367,13 +4368,13 @@ mod test {
         let requested_ranges = extract_blocksync_requests(cmds);
         assert_eq!(requested_ranges.len(), 1);
         let requested_range = requested_ranges[0];
-        // last received block was update_block - 1, last committed block was update_block - 3
+        // last received block was boundary_block - 1, last committed block was boundary_block - 3
         assert_eq!(requested_range.num_blocks, SeqNum(1));
 
         let state1 = &mut ctx[1];
         let (_, requested_blocks) = blocks
             .as_slice()
-            .split_at((update_block_round.0 as usize) - 3);
+            .split_at((boundary_block_round.0 as usize) - 3);
         let blocksync_blocks = requested_blocks
             .iter()
             .cloned()
@@ -4428,11 +4429,11 @@ mod test {
         let mut blocks = vec![];
 
         // Sequence number of the block which updates the validator set
-        let update_block = env.epoch_manager.val_set_update_interval - SeqNum(1);
+        let boundary_block = env.epoch_manager.epoch_length - SeqNum(1);
         // Round number of that block is the same as its sequence number (NO TCs in between)
-        let update_block_round = seqnum_to_round_no_tc(update_block);
+        let boundary_block_round = seqnum_to_round_no_tc(boundary_block);
 
-        let expected_epoch_start_round = update_block_round + env.epoch_manager.epoch_start_delay;
+        let expected_epoch_start_round = boundary_block_round + env.epoch_manager.epoch_start_delay;
 
         // handle proposals until expected_epoch_start_round - 1
         for _ in 0..(expected_epoch_start_round.0 - 1) {
@@ -4472,7 +4473,7 @@ mod test {
         }
 
         env.epoch_manager
-            .schedule_epoch_start(update_block, update_block_round);
+            .schedule_epoch_start(boundary_block, boundary_block_round);
 
         let val_stakes: Vec<(NodeId<_>, Stake)> = env
             .val_epoch_map
@@ -4695,14 +4696,14 @@ mod test {
         }
 
         // Sequence number of the block which updates the validator set
-        let update_block = env.epoch_manager.val_set_update_interval - SeqNum(1);
+        let boundary_block = env.epoch_manager.epoch_length - SeqNum(1);
         // Round number of that block is the same as its sequence number (NO TCs in between)
-        let update_block_round = seqnum_to_round_no_tc(update_block);
+        let boundary_block_round = seqnum_to_round_no_tc(boundary_block);
 
-        let expected_epoch_start_round = update_block_round + env.epoch_manager.epoch_start_delay;
+        let expected_epoch_start_round = boundary_block_round + env.epoch_manager.epoch_start_delay;
 
         env.epoch_manager
-            .schedule_epoch_start(update_block, update_block_round);
+            .schedule_epoch_start(boundary_block, boundary_block_round);
 
         // commit blocks until the last round of the epoch
         for _ in 0..(expected_epoch_start_round.0 - 2) {

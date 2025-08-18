@@ -41,9 +41,9 @@ use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyT
 use monad_types::{NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_updaters::{
     ledger::{MockLedger, MockableLedger},
-    state_root_hash::MockStateRootHashNop,
     statesync::MockStateSyncExecutor,
     txpool::MockTxPoolExecutor,
+    val_set::MockValSetUpdaterNop,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use rayon::prelude::*;
@@ -53,7 +53,7 @@ impl SwarmRelation for ForkpointSwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
     type ExecutionProtocolType = EthExecutionProtocol;
-    type StateBackendType = InMemoryState;
+    type StateBackendType = InMemoryState<Self::SignatureType, Self::SignatureCollectionType>;
     type BlockPolicyType = EthBlockPolicy<Self::SignatureType, Self::SignatureCollectionType>;
     type ChainConfigType = MockChainConfig;
     type ChainRevisionType = MockChainRevision;
@@ -91,7 +91,7 @@ impl SwarmRelation for ForkpointSwarm {
         Self::TransportMessage,
     >;
 
-    type StateRootHashExecutor = MockStateRootHashNop<
+    type ValSetUpdater = MockValSetUpdaterNop<
         Self::SignatureType,
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,
@@ -255,7 +255,7 @@ fn forkpoint_restart_f(
         state_root_delay,
         delta,                               // delta
         MockChainConfig::new(&CHAIN_PARAMS), // chain config
-        epoch_length,                        // val_set_update_interval
+        epoch_length,                        // epoch_length
         Round(50),                           // epoch_start_delay
         statesync_threshold,                 // state_sync_threshold
     );
@@ -288,7 +288,7 @@ fn forkpoint_restart_f(
             state_root_delay,                    // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            epoch_length,                        // val_set_update_interval
+            epoch_length,                        // epoch_length
             Round(50),                           // epoch_start_delay
             statesync_threshold,                 // state_sync_threshold
         );
@@ -311,7 +311,7 @@ fn forkpoint_restart_f(
             state_root_delay,                    // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            epoch_length,                        // val_set_update_interval
+            epoch_length,                        // epoch_length
             Round(50),                           // epoch_start_delay
             statesync_threshold,                 // state_sync_threshold
         );
@@ -335,7 +335,7 @@ fn forkpoint_restart_f(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockStateRootHashNop::new(validators.clone(), epoch_length),
+                        MockValSetUpdaterNop::new(validators.clone(), epoch_length),
                         MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
                         MockLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(
@@ -430,7 +430,7 @@ fn forkpoint_restart_f(
             ID::new(restart_node_id),
             restart_builder,
             NoSerRouterConfig::new(all_peers.clone()).build(),
-            MockStateRootHashNop::new(validators.clone(), epoch_length),
+            MockValSetUpdaterNop::new(validators.clone(), epoch_length),
             MockTxPoolExecutor::new(create_block_policy(), restart_builder_state_backend.clone()),
             MockLedger::new(restart_builder_state_backend.clone()),
             MockStateSyncExecutor::new(
@@ -576,7 +576,7 @@ fn forkpoint_restart_below_all(
         state_root_delay,                    // execution_delay
         delta,                               // delta
         MockChainConfig::new(&CHAIN_PARAMS), // chain config
-        epoch_length,                        // val_set_update_interval
+        epoch_length,                        // epoch_length
         Round(50),                           // epoch_start_delay
         statesync_threshold,                 // state_sync_threshold
     );
@@ -622,7 +622,7 @@ fn forkpoint_restart_below_all(
             state_root_delay,                    // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            epoch_length,                        // val_set_update_interval
+            epoch_length,                        // epoch_length
             Round(50),                           // epoch_start_delay
             statesync_threshold,                 // state_sync_threshold
         );
@@ -636,7 +636,7 @@ fn forkpoint_restart_below_all(
             state_root_delay,                    // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            epoch_length,                        // val_set_update_interval
+            epoch_length,                        // epoch_length
             Round(50),                           // epoch_start_delay
             statesync_threshold,                 // state_sync_threshold
         );
@@ -655,7 +655,7 @@ fn forkpoint_restart_below_all(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockStateRootHashNop::new(validators.clone(), epoch_length),
+                        MockValSetUpdaterNop::new(validators.clone(), epoch_length),
                         MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
                         MockLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(
@@ -766,7 +766,7 @@ fn forkpoint_restart_below_all(
                 ID::new(node_id),
                 builder,
                 NoSerRouterConfig::new(all_peers.clone()).build(),
-                MockStateRootHashNop::new(validators.clone(), epoch_length),
+                MockValSetUpdaterNop::new(validators.clone(), epoch_length),
                 MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
                 MockLedger::new(state_backend.clone()),
                 MockStateSyncExecutor::new(

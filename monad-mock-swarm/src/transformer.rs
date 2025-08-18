@@ -17,7 +17,6 @@ use std::{collections::BTreeMap, marker::PhantomData, ops::Deref, time::Duration
 
 use itertools::Itertools;
 use monad_consensus::messages::consensus_message::ProtocolMessage;
-use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
@@ -27,6 +26,7 @@ use monad_transformer::{
     Transformer, TransformerStream, XorLatencyTransformer, ID, UNIQUE_ID,
 };
 use monad_types::{ExecutionProtocol, NodeId, Round};
+use monad_validator::signature_collection::SignatureCollection;
 
 #[derive(Debug, Clone)]
 pub struct FilterTransformer<PT: PubKey> {
