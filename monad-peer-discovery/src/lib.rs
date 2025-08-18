@@ -16,14 +16,18 @@
 use std::{
     collections::{BTreeSet, HashMap},
     net::{Ipv4Addr, SocketAddrV4},
+    str::FromStr,
     time::Duration,
 };
+
+const SEQUENCE_TOKEN: &str = "seq";
+const CAPABILITIES_TOKEN: &str = "capabilities";
 
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable, encode_list};
 use message::{PeerLookupRequest, PeerLookupResponse, Ping, Pong};
 use monad_crypto::{
     certificate_signature::{
-        CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
+        CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
     },
     signing_domain,
 };
@@ -45,6 +49,25 @@ pub enum PortTag {
     TCP = 0,
     UDP = 1,
     DirectUdp = 2,
+}
+
+impl PortTag {
+    pub fn token(&self) -> &'static str {
+        match self {
+            PortTag::TCP => "tcp",
+            PortTag::UDP => "udp",
+            PortTag::DirectUdp => "direct_udp",
+        }
+    }
+
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "tcp" => Some(PortTag::TCP),
+            "udp" => Some(PortTag::UDP),
+            "direct_udp" => Some(PortTag::DirectUdp),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, RlpEncodable, RlpDecodable)]
@@ -214,15 +237,171 @@ impl NameRecord {
     pub fn set_capability(&mut self, capability: Capability) {
         self.capabilities |= 1u64 << (capability as u8);
     }
+
+    pub fn capabilities_iter(&self) -> CapabilityIterator {
+        CapabilityIterator {
+            capabilities: self.capabilities,
+            current_bit: 0,
+        }
+    }
+}
+
+impl TryFrom<String> for NameRecord {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        let value = value.trim();
+
+        let (address_part, params_part) = if let Some(q_pos) = value.find('?') {
+            value.split_at(q_pos)
+        } else {
+            return Err("Missing '?' separator".to_string());
+        };
+
+        let ip =
+            Ipv4Addr::from_str(address_part).map_err(|e| format!("Invalid IP address: {}", e))?;
+
+        let params_str = &params_part[1..];
+
+        let mut tcp_port = None;
+        let mut udp_port = None;
+        let mut direct_udp_port = None;
+        let mut seq = None;
+        let mut capabilities = 0u64;
+
+        for param in params_str.split(',') {
+            let param = param.trim();
+            if let Some((key, value)) = param.split_once('=') {
+                if let Some(port_tag) = PortTag::from_token(key) {
+                    let port = value
+                        .parse::<u16>()
+                        .map_err(|e| format!("Invalid {} port: {}", key, e))?;
+                    match port_tag {
+                        PortTag::TCP => tcp_port = Some(port),
+                        PortTag::UDP => udp_port = Some(port),
+                        PortTag::DirectUdp => direct_udp_port = Some(port),
+                    }
+                } else if key == SEQUENCE_TOKEN {
+                    seq = Some(
+                        value
+                            .parse::<u64>()
+                            .map_err(|e| format!("Invalid seq: {}", e))?,
+                    );
+                } else if key == CAPABILITIES_TOKEN {
+                    for cap_token in value.split('+') {
+                        let cap_token = cap_token.trim();
+                        if let Some(cap) = Capability::from_token(cap_token) {
+                            capabilities |= 1u64 << (cap as u8);
+                        } else {
+                            return Err(format!("Unknown capability: {}", cap_token));
+                        }
+                    }
+                }
+            }
+        }
+
+        let tcp_port = tcp_port.ok_or("Missing TCP port")?;
+        let udp_port = udp_port.ok_or("Missing UDP port")?;
+        let seq = seq.ok_or("Missing seq")?;
+
+        Ok(NameRecord {
+            ip,
+            tcp_port,
+            udp_port,
+            direct_udp_port,
+            capabilities,
+            seq,
+        })
+    }
+}
+
+impl From<NameRecord> for String {
+    fn from(record: NameRecord) -> Self {
+        let mut params = vec![
+            format!("{}={}", PortTag::TCP.token(), record.tcp_port),
+            format!("{}={}", PortTag::UDP.token(), record.udp_port),
+        ];
+
+        if let Some(port) = record.direct_udp_port {
+            params.push(format!("{}={}", PortTag::DirectUdp.token(), port));
+        }
+
+        params.push(format!("{}={}", SEQUENCE_TOKEN, record.seq));
+
+        if record.capabilities != 0 {
+            let caps: Vec<String> = record
+                .capabilities_iter()
+                .map(|cap| cap.token().to_string())
+                .collect();
+            if !caps.is_empty() {
+                params.push(format!("{}={}", CAPABILITIES_TOKEN, caps.join("+")));
+            }
+        }
+
+        format!("{}?{}", record.ip, params.join(","))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Capability {}
+pub enum Capability {
+    Test = 0,
+}
+
+impl Capability {
+    pub fn from_bit(bit: u8) -> Option<Self> {
+        match bit {
+            0 => Some(Capability::Test),
+            _ => None,
+        }
+    }
+
+    pub fn token(&self) -> &'static str {
+        match self {
+            Capability::Test => "test",
+        }
+    }
+
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "test" => Some(Capability::Test),
+            _ => None,
+        }
+    }
+}
+
+pub struct CapabilityIterator {
+    capabilities: u64,
+    current_bit: u8,
+}
+
+impl Iterator for CapabilityIterator {
+    type Item = Capability;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.current_bit < 64 {
+            let bit = self.current_bit;
+            self.current_bit += 1;
+
+            if (self.capabilities & (1u64 << bit)) != 0 {
+                if let Some(cap) = Capability::from_bit(bit) {
+                    return Some(cap);
+                }
+            }
+        }
+        None
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, RlpEncodable, RlpDecodable, Eq)]
 pub struct MonadNameRecord<ST: CertificateSignatureRecoverable> {
     pub name_record: NameRecord,
     pub signature: ST,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KnownNameRecord<PK: PubKey> {
+    pub name_record: NameRecord,
+    pub pubkey: PK,
 }
 
 impl<ST: CertificateSignatureRecoverable + Copy> MonadNameRecord<ST> {
@@ -253,6 +432,59 @@ impl<ST: CertificateSignatureRecoverable + Copy> MonadNameRecord<ST> {
 
     pub fn seq(&self) -> u64 {
         self.name_record.seq
+    }
+}
+
+impl<PK: PubKey> KnownNameRecord<PK> {
+    pub fn from_monad_record<ST>(record: MonadNameRecord<ST>) -> Result<Self, ST::Error>
+    where
+        ST: CertificateSignatureRecoverable,
+        PK: From<CertificateSignaturePubKey<ST>>,
+    {
+        let mut encoded = Vec::new();
+        record.name_record.encode(&mut encoded);
+        let pubkey = record
+            .signature
+            .recover_pubkey::<signing_domain::NameRecord>(&encoded)?;
+
+        Ok(KnownNameRecord {
+            name_record: record.name_record,
+            pubkey: PK::from(pubkey),
+        })
+    }
+}
+
+impl<PK: PubKey> TryFrom<String> for KnownNameRecord<PK> {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        let value = value.trim();
+
+        let at_pos = value.find('@').ok_or("Missing '@' separator")?;
+        let (pubkey_part, addr_params) = value.split_at(at_pos);
+
+        let pubkey_bytes =
+            hex::decode(pubkey_part).map_err(|e| format!("Invalid hex pubkey: {}", e))?;
+
+        let pubkey = PK::from_bytes(&pubkey_bytes).map_err(|e| format!("Invalid pubkey: {}", e))?;
+
+        let full_addr_params = addr_params[1..].to_string();
+        let name_record = NameRecord::try_from(full_addr_params)?;
+
+        Ok(KnownNameRecord {
+            name_record,
+            pubkey,
+        })
+    }
+}
+
+impl<PK: PubKey> From<KnownNameRecord<PK>> for String {
+    fn from(record: KnownNameRecord<PK>) -> Self {
+        let pubkey_bytes = record.pubkey.bytes();
+        let pubkey_hex = hex::encode(&pubkey_bytes);
+
+        let name_record_str = String::from(record.name_record);
+        format!("{}@{}", pubkey_hex, name_record_str)
     }
 }
 
@@ -466,6 +698,9 @@ pub trait PeerDiscoveryAlgoBuilder {
 mod tests {
     use std::str::FromStr;
 
+    use monad_secp::KeyPair;
+    use rstest::rstest;
+
     use super::*;
 
     #[test]
@@ -610,6 +845,252 @@ mod tests {
         assert_eq!(original, decoded);
     }
 
+    #[rstest]
+    #[case(
+        "192.168.1.1?tcp=8080,udp=8081,seq=42",
+        "192.168.1.1",
+        8080,
+        8081,
+        None,
+        42,
+        0
+    )]
+    #[case(
+        "10.0.0.1?tcp=9000,udp=9001,direct_udp=9002,seq=100,capabilities=test",
+        "10.0.0.1",
+        9000,
+        9001,
+        Some(9002),
+        100,
+        1
+    )]
+    #[case(
+        "172.16.0.1?tcp=7000,udp=7001,direct_udp=7002,seq=999,capabilities=test",
+        "172.16.0.1",
+        7000,
+        7001,
+        Some(7002),
+        999,
+        1
+    )]
+    fn test_name_record_from_string(
+        #[case] url: &str,
+        #[case] expected_ip: &str,
+        #[case] expected_tcp: u16,
+        #[case] expected_udp: u16,
+        #[case] expected_direct_udp: Option<u16>,
+        #[case] expected_seq: u64,
+        #[case] expected_capabilities: u64,
+    ) {
+        let record = NameRecord::try_from(url.to_string()).unwrap();
+
+        assert_eq!(record.ip, Ipv4Addr::from_str(expected_ip).unwrap());
+        assert_eq!(record.tcp_port, expected_tcp);
+        assert_eq!(record.udp_port, expected_udp);
+        assert_eq!(record.direct_udp_port, expected_direct_udp);
+        assert_eq!(record.seq, expected_seq);
+        assert_eq!(record.capabilities, expected_capabilities);
+
+        // Test roundtrip
+        let url_out = String::from(record);
+        let record2 = NameRecord::try_from(url_out).unwrap();
+        assert_eq!(record, record2);
+    }
+
+    #[rstest]
+    #[case(
+        "192.168.1.1",
+        8080,
+        8081,
+        None,
+        0,
+        42,
+        "192.168.1.1?tcp=8080,udp=8081,seq=42"
+    )]
+    #[case(
+        "10.0.0.1",
+        9000,
+        9001,
+        Some(9002),
+        1,
+        100,
+        "10.0.0.1?tcp=9000,udp=9001,direct_udp=9002,seq=100,capabilities=test"
+    )]
+    #[case("127.0.0.1", 80, 443, None, 2, 1, "127.0.0.1?tcp=80,udp=443,seq=1")]
+    #[case(
+        "172.16.0.1",
+        3000,
+        3001,
+        Some(3002),
+        3,
+        999,
+        "172.16.0.1?tcp=3000,udp=3001,direct_udp=3002,seq=999,capabilities=test"
+    )]
+    fn test_name_record_to_string(
+        #[case] ip: &str,
+        #[case] tcp_port: u16,
+        #[case] udp_port: u16,
+        #[case] direct_udp_port: Option<u16>,
+        #[case] capabilities: u64,
+        #[case] seq: u64,
+        #[case] expected_url: &str,
+    ) {
+        let record = NameRecord {
+            ip: Ipv4Addr::from_str(ip).unwrap(),
+            tcp_port,
+            udp_port,
+            direct_udp_port,
+            capabilities,
+            seq,
+        };
+
+        let url = String::from(record);
+        assert_eq!(url, expected_url);
+    }
+
+    #[rstest]
+    #[case("192.168.1.1?udp=8081,seq=42", "Missing TCP port")]
+    #[case("192.168.1.1?tcp=8080,seq=42", "Missing UDP port")]
+    #[case("192.168.1.1?tcp=8080,udp=8081", "Missing seq")]
+    #[case("192.168.1.1tcp=8080,udp=8081,seq=42", "Missing '?' separator")]
+    #[case(
+        "192.168.1.1?tcp=8080,udp=8081,seq=42,capabilities=unknown",
+        "Unknown capability: unknown"
+    )]
+    #[case(
+        "192.168.1.1?tcp=8080,udp=8081,seq=42,capabilities=test+invalid",
+        "Unknown capability: invalid"
+    )]
+    fn test_name_record_from_string_errors(#[case] url: &str, #[case] expected_error: &str) {
+        let result = NameRecord::try_from(url.to_string());
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), expected_error);
+    }
+
+    #[test]
+    fn test_name_record_from_string_invalid_ip() {
+        let url = "invalid_ip?tcp=8080,udp=8081,seq=42".to_string();
+        let result = NameRecord::try_from(url);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().starts_with("Invalid IP address"));
+    }
+
+    #[rstest]
+    #[case(0, vec![])]
+    #[case(1, vec![Capability::Test])]
+    #[case(2, vec![])]
+    #[case(3, vec![Capability::Test])]
+    fn test_capability_iterator(#[case] capabilities: u64, #[case] expected: Vec<Capability>) {
+        let record = NameRecord {
+            ip: Ipv4Addr::from_str("127.0.0.1").unwrap(),
+            tcp_port: 80,
+            udp_port: 80,
+            direct_udp_port: None,
+            capabilities,
+            seq: 1,
+        };
+
+        let caps: Vec<Capability> = record.capabilities_iter().collect();
+        assert_eq!(caps, expected);
+    }
+
+    #[rstest]
+    #[case(
+        "033b5b7ad0e97ba616fb816354e0a00f957fff11a4a7e5b829bde964aeba00e39f@192.168.1.1?tcp=8080,udp=8081,seq=42",
+        "192.168.1.1",
+        8080,
+        8081,
+        None,
+        42,
+        0
+    )]
+    #[case(
+        "033b5b7ad0e97ba616fb816354e0a00f957fff11a4a7e5b829bde964aeba00e39f@10.0.0.1?tcp=9000,udp=9001,direct_udp=9002,seq=100,capabilities=test",
+        "10.0.0.1",
+        9000,
+        9001,
+        Some(9002),
+        100,
+        1
+    )]
+    fn test_known_name_record_from_string(
+        #[case] url: &str,
+        #[case] expected_ip: &str,
+        #[case] expected_tcp: u16,
+        #[case] expected_udp: u16,
+        #[case] expected_direct_udp: Option<u16>,
+        #[case] expected_seq: u64,
+        #[case] expected_capabilities: u64,
+    ) {
+        let result = KnownNameRecord::<monad_secp::PubKey>::try_from(url.to_string());
+
+        if let Ok(known_record) = result {
+            assert_eq!(
+                known_record.name_record.ip,
+                Ipv4Addr::from_str(expected_ip).unwrap()
+            );
+            assert_eq!(known_record.name_record.tcp_port, expected_tcp);
+            assert_eq!(known_record.name_record.udp_port, expected_udp);
+            assert_eq!(
+                known_record.name_record.direct_udp_port,
+                expected_direct_udp
+            );
+            assert_eq!(known_record.name_record.seq, expected_seq);
+            assert_eq!(known_record.name_record.capabilities, expected_capabilities);
+
+            // Test roundtrip
+            let url_out = String::from(known_record);
+            let known_record2 = KnownNameRecord::<monad_secp::PubKey>::try_from(url_out).unwrap();
+            assert_eq!(known_record, known_record2);
+        }
+    }
+
+    #[rstest]
+    #[case(
+        "invalid_hex@192.168.1.1?tcp=8080,udp=8081,seq=42",
+        "Invalid hex pubkey"
+    )]
+    #[case("192.168.1.1?tcp=8080,udp=8081,seq=42", "Missing '@' separator")]
+    #[case(
+        "033b5b7ad0e97ba616fb816354e0a00f957fff11a4a7e5b829bde964aeba00e39f@invalid_ip?tcp=8080,udp=8081,seq=42",
+        "Invalid IP address"
+    )]
+    #[case(
+        "033b5b7ad0e97ba616fb816354e0a00f957fff11a4a7e5b829bde964aeba00e39f@192.168.1.1?tcp=8080,udp=8081",
+        "Missing seq"
+    )]
+    fn test_known_name_record_from_string_errors(
+        #[case] url: &str,
+        #[case] expected_error_prefix: &str,
+    ) {
+        let result = KnownNameRecord::<monad_secp::PubKey>::try_from(url.to_string());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains(expected_error_prefix));
+    }
+
+    #[test]
+    fn test_known_name_record_from_monad_record() {
+        let name_record = NameRecord {
+            ip: Ipv4Addr::from_str("192.168.1.1").unwrap(),
+            tcp_port: 8080,
+            udp_port: 8081,
+            direct_udp_port: None,
+            capabilities: 0,
+            seq: 42,
+        };
+
+        let mut secret = [0u8; 32];
+        secret[0] = 1;
+        let keypair = KeyPair::from_bytes(&mut secret).unwrap();
+
+        let monad_record = MonadNameRecord::<monad_secp::SecpSignature>::new(name_record, &keypair);
+        let known_record =
+            KnownNameRecord::<monad_secp::PubKey>::from_monad_record(monad_record).unwrap();
+
+        assert_eq!(known_record.name_record, name_record);
+        assert_eq!(known_record.pubkey, keypair.pubkey());
+    }
+
     #[test]
     fn test_wire_name_record_compatibility() {
         let name_record = NameRecord {
@@ -632,5 +1113,47 @@ mod tests {
         assert_eq!(wire.ports[1].port, 8001);
         assert_eq!(wire.ports[2].tag, PortTag::DirectUdp as u8);
         assert_eq!(wire.ports[2].port, 8002);
+    }
+}
+
+#[cfg(test)]
+mod proptest_tests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    proptest! {
+        #[test]
+        fn test_name_record_string_roundtrip(
+            a in 0u8..=255u8,
+            b in 0u8..=255u8,
+            c in 0u8..=255u8,
+            d in 0u8..=255u8,
+            tcp_port in 1u16..=65535u16,
+            udp_port in 1u16..=65535u16,
+            direct_udp_port in prop::option::of(1u16..=65535u16),
+            capabilities in 0u64..=1u64,
+            seq in 0u64..=u64::MAX,
+        ) {
+            let original = NameRecord {
+                ip: Ipv4Addr::new(a, b, c, d),
+                tcp_port,
+                udp_port,
+                direct_udp_port,
+                capabilities,
+                seq,
+            };
+
+            let url = String::from(original);
+            let decoded = NameRecord::try_from(url.clone()).unwrap();
+
+            prop_assert_eq!(original.ip, decoded.ip);
+            prop_assert_eq!(original.tcp_port, decoded.tcp_port);
+            prop_assert_eq!(original.udp_port, decoded.udp_port);
+            prop_assert_eq!(original.direct_udp_port, decoded.direct_udp_port);
+            prop_assert_eq!(original.seq, decoded.seq);
+            prop_assert_eq!(original.capabilities, decoded.capabilities);
+        }
+
     }
 }

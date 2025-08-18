@@ -38,7 +38,7 @@ struct Args {
     self_record_seq_num: Option<u64>,
 
     /// Direct UDP port (optional)
-    #[arg(long, default_value_t = 30101)]
+    #[arg(long, default_value = "30101")]
     direct_udp_port: Option<u16>,
 
     /// Set the node config path

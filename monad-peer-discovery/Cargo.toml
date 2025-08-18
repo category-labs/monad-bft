@@ -11,6 +11,7 @@ monad-types = { workspace = true }
 
 alloy-rlp = { workspace = true }
 futures = { workspace = true }
+hex = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 smallvec = { workspace = true }
@@ -26,5 +27,7 @@ monad-testutil = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 hex = { workspace = true }
 insta = { workspace = true }
+proptest = { workspace = true }
+rstest = { workspace = true }
 test-case = { workspace = true }
 toml = { workspace = true }
