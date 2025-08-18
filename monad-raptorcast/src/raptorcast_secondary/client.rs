@@ -166,6 +166,22 @@ where
             return false;
         }
 
+        // Reject invite for round span larger than max allowed
+        let round_span = Round(
+            invite_msg
+                .end_round
+                .0
+                .saturating_sub(invite_msg.start_round.0),
+        );
+        if round_span > self.config.invite_round_span_max {
+            warn!(
+                "RaptorCastSecondary rejecting invite for round span \
+                        larger than max allowed, invite = {:?}, max allowed span = {:?}",
+                invite_msg, self.config.invite_round_span_max
+            );
+            return false;
+        }
+
         // Reject late round
         if invite_msg.start_round <= self.curr_round {
             warn!(
@@ -527,6 +543,7 @@ mod tests {
                 bandwidth_capacity: u64::MAX,
                 invite_future_dist_min: Round(1),
                 invite_future_dist_max: Round(100),
+                invite_round_span_max: Round(2000),
                 invite_accept_heartbeat: Duration::from_secs(10),
             },
         );
@@ -555,6 +572,13 @@ mod tests {
                 validator_id: nid(2),
                 start_round: Round(7),
                 end_round: Round(5),
+            },
+            // oversize round span
+            PrepareGroup {
+                max_group_size: 1,
+                validator_id: nid(2),
+                start_round: Round(5),
+                end_round: Round(2006),
             },
         ];
 

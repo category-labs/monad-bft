@@ -708,6 +708,7 @@ where
                             invite_future_dist_min: cfg_2nd.invite_future_dist_min,
                             invite_future_dist_max: cfg_2nd.invite_future_dist_max,
                             invite_accept_heartbeat: Duration::from_millis(cfg_2nd.invite_accept_heartbeat_ms),
+                            invite_round_span_max: cfg_2nd.invite_round_span_max,
                         })
                     }
                 }

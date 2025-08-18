@@ -144,6 +144,7 @@ pub struct RaptorCastConfigSecondaryClient {
     // seen any proposals in `invite_accept_heartbeat`
     pub invite_future_dist_min: Round,
     pub invite_future_dist_max: Round,
+    pub invite_round_span_max: Round,
     pub invite_accept_heartbeat: Duration,
 }
 
@@ -154,6 +155,7 @@ impl Default for RaptorCastConfigSecondaryClient {
             bandwidth_capacity: u64::MAX,
             invite_future_dist_min: Round(1),
             invite_future_dist_max: Round(600), // ~5 minutes into the future, with current round length of 500ms
+            invite_round_span_max: Round(172800), // 24 hours
             invite_accept_heartbeat: Duration::from_secs(10),
         }
     }
