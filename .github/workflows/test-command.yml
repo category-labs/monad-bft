@@ -4,6 +4,16 @@ on:
   issue_comment:
     types: [created]
 
+env:
+  CARGO_TERM_COLOR: always
+
+  ASMFLAGS: -march=haswell
+  CC: gcc-15
+  CFLAGS: -march=haswell
+  CXX: g++-15
+  CXXFLAGS: -march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL
+  TRIEDB_TARGET: triedb_driver
+
 permissions:
   contents: read
   pull-requests: write
