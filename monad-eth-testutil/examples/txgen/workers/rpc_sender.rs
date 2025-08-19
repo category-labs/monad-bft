@@ -23,7 +23,7 @@ use alloy_primitives::hex;
 use tokio::time::MissedTickBehavior;
 
 use super::*;
-use crate::config::Config;
+use crate::config::{Config, GenMode};
 
 pub struct RpcSender {
     pub gen_rx: mpsc::Receiver<AccountsWithTxs>,
@@ -34,6 +34,7 @@ pub struct RpcSender {
     pub target_tps: u64,
     pub metrics: Arc<Metrics>,
     pub sent_txs: Arc<DashMap<TxHash, Instant>>,
+    pub gen_mode: GenMode,
 
     // Fields for dynamic adjustment
     pub tx_history: VecDeque<(Instant, u64)>,
@@ -64,6 +65,7 @@ impl RpcSender {
             client,
             metrics,
             sent_txs,
+            gen_mode: traffic_gen.gen_mode.clone(),
             // Initialize fields
             tx_history: VecDeque::new(),
             last_adjustment_time: Instant::now(),
@@ -84,6 +86,7 @@ impl RpcSender {
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         info!(
+            gen_mode = ?self.gen_mode,
             use_dynamic_adjustment = self.use_dynamic_adjustment,
             batch_size = BATCH_SIZE as u64,
             interval_ms = interval.period().as_millis(),
@@ -95,6 +98,7 @@ impl RpcSender {
                 break;
             }
             info!(
+                gen_mode = ?self.gen_mode,
                 num_accts = accts.len(),
                 num_txs = txs.len(),
                 channel_len = self.gen_rx.len(),

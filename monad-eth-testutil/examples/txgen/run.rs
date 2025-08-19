@@ -113,6 +113,7 @@ async fn run_traffic_phase(
         &metrics,
         config.base_fee(),
         config.chain_id,
+        traffic_gen.gen_mode.clone(),
         Arc::clone(&shutdown),
     );
 
@@ -124,6 +125,7 @@ async fn run_traffic_phase(
         Duration::from_secs_f64(config.refresh_delay_secs),
         deployed_contract,
         traffic_gen.erc20_balance_of,
+        traffic_gen.gen_mode.clone(),
         Arc::clone(&shutdown),
     )?;
 

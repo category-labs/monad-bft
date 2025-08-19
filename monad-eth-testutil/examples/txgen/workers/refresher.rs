@@ -18,7 +18,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::time::MissedTickBehavior;
 
 use super::*;
-use crate::{config::DeployedContract, shared::erc20::ERC20};
+use crate::{
+    config::{DeployedContract, GenMode},
+    shared::erc20::ERC20,
+};
 
 pub struct Refresher {
     pub rpc_rx: mpsc::UnboundedReceiver<AccountsWithTime>,
@@ -27,6 +30,7 @@ pub struct Refresher {
     pub client: ReqwestClient,
     pub metrics: Arc<Metrics>,
     pub erc20: Option<ERC20>,
+    pub gen_mode: GenMode,
 
     pub delay: Duration,
 
@@ -45,6 +49,7 @@ impl Refresher {
 
         deployed_contract: DeployedContract,
         refresh_erc20_balance: bool,
+        gen_mode: GenMode,
         shutdown: Arc<AtomicBool>,
     ) -> Result<Refresher> {
         let erc20 = if refresh_erc20_balance {
@@ -59,6 +64,7 @@ impl Refresher {
             metrics,
             delay,
             erc20,
+            gen_mode,
             shutdown,
         })
     }
@@ -67,12 +73,13 @@ impl Refresher {
         let mut interval = tokio::time::interval(Duration::from_millis(5));
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-        info!("Starting refresher loop");
+        info!("Starting refresher loop with gen_mode: {:?}", self.gen_mode);
         while let Some(AccountsWithTime { accts, sent }) = self.rpc_rx.recv().await {
             if self.shutdown.load(Ordering::Relaxed) {
                 break;
             }
             info!(
+                gen_mode = ?self.gen_mode,
                 num_accts = accts.len(),
                 channel_len = self.rpc_rx.len(),
                 "Refresher received accts"

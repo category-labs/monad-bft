@@ -16,7 +16,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::*;
-use crate::{generators::native_transfer_priority_fee, prelude::*};
+use crate::{config::GenMode, generators::native_transfer_priority_fee, prelude::*};
 
 pub trait Generator {
     // todo: come up with a way to mint too
@@ -45,6 +45,7 @@ pub struct GeneratorHarness {
     pub metrics: Arc<Metrics>,
     pub base_fee: u128,
     pub chain_id: u64,
+    pub gen_mode: GenMode,
 
     pub shutdown: Arc<AtomicBool>,
 }
@@ -60,6 +61,7 @@ impl GeneratorHarness {
         metrics: &Arc<Metrics>,
         base_fee: u128,
         chain_id: u64,
+        gen_mode: GenMode,
         shutdown: Arc<AtomicBool>,
     ) -> Self {
         Self {
@@ -73,17 +75,19 @@ impl GeneratorHarness {
             seed_native_amt,
             base_fee,
             chain_id,
+            gen_mode,
             shutdown,
         }
     }
 
     pub async fn run(mut self) {
-        info!("Starting main gen loop");
+        info!("Starting main gen loop with gen_mode: {:?}", self.gen_mode);
         while let Some(accts) = self.refresh_rx.recv().await {
             if self.shutdown.load(Ordering::Relaxed) {
                 break;
             }
             info!(
+                gen_mode = ?self.gen_mode,
                 num_accts = accts.len(),
                 channel_len = self.refresh_rx.len(),
                 "Gen received accounts"
