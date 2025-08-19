@@ -5638,8 +5638,10 @@ dependencies = [
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "rstest",
+ "serde",
  "thiserror 1.0.69",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
 ]

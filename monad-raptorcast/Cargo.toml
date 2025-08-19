@@ -35,18 +35,19 @@ rand = { workspace = true }
 rand_chacha = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
+clap = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
+toml = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+futures-util = { workspace = true }
 
 [dev-dependencies]
 monad-testutil = { workspace = true }
 
-clap = { workspace = true, features = ["derive"] }
 rstest = { workspace = true }
 criterion = { workspace = true }
-futures-util = { workspace = true }
 insta = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [[bench]]
 name = "raptor_bench"
@@ -54,3 +55,7 @@ harness = false
 
 [[example]]
 name = "service"
+
+[[bin]]
+name = "node"
+path = "src/bin/node.rs"
