@@ -43,6 +43,48 @@ use tracing_subscriber::{
 
 const MAX_REWIND_QUEUE_LEN: usize = 100;
 
+type BlockHeader =
+    ConsensusBlockHeader<SignatureType, SignatureCollectionType, ExecutionProtocolType>;
+
+struct CachedBlock {
+    header: BlockHeader,
+    is_finalized: bool,
+}
+impl CachedBlock {
+    fn new(header: BlockHeader) -> Self {
+        Self {
+            header,
+            is_finalized: false,
+        }
+    }
+}
+type CachedBlocks = LruCache<BlockId, CachedBlock>;
+
+fn finalize_block(
+    blocks: &mut CachedBlocks,
+    finalized_block_id: &BlockId,
+    finalize_fn: impl Fn(&BlockHeader),
+) {
+    let mut finalized_block_id = *finalized_block_id;
+    let mut to_finalize = Vec::new();
+    while let Some(finalized_block) = blocks.peek_mut(&finalized_block_id) {
+        if finalized_block.is_finalized {
+            // already finalized
+            break;
+        }
+        finalized_block.is_finalized = true;
+        let finalized_block_header = &finalized_block.header;
+        to_finalize.push(finalized_block_header.clone());
+        // try finalizing parent
+        finalized_block_id = finalized_block_header.get_parent_id();
+    }
+
+    // finalize in reverse order (oldest first)
+    for finalized_block_header in to_finalize.iter().rev() {
+        finalize_fn(finalized_block_header)
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let subscriber = tracing_subscriber::Registry::default().with(
@@ -56,10 +98,7 @@ async fn main() {
     );
     tracing::subscriber::set_global_default(subscriber).expect("unable to set default subscriber");
 
-    let mut visited_blocks: LruCache<
-        BlockId,
-        ConsensusBlockHeader<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
-    > = LruCache::new(NonZero::new(100).unwrap());
+    let mut visited_blocks: CachedBlocks = LruCache::new(NonZero::new(100).unwrap());
 
     let forkpoint_path: PathBuf = PathBuf::from("/monad/config/forkpoint");
     let ledger_path: PathBuf = PathBuf::from("/monad/ledger");
@@ -140,7 +179,7 @@ async fn main() {
             };
             let block = ConsensusFullBlock::new(block_header, block_body).expect("block is valid");
 
-            visited_blocks.put(block.get_id(), block.header().clone());
+            visited_blocks.put(block.get_id(), CachedBlock::new(block.header().clone()));
 
             info!(
                 round =? block.get_block_round().0,
@@ -158,25 +197,27 @@ async fn main() {
 
         if last_high_certificate != high_certificate {
             if let RoundCertificate::Qc(qc) = &high_certificate {
-                if let Some(parent_block) = visited_blocks.get(&qc.get_block_id()) {
-                    let parent_qc = parent_block.qc.clone();
+                if let Some(parent_block) = visited_blocks.peek(&qc.get_block_id()) {
+                    let parent_qc = parent_block.header.qc.clone();
                     if qc.get_round() == parent_qc.get_round() + Round(1) {
                         // commit rule passed
-                        if let Some(finalized_block_header) =
-                            visited_blocks.get(&parent_qc.get_block_id())
-                        {
-                            info!(
-                                round =? finalized_block_header.block_round.0,
-                                parent_round =? finalized_block_header.qc.get_round().0,
-                                epoch =? finalized_block_header.epoch.0,
-                                seq_num =? finalized_block_header.seq_num.0,
-                                author =? finalized_block_header.author,
-                                block_ts_ms =? finalized_block_header.timestamp_ns / 1_000_000,
-                                now_ts_ms =? now_ts.as_millis(),
-                                author_address = addresses.get(&finalized_block_header.author.pubkey()).cloned().unwrap_or_default(),
-                                "finalized_block"
-                            );
-                        }
+                        finalize_block(
+                            &mut visited_blocks,
+                            &parent_qc.get_block_id(),
+                            |finalized_block_header| {
+                                info!(
+                                    round =? finalized_block_header.block_round.0,
+                                    parent_round =? finalized_block_header.qc.get_round().0,
+                                    epoch =? finalized_block_header.epoch.0,
+                                    seq_num =? finalized_block_header.seq_num.0,
+                                    author =? finalized_block_header.author,
+                                    block_ts_ms =? finalized_block_header.timestamp_ns / 1_000_000,
+                                    now_ts_ms =? now_ts.as_millis(),
+                                    author_address = addresses.get(&finalized_block_header.author.pubkey()).cloned().unwrap_or_default(),
+                                    "finalized_block"
+                                )
+                            },
+                        );
                     }
                 }
             }
@@ -195,7 +236,7 @@ pub fn latest_tip_stream(
 ) -> impl Stream<
     Item = (
         RoundCertificate<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
-        ConsensusBlockHeader<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
+        BlockHeader,
     ),
 > {
     let inotify = Inotify::init().expect("error initializing inotify");
