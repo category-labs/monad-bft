@@ -44,3 +44,8 @@ jobs:
         uses: philipglazman/openrpc-validation@v1
         with:
           file-path: openrpc.json
+      - name: Archive OpenRPC documentation
+        uses: actions/upload-artifact@v4
+        with:
+          name: Monad RPC OpenRPC
+          path: openrpc.json
