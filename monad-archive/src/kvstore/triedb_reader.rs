@@ -133,4 +133,9 @@ impl BlockDataReader for TriedbReader {
     async fn try_get_block_traces(&self, block_number: u64) -> Result<Option<BlockTraces>> {
         self.get_block_traces(block_number).await.map(Some)
     }
+
+    #[doc = " Get a block by its hash, or return None if not found"]
+    async fn try_get_block_by_hash(&self, block_hash: &BlockHash) -> Result<Option<Block>> {
+        self.get_block_by_hash(block_hash).await.map(Some)
+    }
 }

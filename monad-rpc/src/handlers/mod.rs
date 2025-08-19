@@ -385,9 +385,7 @@ async fn eth_sendRawTransaction(
     params: Value,
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let params = serde_json::from_value(params).invalid_params()?;
-    let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
     monad_eth_sendRawTransaction(
-        triedb_env,
         &app_state.txpool_bridge_client,
         app_state.base_fee_per_gas.clone(),
         params,
