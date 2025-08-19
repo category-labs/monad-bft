@@ -15,15 +15,10 @@ receivers:
         - targets: ['127.0.0.1:8888']
 
 exporters:
-  otlp:
-    endpoint: peach10.devcore4.com:4317
-    tls:
-      insecure: true
-      insecure_skip_verify: true
   prometheus:
     endpoint: "0.0.0.0:8889"
     send_timestamps: true
-    metric_expiration: 180m
+    metric_expiration: 1m
     enable_open_metrics: true
     resource_to_telemetry_conversion:
       enabled: true
@@ -38,13 +33,5 @@ service:
   pipelines:
     metrics:
       receivers: [otlp]
-      exporters: [prometheus,otlp]
+      exporters: [prometheus]
       processors: [batch]
-    traces:
-      receivers: [otlp]
-      processors: [batch]
-      exporters: [otlp]
-    logs:
-      receivers: [otlp]
-      processors: [batch]
-      exporters: [otlp]
