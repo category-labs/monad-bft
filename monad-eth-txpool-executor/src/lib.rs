@@ -18,10 +18,7 @@ use std::{
     io,
     marker::PhantomData,
     pin::Pin,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
+    sync::{atomic::Ordering, Arc},
     task::Poll,
     time::Duration,
 };
@@ -320,52 +317,32 @@ where
                         "txpool executor received forwarded txs"
                     );
 
-                    let num_invalid_bytes = AtomicU64::default();
-                    let num_invalid_signer = AtomicU64::default();
+                    let mut num_invalid_bytes = 0;
 
-                    let recovered_txs = txs
-                        .into_par_iter()
+                    let txs = txs
+                        .into_iter()
                         .filter_map(|raw_tx| {
-                            let Ok(tx) = TxEnvelope::decode(&mut raw_tx.as_ref()) else {
-                                num_invalid_bytes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                                return None;
-                            };
-
-                            let Ok(signer) = tx.secp256k1_recover() else {
-                                num_invalid_signer
-                                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                                return None;
-                            };
-
-                            Some(Recovered::new_unchecked(tx, signer))
+                            if let Ok(tx) = TxEnvelope::decode(&mut raw_tx.as_ref()) {
+                                Some(tx)
+                            } else {
+                                num_invalid_bytes += 1;
+                                None
+                            }
                         })
                         .collect::<Vec<_>>();
-
-                    let num_invalid_bytes =
-                        num_invalid_bytes.load(std::sync::atomic::Ordering::SeqCst);
-                    let num_invalid_signer =
-                        num_invalid_signer.load(std::sync::atomic::Ordering::SeqCst);
 
                     self.metrics
                         .reject_forwarded_invalid_bytes
                         .fetch_add(num_invalid_bytes, Ordering::SeqCst);
-                    self.metrics
-                        .reject_forwarded_invalid_signer
-                        .fetch_add(num_invalid_signer, Ordering::SeqCst);
 
-                    if num_invalid_bytes != 0 || num_invalid_signer != 0 {
-                        tracing::warn!(
-                            ?sender,
-                            ?num_invalid_bytes,
-                            ?num_invalid_signer,
-                            "invalid forwarded txs"
-                        );
+                    if num_invalid_bytes != 0 {
+                        tracing::warn!(?sender, ?num_invalid_bytes, "invalid forwarded txs");
                     }
 
                     self.forwarding_manager
                         .as_mut()
                         .project()
-                        .add_ingress_txs(recovered_txs);
+                        .add_ingress_txs(txs);
                 }
                 TxPoolCommand::EnterRound {
                     epoch: _,
@@ -488,14 +465,13 @@ where
         if let Poll::Ready(unvalidated_txs) = ipc.as_mut().poll_txs(cx, || pool.generate_snapshot())
         {
             let _span = debug_span!("ipc txs", len = unvalidated_txs.len()).entered();
+
             let mut ipc_events = Vec::default();
-            let mut inserted_txs = Vec::default();
-            let mut inserted_addresses = HashSet::<Address>::default();
 
             let recovered_txs = {
                 let (recovered_txs, dropped_txs): (Vec<_>, Vec<_>) =
                     unvalidated_txs.into_par_iter().partition_map(|tx| {
-                        let _span = trace_span!("txpool: recover signer").entered();
+                        let _span = trace_span!("txpool: ipc tx recover signer").entered();
                         match tx.secp256k1_recover() {
                             Ok(signer) => {
                                 rayon::iter::Either::Left(Recovered::new_unchecked(tx, signer))
@@ -509,6 +485,9 @@ where
                 ipc_events.extend_from_slice(&dropped_txs);
                 recovered_txs
             };
+
+            let mut inserted_addresses = HashSet::<Address>::default();
+            let mut inserted_txs = Vec::default();
 
             pool.insert_txs(
                 &mut EthTxPoolEventTracker::new(&metrics.pool, &mut ipc_events),
@@ -536,13 +515,32 @@ where
 
         while let Poll::Ready(forwarded_txs) = forwarding_manager.as_mut().poll_ingress(cx) {
             let _span = debug_span!("forwarded txs", len = forwarded_txs.len()).entered();
+
+            let recovered_txs = {
+                let (recovered_txs, dropped_txs): (Vec<_>, Vec<_>) =
+                    forwarded_txs.into_par_iter().partition_map(|tx| {
+                        let _span = trace_span!("txpool: forwarded tx recover signer").entered();
+                        match tx.secp256k1_recover() {
+                            Ok(signer) => {
+                                rayon::iter::Either::Left(Recovered::new_unchecked(tx, signer))
+                            }
+                            Err(_) => rayon::iter::Either::Right(EthTxPoolEvent::Drop {
+                                tx_hash: *tx.tx_hash(),
+                                reason: EthTxPoolDropReason::InvalidSignature,
+                            }),
+                        }
+                    });
+                ipc_events.extend_from_slice(&dropped_txs);
+                recovered_txs
+            };
+
             let mut inserted_addresses = HashSet::<Address>::default();
 
             pool.insert_txs(
                 &mut EthTxPoolEventTracker::new(&metrics.pool, &mut ipc_events),
                 block_policy,
                 state_backend,
-                forwarded_txs,
+                recovered_txs,
                 false,
                 |tx| {
                     inserted_addresses.insert(tx.signer());

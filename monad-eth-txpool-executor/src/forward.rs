@@ -20,7 +20,7 @@ use std::{
     time::Duration,
 };
 
-use alloy_consensus::{transaction::Recovered, TxEnvelope};
+use alloy_consensus::TxEnvelope;
 use bytes::Bytes;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -29,18 +29,19 @@ use monad_eth_txpool::EthTxPool;
 use monad_state_backend::StateBackend;
 use monad_validator::signature_collection::SignatureCollection;
 use pin_project::pin_project;
+use tracing::debug;
 
 const EGRESS_MIN_COMMITTED_SEQ_NUM_DIFF: u64 = 5;
 const EGRESS_MAX_RETRIES: usize = 2;
 
 const INGRESS_CHUNK_MAX_SIZE: usize = 128;
 const INGRESS_CHUNK_INTERVAL_MS: u64 = 8;
-const INGRESS_MAX_SIZE: usize = 64 * 1024;
+const INGRESS_MAX_SIZE: usize = 8 * 1024;
 const EGRESS_MAX_SIZE_BYTES: usize = 256 * 1024;
 
 #[pin_project(project = EthTxPoolForwardingManagerProjected)]
 pub struct EthTxPoolForwardingManager {
-    ingress: VecDeque<Recovered<TxEnvelope>>,
+    ingress: VecDeque<TxEnvelope>,
     #[pin]
     ingress_timer: tokio::time::Interval,
     ingress_waker: Option<Waker>,
@@ -66,10 +67,7 @@ impl EthTxPoolForwardingManager {
         }
     }
 
-    pub fn poll_ingress(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Vec<Recovered<TxEnvelope>>> {
+    pub fn poll_ingress(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Vec<TxEnvelope>> {
         let EthTxPoolForwardingManagerProjected {
             ingress,
             mut ingress_timer,
@@ -131,17 +129,27 @@ impl EthTxPoolForwardingManager {
 }
 
 impl EthTxPoolForwardingManagerProjected<'_> {
-    pub fn add_ingress_txs(&mut self, txs: Vec<Recovered<TxEnvelope>>) {
+    pub fn add_ingress_txs(&mut self, txs: Vec<TxEnvelope>) {
         let Self {
             ingress,
             ingress_waker,
             ..
         } = self;
 
-        ingress.extend(
-            txs.into_iter()
-                .take(INGRESS_MAX_SIZE.saturating_sub(ingress.len())),
-        );
+        let capacity_remaining = INGRESS_MAX_SIZE.saturating_sub(ingress.len());
+
+        let dropped = txs.len().saturating_sub(capacity_remaining);
+
+        if dropped > 0 {
+            debug!(
+                capacity =? INGRESS_MAX_SIZE,
+                ?capacity_remaining,
+                ?dropped,
+                "ingress queue full, discarding forwarded txs"
+            )
+        }
+
+        ingress.extend(txs.into_iter().take(capacity_remaining));
 
         if ingress.is_empty() {
             return;
@@ -220,14 +228,12 @@ mod test {
         )
     }
 
-    fn generate_tx(nonce: u64) -> Recovered<TxEnvelope> {
-        recover_tx(make_legacy_tx(
-            S1,
-            BASE_FEE_PER_GAS as u128,
-            100_000,
-            nonce,
-            0,
-        ))
+    fn generate_tx(nonce: u64) -> TxEnvelope {
+        make_legacy_tx(S1, BASE_FEE_PER_GAS as u128, 100_000, nonce, 0)
+    }
+
+    fn generate_recovered_tx(nonce: u64) -> Recovered<TxEnvelope> {
+        recover_tx(generate_tx(nonce))
     }
 
     async fn assert_pending_now_and_forever(
@@ -465,7 +471,7 @@ mod test {
 
         let mut nonce = 0u64;
         while total_size < target_size {
-            let tx = generate_tx(nonce);
+            let tx = generate_recovered_tx(nonce);
             let encoded = alloy_rlp::encode(&tx);
             let tx_bytes: Bytes = encoded.into();
             total_size += tx_bytes.len();
