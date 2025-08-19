@@ -158,7 +158,7 @@ const MONAD_DEVNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     v_0_8_0_activation: Round::MIN,
     v_0_10_0_activation: Round::MIN,
 
-    staking_activation: Epoch::MAX,
+    staking_activation: Epoch(2),
 
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
