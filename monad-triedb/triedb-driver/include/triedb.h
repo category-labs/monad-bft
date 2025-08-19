@@ -81,6 +81,36 @@ uint64_t triedb_latest_verified_block(triedb *);
 // returns MAX if doesn't exist
 uint64_t triedb_earliest_finalized_block(triedb *);
 
+#pragma pack(push, 1)
+
+typedef struct monad_validator
+{
+    uint8_t secp_pubkey[33];
+    uint8_t bls_pubkey[48];
+    uint8_t stake[32];
+} monad_validator;
+
+typedef struct monad_validator_set
+{
+    struct monad_validator *valset;
+    uint64_t length;
+} monad_validator_set;
+
+#pragma pack(pop)
+
+void monad_free_valset(monad_validator_set);
+
+// block_num should be finalized
+// if get_next is false:
+//     returns validator set of the epoch block_num was proposed in.
+// if get_next is true:
+//     if block_num was proposed in epoch start delay, returns the
+//     validator set of the next epoch snapshotted in the staking
+//     contract at the boudary_block.
+//     if block_num is not in epoch start delay, returns the validator
+//     set of the epoch block_num was proposed in. (get_next is nop) 
+monad_validator_set monad_read_valset(triedb *, size_t block_num, bool get_next);
+
 #ifdef __cplusplus
 }
 #endif

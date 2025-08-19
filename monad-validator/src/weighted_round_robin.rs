@@ -18,7 +18,7 @@ use std::{collections::BTreeMap, marker::PhantomData};
 use alloy_primitives::U256;
 use itertools::Itertools;
 use monad_crypto::certificate_signature::PubKey;
-use monad_types::{NodeId, Round, Stake};
+use monad_types::{Epoch, NodeId, Round, Stake};
 use rand::Rng;
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
 
@@ -26,12 +26,16 @@ use crate::leader_election::LeaderElection;
 
 #[derive(Clone)]
 pub struct WeightedRoundRobin<PT: PubKey> {
+    staking_activation: Epoch,
+
     _phantom: PhantomData<PT>,
 }
 
-impl<PT: PubKey> Default for WeightedRoundRobin<PT> {
-    fn default() -> Self {
+impl<PT: PubKey> WeightedRoundRobin<PT> {
+    pub fn new(staking_activation: Epoch) -> Self {
         Self {
+            staking_activation,
+
             _phantom: PhantomData,
         }
     }
@@ -131,13 +135,19 @@ impl<PT: PubKey> LeaderElection for WeightedRoundRobin<PT> {
     /// # Panics
     /// Panics if `validators.is_empty()` or if `validators` does not contain an element whose stake is > 0, because
     /// there is no sensible choice for leader in either of those cases.
-    fn get_leader(&self, round: Round, validators: &BTreeMap<NodeId<PT>, Stake>) -> NodeId<PT> {
-        generate_random_validator_u64(round, validators.iter().collect_vec())
-
-        // TODO switch to U256 gen on fork
-        // let mut gen = ChaCha20Rng::seed_from_u64(round.0);
-        // let randomizer = |total_stake| randomize_256_with_rng(&mut gen, total_stake);
-        // generate_random_validator_with_randomizer(validators.iter().collect_vec(), randomizer)
+    fn get_leader(
+        &self,
+        round: Round,
+        epoch: Epoch,
+        validators: &BTreeMap<NodeId<PT>, Stake>,
+    ) -> NodeId<PT> {
+        if epoch < self.staking_activation {
+            generate_random_validator_u64(round, validators.iter().collect_vec())
+        } else {
+            let mut gen = ChaCha20Rng::seed_from_u64(round.0);
+            let randomizer = |total_stake| randomize_256_with_rng(&mut gen, total_stake);
+            generate_random_validator_with_randomizer(validators.iter().collect_vec(), randomizer)
+        }
     }
 }
 
@@ -157,7 +167,7 @@ mod tests {
     #[test_case(vec![('A', U256::from(10)), ('B', U256::from(2)), ('C', U256::from(3))]; "test big stake")]
     fn test_weighted_round_robin(validator_set: Vec<(char, U256)>) {
         let num_iterations = 10000_u64;
-        let l = WeightedRoundRobin::default();
+        let l = WeightedRoundRobin::new(Epoch(1));
         let total_stakes = validator_set
             .iter()
             .filter_map(|(_, stake)| {
@@ -195,7 +205,7 @@ mod tests {
             .collect();
 
         for i in 0..num_iterations {
-            let leader = l.get_leader(Round(i), &validator_set);
+            let leader = l.get_leader(Round(i), Epoch(1), &validator_set);
             let index = validator_set.keys().position(|k| k == &leader).unwrap();
             num_picked[index] += 1;
         }
@@ -247,9 +257,9 @@ mod tests {
             })
             .collect();
 
-        let leader_election = WeightedRoundRobin::default();
+        let leader_election = WeightedRoundRobin::new(Epoch(2));
         for (round, expected_leader) in expected_schedule.into_iter().enumerate() {
-            let leader = leader_election.get_leader(Round(round as u64), &validator_set);
+            let leader = leader_election.get_leader(Round(round as u64), Epoch(1), &validator_set);
             let leader_char = leader.pubkey().bytes()[0] as char;
             assert_eq!(expected_leader, leader_char);
         }

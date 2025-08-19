@@ -24,17 +24,20 @@
 use std::collections::VecDeque;
 
 use alloy_consensus::{Transaction, TxEnvelope, transaction::Recovered};
-use alloy_primitives::{Address, Bytes, TxKind, U256};
+use alloy_primitives::{Address, TxKind, U256};
 use monad_consensus_types::block::ConsensusBlockHeader;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_types::EthExecutionProtocol;
+use monad_types::{Epoch, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::debug;
 
 use crate::{
-    SYSTEM_SENDER_ETH_ADDRESS, SystemCall, SystemTransaction, generate_system_calls_from_header,
+    EPOCH_CHANGE_FUNCTION_SELECTOR, REWARD_FUNCTION_SELECTOR, SNAPSHOT_FUNCTION_SELECTOR,
+    STAKING_CONTRACT_ADDRESS, SYSTEM_SENDER_ETH_ADDRESS, SystemCall, SystemCallInner,
+    SystemTransaction, SystemTransactionInner, generate_system_calls_from_header,
 };
 
 #[derive(Debug)]
@@ -45,8 +48,8 @@ pub enum SystemTransactionError {
     NonZeroGasLimit,
     InvalidTxKind,
     NonZeroValue,
-    UnexpectedDestAddress { expected: Address },
-    UnexpectedInput { expected: Bytes },
+    UnexpectedDestAddress,
+    UnexpectedInput,
 }
 
 #[derive(Debug)]
@@ -57,16 +60,33 @@ pub enum SystemTransactionValidationError {
     SystemTransactionError(SystemTransactionError),
 }
 
-pub struct SystemTransactionValidator {}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SystemTransactionValidator {
+    epoch_length: SeqNum,
+    staking_activation: Epoch,
+}
 
 impl SystemTransactionValidator {
+    pub fn new(epoch_length: SeqNum, staking_activation: Epoch) -> Self {
+        Self {
+            epoch_length,
+            staking_activation,
+        }
+    }
+
     pub fn is_system_sender(address: Address) -> bool {
         address == SYSTEM_SENDER_ETH_ADDRESS
     }
 
     // used to check if a user transaction calls a restricted function
     pub fn is_restricted_system_call(txn: &Recovered<TxEnvelope>) -> bool {
-        // TODO check if txn invokes any supported system call
+        if txn.to() == Some(STAKING_CONTRACT_ADDRESS) {
+            let input = txn.input();
+            return input.starts_with(REWARD_FUNCTION_SELECTOR.as_slice())
+                || input.starts_with(SNAPSHOT_FUNCTION_SELECTOR.as_slice())
+                || input.starts_with(EPOCH_CHANGE_FUNCTION_SELECTOR.as_slice());
+        }
+
         false
     }
 
@@ -102,24 +122,76 @@ impl SystemTransactionValidator {
 
     fn validate_system_transaction_input(
         expected_sys_call: SystemCall,
-        sys_txn: &Recovered<TxEnvelope>,
+        sys_txn: Recovered<TxEnvelope>,
     ) -> Result<SystemTransaction, SystemTransactionError> {
-        // verify destination address, function selector and function input
+        let to = sys_txn.to();
+        let input = sys_txn.input();
 
-        // TODO remove error
-        Err(SystemTransactionError::NonZeroValue)
+        match expected_sys_call.0 {
+            SystemCallInner::Reward {
+                block_author_address,
+            } => {
+                if to != Some(STAKING_CONTRACT_ADDRESS) {
+                    return Err(SystemTransactionError::UnexpectedDestAddress);
+                }
+                if input.len() != REWARD_FUNCTION_SELECTOR.len() + block_author_address.len() {
+                    return Err(SystemTransactionError::UnexpectedInput);
+                }
+                if input[0..4] != REWARD_FUNCTION_SELECTOR {
+                    return Err(SystemTransactionError::UnexpectedInput);
+                }
+                if input[4..24] != block_author_address {
+                    return Err(SystemTransactionError::UnexpectedInput);
+                }
+
+                Ok(SystemTransaction(SystemTransactionInner::Reward(sys_txn)))
+            }
+            SystemCallInner::SnapshotStakingContract => {
+                if to != Some(STAKING_CONTRACT_ADDRESS) {
+                    return Err(SystemTransactionError::UnexpectedDestAddress);
+                }
+                if input != SNAPSHOT_FUNCTION_SELECTOR.as_slice() {
+                    return Err(SystemTransactionError::UnexpectedInput);
+                }
+
+                Ok(SystemTransaction(
+                    SystemTransactionInner::SnapshotStakingContract(sys_txn),
+                ))
+            }
+            SystemCallInner::EpochChange { new_epoch } => {
+                if to != Some(STAKING_CONTRACT_ADDRESS) {
+                    return Err(SystemTransactionError::UnexpectedDestAddress);
+                }
+                let expected_epoch_input = new_epoch.0.to_be_bytes();
+                if input.len() != EPOCH_CHANGE_FUNCTION_SELECTOR.len() + expected_epoch_input.len()
+                {
+                    return Err(SystemTransactionError::UnexpectedInput);
+                }
+                if input[0..4] != EPOCH_CHANGE_FUNCTION_SELECTOR {
+                    return Err(SystemTransactionError::UnexpectedInput);
+                }
+                if input[4..12] != expected_epoch_input {
+                    return Err(SystemTransactionError::UnexpectedInput);
+                }
+
+                Ok(SystemTransaction(SystemTransactionInner::EpochChange(
+                    sys_txn,
+                )))
+            }
+        }
     }
 
     fn validate_system_transaction(
         expected_sys_call: SystemCall,
-        sys_txn: &Recovered<TxEnvelope>,
+        sys_txn: Recovered<TxEnvelope>,
     ) -> Result<SystemTransaction, SystemTransactionError> {
-        Self::static_validate_system_transaction(sys_txn)?;
+        Self::static_validate_system_transaction(&sys_txn)?;
 
         Self::validate_system_transaction_input(expected_sys_call, sys_txn)
     }
 
     pub fn validate_and_extract_system_transactions<ST, SCT>(
+        &self,
         block_header: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
         mut txns: VecDeque<Recovered<TxEnvelope>>,
     ) -> Result<
@@ -132,15 +204,28 @@ impl SystemTransactionValidator {
     {
         let mut validated_sys_txns = Vec::new();
 
-        let expected_sys_calls = generate_system_calls_from_header(block_header);
+        let expected_sys_calls = generate_system_calls_from_header(
+            self.epoch_length,
+            self.staking_activation,
+            block_header,
+        );
         let mut curr_sys_sender_nonce = None;
         for expected_sys_call in expected_sys_calls {
             let Some(sys_txn) = txns.pop_front() else {
                 return Err(SystemTransactionValidationError::MissingSystemTransaction);
             };
 
-            match Self::validate_system_transaction(expected_sys_call, &sys_txn) {
+            match Self::validate_system_transaction(expected_sys_call, sys_txn) {
                 Ok(validated_sys_txn) => {
+                    // system sender nonce must be sequential
+                    if let Some(old_nonce) = curr_sys_sender_nonce {
+                        if validated_sys_txn.nonce() != old_nonce + 1 {
+                            debug!(?validated_sys_txn, "invalid system transaction nonce");
+                            return Err(SystemTransactionValidationError::NonSequentialNonces);
+                        }
+                    }
+                    curr_sys_sender_nonce = Some(validated_sys_txn.nonce());
+
                     validated_sys_txns.push(validated_sys_txn);
                 }
                 Err(err) => {
@@ -149,15 +234,6 @@ impl SystemTransactionValidator {
                     ));
                 }
             }
-
-            // system sender nonce must be sequential
-            if let Some(old_nonce) = curr_sys_sender_nonce {
-                if sys_txn.nonce() != old_nonce + 1 {
-                    debug!(?sys_txn, "invalid system transaction nonce");
-                    return Err(SystemTransactionValidationError::NonSequentialNonces);
-                }
-            }
-            curr_sys_sender_nonce = Some(sys_txn.nonce())
         }
 
         for user_txn in &txns {
@@ -318,11 +394,9 @@ mod test {
             1,
             RoundSignature::new(Round(1), &nop_keypair),
         );
+        let sys_tx_validator = SystemTransactionValidator::new(SeqNum::MAX, Epoch::MAX);
 
-        let result = SystemTransactionValidator::validate_and_extract_system_transactions(
-            &block_header,
-            txs,
-        );
+        let result = sys_tx_validator.validate_and_extract_system_transactions(&block_header, txs);
         assert!(matches!(
             result,
             Err(SystemTransactionValidationError::UnexpectedSystemTransaction)

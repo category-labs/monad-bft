@@ -411,7 +411,8 @@ where
                 .val_epoch_map
                 .get_val_set(&epoch)
                 .expect("validator set exists for local epoch");
-            self.election.get_leader(round, validator_set.get_members())
+            self.election
+                .get_leader(round, epoch, validator_set.get_members())
         };
 
         let timeout_round = self.consensus.pacemaker.get_current_round();
@@ -497,9 +498,9 @@ where
         // author, leader, round checks
         let pacemaker_round = self.consensus.pacemaker.get_current_round();
         let proposal_round = p.proposal_round;
-        let expected_leader = self
-            .election
-            .get_leader(proposal_round, validator_set.get_members());
+        let expected_leader =
+            self.election
+                .get_leader(proposal_round, epoch, validator_set.get_members());
         if proposal_round > pacemaker_round || author != expected_leader {
             debug!(
                 ?pacemaker_round,
@@ -578,9 +579,9 @@ where
             .val_epoch_map
             .get_val_set(&epoch)
             .expect("proposal message was verified");
-        let block_round_leader = self
-            .election
-            .get_leader(block_round, validator_set.get_members());
+        let block_round_leader =
+            self.election
+                .get_leader(block_round, epoch, validator_set.get_members());
         if block_author != block_round_leader {
             return None;
         }
@@ -766,9 +767,9 @@ where
             // Note that this try_propose is superfluous because process_qc calls it internally
             cmds.extend(self.try_propose());
 
-            let vote_round_leader = self
-                .election
-                .get_leader(vote_round, validator_set.get_members());
+            let vote_round_leader =
+                self.election
+                    .get_leader(vote_round, epoch, validator_set.get_members());
             if self.nodeid == &vote_round_leader {
                 // Note that if we're also the leader of (vote_round + 1), we'll send QC(r) in
                 // both AdvanceRound(QC(r)) and Proposal(r+1). This is fine, as AdvanceRound(r)
@@ -910,9 +911,9 @@ where
         // author, leader, round checks
         let pacemaker_round = self.consensus.pacemaker.get_current_round();
         let round = round_recovery.round;
-        let expected_leader = self
-            .election
-            .get_leader(pacemaker_round, validator_set.get_members());
+        let expected_leader =
+            self.election
+                .get_leader(pacemaker_round, epoch, validator_set.get_members());
         if round != pacemaker_round || author != expected_leader {
             debug!(
                 ?pacemaker_round,
@@ -1138,7 +1139,8 @@ where
                 .val_epoch_map
                 .get_val_set(&epoch)
                 .expect("looked up leader for invalid round");
-            self.election.get_leader(round, validator_set.get_members())
+            self.election
+                .get_leader(round, epoch, validator_set.get_members())
         };
         // leader for next round must be known
         let next_leader = get_leader(round + Round(1));
@@ -1607,7 +1609,9 @@ where
             todo!("handle non-existent validatorset for next round epoch");
         };
 
-        let leader = &self.election.get_leader(round, validator_set.get_members());
+        let leader = &self
+            .election
+            .get_leader(round, epoch, validator_set.get_members());
         trace!(?round, ?leader, "try propose");
 
         // check that self is leader
@@ -1801,6 +1805,7 @@ where
                 );
 
                 cmds.push(ConsensusCommand::CreateProposal {
+                    node_id: *self.nodeid,
                     epoch,
                     round,
                     seq_num: try_propose_seq_num,
@@ -1856,9 +1861,9 @@ where
                     todo!("handle non-existent validatorset for next k round epoch");
                 };
 
-                let leader = self
-                    .election
-                    .get_leader(round, next_validator_set.get_members());
+                let leader =
+                    self.election
+                        .get_leader(round, epoch, next_validator_set.get_members());
 
                 (leader, round)
             })
@@ -1960,6 +1965,8 @@ mod test {
 
     const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;
     const GAS_LIMIT: u64 = 30000;
+    const EPOCH_LENGTH: SeqNum = SeqNum(100);
+    const EPOCH_START_DELAY: Round = Round(20);
 
     static CHAIN_PARAMS: ChainParams = ChainParams {
         tx_limit: 10_000,
@@ -2289,7 +2296,7 @@ mod test {
                     ValidatorMapping::new(val_cert_pubkeys.clone()),
                 );
                 let epoch_manager =
-                    EpochManager::new(SeqNum(100), Round(20), &[(Epoch(1), Round(0))]);
+                    EpochManager::new(EPOCH_LENGTH, EPOCH_START_DELAY, &[(Epoch(1), Round(0))]);
 
                 let default_key =
                     <ST::KeyPairType as CertificateKeyPair>::from_bytes(&mut [127; 32]).unwrap();
@@ -2590,7 +2597,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            || EthValidator::new(0, EPOCH_LENGTH, Epoch::MAX),
             execution_delay,
         );
 
@@ -2667,7 +2674,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            || EthValidator::new(0, EPOCH_LENGTH, Epoch::MAX),
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -2710,7 +2717,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            || EthValidator::new(0, EPOCH_LENGTH, Epoch::MAX),
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -2770,7 +2777,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            || EthValidator::new(0, EPOCH_LENGTH, Epoch::MAX),
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -2802,7 +2809,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            || EthValidator::new(0, EPOCH_LENGTH, Epoch::MAX),
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -2864,7 +2871,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            || EthValidator::new(0, EPOCH_LENGTH, Epoch::MAX),
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -2954,7 +2961,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            || EthValidator::new(0, EPOCH_LENGTH, Epoch::MAX),
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -3039,7 +3046,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            || EthValidator::new(0, EPOCH_LENGTH, Epoch::MAX),
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -3114,7 +3121,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            || EthValidator::new(0, EPOCH_LENGTH, Epoch::MAX),
             execution_delay,
         );
         let (n1, xs) = ctx.split_first_mut().unwrap();
@@ -3327,7 +3334,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            || EthValidator::new(0, EPOCH_LENGTH, Epoch::MAX),
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -3376,7 +3383,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            || EthValidator::new(0, EPOCH_LENGTH, Epoch::MAX),
             execution_delay,
         );
 
@@ -3466,7 +3473,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            || EthValidator::new(0, EPOCH_LENGTH, Epoch::MAX),
             execution_delay,
         );
 
@@ -3494,6 +3501,7 @@ mod test {
             .expect("epoch exists");
         let next_leader = env.election.get_leader(
             Round(11),
+            epoch,
             env.val_epoch_map.get_val_set(&epoch).unwrap().get_members(),
         );
         let mut leader_index = 0;
@@ -3572,7 +3580,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            || EthValidator::new(0, EPOCH_LENGTH, Epoch::MAX),
             execution_delay,
         );
         let mut blocks = vec![];
@@ -3643,7 +3651,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            || EthValidator::new(0, EPOCH_LENGTH, Epoch::MAX),
             execution_delay,
         );
         let mut blocks = vec![];
@@ -3689,7 +3697,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            || EthValidator::new(0, EPOCH_LENGTH, Epoch::MAX),
             execution_delay,
         );
 
@@ -3719,6 +3727,7 @@ mod test {
             .expect("epoch exists");
         let next_leader = env.election.get_leader(
             Round(missing_round + 1),
+            epoch,
             env.val_epoch_map.get_val_set(&epoch).unwrap().get_members(),
         );
         let mut leader_index = 0;
@@ -3811,7 +3820,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            || EthValidator::new(0, EPOCH_LENGTH, Epoch::MAX),
             execution_delay,
         );
         let node = &mut ctx[0];
@@ -3828,6 +3837,7 @@ mod test {
         let epoch = env.epoch_manager.get_epoch(Round(4)).expect("epoch exists");
         let invalid_author = env.election.get_leader(
             Round(4),
+            epoch,
             env.val_epoch_map.get_val_set(&epoch).unwrap().get_members(),
         );
         assert!(invalid_author != node.nodeid);
@@ -3888,7 +3898,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            || EthValidator::new(0, EPOCH_LENGTH, Epoch::MAX),
             execution_delay,
         );
         let mut blocks = vec![];
@@ -3955,7 +3965,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            || EthValidator::new(0, EPOCH_LENGTH, Epoch::MAX),
             execution_delay,
         );
         let mut blocks = vec![];
@@ -4060,7 +4070,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            || EthValidator::new(0, EPOCH_LENGTH, Epoch::MAX),
             execution_delay,
         );
         let mut blocks = vec![];
@@ -4156,7 +4166,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            || EthValidator::new(0, EPOCH_LENGTH, Epoch::MAX),
             execution_delay,
         );
         let mut blocks = vec![];
@@ -4268,7 +4278,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            || EthValidator::new(0, EPOCH_LENGTH, Epoch::MAX),
             execution_delay,
         );
 
@@ -4423,7 +4433,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            || EthValidator::new(0, EPOCH_LENGTH, Epoch::MAX),
             execution_delay,
         );
         let mut blocks = vec![];
@@ -4542,7 +4552,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            || EthValidator::new(0, EPOCH_LENGTH, Epoch::MAX),
             execution_delay,
         );
         let p1 = env.next_proposal(Vec::new());
@@ -4587,7 +4597,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            || EthValidator::new(0, EPOCH_LENGTH, Epoch::MAX),
             execution_delay,
         );
 
@@ -4648,7 +4658,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            || EthValidator::new(0, EPOCH_LENGTH, Epoch::MAX),
             execution_delay,
         );
 
@@ -4755,7 +4765,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            || EthValidator::new(0, EPOCH_LENGTH, Epoch::MAX),
             execution_delay,
         );
 
@@ -4880,7 +4890,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            || EthValidator::new(0, EPOCH_LENGTH, Epoch::MAX),
             execution_delay,
         );
 
@@ -5039,7 +5049,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            || EthValidator::new(0, EPOCH_LENGTH, Epoch::MAX),
             execution_delay,
         );
 
@@ -5155,7 +5165,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            || EthValidator::new(0, EPOCH_LENGTH, Epoch::MAX),
             execution_delay,
         );
 
@@ -5256,7 +5266,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            || EthValidator::new(0, EPOCH_LENGTH, Epoch::MAX),
             execution_delay,
         );
 

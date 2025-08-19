@@ -662,6 +662,7 @@ where
                 TimerCommand::ScheduleReset(TimeoutVariant::Pacemaker),
             )),
             ConsensusCommand::CreateProposal {
+                node_id,
                 epoch,
                 round,
                 seq_num,
@@ -680,6 +681,7 @@ where
                 delayed_execution_results,
             } => {
                 parent_cmds.push(Command::TxPoolCommand(TxPoolCommand::CreateProposal {
+                    node_id,
                     epoch,
                     round,
                     seq_num,

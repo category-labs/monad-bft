@@ -53,7 +53,7 @@ mod test {
         DropTransformer, GenericTransformer, GenericTransformerPipeline, LatencyTransformer,
         PartitionTransformer, ID,
     };
-    use monad_types::{NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
+    use monad_types::{Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
     use monad_updaters::{
         ledger::MockableLedger, statesync::MockStateSyncExecutor, txpool::MockTxPoolExecutor,
         val_set::MockValSetUpdaterNop,
@@ -142,6 +142,7 @@ mod test {
         num_nodes: u16,
         existing_accounts: impl IntoIterator<Item = Address>,
     ) -> Nodes<EthSwarm> {
+        let epoch_length = SeqNum(2000);
         let execution_delay = SeqNum(4);
 
         let existing_nonces: BTreeMap<_, _> =
@@ -153,7 +154,7 @@ mod test {
             num_nodes,
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            || EthValidator::new(1337),
+            || EthValidator::new(1337, epoch_length, Epoch::MAX),
             create_block_policy,
             || {
                 InMemoryStateInner::new(
@@ -165,7 +166,7 @@ mod test {
             execution_delay,                     // execution_delay
             CONSENSUS_DELTA,                     // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            SeqNum(2000),                        // epoch_length
+            epoch_length,                        // epoch_length
             Round(50),                           // epoch_start_delay
             SeqNum(100),                         // state_sync_threshold
         );

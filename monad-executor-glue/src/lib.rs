@@ -444,6 +444,7 @@ where
     BlockCommit(Vec<BPT::ValidatedBlock>),
 
     CreateProposal {
+        node_id: NodeId<CertificateSignaturePubKey<ST>>,
         epoch: Epoch,
         round: Round,
         seq_num: SeqNum,
@@ -491,6 +492,7 @@ where
         match self {
             Self::BlockCommit(arg0) => f.debug_tuple("BlockCommit").field(arg0).finish(),
             Self::CreateProposal {
+                node_id,
                 epoch,
                 round,
                 seq_num,
@@ -507,6 +509,7 @@ where
                 delayed_execution_results,
             } => f
                 .debug_struct("CreateProposal")
+                .field("node_id", node_id)
                 .field("epoch", epoch)
                 .field("round", round)
                 .field("seq_num", seq_num)

@@ -13,6 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use alloy_primitives::Address;
 use alloy_rlp::{Decodable, Encodable, Header};
 use monad_crypto::{
     certificate_signature::{
@@ -49,6 +50,10 @@ impl PubKey for BlsPubKey {
 
     fn bytes(&self) -> Vec<u8> {
         self.compress().to_vec()
+    }
+
+    fn get_eth_address(&self) -> Option<Address> {
+        None
     }
 }
 
