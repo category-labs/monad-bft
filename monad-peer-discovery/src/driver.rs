@@ -27,7 +27,6 @@ use monad_crypto::certificate_signature::{
 use monad_executor::ExecutorMetrics;
 use monad_types::NodeId;
 use tokio_util::time::{DelayQueue, delay_queue::Key};
-use tracing::error;
 
 use crate::{
     MonadNameRecord, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryCommand,
@@ -85,10 +84,6 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscTimers<ST> {
         if let Some((key, _event)) = self.events.remove(&(node_id, timer_kind)) {
             // DelayQueue timer panics if key is not found, which indicates a
             // logic error - inconsistency between timers and events
-            error!(
-                ?key,
-                "key is not present in peer discovery timer delay queue"
-            );
             self.timers.remove(&key);
         }
     }
