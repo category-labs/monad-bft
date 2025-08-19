@@ -443,6 +443,7 @@ where
             block_author,
             next_system_txn_nonce,
         );
+
         debug!(
             ?proposed_seq_num,
             ?sys_txns,
