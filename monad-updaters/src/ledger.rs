@@ -97,6 +97,7 @@ where
 
     events: VecDeque<BlockSyncEvent<ST, SCT, EPT>>,
 
+    finalization_delay: SeqNum,
     state_backend: InMemoryState<ST, SCT>,
 
     waker: Option<Waker>,
@@ -115,11 +116,17 @@ where
             committed_blocks: Default::default(),
             events: Default::default(),
 
+            finalization_delay: SeqNum(0),
             state_backend,
 
             waker: Default::default(),
             _phantom: Default::default(),
         }
+    }
+
+    pub fn with_finalization_delay(mut self, finalization_delay: SeqNum) -> Self {
+        self.finalization_delay = finalization_delay;
+        self
     }
 
     fn get_headers(&self, block_range: BlockRange) -> BlockSyncHeadersResponse<ST, SCT, EPT> {
@@ -176,12 +183,24 @@ where
                     self.blocks.insert(block.get_id(), block);
                 }
                 LedgerCommand::LedgerCommit(OptimisticCommit::Finalized(block)) => {
-                    self.committed_blocks
-                        .insert(block.get_seq_num(), block.clone());
-                    self.state_backend
-                        .lock()
-                        .unwrap()
-                        .ledger_commit(&block.get_id(), &block.get_seq_num());
+                    if block.get_seq_num() <= self.finalization_delay {
+                        continue;
+                    }
+                    let finalize_seq_num = block.get_seq_num() - self.finalization_delay;
+                    let mut block = block;
+                    loop {
+                        if block.get_seq_num() == finalize_seq_num {
+                            self.committed_blocks
+                                .insert(block.get_seq_num(), block.clone());
+                            let mut state = self.state_backend.lock().unwrap();
+                            state.ledger_commit(&block.get_id(), &block.get_seq_num());
+                            break;
+                        }
+                        block = match self.blocks.get(&block.get_parent_id()) {
+                            None => break,
+                            Some(next_block) => next_block.clone(),
+                        };
+                    }
                 }
                 LedgerCommand::LedgerFetchHeaders(block_range) => {
                     self.events.push_back(BlockSyncEvent::SelfResponse {

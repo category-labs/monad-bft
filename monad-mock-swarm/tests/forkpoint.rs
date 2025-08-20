@@ -126,6 +126,7 @@ fn test_forkpoint_restart_f_simple_blocksync() {
     let blocks_before_failure = SeqNum(10);
     let time_before_new_forkpoint = SeqNum(0);
     let recovery_time = SeqNum(statesync_threshold.0 / 2);
+    let finalization_delay = SeqNum(0);
     forkpoint_restart_f(
         blocks_before_failure,
         time_before_new_forkpoint,
@@ -133,6 +134,31 @@ fn test_forkpoint_restart_f_simple_blocksync() {
         epoch_length,
         statesync_threshold,
         statesync_service_window,
+        finalization_delay,
+    );
+}
+
+#[ignore]
+// execution is delayed longer than state_root_delay
+// ensure that we don't statesync
+#[test]
+fn test_forkpoint_restart_f_delayed_execution_no_statesync() {
+    let epoch_length = SeqNum(200);
+    let statesync_threshold = SeqNum(100);
+    let statesync_service_window = SeqNum::MAX;
+
+    let blocks_before_failure = SeqNum(10);
+    let time_before_new_forkpoint = SeqNum(0);
+    let recovery_time = SeqNum(statesync_threshold.0 / 2);
+    let finalization_delay = SeqNum(8); // state_root_delay is 4
+    forkpoint_restart_f(
+        blocks_before_failure,
+        time_before_new_forkpoint,
+        recovery_time,
+        epoch_length,
+        statesync_threshold,
+        statesync_service_window,
+        finalization_delay,
     );
 }
 
@@ -145,6 +171,7 @@ fn test_forkpoint_restart_f_simple_statesync() {
     let blocks_before_failure = SeqNum(10);
     let time_before_new_forkpoint = SeqNum(statesync_threshold.0 * 3 / 2);
     let recovery_time = time_before_new_forkpoint;
+    let finalization_delay = SeqNum(0);
     forkpoint_restart_f(
         blocks_before_failure,
         time_before_new_forkpoint,
@@ -152,6 +179,7 @@ fn test_forkpoint_restart_f_simple_statesync() {
         epoch_length,
         statesync_threshold,
         statesync_service_window,
+        finalization_delay,
     );
 }
 
@@ -169,6 +197,7 @@ fn test_forkpoint_restart_f_target_reset_statesync() {
     let blocks_before_failure = SeqNum(10);
     let time_before_new_forkpoint = SeqNum(10);
     let recovery_time = SeqNum(statesync_threshold.0 * 3 / 2);
+    let finalization_delay = SeqNum(0);
     forkpoint_restart_f(
         blocks_before_failure,
         time_before_new_forkpoint,
@@ -176,6 +205,7 @@ fn test_forkpoint_restart_f_target_reset_statesync() {
         epoch_length,
         statesync_threshold,
         statesync_service_window,
+        finalization_delay,
     );
 }
 
@@ -188,6 +218,7 @@ fn test_forkpoint_restart_f_epoch_boundary_statesync() {
     let blocks_before_failure = SeqNum(275);
     let time_before_new_forkpoint = SeqNum(statesync_threshold.0 * 3 / 2);
     let recovery_time = time_before_new_forkpoint;
+    let finalization_delay = SeqNum(0);
     forkpoint_restart_f(
         blocks_before_failure,
         time_before_new_forkpoint,
@@ -195,6 +226,7 @@ fn test_forkpoint_restart_f_epoch_boundary_statesync() {
         epoch_length,
         statesync_threshold,
         statesync_service_window,
+        finalization_delay,
     );
 }
 
@@ -210,6 +242,7 @@ fn test_forkpoint_restart_f() {
     let statesync_threshold = SeqNum(100);
     let statesync_service_window = SeqNum::MAX;
     let time_before_new_forkpoint = SeqNum(0);
+    let finalization_delay = SeqNum(0);
     // Epoch 1 and 2 are populated on genesis
     // This covers the case with generating validator set for epoch 3
     for before in 10..epoch_length.0 * 3 {
@@ -225,6 +258,7 @@ fn test_forkpoint_restart_f() {
                     epoch_length,
                     statesync_threshold,
                     statesync_service_window,
+                    finalization_delay,
                 );
             })
         });
@@ -242,6 +276,7 @@ fn forkpoint_restart_f(
     epoch_length: SeqNum,
     statesync_threshold: SeqNum,
     statesync_service_window: SeqNum,
+    finalization_delay: SeqNum,
 ) {
     assert!(time_before_new_forkpoint <= recovery_time);
 
@@ -345,7 +380,8 @@ fn forkpoint_restart_f(
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockValSetUpdaterNop::new(validators.clone(), epoch_length),
                         MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
-                        MockLedger::new(state_backend.clone()),
+                        MockLedger::new(state_backend.clone())
+                            .with_finalization_delay(finalization_delay),
                         MockStateSyncExecutor::new(
                             state_backend,
                             validators
