@@ -13,10 +13,10 @@ buckets = 5
 [[guests.commands]]
 command = "/home/dd/monad-bft/target/release/node producer --cluster /home/dd/monad-bft/cluster.toml --interval 500ms --size 10MB"
 [guests.commands.env]
-RUST_LOG = "info"
+RUST_LOG = "trace"
 
 [[guests.commands]]
 command = "/home/dd/monad-bft/target/release/node run --cluster /home/dd/monad-bft/cluster.toml"
-replicas = 49
+replicas = 9
 [guests.commands.env]
-RUST_LOG = "debug"
+RUST_LOG = "trace"

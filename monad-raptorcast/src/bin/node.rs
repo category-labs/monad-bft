@@ -96,10 +96,10 @@ struct ClusterConfig {
     participants: Vec<ParticipantConfig>,
 }
 
-#[derive(Debug, Clone, Copy, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
+#[derive(Debug, Clone, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
 struct MockMessage {
     timestamp: u64,
-    message_len: usize,
+    data: bytes::Bytes,
 }
 
 impl MockMessage {
@@ -108,9 +108,23 @@ impl MockMessage {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
+        
+        let mut data = bytes::BytesMut::with_capacity(message_len);
+        data.resize(message_len, 0);
+        
+        let timestamp_bytes = timestamp.to_le_bytes();
+        if data.len() >= 8 {
+            data[0..8].copy_from_slice(&timestamp_bytes);
+        }
+        
+        if data.len() > 8 {
+            let mut rng = thread_rng();
+            rng.fill(&mut data[8..]);
+        }
+        
         Self {
             timestamp,
-            message_len,
+            data: data.freeze(),
         }
     }
 }
@@ -129,20 +143,7 @@ impl Message for MockMessage {
 
 impl Serializable<bytes::Bytes> for MockMessage {
     fn serialize(&self) -> bytes::Bytes {
-        let mut message = bytes::BytesMut::with_capacity(self.message_len);
-        message.resize(self.message_len, 0);
-        
-        let timestamp_bytes = self.timestamp.to_le_bytes();
-        if message.len() >= 8 {
-            message[0..8].copy_from_slice(&timestamp_bytes);
-        }
-        
-        if message.len() > 8 {
-            let mut rng = thread_rng();
-            rng.fill(&mut message[8..]);
-        }
-        
-        message.into()
+        self.data.clone()
     }
 }
 
@@ -159,12 +160,12 @@ impl Deserializable<bytes::Bytes> for MockMessage {
         let timestamp = u64::from_le_bytes(message[..8].try_into().unwrap());
         Ok(Self {
             timestamp,
-            message_len: message.len(),
+            data: message.clone(),
         })
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct MockEvent<P: monad_crypto::certificate_signature::PubKey> {
     from: NodeId<P>,
     message: MockMessage,
@@ -388,7 +389,7 @@ async fn run_producer(
                             tracing::info!(
                                 from = ?from,
                                 latency_ms = latency_ms,
-                                message_size = message.message_len,
+                                message_size = message.data.len(),
                                 "message received"
                             );
                         }
@@ -529,7 +530,7 @@ async fn run_node(cluster_path: String) -> Result<(), Box<dyn std::error::Error>
                             tracing::info!(
                                 from = ?from,
                                 latency_ms = latency_ms,
-                                message_size = message.message_len,
+                                message_size = message.data.len(),
                                 "message received"
                             );
                         }
