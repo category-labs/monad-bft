@@ -161,6 +161,7 @@ impl ValidEthTransaction {
     pub fn get_if_forwardable<const MIN_SEQNUM_DIFF: u64, const MAX_RETRIES: usize>(
         &mut self,
         last_commit_seq_num: SeqNum,
+        last_commit_base_fee: u64,
     ) -> Option<&TxEnvelope> {
         if !self.owned {
             return None;
@@ -175,6 +176,10 @@ impl ValidEthTransaction {
             .saturating_add(SeqNum(MIN_SEQNUM_DIFF));
 
         if min_forwardable_seqnum > last_commit_seq_num {
+            return None;
+        }
+
+        if self.tx.max_fee_per_gas() < last_commit_base_fee as u128 {
             return None;
         }
 
