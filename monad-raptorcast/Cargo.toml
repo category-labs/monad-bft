@@ -41,6 +41,8 @@ serde = { workspace = true, features = ["derive"] }
 toml = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 futures-util = { workspace = true }
+humantime = "2"
+byte-unit = "5"
 
 [dev-dependencies]
 monad-testutil = { workspace = true }

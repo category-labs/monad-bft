@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     net::{SocketAddr, SocketAddrV4},
     sync::Arc,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use clap::{Parser, Subcommand};
@@ -26,13 +26,26 @@ use monad_raptorcast::{
     RaptorCast, RaptorCastEvent,
 };
 use monad_secp::{KeyPair, SecpSignature};
-use monad_types::{Deserializable, Epoch, NodeId, Round, Serializable, Stake};
+use monad_types::{Deserializable, Epoch, NodeId, Round, RouterTarget, Serializable, Stake};
 use rand_chacha::{rand_core::SeedableRng, ChaCha8Rng};
 use serde::{Deserialize, Serialize};
 use tracing_subscriber::fmt::format::FmtSpan;
 
 type SignatureType = SecpSignature;
 type PubKeyType = CertificateSignaturePubKey<SignatureType>;
+
+fn parse_duration(s: &str) -> Result<Duration, String> {
+    humantime::parse_duration(s).map_err(|e| e.to_string())
+}
+
+fn parse_size(s: &str) -> Result<usize, String> {
+    use std::str::FromStr;
+
+    use byte_unit::Byte;
+    Byte::from_str(s)
+        .map(|b| b.as_u64() as usize)
+        .map_err(|e| e.to_string())
+}
 
 #[derive(Parser)]
 #[command(name = "node")]
@@ -49,6 +62,16 @@ enum Commands {
         cluster: String,
         #[arg(long)]
         index: usize,
+    },
+    Producer {
+        #[arg(long)]
+        cluster: String,
+        #[arg(long)]
+        index: usize,
+        #[arg(long, value_parser = parse_duration)]
+        interval: Duration,
+        #[arg(long, value_parser = parse_size)]
+        size: usize,
     },
     Generate {
         #[arg(long)]
@@ -77,15 +100,22 @@ struct ClusterConfig {
     participants: Vec<ParticipantConfig>,
 }
 
-#[derive(Clone, Copy, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
+#[derive(Debug, Clone, Copy, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
 struct MockMessage {
-    id: u32,
+    timestamp: u64,
     message_len: usize,
 }
 
 impl MockMessage {
-    fn new(id: u32, message_len: usize) -> Self {
-        Self { id, message_len }
+    fn new_with_timestamp(message_len: usize) -> Self {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        Self {
+            timestamp,
+            message_len,
+        }
     }
 }
 
@@ -94,35 +124,47 @@ impl Message for MockMessage {
     type Event = MockEvent<Self::NodeIdPubKey>;
 
     fn event(self, from: NodeId<Self::NodeIdPubKey>) -> Self::Event {
-        MockEvent((from, self.id))
+        MockEvent {
+            from,
+            message: self,
+        }
     }
 }
 
 impl Serializable<bytes::Bytes> for MockMessage {
     fn serialize(&self) -> bytes::Bytes {
         let mut message = bytes::BytesMut::zeroed(self.message_len);
-        let id_bytes = self.id.to_le_bytes();
-        message[0] = id_bytes[0];
-        message[1] = id_bytes[1];
-        message[2] = id_bytes[2];
-        message[3] = id_bytes[3];
+        let timestamp_bytes = self.timestamp.to_le_bytes();
+        if message.len() >= 8 {
+            message[0..8].copy_from_slice(&timestamp_bytes);
+        }
         message.into()
     }
 }
 
 impl Deserializable<bytes::Bytes> for MockMessage {
-    type ReadError = std::num::ParseIntError;
+    type ReadError = std::io::Error;
 
     fn deserialize(message: &bytes::Bytes) -> Result<Self, Self::ReadError> {
-        Ok(Self::new(
-            u32::from_le_bytes(message[..4].try_into().unwrap()),
-            message.len(),
-        ))
+        if message.len() < 8 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Message too short",
+            ));
+        }
+        let timestamp = u64::from_le_bytes(message[..8].try_into().unwrap());
+        Ok(Self {
+            timestamp,
+            message_len: message.len(),
+        })
     }
 }
 
 #[derive(Clone, Copy, Debug)]
-struct MockEvent<P: monad_crypto::certificate_signature::PubKey>((NodeId<P>, u32));
+struct MockEvent<P: monad_crypto::certificate_signature::PubKey> {
+    from: NodeId<P>,
+    message: MockMessage,
+}
 
 impl<ST> From<RaptorCastEvent<MockEvent<CertificateSignaturePubKey<ST>>, ST>>
     for MockEvent<CertificateSignaturePubKey<ST>>
@@ -183,8 +225,11 @@ fn create_peer_discovery_builder(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
     tracing_subscriber::fmt::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(env_filter)
         .with_span_events(FmtSpan::CLOSE)
         .init();
 
@@ -192,6 +237,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Commands::Run { cluster, index } => run_node(cluster, index).await,
+        Commands::Producer {
+            cluster,
+            index,
+            interval,
+            size,
+        } => run_producer(cluster, index, interval, size).await,
         Commands::Generate {
             output,
             count,
@@ -199,6 +250,148 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             tcp_port,
             udp_port,
         } => generate_config(output, count, ip, tcp_port, udp_port),
+    }
+}
+
+async fn run_producer(
+    cluster_path: String,
+    index: usize,
+    interval: Duration,
+    size: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let config_str = std::fs::read_to_string(cluster_path)?;
+    let cluster_config: ClusterConfig = toml::from_str(&config_str)?;
+
+    if index >= cluster_config.participants.len() {
+        return Err(format!(
+            "Index {} out of range for {} participants",
+            index,
+            cluster_config.participants.len()
+        )
+        .into());
+    }
+
+    let my_config = &cluster_config.participants[index];
+    let private_key_bytes = hex::decode(&my_config.private_key)?;
+    let mut privkey_array = [0u8; 32];
+    privkey_array.copy_from_slice(&private_key_bytes);
+    let keypair = KeyPair::from_bytes(&mut privkey_array)?;
+
+    let my_node_id = NodeId::new(keypair.pubkey());
+
+    let mut routing_info = BTreeMap::new();
+    let mut epoch_validators = BTreeMap::new();
+
+    for participant in &cluster_config.participants {
+        let mut participant_privkey = [0u8; 32];
+        participant_privkey.copy_from_slice(&hex::decode(&participant.private_key)?);
+        let participant_keypair = KeyPair::from_bytes(&mut participant_privkey)?;
+        let participant_pubkey = participant_keypair.pubkey();
+        let node_id = NodeId::new(participant_pubkey);
+
+        let name_record = NameRecord {
+            address: participant.udp_addr,
+            seq: 0,
+        };
+        let monad_name_record = MonadNameRecord::new(name_record, &participant_keypair);
+
+        routing_info.insert(node_id, monad_name_record);
+        epoch_validators.insert(
+            node_id,
+            monad_raptorcast::util::Validator { stake: Stake::ONE },
+        );
+    }
+
+    let my_name_record = NameRecord {
+        address: my_config.udp_addr,
+        seq: 0,
+    };
+    let my_monad_name_record = MonadNameRecord::new(my_name_record, &keypair);
+
+    let server_address = SocketAddr::V4(SocketAddrV4::new(
+        std::net::Ipv4Addr::new(0, 0, 0, 0),
+        my_config.tcp_addr.port(),
+    ));
+
+    let dataplane = DataplaneBuilder::new(&server_address, 1_000).build();
+    assert!(dataplane.block_until_ready(Duration::from_secs(2)));
+
+    let (dataplane_reader, dataplane_writer) = dataplane.split();
+
+    let pd = PeerDiscoveryDriver::new(create_peer_discovery_builder(
+        my_node_id,
+        my_monad_name_record,
+        routing_info,
+        epoch_validators.clone(),
+    ));
+
+    let mut raptorcast = RaptorCast::<
+        SignatureType,
+        MockMessage,
+        MockMessage,
+        <MockMessage as Message>::Event,
+        PeerDiscovery<SignatureType>,
+    >::new(
+        create_raptorcast_config(Arc::new(keypair)),
+        dataplane_reader,
+        dataplane_writer,
+        Arc::new(std::sync::Mutex::new(pd)),
+    );
+
+    raptorcast.exec(vec![RouterCommand::AddEpochValidatorSet {
+        epoch: Epoch(0),
+        validator_set: epoch_validators
+            .iter()
+            .map(|(id, v)| (*id, v.stake))
+            .collect(),
+    }]);
+
+    tracing::info!(
+        node_id = ?my_node_id,
+        tcp_addr = ?server_address,
+        udp_addr = ?my_config.udp_addr,
+        interval = ?interval,
+        message_size = size,
+        "started producer node"
+    );
+
+    let mut interval_timer = tokio::time::interval(interval);
+    interval_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        tokio::select! {
+            maybe_event = raptorcast.next() => {
+                if let Some(event) = maybe_event {
+                    match MockEvent::from(event) {
+                        MockEvent { from, message } => {
+                            let now = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap()
+                                .as_nanos() as u64;
+                            let latency_ns = now - message.timestamp;
+                            let latency_ms = latency_ns as f64 / 1_000_000.0;
+                            tracing::info!(
+                                from = ?from,
+                                latency_ms = latency_ms,
+                                message_size = message.message_len,
+                                "message received"
+                            );
+                        }
+                    }
+                }
+            }
+            _ = interval_timer.tick() => {
+                let message = MockMessage::new_with_timestamp(size);
+                raptorcast.exec(vec![RouterCommand::Publish {
+                    target: RouterTarget::Raptorcast(Epoch(0)),
+                    message,
+                }]);
+                tracing::info!(
+                    message_size = size,
+                    "sent broadcast message"
+                );
+            }
+        }
     }
 }
 
@@ -301,7 +494,22 @@ async fn run_node(cluster_path: String, index: usize) -> Result<(), Box<dyn std:
         tokio::select! {
             maybe_event = raptorcast.next() => {
                 if let Some(event) = maybe_event {
-                    tracing::info!(event = ?event, "Received raptorcast event");
+                    match MockEvent::from(event) {
+                        MockEvent { from, message } => {
+                            let now = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap()
+                                .as_nanos() as u64;
+                            let latency_ns = now - message.timestamp;
+                            let latency_ms = latency_ns as f64 / 1_000_000.0;
+                            tracing::info!(
+                                from = ?from,
+                                latency_ms = latency_ms,
+                                message_size = message.message_len,
+                                "message received"
+                            );
+                        }
+                    }
                 }
             }
             _ = tokio::time::sleep(Duration::from_secs(1)) => {
