@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeMap,
+    env,
     net::{SocketAddr, SocketAddrV4},
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -27,6 +28,7 @@ use monad_raptorcast::{
 };
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{Deserializable, Epoch, NodeId, Round, RouterTarget, Serializable, Stake};
+use rand::{thread_rng, Rng};
 use rand_chacha::{rand_core::SeedableRng, ChaCha8Rng};
 use serde::{Deserialize, Serialize};
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -60,14 +62,10 @@ enum Commands {
     Run {
         #[arg(long)]
         cluster: String,
-        #[arg(long)]
-        index: usize,
     },
     Producer {
         #[arg(long)]
         cluster: String,
-        #[arg(long)]
-        index: usize,
         #[arg(long, value_parser = parse_duration)]
         interval: Duration,
         #[arg(long, value_parser = parse_size)]
@@ -81,9 +79,7 @@ enum Commands {
         #[arg(long, default_value = "127.0.0.1")]
         ip: String,
         #[arg(long, default_value = "30000")]
-        tcp_port: u16,
-        #[arg(long, default_value = "40000")]
-        udp_port: u16,
+        port: u16,
     },
 }
 
@@ -133,11 +129,19 @@ impl Message for MockMessage {
 
 impl Serializable<bytes::Bytes> for MockMessage {
     fn serialize(&self) -> bytes::Bytes {
-        let mut message = bytes::BytesMut::zeroed(self.message_len);
+        let mut message = bytes::BytesMut::with_capacity(self.message_len);
+        message.resize(self.message_len, 0);
+        
         let timestamp_bytes = self.timestamp.to_le_bytes();
         if message.len() >= 8 {
             message[0..8].copy_from_slice(&timestamp_bytes);
         }
+        
+        if message.len() > 8 {
+            let mut rng = thread_rng();
+            rng.fill(&mut message[8..]);
+        }
+        
         message.into()
     }
 }
@@ -179,21 +183,10 @@ where
     }
 }
 
-fn create_keypair(seed: u8) -> KeyPair {
-    let mut key_bytes = [0u8; 32];
-    let seed_bytes = (seed as u32).to_le_bytes();
-    key_bytes[0] = seed_bytes[0];
-    key_bytes[1] = seed_bytes[1];
-    key_bytes[2] = seed_bytes[2];
-    key_bytes[3] = seed_bytes[3];
-    key_bytes[31] = 1;
-    KeyPair::from_bytes(&mut key_bytes).unwrap()
-}
-
 fn create_raptorcast_config(keypair: Arc<KeyPair>) -> RaptorCastConfig<SignatureType> {
     RaptorCastConfig {
         shared_key: keypair,
-        mtu: 1450,
+        mtu: monad_dataplane::udp::DEFAULT_MTU,
         udp_message_max_age_ms: 5000,
         primary_instance: RaptorCastConfigPrimary::default(),
         secondary_instance: RaptorCastConfigSecondary {
@@ -219,13 +212,13 @@ fn create_peer_discovery_builder(
             .collect(),
         pinned_full_nodes: std::collections::BTreeSet::new(),
         routing_info,
-        ping_period: Duration::from_millis(1000),
-        refresh_period: Duration::from_millis(5000),
-        request_timeout: Duration::from_millis(500),
+        ping_period: Duration::from_millis(1000000),
+        refresh_period: Duration::from_millis(5000000),
+        request_timeout: Duration::from_millis(500000),
         unresponsive_prune_threshold: 5,
         last_participation_prune_threshold: Round(100),
         min_num_peers: 3,
-        max_num_peers: 50,
+        max_num_peers: 10000,
         rng: ChaCha8Rng::from_seed([0u8; 32]),
     }
 }
@@ -245,35 +238,42 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing_subscriber::fmt::fmt()
         .with_env_filter(env_filter)
-        .with_span_events(FmtSpan::CLOSE)
         .init();
 
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Run { cluster, index } => run_node(cluster, index).await,
+        Commands::Run { cluster } => run_node(cluster).await,
         Commands::Producer {
             cluster,
-            index,
             interval,
             size,
-        } => run_producer(cluster, index, interval, size).await,
+        } => run_producer(cluster, interval, size).await,
         Commands::Generate {
             output,
             count,
             ip,
-            tcp_port,
-            udp_port,
-        } => generate_config(output, count, ip, tcp_port, udp_port),
+            port,
+        } => generate_config(output, count, ip, port),
     }
 }
 
+const UDP_BW: u64 = 1_000;
+
 async fn run_producer(
     cluster_path: String,
-    index: usize,
     interval: Duration,
     size: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let simnet_index = env::var("SIMNET_INDEX")
+        .expect("SIMNET_INDEX environment variable must be set")
+        .parse::<usize>()
+        .expect("SIMNET_INDEX must be a valid number");
+    
+    let index = simnet_index - 1;
+    
+    tracing::info!(simnet_index = simnet_index, index = index, "starting producer node with SIMNET_INDEX");
+    
     let config_str = std::fs::read_to_string(cluster_path)?;
     let cluster_config: ClusterConfig = toml::from_str(&config_str)?;
 
@@ -328,7 +328,7 @@ async fn run_producer(
         my_config.tcp_addr.port(),
     ));
 
-    let dataplane = DataplaneBuilder::new(&server_address, 1_000).build();
+    let dataplane = DataplaneBuilder::new(&server_address, UDP_BW).build();
     assert!(dataplane.block_until_ready(Duration::from_secs(2)));
 
     let (dataplane_reader, dataplane_writer) = dataplane.split();
@@ -410,7 +410,16 @@ async fn run_producer(
     }
 }
 
-async fn run_node(cluster_path: String, index: usize) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_node(cluster_path: String) -> Result<(), Box<dyn std::error::Error>> {
+    let simnet_index = env::var("SIMNET_INDEX")
+        .expect("SIMNET_INDEX environment variable must be set")
+        .parse::<usize>()
+        .expect("SIMNET_INDEX must be a valid number");
+    
+    let index = simnet_index - 1;
+    
+    tracing::info!(simnet_index = simnet_index, index = index, "starting regular node with SIMNET_INDEX");
+    
     let config_str = std::fs::read_to_string(cluster_path)?;
     let cluster_config: ClusterConfig = toml::from_str(&config_str)?;
 
@@ -465,7 +474,7 @@ async fn run_node(cluster_path: String, index: usize) -> Result<(), Box<dyn std:
         my_config.tcp_addr.port(),
     ));
 
-    let dataplane = DataplaneBuilder::new(&server_address, 1_000).build();
+    let dataplane = DataplaneBuilder::new(&server_address, UDP_BW).build();
     assert!(dataplane.block_until_ready(Duration::from_secs(2)));
 
     let (dataplane_reader, dataplane_writer) = dataplane.split();
@@ -538,8 +547,7 @@ fn generate_config(
     output_path: String,
     count: usize,
     base_ip: String,
-    tcp_port: u16,
-    udp_port: u16,
+    port: u16,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut participants = Vec::new();
 
@@ -566,8 +574,8 @@ fn generate_config(
         let participant = ParticipantConfig {
             public_key: hex::encode(pubkey_bytes),
             private_key: hex::encode(privkey),
-            tcp_addr: SocketAddrV4::new(node_ip, tcp_port),
-            udp_addr: SocketAddrV4::new(node_ip, udp_port),
+            tcp_addr: SocketAddrV4::new(node_ip, port),
+            udp_addr: SocketAddrV4::new(node_ip, port),
         };
         participants.push(participant);
     }
@@ -585,6 +593,6 @@ fn generate_config(
         base_ip_addr,
         std::net::Ipv4Addr::from(base_ip_u32 + count as u32 - 1)
     );
-    println!("Ports: TCP={}, UDP={}", tcp_port, udp_port);
+    println!("Port: {}", port);
     Ok(())
 }
