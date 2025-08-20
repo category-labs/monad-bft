@@ -41,6 +41,7 @@ RUN apt update && apt install -y \
   libgmock-dev \
   libgmp-dev \
   libgtest-dev \
+  libhugetlbfs-dev \
   libmimalloc-dev \
   libtbb-dev \
   liburing-dev \
