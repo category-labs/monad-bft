@@ -33,7 +33,7 @@ use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_eip1559_tx, make_legacy_tx, recover_tx};
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
 use monad_eth_txpool_types::EthTxPoolSnapshot;
-use monad_eth_types::{Balance, BASE_FEE_PER_GAS};
+use monad_eth_types::Balance;
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
@@ -41,6 +41,7 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing_test::traced_test;
 
 const EXECUTION_DELAY: u64 = 4;
+const BASE_FEE_PER_GAS: u64 = monad_eth_types::BASE_FEE_PER_GAS;
 const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;
 const GAS_LIMIT: u64 = 30000;
 const PROPOSAL_GAS_LIMIT: u64 = 300_000_000;
@@ -90,6 +91,7 @@ enum TxPoolTestEvent<'a> {
         should_insert: bool,
     },
     CreateProposal {
+        base_fee: u64,
         tx_limit: usize,
         gas_limit: u64,
         expected_txs: Vec<&'a TxEnvelope>,
@@ -229,6 +231,7 @@ fn run_custom_iter<const N: usize>(
                 );
             }
             TxPoolTestEvent::CreateProposal {
+                base_fee,
                 tx_limit,
                 gas_limit,
                 expected_txs,
@@ -239,6 +242,7 @@ fn run_custom_iter<const N: usize>(
                     .create_proposal(
                         &mut event_tracker,
                         SeqNum(current_seq_num),
+                        base_fee,
                         tx_limit,
                         gas_limit,
                         PROPOSAL_SIZE_LIMIT,
@@ -343,6 +347,7 @@ fn test_insert_tx_exceeds_gas_limit() {
             expected_pool_size_change: 0,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 1,
             gas_limit: PROPOSAL_GAS_LIMIT,
             expected_txs: vec![],
@@ -362,6 +367,7 @@ fn test_create_proposal_with_insufficient_tx_limit() {
             expected_pool_size_change: 1,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 0,
             gas_limit: GAS_LIMIT,
             expected_txs: vec![],
@@ -386,6 +392,7 @@ fn test_create_partial_proposal_with_insufficient_gas_limit() {
             expected_pool_size_change: 3,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 3,
             gas_limit: PROPOSAL_GAS_LIMIT,
             expected_txs: vec![&tx1, &tx2],
@@ -409,6 +416,7 @@ fn test_basic_price_priority() {
             expected_pool_size_change: 2,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 2,
             gas_limit: GAS_LIMIT * 3,
             expected_txs: vec![&tx2, &tx1],
@@ -432,6 +440,7 @@ fn test_resubmit_with_same_price() {
             expected_pool_size_change: 1,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 2,
             gas_limit: GAS_LIMIT * 2,
             expected_txs: vec![&tx1],
@@ -452,6 +461,7 @@ fn test_resubmit_with_better_price() {
             expected_pool_size_change: 1,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 2,
             gas_limit: GAS_LIMIT * 3,
             expected_txs: vec![&tx2],
@@ -482,6 +492,7 @@ fn nontrivial_example() {
             expected_pool_size_change: 9,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 1024 * GAS_LIMIT,
             expected_txs: vec![&tx1, &tx7, &tx8, &tx9, &tx4, &tx2, &tx5, &tx3, &tx6],
@@ -509,6 +520,7 @@ fn another_non_trivial_example() {
             expected_pool_size_change: 6,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 1024 * GAS_LIMIT,
             expected_txs: vec![&tx1, &tx5, &tx6, &tx3, &tx2, &tx4],
@@ -544,6 +556,7 @@ fn attacker_tries_to_include_transaction_with_large_gas_limit_to_exit_proposal_c
             expected_pool_size_change: 10,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
             expected_txs: vec![&tx2, &tx3, &tx4, &tx5, &tx6, &tx7, &tx8, &tx9, &tx10, &tx11],
@@ -582,6 +595,7 @@ fn suboptimal_block() {
                 expected_pool_size_change: 11,
             },
             TxPoolTestEvent::CreateProposal {
+                base_fee: BASE_FEE_PER_GAS,
                 tx_limit: 11,
                 gas_limit: PROPOSAL_GAS_LIMIT,
                 expected_txs: vec![&tx11],
@@ -625,6 +639,7 @@ fn insertion_order() {
             expected_pool_size_change: 10,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 10,
             gas_limit: 10 * GAS_LIMIT,
             expected_txs: vec![&tx1, &tx3, &tx5, &tx7, &tx9, &tx2, &tx4, &tx6, &tx8, &tx10],
@@ -646,6 +661,7 @@ fn test_zero_nonce_included_in_block() {
             expected_pool_size_change: 1,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
             expected_txs: vec![&tx1],
@@ -667,6 +683,7 @@ fn test_nonce_gap() {
             expected_pool_size_change: 1,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
             expected_txs: vec![],
@@ -690,6 +707,7 @@ fn test_intermediary_nonce_gap() {
             expected_pool_size_change: 3,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
             expected_txs: vec![&tx1, &tx2],
@@ -719,6 +737,7 @@ fn test_nonce_exists_in_committed_block() {
                 expected_pool_size_change: 1,
             },
             TxPoolTestEvent::CreateProposal {
+                base_fee: BASE_FEE_PER_GAS,
                 tx_limit: 128,
                 gas_limit: 10 * GAS_LIMIT,
                 expected_txs: vec![&tx2],
@@ -745,6 +764,7 @@ fn test_unknown_account() {
                 assert!(pool.is_empty());
             })),
             TxPoolTestEvent::CreateProposal {
+                base_fee: BASE_FEE_PER_GAS,
                 tx_limit: 1,
                 gas_limit: GAS_LIMIT,
                 expected_txs: vec![],
@@ -771,6 +791,7 @@ fn test_nonce_exists_in_pending_block() {
             expected_pool_size_change: 1,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 1,
             gas_limit: GAS_LIMIT,
             expected_txs: vec![&tx1],
@@ -781,6 +802,7 @@ fn test_nonce_exists_in_pending_block() {
             expected_pool_size_change: 1,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
             expected_txs: vec![&tx3],
@@ -804,6 +826,7 @@ fn test_combine_nonces_of_blocks() {
             expected_pool_size_change: 1,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
             expected_txs: vec![&tx1],
@@ -818,6 +841,7 @@ fn test_combine_nonces_of_blocks() {
             expected_pool_size_change: 1,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
             expected_txs: vec![&tx2],
@@ -828,6 +852,7 @@ fn test_combine_nonces_of_blocks() {
             expected_pool_size_change: 1,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
             expected_txs: vec![&tx3],
@@ -850,12 +875,14 @@ fn test_nonce_gap_maintained_across_proposals() {
             expected_pool_size_change: 3,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
             expected_txs: vec![&tx1, &tx2],
             add_to_blocktree: false,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
             expected_txs: vec![&tx1, &tx2],
@@ -867,12 +894,14 @@ fn test_nonce_gap_maintained_across_proposals() {
         },
         // Even though proposals have been created, the txpool should still contain tx4!
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
             expected_txs: vec![&tx1, &tx2, &tx3, &tx4],
             add_to_blocktree: true,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
             expected_txs: vec![],
@@ -895,6 +924,7 @@ fn test_nonce_gap_maintained_across_commit() {
             expected_pool_size_change: 3,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
             expected_txs: vec![&tx1, &tx2],
@@ -910,18 +940,21 @@ fn test_nonce_gap_maintained_across_commit() {
         },
         // Even though block has been committed, the txpool should still contain tx4!
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
             expected_txs: vec![&tx3, &tx4],
             add_to_blocktree: false,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
             expected_txs: vec![&tx3, &tx4],
             add_to_blocktree: true,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
             expected_txs: vec![],
@@ -981,6 +1014,7 @@ fn test_same_account_priority_fee_ordering() {
                 expected_pool_size_change: 1,
             },
             TxPoolTestEvent::CreateProposal {
+                base_fee: BASE_FEE_PER_GAS,
                 tx_limit: 2,
                 gas_limit: GAS_LIMIT * 2,
                 expected_txs: vec![&tx_higher],
@@ -1005,6 +1039,7 @@ fn test_different_account_priority_fee_ordering() {
                     expected_pool_size_change: 2,
                 },
                 TxPoolTestEvent::CreateProposal {
+                    base_fee: BASE_FEE_PER_GAS,
                     tx_limit: 2,
                     gas_limit: GAS_LIMIT * 2,
                     expected_txs: vec![&tx_higher, &tx_lower],
@@ -1012,6 +1047,35 @@ fn test_different_account_priority_fee_ordering() {
                 },
             ]);
         }
+    }
+}
+
+#[test]
+fn test_eip1559_proposal_base_fee() {
+    let tx1 = make_eip1559_tx(S2, (BASE_FEE_PER_GAS + 10).into(), 10, GAS_LIMIT, 0, 10);
+    let tx2 = make_eip1559_tx(S1, (BASE_FEE_PER_GAS + 15).into(), 5, GAS_LIMIT, 0, 10);
+
+    for (txa, txb) in [(&tx1, &tx2), (&tx2, &tx1)] {
+        run_simple([
+            TxPoolTestEvent::InsertTxs {
+                txs: vec![(txa, true), (txb, true)],
+                expected_pool_size_change: 2,
+            },
+            TxPoolTestEvent::CreateProposal {
+                base_fee: BASE_FEE_PER_GAS,
+                tx_limit: 2,
+                gas_limit: 2 * GAS_LIMIT,
+                expected_txs: vec![&tx1, &tx2],
+                add_to_blocktree: false,
+            },
+            TxPoolTestEvent::CreateProposal {
+                base_fee: BASE_FEE_PER_GAS + 10,
+                tx_limit: 2,
+                gas_limit: 2 * GAS_LIMIT,
+                expected_txs: vec![&tx2, &tx1],
+                add_to_blocktree: false,
+            },
+        ]);
     }
 }
 
@@ -1040,6 +1104,7 @@ fn test_missing_chain_id() {
             expected_pool_size_change: 1,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 1,
             gas_limit: GAS_LIMIT,
             expected_txs: vec![&tx],
@@ -1099,16 +1164,45 @@ fn test_exceed_byte_limit() {
             expected_pool_size_change: 2,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 2,
             gas_limit: PROPOSAL_GAS_LIMIT,
             expected_txs: vec![&tx1],
             add_to_blocktree: true,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 2,
             gas_limit: PROPOSAL_GAS_LIMIT,
             expected_txs: vec![&tx2],
             add_to_blocktree: true,
+        },
+    ]);
+}
+
+#[test]
+#[traced_test]
+fn test_proposal_tx_low_base_fee() {
+    let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
+
+    run_simple([
+        TxPoolTestEvent::InsertTxs {
+            txs: vec![(&tx1, true)],
+            expected_pool_size_change: 1,
+        },
+        TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS + 1,
+            tx_limit: 1,
+            gas_limit: GAS_LIMIT,
+            expected_txs: vec![],
+            add_to_blocktree: false,
+        },
+        TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
+            tx_limit: 1,
+            gas_limit: GAS_LIMIT,
+            expected_txs: vec![&tx1],
+            add_to_blocktree: false,
         },
     ]);
 }

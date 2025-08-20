@@ -147,6 +147,7 @@ where
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         proposed_seq_num: SeqNum,
+        base_fee: u64,
         tx_limit: usize,
         proposal_gas_limit: u64,
         proposal_byte_limit: u64,
@@ -194,7 +195,7 @@ where
             return Ok(Vec::new());
         }
 
-        let tx_heap = TrackedTxHeap::new(&self.txs, &extending_blocks);
+        let tx_heap = TrackedTxHeap::new(&self.txs, &extending_blocks, base_fee);
         let tx_heap_len = tx_heap.len();
 
         let (account_balances, account_balance_lookups) = {
