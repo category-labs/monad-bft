@@ -65,6 +65,7 @@ impl PendingTxList {
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         tx: ValidEthTransaction,
+        last_commit_base_fee: u64,
     ) -> Option<(&ValidEthTransaction, bool)> {
         match self.nonce_map.entry(tx.nonce()) {
             Entry::Vacant(v) => {
@@ -74,19 +75,21 @@ impl PendingTxList {
             Entry::Occupied(mut entry) => {
                 let existing_tx = entry.get();
 
-                if &tx <= existing_tx {
-                    event_tracker.drop(tx.hash(), EthTxPoolDropReason::ExistingHigherPriority);
-                    return None;
-                }
+                if tx.has_higher_priority(existing_tx, last_commit_base_fee) {
+                    event_tracker.replace_pending(
+                        tx.signer_ref(),
+                        existing_tx.hash(),
+                        tx.hash(),
+                        tx.is_owned(),
+                    );
+                    entry.insert(tx);
 
-                event_tracker.replace_pending(
-                    tx.signer_ref(),
-                    existing_tx.hash(),
-                    tx.hash(),
-                    tx.is_owned(),
-                );
-                entry.insert(tx);
-                Some((entry.into_mut(), false))
+                    Some((entry.into_mut(), false))
+                } else {
+                    event_tracker.drop(tx.hash(), EthTxPoolDropReason::ExistingHigherPriority);
+
+                    None
+                }
             }
         }
     }

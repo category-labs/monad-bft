@@ -13,8 +13,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::cmp::Ordering;
-
 use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
 use alloy_primitives::{Address, TxHash};
 use alloy_rlp::Encodable;
@@ -158,6 +156,13 @@ impl ValidEthTransaction {
         self.owned
     }
 
+    pub fn has_higher_priority(&self, other: &Self, base_fee: u64) -> bool {
+        let self_effective_gas_price = self.tx.effective_gas_price(Some(base_fee));
+        let other_effective_gas_price = other.tx.effective_gas_price(Some(base_fee));
+
+        self_effective_gas_price > other_effective_gas_price
+    }
+
     pub fn get_if_forwardable<const MIN_SEQNUM_DIFF: u64, const MAX_RETRIES: usize>(
         &mut self,
         last_commit_seq_num: SeqNum,
@@ -187,24 +192,5 @@ impl ValidEthTransaction {
         self.forward_retries += 1;
 
         Some(&self.tx)
-    }
-}
-
-impl PartialOrd for ValidEthTransaction {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for ValidEthTransaction {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // Since the base fee is currently hard-coded, we can easily and deterministically compute
-        // the effective tip per gas the proposer receives for a given tx. Proposers want to
-        // maximize the total effective tip in a block so we order txs based on their effective tip
-        // per gas since we do not know at proposal time how much gas the tx will use. Additionally,
-        // txs with higher gas limits _typically_ have higher gas usages so we use this as a
-        // heuristic tie breaker when the effective tip per gas is equal.
-        (self.effective_tip_per_gas, self.tx.gas_limit())
-            .cmp(&(other.effective_tip_per_gas, other.tx.gas_limit()))
     }
 }

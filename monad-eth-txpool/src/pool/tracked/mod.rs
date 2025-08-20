@@ -127,15 +127,20 @@ where
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         tx: ValidEthTransaction,
     ) -> Result<Option<&ValidEthTransaction>, ValidEthTransaction> {
-        if self.last_commit.is_none() {
+        let Some(last_commit) = self.last_commit.as_ref() else {
             return Err(tx);
-        }
+        };
 
         let Some(tx_list) = self.txs.get_mut(tx.signer_ref()) else {
             return Err(tx);
         };
 
-        Ok(tx_list.try_insert_tx(event_tracker, tx, self.hard_tx_expiry))
+        Ok(tx_list.try_insert_tx(
+            event_tracker,
+            tx,
+            last_commit.execution_inputs.base_fee_per_gas,
+            self.hard_tx_expiry,
+        ))
     }
 
     pub fn create_proposal(

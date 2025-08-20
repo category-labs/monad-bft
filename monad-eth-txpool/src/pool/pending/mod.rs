@@ -67,6 +67,7 @@ impl PendingTxMap {
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         tx: ValidEthTransaction,
+        last_commit_base_fee: u64,
     ) -> Option<&ValidEthTransaction> {
         if self.num_txs >= MAX_TXS {
             event_tracker.drop(tx.hash(), EthTxPoolDropReason::PoolFull);
@@ -78,7 +79,10 @@ impl PendingTxMap {
 
         match self.txs.entry(tx.signer()) {
             indexmap::map::Entry::Occupied(tx_list) => {
-                let (tx, new_tx) = tx_list.into_mut().try_insert_tx(event_tracker, tx)?;
+                let (tx, new_tx) =
+                    tx_list
+                        .into_mut()
+                        .try_insert_tx(event_tracker, tx, last_commit_base_fee)?;
 
                 if new_tx {
                     self.num_txs += 1;

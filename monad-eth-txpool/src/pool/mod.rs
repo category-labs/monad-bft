@@ -178,6 +178,8 @@ where
             }
         };
 
+        let last_commit_base_fee = last_commit.execution_inputs.base_fee_per_gas;
+
         for tx in txs {
             let account_balance = account_balances
                 .get(tx.signer_ref())
@@ -192,7 +194,10 @@ where
             let Some(tx) = self
                 .tracked
                 .try_insert_tx(event_tracker, tx)
-                .unwrap_or_else(|tx| self.pending.try_insert_tx(event_tracker, tx))
+                .unwrap_or_else(|tx| {
+                    self.pending
+                        .try_insert_tx(event_tracker, tx, last_commit_base_fee)
+                })
             else {
                 continue;
             };
