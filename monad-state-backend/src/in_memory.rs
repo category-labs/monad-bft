@@ -145,6 +145,15 @@ where
         parent_id: BlockId,
         new_account_nonces: BTreeMap<Address, Nonce>,
     ) {
+        if self
+            .commits
+            .get(&seq_num)
+            .is_some_and(|committed| committed.block_id == block_id)
+        {
+            // we can repropose already-finalized blocks on startup
+            // this is part of the statesync process
+            return;
+        }
         assert!(
             seq_num
                 >= self
@@ -182,7 +191,17 @@ where
         );
     }
 
-    fn ledger_commit(&mut self, block_id: &BlockId) {
+    fn ledger_commit(&mut self, block_id: &BlockId, seq_num: &SeqNum) {
+        if self
+            .commits
+            .get(seq_num)
+            .is_some_and(|committed| &committed.block_id == block_id)
+        {
+            // we can refinalize already-finalized blocks on startup
+            // this is part of the statesync process
+            return;
+        }
+
         let committed_proposal = self.proposals.remove(block_id).unwrap_or_else(|| {
             panic!(
                 "committed proposal that doesn't exist, block_id={:?}",

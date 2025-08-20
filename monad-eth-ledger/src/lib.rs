@@ -160,7 +160,7 @@ where
                     let _span = debug_span!("optimistic commit finalized").entered();
                     self.finalized.insert(block.get_seq_num(), block.clone());
                     let mut state = self.state.lock().unwrap();
-                    state.ledger_commit(&block.get_id());
+                    state.ledger_commit(&block.get_id(), &block.get_seq_num());
                 }
                 LedgerCommand::LedgerFetchHeaders(block_range) => {
                     let _span = debug_span!("ledger fetch header").entered();

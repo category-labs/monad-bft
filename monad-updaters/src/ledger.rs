@@ -204,7 +204,7 @@ where
                     self.state_backend
                         .lock()
                         .unwrap()
-                        .ledger_commit(&block.get_id());
+                        .ledger_commit(&block.get_id(), &block.get_seq_num());
                 }
                 LedgerCommand::LedgerFetchHeaders(block_range) => {
                     self.events.push_back(BlockSyncEvent::SelfResponse {

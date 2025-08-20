@@ -1220,6 +1220,7 @@ where
                     1,
                     "always 1 execution result after first k-1 blocks for now"
                 );
+                self.metrics.consensus_events.trigger_state_sync += 1;
                 return vec![Command::StateSyncCommand(StateSyncCommand::RequestSync(
                     delayed_execution_result
                         .first()

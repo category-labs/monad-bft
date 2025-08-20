@@ -2095,7 +2095,8 @@ mod test {
         }
 
         fn ledger_commit(&mut self, block: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>) {
-            self.state_backend.ledger_commit(&block.get_id());
+            self.state_backend
+                .ledger_commit(&block.get_id(), &block.seq_num);
         }
 
         fn ledger_propose(&mut self, block: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>) {

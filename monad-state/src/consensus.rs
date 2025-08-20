@@ -175,6 +175,7 @@ where
                                         consensus_tip =? new_root.seq_num,
                                         "setting new statesync target",
                                     );
+                                    self.metrics.consensus_events.trigger_state_sync += 1;
                                     cmds.push(self.wrap(ConsensusCommand::RequestStateSync {
                                         root: new_root,
                                         high_qc: new_high_qc,
