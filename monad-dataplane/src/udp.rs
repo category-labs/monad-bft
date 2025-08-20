@@ -24,7 +24,7 @@ use std::{
 use bytes::{Bytes, BytesMut};
 use monoio::{net::udp::UdpSocket, spawn, time};
 use tokio::sync::mpsc;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, trace, warn};
 
 use super::{RecvUdpMsg, UdpMsg};
 use crate::buffer_ext::SocketBufferExt;
@@ -168,6 +168,13 @@ async fn rx_single_socket(socket: UdpSocket, udp_ingress_tx: mpsc::Sender<RecvUd
         match socket.recv_from(buf).await {
             (Ok((len, src_addr)), buf) => {
                 let payload = buf.freeze();
+                
+                trace!(
+                    src_addr = ?src_addr,
+                    len = len,
+                    payload_len = payload.len(),
+                    "received udp packet"
+                );
 
                 let msg = RecvUdpMsg {
                     src_addr,
@@ -244,6 +251,13 @@ async fn tx(
             _ => &socket_tx,
         };
 
+        trace!(
+            dst_addr = ?addr,
+            chunk_len = chunk.len(),
+            msg_type = ?msg_type,
+            "sending udp packet"
+        );
+        
         let (ret, chunk) = socket.send_to(chunk, addr).await;
 
         if let Err(err) = &ret {
