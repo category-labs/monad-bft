@@ -48,6 +48,10 @@ pub fn decode(s: &str) -> Result<Vec<u8>, DecodeHexError> {
         return Err(DecodeHexError::ParseErr);
     }
 
+    if s.chars().any(|c| c == '+' || c == '-') {
+        return Err(DecodeHexError::ParseErr);
+    }
+
     let Some(noprefix) = s.strip_prefix("0x") else {
         return Err(DecodeHexError::ParseErr);
     };
@@ -64,6 +68,10 @@ pub fn decode(s: &str) -> Result<Vec<u8>, DecodeHexError> {
 pub fn decode_quantity(s: &str) -> Result<u64, DecodeHexError> {
     if s.is_empty() {
         return Err(DecodeHexError::InvalidLen);
+    }
+
+    if s.chars().any(|c| c == '+' || c == '-') {
+        return Err(DecodeHexError::ParseErr);
     }
 
     let Some(noprefix) = s.strip_prefix("0x") else {
@@ -110,6 +118,7 @@ mod test {
         assert_eq!(Err(DecodeHexError::ParseErr), decode("x012"));
         assert_eq!(Err(DecodeHexError::ParseErr), decode("0xbbb˝a"));
         assert_eq!(Err(DecodeHexError::ParseErr), decode("0xghijkl"));
+        assert_eq!(Err(DecodeHexError::ParseErr), decode("0x12+3"));
     }
 
     #[test]
@@ -141,5 +150,10 @@ mod test {
         assert_eq!(Ok(0), decode_quantity("0x0"));
         assert_eq!(Err(DecodeHexError::ParseErr), decode_quantity("0x0400"));
         assert_eq!(Ok(1024), decode_quantity("0x400"));
+        assert_eq!(Err(DecodeHexError::ParseErr), decode_quantity("0x12+3"));
+        assert_eq!(
+            Err(DecodeHexError::ParseErr),
+            decode_quantity("0x+deadbeef")
+        );
     }
 }
