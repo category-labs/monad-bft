@@ -25,6 +25,7 @@ RUN apt install -y \
   libcap-dev \
   libcgroup-dev \
   libcli11-dev \
+  libcrypto++-dev \
   libgmock-dev \
   libgmp-dev \
   libgtest-dev \
