@@ -180,7 +180,14 @@ where
 }
 
 fn create_keypair(seed: u8) -> KeyPair {
-    KeyPair::from_bytes(&mut [seed; 32]).unwrap()
+    let mut key_bytes = [0u8; 32];
+    let seed_bytes = (seed as u32).to_le_bytes();
+    key_bytes[0] = seed_bytes[0];
+    key_bytes[1] = seed_bytes[1];
+    key_bytes[2] = seed_bytes[2];
+    key_bytes[3] = seed_bytes[3];
+    key_bytes[31] = 1;
+    KeyPair::from_bytes(&mut key_bytes).unwrap()
 }
 
 fn create_raptorcast_config(keypair: Arc<KeyPair>) -> RaptorCastConfig<SignatureType> {
@@ -223,8 +230,16 @@ fn create_peer_discovery_builder(
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    
+    runtime.block_on(async_main())
+}
+
+async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
 
@@ -534,16 +549,17 @@ fn generate_config(
     let base_ip_u32 = u32::from(base_ip_addr);
 
     for i in 0..count {
-        let keypair = create_keypair(i as u8);
-        let pubkey = keypair.pubkey();
-        let pubkey_bytes = pubkey.bytes();
-
         let mut privkey = [0u8; 32];
         let idx_bytes = (i as u32).to_le_bytes();
         privkey[0] = idx_bytes[0];
         privkey[1] = idx_bytes[1];
         privkey[2] = idx_bytes[2];
         privkey[3] = idx_bytes[3];
+        privkey[31] = 1;
+
+        let keypair = KeyPair::from_bytes(&mut privkey.clone()).unwrap();
+        let pubkey = keypair.pubkey();
+        let pubkey_bytes = pubkey.bytes();
 
         let node_ip = std::net::Ipv4Addr::from(base_ip_u32 + i as u32);
 
