@@ -90,7 +90,7 @@ where
         new_account_nonces: BTreeMap<Address, Nonce>,
     );
 
-    fn ledger_commit(&mut self, block_id: &BlockId);
+    fn ledger_commit(&mut self, block_id: &BlockId, seq_num: &SeqNum);
 }
 
 impl<ST, SCT, T> StateBackend<ST, SCT> for Arc<Mutex<T>>
@@ -149,9 +149,9 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     T: StateBackendTest<ST, SCT>,
 {
-    fn ledger_commit(&mut self, block_id: &BlockId) {
+    fn ledger_commit(&mut self, block_id: &BlockId, seq_num: &SeqNum) {
         let mut state = self.lock().unwrap();
-        state.ledger_commit(block_id);
+        state.ledger_commit(block_id, seq_num);
     }
 
     fn ledger_propose(

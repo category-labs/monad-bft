@@ -124,14 +124,15 @@ fn test_forkpoint_restart_f_simple_blocksync() {
     let statesync_service_window = SeqNum::MAX;
 
     let blocks_before_failure = SeqNum(10);
+    let time_before_new_forkpoint = SeqNum(0);
     let recovery_time = SeqNum(statesync_threshold.0 / 2);
     forkpoint_restart_f(
         blocks_before_failure,
+        time_before_new_forkpoint,
         recovery_time,
         epoch_length,
         statesync_threshold,
         statesync_service_window,
-        false,
     );
 }
 
@@ -142,18 +143,20 @@ fn test_forkpoint_restart_f_simple_statesync() {
     let statesync_service_window = SeqNum::MAX;
 
     let blocks_before_failure = SeqNum(10);
-    let recovery_time = SeqNum(statesync_threshold.0 * 3 / 2);
+    let time_before_new_forkpoint = SeqNum(statesync_threshold.0 * 3 / 2);
+    let recovery_time = time_before_new_forkpoint;
     forkpoint_restart_f(
         blocks_before_failure,
+        time_before_new_forkpoint,
         recovery_time,
         epoch_length,
         statesync_threshold,
         statesync_service_window,
-        true,
     );
 }
 
 // statesync_service_window is less than recovery_time
+// the restarted forkpoint is more than recovery_time away from tip
 //
 // so this test only passes if the statesync target refreshing works in
 // monad-state/src/statesync.rs
@@ -164,14 +167,15 @@ fn test_forkpoint_restart_f_target_reset_statesync() {
     let statesync_service_window = SeqNum(50);
 
     let blocks_before_failure = SeqNum(10);
+    let time_before_new_forkpoint = SeqNum(10);
     let recovery_time = SeqNum(statesync_threshold.0 * 3 / 2);
     forkpoint_restart_f(
         blocks_before_failure,
+        time_before_new_forkpoint,
         recovery_time,
         epoch_length,
         statesync_threshold,
         statesync_service_window,
-        false,
     );
 }
 
@@ -182,14 +186,15 @@ fn test_forkpoint_restart_f_epoch_boundary_statesync() {
     let statesync_service_window = SeqNum::MAX;
 
     let blocks_before_failure = SeqNum(275);
-    let recovery_time = SeqNum(statesync_threshold.0 * 3 / 2);
+    let time_before_new_forkpoint = SeqNum(statesync_threshold.0 * 3 / 2);
+    let recovery_time = time_before_new_forkpoint;
     forkpoint_restart_f(
         blocks_before_failure,
+        time_before_new_forkpoint,
         recovery_time,
         epoch_length,
         statesync_threshold,
         statesync_service_window,
-        true,
     );
 }
 
@@ -204,6 +209,7 @@ fn test_forkpoint_restart_f() {
     let epoch_length = SeqNum(200);
     let statesync_threshold = SeqNum(100);
     let statesync_service_window = SeqNum::MAX;
+    let time_before_new_forkpoint = SeqNum(0);
     // Epoch 1 and 2 are populated on genesis
     // This covers the case with generating validator set for epoch 3
     for before in 10..epoch_length.0 * 3 {
@@ -214,11 +220,11 @@ fn test_forkpoint_restart_f() {
                 let recovery_time = SeqNum(recovery);
                 forkpoint_restart_f(
                     blocks_before,
+                    time_before_new_forkpoint,
                     recovery_time,
                     epoch_length,
                     statesync_threshold,
                     statesync_service_window,
-                    false,
                 );
             })
         });
@@ -231,12 +237,14 @@ fn test_forkpoint_restart_f() {
 /// forkpoint and blocksync
 fn forkpoint_restart_f(
     blocks_before_failure: SeqNum,
+    time_before_new_forkpoint: SeqNum,
     recovery_time: SeqNum,
     epoch_length: SeqNum,
     statesync_threshold: SeqNum,
     statesync_service_window: SeqNum,
-    fresh_forkpoint: bool,
 ) {
+    assert!(time_before_new_forkpoint <= recovery_time);
+
     let delta = Duration::from_millis(100);
     let state_root_delay = SeqNum(4);
     let state_configs = make_state_configs::<ForkpointSwarm>(
@@ -374,13 +382,15 @@ fn forkpoint_restart_f(
             .remove_state(&ID::new(restart_node_id))
             .expect("node exists");
 
-        let recover_block = blocks_before_failure + recovery_time;
-        while swarm
-            .step_until(&mut UntilTerminator::new().until_block(recover_block.0 as usize))
-            .is_some()
-        {}
-
-        let forkpoint = if fresh_forkpoint {
+        let forkpoint = if time_before_new_forkpoint == SeqNum(0) {
+            // Restart node from old forkpoint
+            failed_node.get_forkpoint()
+        } else {
+            let forkpoint_block = blocks_before_failure + time_before_new_forkpoint;
+            while swarm
+                .step_until(&mut UntilTerminator::new().until_block(forkpoint_block.0 as usize))
+                .is_some()
+            {}
             // Restart node from fresh forkpoint
             swarm
                 .states()
@@ -389,10 +399,14 @@ fn forkpoint_restart_f(
                 .1
                 .get_forkpoint()
                 .clone()
-        } else {
-            // Restart node from old forkpoint
-            failed_node.get_forkpoint()
         };
+
+        let recover_block = blocks_before_failure + recovery_time;
+        while swarm
+            .step_until(&mut UntilTerminator::new().until_block(recover_block.0 as usize))
+            .is_some()
+        {}
+
         let network_current_epoch = swarm
             .states()
             .iter()
@@ -425,6 +439,7 @@ fn forkpoint_restart_f(
             })
             .collect();
         restart_builder.forkpoint = forkpoint.clone();
+        restart_builder.state_backend = failed_node.state.state_backend().clone();
         let restart_builder_state_backend = restart_builder.state_backend.clone();
         swarm.add_state(NodeBuilder::new(
             ID::new(restart_node_id),
@@ -472,6 +487,14 @@ fn forkpoint_restart_f(
             .consensus_events
             .trigger_state_sync
             > 0;
+        let state_sync_reset_target = restarted_node
+            .state
+            .metrics()
+            .consensus_events
+            .trigger_state_sync
+            > 1;
+        let should_reset_statesync_target =
+            (recovery_time - time_before_new_forkpoint) >= statesync_service_window;
         let invalid_epoch_error = restarted_node
             .state
             .metrics()
@@ -497,8 +520,9 @@ fn forkpoint_restart_f(
             .unwrap_or(false);
 
         let test_result = restarted_node_caught_up
-            || (state_sync_triggered && close_to_threshold)
-            || (invalid_epoch_error && epoch_cross_over);
+            && (!state_sync_triggered || close_to_threshold)
+            && (!state_sync_reset_target || should_reset_statesync_target)
+            && (!invalid_epoch_error || epoch_cross_over);
 
         assert!(
             test_result,
