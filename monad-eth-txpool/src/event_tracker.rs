@@ -216,21 +216,28 @@ impl<'a> EthTxPoolEventTracker<'a> {
         }
     }
 
-    pub fn pending_promote(&mut self, tx_hashes: impl Iterator<Item = TxHash>) {
+    pub fn pending_promote<'b>(
+        &mut self,
+        txs: impl Iterator<Item = (bool, &'b Recovered<TxEnvelope>)>,
+    ) {
         self.metrics
             .pending
             .promote_addresses
             .fetch_add(1, Ordering::SeqCst);
 
-        for tx_hash in tx_hashes {
+        for (owned, tx) in txs {
             self.metrics
                 .pending
                 .promote_txs
                 .fetch_add(1, Ordering::SeqCst);
 
             self.events.push(EthTxPoolEvent {
-                tx_hash: tx_hash.to_owned(),
-                action: EthTxPoolEventType::Promote,
+                tx_hash: *tx.tx_hash(),
+                action: EthTxPoolEventType::Insert {
+                    address: tx.signer(),
+                    owned,
+                    tracked: true,
+                },
             });
         }
     }

@@ -65,7 +65,7 @@ impl TrackedTxList {
             return None;
         }
 
-        event_tracker.pending_promote(txs.values().map(ValidEthTransaction::hash));
+        event_tracker.pending_promote(txs.values().map(|tx| (tx.is_owned(), tx.raw())));
 
         Some(Self {
             account_nonce,

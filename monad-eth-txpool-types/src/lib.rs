@@ -33,9 +33,6 @@ pub enum EthTxPoolEventType {
         tracked: bool,
     },
 
-    /// The tx was promoted from the txpool's pending tx list to it's tracked tx list.
-    Promote,
-
     /// The tx was committed and is thus finalized.
     Commit,
 
