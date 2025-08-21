@@ -175,6 +175,7 @@ pub enum BlockPolicyError {
     ExecutionResultMismatch,
     BaseFeeError,
     BlockPolicyBlockValidatorError(BlockPolicyBlockValidatorError),
+    Eip7702Error,
 }
 
 impl From<StateBackendError> for BlockPolicyError {
@@ -189,6 +190,7 @@ pub struct AccountBalanceState {
     pub remaining_reserve_balance: Balance,
     pub max_reserve_balance: Balance,
     pub block_seqnum_of_latest_txn: SeqNum,
+    pub is_delegated: bool,
 }
 
 impl AccountBalanceState {
@@ -198,6 +200,7 @@ impl AccountBalanceState {
             remaining_reserve_balance: Balance::ZERO,
             max_reserve_balance,
             block_seqnum_of_latest_txn: GENESIS_SEQ_NUM,
+            is_delegated: false,
         }
     }
 }
@@ -217,6 +220,7 @@ pub struct TxnFee {
     pub first_txn_gas: Balance,
     pub max_gas_cost: Balance,
     pub max_txn_cost: Balance, // Used for pre TFM validation
+    pub is_delegated: bool,
 }
 
 pub type TxnFees = BTreeMap<Address, TxnFee>;

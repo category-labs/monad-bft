@@ -258,8 +258,7 @@ where
                 continue;
             };
 
-            // TODO(andr-dev): Add after eip7702 reserve balance accounting
-            // account_balance.is_delegated = true;
+            account_balance.is_delegated = true;
         }
 
         let validator = EthBlockPolicyBlockValidator::new(

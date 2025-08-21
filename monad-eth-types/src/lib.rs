@@ -48,6 +48,7 @@ pub struct EthAccount {
     pub nonce: Nonce,
     pub balance: Balance,
     pub code_hash: Option<B256>,
+    pub is_delegated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Default)]

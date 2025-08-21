@@ -1928,7 +1928,7 @@ mod test {
     const EPOCH_LENGTH: SeqNum = SeqNum(100);
     const EPOCH_START_DELAY: Round = Round(20);
     const GAS_LIMIT: u64 = 30000;
-    const RESERVE_BALANCE: u128 = 1_000_000_000_000_000_000;
+    const RESERVE_BALANCE: u128 = 10_000_000_000_000_000_000;
 
     static CHAIN_PARAMS: ChainParams = ChainParams {
         tx_limit: 10_000,

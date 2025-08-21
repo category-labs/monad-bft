@@ -232,6 +232,7 @@ where
         let chain_params = chain_config
             .get_chain_revision(header.block_round)
             .chain_params();
+        let chain_id = chain_config.chain_id();
 
         let execution_chain_params = {
             let timestamp_s: u64 = (header.timestamp_ns / 1_000_000_000)
@@ -315,13 +316,8 @@ where
         let mut txn_fees: TxnFees = TxnFees::default();
 
         for eth_txn in eth_txns.iter() {
-            if static_validate_transaction(
-                eth_txn,
-                chain_config.chain_id(),
-                chain_params,
-                execution_chain_params,
-            )
-            .is_err()
+            if static_validate_transaction(eth_txn, chain_id, chain_params, execution_chain_params)
+                .is_err()
             {
                 return Err(BlockValidationError::TxnError);
             }
@@ -362,6 +358,7 @@ where
                     first_txn_gas: compute_txn_max_gas_cost(eth_txn, header.base_fee),
                     max_gas_cost: Balance::ZERO,
                     max_txn_cost: compute_max_txn_cost(eth_txn),
+                    is_delegated: false,
                 });
 
             debug!(seq_num = ?header.seq_num, address = ?eth_txn.signer(), nonce = ?eth_txn.nonce(), ?txn_fee_entry, "TxnFeeEntry");
@@ -400,9 +397,8 @@ where
                             }
                         }
 
-                        // TODO(andr-dev): Add after eip7702 reserve balance accounting
-                        // let txn_fee = txn_fees.entry(authority).or_default();
-                        // txn_fee.is_delegated = true;
+                        let txn_fee = txn_fees.entry(authority).or_default();
+                        txn_fee.is_delegated = true;
                     }
                 }
             }

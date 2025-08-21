@@ -144,6 +144,28 @@ pub fn make_eip7702_tx(
     authorization_list: Vec<SignedAuthorization>,
     input_len: usize,
 ) -> TxEnvelope {
+    make_eip7702_tx_with_value(
+        sender,
+        0,
+        max_fee_per_gas,
+        max_priority_fee_per_gas,
+        gas_limit,
+        nonce,
+        authorization_list,
+        input_len,
+    )
+}
+
+pub fn make_eip7702_tx_with_value(
+    sender: FixedBytes<32>,
+    value: u128,
+    max_fee_per_gas: u128,
+    max_priority_fee_per_gas: u128,
+    gas_limit: u64,
+    nonce: u64,
+    authorization_list: Vec<SignedAuthorization>,
+    input_len: usize,
+) -> TxEnvelope {
     let transaction = TxEip7702 {
         chain_id: 1337,
         nonce,
@@ -151,7 +173,7 @@ pub fn make_eip7702_tx(
         max_fee_per_gas,
         max_priority_fee_per_gas,
         to: Address::repeat_byte(0u8),
-        value: Default::default(),
+        value: U256::from(value),
         access_list: Default::default(),
         authorization_list,
         input: vec![0; input_len].into(),
@@ -175,6 +197,13 @@ pub fn make_signed_authorization(
         nonce,
     };
 
+    sign_authorization(authority, authorization)
+}
+
+pub fn sign_authorization(
+    authority: FixedBytes<32>,
+    authorization: Authorization,
+) -> SignedAuthorization {
     let signer = PrivateKeySigner::from_bytes(&authority).unwrap();
     let signature = signer
         .sign_hash_sync(&authorization.signature_hash())
@@ -271,6 +300,7 @@ pub fn generate_consensus_test_block(
                 first_txn_gas: compute_txn_max_gas_cost(eth_txn, BASE_FEE),
                 max_gas_cost: Balance::ZERO,
                 max_txn_cost: compute_max_txn_cost(eth_txn),
+                is_delegated: false,
             });
     }
 
@@ -290,20 +320,19 @@ pub fn generate_consensus_test_block(
                             NonceUsage::Possible(VecDeque::from_iter([auth.nonce()])),
                         ));
 
-                        // TODO(andr-dev): Add after eip7702 reserve balance accounting
-                        // txn_fees
-                        //     .entry(authority)
-                        //     .and_modify(|e| {
-                        //         e.is_delegated = true;
-                        //     })
-                        //     .or_insert(TxnFee {
-                        //         first_txn_value: Balance::ZERO,
-                        //         first_txn_gas: Balance::ZERO,
-                        //         max_gas_cost: Balance::ZERO,
-                        //         max_txn_cost: Balance::ZERO,
+                        txn_fees
+                            .entry(authority)
+                            .and_modify(|e| {
+                                e.is_delegated = true;
+                            })
+                            .or_insert(TxnFee {
+                                first_txn_value: Balance::ZERO,
+                                first_txn_gas: Balance::ZERO,
+                                max_gas_cost: Balance::ZERO,
+                                max_txn_cost: Balance::ZERO,
 
-                        //         is_delegated: true,
-                        //     });
+                                is_delegated: true,
+                            });
                     }
                 }
             }

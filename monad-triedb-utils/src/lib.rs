@@ -172,7 +172,37 @@ impl TriedbReader {
                 // Receiver should not fail
                 let maybe_rlp_account = receiver_result.expect("receiver can't be canceled");
                 // RLP decode the received account value
-                maybe_rlp_account.and_then(rlp_decode_account)
+                let res = maybe_rlp_account.and_then(rlp_decode_account);
+                match res {
+                    Some(mut eth_account) => {
+                        debug!(?eth_account, block_id = ?seq_num.0, "account code_hash");
+                        match eth_account.code_hash {
+                            Some(code_hash) => {
+                                // Request code
+                                let (triedb_key, key_len_nibbles) =
+                                    create_triedb_key(version, KeyInput::CodeHash(&code_hash));
+                                let res = self.handle.read(&triedb_key, key_len_nibbles, seq_num.0);
+                                debug!(?res, block_id = ?seq_num.0, ?eth_account, "account code_data");
+                                match res {
+                                    Some(data) => {
+                                        if data.len() >= 3 {
+                                            let delegation_code = &data[0..3];
+                                            eth_account.is_delegated =
+                                                delegation_code == [0xef, 0x01, 0x00];
+                                            if eth_account.is_delegated {
+                                                debug!(?eth_account, block_id = ?seq_num.0, "is_delegated == true");
+                                            }
+                                        }
+                                        Some(eth_account)
+                                    }
+                                    None => Some(eth_account),
+                                }
+                            }
+                            None => Some(eth_account),
+                        }
+                    }
+                    None => None,
+                }
             })
         });
         // Join all futures of receivers

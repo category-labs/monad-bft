@@ -310,6 +310,7 @@ where
                 Err(
                     BlockPolicyError::BlockPolicyBlockValidatorError(_)
                     | BlockPolicyError::BlockNotCoherent
+                    | BlockPolicyError::Eip7702Error
                     | BlockPolicyError::TimestampError
                     | BlockPolicyError::StateBackendError(StateBackendError::NeverAvailable),
                 ) => {
