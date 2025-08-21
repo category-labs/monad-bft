@@ -3297,7 +3297,7 @@ mod test {
     #[test]
     fn test_missing_block() {
         let num_state = 4;
-        let execution_delay = SeqNum(1);
+        let execution_delay = SeqNum::MAX;
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -3365,13 +3365,13 @@ mod test {
             execution_delay,
         );
 
-        let mut wrapped_state = ctx[0].wrapped_state();
+        let n0 = &mut ctx[0];
 
-        // prepare 5 blocks
         for _ in 0..4 {
             let p = env.next_proposal(Vec::new());
             let (author, _, p) = p.destructure();
-            let _cmds = wrapped_state.handle_proposal_message(author, p);
+            let _cmds = n0.handle_proposal_message(author, p.clone());
+            n0.ledger_propose(&p.tip.block_header);
         }
         let p = env.next_proposal(vec![EthHeader(Header {
             number: 0,
@@ -3379,19 +3379,14 @@ mod test {
         })]);
         let (author, _, p) = p.destructure();
         let bid_1 = p.tip.block_header.get_id();
-        let _cmds = wrapped_state.handle_proposal_message(author, p);
+        let _cmds = n0.handle_proposal_message(author, p);
+
         // valid execution result, so is coherent
-        assert!(wrapped_state
-            .consensus
-            .pending_block_tree
-            .is_coherent(&bid_1));
+        assert!(n0.consensus_state.pending_block_tree.is_coherent(&bid_1));
 
-        assert_eq!(wrapped_state.consensus.get_current_round(), Round(5));
+        assert_eq!(n0.consensus_state.get_current_round(), Round(5));
 
-        assert_eq!(
-            wrapped_state.metrics.consensus_events.rx_execution_lagging,
-            0
-        );
+        assert_eq!(n0.metrics.consensus_events.rx_execution_lagging, 0);
 
         // Block 11 carries the state root hash from executing block 6 the state
         // root hash is missing. The certificates are processed - consensus enters new round and commit blocks, but it doesn't vote
@@ -3402,15 +3397,12 @@ mod test {
         let (author, _, p) = p.destructure();
         let bid_2 = p.tip.block_header.get_id();
 
-        let cmds = wrapped_state.handle_proposal_message(author, p);
+        let cmds = n0.handle_proposal_message(author, p);
         // invalid execution result, so incoherent and we don't vote
-        assert!(!wrapped_state
-            .consensus
-            .pending_block_tree
-            .is_coherent(&bid_2));
-        assert_eq!(wrapped_state.metrics.consensus_events.rx_bad_state_root, 1);
+        assert!(!n0.consensus_state.pending_block_tree.is_coherent(&bid_2));
+        assert_eq!(n0.metrics.consensus_events.rx_bad_state_root, 1);
 
-        assert_eq!(wrapped_state.consensus.get_current_round(), Round(6));
+        assert_eq!(n0.consensus_state.get_current_round(), Round(6));
         assert_eq!(cmds.len(), 4);
         assert!(matches!(
             cmds[0],

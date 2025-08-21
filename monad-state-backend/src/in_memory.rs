@@ -283,13 +283,33 @@ where
 
     fn get_execution_result(
         &self,
-        _block_id: &BlockId,
+        block_id: &BlockId,
         seq_num: &SeqNum,
-        _is_finalized: bool,
+        is_finalized: bool,
     ) -> Result<EthHeader, StateBackendError> {
-        // TODO make this mock less trivial
+        let block = if is_finalized
+            && self
+                .raw_read_latest_finalized_block()
+                .is_some_and(|latest_seq_num| &latest_seq_num >= seq_num)
+        {
+            if self
+                .raw_read_earliest_finalized_block()
+                .is_some_and(|earliest_finalized| &earliest_finalized > seq_num)
+            {
+                return Err(StateBackendError::NeverAvailable);
+            }
+            self.commits.get(seq_num).unwrap()
+        } else {
+            self.proposals
+                .get(block_id)
+                .ok_or(StateBackendError::NotAvailableYet)?
+        };
+
+        assert_eq!(&block.block_id, block_id);
+        assert_eq!(&block.seq_num, seq_num);
+
         Ok(EthHeader(Header {
-            number: seq_num.0,
+            number: block.seq_num.0,
             gas_limit: self.extra_data,
             ..Default::default()
         }))

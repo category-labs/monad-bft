@@ -138,7 +138,6 @@ fn test_forkpoint_restart_f_simple_blocksync() {
     );
 }
 
-#[ignore]
 // execution is delayed longer than state_root_delay
 // ensure that we don't statesync
 #[test]
@@ -483,7 +482,9 @@ fn forkpoint_restart_f(
             NoSerRouterConfig::new(all_peers.clone()).build(),
             MockValSetUpdaterNop::new(validators.clone(), epoch_length),
             MockTxPoolExecutor::new(create_block_policy(), restart_builder_state_backend.clone()),
-            MockLedger::new(restart_builder_state_backend.clone()),
+            MockLedger::new(restart_builder_state_backend.clone())
+                .with_finalization_delay(finalization_delay)
+                .with_blocks(failed_node.executor.ledger()),
             MockStateSyncExecutor::new(
                 restart_builder_state_backend,
                 validators

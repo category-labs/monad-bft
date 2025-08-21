@@ -124,6 +124,12 @@ where
         }
     }
 
+    pub fn with_blocks(mut self, old_ledger: &Self) -> Self {
+        self.blocks = old_ledger.blocks.clone();
+        self.committed_blocks = old_ledger.committed_blocks.clone();
+        self
+    }
+
     pub fn with_finalization_delay(mut self, finalization_delay: SeqNum) -> Self {
         self.finalization_delay = finalization_delay;
         self
