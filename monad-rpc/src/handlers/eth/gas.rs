@@ -18,9 +18,10 @@ use std::{
     sync::Arc,
 };
 
-use alloy_consensus::{Header, Transaction as _, TxEnvelope};
+use alloy_consensus::{Header, Transaction, TxEnvelope};
 use alloy_primitives::{Address, TxKind, U256, U64};
 use alloy_rpc_types::FeeHistory;
+use itertools::Itertools;
 use monad_ethcall::{CallResult, EthCallExecutor, StateOverrideSet};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb};
@@ -32,7 +33,10 @@ use tracing::trace;
 use crate::{
     chainstate::{get_block_key_from_tag, ChainState},
     eth_json_types::{BlockTagOrHash, BlockTags, MonadFeeHistory, Quantity},
-    handlers::eth::call::{fill_gas_params, CallRequest},
+    handlers::eth::{
+        call::{fill_gas_params, CallRequest},
+        gas,
+    },
     jsonrpc::{JsonRpcError, JsonRpcResult},
 };
 
@@ -424,10 +428,8 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
 
     let base_fee_per_gas = header.base_fee_per_gas.unwrap_or_default();
     let gas_used_ratio = (header.gas_used as f64).div(header.gas_limit as f64);
-    let blob_gas_used = header.blob_gas_used.unwrap_or_default();
-    let blob_gas_used_ratio = (blob_gas_used as f64).div(header.gas_limit as f64);
 
-    let reward = match params.reward_percentiles {
+    let percentiles = match params.reward_percentiles {
         Some(percentiles) => {
             // Check percentiles are between 0-100
             if percentiles.iter().any(|p| *p < 0.0 || *p > 100.0) {
@@ -446,21 +448,65 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
             if percentiles.is_empty() {
                 None
             } else {
-                Some(vec![vec![0; percentiles.len()]; block_count as usize])
+                Some(percentiles)
+                // Some(vec![vec![0; percentiles.len()]; block_count as usize])
             }
         }
         None => None,
     };
 
+    // Get all blocks from oldest block to the header - 1
+    let oldest_block = header.number.saturating_sub(block_count);
+
+    let mut base_fee_per_gas_history = vec![base_fee_per_gas.into(); (block_count + 1) as usize];
+    let mut gas_used_ratio_history = vec![gas_used_ratio; block_count as usize];
+    let mut rewards = vec![vec![]; block_count as usize];
+
+    for (idx, blk_num) in (oldest_block..=header.number).enumerate() {
+        let block = chain_state
+            .get_block(
+                BlockTagOrHash::BlockTags(BlockTags::Number(Quantity(blk_num))),
+                true,
+            )
+            .await
+            .map_err(|_| JsonRpcError::internal_error("could not get block data".into()))?;
+
+        let header = block.header;
+        base_fee_per_gas_history[idx] = header.base_fee_per_gas.unwrap_or_default().into();
+        gas_used_ratio_history[idx] = (header.gas_used as f64).div(header.gas_limit as f64);
+
+        let txns: Vec<alloy_rpc_types::Transaction> = block
+            .transactions
+            .into_transactions()
+            .sorted_by(|a, b| a.priority_fee_or_price().cmp(&b.priority_fee_or_price()))
+            .collect::<Vec<_>>();
+
+        // Get block transactions for calculating the percenatile rewards.
+        let percentile_rewards = match percentiles {
+            Some(ref percentiles) => percentiles
+                .iter()
+                .map(|&pct| {
+                    let idx = ((txns.len() - 1) as f64 * pct).round() as usize;
+                    txns.get(idx)
+                        .map(|tx| tx.priority_fee_or_price())
+                        .unwrap_or(0)
+                })
+                .collect::<Vec<_>>(),
+            None => vec![],
+        };
+
+        rewards[idx] = percentile_rewards;
+    }
+
     // TODO: retrieve fee parameters from historical blocks. For now, return a hacky default
     Ok(MonadFeeHistory(FeeHistory {
-        base_fee_per_gas: vec![base_fee_per_gas.into(); (block_count + 1) as usize],
-        gas_used_ratio: vec![gas_used_ratio; block_count as usize],
+        base_fee_per_gas: base_fee_per_gas_history,
+        gas_used_ratio: gas_used_ratio_history,
         // TODO: proper calculation of blob fee
         base_fee_per_blob_gas: vec![base_fee_per_gas.into(); (block_count + 1) as usize],
-        blob_gas_used_ratio: vec![blob_gas_used_ratio; block_count as usize],
+        blob_gas_used_ratio: vec![0.0; block_count as usize],
         oldest_block: header.number.saturating_sub(block_count),
-        reward,
+        reward: percentiles.map(|_| Some(rewards)).unwrap_or(None),
     }))
 }
 
@@ -595,4 +641,6 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Quantity(60_000));
     }
+
+    // call eth fee history, with various blocks.
 }
