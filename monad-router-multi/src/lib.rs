@@ -18,6 +18,7 @@ use std::{
     pin::Pin,
     sync::{Arc, Mutex},
     task::Poll,
+    time::Duration,
 };
 
 use alloy_rlp::{Decodable, Encodable};
@@ -72,7 +73,9 @@ where
         let pdd = PeerDiscoveryDriver::new(peer_discovery_builder);
         let shared_pdd = Arc::new(Mutex::new(pdd));
 
-        let (dp_reader, dp_writer) = dataplane_builder.build().split();
+        let dp = dataplane_builder.build();
+        assert!(dp.block_until_ready(Duration::from_secs(1)));
+        let (dp_reader, dp_writer) = dp.split();
 
         // Create a channel between primary and secondary raptorcast instances.
         // Fundamentally this is needed because, while both can send, only the

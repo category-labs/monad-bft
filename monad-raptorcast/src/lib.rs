@@ -292,8 +292,9 @@ where
         ..Default::default()
     };
     let up_bandwidth_mbps = 1_000;
-    let dp_builder = DataplaneBuilder::new(&local_addr, up_bandwidth_mbps);
-    let (dp_reader, dp_writer) = dp_builder.build().split();
+    let dp = DataplaneBuilder::new(&local_addr, up_bandwidth_mbps).build();
+    assert!(dp.block_until_ready(Duration::from_secs(1)));
+    let (dp_reader, dp_writer) = dp.split();
     let config = config::RaptorCastConfig {
         shared_key,
         mtu: DEFAULT_MTU,
