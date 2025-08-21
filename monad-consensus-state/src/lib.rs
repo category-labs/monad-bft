@@ -234,22 +234,6 @@ where
     pub _phantom: PhantomData<CRT>,
 }
 
-/// Actions after state root validation
-#[derive(Debug)]
-pub enum StateRootAction {
-    /// StateRoot validation is successful, proceed to next steps
-    Proceed,
-    /// StateRoot validation is unsuccessful - there's a mismatch of StateRoots.
-    /// Reject the proposal immediately
-    Reject,
-    /// StateRoot validation is undecided - we haven't collect enough
-    /// information. Either the state root is missing because we haven't
-    /// received a majority quorum on the state root, or the state root is
-    /// out-of-range. It's ok to insert to the block tree and observe if a QC
-    /// forms on the block. But we shouldn't vote on the block
-    Defer,
-}
-
 impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
