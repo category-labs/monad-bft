@@ -208,7 +208,7 @@ struct CommittedBlock {
 #[derive(Debug)]
 struct CommittedBlkBuffer<ST, SCT> {
     blocks: SortedVectorMap<SeqNum, CommittedBlock>,
-    min_buffer_size: usize, // should be execution delay
+    min_buffer_size: usize, // should be 2 * execution delay
 
     _phantom: PhantomData<(ST, SCT)>,
 }
@@ -333,16 +333,12 @@ where
     }
 }
 
-pub struct EthBlockPolicyBlockState {
-    fees: BTreeMap<Address, TxnFees>,
-}
-
 pub struct EthBlockPolicyBlockValidator {
     block_seq_num: SeqNum,
     execution_delay: SeqNum,
 }
 
-fn compute_is_emptying_transaction(
+fn is_possibly_emptying_transaction(
     block_seq_num_of_curr_txn: SeqNum,
     block_seqnum_of_latest_txn: SeqNum,
     execution_delay: SeqNum,
@@ -372,7 +368,7 @@ where
         block_txn_fees: &TxnFee,
         eth_address: &Address,
     ) -> Result<(), BlockPolicyError> {
-        let has_emptying_transaction = compute_is_emptying_transaction(
+        let has_emptying_transaction = is_possibly_emptying_transaction(
             self.block_seq_num,
             account_balance.block_seqnum_of_latest_txn,
             self.execution_delay,
@@ -470,7 +466,7 @@ where
             ));
         };
 
-        let is_emptying_transaction = compute_is_emptying_transaction(
+        let is_emptying_transaction = is_possibly_emptying_transaction(
             self.block_seq_num,
             account_balance.block_seqnum_of_latest_txn,
             self.execution_delay,
@@ -1002,23 +998,30 @@ mod test {
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use monad_crypto::NopSignature;
-    use monad_eth_testutil::{make_eip1559_tx_with_value, make_legacy_tx, recover_tx};
+    use monad_eth_testutil::{
+        generate_consensus_test_block, make_eip1559_tx_with_value, recover_tx,
+    };
     use monad_eth_types::BASE_FEE_PER_GAS;
+    use monad_state_backend::NopStateBackend;
     use monad_testutil::signing::MockSignatures;
     use monad_types::{Hash, SeqNum};
     use proptest::{prelude::*, strategy::Just};
     use rstest::*;
+    use test_case::test_case;
 
     use super::*;
 
     type SignatureType = NopSignature;
     type SignatureCollectionType = MockSignatures<SignatureType>;
+    type StateBackendType = NopStateBackend;
 
     const RESERVE_BALANCE: u128 = 1_000_000_000_000_000_000;
     const EXEC_DELAY: SeqNum = SeqNum(3);
     const S1: B256 = B256::new(hex!(
         "0ed2e19e3aca1a321349f295837988e9c6f95d4a6fc54cfab6befd5ee82662ad"
     ));
+    const ONE_ETHER: u128 = 1_000_000_000_000_000_000;
+    const HALF_ETHER: u128 = 500_000_000_000_000_000;
 
     fn sign_tx(signature_hash: &FixedBytes<32>) -> PrimitiveSignature {
         let secret_key = B256::repeat_byte(0xAu8).to_string();
@@ -1026,14 +1029,322 @@ mod test {
         signer.sign_hash_sync(signature_hash).unwrap()
     }
 
-    fn make_test_tx(value: u64, nonce: u64, signer: FixedBytes<32>) -> Recovered<TxEnvelope> {
-        recover_tx(make_legacy_tx(
+    fn make_test_tx(
+        gas_limit: u64,
+        value: u128,
+        nonce: u64,
+        signer: FixedBytes<32>,
+    ) -> Recovered<TxEnvelope> {
+        recover_tx(make_eip1559_tx_with_value(
             signer,
-            BASE_FEE_PER_GAS as u128,
             value,
+            BASE_FEE_PER_GAS as u128,
+            0, // priority fee
+            gas_limit,
             nonce,
-            0,
+            0, // input length
         ))
+    }
+
+    fn make_test_block(
+        round: Round,
+        seq_num: SeqNum,
+        txs: Vec<Recovered<TxEnvelope>>,
+    ) -> EthValidatedBlock<NopSignature, MockSignatures<NopSignature>> {
+        let consensus_test_block = generate_consensus_test_block(round, seq_num, txs);
+        EthValidatedBlock {
+            block: consensus_test_block.block,
+            system_txns: Vec::new(),
+            validated_txns: consensus_test_block.validated_txns,
+            nonces: consensus_test_block.nonces,
+            txn_fees: consensus_test_block.txn_fees,
+        }
+    }
+
+    fn reserve_balance_coherency(
+        block_policy: EthBlockPolicy<SignatureType, SignatureCollectionType>,
+        incoming_block: EthValidatedBlock<SignatureType, SignatureCollectionType>,
+        extending_blocks: Vec<&EthValidatedBlock<SignatureType, SignatureCollectionType>>,
+        state_backend: &impl StateBackend<SignatureType, SignatureCollectionType>,
+        addresses: Vec<Address>,
+    ) -> Result<(), BlockPolicyError> {
+        let mut account_balances = block_policy.compute_account_base_balances(
+            incoming_block.get_seq_num(),
+            state_backend,
+            Some(&extending_blocks),
+            addresses.iter(),
+        )?;
+
+        let mut validator = EthBlockPolicyBlockValidator::new(
+            incoming_block.get_seq_num(),
+            block_policy.execution_delay,
+        )?;
+
+        for txn in incoming_block.validated_txns.iter() {
+            let eth_address = txn.signer();
+            let txn_nonce = txn.nonce();
+
+            validator.try_add_transaction(&mut account_balances, txn)?;
+        }
+
+        Ok(())
+    }
+
+    fn setup_block_policy_with_txs(
+        txs: BTreeMap<u64, Vec<Recovered<TxEnvelope>>>,
+        signers: Vec<Address>,
+        state_backend: &impl StateBackend<SignatureType, SignatureCollectionType>,
+        num_committed_blocks: usize,
+    ) -> Result<(), BlockPolicyError> {
+        let mut block_policy = EthBlockPolicy::<SignatureType, SignatureCollectionType>::new(
+            SeqNum(17),
+            EXEC_DELAY.0,
+            1337,
+            RESERVE_BALANCE,
+        );
+
+        // Build 5 sequential blocks (n-4 .. n)
+        let seq_num = 18;
+        let mut blocks = Vec::new();
+        for offset in 0..=4 {
+            let seq = seq_num + offset;
+            let txs = txs.get(&offset).cloned().unwrap_or_default();
+            let block = make_test_block(Round(1), SeqNum(seq), txs);
+            blocks.push(block);
+        }
+
+        // Commit blocks
+        for block in &blocks[0..num_committed_blocks] {
+            BlockPolicy::<_, _, _, StateBackendType>::update_committed_block(
+                &mut block_policy,
+                block,
+            );
+        }
+
+        // Last block is incoming_block
+        // Remaining ones in the middle are extending_block
+        let incoming_block = blocks[4].clone();
+        let extending_blocks = blocks[num_committed_blocks..4].iter().collect();
+
+        reserve_balance_coherency(
+            block_policy,
+            incoming_block,
+            extending_blocks,
+            state_backend,
+            signers,
+        )
+    }
+
+    #[test_case(3; "three committed blocks, one extending block")]
+    #[test_case(0; "no committed blocks, four extending block")]
+    fn test_check_reserve_balance_coherency(num_committed_blocks: usize) {
+        //////////////////////////////////////////////////////////////////
+        // Case1: Single emptying transaction                          ///
+        //////////////////////////////////////////////////////////////////
+
+        let tx1 = make_test_tx(50000, HALF_ETHER, 0, S1);
+        let signer = tx1.signer();
+        let txs = BTreeMap::from([(4, vec![tx1])]); // tx in block n
+
+        // balance of signer at block n-3
+        // minimum balance required is gas limit * gas bid
+        let gas_cost = 50000 * BASE_FEE_PER_GAS as u128;
+        let state_backend = NopStateBackend {
+            balances: BTreeMap::from([(signer, U256::from(gas_cost))]),
+            ..Default::default()
+        };
+
+        let result = setup_block_policy_with_txs(
+            txs.clone(),
+            vec![signer],
+            &state_backend,
+            num_committed_blocks,
+        );
+        assert!(result.is_ok(), "Block coherency check failed: {:?}", result);
+
+        // should return error if fall below minimum balance
+        let state_backend = NopStateBackend {
+            balances: BTreeMap::from([(signer, U256::from(gas_cost - 1))]),
+            ..Default::default()
+        };
+        let result =
+            setup_block_policy_with_txs(txs, vec![signer], &state_backend, num_committed_blocks);
+        assert!(
+            result.is_err(),
+            "Block coherency check should have failed: {:?}",
+            result
+        );
+
+        ///////////////////////////////////////////////////////////////////////////////////
+        // Case2: Emptying transaction + another transaction in same block              ///
+        ///////////////////////////////////////////////////////////////////////////////////
+
+        // first tx dips into reserve balance, second tx has gas cost less than remaining reserve balance
+        let tx1 = make_test_tx(50000, ONE_ETHER, 0, S1);
+        let tx2 = make_test_tx(50000, HALF_ETHER, 1, S1);
+        let txs = BTreeMap::from([(4, vec![tx1, tx2])]); // txs in block n
+
+        // balance of signer at block n-3
+        let state_backend = NopStateBackend {
+            balances: BTreeMap::from([(signer, U256::from(ONE_ETHER + HALF_ETHER))]),
+            ..Default::default()
+        };
+
+        let result =
+            setup_block_policy_with_txs(txs, vec![signer], &state_backend, num_committed_blocks);
+        assert!(result.is_ok(), "Block coherency check failed: {:?}", result);
+
+        // first tx dips into reserve balance, second tx has gas cost more than remaining reserve balance
+        let tx1 = make_test_tx(50000, ONE_ETHER, 0, S1);
+        let tx2 = make_test_tx(50000, HALF_ETHER, 1, S1);
+        let txs = BTreeMap::from([(4, vec![tx1, tx2])]); // txs in block n
+
+        // balance of signer at block n-3
+        let gas_cost = 50000 * BASE_FEE_PER_GAS as u128;
+        let balance = ONE_ETHER + (2 * gas_cost) - 1;
+        let state_backend = NopStateBackend {
+            balances: BTreeMap::from([(signer, U256::from(balance))]),
+            ..Default::default()
+        };
+
+        let result =
+            setup_block_policy_with_txs(txs, vec![signer], &state_backend, num_committed_blocks);
+        assert!(
+            result.is_err(),
+            "Block coherency check should have failed: {:?}",
+            result
+        );
+
+        // first tx doesn't dip into reserve balance, second tx has max reserve balance to spend from
+        let tx1 = make_test_tx(50000, 0, 0, S1);
+        let tx2 = make_test_tx(20_000_000, HALF_ETHER, 1, S1);
+        let txs = BTreeMap::from([(4, vec![tx1, tx2.clone()])]); // txs in block n
+
+        // balance of signer at block n-3
+        assert_eq!(
+            tx2.gas_limit() as u128 * BASE_FEE_PER_GAS as u128,
+            RESERVE_BALANCE
+        );
+        let first_tx_gas_cost = 50000 * BASE_FEE_PER_GAS as u128;
+        let second_tx_gas_cost = RESERVE_BALANCE;
+        let balance = first_tx_gas_cost + second_tx_gas_cost;
+        let state_backend = NopStateBackend {
+            balances: BTreeMap::from([(signer, U256::from(balance))]),
+            ..Default::default()
+        };
+
+        let result =
+            setup_block_policy_with_txs(txs, vec![signer], &state_backend, num_committed_blocks);
+        assert!(result.is_ok(), "Block coherency check failed: {:?}", result);
+
+        ///////////////////////////////////////////////////////////////////////////////////
+        // Case3: Emptying transaction + another transaction in different block         ///
+        ///////////////////////////////////////////////////////////////////////////////////
+
+        // first tx dips into reserve balance, second tx has gas cost less than remaining reserve balance
+        let tx1 = make_test_tx(50000, ONE_ETHER, 0, S1);
+        let tx2 = make_test_tx(50000, HALF_ETHER, 1, S1);
+        // first tx in block n-2, second tx in block n
+        let txs = BTreeMap::from([(2, vec![tx1]), (4, vec![tx2])]);
+
+        // balance of signer at block n-3
+        let state_backend = NopStateBackend {
+            balances: BTreeMap::from([(signer, U256::from(ONE_ETHER + HALF_ETHER))]),
+            ..Default::default()
+        };
+
+        let result =
+            setup_block_policy_with_txs(txs, vec![signer], &state_backend, num_committed_blocks);
+        assert!(result.is_ok(), "Block coherency check failed: {:?}", result);
+
+        // first tx dips into reserve balance, second tx has gas cost more than remaining reserve balance
+        let tx1 = make_test_tx(50000, ONE_ETHER, 0, S1);
+        let tx2 = make_test_tx(50000, HALF_ETHER, 1, S1);
+        // first tx in block n-2, second tx in block n
+        let txs = BTreeMap::from([(2, vec![tx1]), (4, vec![tx2])]);
+
+        // balance of signer at block n-3
+        let gas_cost = 50000 * BASE_FEE_PER_GAS as u128;
+        let balance = ONE_ETHER + (2 * gas_cost) - 1;
+        let state_backend = NopStateBackend {
+            balances: BTreeMap::from([(signer, U256::from(balance))]),
+            ..Default::default()
+        };
+
+        let result =
+            setup_block_policy_with_txs(txs, vec![signer], &state_backend, num_committed_blocks);
+        assert!(
+            result.is_err(),
+            "Block coherency check should have failed: {:?}",
+            result
+        );
+
+        // first tx doesn't dip into reserve balance, second tx has max reserve balance to spend from
+        let tx1 = make_test_tx(50000, 0, 0, S1);
+        let tx2 = make_test_tx(20_000_000, HALF_ETHER, 1, S1);
+        // first tx in block n-2, second tx in block n
+        let txs = BTreeMap::from([(2, vec![tx1]), (4, vec![tx2.clone()])]);
+
+        // balance of signer at block n-3
+        assert_eq!(
+            tx2.gas_limit() as u128 * BASE_FEE_PER_GAS as u128,
+            RESERVE_BALANCE
+        );
+        let first_tx_gas_cost = 50000 * BASE_FEE_PER_GAS as u128;
+        let second_tx_gas_cost = RESERVE_BALANCE;
+        let balance = first_tx_gas_cost + second_tx_gas_cost;
+        let state_backend = NopStateBackend {
+            balances: BTreeMap::from([(signer, U256::from(balance))]),
+            ..Default::default()
+        };
+
+        let result =
+            setup_block_policy_with_txs(txs, vec![signer], &state_backend, num_committed_blocks);
+        assert!(result.is_ok(), "Block coherency check failed: {:?}", result);
+
+        ///////////////////////////////////////////////////////////////////////////////////
+        // Case4: Non-emptying transaction + another transaction in different block     ///
+        ///////////////////////////////////////////////////////////////////////////////////
+
+        // only gas cost of transactions are taken into account, txn value is not included when calculating reserve balance
+        let tx1 = make_test_tx(50000, ONE_ETHER, 0, S1);
+        let tx2 = make_test_tx(50000, HALF_ETHER, 1, S1);
+        let tx3 = make_test_tx(50000, HALF_ETHER, 2, S1);
+        // first tx in block n-3, second tx in block n-2, third tx in block n
+        let txs = BTreeMap::from([(1, vec![tx1]), (2, vec![tx2]), (4, vec![tx3])]);
+
+        // balance of signer at block n-3
+        let gas_cost = 50000 * 2 * BASE_FEE_PER_GAS as u128;
+        let state_backend = NopStateBackend {
+            balances: BTreeMap::from([(signer, U256::from(gas_cost))]),
+            ..Default::default()
+        };
+
+        let result =
+            setup_block_policy_with_txs(txs, vec![signer], &state_backend, num_committed_blocks);
+        assert!(result.is_ok(), "Block coherency check failed: {:?}", result);
+
+        // transactions exceed reserve balance
+        let tx1 = make_test_tx(50000, ONE_ETHER, 0, S1);
+        let tx2 = make_test_tx(50000, HALF_ETHER, 1, S1);
+        let tx3 = make_test_tx(50001, HALF_ETHER, 2, S1);
+        // first tx in block n-3, second tx in block n-2, third tx in block n
+        let txs = BTreeMap::from([(1, vec![tx1]), (2, vec![tx2]), (4, vec![tx3])]);
+
+        // balance of signer at block n-3
+        let gas_cost = 50000 * 2 * BASE_FEE_PER_GAS as u128;
+        let state_backend = NopStateBackend {
+            balances: BTreeMap::from([(signer, U256::from(gas_cost))]),
+            ..Default::default()
+        };
+
+        let result =
+            setup_block_policy_with_txs(txs, vec![signer], &state_backend, num_committed_blocks);
+        assert!(
+            result.is_err(),
+            "Block coherency check should have failed: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -1232,7 +1543,7 @@ mod test {
             assert_eq!(result, expected_max_value);
         }
     }
-    // TODO: check accounts for previous transactions in the block
+
     #[test]
     fn test_validate_emptying_txn() {
         let reserve_balance = Balance::from(RESERVE_BALANCE);
@@ -1240,10 +1551,10 @@ mod test {
         let txn_value = 1000;
         let block_seq_num = latest_seq_num + EXEC_DELAY;
 
-        let tx = make_test_tx(txn_value, 0, S1);
+        let tx = make_test_tx(50000, txn_value, 0, S1);
         let txs = vec![tx.clone()];
         let signer = tx.recover_signer().unwrap();
-        let min_balance = compute_txn_max_value(&tx);
+        let min_balance = compute_txn_max_gas_cost(&tx);
 
         let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
         account_balances.insert(
@@ -1288,13 +1599,13 @@ mod test {
     }
 
     #[test]
-    fn test_validate_nonemptying_txn() {
+    fn test_validate_non_emptying_txn() {
         let reserve_balance = Balance::from(RESERVE_BALANCE);
         let latest_seq_num = SeqNum(1000);
         let txn_value = 1000;
         let block_seq_num = latest_seq_num + EXEC_DELAY - SeqNum(1);
 
-        let tx = make_test_tx(txn_value, 0, S1);
+        let tx = make_test_tx(50000, txn_value, 0, S1);
         let txs = vec![tx.clone()];
         let signer = tx.recover_signer().unwrap();
         let min_balance = compute_txn_max_gas_cost(&tx);
@@ -1348,7 +1659,7 @@ mod test {
         let txn_value = 1000;
         let block_seq_num = latest_seq_num + EXEC_DELAY;
 
-        let tx = make_test_tx(txn_value, 0, S1);
+        let tx = make_test_tx(50000, txn_value, 0, S1);
         let txs = vec![tx.clone()];
         let min_balance = compute_txn_max_gas_cost(&tx);
 
@@ -1384,7 +1695,7 @@ mod test {
         let txn_value = 1000;
         let block_seq_num = latest_seq_num + EXEC_DELAY;
 
-        let tx = make_test_tx(txn_value, 0, S1);
+        let tx = make_test_tx(50000, txn_value, 0, S1);
         let txs = vec![tx.clone()];
         let signer = tx.recover_signer().unwrap();
         let min_balance = compute_txn_max_value(&tx);
@@ -1439,8 +1750,8 @@ mod test {
         let txn_value = 1000;
         let block_seq_num = latest_seq_num + EXEC_DELAY;
 
-        let tx1 = make_test_tx(txn_value, 0, S1);
-        let tx2 = make_test_tx(txn_value * 2, 1, S1);
+        let tx1 = make_test_tx(50000, txn_value, 0, S1);
+        let tx2 = make_test_tx(50000, txn_value * 2, 1, S1);
         let signer = tx1.recover_signer().unwrap();
 
         let txs = vec![tx1.clone(), tx2.clone()];
@@ -1491,10 +1802,6 @@ mod test {
         Err(BlockPolicyError::BlockPolicyBlockValidatorError(
             BlockPolicyBlockValidatorError::InsufficientReserveBalance,
         ));
-    const BALANCE_FAIL: Result<(), BlockPolicyError> =
-        Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-            BlockPolicyBlockValidatorError::InsufficientBalance,
-        ));
 
     #[rstest]
     #[case(Balance::from(100), Balance::from(10), Balance::from(10), SeqNum(3), 1_u128, 1_u64, Ok(()))]
@@ -1534,7 +1841,7 @@ mod test {
             max_reserve_balance,
         };
 
-        let txn = make_test_eip1559_tx(txn_value, 0, txn_gas_limit, signer());
+        let txn = make_test_eip1559_tx(txn_value, 0, txn_gas_limit, S1);
         let signer = txn.recover_signer().unwrap();
 
         let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
@@ -1587,7 +1894,7 @@ mod test {
             .iter()
             .enumerate()
             .map(|(nonce, (value, gas_limit))| {
-                make_test_eip1559_tx(*value, nonce as u64, *gas_limit, signer())
+                make_test_eip1559_tx(*value, nonce as u64, *gas_limit, S1)
             })
             .collect_vec();
         let signer = txns[0].recover_signer().unwrap();
@@ -1614,12 +1921,6 @@ mod test {
             "txn nonce {}",
             txn.nonce()
         );
-    }
-
-    fn signer() -> B256 {
-        B256::new(hex!(
-            "0ed2e19e3aca1a321349f295837988e9c6f95d4a6fc54cfab6befd5ee82662ad"
-        ))
     }
 
     fn make_test_eip1559_tx(

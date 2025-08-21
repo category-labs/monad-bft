@@ -28,10 +28,12 @@ use monad_validator::signature_collection::{SignatureCollection, SignatureCollec
 
 pub use self::{
     in_memory::{InMemoryBlockState, InMemoryState, InMemoryStateInner},
+    mock::NopStateBackend,
     thread::StateBackendThreadClient,
 };
 
 mod in_memory;
+mod mock;
 mod thread;
 
 #[derive(Debug, PartialEq)]
