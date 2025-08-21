@@ -199,7 +199,9 @@ where
         let sequencer = ProposalSequencer::new(&self.txs, &extending_blocks, base_fee);
         let sequencer_len = sequencer.len();
 
-        let (account_balances, account_balance_lookups) = {
+        // TODO: enrich with delegated EOAs
+
+        let (mut account_balances, account_balance_lookups) = {
             let _timer = DropTimer::start(Duration::ZERO, |elapsed| {
                 debug!(
                     ?elapsed,
@@ -219,6 +221,15 @@ where
                 state_backend.total_db_lookups() - total_db_lookups_before,
             )
         };
+
+        // for signer in &authority_addresses {
+        //     let account_balance = account_balances
+        //         .get_mut(signer)
+        //         .expect("account_balances should have been populated for delegated accounts");
+
+        //     debug!(authority_account = ?signer, "Setting account to is_delegated: true");
+        //     account_balance.is_delegated = true;
+        // }
 
         info!(
             addresses = self.txs.len(),

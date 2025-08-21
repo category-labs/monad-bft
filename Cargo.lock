@@ -5022,6 +5022,7 @@ name = "monad-eth-block-policy"
 version = "0.1.0"
 dependencies = [
  "alloy-consensus",
+ "alloy-eips",
  "alloy-primitives",
  "alloy-signer",
  "alloy-signer-local",
@@ -5050,6 +5051,7 @@ dependencies = [
  "alloy-consensus",
  "alloy-primitives",
  "alloy-rlp",
+ "itertools 0.10.5",
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-block-policy",
