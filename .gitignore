@@ -19,5 +19,4 @@ test-keys
 /venv
 /logs
 *.png
-*.ipynb
 .ipynb_checkpoints/
