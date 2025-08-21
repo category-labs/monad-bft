@@ -1,5 +1,5 @@
 name = "rs"
-workdir = "/tmp/rs50"
+workdir = "/tmp/rs10-2mb"
 
 [network]
 cidr = "10.1.0.0/24"
@@ -11,7 +11,7 @@ distanced = "30ms"
 buckets = 5
 
 [[guests.commands]]
-command = "/home/dd/monad-bft/target/release/node producer --cluster /home/dd/monad-bft/cluster.toml --interval 500ms --size 2MB"
+command = "/home/dd/monad-bft/target/release/node producer --cluster /home/dd/monad-bft/cluster.toml --interval 2s --size 2MB"
 [guests.commands.env]
 RUST_LOG = "info"
 

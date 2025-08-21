@@ -43,6 +43,8 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 futures-util = { workspace = true }
 humantime = "2"
 byte-unit = "5"
+tracing-manytrace = { workspace = true }
+agent = { workspace = true }
 
 [dev-dependencies]
 monad-testutil = { workspace = true }

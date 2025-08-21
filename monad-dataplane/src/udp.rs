@@ -168,7 +168,7 @@ async fn rx_single_socket(socket: UdpSocket, udp_ingress_tx: mpsc::Sender<RecvUd
         match socket.recv_from(buf).await {
             (Ok((len, src_addr)), buf) => {
                 let payload = buf.freeze();
-                
+
                 trace!(
                     src_addr = ?src_addr,
                     len = len,
@@ -257,7 +257,7 @@ async fn tx(
             msg_type = ?msg_type,
             "sending udp packet"
         );
-        
+
         let (ret, chunk) = socket.send_to(chunk, addr).await;
 
         if let Err(err) = &ret {

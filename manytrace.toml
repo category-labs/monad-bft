@@ -1,0 +1,51 @@
+buffer_size = 16777216
+
+[[user]]
+socket = "/tmp/rs10-2mb/g1/manytrace.sock"
+log_filter = "TRACE"
+random_process_id = false
+
+[[user]]
+socket = "/tmp/rs10-2mb/g2/manytrace.sock"
+log_filter = "TRACE"
+random_process_id = false
+
+[[user]]
+socket = "/tmp/rs10-2mb/g3/manytrace.sock"
+log_filter = "TRACE"
+random_process_id = false
+
+[[user]]
+socket = "/tmp/rs10-2mb/g4/manytrace.sock"
+log_filter = "TRACE"
+random_process_id = false
+
+[[user]]
+socket = "/tmp/rs10-2mb/g5/manytrace.sock"
+log_filter = "TRACE"
+random_process_id = false
+
+[[user]]
+socket = "/tmp/rs10-2mb/g6/manytrace.sock"
+log_filter = "TRACE"
+random_process_id = false
+
+[[user]]
+socket = "/tmp/rs10-2mb/g7/manytrace.sock"
+log_filter = "TRACE"
+random_process_id = false
+
+[[user]]
+socket = "/tmp/rs10-2mb/g8/manytrace.sock"
+log_filter = "TRACE"
+random_process_id = false
+
+[[user]]
+socket = "/tmp/rs10-2mb/g9/manytrace.sock"
+log_filter = "TRACE"
+random_process_id = false
+
+[[user]]
+socket = "/tmp/rs10-2mb/g10/manytrace.sock"
+log_filter = "TRACE"
+random_process_id = false

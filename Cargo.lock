@@ -5679,6 +5679,7 @@ dependencies = [
 name = "monad-raptorcast"
 version = "0.1.0"
 dependencies = [
+ "agent",
  "alloy-primitives",
  "alloy-rlp",
  "bitvec",
@@ -5715,6 +5716,7 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+ "tracing-manytrace",
  "tracing-subscriber",
 ]
 

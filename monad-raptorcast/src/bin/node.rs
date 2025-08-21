@@ -2,6 +2,7 @@ use std::{
     collections::BTreeMap,
     env,
     net::{SocketAddr, SocketAddrV4},
+    path::PathBuf,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -31,7 +32,8 @@ use monad_types::{Deserializable, Epoch, NodeId, Round, RouterTarget, Serializab
 use rand::{thread_rng, Rng};
 use rand_chacha::{rand_core::SeedableRng, ChaCha8Rng};
 use serde::{Deserialize, Serialize};
-use tracing_subscriber::fmt::format::FmtSpan;
+use tracing_manytrace::{ManytraceLayer, TracingExtension};
+use tracing_subscriber::{layer::SubscriberExt, Layer};
 
 type SignatureType = SecpSignature;
 type PubKeyType = CertificateSignaturePubKey<SignatureType>;
@@ -62,14 +64,22 @@ enum Commands {
     Run {
         #[arg(long)]
         cluster: String,
+        #[arg(long)]
+        cluster_size: Option<usize>,
+        #[arg(long, default_value = "manytrace.sock")]
+        manytrace_socket: String,
     },
     Producer {
         #[arg(long)]
         cluster: String,
+        #[arg(long)]
+        cluster_size: Option<usize>,
         #[arg(long, value_parser = parse_duration)]
         interval: Duration,
         #[arg(long, value_parser = parse_size)]
         size: usize,
+        #[arg(long, default_value = "manytrace.sock")]
+        manytrace_socket: String,
     },
     Generate {
         #[arg(long)]
@@ -108,20 +118,20 @@ impl MockMessage {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
-        
+
         let mut data = bytes::BytesMut::with_capacity(message_len);
         data.resize(message_len, 0);
-        
+
         let timestamp_bytes = timestamp.to_le_bytes();
         if data.len() >= 8 {
             data[0..8].copy_from_slice(&timestamp_bytes);
         }
-        
+
         if data.len() > 8 {
             let mut rng = thread_rng();
             rng.fill(&mut data[8..]);
         }
-        
+
         Self {
             timestamp,
             data: data.freeze(),
@@ -224,32 +234,72 @@ fn create_peer_discovery_builder(
     }
 }
 
+fn setup_tracing(manytrace_socket: &str) -> Option<agent::Agent> {
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    let manytrace_socket_path = PathBuf::from(manytrace_socket);
+
+    let extension = std::sync::Arc::new(TracingExtension::new());
+    if let Ok(agent) = agent::AgentBuilder::new(manytrace_socket_path.to_string_lossy().to_string())
+        .register_tracing(Box::new((*extension).clone()))
+        .build()
+    {
+        let layer = ManytraceLayer::new(extension);
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(layer)
+            .with(tracing_subscriber::fmt::layer().with_filter(env_filter));
+
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("failed to set tracing subscriber");
+        tracing::info!(socket = ?manytrace_socket_path, "manytrace tracing enabled");
+        Some(agent)
+    } else {
+        tracing_subscriber::fmt::fmt()
+            .with_env_filter(env_filter)
+            .init();
+        tracing::info!("manytrace not available, using standard tracing");
+        None
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
-    
+
     runtime.block_on(async_main())
 }
 
 async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-
-    tracing_subscriber::fmt::fmt()
-        .with_env_filter(env_filter)
-        .init();
-
     let cli = Cli::parse();
 
+    let manytrace_socket = match &cli.command {
+        Commands::Run {
+            manytrace_socket, ..
+        } => manytrace_socket.clone(),
+        Commands::Producer {
+            manytrace_socket, ..
+        } => manytrace_socket.clone(),
+        Commands::Generate { .. } => "manytrace.sock".to_string(),
+    };
+
+    let _agent = setup_tracing(&manytrace_socket);
+
     match cli.command {
-        Commands::Run { cluster } => run_node(cluster).await,
+        Commands::Run {
+            cluster,
+            cluster_size,
+            manytrace_socket: _,
+        } => run_node(cluster, cluster_size).await,
         Commands::Producer {
             cluster,
+            cluster_size,
             interval,
             size,
-        } => run_producer(cluster, interval, size).await,
+            manytrace_socket: _,
+        } => run_producer(cluster, cluster_size, interval, size).await,
         Commands::Generate {
             output,
             count,
@@ -263,6 +313,7 @@ const UDP_BW: u64 = 1_000;
 
 async fn run_producer(
     cluster_path: String,
+    cluster_size: Option<usize>,
     interval: Duration,
     size: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -270,11 +321,15 @@ async fn run_producer(
         .expect("SIMNET_INDEX environment variable must be set")
         .parse::<usize>()
         .expect("SIMNET_INDEX must be a valid number");
-    
+
     let index = simnet_index - 1;
-    
-    tracing::info!(simnet_index = simnet_index, index = index, "starting producer node with SIMNET_INDEX");
-    
+
+    tracing::info!(
+        simnet_index = simnet_index,
+        index = index,
+        "starting producer node with SIMNET_INDEX"
+    );
+
     let config_str = std::fs::read_to_string(cluster_path)?;
     let cluster_config: ClusterConfig = toml::from_str(&config_str)?;
 
@@ -298,7 +353,20 @@ async fn run_producer(
     let mut routing_info = BTreeMap::new();
     let mut epoch_validators = BTreeMap::new();
 
-    for participant in &cluster_config.participants {
+    let participants_to_use = if let Some(size) = cluster_size {
+        let limited_size = size.min(cluster_config.participants.len());
+        tracing::info!(
+            cluster_size = size,
+            total_participants = cluster_config.participants.len(),
+            using_participants = limited_size,
+            "limiting validator set size"
+        );
+        &cluster_config.participants[..limited_size]
+    } else {
+        &cluster_config.participants[..]
+    };
+
+    for participant in participants_to_use {
         let mut participant_privkey = [0u8; 32];
         participant_privkey.copy_from_slice(&hex::decode(&participant.private_key)?);
         let participant_keypair = KeyPair::from_bytes(&mut participant_privkey)?;
@@ -411,16 +479,23 @@ async fn run_producer(
     }
 }
 
-async fn run_node(cluster_path: String) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_node(
+    cluster_path: String,
+    cluster_size: Option<usize>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let simnet_index = env::var("SIMNET_INDEX")
         .expect("SIMNET_INDEX environment variable must be set")
         .parse::<usize>()
         .expect("SIMNET_INDEX must be a valid number");
-    
+
     let index = simnet_index - 1;
-    
-    tracing::info!(simnet_index = simnet_index, index = index, "starting regular node with SIMNET_INDEX");
-    
+
+    tracing::info!(
+        simnet_index = simnet_index,
+        index = index,
+        "starting regular node with SIMNET_INDEX"
+    );
+
     let config_str = std::fs::read_to_string(cluster_path)?;
     let cluster_config: ClusterConfig = toml::from_str(&config_str)?;
 
@@ -444,7 +519,20 @@ async fn run_node(cluster_path: String) -> Result<(), Box<dyn std::error::Error>
     let mut routing_info = BTreeMap::new();
     let mut epoch_validators = BTreeMap::new();
 
-    for participant in &cluster_config.participants {
+    let participants_to_use = if let Some(size) = cluster_size {
+        let limited_size = size.min(cluster_config.participants.len());
+        tracing::info!(
+            cluster_size = size,
+            total_participants = cluster_config.participants.len(),
+            using_participants = limited_size,
+            "limiting validator set size"
+        );
+        &cluster_config.participants[..limited_size]
+    } else {
+        &cluster_config.participants[..]
+    };
+
+    for participant in participants_to_use {
         let mut participant_privkey = [0u8; 32];
         participant_privkey.copy_from_slice(&hex::decode(&participant.private_key)?);
         let participant_keypair = KeyPair::from_bytes(&mut participant_privkey)?;
