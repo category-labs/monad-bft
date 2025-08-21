@@ -1,5 +1,5 @@
 name = "rs"
-workdir = "/tmp/rs10-2mb"
+workdir = "/tmp/rs10-2mb-uring"
 
 [network]
 cidr = "10.1.0.0/24"

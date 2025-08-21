@@ -5053,6 +5053,7 @@ dependencies = [
  "futures",
  "futures-util",
  "governor",
+ "io-uring 0.7.8",
  "libc",
  "monoio",
  "ntest",

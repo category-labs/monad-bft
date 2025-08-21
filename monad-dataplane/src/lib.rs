@@ -35,6 +35,7 @@ use tracing::{debug, warn};
 pub(crate) mod addrlist;
 pub(crate) mod ban_expiry;
 pub(crate) mod buffer_ext;
+pub(crate) mod rx_uring;
 pub mod tcp;
 pub mod udp;
 

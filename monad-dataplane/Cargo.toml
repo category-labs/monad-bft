@@ -14,6 +14,7 @@ env_logger = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
 governor = { workspace = true }
+io-uring = { workspace = true }
 libc = { workspace = true }
 monoio = { workspace = true }
 rand = { workspace = true }

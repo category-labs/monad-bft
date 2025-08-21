@@ -104,6 +104,104 @@ fn set_mtu_discovery(socket: &UdpSocket) {
     }
 }
 
+fn set_socket_buffer_sizes_std(socket: &std::net::UdpSocket, requested_size: usize) {
+    set_recv_buffer_size_std(socket, requested_size);
+    set_send_buffer_size_std(socket, requested_size);
+}
+
+fn set_recv_buffer_size_std(socket: &std::net::UdpSocket, requested_size: usize) {
+    let raw_fd = socket.as_raw_fd();
+    let size = requested_size as libc::c_int;
+    
+    if unsafe {
+        libc::setsockopt(
+            raw_fd,
+            libc::SOL_SOCKET,
+            libc::SO_RCVBUF,
+            &size as *const _ as _,
+            std::mem::size_of_val(&size) as _,
+        )
+    } != 0 {
+        panic!("set_recv_buffer_size to {requested_size} failed with: {}", Error::last_os_error());
+    }
+    
+    let mut actual_size: libc::c_int = 0;
+    let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    
+    if unsafe {
+        libc::getsockopt(
+            raw_fd,
+            libc::SOL_SOCKET,
+            libc::SO_RCVBUF,
+            &mut actual_size as *mut _ as _,
+            &mut len,
+        )
+    } != 0 {
+        panic!("get recv buffer size failed");
+    }
+    
+    if (actual_size as usize) < requested_size {
+        panic!("unable to set udp receive buffer size to {requested_size}. Got {actual_size} instead. Set net.core.rmem_max to at least {requested_size}");
+    }
+}
+
+fn set_send_buffer_size_std(socket: &std::net::UdpSocket, requested_size: usize) {
+    let raw_fd = socket.as_raw_fd();
+    let size = requested_size as libc::c_int;
+    
+    if unsafe {
+        libc::setsockopt(
+            raw_fd,
+            libc::SOL_SOCKET,
+            libc::SO_SNDBUF,
+            &size as *const _ as _,
+            std::mem::size_of_val(&size) as _,
+        )
+    } != 0 {
+        panic!("set_send_buffer_size to {requested_size} failed with: {}", Error::last_os_error());
+    }
+    
+    let mut actual_size: libc::c_int = 0;
+    let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    
+    if unsafe {
+        libc::getsockopt(
+            raw_fd,
+            libc::SOL_SOCKET,
+            libc::SO_SNDBUF,
+            &mut actual_size as *mut _ as _,
+            &mut len,
+        )
+    } != 0 {
+        panic!("get send buffer size failed");
+    }
+    
+    if (actual_size as usize) < requested_size {
+        panic!("unable to set udp send buffer size to {requested_size}. got {actual_size} instead. set net.core.wmem_max to at least {requested_size}");
+    }
+}
+
+fn set_mtu_discovery_std(socket: &std::net::UdpSocket) {
+    const MTU_DISCOVER: libc::c_int = libc::IP_PMTUDISC_OMIT;
+    let raw_fd = socket.as_raw_fd();
+
+    if unsafe {
+        libc::setsockopt(
+            raw_fd,
+            libc::SOL_IP,
+            libc::IP_MTU_DISCOVER,
+            &MTU_DISCOVER as *const _ as _,
+            std::mem::size_of_val(&MTU_DISCOVER) as _,
+        )
+    } != 0
+    {
+        panic!(
+            "set IP_MTU_DISCOVER failed with: {}",
+            Error::last_os_error()
+        );
+    }
+}
+
 pub(crate) fn spawn_tasks(
     local_addr: SocketAddr,
     direct_socket_port: Option<u16>,
@@ -113,22 +211,63 @@ pub(crate) fn spawn_tasks(
     up_bandwidth_mbps: u64,
     buffer_size: Option<usize>,
 ) {
-    let (udp_socket_rx, udp_socket_tx) = create_socket_pair(local_addr, buffer_size);
-    let (direct_socket_rx, direct_socket_tx) = direct_socket_port
-        .map(|port| {
-            let mut direct_addr = local_addr;
-            direct_addr.set_port(port);
-            let (rx, tx) = create_socket_pair(direct_addr, buffer_size);
-            (Some(rx), Some(tx))
-        })
-        .unwrap_or((None, None));
-
-    spawn(rx(
-        udp_socket_rx,
-        direct_socket_rx,
-        udp_ingress_tx,
-        udp_direct_ingress_tx,
-    ));
+    // Create std socket for io-uring reader and monoio socket for tx
+    let std_socket = std::net::UdpSocket::bind(local_addr).unwrap();
+    if let Some(size) = buffer_size {
+        set_socket_buffer_sizes_std(&std_socket, size);
+    }
+    set_mtu_discovery_std(&std_socket);
+    
+    // Clone the socket for tx by duplicating the file descriptor
+    let tx_socket = unsafe {
+        let fd = libc::dup(std_socket.as_raw_fd());
+        if fd < 0 {
+            panic!("Failed to duplicate socket fd");
+        }
+        std::net::UdpSocket::from_raw_fd(fd)
+    };
+    
+    let udp_socket_tx = UdpSocket::from_std(tx_socket).unwrap();
+    
+    // Use io-uring based reader
+    crate::rx_uring::spawn_uring_reader(std_socket, udp_ingress_tx);
+    
+    // Handle direct socket if configured
+    let direct_socket_tx = if let Some(port) = direct_socket_port {
+        let mut direct_addr = local_addr;
+        direct_addr.set_port(port);
+        
+        let std_direct_socket = std::net::UdpSocket::bind(direct_addr).unwrap();
+        if let Some(size) = buffer_size {
+            set_socket_buffer_sizes_std(&std_direct_socket, size);
+        }
+        set_mtu_discovery_std(&std_direct_socket);
+        
+        // Clone the socket for tx by duplicating the file descriptor
+        let tx_socket = unsafe {
+            let fd = libc::dup(std_direct_socket.as_raw_fd());
+            if fd < 0 {
+                panic!("Failed to duplicate direct socket fd");
+            }
+            std::net::UdpSocket::from_raw_fd(fd)
+        };
+        
+        let direct_tx = UdpSocket::from_std(tx_socket).unwrap();
+        
+        crate::rx_uring::spawn_uring_reader_direct(std_direct_socket, udp_direct_ingress_tx);
+        Some(direct_tx)
+    } else {
+        None
+    };
+    
+    // Comment out the original rx task
+    // spawn(rx(
+    //     udp_socket_rx,
+    //     direct_socket_rx,
+    //     udp_ingress_tx,
+    //     udp_direct_ingress_tx,
+    // ));
+    
     spawn(tx(
         udp_socket_tx,
         direct_socket_tx,
