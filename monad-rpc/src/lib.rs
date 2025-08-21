@@ -19,7 +19,6 @@ pub mod docs;
 pub mod eth_json_types;
 pub mod event;
 pub mod fee;
-pub mod gas_oracle;
 pub mod handlers;
 pub mod hex;
 pub mod jsonrpc;
