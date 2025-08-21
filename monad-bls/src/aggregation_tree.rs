@@ -297,7 +297,7 @@ impl<PT: PubKey> SignatureCollection for BlsSignatureCollection<PT> {
 
         for (bit, (node_id, pubkey)) in self.signers.0.iter().zip(validator_mapping.map.iter()) {
             if *bit {
-                aggpk.add_assign(pubkey).expect("pubkey aggregation");
+                aggpk.add_assign(pubkey);
                 signers.push(*node_id);
             }
         }
