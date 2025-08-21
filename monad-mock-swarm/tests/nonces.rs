@@ -35,7 +35,7 @@ mod test {
     use monad_eth_block_validator::EthValidator;
     use monad_eth_ledger::MockEthLedger;
     use monad_eth_testutil::{make_legacy_tx, secret_to_eth_address};
-    use monad_eth_types::{Balance, EthExecutionProtocol, BASE_FEE_PER_GAS};
+    use monad_eth_types::{EthExecutionProtocol, BASE_FEE_PER_GAS};
     use monad_mock_swarm::{
         mock::TimestamperConfig,
         mock_swarm::{Nodes, SwarmBuilder},
@@ -53,7 +53,7 @@ mod test {
         DropTransformer, GenericTransformer, GenericTransformerPipeline, LatencyTransformer,
         PartitionTransformer, ID,
     };
-    use monad_types::{NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
+    use monad_types::{Balance, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
     use monad_updaters::{
         ledger::MockableLedger, statesync::MockStateSyncExecutor, txpool::MockTxPoolExecutor,
         val_set::MockValSetUpdaterNop,
@@ -135,6 +135,7 @@ mod test {
         tx_limit: 10_000,
         proposal_gas_limit: 300_000_000,
         proposal_byte_limit: 4_000_000,
+        max_reserve_balance: 1_000_000_000_000_000_000,
         vote_pace: Duration::from_millis(0),
     };
 
@@ -147,7 +148,14 @@ mod test {
         let existing_nonces: BTreeMap<_, _> =
             existing_accounts.into_iter().map(|acc| (acc, 0)).collect();
 
-        let create_block_policy = || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337);
+        let create_block_policy = || {
+            EthBlockPolicy::new(
+                GENESIS_SEQ_NUM,
+                execution_delay.0,
+                1337,
+                CHAIN_PARAMS.max_reserve_balance,
+            )
+        };
 
         let state_configs = make_state_configs::<EthSwarm>(
             num_nodes,

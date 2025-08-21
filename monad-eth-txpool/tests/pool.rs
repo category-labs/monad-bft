@@ -33,10 +33,10 @@ use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_eip1559_tx, make_legacy_tx, recover_tx};
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
 use monad_eth_txpool_types::EthTxPoolSnapshot;
-use monad_eth_types::{Balance, BASE_FEE_PER_GAS};
+use monad_eth_types::BASE_FEE_PER_GAS;
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
-use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
+use monad_types::{Balance, Round, SeqNum, GENESIS_SEQ_NUM};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing_test::traced_test;
 
@@ -76,7 +76,12 @@ type SignatureCollectionType = MockSignatures<SignatureType>;
 type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
 
 fn make_test_block_policy() -> EthBlockPolicy<SignatureType, SignatureCollectionType> {
-    EthBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY, 1337)
+    EthBlockPolicy::new(
+        GENESIS_SEQ_NUM,
+        EXECUTION_DELAY,
+        1337,
+        100_000_000_000_000_000_000,
+    )
 }
 
 #[derive(Clone)]
@@ -959,7 +964,7 @@ fn test_tx_invalid_chain_id() {
     };
 
     run_custom(
-        || EthBlockPolicy::new(GENESIS_SEQ_NUM, 0, 1),
+        || EthBlockPolicy::new(GENESIS_SEQ_NUM, 0, 1, 1_000_000_000_000_000_000),
         None,
         [TxPoolTestEvent::InsertTxs {
             txs: vec![(&tx1, true)],
@@ -1110,4 +1115,43 @@ fn test_exceed_byte_limit() {
             add_to_blocktree: true,
         },
     ]);
+}
+
+#[test]
+fn test_compute_balances() {
+    let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
+    let tx2 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 1000);
+    let txns = vec![tx1, tx2];
+
+    let nonces: BTreeMap<Address, u64> = BTreeMap::new();
+    let state_backend =
+        { InMemoryStateInner::new(Balance::MAX, SeqNum(4), InMemoryBlockState::genesis(nonces)) };
+    let mut current_round = 1u64;
+    let mut current_seq_num = 1u64;
+
+    let extending_blocks = None;
+    let block_policy = make_test_block_policy();
+    let block = generate_block_with_txs(
+        Round(current_round),
+        SeqNum(current_seq_num),
+        txns.into_iter()
+            .map(|tx| {
+                let signer = tx.recover_signer().unwrap();
+                Recovered::new_unchecked(tx, signer)
+            })
+            .collect(),
+    );
+
+    let tx_signers = block
+        .validated_txns
+        .iter()
+        .map(|txn| txn.signer())
+        .collect_vec();
+
+    let balances = block_policy.compute_account_base_balances(
+        block.get_seq_num(),
+        &state_backend,
+        extending_blocks,
+        tx_signers.iter(),
+    );
 }
