@@ -1117,10 +1117,13 @@ mod tests {
             logs_bloom: Bloom::default(),
         };
 
-        mock_triedb.set_receipts(vec![ReceiptWithLogIndex {
-            receipt: ReceiptEnvelope::Eip1559(receipt),
-            starting_log_index: 0,
-        }]);
+        mock_triedb.set_receipts(
+            SeqNum(1),
+            vec![ReceiptWithLogIndex {
+                receipt: ReceiptEnvelope::Eip1559(receipt),
+                starting_log_index: 0,
+            }],
+        );
 
         let chain_state = ChainState::new(None, mock_triedb, None);
         let result = monad_debug_getRawReceipts(
