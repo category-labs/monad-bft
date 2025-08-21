@@ -22,7 +22,7 @@ use std::{
 use alloy_consensus::TxEnvelope;
 use alloy_primitives::{Address, TxHash};
 use dashmap::{DashMap, Entry};
-use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolSnapshot};
+use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolEventType, EthTxPoolSnapshot};
 use tokio::time::Instant;
 
 use super::TxStatus;
@@ -189,10 +189,9 @@ impl EthTxPoolBridgeState {
             };
         };
 
-        for event in events {
-            match event {
-                EthTxPoolEvent::Insert {
-                    tx_hash,
+        for EthTxPoolEvent { tx_hash, action } in events {
+            match action {
+                EthTxPoolEventType::Insert {
                     address,
                     owned: _,
                     tracked,
@@ -212,16 +211,16 @@ impl EthTxPoolBridgeState {
                         .or_default()
                         .insert(tx_hash);
                 }
-                EthTxPoolEvent::Drop { tx_hash, reason } => {
-                    insert(tx_hash, TxStatus::Dropped { reason });
-                }
-                EthTxPoolEvent::Promoted { tx_hash } => {
+                EthTxPoolEventType::Promote => {
                     insert(tx_hash, TxStatus::Tracked);
                 }
-                EthTxPoolEvent::Commit { tx_hash } => {
+                EthTxPoolEventType::Commit => {
                     insert(tx_hash, TxStatus::Committed);
                 }
-                EthTxPoolEvent::Evict { tx_hash, reason } => {
+                EthTxPoolEventType::Drop { reason } => {
+                    insert(tx_hash, TxStatus::Dropped { reason });
+                }
+                EthTxPoolEventType::Evict { reason } => {
                     insert(tx_hash, TxStatus::Evicted { reason });
                 }
             }
@@ -273,7 +272,8 @@ mod test {
     use alloy_primitives::{hex, B256};
     use monad_eth_testutil::make_legacy_tx;
     use monad_eth_txpool_types::{
-        EthTxPoolDropReason, EthTxPoolEvent, EthTxPoolEvictReason, EthTxPoolSnapshot,
+        EthTxPoolDropReason, EthTxPoolEvent, EthTxPoolEventType, EthTxPoolEvictReason,
+        EthTxPoolSnapshot,
     };
     use monad_eth_types::BASE_FEE_PER_GAS;
     use tokio::time::Instant;
@@ -387,11 +387,13 @@ mod test {
                 TestCases::InsertPending => {
                     state.handle_events(
                         &mut eviction_queue,
-                        vec![EthTxPoolEvent::Insert {
+                        vec![EthTxPoolEvent {
                             tx_hash: tx.tx_hash().to_owned(),
-                            address: tx.recover_signer().unwrap(),
-                            owned: true,
-                            tracked: false,
+                            action: EthTxPoolEventType::Insert {
+                                address: tx.recover_signer().unwrap(),
+                                owned: true,
+                                tracked: false,
+                            },
                         }],
                     );
                     assert_eq!(
@@ -415,11 +417,13 @@ mod test {
                 TestCases::InsertTracked => {
                     state.handle_events(
                         &mut eviction_queue,
-                        vec![EthTxPoolEvent::Insert {
+                        vec![EthTxPoolEvent {
                             tx_hash: tx.tx_hash().to_owned(),
-                            address: tx.recover_signer().unwrap(),
-                            owned: true,
-                            tracked: true,
+                            action: EthTxPoolEventType::Insert {
+                                address: tx.recover_signer().unwrap(),
+                                owned: true,
+                                tracked: true,
+                            },
                         }],
                     );
                     assert_eq!(
@@ -443,9 +447,11 @@ mod test {
                 TestCases::Drop => {
                     state.handle_events(
                         &mut eviction_queue,
-                        vec![EthTxPoolEvent::Drop {
+                        vec![EthTxPoolEvent {
                             tx_hash: tx.tx_hash().to_owned(),
-                            reason: EthTxPoolDropReason::PoolNotReady,
+                            action: EthTxPoolEventType::Drop {
+                                reason: EthTxPoolDropReason::PoolNotReady,
+                            },
                         }],
                     );
                     assert_eq!(
@@ -458,11 +464,13 @@ mod test {
                 TestCases::Promote => {
                     state.handle_events(
                         &mut eviction_queue,
-                        vec![EthTxPoolEvent::Insert {
+                        vec![EthTxPoolEvent {
                             tx_hash: tx.tx_hash().to_owned(),
-                            address: tx.recover_signer().unwrap(),
-                            owned: true,
-                            tracked: false,
+                            action: EthTxPoolEventType::Insert {
+                                address: tx.recover_signer().unwrap(),
+                                owned: true,
+                                tracked: false,
+                            },
                         }],
                     );
                     assert_eq!(
@@ -472,8 +480,9 @@ mod test {
 
                     state.handle_events(
                         &mut eviction_queue,
-                        vec![EthTxPoolEvent::Promoted {
+                        vec![EthTxPoolEvent {
                             tx_hash: tx.tx_hash().to_owned(),
+                            action: EthTxPoolEventType::Promote,
                         }],
                     );
                     assert_eq!(
@@ -484,11 +493,13 @@ mod test {
                 TestCases::PromoteSnapshot => {
                     state.handle_events(
                         &mut eviction_queue,
-                        vec![EthTxPoolEvent::Insert {
+                        vec![EthTxPoolEvent {
                             tx_hash: tx.tx_hash().to_owned(),
-                            address: tx.recover_signer().unwrap(),
-                            owned: true,
-                            tracked: false,
+                            action: EthTxPoolEventType::Insert {
+                                address: tx.recover_signer().unwrap(),
+                                owned: true,
+                                tracked: false,
+                            },
                         }],
                     );
                     assert_eq!(
@@ -511,11 +522,13 @@ mod test {
                 TestCases::DemoteSnapshot => {
                     state.handle_events(
                         &mut eviction_queue,
-                        vec![EthTxPoolEvent::Insert {
+                        vec![EthTxPoolEvent {
                             tx_hash: tx.tx_hash().to_owned(),
-                            address: tx.recover_signer().unwrap(),
-                            owned: true,
-                            tracked: true,
+                            action: EthTxPoolEventType::Insert {
+                                address: tx.recover_signer().unwrap(),
+                                owned: true,
+                                tracked: true,
+                            },
                         }],
                     );
                     assert_eq!(
@@ -538,8 +551,9 @@ mod test {
                 TestCases::Commit => {
                     state.handle_events(
                         &mut eviction_queue,
-                        vec![EthTxPoolEvent::Commit {
+                        vec![EthTxPoolEvent {
                             tx_hash: tx.tx_hash().to_owned(),
+                            action: EthTxPoolEventType::Commit,
                         }],
                     );
                     assert_eq!(
@@ -559,9 +573,11 @@ mod test {
                 TestCases::Evict => {
                     state.handle_events(
                         &mut eviction_queue,
-                        vec![EthTxPoolEvent::Evict {
+                        vec![EthTxPoolEvent {
                             tx_hash: tx.tx_hash().to_owned(),
-                            reason: EthTxPoolEvictReason::Expired,
+                            action: EthTxPoolEventType::Evict {
+                                reason: EthTxPoolEvictReason::Expired,
+                            },
                         }],
                     );
                     assert_eq!(

@@ -19,32 +19,31 @@ use alloy_primitives::{Address, TxHash, B256};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum EthTxPoolEvent {
+pub struct EthTxPoolEvent {
+    pub tx_hash: B256,
+    pub action: EthTxPoolEventType,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum EthTxPoolEventType {
     /// The tx was inserted into the txpool's (pending/tracked) tx list.
     Insert {
-        tx_hash: B256,
         address: Address,
         owned: bool,
         tracked: bool,
     },
 
-    /// The tx was dropped for the attached reason.
-    Drop {
-        tx_hash: B256,
-        reason: EthTxPoolDropReason,
-    },
-
     /// The tx was promoted from the txpool's pending tx list to it's tracked tx list.
-    Promoted { tx_hash: B256 },
+    Promote,
 
     /// The tx was committed and is thus finalized.
-    Commit { tx_hash: B256 },
+    Commit,
+
+    /// The tx was dropped for the attached reason.
+    Drop { reason: EthTxPoolDropReason },
 
     /// The tx timed out and was evicted.
-    Evict {
-        tx_hash: B256,
-        reason: EthTxPoolEvictReason,
-    },
+    Evict { reason: EthTxPoolEvictReason },
 }
 
 // allow for more fine grain debugging if needed

@@ -34,7 +34,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker};
-use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolEvent};
+use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolEvent, EthTxPoolEventType};
 use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
@@ -476,9 +476,11 @@ where
                             Ok(signer) => {
                                 rayon::iter::Either::Left(Recovered::new_unchecked(tx, signer))
                             }
-                            Err(_) => rayon::iter::Either::Right(EthTxPoolEvent::Drop {
+                            Err(_) => rayon::iter::Either::Right(EthTxPoolEvent {
                                 tx_hash: *tx.tx_hash(),
-                                reason: EthTxPoolDropReason::InvalidSignature,
+                                action: EthTxPoolEventType::Drop {
+                                    reason: EthTxPoolDropReason::InvalidSignature,
+                                },
                             }),
                         }
                     });
@@ -524,9 +526,11 @@ where
                             Ok(signer) => {
                                 rayon::iter::Either::Left(Recovered::new_unchecked(tx, signer))
                             }
-                            Err(_) => rayon::iter::Either::Right(EthTxPoolEvent::Drop {
+                            Err(_) => rayon::iter::Either::Right(EthTxPoolEvent {
                                 tx_hash: *tx.tx_hash(),
-                                reason: EthTxPoolDropReason::InvalidSignature,
+                                action: EthTxPoolEventType::Drop {
+                                    reason: EthTxPoolDropReason::InvalidSignature,
+                                },
                             }),
                         }
                     });
