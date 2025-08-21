@@ -47,6 +47,7 @@ pub fn rlp_decode_account(account_rlp: Vec<u8>) -> Option<EthAccount> {
         return None;
     };
 
+    let mut is_delegated = false;
     let code_hash = if buf.is_empty() {
         None
     } else {
@@ -63,6 +64,7 @@ pub fn rlp_decode_account(account_rlp: Vec<u8>) -> Option<EthAccount> {
         nonce,
         balance,
         code_hash: code_hash.map(B256::from),
+        is_delegated,
     })
 }
 

@@ -13,12 +13,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeMap, iter::repeat_n};
+use std::{
+    collections::{BTreeMap, HashMap},
+    iter::repeat_n,
+};
 
 use alloy_consensus::{
     transaction::Recovered, Eip658Value, Receipt, ReceiptWithBloom, SignableTransaction,
-    Transaction, TxEip1559, TxEnvelope, TxLegacy,
+    Transaction, TxEip1559, TxEip7702, TxEnvelope, TxLegacy,
 };
+use alloy_eips::eip7702::Authorization;
 use alloy_primitives::{keccak256, Address, Bloom, FixedBytes, Log, LogData, TxKind, U256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
@@ -124,6 +128,44 @@ pub fn make_eip1559_tx_with_value(
     transaction.into_signed(signature).into()
 }
 
+pub fn make_eip7702_tx(
+    sender: FixedBytes<32>,
+    value: u128,
+    max_fee_per_gas: u128,
+    max_priority_fee_per_gas: u128,
+    gas_limit: u64,
+    nonce: u64,
+    input_len: usize,
+    authorizations: HashMap<FixedBytes<32>, Authorization>,
+) -> TxEnvelope {
+    let mut authorization_list = Vec::new();
+    for (signer, auth) in authorizations.into_iter() {
+        let signer = PrivateKeySigner::from_bytes(&signer).unwrap();
+        let signature = signer.sign_hash_sync(&auth.signature_hash()).unwrap();
+        let signed_authorization = auth.into_signed(signature);
+        authorization_list.push(signed_authorization);
+    }
+
+    let transaction = TxEip7702 {
+        chain_id: 1337,
+        nonce,
+        gas_limit,
+        max_fee_per_gas,
+        max_priority_fee_per_gas,
+        to: Address::repeat_byte(0u8),
+        value: U256::from(value),
+        access_list: Default::default(),
+        input: vec![1; input_len].into(),
+        authorization_list,
+    };
+
+    let signer = PrivateKeySigner::from_bytes(&sender).unwrap();
+    let signature = signer
+        .sign_hash_sync(&transaction.signature_hash())
+        .unwrap();
+    transaction.into_signed(signature).into()
+}
+
 pub fn recover_tx(tx: TxEnvelope) -> Recovered<TxEnvelope> {
     let signer = tx.recover_signer().unwrap();
     Recovered::new_unchecked(tx, signer)
@@ -188,22 +230,6 @@ pub fn generate_consensus_test_block(
         monad_tfm::base_fee::GENESIS_BASE_FEE_MOMENT,
     );
 
-    let nonces = txs.iter().map(|t| (t.signer(), t.nonce())).fold(
-        BTreeMap::default(),
-        |mut map, (address, nonce)| {
-            match map.entry(address) {
-                std::collections::btree_map::Entry::Vacant(v) => {
-                    v.insert(nonce);
-                }
-                std::collections::btree_map::Entry::Occupied(mut o) => {
-                    o.insert(nonce.max(*o.get()));
-                }
-            }
-
-            map
-        },
-    );
-
     let mut txn_fees: BTreeMap<_, TxnFee> = BTreeMap::new();
     for eth_txn in txs.iter() {
         txn_fees
@@ -217,8 +243,47 @@ pub fn generate_consensus_test_block(
                 first_txn_value: eth_txn.value(),
                 first_txn_gas: compute_txn_max_gas_cost(eth_txn, BASE_FEE),
                 max_gas_cost: Balance::ZERO,
+                is_delegated: false,
             });
     }
+
+    let nonces = txs
+        .iter()
+        .flat_map(|t| {
+            let mut pairs = vec![(t.signer(), t.nonce())];
+
+            if t.is_eip7702() {
+                if let Some(auth_list) = t.authorization_list() {
+                    for auth in auth_list {
+                        let authority = auth.recover_authority().unwrap();
+                        pairs.push((authority, auth.nonce()));
+                        txn_fees
+                            .entry(authority)
+                            .and_modify(|e| {
+                                e.is_delegated = true;
+                            })
+                            .or_insert(TxnFee {
+                                first_txn_value: Balance::ZERO,
+                                first_txn_gas: Balance::ZERO,
+                                max_gas_cost: Balance::ZERO,
+                                is_delegated: true,
+                            });
+                    }
+                }
+            }
+            pairs
+        })
+        .fold(BTreeMap::new(), |mut map, (address, nonce)| {
+            match map.entry(address) {
+                std::collections::btree_map::Entry::Vacant(v) => {
+                    v.insert(nonce);
+                }
+                std::collections::btree_map::Entry::Occupied(mut o) => {
+                    o.insert(nonce.max(*o.get()));
+                }
+            }
+            map
+        });
 
     ConsensusTestBlock {
         block: ConsensusFullBlock::new(header, body).expect("header doesn't match body"),
