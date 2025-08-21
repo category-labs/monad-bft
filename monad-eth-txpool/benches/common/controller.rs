@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::collections::BTreeMap;
+
 use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
 use alloy_primitives::{Uint, B256};
 use alloy_rlp::Encodable;
@@ -110,7 +112,7 @@ impl<'a> BenchController<'a> {
         let mut pool = Pool::default_testing();
 
         pool.update_committed_block(
-            &mut EthTxPoolEventTracker::new(metrics, &mut Vec::default()),
+            &mut EthTxPoolEventTracker::new(metrics, &mut BTreeMap::default()),
             generate_block_with_txs(Round(0), block_policy.get_last_commit(), txs),
         );
 

@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::collections::BTreeMap;
+
 use criterion::{criterion_group, criterion_main, Criterion};
 use monad_consensus_types::{block::GENESIS_TIMESTAMP, payload::RoundSignature};
 use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair};
@@ -45,7 +47,7 @@ fn criterion_benchmark(c: &mut Criterion) {
              proposal_byte_limit,
          }| {
             pool.create_proposal(
-                &mut EthTxPoolEventTracker::new(metrics, &mut Vec::default()),
+                &mut EthTxPoolEventTracker::new(metrics, &mut BTreeMap::default()),
                 block_policy.get_last_commit() + SeqNum(pending_blocks.len() as u64),
                 *proposal_tx_limit,
                 *proposal_gas_limit,

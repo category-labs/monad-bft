@@ -58,7 +58,7 @@ fn with_txpool(
     let mut pool = EthTxPool::default_testing();
 
     let metrics = EthTxPoolMetrics::default();
-    let mut ipc_events = Vec::default();
+    let mut ipc_events = BTreeMap::default();
     let mut event_tracker = EthTxPoolEventTracker::new(&metrics, &mut ipc_events);
 
     assert!(pool
@@ -78,7 +78,7 @@ fn with_txpool(
     );
 
     let metrics = EthTxPoolMetrics::default();
-    let mut ipc_events = Vec::default();
+    let mut ipc_events = BTreeMap::default();
     let mut event_tracker = EthTxPoolEventTracker::new(&metrics, &mut ipc_events);
 
     pool.insert_txs(

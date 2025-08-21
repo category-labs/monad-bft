@@ -15,12 +15,12 @@
 
 use std::collections::HashSet;
 
-use alloy_primitives::{Address, TxHash, B256};
+use alloy_primitives::{Address, TxHash};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EthTxPoolEvent {
-    pub tx_hash: B256,
+    pub tx_hash: TxHash,
     pub action: EthTxPoolEventType,
 }
 

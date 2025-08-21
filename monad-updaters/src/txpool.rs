@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     task::{Poll, Waker},
 };
 
@@ -219,7 +219,7 @@ where
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let (pool, block_policy, state_backend) = self.eth.as_mut().unwrap();
 
-        let mut events = Vec::default();
+        let mut events = BTreeMap::default();
         let mut event_tracker = EthTxPoolEventTracker::new(&self.metrics, &mut events);
 
         for command in commands {
@@ -412,7 +412,7 @@ where
         let tx = Recovered::new_unchecked(tx, signer);
 
         pool.insert_txs(
-            &mut EthTxPoolEventTracker::new(&self.metrics, &mut Vec::default()),
+            &mut EthTxPoolEventTracker::new(&self.metrics, &mut BTreeMap::default()),
             block_policy,
             state_backend,
             vec![tx],

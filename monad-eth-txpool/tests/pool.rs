@@ -140,7 +140,7 @@ fn run_custom_iter<const N: usize>(
 
     let mut pool = EthTxPool::default_testing();
     let metrics = EthTxPoolMetrics::default();
-    let mut ipc_events = Vec::default();
+    let mut ipc_events = BTreeMap::default();
     let mut event_tracker = EthTxPoolEventTracker::new(&metrics, &mut ipc_events);
 
     pool.update_committed_block(
@@ -183,10 +183,7 @@ fn run_custom_iter<const N: usize>(
                     );
 
                     if should_insert && !was_inserted {
-                        panic!(
-                            "tx should have been inserted but was not! last event: {:?}",
-                            ipc_events.last()
-                        );
+                        panic!("tx should have been inserted but was not! events: {ipc_events:?}",);
                     }
                 }
 

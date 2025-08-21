@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::collections::BTreeMap;
+
 use criterion::{criterion_group, criterion_main, Criterion};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::generate_block_with_txs;
@@ -52,7 +54,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         },
         |(pool, metrics, block)| {
             pool.update_committed_block(
-                &mut EthTxPoolEventTracker::new(metrics, &mut Vec::default()),
+                &mut EthTxPoolEventTracker::new(metrics, &mut BTreeMap::default()),
                 block.to_owned(),
             );
         },
