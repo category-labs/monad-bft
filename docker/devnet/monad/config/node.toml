@@ -41,7 +41,6 @@ peers = []
 self_address = "0.0.0.0:8000"
 self_record_seq_num = 0
 self_name_record_sig = "85663053b3d719985357b56270ba320abadd1c51e10ea06430f3990d81393dc7770ff661c331bd631afca705029b0fd77cc0f48d46b37c8d8523c73c6af1242801"
-ping_period = 30
 refresh_period = 120
 request_timeout = 5
 unresponsive_prune_threshold = 5

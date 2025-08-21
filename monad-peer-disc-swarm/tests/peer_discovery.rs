@@ -82,7 +82,7 @@ type KeyPairType = <SignatureType as CertificateSignature>::KeyPairType;
 /// node0 has node1 and node2 in its bootstrap_peers
 /// node1 has node0 in its bootstrap_peers
 /// node2 has node0 and node1 in its bootstrap_peers
-/// TODO: in the future, we can support different configs like different ping_period for different nodes too
+/// TODO: in the future, we can support different configs like different outbound delay for different nodes too
 #[derive(Clone)]
 struct TestConfig {
     pub num_nodes: u32,
@@ -92,7 +92,6 @@ struct TestConfig {
     pub pinned_full_nodes: BTreeMap<usize, BTreeSet<usize>>,
     pub roles: BTreeMap<usize, PeerDiscoveryRole>,
     pub bootstrap_peers: BTreeMap<usize, BTreeSet<usize>>,
-    pub ping_period: Duration,
     pub refresh_period: Duration,
     pub request_timeout: Duration,
     pub unresponsive_prune_threshold: u32,
@@ -116,7 +115,6 @@ impl Default for TestConfig {
                 (1, PeerDiscoveryRole::ValidatorNone),
             ]),
             bootstrap_peers: BTreeMap::from([(0, BTreeSet::from([1])), (1, BTreeSet::from([0]))]),
-            ping_period: Duration::from_secs(5),
             refresh_period: Duration::from_secs(30),
             request_timeout: Duration::from_secs(1),
             unresponsive_prune_threshold: 3,
@@ -227,7 +225,6 @@ fn setup_keys_and_swarm_builder(
                         epoch_validators: epoch_validators.clone(),
                         pinned_full_nodes,
                         bootstrap_peers,
-                        ping_period: config.ping_period,
                         refresh_period: config.refresh_period,
                         request_timeout: config.request_timeout,
                         unresponsive_prune_threshold: config.unresponsive_prune_threshold,
@@ -403,7 +400,6 @@ fn test_update_name_record() {
             epoch_validators: BTreeMap::new(),
             pinned_full_nodes: BTreeSet::new(),
             bootstrap_peers: BTreeMap::from([(node_1, generate_name_record(node_1_key))]),
-            ping_period: config.ping_period,
             refresh_period: config.refresh_period,
             request_timeout: config.request_timeout,
             unresponsive_prune_threshold: config.unresponsive_prune_threshold,
@@ -441,7 +437,6 @@ fn test_update_name_record() {
 #[test]
 fn test_unresponsive_pings() {
     let config = TestConfig {
-        ping_period: Duration::from_secs(2),
         refresh_period: Duration::from_secs(10),
         epoch_validators: BTreeMap::from([(Epoch(1), BTreeSet::from([1]))]),
         ..Default::default()
@@ -583,7 +578,6 @@ fn test_peer_lookup_retry() {
     // Node1 send peer lookup request to Node0, requesting for Node2
     let config = TestConfig {
         num_nodes: 3,
-        ping_period: Duration::from_secs(15),
         bootstrap_peers: BTreeMap::from([
             (0, BTreeSet::from([1, 2])),
             (1, BTreeSet::from([0])),
@@ -641,7 +635,6 @@ fn test_peer_lookup_retry() {
 fn test_ping_timeout() {
     // 2 nodes: Node0, Node1
     let config = TestConfig {
-        ping_period: Duration::from_secs(5),
         refresh_period: Duration::from_secs(20),
         request_timeout: Duration::from_secs(1),
         epoch_validators: BTreeMap::default(),
@@ -739,7 +732,6 @@ fn test_max_watermark() {
             (3, BTreeSet::from([0, 1, 2, 4])),
             (4, BTreeSet::from([0, 1, 2, 3])),
         ]),
-        ping_period: Duration::from_secs(2),
         refresh_period: Duration::from_secs(5),
         unresponsive_prune_threshold: 1,
         min_num_peers: 1,
@@ -804,7 +796,6 @@ fn test_full_nodes_connections() {
             (2, BTreeSet::from([0, 1])),
         ]),
         last_participation_prune_threshold: Round(5),
-        ping_period: Duration::from_secs(2),
         refresh_period: Duration::from_secs(15),
         request_timeout: Duration::from_secs(5),
         outbound_pipeline: vec![GenericTransformer::Latency(LatencyTransformer::new(
@@ -968,7 +959,6 @@ fn test_full_node_promoted_to_validator() {
             (4, BTreeSet::from([0, 1, 2, 3])),
             (5, BTreeSet::from([0, 1, 2])),
         ]),
-        ping_period: Duration::from_secs(2),
         refresh_period: Duration::from_secs(5),
         min_num_peers: 3,
         max_num_peers: 10,
@@ -1046,7 +1036,6 @@ fn test_validator_demoted_to_full_node() {
             (3, BTreeSet::from([0, 1, 2, 4])),
             (4, BTreeSet::from([0, 1, 2, 3])),
         ]),
-        ping_period: Duration::from_secs(2),
         refresh_period: Duration::from_secs(5),
         last_participation_prune_threshold: Round(5),
         min_num_peers: 3,
@@ -1146,7 +1135,6 @@ fn test_prune_non_participating_full_node() {
         ]),
         epoch_validators: BTreeMap::from([(Epoch(1), BTreeSet::from([0]))]),
         last_participation_prune_threshold: Round(5),
-        ping_period: Duration::from_secs(2),
         refresh_period: Duration::from_secs(5),
         min_num_peers: 1,
         ..Default::default()

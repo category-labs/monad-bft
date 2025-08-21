@@ -141,8 +141,6 @@ pub struct PeerDiscovery<ST: CertificateSignatureRecoverable> {
     // that matches a local lookup ID
     pub outstanding_lookup_requests: HashMap<u32, LookupInfo<ST>>,
     pub metrics: ExecutorMetrics,
-    // duration before sending next ping
-    pub ping_period: Duration,
     // duration before checking min/max watermark and decide to look for more peers or prune peers
     pub refresh_period: Duration,
     // duration before outstanding pings and lookup requests are dropped
@@ -167,7 +165,6 @@ pub struct PeerDiscoveryBuilder<ST: CertificateSignatureRecoverable> {
     pub epoch_validators: BTreeMap<Epoch, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
     pub pinned_full_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
     pub bootstrap_peers: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<ST>>,
-    pub ping_period: Duration,
     pub refresh_period: Duration,
     pub request_timeout: Duration,
     pub unresponsive_prune_threshold: u32,
@@ -204,7 +201,6 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
             pending_queue: Default::default(),
             outstanding_lookup_requests: Default::default(),
             metrics: Default::default(),
-            ping_period: self.ping_period,
             refresh_period: self.refresh_period,
             request_timeout: self.request_timeout,
             unresponsive_prune_threshold: self.unresponsive_prune_threshold,
@@ -1424,7 +1420,6 @@ mod tests {
             pending_queue: BTreeMap::new(),
             outstanding_lookup_requests: HashMap::new(),
             metrics: ExecutorMetrics::default(),
-            ping_period: Duration::from_secs(60),
             refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),
             unresponsive_prune_threshold: 10,

@@ -763,7 +763,6 @@ where
         epoch_validators,
         pinned_full_nodes,
         bootstrap_peers,
-        ping_period: Duration::from_secs(peer_discovery_config.ping_period),
         refresh_period: Duration::from_secs(peer_discovery_config.refresh_period),
         request_timeout: Duration::from_secs(peer_discovery_config.request_timeout),
         unresponsive_prune_threshold: peer_discovery_config.unresponsive_prune_threshold,
