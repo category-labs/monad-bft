@@ -19,7 +19,9 @@ use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
 use monad_types::GENESIS_SEQ_NUM;
 
-use self::common::{run_txpool_benches, BenchController, SignatureCollectionType, EXECUTION_DELAY};
+use self::common::{
+    run_txpool_benches, BenchController, SignatureCollectionType, EXECUTION_DELAY, RESERVE_BALANCE,
+};
 
 mod common;
 
@@ -27,7 +29,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     // TODO: change this to something more meaningful, i.e. what's is the block
     // policy state we want to benchmark
     let block_policy: EthBlockPolicy<SignatureType, SignatureCollectionType> =
-        EthBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY, 1337);
+        EthBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY, 1337, RESERVE_BALANCE);
 
     run_txpool_benches(
         c,

@@ -16,17 +16,14 @@
 use std::fmt::Debug;
 
 use alloy_consensus::{Header, TxEnvelope};
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, B256};
 use alloy_rlp::{RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
-use monad_types::{ExecutionProtocol, FinalizedHeader, SeqNum};
+use monad_types::{Balance, ExecutionProtocol, FinalizedHeader, Nonce, SeqNum};
 
 pub mod serde;
 
 pub const EMPTY_RLP_TX_LIST: u8 = 0xc0;
 pub const BASE_FEE_PER_GAS: u64 = 50_000_000_000;
-
-pub type Nonce = u64;
-pub type Balance = U256;
 
 #[derive(Debug, Copy, Clone)]
 pub struct EthAccount {
