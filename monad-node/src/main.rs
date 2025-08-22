@@ -56,11 +56,7 @@ use monad_peer_discovery::{
     MonadNameRecord, NameRecord,
 };
 use monad_pprof::start_pprof_server;
-use monad_raptorcast::config::{
-    GroupSchedulingConfig, RaptorCastConfig, RaptorCastConfigPrimary, RaptorCastConfigSecondary,
-    RaptorCastConfigSecondaryClient, RaptorCastConfigSecondaryPublisher,
-    SecondaryRaptorCastModeConfig,
-};
+use monad_raptorcast::config::{RaptorCastConfig, RaptorCastConfigPrimary};
 use monad_router_multi::MultiRouter;
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::StateBackendThreadClient;
@@ -82,7 +78,7 @@ use opentelemetry::metrics::MeterProvider;
 use opentelemetry_otlp::{MetricExporter, WithExportConfig};
 use rand_chacha::{rand_core::SeedableRng, ChaCha8Rng};
 use tokio::signal::unix::{signal, SignalKind};
-use tracing::{debug, error, event, info, warn, Instrument, Level};
+use tracing::{error, event, info, warn, Instrument, Level};
 use tracing_manytrace::{ManytraceLayer, TracingExtension};
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
@@ -691,66 +687,30 @@ where
         .map(|full_node| NodeId::new(full_node.secp256k1_pubkey))
         .collect();
 
-    let mut self_peer_disc_role = match epoch_validators
-        .get(&current_epoch)
-        .and_then(|validators| validators.get(&self_id))
-    {
-        Some(_) => PeerDiscoveryRole::ValidatorNone,
-        None => PeerDiscoveryRole::FullNodeNone,
-    };
-    let secondary_instance: RaptorCastConfigSecondary<ST> = {
-        if let Some(cfg_2nd) = node_config.fullnode_raptorcast {
-            match cfg_2nd.mode {
-                monad_node_config::fullnode_raptorcast::SecondaryRaptorCastModeConfig::None => {
-                    debug!("Configured with Secondary RaptorCast instance: None");
-                    RaptorCastConfigSecondary::default()
-                }
-
-                monad_node_config::fullnode_raptorcast::SecondaryRaptorCastModeConfig::Client => {
-                    debug!("Configured with Secondary RaptorCast instance: Client");
-                    self_peer_disc_role = PeerDiscoveryRole::FullNodeClient;
-                    RaptorCastConfigSecondary {
-                        raptor10_redundancy: cfg_2nd.raptor10_fullnode_redundancy_factor,
-                        mode: SecondaryRaptorCastModeConfig::Client(RaptorCastConfigSecondaryClient {
-                            max_num_group: cfg_2nd.max_num_group,
-                            max_group_size: cfg_2nd.max_group_size,
-                            invite_future_dist_min: cfg_2nd.invite_future_dist_min,
-                            invite_future_dist_max: cfg_2nd.invite_future_dist_max,
-                            invite_accept_heartbeat: Duration::from_millis(cfg_2nd.invite_accept_heartbeat_ms),
-                        })
-                    }
-                }
-
-                monad_node_config::fullnode_raptorcast::SecondaryRaptorCastModeConfig::Publisher => {
-                    debug!("Configured with Secondary RaptorCast instance: Publisher");
-                    self_peer_disc_role = PeerDiscoveryRole::ValidatorPublisher;
-                    let full_nodes_prioritized: Vec<NodeId<CertificateSignaturePubKey<ST>>> = cfg_2nd
-                        .full_nodes_prioritized
-                        .identities
-                        .iter()
-                        .map(|id| NodeId::new(id.secp256k1_pubkey))
-                        .collect();
-                    // also pin these full nodes in peer discovery
-                    pinned_full_nodes.extend(full_nodes_prioritized.iter());
-
-                    RaptorCastConfigSecondary {
-                        raptor10_redundancy: cfg_2nd.raptor10_fullnode_redundancy_factor,
-                        mode: SecondaryRaptorCastModeConfig::Publisher(RaptorCastConfigSecondaryPublisher {
-                            full_nodes_prioritized,
-                            group_scheduling: GroupSchedulingConfig {
-                                max_group_size: cfg_2nd.max_group_size,
-                                round_span: cfg_2nd.round_span,
-                                invite_lookahead: cfg_2nd.invite_lookahead,
-                                max_invite_wait: cfg_2nd.max_invite_wait,
-                                deadline_round_dist: cfg_2nd.deadline_round_dist,
-                                init_empty_round_span: cfg_2nd.init_empty_round_span,
-                            }
-                        })
-                    }
-                }
+    let self_peer_disc_role = match node_config.fullnode_raptorcast.mode {
+        monad_node_config::fullnode_raptorcast::SecondaryRaptorCastModeConfig::None => {
+            match epoch_validators
+                .get(&current_epoch)
+                .and_then(|validators| validators.get(&self_id))
+            {
+                Some(_) => PeerDiscoveryRole::ValidatorNone,
+                None => PeerDiscoveryRole::FullNodeNone,
             }
-        } else {
-            RaptorCastConfigSecondary::default()
+        }
+        monad_node_config::fullnode_raptorcast::SecondaryRaptorCastModeConfig::Client => {
+            PeerDiscoveryRole::FullNodeClient
+        }
+        monad_node_config::fullnode_raptorcast::SecondaryRaptorCastModeConfig::Publisher => {
+            // also pin prioritized full nodes in peer discovery
+            let full_nodes_prioritized: Vec<NodeId<CertificateSignaturePubKey<ST>>> = node_config
+                .fullnode_raptorcast
+                .full_nodes_prioritized
+                .identities
+                .iter()
+                .map(|id| NodeId::new(id.secp256k1_pubkey))
+                .collect();
+            pinned_full_nodes.extend(full_nodes_prioritized.iter());
+            PeerDiscoveryRole::ValidatorPublisher
         }
     };
 
@@ -760,7 +720,7 @@ where
         self_record,
         current_round,
         current_epoch,
-        epoch_validators,
+        epoch_validators: epoch_validators.clone(),
         pinned_full_nodes,
         bootstrap_peers,
         refresh_period: Duration::from_secs(peer_discovery_config.refresh_period),
@@ -774,6 +734,7 @@ where
     };
 
     MultiRouter::new(
+        self_id,
         RaptorCastConfig {
             shared_key: Arc::new(identity),
             mtu: network_config.mtu,
@@ -785,10 +746,12 @@ where
                     .map(|full_node| NodeId::new(full_node.secp256k1_pubkey))
                     .collect(),
             },
-            secondary_instance,
+            secondary_instance: node_config.fullnode_raptorcast,
         },
         dp_builder,
         peer_discovery_builder,
+        current_epoch,
+        epoch_validators,
     )
 }
 
