@@ -120,7 +120,7 @@ fn compute_base_fee_math(
 mod test {
     use proptest::prelude::*;
 
-    use super::compute_base_fee_math;
+    use super::{compute_base_fee_math, fake_exponential};
     use crate::base_fee::MIN_BASE_FEE;
 
     proptest! {
@@ -141,5 +141,11 @@ mod test {
             );
             // overflow didn't happen
         }
+    }
+
+    #[test]
+    fn test_fake_exponential() {
+        assert_eq!(fake_exponential(1, -1, 1), 0);
+        assert_eq!(fake_exponential(1000, -1, 1), 368);
     }
 }
