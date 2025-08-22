@@ -578,9 +578,10 @@ where
         chain_id: u64,
         max_reserve_balance: u128,
     ) -> Self {
+        let cache_max_size = execution_delay.saturating_mul(2);
         Self {
             // Needs to be at least 2 * execution_delay to detect emptying transactions
-            committed_cache: CommittedBlkBuffer::new((execution_delay * 2) as usize),
+            committed_cache: CommittedBlkBuffer::new((cache_max_size) as usize),
             last_commit,
             execution_delay: SeqNum(execution_delay),
             chain_id,
