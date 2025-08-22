@@ -222,7 +222,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
             || state.self_role == PeerDiscoveryRole::ValidatorPublisher
         {
             assert!(
-                state.check_validator_membership(&self.self_id),
+                state.check_current_epoch_validator(&state.self_id),
                 "incorrectly set as validator"
             );
         }
@@ -456,7 +456,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
                 .keys()
                 .filter(|&node_id| {
                     !connected_validators.contains(node_id)
-                        && self.check_validator_membership(node_id)
+                        && self.check_current_epoch_validator(node_id)
                         && node_id != &self.self_id
                 })
                 .copied()
@@ -526,6 +526,16 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
                 .cloned()
                 .choose_multiple(&mut self.rng, NUM_LOOKUP_PEERS),
         }
+    }
+
+    // a helper function to check if a node is a validator in the current epoch
+    fn check_current_epoch_validator(
+        &self,
+        peer_id: &NodeId<CertificateSignaturePubKey<ST>>,
+    ) -> bool {
+        self.epoch_validators
+            .get(&self.current_epoch)
+            .is_some_and(|validators| validators.contains(peer_id))
     }
 
     // a helper function to check if a node is a validator in the current or next epoch
@@ -1218,11 +1228,17 @@ where
             self.current_epoch = epoch;
 
             // if a full node gets promoted to a validator, advertise name records to all validators in the current and next epoch
+            // default to ValidatorPublisher
             if (self.self_role == PeerDiscoveryRole::FullNodeNone
                 || self.self_role == PeerDiscoveryRole::FullNodeClient)
-                && self.check_validator_membership(&self.self_id)
+                && self.check_current_epoch_validator(&self.self_id)
             {
-                self.self_role = PeerDiscoveryRole::ValidatorNone;
+                debug!(?epoch, "full node promoted to validator");
+                self.self_role = PeerDiscoveryRole::ValidatorPublisher;
+                // clear connection info
+                self.participation_info.iter_mut().for_each(|(_, info)| {
+                    info.status = SecondaryRaptorcastConnectionStatus::None;
+                });
 
                 let current_validators = self.epoch_validators.get(&epoch);
                 let next_validators = self.epoch_validators.get(&(epoch + Epoch(1)));
@@ -1235,16 +1251,30 @@ where
 
                 for validator in validators {
                     if let Some(name_record) = self.routing_info.get(&validator) {
-                        cmds.extend(self.insert_peer_to_pending(validator, *name_record));
+                        // send ping to advertise name record
+                        cmds.push(PeerDiscoveryCommand::RouterCommand {
+                            target: validator,
+                            message: PeerDiscoveryMessage::Ping(Ping {
+                                id: self.rng.next_u32(),
+                                local_name_record: self.self_record,
+                            }),
+                        });
                     }
                 }
             }
 
+            // when a validator is demoted to a full node, defaults to FullNodeClient
             if (self.self_role == PeerDiscoveryRole::ValidatorNone
                 || self.self_role == PeerDiscoveryRole::ValidatorPublisher)
-                && !self.check_validator_membership(&self.self_id)
+                && !self.check_current_epoch_validator(&self.self_id)
             {
-                self.self_role = PeerDiscoveryRole::FullNodeNone;
+                debug!(?epoch, "validator demoted to full node");
+                self.self_role = PeerDiscoveryRole::FullNodeClient;
+                // clear connection info
+                self.participation_info.iter_mut().for_each(|(_, info)| {
+                    info.status = SecondaryRaptorcastConnectionStatus::None;
+                });
+                cmds.extend(self.look_for_upstream_validators());
             }
         }
 

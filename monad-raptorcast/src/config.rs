@@ -18,6 +18,7 @@ use std::{sync::Arc, time::Duration};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_node_config::FullNodeRaptorCastConfig;
 use monad_types::{NodeId, Round};
 
 pub struct RaptorCastConfig<ST>
@@ -46,7 +47,7 @@ where
     // running as full-node.
     // Validators and full-nodes who do not want to participate in validator-
     // to-full-node raptor-casting may opt out of this.
-    pub secondary_instance: RaptorCastConfigSecondary<ST>,
+    pub secondary_instance: FullNodeRaptorCastConfig<CertificateSignaturePubKey<ST>>,
 }
 
 impl<ST> Clone for RaptorCastConfig<ST>
@@ -107,7 +108,7 @@ where
 
     /// Client mode if we are a full-node, publisher mode if we are a validator.
     /// None if we are not participating in any raptor-casting to full-nodes.
-    pub mode: SecondaryRaptorCastModeConfig<ST>,
+    pub mode: SecondaryRaptorCastMode<ST>,
 }
 
 impl<ST> Default for RaptorCastConfigSecondary<ST>
@@ -116,15 +117,15 @@ where
 {
     fn default() -> RaptorCastConfigSecondary<ST> {
         RaptorCastConfigSecondary {
-            raptor10_redundancy: 2,                    // for full-nodes
-            mode: SecondaryRaptorCastModeConfig::None, // no raptorcasting to full-nodes
+            raptor10_redundancy: 2,              // for full-nodes
+            mode: SecondaryRaptorCastMode::None, // no raptorcasting to full-nodes
         }
     }
 }
 
 /// Configuration for the secondary instance of RaptorCast (group of full-nodes)
 #[derive(Clone)]
-pub enum SecondaryRaptorCastModeConfig<ST>
+pub enum SecondaryRaptorCastMode<ST>
 where
     ST: CertificateSignatureRecoverable,
 {
