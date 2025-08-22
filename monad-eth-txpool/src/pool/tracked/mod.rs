@@ -138,6 +138,7 @@ where
         Ok(tx_list.try_insert_tx(event_tracker, tx, self.hard_tx_expiry))
     }
 
+    // FIXME: double check for base fee
     pub fn create_proposal(
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
@@ -145,6 +146,7 @@ where
         tx_limit: usize,
         proposal_gas_limit: u64,
         proposal_byte_limit: u64,
+        base_fee: u64,
         block_policy: &EthBlockPolicy<ST, SCT>,
         extending_blocks: Vec<&EthValidatedBlock<ST, SCT>>,
         state_backend: &SBT,
@@ -227,6 +229,7 @@ where
             tx_limit,
             proposal_gas_limit,
             proposal_byte_limit,
+            base_fee,
             tx_heap,
             account_balances,
         );
@@ -364,6 +367,7 @@ where
         tx_limit: usize,
         proposal_gas_limit: u64,
         proposal_byte_limit: u64,
+        base_fee: u64,
         tx_heap: TrackedTxHeap<'_>,
         mut account_balances: BTreeMap<&Address, Balance>,
     ) -> (u64, Vec<Recovered<TxEnvelope>>) {
@@ -374,6 +378,12 @@ where
         let mut total_size = 0u64;
 
         tx_heap.drain_in_order_while(|sender, tx| {
+            // skip transactions with base_fee lower than current floating base
+            // fee
+            if tx.max_fee_per_gas() < base_fee {
+                return TrackedTxHeapDrainAction::Skip;
+            }
+
             if total_gas
                 .checked_add(tx.gas_limit())
                 .is_none_or(|new_total_gas| new_total_gas > proposal_gas_limit)

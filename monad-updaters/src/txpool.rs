@@ -178,6 +178,9 @@ where
                         high_qc,
                         timestamp_ns,
                         round_signature,
+                        base_fee: monad_tfm::base_fee::MIN_BASE_FEE,
+                        base_fee_trend: monad_tfm::base_fee::GENESIS_BASE_FEE_TREND,
+                        base_fee_moment: monad_tfm::base_fee::GENESIS_BASE_FEE_MOMENT,
                         delayed_execution_results,
                         proposed_execution_inputs: ProposedExecutionInputs {
                             header: MockExecutionProposedHeader::default(),
@@ -240,6 +243,9 @@ where
                     extending_blocks,
                     delayed_execution_results,
                 } => {
+                    let (base_fee, base_fee_trend, base_fee_moment) =
+                        block_policy.compute_base_fee(&extending_blocks.iter().collect());
+
                     let proposed_execution_inputs = pool
                         .create_proposal(
                             &mut event_tracker,
@@ -250,6 +256,7 @@ where
                             beneficiary,
                             timestamp_ns,
                             round_signature.clone(),
+                            base_fee,
                             extending_blocks,
                             block_policy,
                             state_backend,
@@ -263,6 +270,9 @@ where
                         high_qc,
                         timestamp_ns,
                         round_signature,
+                        base_fee,
+                        base_fee_trend,
+                        base_fee_moment,
                         delayed_execution_results,
                         proposed_execution_inputs,
                         last_round_tc,

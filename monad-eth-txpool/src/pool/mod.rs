@@ -27,7 +27,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason, EthTxPoolSnapshot};
-use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader, BASE_FEE_PER_GAS};
+use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_system_calls::generate_system_calls;
 use monad_types::SeqNum;
@@ -243,6 +243,7 @@ where
         beneficiary: [u8; 20],
         timestamp_ns: u128,
         round_signature: RoundSignature<SCT::SignatureType>,
+        base_fee: u64,
         extending_blocks: Vec<EthValidatedBlock<ST, SCT>>,
 
         block_policy: &EthBlockPolicy<ST, SCT>,
@@ -274,6 +275,7 @@ where
             tx_limit - system_transactions.len(),
             proposal_gas_limit,
             proposal_byte_limit - system_txs_size,
+            base_fee,
             block_policy,
             extending_blocks.iter().collect(),
             state_backend,
@@ -310,7 +312,7 @@ where
             mix_hash: round_signature.get_hash().0,
             nonce: [0_u8; 8],
             extra_data: [0_u8; 32],
-            base_fee_per_gas: BASE_FEE_PER_GAS,
+            base_fee_per_gas: base_fee,
             blob_gas_used: 0,
             excess_blob_gas: 0,
             parent_beacon_block_root: [0_u8; 32],

@@ -30,4 +30,3 @@ monad-testutil = { workspace = true }
 
 alloy-consensus = { workspace = true }
 test-case = { workspace = true }
-tracing-test = { workspace = true }

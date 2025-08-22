@@ -1090,6 +1090,10 @@ mod test {
         messages::message::{BlockSyncRequestMessage, BlockSyncResponseMessage},
     };
 
+    const BASE_FEE: u64 = 100_000_000_000;
+    const BASE_FEE_TREND: u64 = 0;
+    const BASE_FEE_MOMENT: u64 = 0;
+
     struct BlockSyncContext<ST, SCT, EPT, BPT, SBT, VTF, LT>
     where
         ST: CertificateSignatureRecoverable,
@@ -1277,6 +1281,9 @@ mod test {
                     seq_num,
                     timestamp,
                     RoundSignature::new(round, leader_certkey),
+                    BASE_FEE,
+                    BASE_FEE_TREND,
+                    BASE_FEE_MOMENT,
                 );
 
                 let validator_cert_pubkeys = self

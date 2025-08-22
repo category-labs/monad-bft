@@ -120,6 +120,7 @@ metrics!(
             creating_proposal,
             rx_execution_lagging,
             rx_bad_state_root,
+            rx_base_fee_error,
             proposal_with_tc,
             failed_verify_randao_reveal_sig,
             commit_block,

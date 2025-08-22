@@ -1011,6 +1011,9 @@ where
         high_qc: QuorumCertificate<SCT>,
         timestamp_ns: u128,
         round_signature: RoundSignature<SCT::SignatureType>,
+        base_fee: u64,
+        base_fee_trend: u64,
+        base_fee_moment: u64,
         delayed_execution_results: Vec<EPT::FinalizedHeader>,
         proposed_execution_inputs: ProposedExecutionInputs<EPT>,
         last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
@@ -1042,6 +1045,9 @@ where
                 high_qc,
                 timestamp_ns,
                 round_signature,
+                base_fee,
+                base_fee_trend,
+                base_fee_moment,
                 delayed_execution_results,
                 proposed_execution_inputs,
                 last_round_tc,
@@ -1071,7 +1077,7 @@ where
                     }
                 }
 
-                let enc: [&dyn Encodable; 11] = [
+                let enc: [&dyn Encodable; 14] = [
                     &1u8,
                     epoch,
                     round,
@@ -1079,6 +1085,9 @@ where
                     high_qc,
                     timestamp_ns,
                     round_signature,
+                    base_fee,
+                    base_fee_trend,
+                    base_fee_moment,
                     delayed_execution_results,
                     proposed_execution_inputs,
                     &tc_buf,
@@ -1114,6 +1123,9 @@ where
                 let high_qc = QuorumCertificate::<SCT>::decode(&mut payload)?;
                 let timestamp_ns = u128::decode(&mut payload)?;
                 let round_signature = RoundSignature::<SCT::SignatureType>::decode(&mut payload)?;
+                let base_fee = u64::decode(&mut payload)?;
+                let base_fee_trend = u64::decode(&mut payload)?;
+                let base_fee_moment = u64::decode(&mut payload)?;
                 let delayed_execution_results = Vec::<EPT::FinalizedHeader>::decode(&mut payload)?;
                 let proposed_execution_inputs =
                     ProposedExecutionInputs::<EPT>::decode(&mut payload)?;
@@ -1144,6 +1156,9 @@ where
                     high_qc,
                     timestamp_ns,
                     round_signature,
+                    base_fee,
+                    base_fee_trend,
+                    base_fee_moment,
                     delayed_execution_results,
                     proposed_execution_inputs,
                     last_round_tc: tc,
@@ -1181,6 +1196,9 @@ where
                 high_qc,
                 timestamp_ns,
                 round_signature,
+                base_fee,
+                base_fee_trend,
+                base_fee_moment,
                 delayed_execution_results,
                 proposed_execution_inputs,
                 last_round_tc,
@@ -1193,6 +1211,9 @@ where
                 .field("high_qc", high_qc)
                 .field("timestamp_ns", timestamp_ns)
                 .field("round_signature", round_signature)
+                .field("base_fee", &base_fee)
+                .field("base_fee_trend", &base_fee_trend.cast_signed())
+                .field("base_fee_moment", &base_fee_moment)
                 .field("delayed_execution_results", delayed_execution_results)
                 .field("proposed_execution_inputs", proposed_execution_inputs)
                 .field("last_round_tc", last_round_tc)

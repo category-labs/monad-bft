@@ -33,7 +33,7 @@ use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_eip1559_tx, make_legacy_tx, recover_tx};
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
 use monad_eth_txpool_types::EthTxPoolSnapshot;
-use monad_eth_types::{Balance, BASE_FEE_PER_GAS};
+use monad_eth_types::Balance;
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
@@ -41,7 +41,7 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing_test::traced_test;
 
 const EXECUTION_DELAY: u64 = 4;
-const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;
+const BASE_FEE: u128 = 100_000_000_000;
 const GAS_LIMIT: u64 = 30000;
 const PROPOSAL_GAS_LIMIT: u64 = 300_000_000;
 const PROPOSAL_SIZE_LIMIT: u64 = 4_000_000;
@@ -245,6 +245,7 @@ fn run_custom_iter<const N: usize>(
                         [0_u8; 20],
                         GENESIS_TIMESTAMP + current_seq_num as u128,
                         RoundSignature::new(Round(0), &mock_keypair),
+                        BASE_FEE as u64,
                         pending_blocks.iter().cloned().collect_vec(),
                         &eth_block_policy,
                         &state_backend,
@@ -970,8 +971,8 @@ fn test_tx_invalid_chain_id() {
 
 #[test]
 fn test_same_account_priority_fee_ordering() {
-    let tx_higher = make_eip1559_tx(S1, (BASE_FEE_PER_GAS + 50).into(), 20, GAS_LIMIT, 0, 10);
-    let tx_lower = make_eip1559_tx(S1, (BASE_FEE_PER_GAS + 100).into(), 10, GAS_LIMIT, 0, 10);
+    let tx_higher = make_eip1559_tx(S1, BASE_FEE + 50, 20, GAS_LIMIT, 0, 10);
+    let tx_lower = make_eip1559_tx(S1, BASE_FEE + 100, 10, GAS_LIMIT, 0, 10);
 
     for (tx1, tx2) in [(&tx_higher, &tx_lower), (&tx_lower, &tx_higher)] {
         run_simple([
@@ -992,10 +993,8 @@ fn test_same_account_priority_fee_ordering() {
 #[test]
 fn test_different_account_priority_fee_ordering() {
     for (addr1, addr2) in [(S1, S2), (S2, S1)] {
-        let tx_higher =
-            make_eip1559_tx(addr1, (BASE_FEE_PER_GAS + 50).into(), 20, GAS_LIMIT, 0, 10);
-        let tx_lower =
-            make_eip1559_tx(addr2, (BASE_FEE_PER_GAS + 100).into(), 10, GAS_LIMIT, 0, 10);
+        let tx_higher = make_eip1559_tx(addr1, BASE_FEE + 50, 20, GAS_LIMIT, 0, 10);
+        let tx_lower = make_eip1559_tx(addr2, BASE_FEE + 100, 10, GAS_LIMIT, 0, 10);
 
         for (tx1, tx2) in [(&tx_higher, &tx_lower), (&tx_lower, &tx_higher)] {
             run_simple([

@@ -26,12 +26,12 @@ monad-chain-config = { workspace = true }
 monad-archive = { workspace = true }
 monad-eth-txpool-ipc = { workspace = true }
 monad-eth-txpool-types = { workspace = true }
-monad-eth-types = { workspace = true }
 monad-ethcall = { workspace = true }
 monad-event-ring = { workspace = true }
 monad-exec-events = { workspace = true, features = ["alloy"] }
 monad-node-config = { workspace = true, features = ["crypto"] }
 monad-rpc-docs = { workspace = true }
+monad-tfm = { workspace = true }
 monad-tracing-timing = { workspace = true }
 monad-triedb-utils = { workspace = true }
 monad-types = { workspace = true }
@@ -67,7 +67,12 @@ reqwest = { workspace = true }
 schemars = { workspace = true, features = ["preserve_order", "raw_value"] }
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true, features = ["raw_value"] }
-tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread", "fs"] }
+tokio = { workspace = true, features = [
+    "net",
+    "macros",
+    "rt-multi-thread",
+    "fs",
+] }
 toml = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 tracing-actix-web = { workspace = true }
@@ -75,7 +80,12 @@ tracing-manytrace = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 [target.'cfg(not(target_env = "msvc"))'.dependencies.tikv-jemallocator]
 workspace = true
-features = ["profiling", "stats", "unprefixed_malloc_on_supported_platforms", "background_threads"]
+features = [
+    "profiling",
+    "stats",
+    "unprefixed_malloc_on_supported_platforms",
+    "background_threads",
+]
 optional = true
 
 [dev-dependencies]

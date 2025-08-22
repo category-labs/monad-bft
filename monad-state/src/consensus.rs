@@ -342,6 +342,9 @@ where
                 seq_num,
                 timestamp_ns,
                 round_signature,
+                base_fee,
+                base_fee_trend,
+                base_fee_moment,
                 delayed_execution_results,
                 proposed_execution_inputs,
                 last_round_tc,
@@ -363,6 +366,9 @@ where
                     seq_num,
                     timestamp_ns,
                     round_signature,
+                    base_fee,
+                    base_fee_trend,
+                    base_fee_moment,
                 );
 
                 let p = ProposalMessage {

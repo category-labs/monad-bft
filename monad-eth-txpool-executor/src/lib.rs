@@ -268,6 +268,10 @@ where
 
                     let create_proposal_start = Instant::now();
 
+                    let (base_fee, base_fee_trend, base_fee_moment) = self
+                        .block_policy
+                        .compute_base_fee(&extending_blocks.iter().collect());
+
                     match self.pool.create_proposal(
                         &mut event_tracker,
                         seq_num,
@@ -277,6 +281,7 @@ where
                         beneficiary,
                         timestamp_ns,
                         round_signature.clone(),
+                        base_fee,
                         extending_blocks,
                         &self.block_policy,
                         &self.state_backend,
@@ -297,6 +302,9 @@ where
                                     high_qc,
                                     timestamp_ns,
                                     round_signature,
+                                    base_fee,
+                                    base_fee_trend,
+                                    base_fee_moment,
                                     delayed_execution_results,
                                     proposed_execution_inputs,
                                     last_round_tc,

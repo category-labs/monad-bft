@@ -4918,7 +4918,6 @@ dependencies = [
  "monad-validator",
  "test-case",
  "tracing",
- "tracing-test",
 ]
 
 [[package]]
@@ -5057,6 +5056,7 @@ dependencies = [
  "monad-state-backend",
  "monad-system-calls",
  "monad-testutil",
+ "monad-tfm",
  "monad-types",
  "monad-validator",
  "proptest",
@@ -5136,6 +5136,7 @@ dependencies = [
  "monad-eth-types",
  "monad-secp",
  "monad-testutil",
+ "monad-tfm",
  "monad-types",
  "opentelemetry",
  "opentelemetry-otlp",
@@ -5413,6 +5414,7 @@ dependencies = [
  "monad-state",
  "monad-state-backend",
  "monad-testutil",
+ "monad-tfm",
  "monad-transformer",
  "monad-types",
  "monad-updaters",
@@ -5703,13 +5705,13 @@ dependencies = [
  "monad-eth-testutil",
  "monad-eth-txpool-ipc",
  "monad-eth-txpool-types",
- "monad-eth-types",
  "monad-ethcall",
  "monad-event-ring",
  "monad-exec-events",
  "monad-node-config",
  "monad-pprof",
  "monad-rpc-docs",
+ "monad-tfm",
  "monad-tracing-timing",
  "monad-triedb-utils",
  "monad-types",
@@ -5905,9 +5907,18 @@ dependencies = [
  "monad-crypto",
  "monad-mock-swarm",
  "monad-state",
+ "monad-tfm",
  "monad-types",
  "monad-updaters",
  "monad-validator",
+]
+
+[[package]]
+name = "monad-tfm"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "proptest",
 ]
 
 [[package]]
@@ -6054,6 +6065,7 @@ dependencies = [
  "monad-executor-glue",
  "monad-node-config",
  "monad-state-backend",
+ "monad-tfm",
  "monad-types",
  "monad-validator",
  "ntest",

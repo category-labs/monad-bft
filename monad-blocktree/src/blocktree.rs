@@ -290,6 +290,9 @@ where
                 Err(BlockPolicyError::ExecutionResultMismatch) => {
                     metrics.consensus_events.rx_bad_state_root += 1;
                 }
+                Err(BlockPolicyError::BaseFeeError) => {
+                    metrics.consensus_events.rx_base_fee_error += 1;
+                }
                 Err(
                     BlockPolicyError::BlockNotCoherent
                     | BlockPolicyError::TimestampError
@@ -534,6 +537,10 @@ mod test {
     use super::BlockTree;
     use crate::blocktree::RootInfo;
 
+    const BASE_FEE: u64 = 100_000_000_000;
+    const BASE_FEE_TREND: u64 = 0;
+    const BASE_FEE_MOMENT: u64 = 0;
+
     type SignatureType = NopSignature;
     type SignatureCollectionType = MockSignatures<SignatureType>;
     type ExecutionProtocolType = MockExecutionProtocol;
@@ -601,6 +608,9 @@ mod test {
             SeqNum(1),
             1,
             RoundSignature::new(Round(1), &NopKeyPair::from_bytes(&mut [1_u8; 32]).unwrap()),
+            BASE_FEE,
+            BASE_FEE_TREND,
+            BASE_FEE_MOMENT,
         );
 
         FullBlock::new(header, body).unwrap()
@@ -630,6 +640,9 @@ mod test {
             parent.seq_num + SeqNum(1),
             parent.timestamp_ns + 1,
             RoundSignature::new(round, &NopKeyPair::from_bytes(&mut [1_u8; 32]).unwrap()),
+            BASE_FEE,
+            BASE_FEE_TREND,
+            BASE_FEE_MOMENT,
         );
 
         FullBlock::new(header, body).unwrap()

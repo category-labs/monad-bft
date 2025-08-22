@@ -26,6 +26,8 @@ use self::common::{run_txpool_benches, BenchController, EXECUTION_DELAY};
 
 mod common;
 
+const BASE_FEE: u64 = 100_000_000_000;
+
 fn criterion_benchmark(c: &mut Criterion) {
     // TODO: change this to something more meaningful, i.e. what's is the block
     // policy state we want to benchmark
@@ -57,6 +59,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                     + block_policy.get_last_commit().0 as u128
                     + pending_blocks.len() as u128,
                 RoundSignature::new(Round(0), &mock_keypair),
+                BASE_FEE,
                 pending_blocks.to_owned(),
                 block_policy,
                 state_backend,

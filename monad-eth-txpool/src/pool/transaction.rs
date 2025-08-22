@@ -24,11 +24,11 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_block_policy::{compute_txn_max_value, static_validate_transaction, EthBlockPolicy};
 use monad_eth_txpool_types::EthTxPoolDropReason;
-use monad_eth_types::{Balance, EthExecutionProtocol, Nonce, BASE_FEE_PER_GAS};
+use monad_eth_types::{Balance, EthExecutionProtocol, Nonce};
 use monad_system_calls::validator::SystemTransactionValidator;
 use monad_types::SeqNum;
 use monad_validator::signature_collection::SignatureCollection;
-use tracing::trace;
+use tracing::{debug, trace};
 
 use crate::EthTxPoolEventTracker;
 
@@ -64,9 +64,15 @@ impl ValidEthTransaction {
             return None;
         }
 
-        // TODO(andr-dev): Block base fee is hardcoded we need to update
-        // this logic once its included in the consensus proposal
-        if tx.max_fee_per_gas() < BASE_FEE_PER_GAS.into() {
+        // computes base_fee based on the last committed block
+        //
+        // transactions may enter the mempool and never get included in a
+        // proposal when base_fee is rising. conversely, transactions with
+        // sufficient gas price may get incorrectly rejected when base_fee is
+        // falling. Users are encouraged to set their gas_price slightly higher
+        let (base_fee, _, _) = block_policy.compute_base_fee(&Vec::new());
+        debug!(?base_fee, "validate transaction");
+        if tx.max_fee_per_gas() < base_fee.into() {
             event_tracker.drop(tx.tx_hash().to_owned(), EthTxPoolDropReason::FeeTooLow);
             return None;
         }
@@ -85,9 +91,7 @@ impl ValidEthTransaction {
         }
 
         let max_value = compute_txn_max_value(&tx);
-        let effective_tip_per_gas = tx
-            .effective_tip_per_gas(BASE_FEE_PER_GAS)
-            .unwrap_or_default();
+        let effective_tip_per_gas = tx.effective_tip_per_gas(base_fee).unwrap_or_default();
 
         Some(Self {
             tx,
@@ -142,6 +146,10 @@ impl ValidEthTransaction {
 
     pub fn size(&self) -> u64 {
         self.tx.length() as u64
+    }
+
+    pub fn max_fee_per_gas(&self) -> u64 {
+        self.tx.max_fee_per_gas() as u64
     }
 
     pub const fn raw(&self) -> &Recovered<TxEnvelope> {
