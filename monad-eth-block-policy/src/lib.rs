@@ -355,6 +355,17 @@ pub struct EthBlockPolicyBlockValidator {
     execution_delay: SeqNum,
 }
 
+fn compute_is_emptying_transaction(
+    block_seq_num_of_curr_txn: SeqNum,
+    block_seqnum_of_latest_txn: SeqNum,
+    execution_delay: SeqNum,
+) -> bool {
+    // txn T is emptying if there is no "prior txn" i.e. a txn from the same sender sent from block P so that P >= block_number(T) - k + 1.
+    let blocks_since_latest_txn =
+        block_seq_num_of_curr_txn.max(block_seqnum_of_latest_txn) - block_seqnum_of_latest_txn;
+    blocks_since_latest_txn > execution_delay - SeqNum(1)
+}
+
 impl BlockPolicyBlockValidator for EthBlockPolicyBlockValidator
 where
     Self: Sized,
@@ -374,13 +385,11 @@ where
         block_txn_fees: &TxnFee,
         eth_address: &Address,
     ) -> Result<(), BlockPolicyError> {
-        // txn T is emptying if there is no "prior txn" i.e. a txn from the same sender sent from block P so that P >= block_number(T) - k + 1.
-        let blocks_since_latest_txn = self
-            .block_seq_num
-            .max(account_balance.block_seqnum_of_latest_txn)
-            - account_balance.block_seqnum_of_latest_txn;
-
-        let has_emptying_transaction = blocks_since_latest_txn > self.execution_delay - SeqNum(1);
+        let has_emptying_transaction = compute_is_emptying_transaction(
+            self.block_seq_num,
+            account_balance.block_seqnum_of_latest_txn,
+            self.execution_delay,
+        );
 
         let mut block_gas_cost = block_txn_fees.max_gas_cost;
         if has_emptying_transaction {
@@ -474,13 +483,11 @@ where
             ));
         };
 
-        // txn T is emptying if there is no "prior txn" i.e. a txn from the same sender sent from block P so that P >= block_number(T) - k + 1.
-        let blocks_since_latest_txn = self
-            .block_seq_num
-            .max(account_balance.block_seqnum_of_latest_txn)
-            - account_balance.block_seqnum_of_latest_txn;
-
-        let is_emptying_transaction = blocks_since_latest_txn > self.execution_delay - SeqNum(1);
+        let is_emptying_transaction = compute_is_emptying_transaction(
+            self.block_seq_num,
+            account_balance.block_seqnum_of_latest_txn,
+            self.execution_delay,
+        );
 
         // if an account for txn T is not delegated and has no prior txns, then T can charge into reserve.
         if is_emptying_transaction {
