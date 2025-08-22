@@ -26,6 +26,7 @@ use alloy_consensus::{
 };
 use alloy_primitives::Address;
 use alloy_rlp::Encodable;
+use itertools::Itertools;
 use monad_consensus_types::{
     block::{BlockPolicy, ConsensusBlockHeader, ConsensusFullBlock, TxnFee, TxnFees},
     block_validator::{BlockValidationError, BlockValidator},
@@ -187,8 +188,36 @@ where
                     first_txn_value: eth_txn.value(),
                     first_txn_gas: compute_txn_max_gas_cost(eth_txn),
                     max_gas_cost: Balance::ZERO,
+                    is_delegated: false,
                 });
-            debug!(?txn_fee_entry, address = ?eth_txn.signer(), "TxnFeeEntry");
+            debug!(?txn_fee_entry, address = ?eth_txn.signer(), nonce = ?eth_txn.nonce(), seq_num = ?header.seq_num, "TxnFeeEntry");
+
+            if eth_txn.is_eip7702() {
+                if let Some(auth_list) = eth_txn.authorization_list() {
+                    let authorities = auth_list
+                        .iter()
+                        .map(|a| a.recover_authority())
+                        .collect_vec();
+                    for result in authorities {
+                        if let Ok(authority) = result {
+                            let txn_fee_entry = txn_fees
+                                .entry(authority)
+                                .and_modify(|e| {
+                                    e.is_delegated = true;
+                                })
+                                .or_insert(TxnFee {
+                                    first_txn_value: Balance::ZERO,
+                                    first_txn_gas: Balance::ZERO,
+                                    max_gas_cost: Balance::ZERO,
+                                    is_delegated: true,
+                                });
+                            debug!(?txn_fee_entry, address = ?eth_txn.signer(), seq_num = ?header.seq_num, "delegated TxnFeeEntry");
+                        } else {
+                            warn!("Error recovering authority {:?}", result);
+                        }
+                    }
+                }
+            }
         }
 
         let total_gas: u64 = eth_txns.iter().map(|tx| tx.gas_limit()).sum();
@@ -250,6 +279,7 @@ where
             blob_gas_used,
             excess_blob_gas,
             parent_beacon_block_root,
+            requests_hash,
         } = &header.execution_inputs;
 
         if ommers_hash != EMPTY_OMMER_ROOT_HASH {
@@ -292,6 +322,9 @@ where
             return Err(BlockValidationError::HeaderError);
         }
         if parent_beacon_block_root != &[0_u8; 32] {
+            return Err(BlockValidationError::HeaderError);
+        }
+        if requests_hash != &[0_u8; 32] {
             return Err(BlockValidationError::HeaderError);
         }
 
