@@ -63,6 +63,23 @@ peers = []
 # [[statesync.peers]]
 # secp256k1_pubkey = "..."
 
+[fullnode_raptorcast]
+mode = "None"
+raptor10_fullnode_redundancy_factor = 3
+max_group_size = 10
+round_span = 240
+invite_lookahead = 120
+max_invite_wait = 10
+deadline_round_dist = 10
+init_empty_round_span = 23
+max_num_group = 3
+invite_future_dist_min = 1
+invite_future_dist_max = 600
+invite_accept_heartbeat_ms = 10000
+
+[fullnode_raptorcast.full_nodes_prioritized]
+identities = []
+
 [network]
 bind_address_host = "0.0.0.0"
 bind_address_port = 8000
