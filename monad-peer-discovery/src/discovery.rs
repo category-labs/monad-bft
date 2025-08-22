@@ -938,7 +938,7 @@ where
                         info.status = SecondaryRaptorcastConnectionStatus::None;
                         info.num_retries = 0;
 
-                        self.look_for_upstream_validators();
+                        cmds.extend(self.look_for_upstream_validators());
                         return cmds;
                     }
                 }
