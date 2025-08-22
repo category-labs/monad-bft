@@ -29,6 +29,7 @@ mongodb-integration-tests = []
 monad-triedb-utils = { workspace = true }
 monad-types = { workspace = true }
 
+sha2 = { workspace = true }
 alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-primitives = { workspace = true, features = ["serde"] }
 alloy-rlp = { workspace = true }
@@ -59,7 +60,13 @@ reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile.workspace = true
-tokio = { workspace = true, features = ["fs", "macros", "net", "rt-multi-thread", "sync"] }
+tokio = { workspace = true, features = [
+    "fs",
+    "macros",
+    "net",
+    "rt-multi-thread",
+    "sync",
+] }
 tokio-retry = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
