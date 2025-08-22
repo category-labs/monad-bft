@@ -126,6 +126,8 @@ pub struct PeerDiscovery<ST: CertificateSignatureRecoverable> {
     pub current_epoch: Epoch,
     // mapping of epoch to validators in that epoch
     pub epoch_validators: BTreeMap<Epoch, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
+    // initial bootstrap peers set in config file
+    pub initial_bootstrap_peers: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
     // pinned full nodes are dedicated and prioritized full nodes passed in from config that will not be pruned
     pub pinned_full_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
     // mapping of node IDs to their corresponding name records
@@ -195,6 +197,11 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
             current_round: self.current_round,
             current_epoch: self.current_epoch,
             epoch_validators: self.epoch_validators,
+            initial_bootstrap_peers: self
+                .bootstrap_peers
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
             pinned_full_nodes: self.pinned_full_nodes,
             routing_info: Default::default(),
             participation_info: Default::default(),
@@ -478,6 +485,47 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
         }
 
         cmds
+    }
+
+    fn select_peers_to_lookup_from(&mut self) -> Vec<NodeId<CertificateSignaturePubKey<ST>>> {
+        match self.self_role {
+            // validators will lookup name records from any current peers
+            PeerDiscoveryRole::ValidatorNone | PeerDiscoveryRole::ValidatorPublisher => self
+                .routing_info
+                .keys()
+                .cloned()
+                .choose_multiple(&mut self.rng, NUM_LOOKUP_PEERS),
+            // public full nodes will lookup name records from connected upstream validators
+            // fallback to all known peers if insufficient
+            PeerDiscoveryRole::FullNodeClient => {
+                let mut selected = self
+                    .participation_info
+                    .iter()
+                    .filter(|(_, info)| {
+                        info.status == SecondaryRaptorcastConnectionStatus::Connected
+                    })
+                    .map(|(id, _)| *id)
+                    .choose_multiple(&mut self.rng, NUM_LOOKUP_PEERS);
+                if selected.len() < NUM_LOOKUP_PEERS {
+                    let needed = NUM_LOOKUP_PEERS - selected.len();
+                    let fallback = self
+                        .routing_info
+                        .keys()
+                        .filter(|id| !selected.contains(id))
+                        .cloned()
+                        .choose_multiple(&mut self.rng, needed);
+
+                    selected.extend(fallback);
+                }
+                selected
+            }
+            // dedicated full nodes will lookup name records from their initial bootstrap peers (their whitelisted upstream)
+            PeerDiscoveryRole::FullNodeNone => self
+                .initial_bootstrap_peers
+                .iter()
+                .cloned()
+                .choose_multiple(&mut self.rng, NUM_LOOKUP_PEERS),
+        }
     }
 
     // a helper function to check if a node is a validator in the current or next epoch
@@ -933,6 +981,7 @@ where
                         );
                         info.status = SecondaryRaptorcastConnectionStatus::None;
                         info.num_retries = 0;
+                        cmds.extend(self.look_for_upstream_validators());
                         return cmds;
                     }
                 }
@@ -1103,11 +1152,7 @@ where
             .into_iter()
             .choose_multiple(&mut self.rng, NUM_LOOKUP_PEERS);
 
-        let chosen_peers = self
-            .routing_info
-            .keys()
-            .cloned()
-            .choose_multiple(&mut self.rng, NUM_LOOKUP_PEERS);
+        let chosen_peers = self.select_peers_to_lookup_from();
 
         if self.routing_info.len() < self.min_num_peers {
             // if number of peers below the min number of peers, choose a few peers and do open discovery
@@ -1414,6 +1459,7 @@ mod tests {
             current_round: Round(1),
             current_epoch: Epoch(1),
             epoch_validators: BTreeMap::new(),
+            initial_bootstrap_peers: routing_info.keys().cloned().collect(),
             pinned_full_nodes: BTreeSet::new(),
             routing_info,
             participation_info,
@@ -2142,5 +2188,55 @@ mod tests {
             state.participation_info.get(&peer1_pubkey).unwrap().status,
             SecondaryRaptorcastConnectionStatus::Connected
         );
+    }
+
+    #[test]
+    fn test_select_peers_to_lookup_from() {
+        let keys = create_keys::<SignatureType>(5);
+        let peer0 = &keys[0];
+        let peer1 = &keys[1];
+        let peer1_pubkey = NodeId::new(peer1.pubkey());
+        let peer2 = &keys[2];
+        let peer2_pubkey = NodeId::new(peer2.pubkey());
+        let peer3 = &keys[3];
+        let peer3_pubkey = NodeId::new(peer3.pubkey());
+        let peer4 = &keys[4];
+        let peer4_pubkey = NodeId::new(peer4.pubkey());
+
+        let mut state = generate_test_state(peer0, vec![peer1, peer2]);
+        state
+            .epoch_validators
+            .insert(state.current_epoch, BTreeSet::from([peer1_pubkey]));
+
+        // lookup from initial bootstrap peers if running as a dedicated full node
+        state.self_role = PeerDiscoveryRole::FullNodeNone;
+        let selected_peers = state.select_peers_to_lookup_from();
+        assert_eq!(selected_peers.len(), 2);
+        assert!(selected_peers.contains(&peer1_pubkey));
+        assert!(selected_peers.contains(&peer2_pubkey));
+
+        // lookup from upstream validator if running as a Client in secondary raptorcast
+        state.self_role = PeerDiscoveryRole::FullNodeClient;
+        state
+            .routing_info
+            .insert(peer3_pubkey, generate_name_record(peer3, 0));
+        state
+            .routing_info
+            .insert(peer4_pubkey, generate_name_record(peer4, 0));
+        state
+            .participation_info
+            .insert(peer1_pubkey, SecondaryRaptorcastInfo {
+                status: SecondaryRaptorcastConnectionStatus::Connected,
+                num_retries: 0,
+                last_active: Round(0),
+            });
+        let selected_peers = state.select_peers_to_lookup_from();
+        assert_eq!(selected_peers.len(), 3);
+        assert!(selected_peers.contains(&peer1_pubkey));
+
+        // lookup from any peers if running as a validator
+        state.self_role = PeerDiscoveryRole::ValidatorNone;
+        let selected_peers = state.select_peers_to_lookup_from();
+        assert_eq!(selected_peers.len(), 3);
     }
 }
