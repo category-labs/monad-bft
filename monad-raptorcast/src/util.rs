@@ -511,7 +511,7 @@ where
     // = true,  then we are a full-node re-raptorcasting to other full-nodes.
     // = false, then we are a validator re-raptorcasting to other validators,
     //          or a dedicated full-node.
-    is_dynamic_fullnode: bool,
+    pub is_dynamic_fullnode: bool,
 }
 
 impl<ST> ReBroadcastGroupMap<ST>
