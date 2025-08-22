@@ -997,8 +997,7 @@ where
                                 // First increment than validate against account's nonce+1.
                                 authority_nonces
                                     .entry(authority)
-                                    .and_modify(|n| *n += 1)
-                                    .or_insert(nonce + 1);
+                                    .or_insert(nonce);
                             }
                             Err(error) => {
                                 warn!(?error, "Can not process authorization list");
@@ -1092,13 +1091,11 @@ where
                 match maybe_nonce {
                     Some(n) => {
                         if *n != txn_nonce + 1 {
-                            debug!(nonce = ?*n, seq_num = ?block.get_seq_num(), ?eth_address, "authority nonce error");
-                            return Err(BlockPolicyError::Eip7702Error);
+                            warn!(nonce = ?*n, seq_num = ?block.get_seq_num(), ?eth_address, "authority nonce error");
                         }
                     }
                     None => {
-                        debug!(seq_num = ?block.get_seq_num(), ?eth_address, "authority no nonce");
-                        return Err(BlockPolicyError::Eip7702Error);
+                        warn!(seq_num = ?block.get_seq_num(), ?eth_address, "authority no nonce");
                     }
                 }
             }
