@@ -82,6 +82,8 @@ where
         cfg: RaptorCastConfig<ST>,
         dataplane_builder: DataplaneBuilder,
         peer_discovery_builder: B,
+        current_epoch: Epoch,
+        epoch_validators: BTreeMap<Epoch, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
     ) -> Self
     where
         B: PeerDiscoveryAlgoBuilder<PeerDiscoveryAlgoType = PD>,
@@ -119,8 +121,8 @@ where
             rc_primary,
             rc_secondary,
             rc_config: cfg,
-            current_epoch: Epoch(1),
-            epoch_validators: BTreeMap::new(),
+            current_epoch,
+            epoch_validators,
             self_node_id,
             dp_writer,
             shared_pdd,
@@ -129,6 +131,7 @@ where
     }
 
     fn update_role(&mut self, new_role: SecondaryRaptorCastModeConfig) {
+        debug!(?new_role, "Updating secondary raptorcast role");
         self.rc_config.secondary_instance.mode = new_role;
 
         // create new channels
@@ -173,7 +176,9 @@ where
                     raptor10_redundancy: cfg.secondary_instance.raptor10_fullnode_redundancy_factor,
                     mode: SecondaryRaptorCastMode::Client(RaptorCastConfigSecondaryClient {
                         bandwidth_capacity: cfg.secondary_instance.bandwidth_capacity,
-                        bandwidth_cost_per_group_member: cfg.secondary_instance.bandwidth_cost_per_group_member,
+                        bandwidth_cost_per_group_member: cfg
+                            .secondary_instance
+                            .bandwidth_cost_per_group_member,
                         invite_future_dist_min: cfg.secondary_instance.invite_future_dist_min,
                         invite_future_dist_max: cfg.secondary_instance.invite_future_dist_max,
                         invite_accept_heartbeat: Duration::from_millis(
@@ -248,6 +253,7 @@ where
                         epoch,
                         validator_set: validator_set.clone(),
                     };
+                    debug!(?validator_set, "Updating validator set in multi router");
                     let validator_set = validator_set.iter().map(|(id, _)| *id).collect();
                     self.epoch_validators.insert(epoch, validator_set);
                     validator_cmds.push(cmd_cpy);
@@ -263,15 +269,24 @@ where
                     let cmd_cpy = RouterCommand::UpdateCurrentRound(epoch, round);
                     if epoch > self.current_epoch {
                         // epoch increment
+                        debug!(?self.current_epoch, ?epoch, "Epoch incremented in multi router");
                         let is_validator_before_epoch_increment = self
                             .epoch_validators
                             .get(&self.current_epoch)
                             .is_some_and(|set| set.contains(&self.self_node_id));
+                        debug!(
+                            ?is_validator_before_epoch_increment,
+                            "Is validator before epoch increment"
+                        );
                         self.current_epoch = epoch;
                         let is_validator_after_epoch_increment = self
                             .epoch_validators
                             .get(&self.current_epoch)
                             .is_some_and(|set| set.contains(&self.self_node_id));
+                        debug!(
+                            ?is_validator_after_epoch_increment,
+                            "Is validator after epoch increment"
+                        );
 
                         // check if secondary raptorcast role needs to be updated
                         if is_validator_before_epoch_increment

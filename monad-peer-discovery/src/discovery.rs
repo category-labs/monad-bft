@@ -1182,6 +1182,7 @@ where
                 || self.self_role == PeerDiscoveryRole::FullNodeClient)
                 && self.check_validator_membership(&self.self_id)
             {
+                debug!(?epoch, "full node promoted to validator");
                 self.self_role = PeerDiscoveryRole::ValidatorPublisher;
                 // clear connection info
                 self.participation_info.iter_mut().for_each(|(_, info)| {
@@ -1209,6 +1210,7 @@ where
                 || self.self_role == PeerDiscoveryRole::ValidatorPublisher)
                 && !self.check_validator_membership(&self.self_id)
             {
+                debug!(?epoch, "validator demoted to full node");
                 self.self_role = PeerDiscoveryRole::FullNodeClient;
                 // clear connection info
                 self.participation_info.iter_mut().for_each(|(_, info)| {

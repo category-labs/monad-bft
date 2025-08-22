@@ -722,7 +722,7 @@ where
         self_record,
         current_round,
         current_epoch,
-        epoch_validators,
+        epoch_validators: epoch_validators.clone(),
         pinned_full_nodes,
         bootstrap_peers,
         ping_period: Duration::from_secs(peer_discovery_config.ping_period),
@@ -753,6 +753,8 @@ where
         },
         dp_builder,
         peer_discovery_builder,
+        current_epoch,
+        epoch_validators,
     )
 }
 
