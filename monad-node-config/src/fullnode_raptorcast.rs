@@ -36,15 +36,15 @@ pub struct FullNodeRaptorCastConfig<P: PubKey> {
     pub full_nodes_prioritized: FullNodeConfig<P>,
     pub raptor10_fullnode_redundancy_factor: u8, // validator -> full-nodes
 
-    // RaptorCastConfigSecondaryPublisher::GroupSchedulingConfig
-    pub max_group_size: usize,
+    // config for Publisher
     pub round_span: Round,
     pub invite_lookahead: Round,
     pub max_invite_wait: Round,
     pub deadline_round_dist: Round,
     pub init_empty_round_span: Round,
+    pub max_group_size: usize,
 
-    // RaptorCastConfigSecondaryClient
+    // config for Client
     pub bandwidth_cost_per_group_member: u64,
     pub bandwidth_capacity: u64,
     pub invite_future_dist_min: Round,

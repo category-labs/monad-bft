@@ -45,13 +45,16 @@ use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
     ControlPanelEvent, GetFullNodes, GetPeers, Message, MonadEvent, PeerEntry, RouterCommand,
 };
+use monad_node_config::{
+    fullnode_raptorcast::SecondaryRaptorCastModeConfig, FullNodeConfig, FullNodeRaptorCastConfig,
+};
 use monad_peer_discovery::{
     driver::{PeerDiscoveryDriver, PeerDiscoveryEmit},
     message::PeerDiscoveryMessage,
     mock::{NopDiscovery, NopDiscoveryBuilder},
     PeerDiscoveryAlgo, PeerDiscoveryEvent,
 };
-use monad_types::{DropTimer, Epoch, ExecutionProtocol, NodeId, RouterTarget};
+use monad_types::{DropTimer, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget};
 use monad_validator::signature_collection::SignatureCollection;
 use raptorcast_secondary::group_message::FullNodesGroupMessage;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -137,7 +140,7 @@ where
         let self_id = NodeId::new(config.shared_key.pubkey());
         let is_dynamic_fullnode = matches!(
             config.secondary_instance.mode,
-            config::SecondaryRaptorCastModeConfig::Client(_)
+            SecondaryRaptorCastModeConfig::Client
         );
         tracing::debug!(
             ?is_dynamic_fullnode, ?self_id, ?config.mtu, "RaptorCast::new",
@@ -176,15 +179,19 @@ where
     // we won't be receiving groups from secondary.
     // If we are a full-node, then we need both channels.
     pub fn bind_channel_to_secondary_raptorcast(
-        mut self,
+        &mut self,
         channel_to_secondary: UnboundedSender<FullNodesGroupMessage<ST>>,
         channel_from_secondary: UnboundedReceiver<Group<ST>>,
-    ) -> Self {
+    ) {
         self.channel_to_secondary = Some(channel_to_secondary);
         if self.is_dynamic_fullnode {
             self.channel_from_secondary = Some(channel_from_secondary);
         }
-        self
+    }
+
+    pub fn set_is_dynamic_full_node(&mut self, is_dynamic: bool) {
+        debug!(?is_dynamic, "updating primary raptorcast");
+        self.is_dynamic_fullnode = is_dynamic;
     }
 
     fn enqueue_message_to_self(
@@ -297,9 +304,21 @@ where
         mtu: DEFAULT_MTU,
         udp_message_max_age_ms: u64::MAX, // No timestamp validation for tests
         primary_instance: Default::default(),
-        secondary_instance: config::RaptorCastConfigSecondary {
-            raptor10_redundancy: 2,
-            mode: config::SecondaryRaptorCastModeConfig::None,
+        secondary_instance: FullNodeRaptorCastConfig {
+            mode: SecondaryRaptorCastModeConfig::None,
+            raptor10_fullnode_redundancy_factor: 2,
+            full_nodes_prioritized: FullNodeConfig { identities: vec![] },
+            round_span: Round(10),
+            invite_lookahead: Round(5),
+            max_invite_wait: Round(3),
+            deadline_round_dist: Round(3),
+            init_empty_round_span: Round(1),
+            max_group_size: 10,
+            bandwidth_capacity: 20000,
+            bandwidth_cost_per_group_member: 1000,
+            invite_future_dist_min: Round(1),
+            invite_future_dist_max: Round(5),
+            invite_accept_heartbeat_ms: 100,
         },
     };
     let pd = PeerDiscoveryDriver::new(peer_discovery_builder);
