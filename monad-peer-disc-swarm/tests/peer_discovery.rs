@@ -896,7 +896,7 @@ fn test_full_nodes_connections() {
             assert!(state.routing_info.contains_key(&node_ids[0]));
             assert_eq!(
                 state.participation_info.get(&node_ids[0]).unwrap().status,
-                SecondaryRaptorcastConnectionStatus::None
+                SecondaryRaptorcastConnectionStatus::Pending
             );
             assert!(state.routing_info.contains_key(&node_ids[1]));
             assert_eq!(
@@ -941,7 +941,7 @@ fn test_full_nodes_connections() {
                 state.participation_info.get(&node_ids[1]).unwrap().status,
                 SecondaryRaptorcastConnectionStatus::Connected
             );
-            assert_eq!(metrics[GAUGE_PEER_DISC_NUM_UPSTREAM_VALIDATORS], 1);
+            assert_eq!(metrics[GAUGE_PEER_DISC_NUM_UPSTREAM_VALIDATORS], 2);
             assert_eq!(metrics[GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES], 0);
         }
     }
