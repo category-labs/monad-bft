@@ -47,7 +47,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{error, trace, warn};
 
 use super::{
-    config::RaptorCastConfig,
+    config::{RaptorCastConfig, SecondaryRaptorCastMode},
     message::OutboundRouterMessage,
     udp,
     util::{BuildTarget, FullNodes, Group, Redundancy},
@@ -100,32 +100,34 @@ where
 {
     pub fn new(
         config: RaptorCastConfig<ST>,
+        secondary_mode: SecondaryRaptorCastMode<ST>,
         dataplane_writer: DataplaneWriter,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
         channel_from_primary: UnboundedReceiver<FullNodesGroupMessage<ST>>,
         channel_to_primary: UnboundedSender<Group<ST>>,
     ) -> Self {
         let node_id = NodeId::new(config.shared_key.pubkey());
-        let sec_config = config.secondary_instance.mode.clone();
 
         // Instantiate either publisher or client state machine
-        let role = match sec_config {
-            super::config::SecondaryRaptorCastModeConfig::Publisher(publisher_cfg) => {
+        let role = match secondary_mode {
+            SecondaryRaptorCastMode::Publisher(publisher_cfg) => {
                 let rng = ChaCha8Rng::from_entropy();
                 let publisher = Publisher::new(node_id, publisher_cfg, rng);
                 Role::Publisher(publisher)
             }
-            super::config::SecondaryRaptorCastModeConfig::Client(client_cfg) => {
+            SecondaryRaptorCastMode::Client(client_cfg) => {
                 let client = Client::new(node_id, channel_to_primary, client_cfg);
                 Role::Client(client)
             }
-            super::config::SecondaryRaptorCastModeConfig::None => panic!(
+            SecondaryRaptorCastMode::None => panic!(
                 "secondary_instance is not set in config during \
                     instantiation of RaptorCastSecondary"
             ),
         };
 
-        let raptor10_redundancy = config.secondary_instance.raptor10_redundancy;
+        let raptor10_redundancy = config
+            .secondary_instance
+            .raptor10_fullnode_redundancy_factor;
         trace!(
             self_id =? node_id, mtu =? config.mtu, ?raptor10_redundancy,
             "RaptorCastSecondary::new()",
