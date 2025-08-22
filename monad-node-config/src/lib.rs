@@ -68,7 +68,7 @@ pub struct NodeConfig<ST: CertificateSignatureRecoverable> {
     pub peer_discovery: PeerDiscoveryConfig<ST>,
 
     pub raptor10_validator_redundancy_factor: u8, // validator -> validator
-    pub fullnode_raptorcast: Option<FullNodeRaptorCastConfig<CertificateSignaturePubKey<ST>>>,
+    pub fullnode_raptorcast: FullNodeRaptorCastConfig<CertificateSignaturePubKey<ST>>,
 
     // TODO split network-wide configuration into separate file
     ////////////////////////////////

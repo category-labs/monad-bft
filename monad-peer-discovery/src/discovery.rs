@@ -222,7 +222,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
             || state.self_role == PeerDiscoveryRole::ValidatorPublisher
         {
             assert!(
-                state.check_validator_membership(&self.self_id),
+                state.check_current_epoch_validator(&state.self_id),
                 "incorrectly set as validator"
             );
         }
@@ -324,6 +324,12 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
                 },
             },
         )]
+    }
+
+    fn clear_connection_info(&mut self) {
+        self.participation_info.iter_mut().for_each(|(_, info)| {
+            info.status = SecondaryRaptorcastConnectionStatus::None;
+        });
     }
 
     fn insert_peer_to_pending(
@@ -456,7 +462,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
                 .keys()
                 .filter(|&node_id| {
                     !connected_validators.contains(node_id)
-                        && self.check_validator_membership(node_id)
+                        && self.check_current_epoch_validator(node_id)
                         && node_id != &self.self_id
                 })
                 .copied()
@@ -528,12 +534,26 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
         }
     }
 
+    // a helper function to check if a node is a validator in the current epoch
+    fn check_current_epoch_validator(
+        &self,
+        peer_id: &NodeId<CertificateSignaturePubKey<ST>>,
+    ) -> bool {
+        self.epoch_validators
+            .get(&self.current_epoch)
+            .is_some_and(|validators| validators.contains(peer_id))
+    }
+
+    // a helper function check if a node is a validator in the next epoch
+    fn check_next_epoch_validator(&self, peer_id: &NodeId<CertificateSignaturePubKey<ST>>) -> bool {
+        self.epoch_validators
+            .get(&(self.current_epoch + Epoch(1)))
+            .is_some_and(|validators| validators.contains(peer_id))
+    }
+
     // a helper function to check if a node is a validator in the current or next epoch
     fn check_validator_membership(&self, peer_id: &NodeId<CertificateSignaturePubKey<ST>>) -> bool {
-        let current_epoch_validators = self.epoch_validators.get(&self.current_epoch);
-        let next_epoch_validators = self.epoch_validators.get(&(self.current_epoch + Epoch(1)));
-        current_epoch_validators.is_some_and(|validators| validators.contains(peer_id))
-            || next_epoch_validators.is_some_and(|validators| validators.contains(peer_id))
+        self.check_current_epoch_validator(peer_id) || self.check_next_epoch_validator(peer_id)
     }
 
     // a helper function to check if a node is a validator or a pinned full node
@@ -1217,34 +1237,27 @@ where
             debug!(?epoch, "updating current epoch in peer discovery");
             self.current_epoch = epoch;
 
-            // if a full node gets promoted to a validator, advertise name records to all validators in the current and next epoch
+            // when a full node is promoted to a validator, defaults to ValidatorPublisher
             if (self.self_role == PeerDiscoveryRole::FullNodeNone
                 || self.self_role == PeerDiscoveryRole::FullNodeClient)
-                && self.check_validator_membership(&self.self_id)
+                && self.check_current_epoch_validator(&self.self_id)
             {
-                self.self_role = PeerDiscoveryRole::ValidatorNone;
-
-                let current_validators = self.epoch_validators.get(&epoch);
-                let next_validators = self.epoch_validators.get(&(epoch + Epoch(1)));
-                let validators: HashSet<_> = current_validators
-                    .into_iter()
-                    .chain(next_validators)
-                    .flat_map(|v| v.iter())
-                    .cloned()
-                    .collect();
-
-                for validator in validators {
-                    if let Some(name_record) = self.routing_info.get(&validator) {
-                        cmds.extend(self.insert_peer_to_pending(validator, *name_record));
-                    }
-                }
+                debug!(?epoch, "full node promoted to validator");
+                self.self_role = PeerDiscoveryRole::ValidatorPublisher;
+                // clear secondary raptorcast connection info
+                self.clear_connection_info();
             }
 
+            // when a validator is demoted to a full node, defaults to FullNodeClient
             if (self.self_role == PeerDiscoveryRole::ValidatorNone
                 || self.self_role == PeerDiscoveryRole::ValidatorPublisher)
-                && !self.check_validator_membership(&self.self_id)
+                && !self.check_current_epoch_validator(&self.self_id)
             {
-                self.self_role = PeerDiscoveryRole::FullNodeNone;
+                debug!(?epoch, "validator demoted to full node");
+                self.self_role = PeerDiscoveryRole::FullNodeClient;
+                // clear secondary raptorcast connection info
+                self.clear_connection_info();
+                cmds.extend(self.look_for_upstream_validators());
             }
         }
 
@@ -1266,8 +1279,38 @@ where
             "updating validator set in peer discovery"
         );
 
-        let cmds = Vec::new();
+        let mut cmds = Vec::new();
         self.epoch_validators.insert(epoch, validators);
+
+        // validator set update are done during epoch boundary block
+        // if a full node is going to be promoted to a validator in the next epoch
+        // advertise self name record to the other validators in the next epoch
+        if epoch == self.current_epoch + Epoch(1) {
+            let is_next_epoch_validator = self.check_next_epoch_validator(&self.self_id);
+            if (self.self_role == PeerDiscoveryRole::FullNodeClient
+                || self.self_role == PeerDiscoveryRole::FullNodeNone)
+                && is_next_epoch_validator
+            {
+                debug!(?epoch, "sending pings to next epoch validators");
+                let next_validators = self
+                    .epoch_validators
+                    .get(&epoch)
+                    .cloned()
+                    .unwrap_or_default();
+                for validator in next_validators {
+                    if self.routing_info.contains_key(&validator) {
+                        // send ping to advertise name record
+                        cmds.push(PeerDiscoveryCommand::RouterCommand {
+                            target: validator,
+                            message: PeerDiscoveryMessage::Ping(Ping {
+                                id: self.rng.next_u32(),
+                                local_name_record: self.self_record,
+                            }),
+                        });
+                    }
+                }
+            }
+        }
 
         cmds
     }
