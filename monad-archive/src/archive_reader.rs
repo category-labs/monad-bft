@@ -34,8 +34,8 @@ pub enum LatestKind {
 
 #[derive(Clone)]
 pub struct ArchiveReader {
-    block_data_executor: Arc<FallbackExecutor<BlockDataReaderErased, BlockDataReaderErased>>,
-    index_executor: Arc<FallbackExecutor<IndexReaderImpl, IndexReaderImpl>>,
+    block_data_executor: Arc<FallbackExecutor<BlockDataReaderErased>>,
+    index_executor: Arc<FallbackExecutor<IndexReaderImpl>>,
     pub log_index: Option<LogsIndexArchiver>,
 }
 
@@ -176,7 +176,7 @@ impl ArchiveReader {
         failure_timeout: Option<Duration>,
     ) -> Self {
         if let Some(fallback) = fallback {
-            let failure_threshold = failure_threshold.unwrap_or(10);
+            let failure_threshold = failure_threshold.unwrap_or(100);
             let failure_timeout = failure_timeout.unwrap_or(Duration::from_secs(60 * 5));
 
             // Create new executors with the fallback readers
@@ -324,6 +324,7 @@ impl BlockDataReader for ArchiveReader {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::{
         kvstore::memory::MemoryStorage,
@@ -590,7 +591,7 @@ mod tests {
             None,
         );
 
-        let reader = primary_reader.with_fallback(Some(fallback_reader), None, None);
+        let reader = primary_reader.with_fallback(Some(fallback_reader), Some(10), None);
 
         // First 10 requests should fail and use fallback
         for i in 0..10 {
@@ -686,7 +687,7 @@ mod tests {
                 None,
                 None,
             )),
-            None,
+            Some(10),
             None,
         );
 
@@ -843,8 +844,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Create reader with SHORT timeout for testing (would need to modify the const)
-        // For now, we'll test the state machine logic
         let reader = ArchiveReader::new(
             primary_bdr.clone(),
             IndexReaderImpl::new(primary.clone(), primary_bdr.clone()),
@@ -858,7 +857,7 @@ mod tests {
                 None,
                 None,
             )),
-            None,
+            Some(10),
             None,
         );
 

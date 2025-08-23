@@ -14,25 +14,27 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    sync::RwLock,
+    sync::{Arc, RwLock},
     time::{Duration, Instant},
 };
 
 use eyre::Result;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 /// A circuit breaker that tracks failures and manages failover behavior
 ///
 /// The circuit breaker has three states:
 /// - Closed: Normal operation, all requests go to primary
 /// - Open: Too many failures, all requests go to fallback
-/// - Half-Open: After timeout, allow one request to test if primary is back
+/// - Half-Open: After timeout, allow requests to test if primary is back.
+///   These requests race with success or failure to open/close the circuit.
 #[derive(Clone)]
 pub struct CircuitBreaker {
+    // SAFETY: This lock is not held across await points, so we use the std::sync
+    //         instead of tokio::sync.
     state: Arc<RwLock<CircuitBreakerState>>,
 }
 
-#[derive(Clone)]
 struct CircuitBreakerState {
     /// Current state of the circuit
     state: State,
@@ -79,7 +81,7 @@ impl CircuitBreaker {
                             drop(state);
                             if let Ok(mut state) = self.state.write() {
                                 if state.state == State::Open {
-                                    debug!("Circuit breaker transitioning to half-open");
+                                    info!("Circuit breaker transitioning to half-open");
                                     state.state = State::HalfOpen;
                                 }
                             }
@@ -102,7 +104,7 @@ impl CircuitBreaker {
         if let Ok(mut state) = self.state.write() {
             match state.state {
                 State::HalfOpen => {
-                    debug!("Circuit breaker closing after successful request in half-open state");
+                    info!("Circuit breaker closing after successful request in half-open state");
                     state.state = State::Closed;
                     state.failure_count = 0;
                     state.opened_at = None;
@@ -126,7 +128,7 @@ impl CircuitBreaker {
             match state.state {
                 State::Closed => {
                     if state.failure_count >= state.failure_threshold {
-                        debug!(
+                        info!(
                             "Circuit breaker opening after {} consecutive failures",
                             state.failure_count
                         );
@@ -135,7 +137,7 @@ impl CircuitBreaker {
                     }
                 }
                 State::HalfOpen => {
-                    debug!("Circuit breaker reopening after failure in half-open state");
+                    info!("Circuit breaker reopening after failure in half-open state");
                     state.state = State::Open;
                     state.opened_at = Some(Instant::now());
                 }
@@ -183,17 +185,15 @@ pub struct CircuitBreakerMetrics {
     pub time_until_recovery: Option<Duration>,
 }
 
-use std::sync::Arc;
-
 /// A generic fallback executor that uses circuit breaker pattern
-pub struct FallbackExecutor<P, F> {
+pub struct FallbackExecutor<P> {
     pub primary: P,
-    pub fallback: Option<F>,
+    pub fallback: Option<P>,
     pub circuit_breaker: CircuitBreaker,
 }
 
-impl<P, F> FallbackExecutor<P, F> {
-    pub fn new(primary: P, fallback: Option<F>, circuit_breaker: CircuitBreaker) -> Self {
+impl<P> FallbackExecutor<P> {
+    pub fn new(primary: P, fallback: Option<P>, circuit_breaker: CircuitBreaker) -> Self {
         Self {
             primary,
             fallback,
@@ -204,10 +204,8 @@ impl<P, F> FallbackExecutor<P, F> {
     /// Execute a function with automatic fallback and circuit breaker logic
     pub async fn execute<'a, Ret, Func, Fut>(&'a self, f: Func) -> Result<Ret>
     where
-        Func: Fn(&'a P) -> Fut + Clone,
+        Func: Fn(&'a P) -> Fut,
         Fut: std::future::Future<Output = Result<Ret>>,
-        F: 'a,
-        Func: Fn(&'a F) -> Fut,
     {
         // If no fallback, just execute on primary
         let Some(fallback) = self.fallback.as_ref() else {
