@@ -809,7 +809,7 @@ where
         let process_certificate_cmds = self.process_qc(timeout.high_extend.qc());
         cmds.extend(process_certificate_cmds);
 
-        if let HighExtendVote::Tip(tip, vote_signature) = &timeout.high_extend {
+        if let HighExtendVote::Tip(tip, Some(vote_signature)) = &timeout.high_extend {
             let handle_vote_cmds = self.handle_vote_message(
                 author,
                 VoteMessage {
@@ -3051,10 +3051,10 @@ mod test {
 
         let broadcast_cmd = pacemaker_cmds
             .iter()
-            .find(|cmd| matches!(cmd, PacemakerCommand::PrepareTimeout(_, _, _)))
+            .find(|cmd| matches!(cmd, PacemakerCommand::PrepareTimeout(_, _, _, _)))
             .unwrap();
 
-        let tmo = if let PacemakerCommand::PrepareTimeout(tmo, _, _) = broadcast_cmd {
+        let tmo = if let PacemakerCommand::PrepareTimeout(tmo, _, _, _) = broadcast_cmd {
             tmo
         } else {
             panic!()

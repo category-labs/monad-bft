@@ -65,6 +65,7 @@ where
         cert_keypair: &SignatureCollectionKeyPairType<SCT>,
         timeout: TimeoutInfo,
         high_extend: HighExtend<ST, SCT, EPT>,
+        safe_to_vote: bool,
         last_round_certificate: Option<RoundCertificate<ST, SCT, EPT>>,
     ) -> Self {
         let timeout_digest = alloy_rlp::encode(&timeout);
@@ -75,15 +76,18 @@ where
         let high_extend = match high_extend {
             HighExtend::Qc(qc) => HighExtendVote::Qc(qc),
             HighExtend::Tip(tip) => {
-                let vote_digest = alloy_rlp::encode(Vote {
-                    round: timeout.round,
-                    epoch: timeout.epoch,
-                    id: tip.block_header.get_id(),
+                let maybe_vote_signature = safe_to_vote.then(|| {
+                    let vote_digest = alloy_rlp::encode(Vote {
+                        round: timeout.round,
+                        epoch: timeout.epoch,
+                        id: tip.block_header.get_id(),
+                    });
+                    <SCT::SignatureType as CertificateSignature>::sign::<signing_domain::Vote>(
+                        &vote_digest,
+                        cert_keypair,
+                    )
                 });
-                let vote_signature = <SCT::SignatureType as CertificateSignature>::sign::<
-                    signing_domain::Vote,
-                >(&vote_digest, cert_keypair);
-                HighExtendVote::Tip(tip, vote_signature)
+                HighExtendVote::Tip(tip, maybe_vote_signature)
             }
         };
 
@@ -223,7 +227,7 @@ where
 {
     Tip(
         ConsensusTip<ST, SCT, EPT>,
-        SCT::SignatureType, // vote
+        Option<SCT::SignatureType>, // vote
     ),
     Qc(QuorumCertificate<SCT>),
 }
@@ -250,10 +254,16 @@ where
 {
     fn encode(&self, out: &mut dyn bytes::BufMut) {
         match &self {
-            Self::Tip(tip, vote_signature) => {
-                let enc: [&dyn Encodable; 3] = [&1u8, tip, vote_signature];
-                alloy_rlp::encode_list::<_, dyn Encodable>(&enc, out);
-            }
+            Self::Tip(tip, maybe_vote_signature) => match maybe_vote_signature {
+                Some(vote_signature) => {
+                    let enc: [&dyn Encodable; 3] = [&1u8, tip, vote_signature];
+                    alloy_rlp::encode_list::<_, dyn Encodable>(&enc, out);
+                }
+                None => {
+                    let enc: [&dyn Encodable; 2] = [&1u8, tip];
+                    alloy_rlp::encode_list::<_, dyn Encodable>(&enc, out);
+                }
+            },
             Self::Qc(qc) => {
                 let enc: [&dyn Encodable; 2] = [&2u8, qc];
                 alloy_rlp::encode_list::<_, dyn Encodable>(&enc, out);
@@ -273,8 +283,12 @@ where
         match u8::decode(&mut payload)? {
             1 => {
                 let tip = ConsensusTip::decode(&mut payload)?;
-                let vote_signature = SCT::SignatureType::decode(&mut payload)?;
-                Ok(Self::Tip(tip, vote_signature))
+                let maybe_vote_signature = if !payload.is_empty() {
+                    Some(SCT::SignatureType::decode(&mut payload)?)
+                } else {
+                    None
+                };
+                Ok(Self::Tip(tip, maybe_vote_signature))
             }
             2 => {
                 let qc = QuorumCertificate::decode(&mut payload)?;

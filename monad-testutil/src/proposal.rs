@@ -247,6 +247,7 @@ where
                 certkey,
                 tminfo.clone(),
                 HighExtend::Qc(self.high_qc.clone()),
+                true, // safe_to_vote
                 Some(RoundCertificate::Tc(tc.clone())),
             );
             tmo_msgs.push(Verified::<ST, _>::new(timeout.into(), key));

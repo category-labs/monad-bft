@@ -86,12 +86,14 @@ where
         cert_keypair: &SignatureCollectionKeyPairType<SCT>,
         timeout: TimeoutInfo,
         high_extend: HighExtend<ST, SCT, EPT>,
+        safe_to_vote: bool,
         last_round_certificate: Option<RoundCertificate<ST, SCT, EPT>>,
     ) -> Self {
         TimeoutMessage(Timeout::new(
             cert_keypair,
             timeout,
             high_extend,
+            safe_to_vote,
             last_round_certificate,
         ))
     }
@@ -197,17 +199,22 @@ impl<SCT: SignatureCollection> NoEndorsementMessage<SCT> {
 
 #[cfg(test)]
 mod tests {
+    use alloy_rlp::Encodable;
     use monad_bls::BlsSignatureCollection;
     use monad_consensus_types::{
-        block::MockExecutionProtocol,
+        block::{ConsensusBlockHeader, MockExecutionProposedHeader, MockExecutionProtocol},
+        payload::{ConsensusBlockBodyId, RoundSignature},
         quorum_certificate::QuorumCertificate,
         timeout::{HighExtend, HighExtendVote, TimeoutInfo},
     };
-    use monad_crypto::{certificate_signature::CertificateSignaturePubKey, NopSignature};
+    use monad_crypto::{
+        certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
+        NopSignature,
+    };
     use monad_multi_sig::MultiSig;
     use monad_secp::SecpSignature;
     use monad_testutil::signing::get_certificate_key;
-    use monad_types::{Epoch, Round, GENESIS_ROUND};
+    use monad_types::{Epoch, Hash, NodeId, Round, SeqNum, GENESIS_ROUND};
 
     use super::*;
 
@@ -232,7 +239,7 @@ mod tests {
         };
 
         let msg: TimeoutMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType> =
-            TimeoutMessage::new(&key, timeout, HighExtend::Qc(genesis_qc), None);
+            TimeoutMessage::new(&key, timeout, HighExtend::Qc(genesis_qc), true, None);
 
         let b = alloy_rlp::encode(msg);
         let c: TimeoutMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType> =
@@ -260,7 +267,7 @@ mod tests {
         };
 
         let msg: TimeoutMessage<MockSigType, MockSignatureCollectionType, ExecutionProtocolType> =
-            TimeoutMessage::new(&key, timeout, HighExtend::Qc(genesis_qc), None);
+            TimeoutMessage::new(&key, timeout, HighExtend::Qc(genesis_qc), true, None);
 
         let b = alloy_rlp::encode(msg);
         let c: TimeoutMessage<MockSigType, MockSignatureCollectionType, ExecutionProtocolType> =
@@ -273,5 +280,69 @@ mod tests {
             HighExtendVote::Qc(QuorumCertificate::genesis_qc())
         );
         assert!(c.last_round_certificate.is_none());
+    }
+
+    #[test]
+    fn high_extend_vote_serde() {
+        let key = get_certificate_key::<MockSignatureCollectionType>(22354);
+
+        let header: ConsensusBlockHeader<
+            MockSigType,
+            MockSignatureCollectionType,
+            ExecutionProtocolType,
+        > = ConsensusBlockHeader::new(
+            NodeId::new(key.pubkey()),
+            Epoch(1),
+            Round(10),
+            Vec::new(), // delayed_execution_results
+            MockExecutionProposedHeader {},
+            ConsensusBlockBodyId(Hash::default()),
+            QuorumCertificate::genesis_qc(),
+            SeqNum(1),
+            0,
+            RoundSignature::new(Round(10), &key),
+        );
+        let tip = ConsensusTip::new(&key, header, None);
+
+        let high_extend_tip_no_vote = HighExtendVote::Tip(tip.clone(), None);
+        let high_extend_tip_no_vote_encoded = {
+            let mut buf = Vec::new();
+            alloy_rlp::encode_list::<_, dyn Encodable>(
+                &[&1_u8 as &dyn Encodable, &tip as &dyn Encodable],
+                &mut buf,
+            );
+            buf
+        };
+        assert_eq!(
+            high_extend_tip_no_vote_encoded,
+            alloy_rlp::encode(&high_extend_tip_no_vote)
+        );
+        assert_eq!(
+            alloy_rlp::decode_exact(&high_extend_tip_no_vote_encoded),
+            Ok(high_extend_tip_no_vote),
+        );
+
+        let vote_sig = NopSignature::sign::<signing_domain::Vote>(b"asdf", &key);
+        let high_extend_tip_vote = HighExtendVote::Tip(tip.clone(), Some(vote_sig));
+        let high_extend_tip_vote_encoded = {
+            let mut buf = Vec::new();
+            alloy_rlp::encode_list::<_, dyn Encodable>(
+                &[
+                    &1_u8 as &dyn Encodable,
+                    &tip as &dyn Encodable,
+                    &vote_sig as &dyn Encodable,
+                ],
+                &mut buf,
+            );
+            buf
+        };
+        assert_eq!(
+            high_extend_tip_vote_encoded,
+            alloy_rlp::encode(&high_extend_tip_vote)
+        );
+        assert_eq!(
+            alloy_rlp::decode_exact(&high_extend_tip_vote_encoded),
+            Ok(high_extend_tip_vote),
+        );
     }
 }

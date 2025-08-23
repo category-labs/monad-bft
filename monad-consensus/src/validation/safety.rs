@@ -169,9 +169,19 @@ where
         self.highest_no_endorse = HighNoEndorse { round, tip }
     }
 
-    pub fn timeout(&mut self, round: Round) {
+    /// returns true if it's safe to include a vote for high_tip
+    pub fn timeout(&mut self, round: Round) -> bool {
         assert!(round >= self.highest_vote);
         self.highest_vote = round;
+
+        // We should only include Vote(r) in Timeout(r) if either:
+        // 1. We haven't sent NE(r)
+        // 2. We've sent NE(r) AND high_tip.round == r
+        // This is necessary to ensure that NEC(r) and QC(r) don't form for conflicting tips in the same round.
+        self.highest_no_endorse.round < round
+            || self
+                .maybe_high_tip()
+                .is_some_and(|tip| tip.block_header.block_round == round)
     }
 
     pub fn is_safe_to_propose(&self, round: Round) -> bool {

@@ -108,6 +108,7 @@ where
     PrepareTimeout(
         TimeoutInfo,
         HighExtend<ST, SCT, EPT>,
+        bool, // safe_to_vote
         Option<RoundCertificate<ST, SCT, EPT>>,
     ),
 
@@ -231,7 +232,7 @@ where
         safety: &mut Safety<ST, SCT, EPT>,
     ) -> Vec<PacemakerCommand<ST, SCT, EPT>> {
         let current_round = self.get_current_round();
-        safety.timeout(current_round);
+        let safe_to_include_vote = safety.timeout(current_round);
 
         let high_extend = safety
             .maybe_high_tip()
@@ -262,7 +263,12 @@ where
 
         vec![
             PacemakerCommand::ScheduleReset,
-            PacemakerCommand::PrepareTimeout(timeout, high_extend, last_round_rc.cloned()),
+            PacemakerCommand::PrepareTimeout(
+                timeout,
+                high_extend,
+                safe_to_include_vote,
+                last_round_rc.cloned(),
+            ),
             PacemakerCommand::Schedule {
                 round: current_round,
                 duration: self.get_round_timer(current_round),
@@ -492,10 +498,11 @@ mod test {
             certkeypair,
             timeout,
             HighExtend::Qc(high_qc),
+            true,
             None,
         );
         if !valid {
-            if let HighExtendVote::Tip(_, vote_signature) = &mut tmo_msg.0.high_extend {
+            if let HighExtendVote::Tip(_, Some(vote_signature)) = &mut tmo_msg.0.high_extend {
                 *vote_signature = <SCT::SignatureType as CertificateSignature>::sign::<
                     signing_domain::Vote,
                 >(invalid_msg, certkeypair);
@@ -593,7 +600,10 @@ mod test {
         assert_eq!(pacemaker.phase, PhaseHonest::One);
         assert_eq!(cmds.len(), 3);
         assert!(matches!(cmds[0], PacemakerCommand::ScheduleReset));
-        assert!(matches!(cmds[1], PacemakerCommand::PrepareTimeout(_, _, _)));
+        assert!(matches!(
+            cmds[1],
+            PacemakerCommand::PrepareTimeout(_, _, _, _)
+        ));
         assert!(matches!(cmds[2], PacemakerCommand::Schedule { .. }));
 
         // TC is created, round is incremented, and back to PhaseHonest::Zero

@@ -1648,6 +1648,7 @@ mod test {
                 &certkeys[0],
                 timeout,
                 HighExtend::Qc(qc),
+                true,
                 Some(RoundCertificate::Tc(tc)),
             );
 
@@ -1716,7 +1717,7 @@ mod test {
             SignatureCollectionType,
             ExecutionProtocolType,
         >::new(
-            &certkeys[0], timeout, HighExtend::Qc(qc), None
+            &certkeys[0], timeout, HighExtend::Qc(qc), true, None
         );
 
         let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
@@ -1916,6 +1917,7 @@ mod test {
             author_cert_key,
             timeout,
             HighExtend::Qc(QuorumCertificate::genesis_qc()),
+            true,
             None,
         );
 
@@ -1973,6 +1975,7 @@ mod test {
             author_cert_key,
             timeout,
             HighExtend::Qc(QuorumCertificate::genesis_qc()),
+            true,
             None,
         );
 
