@@ -32,3 +32,4 @@ alloy-signer = { workspace = true }
 alloy-signer-local = { workspace = true }
 proptest = { workspace = true }
 rstest = { workspace = true }
+test-case = { workspace = true }

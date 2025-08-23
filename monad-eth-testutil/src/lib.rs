@@ -27,12 +27,29 @@ use monad_consensus_types::{
     payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
     quorum_certificate::QuorumCertificate,
 };
-use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
-use monad_eth_block_policy::{compute_txn_max_gas_cost, compute_txn_max_value, EthValidatedBlock};
-use monad_eth_types::EthBlockBody;
+use monad_crypto::{
+    certificate_signature::{
+        CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
+    },
+    NopKeyPair, NopSignature,
+};
+use monad_eth_block_policy::{compute_txn_max_gas_cost, EthValidatedBlock};
+use monad_eth_types::{EthBlockBody, EthExecutionProtocol};
 use monad_secp::KeyPair;
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Balance, Epoch, NodeId, Round, SeqNum};
+use monad_validator::signature_collection::SignatureCollection;
+
+pub struct ConsensusTestBlock<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    pub block: ConsensusFullBlock<ST, SCT, EthExecutionProtocol>,
+    pub validated_txns: Vec<Recovered<TxEnvelope>>,
+    pub nonces: BTreeMap<Address, u64>,
+    pub txn_fees: BTreeMap<Address, TxnFee>,
+}
 
 pub fn make_legacy_tx(
     sender: FixedBytes<32>,
@@ -133,11 +150,11 @@ pub fn secret_to_eth_address(mut secret: FixedBytes<32>) -> Address {
     Address::from_slice(&hash[12..])
 }
 
-pub fn generate_block_with_txs(
+pub fn generate_consensus_test_block(
     round: Round,
     seq_num: SeqNum,
     txs: Vec<Recovered<TxEnvelope>>,
-) -> EthValidatedBlock<NopSignature, MockSignatures<NopSignature>> {
+) -> ConsensusTestBlock<NopSignature, MockSignatures<NopSignature>> {
     let body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
         execution_body: EthBlockBody {
             transactions: txs.iter().map(|tx| tx.tx().to_owned()).collect(),
@@ -177,37 +194,43 @@ pub fn generate_block_with_txs(
         },
     );
 
-    let txn_fees = txs
-        .iter()
-        .map(|t| {
-            (
-                t.signer(),
-                compute_txn_max_value(t),
-                compute_txn_max_gas_cost(t),
-            )
-        })
-        .fold(
-            BTreeMap::new(),
-            |mut costs, (address, max_cost, max_gas_cost)| {
-                costs
-                    .entry(address)
-                    .or_insert(TxnFee {
-                        first_txn_value: Balance::ZERO,
-                        first_txn_gas: Balance::ZERO,
-                        max_gas_cost: Balance::ZERO,
-                    })
-                    .max_gas_cost += max_gas_cost;
+    let mut txn_fees: BTreeMap<_, TxnFee> = BTreeMap::new();
+    for eth_txn in txs.iter() {
+        txn_fees
+            .entry(eth_txn.signer())
+            .and_modify(|e| {
+                e.max_gas_cost = e
+                    .max_gas_cost
+                    .saturating_add(compute_txn_max_gas_cost(eth_txn));
+            })
+            .or_insert(TxnFee {
+                first_txn_value: eth_txn.value(),
+                first_txn_gas: compute_txn_max_gas_cost(eth_txn),
+                max_gas_cost: Balance::ZERO,
+            });
+    }
 
-                costs
-            },
-        );
-
-    EthValidatedBlock {
+    ConsensusTestBlock {
         block: ConsensusFullBlock::new(header, body).expect("header doesn't match body"),
-        system_txns: Vec::new(),
         validated_txns: txs,
         nonces,
         txn_fees,
+    }
+}
+
+pub fn generate_block_with_txs(
+    round: Round,
+    seq_num: SeqNum,
+    txs: Vec<Recovered<TxEnvelope>>,
+) -> EthValidatedBlock<NopSignature, MockSignatures<NopSignature>> {
+    let test_block = generate_consensus_test_block(round, seq_num, txs);
+
+    EthValidatedBlock {
+        block: test_block.block,
+        system_txns: Vec::new(),
+        validated_txns: test_block.validated_txns,
+        nonces: test_block.nonces,
+        txn_fees: test_block.txn_fees,
     }
 }
 
