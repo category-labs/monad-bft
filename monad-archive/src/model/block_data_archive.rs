@@ -19,7 +19,7 @@ use alloy_consensus::{Block as AlloyBlock, BlockBody, Header, ReceiptEnvelope, T
 use alloy_primitives::{Address, BlockHash, Bytes, U8};
 use alloy_rlp::{Decodable, Encodable, EMPTY_LIST_CODE};
 use bytes::BufMut;
-use eyre::{bail, OptionExt};
+use eyre::bail;
 use futures::try_join;
 use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -66,7 +66,12 @@ impl BlockDataReader for BlockDataArchive {
             LatestKind::Indexed => &self.latest_indexed_table_key,
         };
 
-        let value = match self.store.get(key).await? {
+        let value = match self
+            .store
+            .get(key)
+            .await
+            .wrap_err("No latest block found")?
+        {
             Some(value) => value,
             None => return Ok(None),
         };
@@ -82,42 +87,19 @@ impl BlockDataReader for BlockDataArchive {
             .map(Some)
     }
 
-    async fn get_block_by_number(&self, block_num: u64) -> Result<Block> {
-        self.try_get_block_by_number(block_num)
-            .await
-            .and_then(|opt| opt.ok_or_eyre("Block not found"))
-    }
-
-    async fn get_block_receipts(&self, block_number: u64) -> Result<BlockReceipts> {
-        self.try_get_block_receipts(block_number)
-            .await
-            .and_then(|opt| opt.ok_or_eyre("Receipt not found"))
-    }
-
-    async fn get_block_traces(&self, block_number: u64) -> Result<BlockTraces> {
-        let traces_key = self.traces_key(block_number);
-
-        let rlp_traces = self
-            .store
-            .get(&traces_key)
-            .await?
-            .wrap_err("No trace found")?;
-        let mut rlp_traces_slice: &[u8] = &rlp_traces;
-
-        let traces = Vec::decode(&mut rlp_traces_slice).wrap_err("Cannot decode block")?;
-
-        Ok(traces)
-    }
-
-    async fn get_block_by_hash(&self, block_hash: &BlockHash) -> Result<Block> {
+    #[doc = "Get a block by its number, or return None if not found"]
+    async fn try_get_block_by_hash(&self, block_hash: &BlockHash) -> Result<Option<Block>> {
         let block_hash_key_suffix = hex::encode(block_hash);
         let block_hash_key = format!("{}/{}", self.block_hash_table_prefix, block_hash_key_suffix);
 
-        let block_num_bytes = self
+        let Some(block_num_bytes) = self
             .store
             .get(&block_hash_key)
-            .await?
-            .wrap_err("No block found")?;
+            .await
+            .wrap_err("Error getting block hash")?
+        else {
+            return Ok(None);
+        };
 
         let block_num_str =
             String::from_utf8(block_num_bytes.to_vec()).wrap_err("Invalid UTF-8 sequence")?;
@@ -126,7 +108,7 @@ impl BlockDataReader for BlockDataArchive {
             format!("Unable to convert block_number string to number (u64), value: {block_num_str}")
         })?;
 
-        self.get_block_by_number(block_num).await
+        self.try_get_block_by_number(block_num).await
     }
 
     async fn get_block_data_with_offsets(&self, block_num: u64) -> Result<BlockDataWithOffsets> {
@@ -137,7 +119,8 @@ impl BlockDataReader for BlockDataArchive {
             self.store.get(&block_key),
             self.store.get(&traces_key),
             self.store.get(&receipts_key),
-        )?;
+        )
+        .wrap_err("Error getting block data")?;
 
         let (block_rlp, mut traces_rlp, receipts_rlp): (&[u8], &[u8], &[u8]) = (
             &block_rlp.wrap_err("No block found")?,
@@ -163,9 +146,14 @@ impl BlockDataReader for BlockDataArchive {
         })
     }
 
-    #[doc = " Get a block by its number, or return None if not found"]
+    #[doc = "Get a block by its number, or return None if not found"]
     async fn try_get_block_by_number(&self, block_num: u64) -> Result<Option<Block>> {
-        let Some(bytes) = self.store.get(&self.block_key(block_num)).await? else {
+        let Some(bytes) = self
+            .store
+            .get(&self.block_key(block_num))
+            .await
+            .wrap_err("Error getting block")?
+        else {
             return Ok(None);
         };
         BlockStorageRepr::decode_and_convert(&bytes)
@@ -174,11 +162,16 @@ impl BlockDataReader for BlockDataArchive {
             .map(Some)
     }
 
-    #[doc = " Get receipts for a block, or return None if not found"]
+    #[doc = "Get receipts for a block, or return None if not found"]
     async fn try_get_block_receipts(&self, block_number: u64) -> Result<Option<BlockReceipts>> {
         let receipts_key = self.receipts_key(block_number);
 
-        let Some(rlp_receipts) = self.store.get(&receipts_key).await? else {
+        let Some(rlp_receipts) = self
+            .store
+            .get(&receipts_key)
+            .await
+            .wrap_err("Error getting receipts")?
+        else {
             return Ok(None);
         };
 
@@ -192,11 +185,16 @@ impl BlockDataReader for BlockDataArchive {
             .map(Some)
     }
 
-    #[doc = " Get execution traces for a block, or return None if not found"]
+    #[doc = "Get execution traces for a block, or return None if not found"]
     async fn try_get_block_traces(&self, block_number: u64) -> Result<Option<BlockTraces>> {
         let traces_key = self.traces_key(block_number);
 
-        let Some(rlp_traces) = self.store.get(&traces_key).await? else {
+        let Some(rlp_traces) = self
+            .store
+            .get(&traces_key)
+            .await
+            .wrap_err("Error getting traces")?
+        else {
             return Ok(None);
         };
         let mut rlp_traces_slice: &[u8] = &rlp_traces;
@@ -637,7 +635,7 @@ impl Encodable for CallFrame {
 
 #[cfg(test)]
 mod tests {
-    use std::iter::repeat_n;
+    use std::{iter::repeat_n, sync::atomic::Ordering};
 
     use alloy_consensus::{BlockBody, Receipt, ReceiptWithBloom, SignableTransaction, TxEip1559};
     use alloy_primitives::{Bloom, Log, LogData, B256, U256};
@@ -923,6 +921,7 @@ mod tests {
     #[tokio::test]
     async fn test_basic_block_operations() {
         let store = MemoryStorage::new("test");
+        let failure_ptr = store.should_fail.clone();
         let archive = BlockDataArchive::new(store);
 
         let block = create_test_block(1);
@@ -939,11 +938,22 @@ mod tests {
         let block_hash = block.header.hash_slow();
         let retrieved_by_hash = archive.get_block_by_hash(&block_hash).await.unwrap();
         assert_eq!(retrieved_by_hash.header.number, 1);
+
+        failure_ptr.store(true, Ordering::SeqCst);
+        let res = archive.get_block_by_number(1).await;
+        assert!(res.is_err());
+        assert!(
+            !res.unwrap_err()
+                .to_string()
+                .contains("MemoryStorage simulated failure"),
+            "Top level error should not contain store specific error"
+        );
     }
 
     #[tokio::test]
     async fn test_receipts_and_traces() {
         let store = MemoryStorage::new("test");
+        let failure_ptr = store.should_fail.clone();
         let archive = BlockDataArchive::new(store);
 
         let block_num = 1;
@@ -969,11 +979,33 @@ mod tests {
 
         let retrieved_traces = archive.get_block_traces(block_num).await.unwrap();
         assert_eq!(retrieved_traces, traces);
+
+        failure_ptr.store(true, Ordering::SeqCst);
+        let res = archive.get_block_receipts(block_num).await;
+        dbg!(&res);
+        assert!(res.is_err());
+        let err = res.unwrap_err();
+        assert!(format!("{:?}", err).contains("MemoryStorage simulated failure"));
+        assert!(
+            !err.to_string().contains("MemoryStorage simulated failure"),
+            "Top level error should not contain store specific error"
+        );
+
+        let res = archive.get_block_traces(block_num).await;
+        dbg!(&res);
+        assert!(res.is_err());
+        let err = res.unwrap_err();
+        assert!(format!("{:?}", err).contains("MemoryStorage simulated failure"));
+        assert!(
+            !err.to_string().contains("MemoryStorage simulated failure"),
+            "Top level error should not contain store specific error"
+        );
     }
 
     #[tokio::test]
     async fn test_latest_operations() {
         let store = MemoryStorage::new("test");
+        let failure_ptr = store.should_fail.clone();
         let archive = BlockDataArchive::new(store);
 
         let initial_latest = archive.get_latest(LatestKind::Uploaded).await.unwrap();
@@ -986,6 +1018,17 @@ mod tests {
 
         let latest = archive.get_latest(LatestKind::Uploaded).await.unwrap();
         assert_eq!(latest, Some(5));
+
+        failure_ptr.store(true, Ordering::SeqCst);
+        let res = archive.get_latest(LatestKind::Uploaded).await;
+        dbg!(&res);
+        assert!(res.is_err());
+        assert!(
+            !res.unwrap_err()
+                .to_string()
+                .contains("MemoryStorage simulated failure"),
+            "Top level error should not contain store specific error"
+        );
     }
 
     // A custom block creator so we don’t conflict with existing helpers.

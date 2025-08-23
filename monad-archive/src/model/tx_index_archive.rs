@@ -45,14 +45,20 @@ impl Deref for TxIndexArchiver {
 pub trait IndexReader {
     async fn resolve_from_bytes(&self, bytes: &[u8]) -> Result<TxIndexedData>;
     async fn get_latest_indexed(&self) -> Result<Option<u64>>;
-    async fn get_tx_indexed_data(&self, tx_hash: &TxHash) -> Result<TxIndexedData>;
+    async fn get_tx_indexed_data(&self, tx_hash: &TxHash) -> Result<Option<TxIndexedData>>;
     async fn get_tx_indexed_data_bulk(
         &self,
         tx_hashes: &[TxHash],
     ) -> Result<HashMap<TxHash, TxIndexedData>>;
-    async fn get_tx(&self, tx_hash: &TxHash) -> Result<(TxEnvelopeWithSender, HeaderSubset)>;
-    async fn get_trace(&self, tx_hash: &TxHash) -> Result<(Vec<u8>, HeaderSubset)>;
-    async fn get_receipt(&self, tx_hash: &TxHash) -> Result<(ReceiptWithLogIndex, HeaderSubset)>;
+    async fn get_tx(
+        &self,
+        tx_hash: &TxHash,
+    ) -> Result<Option<(TxEnvelopeWithSender, HeaderSubset)>>;
+    async fn get_trace(&self, tx_hash: &TxHash) -> Result<Option<(Vec<u8>, HeaderSubset)>>;
+    async fn get_receipt(
+        &self,
+        tx_hash: &TxHash,
+    ) -> Result<Option<(ReceiptWithLogIndex, HeaderSubset)>>;
 }
 
 #[derive(Clone)]
@@ -72,14 +78,19 @@ impl IndexReaderImpl {
         }
     }
 
-    async fn get_repr(&self, tx_hash: &TxHash) -> Result<IndexDataStorageRepr> {
+    async fn get_repr(&self, tx_hash: &TxHash) -> Result<Option<IndexDataStorageRepr>> {
         let key = tx_hash.encode_hex();
-        let bytes = self
+
+        let Some(bytes) = self
             .index_store
             .get(&key)
-            .await?
-            .wrap_err_with(|| format!("No data found in index for txhash: {}", &key))?;
-        IndexDataStorageRepr::decode(&bytes)
+            .await
+            .wrap_err("Error getting index data")?
+        else {
+            return Ok(None);
+        };
+        let repr = IndexDataStorageRepr::decode(&bytes)?;
+        Ok(Some(repr))
     }
 }
 
@@ -94,11 +105,12 @@ impl IndexReader for IndexReaderImpl {
     }
 
     /// Prefer get_tx, get_receipt, get_trace where possible to avoid unecessary network calls
-    async fn get_tx_indexed_data(&self, tx_hash: &TxHash) -> Result<TxIndexedData> {
-        self.get_repr(tx_hash)
-            .await?
-            .convert(&self.block_data_reader)
-            .await
+    async fn get_tx_indexed_data(&self, tx_hash: &TxHash) -> Result<Option<TxIndexedData>> {
+        let Some(repr) = self.get_repr(tx_hash).await? else {
+            return Ok(None);
+        };
+        let data = repr.convert(&self.block_data_reader).await?;
+        Ok(Some(data))
     }
 
     async fn get_tx_indexed_data_bulk(
@@ -109,7 +121,11 @@ impl IndexReader for IndexReaderImpl {
             .iter()
             .map(|h| h.encode_hex())
             .collect::<Vec<String>>();
-        let reprs = self.index_store.bulk_get(&keys).await?;
+        let reprs = self
+            .index_store
+            .bulk_get(&keys)
+            .await
+            .wrap_err("Error getting index data")?;
 
         let mut output = HashMap::new();
         for (hash, key) in tx_hashes.iter().zip(keys) {
@@ -125,25 +141,34 @@ impl IndexReader for IndexReaderImpl {
         Ok(output)
     }
 
-    async fn get_tx(&self, tx_hash: &TxHash) -> Result<(TxEnvelopeWithSender, HeaderSubset)> {
-        self.get_repr(tx_hash)
-            .await?
-            .get_tx(&self.block_data_reader)
-            .await
+    async fn get_tx(
+        &self,
+        tx_hash: &TxHash,
+    ) -> Result<Option<(TxEnvelopeWithSender, HeaderSubset)>> {
+        let Some(repr) = self.get_repr(tx_hash).await? else {
+            return Ok(None);
+        };
+        let data = repr.get_tx(&self.block_data_reader).await?;
+        Ok(Some(data))
     }
 
-    async fn get_receipt(&self, tx_hash: &TxHash) -> Result<(ReceiptWithLogIndex, HeaderSubset)> {
-        self.get_repr(tx_hash)
-            .await?
-            .get_receipt(&self.block_data_reader)
-            .await
+    async fn get_receipt(
+        &self,
+        tx_hash: &TxHash,
+    ) -> Result<Option<(ReceiptWithLogIndex, HeaderSubset)>> {
+        let Some(repr) = self.get_repr(tx_hash).await? else {
+            return Ok(None);
+        };
+        let data = repr.get_receipt(&self.block_data_reader).await?;
+        Ok(Some(data))
     }
 
-    async fn get_trace(&self, tx_hash: &TxHash) -> Result<(Vec<u8>, HeaderSubset)> {
-        self.get_repr(tx_hash)
-            .await?
-            .get_trace(&self.block_data_reader)
-            .await
+    async fn get_trace(&self, tx_hash: &TxHash) -> Result<Option<(Vec<u8>, HeaderSubset)>> {
+        let Some(repr) = self.get_repr(tx_hash).await? else {
+            return Ok(None);
+        };
+        let data = repr.get_trace(&self.block_data_reader).await?;
+        Ok(Some(data))
     }
 }
 
@@ -231,12 +256,17 @@ impl TxIndexArchiver {
                 (key, encoded)
             });
 
-        self.index_store.bulk_put(requests).await
+        self.index_store
+            .bulk_put(requests)
+            .await
+            .wrap_err("Error indexing block")
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     use alloy_rlp::Encodable;
 
     use super::*;
@@ -245,11 +275,19 @@ mod tests {
         test_utils::*,
     };
 
-    fn setup_indexer() -> (BlockDataArchive, TxIndexArchiver) {
+    type FailurePtr = Arc<AtomicBool>;
+
+    fn setup_indexer_with_should_fail() -> (BlockDataArchive, TxIndexArchiver, FailurePtr) {
         let sink = MemoryStorage::new("sink");
+        let failure_ptr = sink.should_fail.clone();
         let archiver = BlockDataArchive::new(sink.clone());
         let index_archiver =
             TxIndexArchiver::new(KVStoreErased::from(sink), archiver.clone(), 1024);
+        (archiver, index_archiver, failure_ptr)
+    }
+
+    fn setup_indexer() -> (BlockDataArchive, TxIndexArchiver) {
+        let (archiver, index_archiver, _) = setup_indexer_with_should_fail();
         (archiver, index_archiver)
     }
 
@@ -289,12 +327,48 @@ mod tests {
             .await
             .unwrap();
 
-        let indexed = indexer.get_tx_indexed_data(tx.tx.tx_hash()).await.unwrap();
+        let indexed = indexer
+            .get_tx_indexed_data(tx.tx.tx_hash())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(indexed.tx.sender, tx.sender);
         assert_eq!(indexed.trace, traces[0]);
         assert_eq!(indexed.header_subset.block_number, 1);
         assert_eq!(indexed.header_subset.block_hash, block.header.hash_slow());
         assert_eq!(indexed.header_subset.gas_used, 21000);
+    }
+
+    #[tokio::test]
+    async fn test_store_errors_do_not_leak() {
+        let (_, indexer, failure_ptr) = setup_indexer_with_should_fail();
+
+        let tx = mock_tx(1);
+        let block = mock_block(1, vec![tx.clone()]);
+        let traces = vec![vec![1, 2, 3]];
+        let receipts = vec![mock_rx(10, 21000)];
+
+        indexer
+            .index_block(
+                block.clone(),
+                traces.clone(),
+                receipts.clone(),
+                offsets_helper(&block, &traces, &receipts).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        failure_ptr.store(true, Ordering::SeqCst);
+
+        let res = indexer.get_tx_indexed_data(tx.tx.tx_hash()).await;
+        dbg!(&res);
+        assert!(res.is_err());
+        let err = res.unwrap_err();
+        assert!(format!("{:?}", err).contains("MemoryStorage simulated failure"));
+        assert!(
+            !err.to_string().contains("MemoryStorage simulated failure"),
+            "Top level error should not contain store specific error"
+        );
     }
 
     #[tokio::test]
@@ -316,8 +390,17 @@ mod tests {
             .await
             .unwrap();
 
-        let indexed1 = indexer.get_tx_indexed_data(tx1.tx.tx_hash()).await.unwrap();
-        let indexed2 = indexer.get_tx_indexed_data(tx2.tx.tx_hash()).await.unwrap();
+        let indexed1 = indexer
+            .get_tx_indexed_data(tx1.tx.tx_hash())
+            .await
+            .unwrap()
+            .unwrap();
+
+        let indexed2 = indexer
+            .get_tx_indexed_data(tx2.tx.tx_hash())
+            .await
+            .unwrap()
+            .unwrap();
 
         assert_eq!(indexed1.header_subset.gas_used, 21000);
         assert_eq!(indexed2.header_subset.gas_used, 21000); // 42000 - 21000

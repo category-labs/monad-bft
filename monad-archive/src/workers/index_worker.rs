@@ -197,7 +197,7 @@ async fn handle_block(
         let tx = tx.tx;
         let key = tx.tx_hash();
         match tx_index_archiver.get_tx_indexed_data(key).await {
-            Ok(resp) => {
+            Ok(Some(resp)) => {
                 if resp.header_subset.block_number != block_num
                     || Some(&resp.receipt) != first_rx.as_ref()
                     || Some(&resp.trace) != first_trace.as_ref()
@@ -214,6 +214,9 @@ async fn handle_block(
                         block_num, "Index spot-check successful"
                     );
                 }
+            }
+            Ok(None) => {
+                warn!(key = key.encode_hex(), block_num, "No index found");
             }
             Err(e) => warn!(
                 key = key.encode_hex(),
@@ -369,7 +372,10 @@ mod tests {
             let tx_hash = block.body.transactions[0].tx.tx_hash();
             let indexed = index_archiver.get_tx_indexed_data(tx_hash).await;
             assert!(indexed.is_ok());
-            assert_eq!(indexed.unwrap().header_subset.block_number, block_num);
+            assert_eq!(
+                indexed.unwrap().unwrap().header_subset.block_number,
+                block_num
+            );
         }
     }
 
@@ -441,7 +447,10 @@ mod tests {
             let tx_hash = block.body.transactions[0].tx.tx_hash();
             let indexed = index_archiver.get_tx_indexed_data(tx_hash).await;
             assert!(indexed.is_ok());
-            assert_eq!(indexed.unwrap().header_subset.block_number, block_num);
+            assert_eq!(
+                indexed.unwrap().unwrap().header_subset.block_number,
+                block_num
+            );
         }
     }
 
@@ -492,7 +501,10 @@ mod tests {
             let tx_hash = block.body.transactions[0].tx.tx_hash();
             let indexed = index_archiver.get_tx_indexed_data(tx_hash).await;
             assert!(indexed.is_ok());
-            assert_eq!(indexed.unwrap().header_subset.block_number, block_num);
+            assert_eq!(
+                indexed.unwrap().unwrap().header_subset.block_number,
+                block_num
+            );
         }
     }
 
@@ -619,7 +631,11 @@ mod tests {
 
         // Verify indexed data
         let tx_hash = block.body.transactions[0].tx.tx_hash();
-        let indexed = index_archiver.get_tx_indexed_data(tx_hash).await.unwrap();
+        let indexed = index_archiver
+            .get_tx_indexed_data(tx_hash)
+            .await
+            .unwrap()
+            .unwrap();
 
         assert_eq!(indexed.header_subset.block_number, block_num);
         assert_eq!(indexed.receipt, receipts[0]);
@@ -656,7 +672,11 @@ mod tests {
 
         // Verify indexed data
         let tx_hash = block.body.transactions[0].tx.tx_hash();
-        let indexed = index_archiver.get_tx_indexed_data(tx_hash).await.unwrap();
+        let indexed = index_archiver
+            .get_tx_indexed_data(tx_hash)
+            .await
+            .unwrap()
+            .unwrap();
 
         assert_eq!(indexed.header_subset.block_number, block_num);
         assert_eq!(indexed.receipt, receipts[0]);
@@ -720,7 +740,7 @@ mod tests {
             let tx_hash = tx.tx.tx_hash();
             let indexed = index_archiver.get_tx_indexed_data(tx_hash).await;
             assert!(indexed.is_ok());
-            let indexed = indexed.unwrap();
+            let indexed = indexed.unwrap().unwrap();
             assert_eq!(indexed.header_subset.block_number, block_num);
             assert_eq!(indexed.receipt, receipts[i]);
             assert_eq!(indexed.trace, traces[i]);
