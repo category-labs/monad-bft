@@ -18,7 +18,6 @@ use std::{collections::BTreeSet, time::Duration};
 use monad_chain_config::{revision::ChainParams, MockChainConfig};
 use monad_consensus_types::{block::PassthruBlockPolicy, block_validator::MockValidator};
 use monad_crypto::certificate_signature::CertificateKeyPair;
-use monad_eth_types::Balance;
 use monad_mock_swarm::{
     mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
     swarm_relation::NoSerSwarm,
@@ -30,7 +29,7 @@ use monad_transformer::{
     DropTransformer, GenericTransformer, LatencyTransformer, PeriodicTransformer,
     RandLatencyTransformer, ID,
 };
-use monad_types::{NodeId, Round, SeqNum};
+use monad_types::{Balance, NodeId, Round, SeqNum};
 use monad_updaters::{
     ledger::MockLedger, statesync::MockStateSyncExecutor, txpool::MockTxPoolExecutor,
     val_set::MockValSetUpdaterNop,
@@ -52,6 +51,7 @@ static CHAIN_PARAMS: ChainParams = ChainParams {
     tx_limit: 10_000,
     proposal_gas_limit: 300_000_000,
     proposal_byte_limit: 4_000_000,
+    max_reserve_balance: 1_000_000_000_000_000_000,
     vote_pace: Duration::from_millis(5),
 };
 

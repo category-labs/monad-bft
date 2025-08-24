@@ -24,9 +24,9 @@ use alloy_primitives::Address;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_types::{Balance, EthAccount, EthHeader, Nonce};
+use monad_eth_types::{EthAccount, EthHeader};
 use monad_types::{
-    BlockId, Round, SeqNum, Stake, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM,
+    Balance, BlockId, Nonce, Round, SeqNum, Stake, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM,
 };
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use serde::{Deserialize, Serialize};
@@ -63,6 +63,7 @@ pub struct InMemoryBlockState {
     round: Round,
     parent_id: BlockId,
     nonces: BTreeMap<Address, Nonce>,
+    balances: Option<BTreeMap<Address, Balance>>,
 }
 
 impl InMemoryBlockState {
@@ -73,6 +74,7 @@ impl InMemoryBlockState {
             round: GENESIS_ROUND,
             parent_id: GENESIS_BLOCK_ID,
             nonces,
+            balances: None,
         }
     }
 }
@@ -187,6 +189,7 @@ where
                 round,
                 parent_id,
                 nonces: last_state_nonces,
+                balances: None,
             },
         );
     }

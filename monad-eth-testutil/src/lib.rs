@@ -23,16 +23,16 @@ use alloy_primitives::{keccak256, Address, Bloom, FixedBytes, Log, LogData, TxKi
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use monad_consensus_types::{
-    block::{ConsensusBlockHeader, ConsensusFullBlock},
+    block::{ConsensusBlockHeader, ConsensusFullBlock, TxnFee},
     payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
     quorum_certificate::QuorumCertificate,
 };
 use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
-use monad_eth_block_policy::{compute_txn_max_value, EthValidatedBlock};
+use monad_eth_block_policy::{compute_txn_max_gas_cost, compute_txn_max_value, EthValidatedBlock};
 use monad_eth_types::EthBlockBody;
 use monad_secp::KeyPair;
 use monad_testutil::signing::MockSignatures;
-use monad_types::{Epoch, NodeId, Round, SeqNum};
+use monad_types::{Balance, Epoch, NodeId, Round, SeqNum};
 
 pub fn make_legacy_tx(
     sender: FixedBytes<32>,
@@ -66,6 +66,26 @@ pub fn make_eip1559_tx(
     nonce: u64,
     input_len: usize,
 ) -> TxEnvelope {
+    make_eip1559_tx_with_value(
+        sender,
+        0,
+        max_fee_per_gas,
+        max_priority_fee_per_gas,
+        gas_limit,
+        nonce,
+        input_len,
+    )
+}
+
+pub fn make_eip1559_tx_with_value(
+    sender: FixedBytes<32>,
+    value: u128,
+    max_fee_per_gas: u128,
+    max_priority_fee_per_gas: u128,
+    gas_limit: u64,
+    nonce: u64,
+    input_len: usize,
+) -> TxEnvelope {
     let transaction = TxEip1559 {
         chain_id: 1337,
         nonce,
@@ -73,7 +93,7 @@ pub fn make_eip1559_tx(
         max_fee_per_gas,
         max_priority_fee_per_gas,
         to: TxKind::Call(Address::repeat_byte(0u8)),
-        value: Default::default(),
+        value: U256::from(value),
         access_list: Default::default(),
         input: vec![0; input_len].into(),
     };
@@ -159,11 +179,28 @@ pub fn generate_block_with_txs(
 
     let txn_fees = txs
         .iter()
-        .map(|t| (t.signer(), compute_txn_max_value(t)))
-        .fold(BTreeMap::new(), |mut costs, (address, cost)| {
-            *costs.entry(address).or_insert(U256::ZERO) += cost;
-            costs
-        });
+        .map(|t| {
+            (
+                t.signer(),
+                compute_txn_max_value(t),
+                compute_txn_max_gas_cost(t),
+            )
+        })
+        .fold(
+            BTreeMap::new(),
+            |mut costs, (address, max_cost, max_gas_cost)| {
+                costs
+                    .entry(address)
+                    .or_insert(TxnFee {
+                        first_txn_value: Balance::ZERO,
+                        first_txn_gas: Balance::ZERO,
+                        max_gas_cost: Balance::ZERO,
+                    })
+                    .max_gas_cost += max_gas_cost;
+
+                costs
+            },
+        );
 
     EthValidatedBlock {
         block: ConsensusFullBlock::new(header, body).expect("header doesn't match body"),
