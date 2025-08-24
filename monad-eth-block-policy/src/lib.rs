@@ -23,6 +23,7 @@ use alloy_consensus::{
     transaction::{Recovered, Transaction},
     TxEnvelope,
 };
+use alloy_eips::eip7702::SignedAuthorization;
 use alloy_primitives::{Address, TxHash, U256};
 use itertools::Itertools;
 use monad_consensus_types::{
@@ -647,6 +648,14 @@ where
         self.last_commit
     }
 
+    pub fn get_chain_id(&self) -> u64 {
+        self.chain_id
+    }
+
+    pub fn max_reserve_balance(&self) -> Balance {
+        self.max_reserve_balance
+    }
+
     fn get_block_index(
         &self,
         extending_blocks: &Option<&Vec<&EthValidatedBlock<ST, SCT>>>,
@@ -824,12 +833,154 @@ where
         account_balances
     }
 
-    pub fn get_chain_id(&self) -> u64 {
-        self.chain_id
+    fn system_transaction_nonce_check(
+        &self,
+        system_txns: &Vec<SystemTransaction>,
+        account_nonces: &mut BTreeMap<&Address, u64>,
+    ) -> Result<(), BlockPolicyError> {
+        for sys_txn in system_txns.iter() {
+            let sys_txn_signer = sys_txn.signer();
+            let sys_txn_nonce = sys_txn.nonce();
+
+            let expected_nonce = account_nonces
+                .get_mut(&sys_txn_signer)
+                .expect("account_nonces should have been populated");
+
+            if &sys_txn_nonce != expected_nonce {
+                warn!(
+                    ?sys_txn_nonce,
+                    ?expected_nonce,
+                    "block not coherent, invalid nonce for system transaction"
+                );
+                return Err(BlockPolicyError::BlockNotCoherent);
+            }
+            *expected_nonce += 1;
+        }
+
+        Ok(())
     }
 
-    pub fn max_reserve_balance(&self) -> Balance {
-        self.max_reserve_balance
+    // this function checks the validity of nonces for a regular transaction
+    fn nonce_check_helper(
+        &self,
+        txn: &Recovered<TxEnvelope>,
+        account_nonces: &mut BTreeMap<&Address, u64>,
+    ) -> Result<(), BlockPolicyError> {
+        let eth_address = txn.signer();
+        let txn_nonce = txn.nonce();
+
+        let expected_nonce = account_nonces
+            .get_mut(&eth_address)
+            .expect("account_nonces should have been populated");
+
+        if &txn_nonce != expected_nonce {
+            warn!(
+                txn_nonce = ?txn_nonce,
+                expected_nonce = ?expected_nonce,
+                "block not coherent, invalid nonce"
+            );
+            return Err(BlockPolicyError::BlockNotCoherent);
+        }
+
+        Ok(())
+    }
+
+    // https://eips.ethereum.org/EIPS/eip-7702#behavior
+    // the nonce of authority is only incremented if the behavior checks
+    // for the tuple pass
+    // this function performs those checks
+    fn eip_7702_valid_nonce_update(
+        &self,
+        auth_list: &[SignedAuthorization],
+        account_nonces: &mut BTreeMap<&Address, u64>,
+    ) {
+        for (result, nonce, code_address, chain_id) in auth_list
+            .iter()
+            .map(|a| (a.recover_authority(), a.nonce(), a.address(), a.chain_id()))
+        {
+            match result {
+                Ok(authority) => {
+                    debug!(?code_address, ?nonce, ?authority, "Authority");
+
+                    if chain_id != 0_u64 || chain_id != self.get_chain_id() {
+                        continue;
+                    }
+
+                    //FIXME: check that authority is empty or already delegated
+
+                    let expected_nonce = account_nonces.get_mut(&authority);
+                    match expected_nonce {
+                        Some(n) => {
+                            if *n != nonce + 1 {
+                                warn!(expected_nonce = ?*n, auth_tuple_nonce = nonce, ?authority, "authority nonce error");
+                                continue;
+                            }
+
+                            *n += 1;
+                        }
+                        None => {
+                            //FIXME:
+                            // if account is not found in the account_nonces map, should nonce be
+                            // considered 0?
+
+                            warn!(?authority, "authority no nonce");
+                        }
+                    }
+                }
+                Err(error) => {
+                    continue;
+                }
+            }
+        }
+    }
+
+    fn extract_signers(
+        &self,
+        validated_txns: &Vec<Recovered<TxEnvelope>>,
+        system_txns: &Vec<SystemTransaction>,
+    ) -> Result<(Vec<Address>, BTreeSet<Address>), BlockPolicyError> {
+        // TODO fix this unnecessary copy into a new vec to generate an owned Address
+        let mut authority_addresses: BTreeSet<Address> = BTreeSet::new();
+        let mut tx_signers: Vec<Address> = Vec::new();
+
+        for tx_signer in validated_txns.iter().map(|txn| {
+            if txn.is_eip7702() {
+                match txn.authorization_list() {
+                    Some(auth_list) => {
+                        for result in auth_list.iter().map(|a| a.recover_authority()) {
+                            match result {
+                                Ok(authority) => {
+                                    authority_addresses.insert(authority);
+                                }
+                                Err(error) => {
+                                    warn!(?error, "invalid authority signature");
+                                }
+                            }
+                        }
+                    }
+                    None => {
+                        warn!("empty authorization list is invalid");
+                        return Err(BlockPolicyError::Eip7702Error);
+                    }
+                }
+            };
+
+            Ok(txn.signer())
+        }) {
+            match tx_signer {
+                Ok(address) => tx_signers.push(address),
+                Err(err) => {
+                    return Err(err);
+                }
+            }
+        }
+
+        tx_signers.extend(authority_addresses.iter().cloned());
+
+        let mut system_tx_signers = system_txns.iter().map(|txn| txn.signer());
+        tx_signers.extend(&mut system_tx_signers);
+
+        Ok((tx_signers, authority_addresses))
     }
 }
 
@@ -902,48 +1053,8 @@ where
             return Err(BlockPolicyError::ExecutionResultMismatch);
         }
 
-        // TODO fix this unnecessary copy into a new vec to generate an owned Address
-        let mut authority_addresses: BTreeSet<Address> = BTreeSet::new();
-        let mut tx_signers: Vec<Address> = Vec::new();
-        let mut authority_nonces = BTreeMap::new();
-
-        for tx_signer in block.validated_txns.iter().map(|txn| {
-            if txn.is_eip7702() {
-                if let Some(auth_list) = txn.authorization_list() {
-                    for (result , nonce, code_address) in auth_list.iter().map(|a| (a.recover_authority(), a.nonce(), a.address())) {
-                        match result {
-                            Ok(authority) => {
-                                debug!(eth_address = ?txn.signer(), ?code_address, ?nonce, ?authority, "Authority");
-                                authority_addresses.insert(authority);
-
-                                // First increment than validate against account's nonce+1.
-                                authority_nonces
-                                    .entry(authority)
-                                    .or_insert(nonce);
-                            }
-                            Err(error) => {
-                                warn!(?error, "Can not process authorization list");
-                                return Err(BlockPolicyError::Eip7702Error);
-                            }
-                        }
-                    }
-                }
-            };
-
-            Ok(txn.signer())
-        }) {
-            match tx_signer {
-                Ok(address) => tx_signers.push(address),
-                Err(err) => {
-                    return Err(err);
-                }
-            }
-        }
-
-        tx_signers.extend(authority_addresses.iter().cloned());
-
-        let mut system_tx_signers = block.system_txns.iter().map(|txn| txn.signer());
-        tx_signers.extend(&mut system_tx_signers);
+        let (tx_signers, authority_addresses) =
+            self.extract_signers(&block.validated_txns, &block.system_txns)?;
 
         // these must be updated as we go through txs in the block
         let mut account_nonces = self.get_account_base_nonces(
@@ -960,25 +1071,6 @@ where
             tx_signers.iter(),
         )?;
 
-        for sys_txn in block.system_txns.iter() {
-            let sys_txn_signer = sys_txn.signer();
-            let sys_txn_nonce = sys_txn.nonce();
-
-            let expected_nonce = account_nonces
-                .get_mut(&sys_txn_signer)
-                .expect("account_nonces should have been populated");
-
-            if &sys_txn_nonce != expected_nonce {
-                warn!(
-                    seq_num =? block.header().seq_num,
-                    round =? block.header().block_round,
-                    "block not coherent, invalid nonce for system transaction"
-                );
-                return Err(BlockPolicyError::BlockNotCoherent);
-            }
-            *expected_nonce += 1;
-        }
-
         for authority in &authority_addresses {
             let account_balance = account_balances
                 .get_mut(authority)
@@ -991,40 +1083,29 @@ where
         let mut validator =
             EthBlockPolicyBlockValidator::new(block.get_seq_num(), self.execution_delay)?;
 
+        self.system_transaction_nonce_check(&block.system_txns, &mut account_nonces)?;
+
         for txn in block.validated_txns.iter() {
-            let eth_address = txn.signer();
-            let txn_nonce = txn.nonce();
+            self.nonce_check_helper(txn, &mut account_nonces)?;
+            validator.try_add_transaction(&mut account_balances, txn)?;
 
-            let expected_nonce = account_nonces
-                .get_mut(&eth_address)
+            let sender = txn.signer();
+            let sender_nonce = account_nonces
+                .get_mut(&sender)
                 .expect("account_nonces should have been populated");
+            *sender_nonce += 1;
 
-            if &txn_nonce != expected_nonce {
-                warn!(
-                    seq_num =? block.header().seq_num,
-                    round =? block.header().block_round,
-                    "block not coherent, invalid nonce"
-                );
-                return Err(BlockPolicyError::BlockNotCoherent);
-            }
-
-            if authority_addresses.contains(&eth_address) {
-                let maybe_nonce = authority_nonces.get(&eth_address);
-                match maybe_nonce {
-                    Some(n) => {
-                        if *n != txn_nonce + 1 {
-                            warn!(nonce = ?*n, seq_num = ?block.get_seq_num(), ?eth_address, "authority nonce error");
-                        }
-                    }
-                    None => {
-                        warn!(seq_num = ?block.get_seq_num(), ?eth_address, "authority no nonce");
-                    }
+            //https://eips.ethereum.org/EIPS/eip-7702#behavior
+            // "The authorization list is processed before the execution portion
+            // of the transaction begins, but after the sender’s nonce is incremented."
+            if txn.is_eip7702() {
+                debug!(?sender, "eip-7702 transaction");
+                if let Some(auth_list) = txn.authorization_list() {
+                    self.eip_7702_valid_nonce_update(auth_list, &mut account_nonces);
                 }
             }
-
-            validator.try_add_transaction(&mut account_balances, txn)?;
-            *expected_nonce += 1;
         }
+
         Ok(())
     }
 
