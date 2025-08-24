@@ -889,7 +889,7 @@ where
                 Ok(authority) => {
                     debug!(?code_address, ?nonce, ?authority, "Authority");
 
-                    if chain_id != 0_u64 || chain_id != self.get_chain_id() {
+                    if chain_id != 0_u64 && chain_id != self.get_chain_id() {
                         continue;
                     }
 
@@ -898,7 +898,7 @@ where
                     let expected_nonce = account_nonces.get_mut(&authority);
                     match expected_nonce {
                         Some(n) => {
-                            if *n != nonce + 1 {
+                            if *n != nonce {
                                 warn!(expected_nonce = ?*n, auth_tuple_nonce = nonce, ?authority, "authority nonce error");
                                 continue;
                             }
