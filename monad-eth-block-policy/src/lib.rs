@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, HashSet},
     marker::PhantomData,
     ops::{Deref, Range, RangeFrom},
 };
@@ -920,10 +920,10 @@ where
         &self,
         validated_txns: &[Recovered<TxEnvelope>],
         system_txns: &[SystemTransaction],
-    ) -> Result<(Vec<Address>, BTreeSet<Address>), BlockPolicyError> {
+    ) -> Result<(HashSet<Address>, HashSet<Address>), BlockPolicyError> {
         // TODO fix this unnecessary copy into a new vec to generate an owned Address
-        let mut authority_addresses: BTreeSet<Address> = BTreeSet::new();
-        let mut tx_signers: Vec<Address> = Vec::new();
+        let mut authority_addresses: HashSet<Address> = HashSet::new();
+        let mut tx_signers: HashSet<Address> = HashSet::new();
 
         for tx_signer in validated_txns.iter().map(|txn| {
             if txn.is_eip7702() {
@@ -950,7 +950,9 @@ where
             Ok(txn.signer())
         }) {
             match tx_signer {
-                Ok(address) => tx_signers.push(address),
+                Ok(address) => {
+                    tx_signers.insert(address);
+                }
                 Err(err) => {
                     return Err(err);
                 }
