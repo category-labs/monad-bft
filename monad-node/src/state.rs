@@ -165,14 +165,7 @@ impl NodeState {
 }
 
 fn load_secp256k1_keypair(path: &Path, keystore_password: &str) -> Result<KeyPair, NodeSetupError> {
-    let result = Keystore::load_key(path, keystore_password);
-    if result.is_ok() {
-        let mut secret = result.unwrap();
-        if secret.len() == 32 {
-            return Ok(KeyPair::from_bytes(secret.as_mut())?);
-        }
-    }
-    Err(NodeSetupError::Custom {
+    Keystore::load_secp_key(path, keystore_password).map_err(|_| NodeSetupError::Custom {
         kind: ErrorKind::ValueValidation,
         msg: "secp secret must be encoded in keystore json".to_owned(),
     })
@@ -182,14 +175,7 @@ fn load_bls12_381_keypair(
     path: &Path,
     keystore_password: &str,
 ) -> Result<BlsKeyPair, NodeSetupError> {
-    let result = Keystore::load_key(path, keystore_password);
-    if result.is_ok() {
-        let mut secret = result.unwrap();
-        if secret.len() == 32 {
-            return Ok(BlsKeyPair::from_bytes(secret.as_mut())?);
-        }
-    }
-    Err(NodeSetupError::Custom {
+    Keystore::load_bls_key(path, keystore_password).map_err(|_| NodeSetupError::Custom {
         kind: ErrorKind::ValueValidation,
         msg: "bls secret secret must be encoded in keystore json".to_owned(),
     })
