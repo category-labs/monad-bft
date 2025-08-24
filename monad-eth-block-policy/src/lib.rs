@@ -1747,6 +1747,74 @@ mod test {
             CoherencyCheckMode::NonceCoherency,
         );
         assert!(result.is_ok(), "Block coherency check failed: {:?}", result);
+
+        //////////////////////////////////////////////////////////////////
+        // Case3: 7702 txs in committed and extending blocks           ///
+        //////////////////////////////////////////////////////////////////
+
+        let tx1 = make_test_tx(50000, 0, 0, S1);
+        let tx2 = make_test_delegation_tx(
+            50000,
+            0,
+            0,
+            S2,
+            HashMap::from([(
+                S1,
+                Authorization {
+                    chain_id: CHAIN_ID,
+                    nonce: 1,
+                    address: Address(FixedBytes([0x11; 20])),
+                },
+            )]),
+        );
+        let signer1 = tx1.signer();
+        let signer2 = tx2.signer();
+
+        // coherent incoming block
+        let tx3 = make_test_tx(50000, 0, 2, S1);
+        let txs = BTreeMap::from([
+            (2, vec![tx1.clone()]),
+            (3, vec![tx2.clone()]),
+            (4, vec![tx3]),
+        ]);
+
+        // balance of signer at block n-3
+        let state_backend = NopStateBackend {
+            balances: BTreeMap::from([(signer1, U256::from(ONE_ETHER))]),
+            nonces: BTreeMap::from([(signer1, 0), (signer2, 0)]),
+        };
+
+        let result = setup_block_policy_with_txs(
+            txs,
+            vec![signer1, signer2],
+            &state_backend,
+            num_committed_blocks,
+            CoherencyCheckMode::NonceCoherency,
+        );
+        assert!(result.is_ok(), "Block coherency check failed: {:?}", result);
+
+        // incoherent incoming block
+        let tx3 = make_test_tx(50000, 0, 3, S1);
+        let txs = BTreeMap::from([(2, vec![tx1]), (3, vec![tx2]), (4, vec![tx3])]);
+
+        // balance of signer at block n-3
+        let state_backend = NopStateBackend {
+            balances: BTreeMap::from([(signer1, U256::from(ONE_ETHER))]),
+            nonces: BTreeMap::from([(signer1, 0), (signer2, 0)]),
+        };
+
+        let result = setup_block_policy_with_txs(
+            txs,
+            vec![signer1, signer2],
+            &state_backend,
+            num_committed_blocks,
+            CoherencyCheckMode::NonceCoherency,
+        );
+        assert!(
+            result.is_err(),
+            "Block coherency check should have failed: {:?}",
+            result
+        );
     }
 
     #[test]
