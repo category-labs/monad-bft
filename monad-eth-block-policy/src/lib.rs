@@ -848,7 +848,7 @@ where
     }
 
     // this function checks the validity of nonces for a regular transaction
-    fn nonce_check_helper(
+    fn nonce_check_and_update(
         &self,
         txn: &Recovered<TxEnvelope>,
         account_nonces: &mut BTreeMap<&Address, u64>,
@@ -1068,7 +1068,7 @@ where
         self.system_transaction_nonce_check(&block.system_txns, &mut account_nonces)?;
 
         for txn in block.validated_txns.iter() {
-            self.nonce_check_helper(txn, &mut account_nonces)?;
+            self.nonce_check_and_update(txn, &mut account_nonces)?;
             validator.try_add_transaction(&mut account_balances, txn)?;
 
             // https://eips.ethereum.org/EIPS/eip-7702#behavior
@@ -1262,7 +1262,7 @@ mod test {
         )?;
 
         for txn in incoming_block.validated_txns.iter() {
-            block_policy.nonce_check_helper(txn, &mut account_nonces)?;
+            block_policy.nonce_check_and_update(txn, &mut account_nonces)?;
             if txn.is_eip7702() {
                 if let Some(auth_list) = txn.authorization_list() {
                     block_policy.eip_7702_valid_nonce_update(auth_list, &mut account_nonces);
