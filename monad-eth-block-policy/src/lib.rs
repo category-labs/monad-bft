@@ -822,7 +822,7 @@ where
 
     fn system_transaction_nonce_check(
         &self,
-        system_txns: &Vec<SystemTransaction>,
+        system_txns: &[SystemTransaction],
         account_nonces: &mut BTreeMap<&Address, u64>,
     ) -> Result<(), BlockPolicyError> {
         for sys_txn in system_txns.iter() {
@@ -923,8 +923,8 @@ where
 
     fn extract_signers(
         &self,
-        validated_txns: &Vec<Recovered<TxEnvelope>>,
-        system_txns: &Vec<SystemTransaction>,
+        validated_txns: &[Recovered<TxEnvelope>],
+        system_txns: &[SystemTransaction],
     ) -> Result<(Vec<Address>, BTreeSet<Address>), BlockPolicyError> {
         // TODO fix this unnecessary copy into a new vec to generate an owned Address
         let mut authority_addresses: BTreeSet<Address> = BTreeSet::new();
@@ -1082,7 +1082,7 @@ where
                 .expect("account_nonces should have been populated");
             *sender_nonce += 1;
 
-            //https://eips.ethereum.org/EIPS/eip-7702#behavior
+            // https://eips.ethereum.org/EIPS/eip-7702#behavior
             // "The authorization list is processed before the execution portion
             // of the transaction begins, but after the sender’s nonce is incremented."
             if txn.is_eip7702() {
@@ -1134,13 +1134,16 @@ where
 
 #[cfg(test)]
 mod test {
+    use std::collections::HashMap;
+
     use alloy_consensus::{SignableTransaction, TxEip1559};
+    use alloy_eips::eip7702::Authorization;
     use alloy_primitives::{hex, Address, FixedBytes, PrimitiveSignature, TxKind, B256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use monad_crypto::NopSignature;
     use monad_eth_testutil::{
-        generate_consensus_test_block, make_eip1559_tx_with_value, recover_tx,
+        generate_consensus_test_block, make_eip1559_tx_with_value, make_eip7702_tx, recover_tx,
     };
     use monad_eth_types::BASE_FEE_PER_GAS;
     use monad_state_backend::NopStateBackend;
@@ -1161,8 +1164,17 @@ mod test {
     const S1: B256 = B256::new(hex!(
         "0ed2e19e3aca1a321349f295837988e9c6f95d4a6fc54cfab6befd5ee82662ad"
     ));
+    const S2: B256 = B256::new(hex!(
+        "1ed2e19e3aca1a321349f295837988e9c6f95d4a6fc54cfab6befd5ee82662ad"
+    ));
     const ONE_ETHER: u128 = 1_000_000_000_000_000_000;
     const HALF_ETHER: u128 = 500_000_000_000_000_000;
+    const CHAIN_ID: u64 = 1337;
+
+    enum CoherencyCheckMode {
+        ReserveBalanceCoherency,
+        NonceCoherency,
+    }
 
     fn sign_tx(signature_hash: &FixedBytes<32>) -> PrimitiveSignature {
         let secret_key = B256::repeat_byte(0xAu8).to_string();
@@ -1184,6 +1196,25 @@ mod test {
             gas_limit,
             nonce,
             0, // input length
+        ))
+    }
+
+    fn make_test_delegation_tx(
+        gas_limit: u64,
+        value: u128,
+        nonce: u64,
+        signer: FixedBytes<32>,
+        authorizations: HashMap<FixedBytes<32>, Authorization>,
+    ) -> Recovered<TxEnvelope> {
+        recover_tx(make_eip7702_tx(
+            signer,
+            value,
+            BASE_FEE_PER_GAS as u128,
+            0, // priority fee
+            gas_limit,
+            nonce,
+            0, // input length
+            authorizations,
         ))
     }
 
@@ -1222,10 +1253,38 @@ mod test {
         )?;
 
         for txn in incoming_block.validated_txns.iter() {
-            let eth_address = txn.signer();
-            let txn_nonce = txn.nonce();
-
             validator.try_add_transaction(&mut account_balances, txn)?;
+        }
+
+        Ok(())
+    }
+
+    fn nonce_coherency(
+        block_policy: EthBlockPolicy<SignatureType, SignatureCollectionType>,
+        incoming_block: EthValidatedBlock<SignatureType, SignatureCollectionType>,
+        extending_blocks: Vec<&EthValidatedBlock<SignatureType, SignatureCollectionType>>,
+        state_backend: &impl StateBackend<SignatureType, SignatureCollectionType>,
+        addresses: Vec<Address>,
+    ) -> Result<(), BlockPolicyError> {
+        let mut account_nonces = block_policy.get_account_base_nonces(
+            incoming_block.get_seq_num(),
+            state_backend,
+            &extending_blocks,
+            addresses.iter(),
+        )?;
+
+        for txn in incoming_block.validated_txns.iter() {
+            block_policy.nonce_check_helper(txn, &mut account_nonces)?;
+
+            let sender = txn.signer();
+            let sender_nonce = account_nonces.get_mut(&sender).unwrap();
+            *sender_nonce += 1;
+
+            if txn.is_eip7702() {
+                if let Some(auth_list) = txn.authorization_list() {
+                    block_policy.eip_7702_valid_nonce_update(auth_list, &mut account_nonces);
+                }
+            }
         }
 
         Ok(())
@@ -1236,11 +1295,12 @@ mod test {
         signers: Vec<Address>,
         state_backend: &impl StateBackend<SignatureType, SignatureCollectionType>,
         num_committed_blocks: usize,
+        coherency_check_mode: CoherencyCheckMode,
     ) -> Result<(), BlockPolicyError> {
         let mut block_policy = EthBlockPolicy::<SignatureType, SignatureCollectionType>::new(
             SeqNum(17),
             EXEC_DELAY.0,
-            1337,
+            CHAIN_ID,
             RESERVE_BALANCE,
         );
 
@@ -1267,13 +1327,22 @@ mod test {
         let incoming_block = blocks[4].clone();
         let extending_blocks = blocks[num_committed_blocks..4].iter().collect();
 
-        reserve_balance_coherency(
-            block_policy,
-            incoming_block,
-            extending_blocks,
-            state_backend,
-            signers,
-        )
+        match coherency_check_mode {
+            CoherencyCheckMode::ReserveBalanceCoherency => reserve_balance_coherency(
+                block_policy,
+                incoming_block,
+                extending_blocks,
+                state_backend,
+                signers,
+            ),
+            CoherencyCheckMode::NonceCoherency => nonce_coherency(
+                block_policy,
+                incoming_block,
+                extending_blocks,
+                state_backend,
+                signers,
+            ),
+        }
     }
 
     #[test_case(3; "three committed blocks, one extending block")]
@@ -1300,6 +1369,7 @@ mod test {
             vec![signer],
             &state_backend,
             num_committed_blocks,
+            CoherencyCheckMode::ReserveBalanceCoherency,
         );
         assert!(result.is_ok(), "Block coherency check failed: {:?}", result);
 
@@ -1308,8 +1378,13 @@ mod test {
             balances: BTreeMap::from([(signer, U256::from(gas_cost - 1))]),
             ..Default::default()
         };
-        let result =
-            setup_block_policy_with_txs(txs, vec![signer], &state_backend, num_committed_blocks);
+        let result = setup_block_policy_with_txs(
+            txs,
+            vec![signer],
+            &state_backend,
+            num_committed_blocks,
+            CoherencyCheckMode::ReserveBalanceCoherency,
+        );
         assert!(
             result.is_err(),
             "Block coherency check should have failed: {:?}",
@@ -1331,8 +1406,13 @@ mod test {
             ..Default::default()
         };
 
-        let result =
-            setup_block_policy_with_txs(txs, vec![signer], &state_backend, num_committed_blocks);
+        let result = setup_block_policy_with_txs(
+            txs,
+            vec![signer],
+            &state_backend,
+            num_committed_blocks,
+            CoherencyCheckMode::ReserveBalanceCoherency,
+        );
         assert!(result.is_ok(), "Block coherency check failed: {:?}", result);
 
         // first tx dips into reserve balance, second tx has gas cost more than remaining reserve balance
@@ -1348,8 +1428,13 @@ mod test {
             ..Default::default()
         };
 
-        let result =
-            setup_block_policy_with_txs(txs, vec![signer], &state_backend, num_committed_blocks);
+        let result = setup_block_policy_with_txs(
+            txs,
+            vec![signer],
+            &state_backend,
+            num_committed_blocks,
+            CoherencyCheckMode::ReserveBalanceCoherency,
+        );
         assert!(
             result.is_err(),
             "Block coherency check should have failed: {:?}",
@@ -1374,8 +1459,13 @@ mod test {
             ..Default::default()
         };
 
-        let result =
-            setup_block_policy_with_txs(txs, vec![signer], &state_backend, num_committed_blocks);
+        let result = setup_block_policy_with_txs(
+            txs,
+            vec![signer],
+            &state_backend,
+            num_committed_blocks,
+            CoherencyCheckMode::ReserveBalanceCoherency,
+        );
         assert!(result.is_ok(), "Block coherency check failed: {:?}", result);
 
         ///////////////////////////////////////////////////////////////////////////////////
@@ -1394,8 +1484,13 @@ mod test {
             ..Default::default()
         };
 
-        let result =
-            setup_block_policy_with_txs(txs, vec![signer], &state_backend, num_committed_blocks);
+        let result = setup_block_policy_with_txs(
+            txs,
+            vec![signer],
+            &state_backend,
+            num_committed_blocks,
+            CoherencyCheckMode::ReserveBalanceCoherency,
+        );
         assert!(result.is_ok(), "Block coherency check failed: {:?}", result);
 
         // first tx dips into reserve balance, second tx has gas cost more than remaining reserve balance
@@ -1412,8 +1507,13 @@ mod test {
             ..Default::default()
         };
 
-        let result =
-            setup_block_policy_with_txs(txs, vec![signer], &state_backend, num_committed_blocks);
+        let result = setup_block_policy_with_txs(
+            txs,
+            vec![signer],
+            &state_backend,
+            num_committed_blocks,
+            CoherencyCheckMode::ReserveBalanceCoherency,
+        );
         assert!(
             result.is_err(),
             "Block coherency check should have failed: {:?}",
@@ -1439,8 +1539,13 @@ mod test {
             ..Default::default()
         };
 
-        let result =
-            setup_block_policy_with_txs(txs, vec![signer], &state_backend, num_committed_blocks);
+        let result = setup_block_policy_with_txs(
+            txs,
+            vec![signer],
+            &state_backend,
+            num_committed_blocks,
+            CoherencyCheckMode::ReserveBalanceCoherency,
+        );
         assert!(result.is_ok(), "Block coherency check failed: {:?}", result);
 
         ///////////////////////////////////////////////////////////////////////////////////
@@ -1461,8 +1566,13 @@ mod test {
             ..Default::default()
         };
 
-        let result =
-            setup_block_policy_with_txs(txs, vec![signer], &state_backend, num_committed_blocks);
+        let result = setup_block_policy_with_txs(
+            txs,
+            vec![signer],
+            &state_backend,
+            num_committed_blocks,
+            CoherencyCheckMode::ReserveBalanceCoherency,
+        );
         assert!(result.is_ok(), "Block coherency check failed: {:?}", result);
 
         // transactions exceed reserve balance
@@ -1479,13 +1589,164 @@ mod test {
             ..Default::default()
         };
 
-        let result =
-            setup_block_policy_with_txs(txs, vec![signer], &state_backend, num_committed_blocks);
+        let result = setup_block_policy_with_txs(
+            txs,
+            vec![signer],
+            &state_backend,
+            num_committed_blocks,
+            CoherencyCheckMode::ReserveBalanceCoherency,
+        );
         assert!(
             result.is_err(),
             "Block coherency check should have failed: {:?}",
             result
         );
+    }
+
+    #[test_case(3; "three committed blocks, one extending block")]
+    #[test_case(0; "no committed blocks, four extending block")]
+    fn test_check_nonce_coherency(num_committed_blocks: usize) {
+        //////////////////////////////////////////////////////////////////
+        // Case1: No 7702 txs                                          ///
+        //////////////////////////////////////////////////////////////////
+
+        let tx1 = make_test_tx(50000, 0, 0, S1);
+        let tx2 = make_test_tx(50000, 0, 1, S1);
+        let tx3 = make_test_tx(50000, 0, 2, S1);
+        let tx4 = make_test_tx(50000, 0, 3, S1);
+        let signer = tx1.signer();
+        let txs = BTreeMap::from([(2, vec![tx1]), (3, vec![tx2, tx3]), (4, vec![tx4])]);
+
+        // balance of signer at block n-3
+        let state_backend = NopStateBackend {
+            balances: BTreeMap::from([(signer, U256::from(ONE_ETHER))]),
+            ..Default::default()
+        };
+
+        let result = setup_block_policy_with_txs(
+            txs,
+            vec![signer],
+            &state_backend,
+            num_committed_blocks,
+            CoherencyCheckMode::NonceCoherency,
+        );
+        assert!(result.is_ok(), "Block coherency check failed: {:?}", result);
+
+        //////////////////////////////////////////////////////////////////
+        // Case2: 7702 txs in incoming block                           ///
+        //////////////////////////////////////////////////////////////////
+
+        // correct sequencing of nonces
+        let tx1 = make_test_tx(50000, 0, 0, S1);
+        let tx2 = make_test_delegation_tx(
+            50000,
+            0,
+            0,
+            S2,
+            HashMap::from([(
+                S1,
+                Authorization {
+                    chain_id: CHAIN_ID,
+                    nonce: 1,
+                    address: Address(FixedBytes([0x11; 20])),
+                },
+            )]),
+        );
+        let tx3 = make_test_tx(50000, 0, 2, S1);
+        let signer1 = tx1.signer();
+        let signer2 = tx2.signer();
+        let txs = BTreeMap::from([(2, vec![tx1]), (4, vec![tx2, tx3])]);
+
+        // balance of signer at block n-3
+        let state_backend = NopStateBackend {
+            balances: BTreeMap::from([(signer1, U256::from(ONE_ETHER))]),
+            nonces: BTreeMap::from([(signer1, 0), (signer2, 0)]),
+        };
+
+        let result = setup_block_policy_with_txs(
+            txs,
+            vec![signer1, signer2],
+            &state_backend,
+            num_committed_blocks,
+            CoherencyCheckMode::NonceCoherency,
+        );
+        assert!(result.is_ok(), "Block coherency check failed: {:?}", result);
+
+        // incorrect sequencing of nonces -- tx3 has incorrect nonce
+        let tx1 = make_test_tx(50000, 0, 0, S1);
+        let tx2 = make_test_delegation_tx(
+            50000,
+            0,
+            0,
+            S2,
+            HashMap::from([(
+                S1,
+                Authorization {
+                    chain_id: CHAIN_ID,
+                    nonce: 1,
+                    address: Address(FixedBytes([0x11; 20])),
+                },
+            )]),
+        );
+        let tx3 = make_test_tx(50000, 0, 1, S1);
+        let signer1 = tx1.signer();
+        let signer2 = tx2.signer();
+        let txs = BTreeMap::from([(2, vec![tx1]), (4, vec![tx2, tx3])]);
+
+        // balance of signer at block n-3
+        let state_backend = NopStateBackend {
+            balances: BTreeMap::from([(signer1, U256::from(ONE_ETHER))]),
+            nonces: BTreeMap::from([(signer1, 0), (signer2, 0)]),
+        };
+
+        let result = setup_block_policy_with_txs(
+            txs,
+            vec![signer1, signer2],
+            &state_backend,
+            num_committed_blocks,
+            CoherencyCheckMode::NonceCoherency,
+        );
+        assert!(
+            result.is_err(),
+            "Block coherency check should have failed: {:?}",
+            result
+        );
+
+        // incorrect nonce in authorization -- shouldn't affect coherency
+        let tx1 = make_test_tx(50000, 0, 0, S1);
+        let tx2 = make_test_delegation_tx(
+            50000,
+            0,
+            0,
+            S2,
+            HashMap::from([(
+                S1,
+                Authorization {
+                    chain_id: CHAIN_ID,
+                    nonce: 2,
+                    address: Address(FixedBytes([0x11; 20])),
+                },
+            )]),
+        );
+        let tx3 = make_test_tx(50000, 0, 1, S1);
+        let signer1 = tx1.signer();
+        let signer2 = tx2.signer();
+        let txs = BTreeMap::from([(2, vec![tx1]), (4, vec![tx2, tx3])]);
+
+        // balance of signer at block n-3
+        let state_backend = NopStateBackend {
+            balances: BTreeMap::from([(signer1, U256::from(ONE_ETHER))]),
+            nonces: BTreeMap::from([(signer1, 0), (signer2, 0)]),
+        };
+
+        let result = setup_block_policy_with_txs(
+            txs,
+            vec![signer1, signer2],
+            &state_backend,
+            num_committed_blocks,
+            CoherencyCheckMode::NonceCoherency,
+        );
+        assert!(result.is_ok(), "Block coherency check failed: {:?}", result);
     }
 
     #[test]

@@ -13,12 +13,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeMap, iter::repeat_n};
+use std::{
+    collections::{BTreeMap, HashMap},
+    iter::repeat_n,
+};
 
 use alloy_consensus::{
     transaction::Recovered, Eip658Value, Receipt, ReceiptWithBloom, SignableTransaction,
-    Transaction, TxEip1559, TxEnvelope, TxLegacy,
+    Transaction, TxEip1559, TxEip7702, TxEnvelope, TxLegacy,
 };
+use alloy_eips::eip7702::Authorization;
 use alloy_primitives::{keccak256, Address, Bloom, FixedBytes, Log, LogData, TxKind, U256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
@@ -113,6 +117,44 @@ pub fn make_eip1559_tx_with_value(
         value: U256::from(value),
         access_list: Default::default(),
         input: vec![0; input_len].into(),
+    };
+
+    let signer = PrivateKeySigner::from_bytes(&sender).unwrap();
+    let signature = signer
+        .sign_hash_sync(&transaction.signature_hash())
+        .unwrap();
+    transaction.into_signed(signature).into()
+}
+
+pub fn make_eip7702_tx(
+    sender: FixedBytes<32>,
+    value: u128,
+    max_fee_per_gas: u128,
+    max_priority_fee_per_gas: u128,
+    gas_limit: u64,
+    nonce: u64,
+    input_len: usize,
+    authorizations: HashMap<FixedBytes<32>, Authorization>,
+) -> TxEnvelope {
+    let mut authorization_list = Vec::new();
+    for (signer, auth) in authorizations.into_iter() {
+        let signer = PrivateKeySigner::from_bytes(&signer).unwrap();
+        let signature = signer.sign_hash_sync(&auth.signature_hash()).unwrap();
+        let signed_authorization = auth.into_signed(signature);
+        authorization_list.push(signed_authorization);
+    }
+
+    let transaction = TxEip7702 {
+        chain_id: 1337,
+        nonce,
+        gas_limit,
+        max_fee_per_gas,
+        max_priority_fee_per_gas,
+        to: Address::repeat_byte(0u8),
+        value: U256::from(value),
+        access_list: Default::default(),
+        input: vec![1; input_len].into(),
+        authorization_list,
     };
 
     let signer = PrivateKeySigner::from_bytes(&sender).unwrap();
