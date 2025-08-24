@@ -87,7 +87,7 @@ impl CommitStateBlockBuilder {
                 self.process_commit_state_event(exec_event).map(Ok)
             }
             EventDescriptorPayload::Payload(None) => {
-                // CommitStateBlockBuilder and ExecutedBlockBuilder select mutually exlcusive
+                // CommitStateBlockBuilder and ExecutedBlockBuilder select mutually exclusive
                 // events. If the event in the event descriptor does not correspond to the
                 // CommitStateBlockBuilder, we allow the ExecutedBlockBuilder to process it.
                 self.block_builder

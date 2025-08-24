@@ -295,7 +295,7 @@ async fn tx(
             }
         }
 
-        // the remainder of the message is re-queued only if the send is succesful
+        // the remainder of the message is re-queued only if the send is successful
         if ret.is_ok() {
             next_transmit +=
                 Duration::from_nanos((chunk_len as u64) * 8 * 1000 / up_bandwidth_mbps);
