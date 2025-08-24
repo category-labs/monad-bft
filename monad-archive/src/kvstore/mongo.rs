@@ -381,7 +381,7 @@ pub mod mongo_tests {
     async fn test_large_value_testnet_block_33174572() {
         let (_container, storage) = setup().await.unwrap();
 
-        let reader = S3Bucket::new(
+        let reader = Bucket::new(
             "testnet-ltu-032-0".to_string(),
             &get_aws_config(None, 60).await,
             Metrics::none(),

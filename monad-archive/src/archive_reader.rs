@@ -142,19 +142,20 @@ impl ArchiveReader {
         );
         let url = url::Url::parse(url)?;
 
-        trace!(
-            "Creating AWS block data reader with concurrency: {}",
-            concurrency
-        );
-        let block_data_reader = BlockDataArchive::new(
-            AwsCliArgs {
-                bucket: bucket.clone(),
-                concurrency,
-                region,
-            }
-            .build_blob_store(&Metrics::none())
-            .await,
-        );
+        trace!("Creating AWS block data reader");
+        let args = AwsCliArgs {
+            bucket: bucket.clone(),
+            region,
+            concurrency,
+            // TODO: these should be configurable
+            operation_timeout_secs: 5,
+            operation_attempt_timeout_secs: 2,
+            read_timeout_secs: 2,
+            ..Default::default()
+        };
+        let config = args.config().await;
+        let block_data_reader =
+            BlockDataArchive::new(Bucket::new(bucket.clone(), &config, Metrics::none()));
 
         trace!("Creating cloud proxy reader");
         let cloud_proxy_reader = CloudProxyReader::new(api_key, url, bucket)?;

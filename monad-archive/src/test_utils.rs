@@ -80,6 +80,69 @@ pub fn mock_block(number: u64, transactions: Vec<TxEnvelopeWithSender>) -> Block
     }
 }
 
+pub struct TestMinioContainer {
+    pub port: u16,
+    pub container_id: String,
+}
+
+impl TestMinioContainer {
+    pub async fn new() -> Result<Self> {
+        let port = NEXT_PORT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let output = Command::new("docker")
+            .args([
+                "run",
+                "-d",
+                "-p",
+                &format!("{port}:9000"),
+                "minio/minio",
+                "server",
+                "/tmp/minio",
+            ])
+            .output()
+            .wrap_err("Failed to start Minio container")?;
+
+        let container_id = String::from_utf8(output.stdout)
+            .wrap_err("Invalid container ID output")?
+            .trim()
+            .to_string();
+
+        // Wait for Minio to be ready by attempting to connect to the port
+        let addr = format!("127.0.0.1:{}", port);
+        let mut ready = false;
+        let max_attempts = 30;
+        for _ in 0..max_attempts {
+            match tokio::net::TcpStream::connect(&addr).await {
+                Ok(_) => {
+                    ready = true;
+                    break;
+                }
+                Err(_) => {
+                    sleep(Duration::from_millis(100)).await;
+                }
+            }
+        }
+        if !ready {
+            eyre::bail!("Minio container did not become ready in time");
+        }
+
+        Ok(Self { port, container_id })
+    }
+}
+
+impl Drop for TestMinioContainer {
+    fn drop(&mut self) {
+        println!("Stopping Minio container: {}", self.container_id);
+        Command::new("docker")
+            .args(["stop", &self.container_id])
+            .output()
+            .expect("Failed to stop Minio container");
+        Command::new("docker")
+            .args(["rm", &self.container_id])
+            .output()
+            .expect("Failed to remove Minio container");
+    }
+}
+
 pub struct TestMongoContainer {
     pub container_id: String,
     pub uri: String,
@@ -87,7 +150,7 @@ pub struct TestMongoContainer {
     pub temp_dir: Option<tempfile::TempDir>,
 }
 
-static NEXT_PORT: AtomicU16 = AtomicU16::new(27017);
+static NEXT_PORT: AtomicU16 = AtomicU16::new(2812);
 
 impl TestMongoContainer {
     pub async fn new() -> Result<Self> {
