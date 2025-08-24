@@ -26,7 +26,6 @@ use alloy_consensus::{
 };
 use alloy_primitives::Address;
 use alloy_rlp::Encodable;
-use itertools::Itertools;
 use monad_consensus_types::{
     block::{BlockPolicy, ConsensusBlockHeader, ConsensusFullBlock, TxnFee, TxnFees},
     block_validator::{BlockValidationError, BlockValidator},
@@ -46,7 +45,7 @@ use monad_system_calls::{validator::SystemTransactionValidator, SystemTransactio
 use monad_types::{Balance, Nonce};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use tracing::{debug, trace_span, warn};
+use tracing::{debug, trace, trace_span, warn};
 
 type NonceMap = BTreeMap<Address, Nonce>;
 type SystemTransactions = Vec<SystemTransaction>;
@@ -195,17 +194,36 @@ where
 
             if eth_txn.is_eip7702() {
                 if let Some(auth_list) = eth_txn.authorization_list() {
-                    let authorities = auth_list
+                    for (result, nonce, code_address, chain_id) in auth_list
                         .iter()
-                        .map(|a| a.recover_authority())
-                        .collect_vec();
-                    for result in authorities {
-                        if let Ok(authority) = result {
-                            let txn_fee = txn_fees.entry(authority).or_default();
-                            txn_fee.is_delegated = true;
-                        } else {
-                            debug!("Error recovering authority {:?}", result);
-                            return Err(BlockValidationError::TxnError);
+                        .map(|a| (a.recover_authority(), a.nonce(), a.address(), a.chain_id()))
+                    {
+                        match result {
+                            Ok(authority) => {
+                                trace!(?code_address, ?nonce, ?authority, "Signed authority");
+                                if chain_id != 0_u64 && chain_id != self.chain_id {
+                                    continue;
+                                }
+
+                                match nonces.get_mut(&authority) {
+                                    Some(n) => {
+                                        if *n + 1 != nonce {
+                                            debug!(expected_nonce = ?*n+1, auth_tuple_nonce = nonce, ?authority, "authority nonce error");
+                                            continue;
+                                        }
+                                        *n += 1;
+                                    }
+                                    None => {
+                                        nonces.insert(authority, nonce);
+                                    }
+                                }
+
+                                let txn_fee = txn_fees.entry(authority).or_default();
+                                txn_fee.is_delegated = true;
+                            }
+                            Err(error) => {
+                                continue;
+                            }
                         }
                     }
                 }

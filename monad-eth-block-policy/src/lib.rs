@@ -868,6 +868,7 @@ where
             );
             return Err(BlockPolicyError::BlockNotCoherent);
         }
+        *expected_nonce += 1;
 
         Ok(())
     }
@@ -887,34 +888,28 @@ where
         {
             match result {
                 Ok(authority) => {
-                    debug!(?code_address, ?nonce, ?authority, "Authority");
-
+                    trace!(?code_address, ?nonce, ?authority, "Authority");
                     if chain_id != 0_u64 && chain_id != self.get_chain_id() {
                         continue;
                     }
 
-                    //FIXME: check that authority is empty or already delegated
+                    let expected_nonce = account_nonces
+                        .get_mut(&authority)
+                        .expect("account_nonces should have been populated");
 
-                    let expected_nonce = account_nonces.get_mut(&authority);
-                    match expected_nonce {
-                        Some(n) => {
-                            if *n != nonce {
-                                warn!(expected_nonce = ?*n, auth_tuple_nonce = nonce, ?authority, "authority nonce error");
-                                continue;
-                            }
-
-                            *n += 1;
-                        }
-                        None => {
-                            //FIXME:
-                            // if account is not found in the account_nonces map, should nonce be
-                            // considered 0?
-
-                            warn!(?authority, "authority no nonce");
-                        }
+                    if *expected_nonce != nonce {
+                        warn!(
+                            ?expected_nonce,
+                            auth_tuple_nonce = nonce,
+                            ?authority,
+                            "authority nonce error"
+                        );
+                        continue;
                     }
+                    *expected_nonce += 1;
                 }
-                Err(error) => {
+                Err(_) => {
+                    // skip authorization if there is error recovering signer
                     continue;
                 }
             }
@@ -1063,7 +1058,7 @@ where
                 .get_mut(authority)
                 .expect("account_balances should have been populated for delegated accounts");
 
-            debug!(?authority, "Setting account to is_delegated: true");
+            trace!(?authority, "Setting account to is_delegated: true");
             account_balance.is_delegated = true;
         }
 
@@ -1076,17 +1071,10 @@ where
             self.nonce_check_helper(txn, &mut account_nonces)?;
             validator.try_add_transaction(&mut account_balances, txn)?;
 
-            let sender = txn.signer();
-            let sender_nonce = account_nonces
-                .get_mut(&sender)
-                .expect("account_nonces should have been populated");
-            *sender_nonce += 1;
-
             // https://eips.ethereum.org/EIPS/eip-7702#behavior
             // "The authorization list is processed before the execution portion
             // of the transaction begins, but after the sender’s nonce is incremented."
             if txn.is_eip7702() {
-                debug!(?sender, "eip-7702 transaction");
                 if let Some(auth_list) = txn.authorization_list() {
                     self.eip_7702_valid_nonce_update(auth_list, &mut account_nonces);
                 }
@@ -1275,11 +1263,6 @@ mod test {
 
         for txn in incoming_block.validated_txns.iter() {
             block_policy.nonce_check_helper(txn, &mut account_nonces)?;
-
-            let sender = txn.signer();
-            let sender_nonce = account_nonces.get_mut(&sender).unwrap();
-            *sender_nonce += 1;
-
             if txn.is_eip7702() {
                 if let Some(auth_list) = txn.authorization_list() {
                     block_policy.eip_7702_valid_nonce_update(auth_list, &mut account_nonces);

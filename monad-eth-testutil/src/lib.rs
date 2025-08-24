@@ -220,9 +220,21 @@ pub fn generate_consensus_test_block(
         RoundSignature::new(Round(1), &keypair),
     );
 
-    let nonces = txs.iter().map(|t| (t.signer(), t.nonce())).fold(
-        BTreeMap::default(),
-        |mut map, (address, nonce)| {
+    let nonces = txs
+        .iter()
+        .flat_map(|t| {
+            let mut pairs = vec![(t.signer(), t.nonce())];
+
+            if t.is_eip7702() {
+                if let Some(auth_list) = t.authorization_list() {
+                    for auth in auth_list {
+                        pairs.push((auth.recover_authority().unwrap(), auth.nonce()));
+                    }
+                }
+            }
+            pairs
+        })
+        .fold(BTreeMap::new(), |mut map, (address, nonce)| {
             match map.entry(address) {
                 std::collections::btree_map::Entry::Vacant(v) => {
                     v.insert(nonce);
@@ -231,10 +243,8 @@ pub fn generate_consensus_test_block(
                     o.insert(nonce.max(*o.get()));
                 }
             }
-
             map
-        },
-    );
+        });
 
     let mut txn_fees: BTreeMap<_, TxnFee> = BTreeMap::new();
     for eth_txn in txs.iter() {
