@@ -258,7 +258,9 @@ where
         );
 
         let mut next_validate = emptying_txn_check_block_range.start;
-        for (_, block) in self.blocks.range(emptying_txn_check_block_range) {
+        for (seq_num, block) in self.blocks.range(emptying_txn_check_block_range) {
+            assert_eq!(*seq_num, next_validate, "Emptying range is not contiguous");
+
             if block.fees.get(eth_address).is_some()
                 && account_balance.block_seqnum_of_latest_txn < block.seq_num
             {
@@ -267,7 +269,11 @@ where
             next_validate += SeqNum(1);
         }
 
-        for (_, block) in self.blocks.range(reserve_balance_check_block_range) {
+        for (seq_num, block) in self.blocks.range(reserve_balance_check_block_range) {
+            assert_eq!(
+                *seq_num, next_validate,
+                "Reserve balance check range is not contiguous"
+            );
             if let Some(block_txn_fees) = block.fees.get(eth_address) {
                 let mut validator =
                     EthBlockPolicyBlockValidator::new(block.seq_num, execution_delay)?;
@@ -745,9 +751,13 @@ where
                     // N - k + 1
                     let reserve_balance_check_start = base_seq_num + SeqNum(1);
                     // N - 2k + 2
-                    let emptying_txn_check_start = (reserve_balance_check_start + SeqNum(1))
+                    let mut emptying_txn_check_start = (reserve_balance_check_start + SeqNum(1))
                         .max(self.execution_delay)
                         - self.execution_delay;
+
+                    if emptying_txn_check_start == GENESIS_SEQ_NUM {
+                        emptying_txn_check_start += SeqNum(1);
+                    }
 
                     // N - 2k + 2 (inclusive) to N - k + 1 (non inclusive)
                     let emptying_txn_check_block_range =
@@ -777,6 +787,7 @@ where
                             .skip_while(move |block| block.get_seq_num() < next_validate);
 
                         for extending_block in next_blocks {
+                            assert_eq!(next_validate, extending_block.get_seq_num());
                             if let Some(txn_fee) = extending_block.txn_fees.get(&address) {
                                 // if still within check emptying range, update latest tx seq num
                                 // otherwise check for reserve balance
