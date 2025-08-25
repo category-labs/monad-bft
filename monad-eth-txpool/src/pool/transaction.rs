@@ -23,12 +23,13 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{
-    compute_txn_max_value, validation::static_validate_transaction, EthBlockPolicy,
+    compute_txn_max_gas_cost, compute_txn_max_value, validation::static_validate_transaction,
+    EthBlockPolicy,
 };
 use monad_eth_txpool_types::EthTxPoolDropReason;
-use monad_eth_types::{Balance, EthExecutionProtocol, Nonce, BASE_FEE_PER_GAS};
+use monad_eth_types::{EthExecutionProtocol, BASE_FEE_PER_GAS};
 use monad_system_calls::validator::SystemTransactionValidator;
-use monad_types::SeqNum;
+use monad_types::{Balance, Nonce, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::trace;
 
@@ -41,6 +42,7 @@ pub struct ValidEthTransaction {
     forward_last_seqnum: SeqNum,
     forward_retries: usize,
     max_value: Balance,
+    max_gas_cost: Balance,
     effective_tip_per_gas: u128,
 }
 
@@ -87,6 +89,7 @@ impl ValidEthTransaction {
         }
 
         let max_value = compute_txn_max_value(&tx);
+        let max_gas_cost = compute_txn_max_gas_cost(&tx);
         let effective_tip_per_gas = tx
             .effective_tip_per_gas(BASE_FEE_PER_GAS)
             .unwrap_or_default();
@@ -97,6 +100,7 @@ impl ValidEthTransaction {
             forward_last_seqnum: last_commit.seq_num,
             forward_retries: 0,
             max_value,
+            max_gas_cost,
             effective_tip_per_gas,
         })
     }
@@ -112,6 +116,23 @@ impl ValidEthTransaction {
                             max_value: {max_value:?} \
                             for address: {address:?}",
             max_value = self.max_value,
+            address = self.tx.signer()
+        );
+
+        None
+    }
+
+    pub fn apply_max_gas_cost(&self, reserve_balance: Balance) -> Option<Balance> {
+        if let Some(reserve_balance) = reserve_balance.checked_sub(self.max_gas_cost) {
+            return Some(reserve_balance);
+        }
+
+        trace!(
+            "AccountBalance insert_tx 3 \
+                            do not add txn to the pool. insufficient reserve balance after applying carriage cost: {reserve_balance:?} \
+                            max_gas_cost: {max_gas_cost:?} \
+                            for address: {address:?}",
+            max_gas_cost = self.max_gas_cost,
             address = self.tx.signer()
         );
 

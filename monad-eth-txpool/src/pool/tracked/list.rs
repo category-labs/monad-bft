@@ -20,7 +20,7 @@ use std::{
 
 use alloy_primitives::Address;
 use monad_eth_txpool_types::EthTxPoolDropReason;
-use monad_eth_types::Nonce;
+use monad_types::Nonce;
 use tracing::error;
 
 use crate::{

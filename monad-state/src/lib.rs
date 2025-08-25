@@ -1255,6 +1255,7 @@ where
         let mut commands = Vec::new();
 
         let delay = self.consensus_config.execution_delay;
+        /// TFM reserve balance checking requires N-2*state_root_delay blocks to validate N
         let last_delay_committed_blocks: Vec<_> = root_parent_chain
             .iter()
             .map(|full_block| {
@@ -1262,6 +1263,7 @@ where
                     tx_limit,
                     proposal_gas_limit,
                     proposal_byte_limit,
+                    max_reserve_balance: _,
                     vote_pace: _,
                 } = self
                     .consensus_config
@@ -1292,7 +1294,7 @@ where
                     )
                     .expect("majority committed invalid block")
             })
-            .take(delay.0 as usize)
+            .take(delay.0.saturating_mul(2) as usize)
             .rev()
             .collect();
 

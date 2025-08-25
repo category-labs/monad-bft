@@ -45,7 +45,9 @@ where
 
     /// trigger resync once passively observe new_root > current_root + resync_threshold
     resync_threshold: SeqNum,
-    state_root_delay: SeqNum,
+    /// minimum blocks requirement is for TFM reserve balance checking which
+    /// requires N-2*state_root_delay blocks to validate N
+    min_num_blocks: SeqNum,
 
     root: BlockId,
     // blocks <= root
@@ -68,7 +70,7 @@ where
         Self {
             max_buffered_proposals: resync_threshold.0 as usize,
             resync_threshold,
-            state_root_delay,
+            min_num_blocks: SeqNum(state_root_delay.0.saturating_mul(2)),
 
             root,
 
@@ -167,7 +169,7 @@ where
     pub fn re_root(&mut self, new_root: ConsensusBlockHeader<ST, SCT, EPT>) {
         // remove obsolete full_blocks
         self.full_blocks
-            .retain(|_id, block| block.get_seq_num() + self.state_root_delay >= new_root.seq_num);
+            .retain(|_id, block| block.get_seq_num() + self.min_num_blocks >= new_root.seq_num);
         for (_sender, proposal) in &self.proposal_buffer {
             if proposal.tip.block_header.seq_num <= new_root.seq_num {
                 if let Ok(full_block) = ConsensusFullBlock::new(
@@ -219,7 +221,7 @@ where
         let Some(last) = chain.last() else {
             let request_range = BlockRange {
                 last_block_id: self.root,
-                num_blocks: self.state_root_delay,
+                num_blocks: self.min_num_blocks,
             };
             tracing::debug!(?request_range, "statesync blocksyncing blocks");
             return Some(request_range);
@@ -227,10 +229,10 @@ where
 
         let block_parent_id = last.get_parent_id();
 
-        if chain.len() < self.state_root_delay.0 as usize {
+        if chain.len() < self.min_num_blocks.0 as usize {
             let request_range = BlockRange {
                 last_block_id: block_parent_id,
-                num_blocks: self.state_root_delay - SeqNum(chain.len() as u64),
+                num_blocks: self.min_num_blocks - SeqNum(chain.len() as u64),
             };
             tracing::debug!(?request_range, "statesync blocksyncing blocks");
             return Some(request_range);

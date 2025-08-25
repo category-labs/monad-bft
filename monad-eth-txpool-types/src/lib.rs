@@ -52,6 +52,7 @@ pub enum TransactionError {
     GasLimitTooLow,
     GasLimitTooHigh,
     UnsupportedTransactionType,
+    InvalidSetCodeTx,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,9 +84,8 @@ impl EthTxPoolDropReason {
                 TransactionError::InitCodeLimitExceeded => "Init code size limit exceeded",
                 TransactionError::GasLimitTooLow => "Gas limit too low",
                 TransactionError::GasLimitTooHigh => "Exceeds block gas limit",
-                TransactionError::UnsupportedTransactionType => {
-                    "EIP4844 and EIP7702 transactions unsupported"
-                }
+                TransactionError::InvalidSetCodeTx => "Invalid EIP 7702 transaction",
+                TransactionError::UnsupportedTransactionType => "EIP4844 transaction unsupported",
             },
             EthTxPoolDropReason::InvalidSignature => "Transaction signature is invalid",
             EthTxPoolDropReason::NonceTooLow => "Transaction nonce too low",
