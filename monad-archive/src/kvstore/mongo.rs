@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use tracing::trace;
 
 use crate::{
-    kvstore::{KVStoreType, MetricsResultExt},
+    kvstore::{metrics::MetricsResultExt, KVStoreType},
     prelude::*,
 };
 
@@ -195,7 +195,7 @@ impl KVReader for MongoDbStorage {
         }
     }
 
-    async fn bulk_get(&self, keys: &[String]) -> Result<HashMap<String, Bytes>> {
+    async fn bulk_get(&self, keys: Vec<String>) -> Result<HashMap<String, Bytes>> {
         let start = Instant::now();
         let find_result = self
             .collection
@@ -382,7 +382,7 @@ pub mod mongo_tests {
             "nonexistent".to_string(),
         ];
 
-        let results = storage.bulk_get(&keys).await.unwrap();
+        let results = storage.bulk_get(keys).await.unwrap();
 
         assert_eq!(results.len(), 2); // Should only have the two existing keys
         assert_eq!(results.get("key1").unwrap().as_ref(), b"value1");

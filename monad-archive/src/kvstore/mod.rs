@@ -16,6 +16,7 @@
 pub mod cloud_proxy;
 pub mod dynamodb;
 pub mod memory;
+mod metrics;
 pub mod mongo;
 pub mod s3;
 pub mod triedb_reader;
@@ -25,7 +26,6 @@ use std::collections::HashMap;
 use bytes::Bytes;
 use enum_dispatch::enum_dispatch;
 use eyre::Result;
-use futures::future::try_join_all;
 use tokio_retry::{
     strategy::{jitter, ExponentialBackoff},
     RetryIf,
@@ -106,28 +106,31 @@ pub trait KVStore: KVReader {
 #[enum_dispatch]
 pub trait KVReader: Clone {
     async fn get(&self, key: &str) -> Result<Option<Bytes>>;
-    async fn bulk_get(&self, keys: &[String]) -> Result<HashMap<String, Bytes>> {
-        // Note: a stream based approach runs into lifetime generality errors for some reason here.
-        // After a lot of variations I could not get it to work, so fell back on this join_all approach even
-        // though it involves an extra allocation.
-        // Optimize at your own risk!
-        let mut futs = Vec::with_capacity(keys.len());
-        for key in keys {
-            let reader = self.clone();
-            futs.push(async move { reader.get(key).await });
-        }
-        let responses = try_join_all(futs).await?;
-
-        let mut out = HashMap::with_capacity(responses.len());
-        for (resp, key) in responses.into_iter().zip(keys) {
-            // let resp = resp?;
-            if let Some(bytes) = resp {
-                out.insert(key.clone(), bytes);
-            }
-        }
-        Ok(out)
+    async fn bulk_get(&self, keys: Vec<String>) -> Result<HashMap<String, Bytes>> {
+        // TODO: use global concurrency throttle
+        const CONCURRENCY: usize = 10;
+        futures::stream::iter(keys)
+            .map(|key| {
+                async move {
+                    self.get(&key)
+                        .await // fmt
+                        .map(|resp| (key, resp))
+                }
+            })
+            .buffered(CONCURRENCY)
+            .try_fold(HashMap::default(), async |mut map, (key, resp)| {
+                if let Some(bytes) = resp {
+                    map.insert(key, bytes);
+                }
+                Ok(map)
+            })
+            .await
     }
 }
+
+///////////
+// Utils //
+///////////
 
 pub fn retry_strategy() -> std::iter::Map<ExponentialBackoff, fn(Duration) -> Duration> {
     ExponentialBackoff::from_millis(10)
@@ -163,160 +166,5 @@ impl RetryTimeout {
         Self {
             cutoff: Instant::now() + Duration::from_millis(ms),
         }
-    }
-}
-
-trait MetricsResultExt {
-    fn write_put_metrics(
-        self,
-        duration: Duration,
-        kvstore_type: KVStoreType,
-        metrics: &Metrics,
-    ) -> Self;
-    fn write_get_metrics(
-        self,
-        duration: Duration,
-        kvstore_type: KVStoreType,
-        metrics: &Metrics,
-    ) -> Self;
-    fn write_get_metrics_on_err(
-        self,
-        duration: Duration,
-        kvstore_type: KVStoreType,
-        metrics: &Metrics,
-    ) -> Self;
-    fn write_put_metrics_on_err(
-        self,
-        duration: Duration,
-        kvstore_type: KVStoreType,
-        metrics: &Metrics,
-    ) -> Self;
-}
-
-impl<T, E> MetricsResultExt for std::result::Result<T, E> {
-    fn write_put_metrics(
-        self,
-        duration: Duration,
-        kvstore_type: KVStoreType,
-        metrics: &Metrics,
-    ) -> Self {
-        kvstore_put_metrics(duration, self.is_ok(), kvstore_type, metrics);
-        self
-    }
-
-    fn write_get_metrics(
-        self,
-        duration: Duration,
-        kvstore_type: KVStoreType,
-        metrics: &Metrics,
-    ) -> Self {
-        kvstore_get_metrics(duration, self.is_ok(), kvstore_type, metrics);
-        self
-    }
-
-    fn write_get_metrics_on_err(
-        self,
-        duration: Duration,
-        kvstore_type: KVStoreType,
-        metrics: &Metrics,
-    ) -> Self {
-        if self.is_err() {
-            kvstore_get_metrics(duration, false, kvstore_type, metrics);
-        }
-        self
-    }
-
-    fn write_put_metrics_on_err(
-        self,
-        duration: Duration,
-        kvstore_type: KVStoreType,
-        metrics: &Metrics,
-    ) -> Self {
-        if self.is_err() {
-            kvstore_put_metrics(duration, false, kvstore_type, metrics);
-        }
-        self
-    }
-}
-
-fn kvstore_put_metrics(
-    duration: Duration,
-    is_success: bool,
-    kvstore_type: KVStoreType,
-    metrics: &Metrics,
-) {
-    let attrs = &[opentelemetry::KeyValue::new(
-        "kvstore_type",
-        kvstore_type.as_str(),
-    )];
-    metrics.histogram_with_attrs(
-        MetricNames::KV_STORE_PUT_DURATION_MS,
-        duration.as_millis() as f64,
-        attrs,
-    );
-    if is_success {
-        metrics.counter_with_attrs(MetricNames::KV_STORE_PUT_SUCCESS, 1, attrs);
-    } else {
-        metrics.counter_with_attrs(MetricNames::KV_STORE_PUT_FAILURE, 1, attrs);
-    }
-
-    // Legacy metrics for backwards compatibility
-    match kvstore_type {
-        KVStoreType::AwsS3 => {
-            if is_success {
-                metrics.inc_counter(MetricNames::AWS_S3_WRITES);
-            } else {
-                metrics.inc_counter(MetricNames::AWS_S3_ERRORS);
-            }
-        }
-        KVStoreType::AwsDynamoDB => {
-            if is_success {
-                metrics.inc_counter(MetricNames::AWS_DYNAMODB_WRITES);
-            } else {
-                metrics.inc_counter(MetricNames::AWS_DYNAMODB_ERRORS);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn kvstore_get_metrics(
-    duration: Duration,
-    is_success: bool,
-    kvstore_type: KVStoreType,
-    metrics: &Metrics,
-) {
-    let attrs = &[opentelemetry::KeyValue::new(
-        "kvstore_type",
-        kvstore_type.as_str(),
-    )];
-    metrics.histogram_with_attrs(
-        MetricNames::KV_STORE_GET_DURATION_MS,
-        duration.as_millis() as f64,
-        attrs,
-    );
-    if is_success {
-        metrics.counter_with_attrs(MetricNames::KV_STORE_GET_SUCCESS, 1, attrs);
-    } else {
-        metrics.counter_with_attrs(MetricNames::KV_STORE_GET_FAILURE, 1, attrs);
-    }
-
-    // Legacy metrics for backwards compatibility
-    match kvstore_type {
-        KVStoreType::AwsS3 => {
-            if is_success {
-                metrics.inc_counter(MetricNames::AWS_S3_READS);
-            } else {
-                metrics.inc_counter(MetricNames::AWS_S3_ERRORS);
-            }
-        }
-        KVStoreType::AwsDynamoDB => {
-            if is_success {
-                metrics.inc_counter(MetricNames::AWS_DYNAMODB_READS);
-            } else {
-                metrics.inc_counter(MetricNames::AWS_DYNAMODB_ERRORS);
-            }
-        }
-        _ => {}
     }
 }
