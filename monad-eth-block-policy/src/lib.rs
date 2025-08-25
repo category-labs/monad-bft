@@ -259,6 +259,7 @@ where
 
         let mut next_validate = emptying_txn_check_block_range.start;
         for (_, block) in self.blocks.range(emptying_txn_check_block_range) {
+            assert_eq!(next_validate, block.seq_num);
             if block.fees.get(eth_address).is_some()
                 && account_balance.block_seqnum_of_latest_txn < block.seq_num
             {
@@ -268,6 +269,7 @@ where
         }
 
         for (_, block) in self.blocks.range(reserve_balance_check_block_range) {
+            assert_eq!(next_validate, block.seq_num);
             if let Some(block_txn_fees) = block.fees.get(eth_address) {
                 let mut validator =
                     EthBlockPolicyBlockValidator::new(block.seq_num, execution_delay)?;
@@ -777,6 +779,7 @@ where
                             .skip_while(move |block| block.get_seq_num() < next_validate);
 
                         for extending_block in next_blocks {
+                            assert_eq!(next_validate, extending_block.get_seq_num());
                             if let Some(txn_fee) = extending_block.txn_fees.get(&address) {
                                 // if still within check emptying range, update latest tx seq num
                                 // otherwise check for reserve balance
