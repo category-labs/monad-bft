@@ -17,6 +17,9 @@
 
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{value::RawValue, Value};
+use tracing::error;
+
+use crate::chainstate::ChainStateError;
 
 pub const JSONRPC_VERSION: &str = "2.0";
 
@@ -241,6 +244,47 @@ impl<T> JsonRpcResultExt for Option<T> {
     }
 }
 
+pub trait ChainStateResultMap<T> {
+    /// Map a ChainStateResult to an JsonRpcResult with Option<U>
+    /// If the result is present, and no error is returned, then the function is applied to the result.
+    /// If the result is an not found error, then None is returned.
+    /// If the result is an error other than not found, then the error is returned.
+    fn map_present_and_no_err<F, U>(self, f: F) -> Result<Option<U>, JsonRpcError>
+    where
+        F: FnOnce(T) -> U;
+}
+
+impl<T> ChainStateResultMap<T> for Result<T, ChainStateError> {
+    fn map_present_and_no_err<F, U>(self, f: F) -> Result<Option<U>, JsonRpcError>
+    where
+        F: FnOnce(T) -> U,
+    {
+        self.to_jsonrpc_result().map(|x| x.map(f))
+    }
+}
+
+pub trait ChainStateResultExt {
+    type Result;
+    fn to_jsonrpc_result(self) -> Self::Result;
+}
+
+impl<T> ChainStateResultExt for Result<T, ChainStateError> {
+    type Result = JsonRpcResult<Option<T>>;
+
+    fn to_jsonrpc_result(self) -> JsonRpcResult<Option<T>> {
+        match self {
+            Ok(x) => Ok(Some(x)),
+            Err(ChainStateError::ResourceNotFound) => Ok(None),
+            Err(ChainStateError::Archive(e)) => {
+                Err(JsonRpcError::internal_error(format!("Archive error: {e}")))
+            }
+            Err(ChainStateError::Triedb(e)) => {
+                Err(JsonRpcError::internal_error(format!("Triedb error: {e}")))
+            }
+        }
+    }
+}
+
 impl JsonRpcError {
     // reserved pre-defined errors
     //
@@ -361,6 +405,41 @@ impl JsonRpcError {
             ),
             data: None,
         }
+    }
+}
+
+pub fn archive_to_jsonrpc_error<'a, A: Into<std::borrow::Cow<'a, str>>>(
+    message: A,
+) -> impl FnOnce(monad_archive::prelude::Report) -> JsonRpcError {
+    // Log with debug to get more details, but return a generic error for response
+    move |e: monad_archive::prelude::Report| {
+        let message = message.into();
+        error!("Archive error: {message}. {e:?}");
+        JsonRpcError::internal_error(format!("Archive error: {message}"))
+    }
+}
+
+pub trait ArchiveErrorExt<T> {
+    fn to_jsonrpc_error<'a, A: Into<std::borrow::Cow<'a, str>>>(
+        self,
+        message: A,
+    ) -> JsonRpcResult<T>;
+}
+
+impl<T> ArchiveErrorExt<T> for monad_archive::prelude::Result<T> {
+    fn to_jsonrpc_error<'a, A: Into<std::borrow::Cow<'a, str>>>(
+        self,
+        message: A,
+    ) -> JsonRpcResult<T> {
+        self.map_err(archive_to_jsonrpc_error(message))
+    }
+}
+
+impl From<monad_archive::prelude::Report> for JsonRpcError {
+    fn from(e: monad_archive::prelude::Report) -> Self {
+        // Log with debug to get more details, but return a generic error for response
+        error!("Archive error: {e:?}");
+        Self::internal_error(format!("Archive error: {}", e.to_string()))
     }
 }
 

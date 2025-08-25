@@ -164,6 +164,7 @@ pub async fn monad_debug_getRawTransaction<T: Triedb>(
 #[derive(Clone, Debug)]
 struct CallFrame {
     typ: CallKind,
+    #[allow(dead_code)]
     flags: U64,
     from: Address,
     to: Option<Address>,
@@ -363,25 +364,17 @@ pub async fn monad_debug_traceBlockByHash<T: Triedb>(
     // try archive if block hash not found and archive reader specified
     let mut resp = Vec::new();
     if let Some(archive_reader) = archive_reader {
-        if let Ok(block) = archive_reader
-            .get_block_by_hash(&params.block_hash.0.into())
-            .await
+        if let Some(block) = archive_reader
+            .try_get_block_by_hash(&params.block_hash.0.into())
+            .await?
         {
-            if let Ok(call_frames) = archive_reader
-                .get_block_traces(block.header.number)
-                .await
-                .inspect_err(|e| {
-                    error!("Error getting block traces from archive: {e:?}");
-                })
+            if let Some(call_frames) = archive_reader
+                .try_get_block_traces(block.header.number)
+                .await?
             {
-                let tx_ids = block
-                    .body
-                    .transactions
-                    .iter()
-                    .map(|tx| *tx.tx.tx_hash())
-                    .collect::<Vec<_>>();
+                let tx_ids = block.body.transactions().map(|tx| *tx.tx.tx_hash());
 
-                for (call_frame, tx_id) in call_frames.iter().zip(tx_ids.into_iter()) {
+                for (call_frame, tx_id) in call_frames.iter().zip(tx_ids) {
                     let rlp_call_frame = &mut call_frame.as_slice();
                     let Some(traces) = decode_call_frame(
                         triedb_env,
@@ -441,28 +434,12 @@ pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
     if let (Some(archive_reader), BlockKey::Finalized(FinalizedBlockKey(block_num))) =
         (archive_reader, block_key)
     {
-        if let Ok(block) = archive_reader
-            .get_block_by_number(block_num.0)
-            .await
-            .inspect_err(|e| {
-                error!("Error getting block by number from archive: {e:?}");
-            })
-        {
-            if let Ok(call_frames) = archive_reader
-                .get_block_traces(block_num.0)
-                .await
-                .inspect_err(|e| {
-                    error!("Error getting block traces from archive: {e:?}");
-                })
-            {
-                let tx_ids = block
-                    .body
-                    .transactions
-                    .iter()
-                    .map(|tx| *tx.tx.tx_hash())
-                    .collect::<Vec<_>>();
+        if let Some(block) = archive_reader.try_get_block_by_number(block_num.0).await? {
+            if let Some(call_frames) = archive_reader.try_get_block_traces(block_num.0).await? {
+                let tx_ids = block.body.transactions().map(|tx| *tx.tx.tx_hash());
 
-                for (call_frame, tx_id) in call_frames.iter().zip(tx_ids.into_iter()) {
+                // TODO: parallelize this with stream + buffered + try_collect
+                for (call_frame, tx_id) in call_frames.iter().zip(tx_ids) {
                     let rlp_call_frame = &mut call_frame.as_slice();
                     let Some(traces) =
                         decode_call_frame(triedb_env, rlp_call_frame, block_key, &params.tracer)
@@ -513,12 +490,8 @@ pub async fn monad_debug_traceTransaction<T: Triedb>(
 
     // try archive if transaction hash not found and archive reader specified
     if let Some(archive_reader) = archive_reader {
-        if let Ok((trace, header_subset)) = archive_reader
-            .get_trace(&params.tx_hash.0.into())
-            .await
-            .inspect_err(|e| {
-                error!("Error getting trace from archive: {e:?}");
-            })
+        if let Some((trace, header_subset)) =
+            archive_reader.get_trace(&params.tx_hash.0.into()).await?
         {
             let rlp_call_frame = &mut trace.as_slice();
             return decode_call_frame(

@@ -44,7 +44,7 @@ use crate::{
         block::block_receipts,
         txn::{parse_tx_receipt, FilterError},
     },
-    jsonrpc::{JsonRpcError, JsonRpcResult},
+    jsonrpc::{ArchiveErrorExt, JsonRpcError, JsonRpcResult},
 };
 
 pub mod buffer;
@@ -59,7 +59,16 @@ pub struct ChainState<T> {
 #[derive(Debug)]
 pub enum ChainStateError {
     Triedb(String),
+    Archive(String),
     ResourceNotFound,
+}
+
+impl From<monad_archive::prelude::Report> for ChainStateError {
+    fn from(e: monad_archive::prelude::Report) -> Self {
+        // Log with debug to get error chain, but return only top level error in response
+        error!("Archive Error: {e:?}");
+        ChainStateError::Archive(e.to_string())
+    }
 }
 
 pub fn get_block_key_from_tag<T: Triedb>(triedb_env: &T, tag: BlockTags) -> BlockKey {
@@ -116,7 +125,7 @@ impl<T: Triedb> ChainState<T> {
 
         // try archive if transaction hash not found and archive reader specified
         if let Some(archive_reader) = &self.archive_reader {
-            if let Ok(tx_data) = archive_reader.get_tx_indexed_data(&hash.into()).await {
+            if let Some(tx_data) = archive_reader.get_tx_indexed_data(&hash.into()).await? {
                 let receipt = crate::handlers::eth::txn::parse_tx_receipt(
                     tx_data.header_subset.base_fee_per_gas,
                     Some(tx_data.header_subset.block_timestamp),
@@ -160,12 +169,7 @@ impl<T: Triedb> ChainState<T> {
                 if let (Some(archive_reader), BlockKey::Finalized(FinalizedBlockKey(block_num))) =
                     (&self.archive_reader, block_key)
                 {
-                    if let Ok(block) = archive_reader
-                        .get_block_by_number(block_num.0)
-                        .await
-                        .inspect_err(|e| {
-                            warn!("Error getting block by number from archive: {e:?}");
-                        })
+                    if let Some(block) = archive_reader.try_get_block_by_number(block_num.0).await?
                     {
                         if let Some(tx) = block.body.transactions.get(index as usize) {
                             return Ok(parse_tx_content(
@@ -207,7 +211,9 @@ impl<T: Triedb> ChainState<T> {
 
                 // try archive if block hash not found and archive reader specified
                 if let Some(archive_reader) = &self.archive_reader {
-                    if let Ok(block) = archive_reader.get_block_by_hash(&hash.0.into()).await {
+                    if let Some(block) =
+                        archive_reader.try_get_block_by_hash(&hash.0.into()).await?
+                    {
                         if let Some(tx) = block.body.transactions.get(index as usize) {
                             return Ok(parse_tx_content(
                                 hash.0.into(),
@@ -252,11 +258,7 @@ impl<T: Triedb> ChainState<T> {
 
         // try archive if transaction hash not found and archive reader specified
         if let Some(archive_reader) = &self.archive_reader {
-            if let Ok((tx, header_subset)) =
-                archive_reader.get_tx(&hash.into()).await.inspect_err(|e| {
-                    warn!("Error getting tx from archive: {e:?}");
-                })
-            {
+            if let Some((tx, header_subset)) = archive_reader.get_tx(&hash.into()).await? {
                 return Ok(parse_tx_content(
                     header_subset.block_hash,
                     header_subset.block_number,
@@ -321,24 +323,14 @@ impl<T: Triedb> ChainState<T> {
         if let Some(archive_reader) = &self.archive_reader {
             match block {
                 BlockTagOrHash::BlockTags(BlockTags::Number(n)) => {
-                    if let Ok(block) =
-                        archive_reader
-                            .get_block_by_number(n.0)
-                            .await
-                            .inspect_err(|e| {
-                                error!("Error getting block by number from archive: {e:?}");
-                            })
-                    {
+                    if let Some(block) = archive_reader.try_get_block_by_number(n.0).await? {
                         return Ok(block.header);
                     }
                 }
                 BlockTagOrHash::Hash(hash) => {
-                    if let Ok(block) = archive_reader
-                        .get_block_by_hash(&FixedBytes(hash.0))
-                        .await
-                        .inspect_err(|e| {
-                            error!("Error getting block by hash from archive: {e:?}");
-                        })
+                    if let Some(block) = archive_reader
+                        .try_get_block_by_hash(&FixedBytes(hash.0))
+                        .await?
                     {
                         return Ok(block.header);
                     }
@@ -413,7 +405,7 @@ impl<T: Triedb> ChainState<T> {
         if let Some(archive_reader) = &self.archive_reader {
             match block {
                 BlockTagOrHash::BlockTags(BlockTags::Number(n)) => {
-                    if let Ok(block) = archive_reader.get_block_by_number(n.0).await {
+                    if let Some(block) = archive_reader.try_get_block_by_number(n.0).await? {
                         return Ok(parse_block_content(
                             block.header.hash_slow(),
                             block.header,
@@ -423,7 +415,10 @@ impl<T: Triedb> ChainState<T> {
                     }
                 }
                 BlockTagOrHash::Hash(hash) => {
-                    if let Ok(block) = archive_reader.get_block_by_hash(&FixedBytes(hash.0)).await {
+                    if let Some(block) = archive_reader
+                        .try_get_block_by_hash(&FixedBytes(hash.0))
+                        .await?
+                    {
                         return Ok(parse_block_content(
                             block.header.hash_slow(),
                             block.header,
@@ -456,13 +451,7 @@ impl<T: Triedb> ChainState<T> {
         if let (Some(archive_reader), BlockKey::Finalized(FinalizedBlockKey(block_num))) =
             (&self.archive_reader, block_key)
         {
-            if let Ok(receipts) = archive_reader
-                .get_block_receipts(block_num.0)
-                .await
-                .inspect_err(|e| {
-                    error!("Error getting block by number from archive: {e:?}");
-                })
-            {
+            if let Some(receipts) = archive_reader.try_get_block_receipts(block_num.0).await? {
                 let receipts: Vec<alloy_consensus::ReceiptEnvelope> = receipts
                     .into_iter()
                     .map(|receipt_with_log_index| receipt_with_log_index.receipt)
@@ -512,31 +501,20 @@ impl<T: Triedb> ChainState<T> {
             let block = match block {
                 BlockTagOrHash::BlockTags(tag) => {
                     match get_block_key_from_tag(&self.triedb_env, tag) {
-                        BlockKey::Finalized(FinalizedBlockKey(block_num)) => archive_reader
-                            .get_block_by_number(block_num.0)
-                            .await
-                            .inspect_err(|e| {
-                                error!("Error getting block by number from archive: {e:?}");
-                            })
-                            .ok(),
+                        BlockKey::Finalized(FinalizedBlockKey(block_num)) => {
+                            archive_reader.try_get_block_by_number(block_num.0).await?
+                        }
                         BlockKey::Proposed(_) => None,
                     }
                 }
-                BlockTagOrHash::Hash(hash) => archive_reader
-                    .get_block_by_hash(&hash.0.into())
-                    .await
-                    .inspect_err(|e| {
-                        error!("Error getting block by hash from archive: {e:?}");
-                    })
-                    .ok(),
+                BlockTagOrHash::Hash(hash) => {
+                    archive_reader.try_get_block_by_hash(&hash.0.into()).await?
+                }
             };
             if let Some(block) = block {
-                if let Ok(receipts_with_log_index) = archive_reader
-                    .get_block_receipts(block.header.number)
-                    .await
-                    .inspect_err(|e| {
-                        error!("Error getting block receipts from archive: {e:?}");
-                    })
+                if let Some(receipts_with_log_index) = archive_reader
+                    .try_get_block_receipts(block.header.number)
+                    .await?
                 {
                     let block_receipts = crate::handlers::eth::block::map_block_receipts(
                         block.body.transactions,
@@ -605,13 +583,11 @@ impl<T: Triedb> ChainState<T> {
                     Some(block_num) => block_num,
                     None => {
                         // retry from archive reader if block hash not available in triedb
+                        // TODO: This is ridiculously inefficient, we should be using the archive direct support for
+                        //       eth_getLogs via block_hash instead
                         if let Some(archive_reader) = &self.archive_reader {
-                            if let Ok(block) = archive_reader
-                                .get_block_by_hash(&block_hash)
-                                .await
-                                .inspect_err(|e| {
-                                    warn!("Error getting block by hash from archive: {e:?}");
-                                })
+                            if let Some(block) =
+                                archive_reader.try_get_block_by_hash(&block_hash).await?
                             {
                                 block.header.number
                             } else {
@@ -720,45 +696,7 @@ impl<T: Triedb> ChainState<T> {
                         Ok(Either::Right(block_num)) => {
                             // fallback and try fetching from archive
                             if let Some(archive_reader) = &self.archive_reader {
-                                let block = archive_reader
-                                    .get_block_by_number(block_num)
-                                    .await
-                                    .map_err(|e| {
-                                        warn!("Error getting block header from archiver: {e:?}");
-                                        JsonRpcError::internal_error(
-                                            "error getting block header from archiver".into(),
-                                        )
-                                    })?;
-                                if filter_match(block.header.logs_bloom) {
-                                    let bloom_receipts = archive_reader
-                                        .get_block_receipts(block_num)
-                                        .await
-                                        .map_err(|e| {
-                                            warn!(
-                                                "Error getting block receipts from archiver: {e:?}"
-                                            );
-                                            JsonRpcError::internal_error(
-                                                "error getting block receipts from archiver".into(),
-                                            )
-                                        })?;
-                                    Ok((
-                                        BlockHeader {
-                                            hash: block.header.hash_slow(),
-                                            header: block.header,
-                                        },
-                                        block.body.transactions,
-                                        bloom_receipts,
-                                    ))
-                                } else {
-                                    Ok((
-                                        BlockHeader {
-                                            hash: block.header.hash_slow(),
-                                            header: block.header,
-                                        },
-                                        vec![],
-                                        vec![],
-                                    ))
-                                }
+                                fetch_from_archive(archive_reader, block_num, filter_match).await
                             } else {
                                 Err(JsonRpcError::internal_error(
                                     "error getting block header from triedb and archive".into(),
@@ -770,10 +708,8 @@ impl<T: Triedb> ChainState<T> {
                 }
             })
             .buffered(100)
-            .collect::<Vec<_>>()
-            .await;
-
-        let data = data.into_iter().collect::<Result<Vec<_>, _>>()?;
+            .try_collect::<Vec<_>>()
+            .await?;
 
         let receipt_logs = data
             .iter()
@@ -830,6 +766,45 @@ impl<T: Triedb> ChainState<T> {
 
         Ok(receipt_logs)
     }
+}
+
+async fn fetch_from_archive(
+    archive_reader: &ArchiveReader,
+    block_num: u64,
+    filter_match: impl Fn(Bloom) -> bool,
+) -> JsonRpcResult<(
+    BlockHeader,
+    Vec<TxEnvelopeWithSender>,
+    Vec<monad_archive::prelude::ReceiptWithLogIndex>,
+)> {
+    let block = archive_reader
+        .get_block_by_number(block_num)
+        .await
+        .to_jsonrpc_error("Error getting block by number")?;
+
+    if !filter_match(block.header.logs_bloom) {
+        return Ok((
+            BlockHeader {
+                hash: block.header.hash_slow(),
+                header: block.header,
+            },
+            vec![],
+            vec![],
+        ));
+    }
+
+    let bloom_receipts = archive_reader
+        .get_block_receipts(block_num)
+        .await
+        .to_jsonrpc_error("Error getting block receipts")?;
+    Ok((
+        BlockHeader {
+            hash: block.header.hash_slow(),
+            header: block.header,
+        },
+        block.body.transactions,
+        bloom_receipts,
+    ))
 }
 
 async fn check_dry_run_get_logs_index(

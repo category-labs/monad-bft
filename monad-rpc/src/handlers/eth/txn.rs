@@ -26,12 +26,12 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, trace, warn};
 
 use crate::{
-    chainstate::{ChainState, ChainStateError},
+    chainstate::ChainState,
     eth_json_types::{
         BlockTagOrHash, BlockTags, EthHash, MonadLog, MonadTransaction, MonadTransactionReceipt,
         Quantity, UnformattedData,
     },
-    jsonrpc::{JsonRpcError, JsonRpcResult},
+    jsonrpc::{ChainStateResultMap, JsonRpcError, JsonRpcResult},
     txpool::{EthTxPoolBridgeClient, TxStatus},
 };
 
@@ -278,11 +278,10 @@ pub async fn monad_eth_getTransactionReceipt<T: Triedb>(
 ) -> JsonRpcResult<Option<MonadTransactionReceipt>> {
     trace!("monad_eth_getTransactionReceipt: {params:?}");
 
-    match chain_state.get_transaction_receipt(params.tx_hash.0).await {
-        Ok(receipt) => Ok(Some(MonadTransactionReceipt(receipt))),
-        Err(ChainStateError::ResourceNotFound) => Ok(None),
-        Err(ChainStateError::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
-    }
+    chain_state
+        .get_transaction_receipt(params.tx_hash.0)
+        .await
+        .map_present_and_no_err(MonadTransactionReceipt)
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -300,11 +299,10 @@ pub async fn monad_eth_getTransactionByHash<T: Triedb>(
 ) -> JsonRpcResult<Option<MonadTransaction>> {
     trace!("monad_eth_getTransactionByHash: {params:?}");
 
-    match chain_state.get_transaction(params.tx_hash.0).await {
-        Ok(tx) => Ok(Some(MonadTransaction(tx))),
-        Err(ChainStateError::ResourceNotFound) => Ok(None),
-        Err(ChainStateError::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
-    }
+    chain_state
+        .get_transaction(params.tx_hash.0)
+        .await
+        .map_present_and_no_err(MonadTransaction)
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -323,17 +321,13 @@ pub async fn monad_eth_getTransactionByBlockHashAndIndex<T: Triedb>(
 ) -> JsonRpcResult<Option<MonadTransaction>> {
     trace!("monad_eth_getTransactionByBlockHashAndIndex: {params:?}");
 
-    match chain_state
+    chain_state
         .get_transaction_with_block_and_index(
             BlockTagOrHash::Hash(params.block_hash),
             params.index.0,
         )
         .await
-    {
-        Ok(tx) => Ok(Some(MonadTransaction(tx))),
-        Err(ChainStateError::ResourceNotFound) => Ok(None),
-        Err(ChainStateError::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
-    }
+        .map_present_and_no_err(MonadTransaction)
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -352,17 +346,13 @@ pub async fn monad_eth_getTransactionByBlockNumberAndIndex<T: Triedb>(
 ) -> JsonRpcResult<Option<MonadTransaction>> {
     trace!("monad_eth_getTransactionByBlockNumberAndIndex: {params:?}");
 
-    match chain_state
+    chain_state
         .get_transaction_with_block_and_index(
             crate::eth_json_types::BlockTagOrHash::BlockTags(params.block_tag),
             params.index.0,
         )
         .await
-    {
-        Ok(tx) => Ok(Some(MonadTransaction(tx))),
-        Err(ChainStateError::ResourceNotFound) => Ok(None),
-        Err(ChainStateError::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
-    }
+        .map_present_and_no_err(MonadTransaction)
 }
 
 #[cfg(test)]
@@ -425,7 +415,7 @@ mod tests {
             },
         );
 
-        let expected_failures = vec![
+        let expected_failures = [
             MonadEthSendRawTransactionParams {
                 hex_tx: serialize_tx(make_tx(sender, 1000, 1000, 21_000, 11, 1337)), // invaid chain id
             },
