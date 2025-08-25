@@ -18,7 +18,6 @@ pub mod comparator;
 pub mod docs;
 pub mod eth_json_types;
 pub mod event;
-pub mod fee;
 pub mod handlers;
 pub mod hex;
 pub mod jsonrpc;
