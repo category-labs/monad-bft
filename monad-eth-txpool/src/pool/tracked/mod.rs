@@ -194,7 +194,30 @@ where
         let tx_heap = TrackedTxHeap::new(&self.txs, &extending_blocks);
         let tx_heap_len = tx_heap.len();
 
-        let (account_balances, account_balance_lookups) = {
+        // enrich with delegated EOAs
+        let mut authority_addresses = Vec::new();
+        let mut addresses = tx_heap
+            .txs()
+            .map(|txn| {
+                if txn.raw().is_eip7702() {
+                    if let Some(auth_list) = txn.raw().authorization_list() {
+                        for result in auth_list.iter().map(|a| a.recover_authority()) {
+                            if let Ok(authority) = result {
+                                authority_addresses.push(authority);
+                            } else {
+                                event_tracker
+                                    .drop(txn.hash(), EthTxPoolDropReason::InvalidSignature);
+                            }
+                        }
+                    }
+                }
+                txn.signer()
+            })
+            .collect_vec();
+
+        addresses.append(&mut authority_addresses);
+
+        let (mut account_balances, account_balance_lookups) = {
             let _timer = DropTimer::start(Duration::ZERO, |elapsed| {
                 debug!(
                     ?elapsed,
@@ -209,11 +232,20 @@ where
                     proposed_seq_num,
                     state_backend,
                     Some(&extending_blocks),
-                    tx_heap.addresses(),
+                    addresses.iter(),
                 )?,
                 state_backend.total_db_lookups() - total_db_lookups_before,
             )
         };
+
+        for signer in &authority_addresses {
+            let account_balance = account_balances
+                .get_mut(signer)
+                .expect("account_balances should have been populated for delegated accounts");
+
+            debug!(authority_account = ?signer, "Setting account to is_delegated: true");
+            account_balance.is_delegated = true;
+        }
 
         info!(
             addresses = self.txs.len(),

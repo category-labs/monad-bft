@@ -106,6 +106,17 @@ impl<'a> TrackedTxHeap<'a> {
         )
     }
 
+    pub fn txs<'s>(&'s self) -> impl Iterator<Item = &'a ValidEthTransaction> + 's {
+        self.heap.iter().map(
+            |OrderedTxGroup {
+                 tx,
+                 virtual_time: _,
+                 address: _,
+                 queued: _,
+             }| *tx,
+        )
+    }
+
     pub fn drain_in_order_while(
         mut self,
         mut f: impl FnMut(&Address, &ValidEthTransaction) -> TrackedTxHeapDrainAction,

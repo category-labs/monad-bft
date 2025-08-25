@@ -46,8 +46,19 @@ pub fn static_validate_transaction(
         return Err(TransactionError::GasLimitTooHigh);
     }
 
-    if tx.is_eip4844() || tx.is_eip7702() {
+    if tx.is_eip4844() {
         return Err(TransactionError::UnsupportedTransactionType);
+    }
+
+    if tx.is_eip7702() {
+        match tx.authorization_list() {
+            Some(auth_list) => {
+                if auth_list.is_empty() {
+                    return Err(TransactionError::InvalidSetCodeTx);
+                }
+            }
+            None => return Err(TransactionError::InvalidSetCodeTx),
+        }
     }
 
     Ok(())

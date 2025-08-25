@@ -30,6 +30,7 @@ pub struct EthAccount {
     pub nonce: Nonce,
     pub balance: Balance,
     pub code_hash: Option<B256>,
+    pub is_delegated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Default)]
@@ -50,6 +51,8 @@ pub struct ProposedEthHeader {
     pub blob_gas_used: u64,
     pub excess_blob_gas: u64,
     pub parent_beacon_block_root: [u8; 32],
+    // eip-7685
+    pub requests_hash: [u8; 32],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodableWrapper, RlpDecodableWrapper)]
