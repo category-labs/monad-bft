@@ -136,7 +136,7 @@ async fn handler(
     msg_stream: actix_ws::MessageStream,
     hostname: &String,
     peer_addr: &Option<String>,
-    mut subscriptions: &mut HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<Filter>)>>,
+    subscriptions: &mut HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<Filter>)>>,
     rx: broadcast::Receiver<EventServerEvent>,
     app_state: &web::Data<MonadRpcResources>,
 ) -> Option<CloseReason> {

@@ -135,7 +135,7 @@ async fn main() -> std::io::Result<()> {
 
     let mut print_message_timer = tokio::time::interval(Duration::from_secs(60));
     let mut retry_timer = tokio::time::interval(Duration::from_secs(1));
-    let (txpool_bridge_client, txpool_bridge_handle) = loop {
+    let (txpool_bridge_client, _txpool_bridge_handle) = loop {
         tokio::select! {
             _ = print_message_timer.tick() => {
                 info!("Waiting for statesync to complete");

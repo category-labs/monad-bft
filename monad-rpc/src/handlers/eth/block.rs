@@ -23,12 +23,12 @@ use serde::{Deserialize, Serialize};
 use tracing::trace;
 
 use crate::{
-    chainstate::{get_block_key_from_tag, ChainState, ChainStateError},
+    chainstate::{get_block_key_from_tag, ChainState},
     eth_json_types::{
         BlockTagOrHash, BlockTags, EthHash, MonadBlock, MonadTransactionReceipt, Quantity,
     },
     handlers::eth::txn::parse_tx_receipt,
-    jsonrpc::{JsonRpcError, JsonRpcResult},
+    jsonrpc::{ChainStateResultMap, JsonRpcError, JsonRpcResult},
 };
 
 pub async fn get_block_key_from_tag_or_hash<T: Triedb>(
@@ -92,19 +92,15 @@ pub async fn monad_eth_getBlockByHash<T: Triedb>(
     params: MonadEthGetBlockByHashParams,
 ) -> JsonRpcResult<Option<MonadEthGetBlock>> {
     trace!("monad_eth_getBlockByHash: {params:?}");
-    match chain_state
+    chain_state
         .get_block(
             BlockTagOrHash::Hash(params.block_hash),
             params.return_full_txns,
         )
         .await
-    {
-        Ok(block) => Ok(Some(MonadEthGetBlock {
+        .map_present_and_no_err(|block| MonadEthGetBlock {
             block: MonadBlock(block),
-        })),
-        Err(ChainStateError::ResourceNotFound) => Ok(None),
-        Err(ChainStateError::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
-    }
+        })
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -122,19 +118,15 @@ pub async fn monad_eth_getBlockByNumber<T: Triedb>(
     params: MonadEthGetBlockByNumberParams,
 ) -> JsonRpcResult<Option<MonadEthGetBlock>> {
     trace!("monad_eth_getBlockByNumber: {params:?}");
-    match chain_state
+    chain_state
         .get_block(
             BlockTagOrHash::BlockTags(params.block_number),
             params.return_full_txns,
         )
         .await
-    {
-        Ok(block) => Ok(Some(MonadEthGetBlock {
+        .map_present_and_no_err(|block| MonadEthGetBlock {
             block: MonadBlock(block),
-        })),
-        Err(ChainStateError::ResourceNotFound) => Ok(None),
-        Err(ChainStateError::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
-    }
+        })
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -151,14 +143,10 @@ pub async fn monad_eth_getBlockTransactionCountByHash<T: Triedb>(
     params: MonadEthGetBlockTransactionCountByHashParams,
 ) -> JsonRpcResult<Option<String>> {
     trace!("monad_eth_getBlockTransactionCountByHash: {params:?}");
-    match chain_state
+    chain_state
         .get_block(BlockTagOrHash::Hash(params.block_hash), true)
         .await
-    {
-        Ok(block) => Ok(Some(format!("0x{:x}", block.transactions.len()))),
-        Err(ChainStateError::ResourceNotFound) => Ok(None),
-        Err(ChainStateError::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
-    }
+        .map_present_and_no_err(|block| format!("0x{:x}", block.transactions.len()))
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -175,14 +163,10 @@ pub async fn monad_eth_getBlockTransactionCountByNumber<T: Triedb>(
     params: MonadEthGetBlockTransactionCountByNumberParams,
 ) -> JsonRpcResult<Option<String>> {
     trace!("monad_eth_getBlockTransactionCountByNumber: {params:?}");
-    match chain_state
+    chain_state
         .get_block(BlockTagOrHash::BlockTags(params.block_tag), true)
         .await
-    {
-        Ok(block) => Ok(Some(format!("0x{:x}", block.transactions.len()))),
-        Err(ChainStateError::ResourceNotFound) => Ok(None),
-        Err(ChainStateError::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
-    }
+        .map_present_and_no_err(|block| format!("0x{:x}", block.transactions.len()))
 }
 
 pub fn map_block_receipts<R>(
@@ -263,9 +247,8 @@ pub async fn monad_eth_getBlockReceipts<T: Triedb>(
 ) -> JsonRpcResult<Option<MonadEthGetBlockReceiptsResult>> {
     trace!("monad_eth_getBlockReceipts: {params:?}");
 
-    match chain_state.get_block_receipts(params.block).await {
-        Ok(receipts) => Ok(Some(MonadEthGetBlockReceiptsResult(receipts))),
-        Err(ChainStateError::ResourceNotFound) => Ok(None),
-        Err(ChainStateError::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
-    }
+    chain_state
+        .get_block_receipts(params.block)
+        .await
+        .map_present_and_no_err(MonadEthGetBlockReceiptsResult)
 }

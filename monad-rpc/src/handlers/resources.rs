@@ -128,8 +128,8 @@ impl RootSpanBuilder for MonadJsonRootSpanBuilder {
     }
 
     fn on_request_end<B: actix_web::body::MessageBody>(
-        span: tracing::Span,
-        outcome: &Result<ServiceResponse<B>, Error>,
+        _span: tracing::Span,
+        _outcome: &Result<ServiceResponse<B>, Error>,
     ) {
     }
 }
