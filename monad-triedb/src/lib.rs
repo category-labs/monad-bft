@@ -17,14 +17,18 @@ use std::{
     cmp::Ordering,
     ffi::CString,
     path::Path,
-    ptr::{null, null_mut},
+    ptr::{null, null_mut, slice_from_raw_parts},
     sync::{
         atomic::{AtomicUsize, Ordering::SeqCst},
         Arc,
     },
 };
 
+use alloy_primitives::U256;
 use futures::channel::oneshot::Sender;
+use monad_bls::BlsPubKey;
+use monad_crypto::certificate_signature::PubKey;
+use monad_types::{SeqNum, Stake};
 use tracing::{debug, error};
 
 #[allow(dead_code, non_camel_case_types, non_upper_case_globals)]
@@ -459,6 +463,35 @@ impl TriedbHandle {
         } else {
             Some(maybe_earliest_finalized_block)
         }
+    }
+
+    pub fn get_next_valset(
+        &self,
+        block_num: SeqNum,
+    ) -> Vec<(monad_secp::PubKey, BlsPubKey, Stake)> {
+        let result =
+            unsafe { bindings::monad_read_valset(self.db_ptr, block_num.0 as usize, true) };
+        let val_set_ptr = result.valset;
+        let val_set_length = result.length as usize;
+        let val_set = unsafe {
+            slice_from_raw_parts(val_set_ptr, val_set_length)
+                .as_ref()
+                .unwrap()
+        };
+
+        let mut validator_data = Vec::new();
+        for validator in val_set {
+            let secp_pubkey =
+                monad_secp::PubKey::from_bytes(validator.secp_pubkey.as_slice()).unwrap();
+            let bls_pubkey = BlsPubKey::from_bytes(validator.bls_pubkey.as_slice()).unwrap();
+            let stake = Stake::from(U256::from_be_bytes(validator.stake));
+            validator_data.push((secp_pubkey, bls_pubkey, stake));
+        }
+
+        unsafe { bindings::monad_free_valset(result) };
+
+        // TODO assert validators are unique
+        validator_data
     }
 }
 

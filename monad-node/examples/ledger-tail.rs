@@ -33,7 +33,7 @@ use monad_consensus_types::{
 use monad_node_config::{
     ExecutionProtocolType, ForkpointConfig, MonadNodeConfig, SignatureCollectionType, SignatureType,
 };
-use monad_types::{BlockId, Round};
+use monad_types::{BlockId, Epoch, Round};
 use monad_validator::{leader_election::LeaderElection, weighted_round_robin::WeightedRoundRobin};
 use tracing::{error, info, warn};
 use tracing_subscriber::{
@@ -142,8 +142,12 @@ async fn main() {
                 });
 
                 let skipped_round = tc.round;
-                let skipped_leader =
-                    WeightedRoundRobin::default().get_leader(skipped_round, validators);
+                // TODO make this aware of staking_activation fork ?
+                let skipped_leader = WeightedRoundRobin::new(Epoch(1)).get_leader(
+                    skipped_round,
+                    tc.epoch,
+                    validators,
+                );
                 info!(
                     round =? skipped_round,
                     author =? skipped_leader,

@@ -10,6 +10,7 @@ bench = false
 
 [dependencies]
 monad-blocksync = { workspace = true }
+monad-bls = { workspace = true }
 monad-consensus-types = { workspace = true }
 monad-crypto = { workspace = true }
 monad-eth-block-policy = { workspace = true }
@@ -18,6 +19,7 @@ monad-eth-types = { workspace = true }
 monad-executor = { workspace = true }
 monad-executor-glue = { workspace = true }
 monad-node-config = { workspace = true }
+monad-secp = { workspace = true }
 monad-state-backend = { workspace = true }
 monad-types = { workspace = true }
 monad-validator = { workspace = true }

@@ -9,8 +9,14 @@ edition = "2021"
 bench = false
 
 [dependencies]
-futures = { workspace = true }
+monad-crypto = { workspace = true }
 monad-cxx = { workspace = true }
+monad-secp = { workspace = true }
+monad-bls = { workspace = true }
+monad-types = { workspace = true }
+
+alloy-primitives = { workspace = true }
+futures = { workspace = true }
 tracing = { workspace = true }
 
 [build-dependencies]

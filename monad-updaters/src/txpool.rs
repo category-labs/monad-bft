@@ -31,7 +31,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
-use monad_eth_types::EthExecutionProtocol;
+use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_state_backend::StateBackend;
@@ -129,6 +129,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend<ST, SCT>,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
 {
     pub fn new(block_policy: EthBlockPolicy<ST, SCT>, state_backend: SBT) -> Self {
         Self {
@@ -156,6 +157,7 @@ where
         for command in commands {
             match command {
                 TxPoolCommand::CreateProposal {
+                    node_id: _,
                     epoch,
                     round,
                     seq_num,
@@ -213,6 +215,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend<ST, SCT>,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
 {
     type Command = TxPoolCommand<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT>;
 
@@ -225,6 +228,7 @@ where
         for command in commands {
             match command {
                 TxPoolCommand::CreateProposal {
+                    node_id,
                     epoch,
                     round,
                     seq_num,
@@ -249,6 +253,8 @@ where
                             proposal_byte_limit,
                             beneficiary,
                             timestamp_ns,
+                            node_id,
+                            epoch,
                             round_signature.clone(),
                             extending_blocks,
                             block_policy,
@@ -381,6 +387,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend<ST, SCT>,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
 
     Self: Executor<
             Command = TxPoolCommand<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT>,

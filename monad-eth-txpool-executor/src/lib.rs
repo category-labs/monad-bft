@@ -35,11 +35,12 @@ use monad_crypto::certificate_signature::{
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker};
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolEventType};
-use monad_eth_types::EthExecutionProtocol;
+use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
+use monad_system_calls::SystemTransactionGenerator;
 use monad_types::DropTimer;
 use monad_updaters::TokioTaskUpdater;
 use monad_validator::signature_collection::SignatureCollection;
@@ -96,6 +97,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend<ST, SCT> + Send + 'static,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
     CCT: ChainConfig<CRT> + Send + 'static,
     CRT: ChainRevision + Send + 'static,
     Self: Unpin,
@@ -137,6 +139,11 @@ where
                         proposal_gas_limit,
                         // it's safe to default max_code_size to zero because it gets set on commit + reset
                         0,
+                        SystemTransactionGenerator::new(
+                            chain_config.chain_id(),
+                            chain_config.get_epoch_length(),
+                            chain_config.get_staking_activation(),
+                        ),
                     );
 
                     Self {
@@ -206,6 +213,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend<ST, SCT>,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -247,6 +255,7 @@ where
                         .add_egress_txs(&mut self.pool);
                 }
                 TxPoolCommand::CreateProposal {
+                    node_id,
                     epoch,
                     round,
                     seq_num,
@@ -276,6 +285,8 @@ where
                         proposal_byte_limit,
                         beneficiary,
                         timestamp_ns,
+                        node_id,
+                        epoch,
                         round_signature.clone(),
                         extending_blocks,
                         &self.block_policy,
@@ -408,6 +419,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend<ST, SCT>,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 

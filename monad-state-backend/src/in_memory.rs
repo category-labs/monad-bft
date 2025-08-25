@@ -333,7 +333,7 @@ where
         &self,
         _block_num: SeqNum,
     ) -> Vec<(SCT::NodeIdPubKey, SignatureCollectionPubKeyType<SCT>, Stake)> {
-        unimplemented!()
+        unimplemented!("can't fetch validator set from InMemoryState")
     }
 
     fn total_db_lookups(&self) -> u64 {
