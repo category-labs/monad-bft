@@ -436,7 +436,6 @@ mod tests {
     };
     use jsonrpc::Response;
     use monad_rpc::{
-        fee::FixedFee,
         handlers::eth::call::EthCallStatsTracker,
         jsonrpc::{self, JsonRpcError, RequestId, ResponseWrapper},
         txpool::EthTxPoolBridgeClient,
@@ -455,7 +454,6 @@ mod tests {
             eth_call_executor_fibers: 64,
             eth_call_stats_tracker: Some(Arc::new(EthCallStatsTracker::default())),
             archive_reader: None,
-            base_fee_per_gas: FixedFee::new(2000),
             chain_id: 1337,
             chain_state: None,
             batch_request_limit: 5,

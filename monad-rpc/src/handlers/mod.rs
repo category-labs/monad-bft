@@ -387,9 +387,7 @@ async fn eth_sendRawTransaction(
     let params = serde_json::from_value(params).invalid_params()?;
     let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
     monad_eth_sendRawTransaction(
-        triedb_env,
         &app_state.txpool_bridge_client,
-        app_state.base_fee_per_gas.clone(),
         params,
         app_state.chain_id,
         app_state.allow_unprotected_txs,
