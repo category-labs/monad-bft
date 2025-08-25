@@ -25,16 +25,13 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason};
-use monad_eth_types::{Balance, EthExecutionProtocol};
+use monad_eth_types::EthExecutionProtocol;
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{DropTimer, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, warn};
 
-use self::{
-    list::TrackedTxList,
-    sequencer::{ProposalSequencer, ProposalSequencerStep},
-};
+use self::{list::TrackedTxList, sequencer::ProposalSequencer};
 use super::{
     pending::{PendingTxList, PendingTxMap},
     transaction::ValidEthTransaction,
@@ -230,15 +227,14 @@ where
             "txpool sequencing transactions"
         );
 
-        let (proposal_total_gas, proposal_tx_list) = self.create_proposal_tx_list(
+        let proposal = sequencer.build_proposal(
             tx_limit,
             proposal_gas_limit,
             proposal_byte_limit,
-            sequencer,
             account_balances,
         );
 
-        let proposal_num_txs = proposal_tx_list.len();
+        let proposal_num_txs = proposal.txs.len();
 
         event_tracker.record_create_proposal(
             self.num_addresses(),
@@ -250,11 +246,11 @@ where
         info!(
             ?proposed_seq_num,
             ?proposal_num_txs,
-            proposal_total_gas,
+            proposal_total_gas = proposal.total_gas,
             "created proposal"
         );
 
-        Ok(proposal_tx_list)
+        Ok(proposal.txs)
     }
 
     pub fn try_promote_pending(
@@ -364,65 +360,6 @@ where
         }
 
         true
-    }
-
-    fn create_proposal_tx_list(
-        &self,
-        tx_limit: usize,
-        proposal_gas_limit: u64,
-        proposal_byte_limit: u64,
-        sequencer: ProposalSequencer<'_>,
-        mut account_balances: BTreeMap<&Address, Balance>,
-    ) -> (u64, Vec<Recovered<TxEnvelope>>) {
-        assert!(tx_limit > 0);
-
-        let mut txs = Vec::new();
-        let mut total_gas = 0u64;
-        let mut total_size = 0u64;
-
-        sequencer.drain_in_order_while(|sender, tx| {
-            if total_gas
-                .checked_add(tx.gas_limit())
-                .is_none_or(|new_total_gas| new_total_gas > proposal_gas_limit)
-            {
-                return ProposalSequencerStep::Skip;
-            }
-
-            let tx_size = tx.size();
-            if total_size
-                .checked_add(tx_size)
-                .is_none_or(|new_total_size| new_total_size > proposal_byte_limit)
-            {
-                return ProposalSequencerStep::Skip;
-            }
-
-            let Some(account_balance) = account_balances.get_mut(sender) else {
-                error!(
-                    ?sender,
-                    "txpool create_proposal account_balances lookup failed"
-                );
-                return ProposalSequencerStep::Skip;
-            };
-
-            let Some(new_account_balance) = tx.apply_max_value(*account_balance) else {
-                return ProposalSequencerStep::Skip;
-            };
-
-            *account_balance = new_account_balance;
-
-            total_gas += tx.gas_limit();
-            total_size += tx_size;
-            trace!(txn_hash = ?tx.hash(), "txn included in proposal");
-            txs.push(tx.raw().to_owned());
-
-            if txs.len() < tx_limit {
-                ProposalSequencerStep::Continue
-            } else {
-                ProposalSequencerStep::Stop
-            }
-        });
-
-        (total_gas, txs)
     }
 
     pub fn update_committed_block(

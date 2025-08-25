@@ -15,17 +15,18 @@
 
 use std::{
     cmp::Ordering,
-    collections::{BinaryHeap, VecDeque},
+    collections::{BTreeMap, BinaryHeap, VecDeque},
 };
 
-use alloy_consensus::Transaction;
-use alloy_primitives::Address;
+use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
+use alloy_primitives::{Address, U256};
 use indexmap::IndexMap;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{AccountNonceRetrievable, EthValidatedBlock};
 use monad_validator::signature_collection::SignatureCollection;
+use tracing::{error, trace};
 
 use super::list::TrackedTxList;
 use crate::pool::transaction::ValidEthTransaction;
@@ -141,33 +142,94 @@ impl<'a> ProposalSequencer<'a> {
         )
     }
 
-    pub fn drain_in_order_while(
+    pub fn build_proposal(
         mut self,
-        mut f: impl FnMut(&Address, &ValidEthTransaction) -> ProposalSequencerStep,
-    ) {
-        while let Some(OrderedTxGroup {
-            tx:
-                OrderedTx {
-                    tx,
-                    effective_tip_per_gas: _,
-                },
-            virtual_time: _,
-            address,
-            mut queued,
-        }) = self.heap.pop()
-        {
-            match f(address, tx) {
-                ProposalSequencerStep::Skip => {}
-                ProposalSequencerStep::Continue => {
-                    if let Some(tx) = queued.pop_front() {
-                        self.push(address, tx, queued);
-                    }
-                }
-                ProposalSequencerStep::Stop => {
-                    break;
+        tx_limit: usize,
+        proposal_gas_limit: u64,
+        proposal_byte_limit: u64,
+        mut account_balances: BTreeMap<&Address, U256>,
+    ) -> Proposal {
+        let mut proposal = Proposal::default();
+
+        while proposal.txs.len() < tx_limit {
+            let Some(OrderedTxGroup {
+                tx:
+                    OrderedTx {
+                        tx,
+                        effective_tip_per_gas: _,
+                    },
+                virtual_time: _,
+                address,
+                mut queued,
+            }) = self.heap.pop()
+            else {
+                break;
+            };
+
+            if Self::try_add_tx_to_proposal(
+                proposal_gas_limit,
+                proposal_byte_limit,
+                &mut account_balances,
+                &mut proposal,
+                address,
+                tx,
+            ) {
+                if let Some(tx) = queued.pop_front() {
+                    self.push(address, tx, queued);
                 }
             }
         }
+
+        proposal
+    }
+
+    #[inline]
+    fn try_add_tx_to_proposal(
+        proposal_gas_limit: u64,
+        proposal_byte_limit: u64,
+        account_balances: &mut BTreeMap<&Address, U256>,
+        proposal: &mut Proposal,
+        address: &Address,
+        tx: &ValidEthTransaction,
+    ) -> bool {
+        if proposal
+            .total_gas
+            .checked_add(tx.gas_limit())
+            .is_none_or(|new_total_gas| new_total_gas > proposal_gas_limit)
+        {
+            return false;
+        }
+
+        let tx_size = tx.size();
+        if proposal
+            .total_size
+            .checked_add(tx_size)
+            .is_none_or(|new_total_size| new_total_size > proposal_byte_limit)
+        {
+            return false;
+        }
+
+        let Some(account_balance) = account_balances.get_mut(address) else {
+            error!(
+                ?address,
+                "txpool create_proposal account_balances lookup failed"
+            );
+            return false;
+        };
+
+        let Some(new_account_balance) = tx.apply_max_value(*account_balance) else {
+            return false;
+        };
+
+        *account_balance = new_account_balance;
+
+        proposal.total_gas += tx.gas_limit();
+        proposal.total_size += tx_size;
+        proposal.txs.push(tx.raw().to_owned());
+
+        trace!(txn_hash = ?tx.hash(), "txn included in proposal");
+
+        true
     }
 
     #[inline]
@@ -184,8 +246,9 @@ impl<'a> ProposalSequencer<'a> {
     }
 }
 
-pub enum ProposalSequencerStep {
-    Skip,
-    Continue,
-    Stop,
+#[derive(Default)]
+pub(super) struct Proposal {
+    pub txs: Vec<Recovered<TxEnvelope>>,
+    pub total_gas: u64,
+    pub total_size: u64,
 }
