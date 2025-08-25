@@ -125,12 +125,12 @@ async fn main() -> std::io::Result<()> {
 
     MONAD_RPC_VERSION.map(|v| info!("starting monad-rpc with version {}", v));
 
-    let (txpool_bridge_client, _txpool_bridge_handle) = if let Some(ipc_path) = args.ipc_path {
+    let (txpool_bridge_client, txpool_bridge_handle) = if let Some(ipc_path) = args.ipc_path {
         // Wait for bft to be in a ready state before starting the RPC server.
         // Bft will bind to the ipc socket after state syncing.
         let mut print_message_timer = tokio::time::interval(Duration::from_secs(60));
         let mut retry_timer = tokio::time::interval(Duration::from_secs(1));
-        let (txpool_bridge_client, _txpool_bridge_handle) = loop {
+        let (txpool_bridge_client, txpool_bridge_handle) = loop {
             tokio::select! {
                 _ = print_message_timer.tick() => {
                     info!("Waiting for statesync to complete");
@@ -148,7 +148,7 @@ async fn main() -> std::io::Result<()> {
                 },
             }
         };
-        (Some(txpool_bridge_client), Some(_txpool_bridge_handle))
+        (Some(txpool_bridge_client), Some(txpool_bridge_handle))
     } else {
         warn!(
             "--ipc-path is not set, tx pool will be disabled. This means that the node will not be able to send transactions."
@@ -404,6 +404,22 @@ async fn main() -> std::io::Result<()> {
         None
     };
 
+    let ws_server_fut = async {
+        if let Some(ws) = ws_server_handle {
+            ws.run().await
+        } else {
+            futures::future::pending().await
+        }
+    };
+
+    let txpool_bridge_handle_fut = async {
+        if let Some(txpool_bridge_handle) = txpool_bridge_handle {
+            txpool_bridge_handle.await
+        } else {
+            futures::future::pending().await
+        }
+    };
+
     // Configure the rpc server with or without metrics
     let app = match with_metrics {
         Some(metrics) => HttpServer::new(move || {
@@ -435,21 +451,19 @@ async fn main() -> std::io::Result<()> {
         .run(),
     };
 
-    let ws_fut = ws_server_handle.map(|ws| ws.run());
-
     tokio::select! {
         result = app => {
             let () = result?;
         }
 
-        result = async {
-            if let Some(fut) = ws_fut {
-                fut.await
-            } else {
-                futures::future::pending().await
-            }
-        } => {
+        result = ws_server_fut => {
             let () = result?;
+            error!("ws server crashed");
+        }
+
+        result = txpool_bridge_handle_fut => {
+            let () = result?;
+            error!("txpool bridge crashed");
         }
     }
 
