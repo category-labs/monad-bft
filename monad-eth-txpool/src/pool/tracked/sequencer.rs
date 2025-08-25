@@ -80,12 +80,12 @@ impl Ord for OrderedTxGroup<'_> {
     }
 }
 
-pub struct TrackedTxHeap<'a> {
+pub struct ProposalSequencer<'a> {
     heap: BinaryHeap<OrderedTxGroup<'a>>,
     virtual_time: u64,
 }
 
-impl<'a> TrackedTxHeap<'a> {
+impl<'a> ProposalSequencer<'a> {
     pub fn new<ST, SCT>(
         tracked_txs: &'a IndexMap<Address, TrackedTxList>,
         extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
@@ -143,7 +143,7 @@ impl<'a> TrackedTxHeap<'a> {
 
     pub fn drain_in_order_while(
         mut self,
-        mut f: impl FnMut(&Address, &ValidEthTransaction) -> TrackedTxHeapDrainAction,
+        mut f: impl FnMut(&Address, &ValidEthTransaction) -> ProposalSequencerStep,
     ) {
         while let Some(OrderedTxGroup {
             tx:
@@ -157,13 +157,13 @@ impl<'a> TrackedTxHeap<'a> {
         }) = self.heap.pop()
         {
             match f(address, tx) {
-                TrackedTxHeapDrainAction::Skip => {}
-                TrackedTxHeapDrainAction::Continue => {
+                ProposalSequencerStep::Skip => {}
+                ProposalSequencerStep::Continue => {
                     if let Some(tx) = queued.pop_front() {
                         self.push(address, tx, queued);
                     }
                 }
-                TrackedTxHeapDrainAction::Stop => {
+                ProposalSequencerStep::Stop => {
                     break;
                 }
             }
@@ -184,7 +184,7 @@ impl<'a> TrackedTxHeap<'a> {
     }
 }
 
-pub enum TrackedTxHeapDrainAction {
+pub enum ProposalSequencerStep {
     Skip,
     Continue,
     Stop,

@@ -30,9 +30,11 @@ use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{DropTimer, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::{debug, error, info, trace, warn};
-use tx_heap::TrackedTxHeapDrainAction;
 
-use self::{list::TrackedTxList, tx_heap::TrackedTxHeap};
+use self::{
+    list::TrackedTxList,
+    sequencer::{ProposalSequencer, ProposalSequencerStep},
+};
 use super::{
     pending::{PendingTxList, PendingTxMap},
     transaction::ValidEthTransaction,
@@ -40,7 +42,7 @@ use super::{
 use crate::EthTxPoolEventTracker;
 
 mod list;
-mod tx_heap;
+mod sequencer;
 
 // To produce 10k tx blocks, we need the tracked tx map to hold at least 20k addresses so that if
 // the block in the pending blocktree has 10k txs with 10k unique addresses that are also in the
@@ -195,8 +197,8 @@ where
             return Ok(Vec::new());
         }
 
-        let tx_heap = TrackedTxHeap::new(&self.txs, &extending_blocks, base_fee);
-        let tx_heap_len = tx_heap.len();
+        let sequencer = ProposalSequencer::new(&self.txs, &extending_blocks, base_fee);
+        let sequencer_len = sequencer.len();
 
         let (account_balances, account_balance_lookups) = {
             let _timer = DropTimer::start(Duration::ZERO, |elapsed| {
@@ -213,7 +215,7 @@ where
                     proposed_seq_num,
                     state_backend,
                     Some(&extending_blocks),
-                    tx_heap.addresses(),
+                    sequencer.addresses(),
                 )?,
                 state_backend.total_db_lookups() - total_db_lookups_before,
             )
@@ -222,8 +224,7 @@ where
         info!(
             addresses = self.txs.len(),
             num_txs = self.num_txs(),
-            tx_heap_len,
-            tx_heap_len = tx_heap.len(),
+            sequencer_len,
             account_balances = account_balances.len(),
             ?account_balance_lookups,
             "txpool sequencing transactions"
@@ -233,7 +234,7 @@ where
             tx_limit,
             proposal_gas_limit,
             proposal_byte_limit,
-            tx_heap,
+            sequencer,
             account_balances,
         );
 
@@ -241,7 +242,7 @@ where
 
         event_tracker.record_create_proposal(
             self.num_addresses(),
-            tx_heap_len,
+            sequencer_len,
             account_balance_lookups,
             proposal_num_txs,
         );
@@ -370,7 +371,7 @@ where
         tx_limit: usize,
         proposal_gas_limit: u64,
         proposal_byte_limit: u64,
-        tx_heap: TrackedTxHeap<'_>,
+        sequencer: ProposalSequencer<'_>,
         mut account_balances: BTreeMap<&Address, Balance>,
     ) -> (u64, Vec<Recovered<TxEnvelope>>) {
         assert!(tx_limit > 0);
@@ -379,12 +380,12 @@ where
         let mut total_gas = 0u64;
         let mut total_size = 0u64;
 
-        tx_heap.drain_in_order_while(|sender, tx| {
+        sequencer.drain_in_order_while(|sender, tx| {
             if total_gas
                 .checked_add(tx.gas_limit())
                 .is_none_or(|new_total_gas| new_total_gas > proposal_gas_limit)
             {
-                return TrackedTxHeapDrainAction::Skip;
+                return ProposalSequencerStep::Skip;
             }
 
             let tx_size = tx.size();
@@ -392,7 +393,7 @@ where
                 .checked_add(tx_size)
                 .is_none_or(|new_total_size| new_total_size > proposal_byte_limit)
             {
-                return TrackedTxHeapDrainAction::Skip;
+                return ProposalSequencerStep::Skip;
             }
 
             let Some(account_balance) = account_balances.get_mut(sender) else {
@@ -400,11 +401,11 @@ where
                     ?sender,
                     "txpool create_proposal account_balances lookup failed"
                 );
-                return TrackedTxHeapDrainAction::Skip;
+                return ProposalSequencerStep::Skip;
             };
 
             let Some(new_account_balance) = tx.apply_max_value(*account_balance) else {
-                return TrackedTxHeapDrainAction::Skip;
+                return ProposalSequencerStep::Skip;
             };
 
             *account_balance = new_account_balance;
@@ -415,9 +416,9 @@ where
             txs.push(tx.raw().to_owned());
 
             if txs.len() < tx_limit {
-                TrackedTxHeapDrainAction::Continue
+                ProposalSequencerStep::Continue
             } else {
-                TrackedTxHeapDrainAction::Stop
+                ProposalSequencerStep::Stop
             }
         });
 
