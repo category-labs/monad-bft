@@ -180,9 +180,14 @@ where
             let txn_fee_entry = txn_fees
                 .entry(eth_txn.signer())
                 .and_modify(|e| {
-                    e.max_gas_cost = e
-                        .max_gas_cost
-                        .saturating_add(compute_txn_max_gas_cost(eth_txn));
+                    if e.first_txn_gas == Balance::ZERO {
+                        e.first_txn_value = eth_txn.value();
+                        e.first_txn_gas = compute_txn_max_gas_cost(eth_txn);
+                    } else {
+                        e.max_gas_cost = e
+                            .max_gas_cost
+                            .saturating_add(compute_txn_max_gas_cost(eth_txn));
+                    }
                 })
                 .or_insert(TxnFee {
                     first_txn_value: eth_txn.value(),
