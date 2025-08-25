@@ -21,6 +21,7 @@ use few_to_many::CreateAccountsGenerator;
 use high_call_data::HighCallDataTxGenerator;
 use many_to_many::ManyToManyGenerator;
 use non_deterministic_storage::NonDeterministicStorageTxGenerator;
+use reserve_balance::ReserveBalanceGenerator;
 use self_destruct::SelfDestructTxGenerator;
 use storage_deletes::StorageDeletesTxGenerator;
 use uniswap::UniswapGenerator;
@@ -37,6 +38,7 @@ mod few_to_many;
 mod high_call_data;
 mod many_to_many;
 mod non_deterministic_storage;
+mod reserve_balance;
 mod self_destruct;
 mod storage_deletes;
 mod uniswap;
@@ -103,6 +105,10 @@ pub fn make_generator(
         GenMode::Uniswap(_) => Box::new(UniswapGenerator {
             uniswap: deployed_contract.uniswap()?,
             tx_per_sender,
+        }),
+        GenMode::ReserveBalance(_) => Box::new(ReserveBalanceGenerator {
+            recipient_keys,
+            num_drain_txs: 2,
         }),
     })
 }

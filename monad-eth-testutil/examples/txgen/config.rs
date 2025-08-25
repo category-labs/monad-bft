@@ -204,6 +204,7 @@ impl Config {
             GenMode::ECMul(..) => 10,
             GenMode::Uniswap(..) => 10,
             GenMode::HighCallDataLowGasLimit(..) => 30,
+            GenMode::ReserveBalance(..) => 1,
         }
     }
 
@@ -224,6 +225,7 @@ impl Config {
             GenMode::ECMul(..) => 10,
             GenMode::HighCallDataLowGasLimit(..) => 3,
             GenMode::Uniswap(..) => 20,
+            GenMode::ReserveBalance(..) => 100,
         }
     }
 
@@ -244,6 +246,7 @@ impl Config {
             GenMode::HighCallDataLowGasLimit(..) => 100,
             GenMode::ECMul(..) => 100,
             GenMode::Uniswap(..) => 200,
+            GenMode::ReserveBalance(..) => 2500,
         }
     }
 
@@ -268,6 +271,7 @@ impl Config {
             GenMode::NullGen(..) => None,
             GenMode::ECMul(..) => ECMUL,
             GenMode::Uniswap(..) => Uniswap,
+            GenMode::ReserveBalance(..) => None,
         }
     }
 
@@ -376,6 +380,7 @@ pub enum GenMode {
     NullGen(NullGenConfig),
     ECMul(ECMulConfig),
     Uniswap(UniswapConfig),
+    ReserveBalance(ReserveBalanceConfig),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -419,6 +424,9 @@ pub struct ECMulConfig {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UniswapConfig {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReserveBalanceConfig {}
 
 fn default_tx_type() -> TxType {
     TxType::ERC20
