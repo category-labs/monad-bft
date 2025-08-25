@@ -625,27 +625,23 @@ where
             return Err(BlockPolicyError::ExecutionResultMismatch);
         }
 
-        let system_tx_signers = block.system_txns.iter().map(|txn| txn.signer());
-        // TODO fix this unnecessary copy into a new vec to generate an owned Address
-        let tx_signers = block
-            .validated_txns
-            .iter()
-            .map(|txn| txn.signer())
-            .chain(system_tx_signers)
-            .collect_vec();
+        let system_tx_signers = block.system_txns.iter().map(|txn| txn.signer_ref());
+        let validated_tx_signers = block.validated_txns.iter().map(|txn| txn.signer_ref());
+        let tx_signers = validated_tx_signers.chain(system_tx_signers);
+
         // these must be updated as we go through txs in the block
         let mut account_nonces = self.get_account_base_nonces(
             block.get_seq_num(),
             state_backend,
             &extending_blocks,
-            tx_signers.iter(),
+            tx_signers.clone(),
         )?;
         // these must be updated as we go through txs in the block
         let mut account_balances = self.compute_account_base_balances(
             block.get_seq_num(),
             state_backend,
             Some(&extending_blocks),
-            tx_signers.iter(),
+            tx_signers,
         )?;
 
         for sys_txn in block.system_txns.iter() {
