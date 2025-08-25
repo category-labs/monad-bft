@@ -56,6 +56,8 @@ impl EthCallExecutor {
         high_pool_timeout_sec: u32,
         triedb_path: &Path,
     ) -> Self {
+        monad_cxx::init_cxx_logging(tracing::Level::WARN);
+
         let dbpath = CString::new(triedb_path.to_str().expect("invalid path"))
             .expect("failed to create CString");
 

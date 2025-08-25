@@ -73,6 +73,8 @@ where
         incoming_request_timeout: Duration,
         uds_path: String,
     ) -> Self {
+        monad_cxx::init_cxx_logging(tracing::Level::WARN);
+
         let mut this = Self {
             incoming_request_timeout,
             uds_path,
