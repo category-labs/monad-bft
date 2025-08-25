@@ -67,7 +67,7 @@ fn with_txpool(
 
     pool.update_committed_block(
         &mut event_tracker,
-        generate_block_with_txs(Round(0), SeqNum(0), Vec::default()),
+        generate_block_with_txs(Round(0), SeqNum(0), BASE_FEE_PER_GAS, Vec::default()),
     );
 
     assert_eq!(
@@ -110,6 +110,7 @@ fn test_simple() {
                 generate_block_with_txs(
                     Round(idx as u64 + 1),
                     SeqNum(idx as u64 + 1),
+                    BASE_FEE_PER_GAS,
                     Vec::default(),
                 ),
             );
@@ -144,6 +145,7 @@ fn test_forwarded() {
                 generate_block_with_txs(
                     Round(idx as u64 + 1),
                     SeqNum(idx as u64 + 1),
+                    BASE_FEE_PER_GAS,
                     Vec::default(),
                 ),
             );
@@ -173,6 +175,7 @@ fn test_multiple_sequential_commits() {
                     generate_block_with_txs(
                         Round(round_seqnum),
                         SeqNum(round_seqnum),
+                        BASE_FEE_PER_GAS,
                         Vec::default(),
                     ),
                 );
@@ -196,6 +199,75 @@ fn test_multiple_sequential_commits() {
                     0
                 );
             }
+        }
+    });
+}
+
+#[test]
+fn test_base_fee() {
+    with_txpool(true, |mut pool, event_tracker| {
+        let mut round = 1;
+
+        for _ in 0..FORWARD_MAX_RETRIES {
+            for _ in 0..128 {
+                pool.update_committed_block(
+                    event_tracker,
+                    generate_block_with_txs(
+                        Round(round),
+                        SeqNum(round),
+                        BASE_FEE_PER_GAS + 1,
+                        Vec::default(),
+                    ),
+                );
+                round += 1;
+
+                assert_eq!(
+                    pool.get_forwardable_txs::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
+                        .unwrap()
+                        .count(),
+                    0
+                );
+            }
+
+            pool.update_committed_block(
+                event_tracker,
+                generate_block_with_txs(
+                    Round(round),
+                    SeqNum(round),
+                    BASE_FEE_PER_GAS,
+                    Vec::default(),
+                ),
+            );
+            round += 1;
+
+            assert_eq!(
+                pool.get_forwardable_txs::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
+                    .unwrap()
+                    .count(),
+                1
+            );
+        }
+
+        for _ in 0..128 {
+            pool.update_committed_block(
+                event_tracker,
+                generate_block_with_txs(
+                    Round(round),
+                    SeqNum(round),
+                    BASE_FEE_PER_GAS,
+                    Vec::default(),
+                ),
+            );
+            round += 1;
+
+            // Subsequent calls do not produce the tx
+            //  -> Validates that forwarding is non-bursty
+            assert_eq!(
+                pool.get_forwardable_txs::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
+                    .unwrap()
+                    .count(),
+                0
+            );
         }
     });
 }

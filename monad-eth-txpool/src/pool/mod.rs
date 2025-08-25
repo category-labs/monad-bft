@@ -27,7 +27,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason, EthTxPoolSnapshot};
-use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader, BASE_FEE_PER_GAS};
+use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_system_calls::generate_system_calls;
 use monad_types::SeqNum;
@@ -178,6 +178,8 @@ where
             }
         };
 
+        let last_commit_base_fee = last_commit.execution_inputs.base_fee_per_gas;
+
         for tx in txs {
             let account_balance = account_balances
                 .get(tx.signer_ref())
@@ -192,7 +194,10 @@ where
             let Some(tx) = self
                 .tracked
                 .try_insert_tx(event_tracker, tx)
-                .unwrap_or_else(|tx| self.pending.try_insert_tx(event_tracker, tx))
+                .unwrap_or_else(|tx| {
+                    self.pending
+                        .try_insert_tx(event_tracker, tx, last_commit_base_fee)
+                })
             else {
                 continue;
             };
@@ -237,6 +242,7 @@ where
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         proposed_seq_num: SeqNum,
+        base_fee: u64,
         tx_limit: usize,
         proposal_gas_limit: u64,
         proposal_byte_limit: u64,
@@ -271,6 +277,7 @@ where
         let user_transactions = self.tracked.create_proposal(
             event_tracker,
             proposed_seq_num,
+            base_fee,
             tx_limit - system_transactions.len(),
             proposal_gas_limit,
             proposal_byte_limit - system_txs_size,
@@ -310,7 +317,7 @@ where
             mix_hash: round_signature.get_hash().0,
             nonce: [0_u8; 8],
             extra_data: [0_u8; 32],
-            base_fee_per_gas: BASE_FEE_PER_GAS,
+            base_fee_per_gas: base_fee,
             blob_gas_used: 0,
             excess_blob_gas: 0,
             parent_beacon_block_root: [0_u8; 32],
@@ -337,14 +344,20 @@ where
     pub fn get_forwardable_txs<const MIN_SEQNUM_DIFF: u64, const MAX_RETRIES: usize>(
         &mut self,
     ) -> Option<impl Iterator<Item = &TxEnvelope>> {
-        let last_commit_seq_num = self.tracked.last_commit()?.seq_num;
+        let last_commit = self.tracked.last_commit()?;
+
+        let last_commit_seq_num = last_commit.seq_num;
+        let last_commit_base_fee = last_commit.execution_inputs.base_fee_per_gas;
 
         Some(
             self.pending
                 .iter_mut_txs()
                 .chain(self.tracked.iter_mut_txs())
                 .filter_map(move |tx| {
-                    tx.get_if_forwardable::<MIN_SEQNUM_DIFF, MAX_RETRIES>(last_commit_seq_num)
+                    tx.get_if_forwardable::<MIN_SEQNUM_DIFF, MAX_RETRIES>(
+                        last_commit_seq_num,
+                        last_commit_base_fee,
+                    )
                 }),
         )
     }

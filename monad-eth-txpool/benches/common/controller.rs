@@ -94,7 +94,12 @@ impl<'a> BenchController<'a> {
                 .into_iter()
                 .enumerate()
                 .map(|(idx, txs)| {
-                    generate_block_with_txs(Round(idx as u64 + 1), SeqNum(idx as u64 + 1), txs)
+                    generate_block_with_txs(
+                        Round(idx as u64 + 1),
+                        SeqNum(idx as u64 + 1),
+                        BASE_FEE_PER_GAS,
+                        txs,
+                    )
                 })
                 .collect_vec(),
             metrics,
@@ -113,7 +118,12 @@ impl<'a> BenchController<'a> {
 
         pool.update_committed_block(
             &mut EthTxPoolEventTracker::new(metrics, &mut BTreeMap::default()),
-            generate_block_with_txs(Round(0), block_policy.get_last_commit(), txs),
+            generate_block_with_txs(
+                Round(0),
+                block_policy.get_last_commit(),
+                BASE_FEE_PER_GAS,
+                txs,
+            ),
         );
 
         pool

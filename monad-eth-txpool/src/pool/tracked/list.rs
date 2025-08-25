@@ -104,6 +104,7 @@ impl TrackedTxList {
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         tx: ValidEthTransaction,
+        last_commit_base_fee: u64,
         tx_expiry: Duration,
     ) -> Option<&ValidEthTransaction> {
         if tx.nonce() < self.account_nonce {
@@ -119,21 +120,23 @@ impl TrackedTxList {
             btree_map::Entry::Occupied(mut entry) => {
                 let (existing_tx, existing_tx_insert_time) = entry.get();
 
-                if !tx_expired(existing_tx_insert_time, tx_expiry, &event_tracker.now)
-                    && &tx <= existing_tx
+                if tx_expired(existing_tx_insert_time, tx_expiry, &event_tracker.now)
+                    || tx.has_higher_priority(existing_tx, last_commit_base_fee)
                 {
-                    event_tracker.drop(tx.hash(), EthTxPoolDropReason::ExistingHigherPriority);
-                    return None;
-                }
+                    event_tracker.replace_tracked(
+                        tx.signer_ref(),
+                        existing_tx.hash(),
+                        tx.hash(),
+                        tx.is_owned(),
+                    );
+                    entry.insert((tx, event_tracker.now));
 
-                event_tracker.replace_tracked(
-                    tx.signer_ref(),
-                    existing_tx.hash(),
-                    tx.hash(),
-                    tx.is_owned(),
-                );
-                entry.insert((tx, event_tracker.now));
-                Some(&entry.into_mut().0)
+                    Some(&entry.into_mut().0)
+                } else {
+                    event_tracker.drop(tx.hash(), EthTxPoolDropReason::ExistingHigherPriority);
+
+                    None
+                }
             }
         }
     }

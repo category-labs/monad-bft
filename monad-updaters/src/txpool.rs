@@ -31,7 +31,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
-use monad_eth_types::EthExecutionProtocol;
+use monad_eth_types::{EthExecutionProtocol, BASE_FEE_PER_GAS};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_state_backend::StateBackend;
@@ -244,6 +244,7 @@ where
                         .create_proposal(
                             &mut event_tracker,
                             seq_num,
+                            BASE_FEE_PER_GAS,
                             tx_limit,
                             proposal_gas_limit,
                             proposal_byte_limit,
