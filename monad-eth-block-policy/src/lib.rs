@@ -1586,6 +1586,46 @@ mod test {
             "Block coherency check should have failed: {:?}",
             result
         );
+
+        //////////////////////////////////////////////////////////////////////////////////////////////////////
+        // Case5: Non-emptying transaction (7702 delegations) + another transaction in different block     ///
+        //////////////////////////////////////////////////////////////////////////////////////////////////////
+
+        // first tx has an authorization from the signer
+        let tx1 = make_test_delegation_tx(
+            50000,
+            0,
+            0,
+            S2,
+            HashMap::from([(
+                S1,
+                Authorization {
+                    chain_id: CHAIN_ID,
+                    nonce: 0,
+                    address: Address(FixedBytes([0x11; 20])),
+                },
+            )]),
+        );
+        let tx2 = make_test_tx(50000, HALF_ETHER, 1, S1);
+        let tx3 = make_test_tx(50000, HALF_ETHER, 2, S1);
+        // first tx in block n-3, second tx in block n-2, third tx in block n
+        let txs = BTreeMap::from([(1, vec![tx1]), (2, vec![tx2]), (4, vec![tx3])]);
+
+        // balance of signer at block n-3
+        let gas_cost = 50000 * 2 * BASE_FEE_PER_GAS as u128;
+        let state_backend = NopStateBackend {
+            balances: BTreeMap::from([(signer, U256::from(gas_cost))]),
+            ..Default::default()
+        };
+
+        let result = setup_block_policy_with_txs(
+            txs,
+            vec![signer],
+            &state_backend,
+            num_committed_blocks,
+            CoherencyCheckMode::ReserveBalanceCoherency,
+        );
+        assert!(result.is_ok(), "Block coherency check failed: {:?}", result);
     }
 
     #[test_case(3; "three committed blocks, one extending block")]
