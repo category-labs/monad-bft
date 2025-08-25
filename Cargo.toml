@@ -152,7 +152,7 @@ k256 = { version = "0.13", features = ["hash2curve"] }
 inventory = "0.3"
 iset = "0.3.1"
 itertools = "0.10"
-jemalloc_pprof = "0.7"
+jemalloc_pprof = "0.8.1"
 libc = "0.2.153"
 lru = "0.12"
 lz4 = "1.28"
