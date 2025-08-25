@@ -1308,6 +1308,11 @@ where
 
         // commit blocks
         for block in last_delay_committed_blocks {
+            if let Some(latest_seq_num) = self.state_backend.raw_read_latest_finalized_block() {
+                if block.get_seq_num() <= latest_seq_num {
+                    continue; //already finalized
+                }
+            }
             commands.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
                 OptimisticCommit::Proposed(block.deref().to_owned()),
             )));
