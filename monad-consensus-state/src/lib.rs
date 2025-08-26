@@ -2148,6 +2148,7 @@ mod test {
                     blob_gas_used: 0,
                     excess_blob_gas: 0,
                     parent_beacon_block_root: [0_u8; 32],
+                    requests_hash: [0_u8; 32],
                 },
                 Vec::new(),
             )
@@ -2179,6 +2180,7 @@ mod test {
                     blob_gas_used: 0,
                     excess_blob_gas: 0,
                     parent_beacon_block_root: [0_u8; 32],
+                    requests_hash: [0_u8; 32],
                 },
                 delayed_execution_results,
             )
@@ -2211,6 +2213,7 @@ mod test {
                     blob_gas_used: 0,
                     excess_blob_gas: 0,
                     parent_beacon_block_root: [0_u8; 32],
+                    requests_hash: [0_u8; 32],
                 },
                 delayed_execution_results,
             )
