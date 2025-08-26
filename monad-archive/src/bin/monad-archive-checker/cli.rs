@@ -136,23 +136,23 @@ pub struct Rechecker {
 pub struct FaultFixerArgs {
     /// Commit changes to replicas
     /// Otherwise runs in dry-run mode
-    #[clap(long)]
+    #[arg(long)]
     pub commit_changes: bool,
 
     /// Verify fixed blocks after repair
-    #[clap(long)]
+    #[arg(long)]
     pub verify: bool,
 
     /// Comma-separated list of specific replicas to fix (defaults to all)
-    #[clap(long, value_delimiter = ',')]
+    #[arg(long, value_delimiter = ',')]
     pub replicas: Option<Vec<String>>,
 
     /// Start block (inclusive)
-    #[clap(long)]
+    #[arg(long)]
     pub start: Option<u64>,
 
     /// End block (inclusive)
-    #[clap(long)]
+    #[arg(long)]
     pub end: Option<u64>,
 
     /// How many blocks to process in parallel
