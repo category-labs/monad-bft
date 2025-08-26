@@ -244,6 +244,7 @@ where
             blob_gas_used,
             excess_blob_gas,
             parent_beacon_block_root,
+            requests_hash,
         } = &header.execution_inputs;
 
         if ommers_hash != EMPTY_OMMER_ROOT_HASH {
@@ -286,6 +287,9 @@ where
             return Err(BlockValidationError::HeaderError);
         }
         if parent_beacon_block_root != &[0_u8; 32] {
+            return Err(BlockValidationError::HeaderError);
+        }
+        if requests_hash != &[0_u8; 32] {
             return Err(BlockValidationError::HeaderError);
         }
 
