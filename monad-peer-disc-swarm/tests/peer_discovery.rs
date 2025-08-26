@@ -1023,6 +1023,13 @@ fn test_validator_demoted_to_full_node() {
     // Fully connected network
     let config = TestConfig {
         num_nodes: 5,
+        roles: BTreeMap::from([
+            (0, PeerDiscoveryRole::ValidatorPublisher),
+            (1, PeerDiscoveryRole::ValidatorPublisher),
+            (2, PeerDiscoveryRole::ValidatorPublisher),
+            (3, PeerDiscoveryRole::ValidatorNone),
+            (4, PeerDiscoveryRole::ValidatorNone),
+        ]),
         epoch_validators: BTreeMap::from([
             (Epoch(1), BTreeSet::from([0, 1, 2, 3, 4])),
             (Epoch(2), BTreeSet::from([0, 1, 2, 3])),
@@ -1049,6 +1056,7 @@ fn test_validator_demoted_to_full_node() {
 
     while nodes.step_until(Duration::from_secs(0)) {}
 
+    let mut second_epoch_validators = BTreeSet::new();
     for state in nodes.states().values() {
         let state = state.peer_disc_driver.get_peer_disc_state();
 
@@ -1060,14 +1068,22 @@ fn test_validator_demoted_to_full_node() {
             assert!(state.routing_info.contains_key(peer_id));
         }
         assert!(state.pending_queue.is_empty());
+
+        if state.self_id == node_ids[4] {
+            second_epoch_validators = state.epoch_validators.get(&Epoch(2)).cloned().unwrap();
+        }
     }
 
     // Node4 is demoted to a full node
-    let epoch_change_event = PeerDiscoveryEvent::UpdateCurrentRound {
-        round: Round(2),
+    let validator_set_change_event = PeerDiscoveryEvent::UpdateValidatorSet {
         epoch: Epoch(2),
+        validators: second_epoch_validators,
     };
-    nodes.insert_test_event(&node_ids[4], Duration::from_secs(0), epoch_change_event);
+    nodes.insert_test_event(
+        &node_ids[4],
+        Duration::from_secs(0),
+        validator_set_change_event,
+    );
 
     while nodes.step_until(Duration::from_secs(10)) {}
 
@@ -1077,41 +1093,22 @@ fn test_validator_demoted_to_full_node() {
 
         if node_id == &node_ids[4] {
             assert_eq!(state.routing_info.len(), 4);
+            let connected_upstream = state
+                .participation_info
+                .iter()
+                .filter(|(_, info)| info.status == SecondaryRaptorcastConnectionStatus::Connected)
+                .count();
+            assert_eq!(connected_upstream, 3);
             continue;
         }
 
         // other nodes should still have connections to each other
-        // TODO: prune eventually
         for peer_id in node_ids.iter() {
             if peer_id == &state.self_id {
                 continue;
             }
             assert!(state.routing_info.contains_key(peer_id));
         }
-    }
-
-    // round increases, non participating full node is pruned
-    let round_change_event = PeerDiscoveryEvent::UpdateCurrentRound {
-        round: Round(10),
-        epoch: Epoch(2),
-    };
-    for node_id in &node_ids {
-        nodes.insert_test_event(node_id, Duration::from_secs(15), round_change_event.clone());
-    }
-
-    // Node0, Node1, Node2, and Node3 prunes Node4
-    while nodes.step_until(Duration::from_secs(20)) {}
-
-    for (node_id, state) in nodes.states() {
-        let state = state.peer_disc_driver.get_peer_disc_state();
-
-        if node_id == &node_ids[4] {
-            assert_eq!(state.routing_info.len(), 4);
-            continue;
-        }
-
-        // other nodes do not have routing info of Node4
-        assert!(!state.routing_info.contains_key(&node_ids[4]));
     }
 }
 

@@ -217,16 +217,6 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
             rng: self.rng,
         };
 
-        // if self initializes config as a validator, make sure it's indeed in the validator set
-        if state.self_role == PeerDiscoveryRole::ValidatorNone
-            || state.self_role == PeerDiscoveryRole::ValidatorPublisher
-        {
-            assert!(
-                state.check_current_epoch_validator(&state.self_id),
-                "incorrectly set as validator"
-            );
-        }
-
         let mut cmds = Vec::new();
         self.bootstrap_peers
             .into_iter()
@@ -1226,7 +1216,7 @@ where
         round: Round,
         epoch: Epoch,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
-        let mut cmds = Vec::new();
+        let cmds = Vec::new();
 
         if round > self.current_round {
             trace!(?round, "updating current round in peer discovery");
@@ -1246,18 +1236,6 @@ where
                 self.self_role = PeerDiscoveryRole::ValidatorPublisher;
                 // clear secondary raptorcast connection info
                 self.clear_connection_info();
-            }
-
-            // when a validator is demoted to a full node, defaults to FullNodeClient
-            if (self.self_role == PeerDiscoveryRole::ValidatorNone
-                || self.self_role == PeerDiscoveryRole::ValidatorPublisher)
-                && !self.check_current_epoch_validator(&self.self_id)
-            {
-                debug!(?epoch, "validator demoted to full node");
-                self.self_role = PeerDiscoveryRole::FullNodeClient;
-                // clear secondary raptorcast connection info
-                self.clear_connection_info();
-                cmds.extend(self.look_for_upstream_validators());
             }
         }
 
@@ -1283,10 +1261,11 @@ where
         self.epoch_validators.insert(epoch, validators);
 
         // validator set update are done during epoch boundary block
-        // if a full node is going to be promoted to a validator in the next epoch
-        // advertise self name record to the other validators in the next epoch
         if epoch == self.current_epoch + Epoch(1) {
             let is_next_epoch_validator = self.check_next_epoch_validator(&self.self_id);
+
+            // if a full node is going to be promoted to a validator in the next epoch
+            // advertise self name record to the other validators in the next epoch
             if (self.self_role == PeerDiscoveryRole::FullNodeClient
                 || self.self_role == PeerDiscoveryRole::FullNodeNone)
                 && is_next_epoch_validator
@@ -1309,6 +1288,18 @@ where
                         });
                     }
                 }
+            }
+            // if a validator is going to be demoted to a full node, switch role to FullNodeClient
+            // and start looking for upstream validators
+            else if (self.self_role == PeerDiscoveryRole::ValidatorNone
+                || self.self_role == PeerDiscoveryRole::ValidatorPublisher)
+                && !is_next_epoch_validator
+            {
+                debug!(?epoch, "validator demoted to full node");
+                self.self_role = PeerDiscoveryRole::FullNodeClient;
+                // clear secondary raptorcast connection info
+                self.clear_connection_info();
+                cmds.extend(self.look_for_upstream_validators());
             }
         }
 
@@ -1403,20 +1394,12 @@ where
     fn get_secondary_fullnode_addrs(
         &self,
     ) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4> {
-        let empty = BTreeSet::new();
-        let curr_validators = self
-            .epoch_validators
-            .get(&self.current_epoch)
-            .unwrap_or(&empty);
         self.routing_info
             .iter()
             .filter(|(id, _)| {
-                !curr_validators.contains(id)
-                    && self
-                        .participation_info
-                        .get(id)
-                        .map(|p| p.status == SecondaryRaptorcastConnectionStatus::Connected)
-                        .unwrap_or(false)
+                self.participation_info
+                    .get(id)
+                    .is_some_and(|p| p.status == SecondaryRaptorcastConnectionStatus::Connected)
             })
             .map(|(id, name_record)| (*id, name_record.address()))
             .collect()
