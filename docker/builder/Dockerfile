@@ -3,6 +3,7 @@ FROM ubuntu:25.04 AS base
 RUN apt update && apt install -y \
   binutils \
   iproute2 \
+  clang \
   curl \
   make \
   ca-certificates \
@@ -15,7 +16,11 @@ RUN apt update && apt install -y \
   cgroup-tools \
   libstdc++-15-dev \
   gcc-15 \
-  g++-15
+  g++-15 \
+  libcrypto++-dev \
+  libhugetlbfs0 \
+  libhugetlbfs-bin \
+  libhugetlbfs-dev
 
 RUN apt update && apt install -y \
   libboost1.83-dev \
@@ -54,28 +59,21 @@ RUN apt update && apt install -y \
   clang-19 \
   libssl-dev \
   gdb \
+  python-is-python3 \
   valgrind \
   ninja-build \
   python3-pytest
 
-RUN rm -rf /var/lib/apt/lists/*
 
+RUN apt update && apt-get install -y \
+  libboost1.83-dev \
+  libcgroup-dev
 
-ARG HOST_UID=2002
-ARG HOST_GID=2002
+USER ubuntu
 
-# Create group and user with host UID/GID
-RUN groupadd --gid $HOST_GID builder && \
-    useradd --uid $HOST_UID --gid $HOST_GID --create-home builder && \
-    usermod -aG sudo builder
+WORKDIR /usr/src/monad-bft
 
-USER builder
-
-WORKDIR /app
-
-RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
-ENV HOME="/home/builder"
-ENV PATH="$HOME/.cargo/bin:$PATH"
-RUN rustup toolchain install 1.85.0-x86_64-unknown-linux-gnu
-
-CMD ["bash"]
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
+ENV PATH="/home/ubuntu/.cargo/bin:${PATH}"
+RUN rustup toolchain install 1.87.0-x86_64-unknown-linux-gnu
+ARG TRIEDB_TARGET=triedb_driver
