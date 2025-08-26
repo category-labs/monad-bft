@@ -256,6 +256,23 @@ where
                     debug!(?validator_set, "Updating validator set in multi router");
                     let validator_set = validator_set.iter().map(|(id, _)| *id).collect();
                     self.epoch_validators.insert(epoch, validator_set);
+
+                    // if self is a validator and will fall out in the next epoch validator set
+                    // switch role to Client in secondary raptorcast to start connecting to upstream
+                    if epoch == self.current_epoch + Epoch(1)
+                        && self
+                            .epoch_validators
+                            .get(&self.current_epoch)
+                            .is_some_and(|set| set.contains(&self.self_node_id))
+                        && !self
+                            .epoch_validators
+                            .get(&(self.current_epoch + Epoch(1)))
+                            .is_some_and(|set| set.contains(&self.self_node_id))
+                    {
+                        // validator demoted to full node, update role to be Client
+                        self.update_role(SecondaryRaptorCastModeConfig::Client);
+                    }
+
                     validator_cmds.push(cmd_cpy);
                 }
                 RouterCommand::GetPeers => validator_cmds.push(cmd),
@@ -296,12 +313,7 @@ where
                         );
 
                         // check if secondary raptorcast role needs to be updated
-                        if is_validator_before_epoch_increment
-                            && !is_validator_after_epoch_increment
-                        {
-                            // validator demoted to full node, update role to be Client
-                            self.update_role(SecondaryRaptorCastModeConfig::Client);
-                        } else if !is_validator_before_epoch_increment
+                        if !is_validator_before_epoch_increment
                             && is_validator_after_epoch_increment
                         {
                             // full node promoted to validator, update role to be Publisher

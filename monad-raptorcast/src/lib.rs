@@ -146,7 +146,7 @@ where
         Self {
             is_dynamic_fullnode,
             epoch_validators: Default::default(),
-            rebroadcast_map: ReBroadcastGroupMap::new(self_id, is_dynamic_fullnode),
+            rebroadcast_map: ReBroadcastGroupMap::new(self_id),
             dedicated_full_nodes: FullNodes::new(
                 config.primary_instance.fullnode_dedicated.clone(),
             ),
@@ -192,7 +192,6 @@ where
     pub fn set_is_dynamic_full_node(&mut self, is_dynamic: bool) {
         debug!(?is_dynamic, "updating primary raptorcast");
         self.is_dynamic_fullnode = is_dynamic;
-        self.rebroadcast_map.is_dynamic_fullnode = is_dynamic;
     }
 
     pub fn set_dedicated_full_nodes(&mut self, nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>) {
