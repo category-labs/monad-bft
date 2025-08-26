@@ -982,7 +982,7 @@ mod tests {
             rx_from_client: UnboundedReceiver<Group<ST>>,
         ) -> Self {
             Self {
-                group_map: ReBroadcastGroupMap::new(clt_node_id, true),
+                group_map: ReBroadcastGroupMap::new(clt_node_id),
                 rx_from_client,
             }
         }
