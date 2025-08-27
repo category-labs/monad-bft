@@ -25,7 +25,6 @@ use monad_crypto::{
     hasher::{Hasher, HasherType},
 };
 use monad_types::{Epoch, NodeId, Round, RoundSpan, Stake};
-use tracing::{debug, warn};
 
 #[derive(Clone, Debug, Default)]
 pub struct EpochValidators<ST>
@@ -202,7 +201,7 @@ where
 }
 
 // Argument for raptorcast send
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum BuildTarget<'a, ST: CertificateSignatureRecoverable> {
     // raptorcast to a set of nodes without stake-based distribution
     // of chunks.
@@ -403,9 +402,10 @@ where
             // Note that AuthorID is a validator and we will not find it among
             // the full-node ids in the group.
             if author_id != &root_vid {
-                warn!(
+                tracing::warn!(
                     "Author {} does not match raptorcast group validator id {}",
-                    author_id, root_vid
+                    author_id,
+                    root_vid
                 );
                 return self.empty_iterator();
             }
@@ -417,7 +417,7 @@ where
             // any nodeID before we know for sure the author_id is among them.
             let maybe_pos_author_id = self.sorted_other_peers.binary_search(author_id);
             if maybe_pos_author_id.is_err() {
-                warn!("Author {} is not a member of raptorcast group", author_id);
+                tracing::warn!("Author {} is not a member of raptorcast group", author_id);
                 return self.empty_iterator();
             }
             maybe_pos_author_id.unwrap()
@@ -443,14 +443,14 @@ where
             // Case for full-node raptorcasting
             let good = &root_vid == author_id;
             if !good {
-                debug!(?author_id, ?root_vid, "check_author_node_id (fn) failed");
+                tracing::debug!(?author_id, ?root_vid, "check_author_node_id (fn) failed");
             }
             good
         } else {
             // Case for validator-to-validator
             let good = self.sorted_other_peers.binary_search(author_id).is_ok();
             if !good {
-                debug!(?author_id, ?self.sorted_other_peers, "check_author_node_id (v2v) failed");
+                tracing::debug!(?author_id, ?self.sorted_other_peers, "check_author_node_id (v2v) failed");
             }
             good
         }
@@ -506,17 +506,27 @@ where
 
     // For Validator->fullnode re-raptorcasting
     fullnode_map: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Group<ST>>,
+
+    // Regarding re-raptorcasting from primary instance, if this.is_fullnode =
+    // = true,  then we are a full-node re-raptorcasting to other full-nodes.
+    // = false, then we are a validator re-raptorcasting to other validators,
+    //          or a dedicated full-node.
+    pub is_dynamic_fullnode: bool,
 }
 
 impl<ST> ReBroadcastGroupMap<ST>
 where
     ST: CertificateSignatureRecoverable,
 {
-    pub fn new(our_node_id: NodeId<CertificateSignaturePubKey<ST>>) -> Self {
+    pub fn new(
+        our_node_id: NodeId<CertificateSignaturePubKey<ST>>,
+        is_dynamic_fullnode: bool,
+    ) -> Self {
         Self {
             our_node_id,
             validator_map: BTreeMap::new(),
             fullnode_map: BTreeMap::new(),
+            is_dynamic_fullnode,
         }
     }
 
@@ -526,42 +536,28 @@ where
         &self,
         msg_epoch: Epoch,
         author_node_id: &NodeId<CertificateSignaturePubKey<ST>>,
-        broadcast: bool,
-        secondary_broadcast: bool,
     ) -> bool {
-        if broadcast && secondary_broadcast {
-            // cannot have both broadcast and secondary broadcast bit set
-            debug!(
-                ?author_node_id,
-                "Receiving invalid message with both broadcast and secondary broadcast bit set"
-            );
-            return false;
-        }
-
-        if broadcast {
-            // validator to validator raptorcast
-            if let Some(group) = self.validator_map.get(&msg_epoch) {
-                let author_found = group.check_author_node_id(author_node_id);
-                if !author_found {
-                    debug!(?author_node_id, ?self.validator_map,
-                        "Validator author for v2v group not found in validator_map");
-                }
-                author_found
-            } else {
-                debug!(?msg_epoch, ?self.validator_map, "Epoch not found in validator_map");
-                false
-            }
-        } else if secondary_broadcast {
+        if self.is_dynamic_fullnode {
             // Source node id (validator) is already the key to the map, so
             // we don't need to look into the group itself.
             let author_found = self.fullnode_map.contains_key(author_node_id);
             if !author_found {
-                debug!(?author_node_id, ?self.fullnode_map,
+                tracing::debug!(?author_node_id, ?self.fullnode_map,
                     "Validator author for v2fn group not found in fullnode_map");
+            }
+            return author_found;
+        }
+        if let Some(group) = self.validator_map.get(&msg_epoch) {
+            let author_found = group.check_author_node_id(author_node_id);
+            if !author_found {
+                tracing::debug!(?author_node_id, ?self.validator_map,
+                    "Validator author for v2v group not found in validator_map");
             }
             author_found
         } else {
-            unreachable!("Either broadcast or secondary_broadcast must be set");
+            tracing::debug!(?msg_epoch, ?self.validator_map,
+                "Epoch not found in validator_map");
+            false
         }
     }
 
@@ -574,25 +570,11 @@ where
         &self,
         msg_epoch: Epoch, // for validator-to-validator re-raptorcasting only
         msg_author: &NodeId<CertificateSignaturePubKey<ST>>, // skipped when iterating RaptorCast group
-        broadcast: bool,
-        secondary_broadcast: bool,
     ) -> Option<GroupIterator<ST>> {
-        if broadcast && secondary_broadcast {
-            // cannot have both broadcast and secondary broadcast bit set
-            // we already check this in check_source but just for safety
-            debug!(
-                ?msg_author,
-                "Receiving invalid message with both broadcast and secondary broadcast bit set"
-            );
-            return None;
-        }
-
-        let maybe_group = if secondary_broadcast {
+        let maybe_group = if self.is_dynamic_fullnode {
             self.fullnode_map.get(msg_author)
-        } else if broadcast {
-            self.validator_map.get(&msg_epoch)
         } else {
-            None
+            self.validator_map.get(&msg_epoch)
         };
         if let Some(group) = maybe_group {
             // If there's no other peers in the group, then there's no one to broadcast to
@@ -614,7 +596,7 @@ where
         let new_group = Group::new_validator_group(all_peers, &self.our_node_id);
         if let Some(existing_group) = self.validator_map.get(&epoch) {
             assert_eq!(existing_group, &new_group);
-            warn!("duplicate validator set update (this is safe but unexpected)")
+            tracing::warn!("duplicate validator set update (this is safe but unexpected)")
         } else {
             let replaced = self.validator_map.insert(epoch, new_group);
             assert!(replaced.is_none());
@@ -623,35 +605,42 @@ where
 
     // As Full-node: When secondary RaptorCast instance (Client) sends us a Group<>
     pub fn push_group_fullnodes(&mut self, group: Group<ST>) {
+        assert!(self.is_dynamic_fullnode);
         if let Some(old_grp) = self
             .fullnode_map
             .insert(*group.get_validator_id(), group.clone())
         {
-            debug!(new_group=?group, old_group=?old_grp, "Group replace");
+            tracing::debug!(new_group=?group, old_group=?old_grp, "Group replace");
         } else {
-            debug!(new_group=?group, "Group insert");
+            tracing::debug!(new_group=?group, "Group insert");
         }
     }
 
     pub fn delete_expired_groups(&mut self, curr_epoch: Epoch, curr_round: Round) {
-        // Keep current and future* groups.
-        // Note: normally the client will only send as groups that are
-        // currently active, but it is possible for the client to send us a
-        // group scheduled for the future when we (the non-dedicated full-node)
-        // aren't received proposals yet and hence do not know what the current
-        // round is.
-        self.fullnode_map
-            .retain(|_, group| curr_round < group.round_span.end);
-
-        // clear old validator map
-        self.validator_map
-            .retain(|key, _| *key + Epoch(1) >= curr_epoch);
-
-        debug!(
+        let old_count;
+        let new_count;
+        if self.is_dynamic_fullnode {
+            old_count = self.fullnode_map.len();
+            // Keep current and future* groups.
+            // Note: normally the client will only send as groups that are
+            // currently active, but it is possible for the client to send us a
+            // group scheduled for the future when we (the non-dedicated full-node)
+            // aren't received proposals yet and hence do not know what the current
+            // round is.
+            self.fullnode_map
+                .retain(|_, group| curr_round < group.round_span.end);
+            new_count = self.fullnode_map.len();
+        } else {
+            old_count = self.validator_map.len();
+            self.validator_map
+                .retain(|key, _| *key + Epoch(1) >= curr_epoch);
+            new_count = self.validator_map.len();
+        }
+        tracing::debug!(
             epoch=?curr_epoch,
             round=?curr_round,
-            validator_map_len_diff=?self.validator_map.len(),
-            fullnode_map_len_diff=?self.fullnode_map.len(),
+            ?old_count,
+            ?new_count,
             "RaptorCast delete_expired_groups",
         );
     }
