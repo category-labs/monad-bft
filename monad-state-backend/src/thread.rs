@@ -57,7 +57,7 @@ where
     RawReadLatestFinalizedBlock {
         tx: mpsc::SyncSender<Option<SeqNum>>,
     },
-    ReadNextValidatorData {
+    ReadNextValidatorSet {
         block_num: SeqNum,
         tx: mpsc::SyncSender<
             Vec<(
@@ -169,7 +169,7 @@ where
         &self,
         block_num: SeqNum,
     ) -> Vec<(SCT::NodeIdPubKey, SignatureCollectionPubKeyType<SCT>, Stake)> {
-        self.send_and_recv_request(|tx| StateBackendThreadRequest::ReadNextValidatorData {
+        self.send_and_recv_request(|tx| StateBackendThreadRequest::ReadNextValidatorSet {
             block_num,
             tx,
         })
@@ -253,7 +253,7 @@ where
                     tx.send(state_backend.raw_read_latest_finalized_block())
                         .expect("StateBackendThreadClient is alive");
                 }
-                StateBackendThreadRequest::ReadNextValidatorData { block_num, tx } => {
+                StateBackendThreadRequest::ReadNextValidatorSet { block_num, tx } => {
                     tx.send(state_backend.read_next_valset(block_num))
                         .expect("StateBackendThreadClient is alive");
                 }

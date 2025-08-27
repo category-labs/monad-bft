@@ -39,11 +39,13 @@ use monad_eth_block_policy::{
     EthValidatedBlock,
 };
 use monad_eth_types::{
-    EthBlockBody, EthExecutionProtocol, Nonce, ProposedEthHeader, BASE_FEE_PER_GAS,
+    EthBlockBody, EthExecutionProtocol, ExtractEthAddress, Nonce, ProposedEthHeader,
+    BASE_FEE_PER_GAS,
 };
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
 use monad_system_calls::{validator::SystemTransactionValidator, SystemTransaction};
+use monad_types::{Epoch, SeqNum};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing::{debug, trace_span, warn};
@@ -64,6 +66,7 @@ where
 {
     /// chain id
     pub chain_id: u64,
+    pub system_tx_validator: SystemTransactionValidator,
 
     _phantom: PhantomData<(ST, SCT, SBT)>,
 }
@@ -73,10 +76,12 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend<ST, SCT>,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
 {
-    pub fn new(chain_id: u64) -> Self {
+    pub fn new(chain_id: u64, epoch_length: SeqNum, staking_activation: Epoch) -> Self {
         Self {
             chain_id,
+            system_tx_validator: SystemTransactionValidator::new(epoch_length, staking_activation),
             _phantom: PhantomData,
         }
     }
@@ -122,17 +127,16 @@ where
             .collect::<Result<_, monad_secp::Error>>()
             .map_err(|_err| BlockValidationError::TxnError)?;
 
-        let (system_txns, eth_txns) =
-            match SystemTransactionValidator::validate_and_extract_system_transactions(
-                header,
-                recovered_txns,
-            ) {
-                Ok((system_txns, eth_txns)) => (system_txns, eth_txns),
-                Err(err) => {
-                    debug!(?err, "system transaction validator error");
-                    return Err(BlockValidationError::SystemTxnError);
-                }
-            };
+        let (system_txns, eth_txns) = match self
+            .system_tx_validator
+            .validate_and_extract_system_transactions(header, recovered_txns)
+        {
+            Ok((system_txns, eth_txns)) => (system_txns, eth_txns),
+            Err(err) => {
+                debug!(?err, "system transaction validator error");
+                return Err(BlockValidationError::SystemTxnError);
+            }
+        };
 
         // recover the account nonces for system txns
         let mut nonces = BTreeMap::new();
@@ -300,6 +304,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend<ST, SCT>,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
 {
     #[tracing::instrument(
         level = "debug", 
@@ -394,7 +399,7 @@ mod test {
             NopSignature,
             MockSignatures<NopSignature>,
             InMemoryState<NopSignature, MockSignatures<NopSignature>>,
-        > = EthValidator::new(1337);
+        > = EthValidator::new(1337, SeqNum::MAX, Epoch::MAX);
 
         // txn1 with nonce 1 while txn2 with nonce 3 (there is a nonce gap)
         let txn1 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 1, 10);
@@ -429,7 +434,7 @@ mod test {
             NopSignature,
             MockSignatures<NopSignature>,
             InMemoryState<NopSignature, MockSignatures<NopSignature>>,
-        > = EthValidator::new(1337);
+        > = EthValidator::new(1337, SeqNum::MAX, Epoch::MAX);
 
         // total gas used is 400_000_000 which is higher than block gas limit
         let txn1 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 200_000_000, 1, 10);
@@ -464,7 +469,7 @@ mod test {
             NopSignature,
             MockSignatures<NopSignature>,
             InMemoryState<NopSignature, MockSignatures<NopSignature>>,
-        > = EthValidator::new(1337);
+        > = EthValidator::new(1337, SeqNum::MAX, Epoch::MAX);
 
         // tx limit per block is 1
         let txn1 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 1, 10);
@@ -499,7 +504,7 @@ mod test {
             NopSignature,
             MockSignatures<NopSignature>,
             InMemoryState<NopSignature, MockSignatures<NopSignature>>,
-        > = EthValidator::new(1337);
+        > = EthValidator::new(1337, SeqNum::MAX, Epoch::MAX);
 
         // proposal limit is 4MB
         let txn1 = make_legacy_tx(
@@ -539,7 +544,7 @@ mod test {
             NopSignature,
             MockSignatures<NopSignature>,
             InMemoryState<NopSignature, MockSignatures<NopSignature>>,
-        > = EthValidator::new(1337);
+        > = EthValidator::new(1337, SeqNum::MAX, Epoch::MAX);
 
         let valid_txn = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 1, 10);
 

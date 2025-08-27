@@ -290,8 +290,8 @@ impl StateBackend<SecpSignature, BlsSignatureCollection<PubKey>> for TriedbReade
         self.get_latest_finalized_block()
     }
 
-    fn read_next_valset(&self, _block_num: SeqNum) -> Vec<(PubKey, BlsPubKey, Stake)> {
-        unimplemented!()
+    fn read_next_valset(&self, block_num: SeqNum) -> Vec<(PubKey, BlsPubKey, Stake)> {
+        self.handle.get_next_valset(block_num)
     }
 
     fn total_db_lookups(&self) -> u64 {

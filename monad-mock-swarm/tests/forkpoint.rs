@@ -38,7 +38,7 @@ use monad_state::{MonadMessage, VerifiedMonadMessage};
 use monad_state_backend::{InMemoryState, InMemoryStateInner};
 use monad_testutil::swarm::make_state_configs;
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID};
-use monad_types::{NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
+use monad_types::{Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_updaters::{
     ledger::{MockLedger, MockableLedger},
     statesync::MockStateSyncExecutor,
@@ -285,7 +285,7 @@ fn forkpoint_restart_f(
         4, // num_nodes
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
-        || EthValidator::new(0),
+        || EthValidator::new(0, epoch_length, Epoch::MAX),
         || {
             EthBlockPolicy::new(
                 GENESIS_SEQ_NUM,
@@ -324,7 +324,7 @@ fn forkpoint_restart_f(
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            || EthValidator::new(0),
+            || EthValidator::new(0, epoch_length, Epoch::MAX),
             create_block_policy,
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
             state_root_delay,                    // execution_delay
@@ -341,7 +341,7 @@ fn forkpoint_restart_f(
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            || EthValidator::new(0),
+            || EthValidator::new(0, epoch_length, Epoch::MAX),
             || {
                 EthBlockPolicy::new(
                     GENESIS_SEQ_NUM,
@@ -625,7 +625,7 @@ fn forkpoint_restart_below_all(
         num_nodes,
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
-        || EthValidator::new(0),
+        || EthValidator::new(0, epoch_length, Epoch::MAX),
         || {
             EthBlockPolicy::new(
                 GENESIS_SEQ_NUM,
@@ -677,7 +677,7 @@ fn forkpoint_restart_below_all(
             num_nodes,
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            || EthValidator::new(0),
+            || EthValidator::new(0, epoch_length, Epoch::MAX),
             create_block_policy,
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
             state_root_delay,                    // execution_delay
@@ -691,7 +691,7 @@ fn forkpoint_restart_below_all(
             num_nodes,
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            || EthValidator::new(0),
+            || EthValidator::new(0, epoch_length, Epoch::MAX),
             create_block_policy,
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
             state_root_delay,                    // execution_delay

@@ -43,7 +43,7 @@ use monad_state::{Forkpoint, MonadMessage, MonadState, MonadStateBuilder, Verifi
 use monad_state_backend::InMemoryState;
 use monad_types::{ExecutionProtocol, NodeId, Round, SeqNum};
 use monad_updaters::{
-    checkpoint::MockCheckpoint, config_loader::MockConfigLoader, ledger::MockLedger,
+    config_file::MockConfigFile, config_loader::MockConfigLoader, ledger::MockLedger,
     local_router::LocalPeerRouter, loopback::LoopbackExecutor, parent::ParentExecutor,
     statesync::MockStateSyncExecutor, timer::TokioTimer, tokio_timestamp::TokioTimestamp,
     txpool::MockTxPoolExecutor, val_set::MockValSetUpdaterNop, BoxUpdater, Updater,
@@ -107,7 +107,7 @@ pub fn make_monad_executor<ST, SCT>(
     >,
     TokioTimer<MonadEvent<ST, SCT, MockExecutionProtocol>>,
     MockLedger<ST, SCT, MockExecutionProtocol>,
-    MockCheckpoint<ST, SCT, MockExecutionProtocol>,
+    MockConfigFile<ST, SCT, MockExecutionProtocol>,
     BoxUpdater<'static, ValSetCommand, MonadEvent<ST, SCT, MockExecutionProtocol>>,
     TokioTimestamp<ST, SCT, MockExecutionProtocol>,
     MockTxPoolExecutor<ST, SCT, MockExecutionProtocol, PassthruBlockPolicy, InMemoryState<ST, SCT>>,
@@ -163,7 +163,7 @@ where
         ledger: match config.ledger_config {
             LedgerConfig::Mock => MockLedger::new(state_backend.clone()),
         },
-        checkpoint: MockCheckpoint::default(),
+        config_file: MockConfigFile::default(),
         val_set: match config.val_set_config {
             ValSetConfig::Mock {
                 genesis_validator_data,
