@@ -356,16 +356,17 @@ where
         &mut self,
         additional_fn: FullNodes<CertificateSignaturePubKey<ST>>,
     ) {
+        let mut full_nodes = Vec::new();
         for node in additional_fn.list {
-            if self.peer_disc_full_nodes.list.contains(&node) || // already have
-               self.always_ask_full_nodes.list.contains(&node) || // already ask
+            if self.always_ask_full_nodes.list.contains(&node) || // already in priority list
                node == self.validator_node_id
             // we can't be a candidate
             {
                 continue;
             }
-            self.peer_disc_full_nodes.list.push(node);
+            full_nodes.push(node);
         }
+        self.peer_disc_full_nodes.list = full_nodes;
     }
 
     pub fn metrics(&self) -> &ExecutorMetrics {
@@ -1365,8 +1366,8 @@ mod tests {
             // Verify that the FSM invites 1 always_ask + 2 random peer_disc.
             // since after last call to update_always_ask_full_nodes, we only
             // have nid(16) as always_ask_full_node, and it should appear first.
-            assert_eq!(invitees.list.len(), 3);
-            assert!(equal_node_vec(&invitees.list, &node_ids_vec![16, 13, 12]));
+            assert_eq!(invitees.list.len(), 2);
+            assert!(equal_node_vec(&invitees.list, &node_ids_vec![16, 11]));
         } else {
             panic!(
                 "Expected FullNodesGroupMessage::PrepareGroup, got: {:?}\n\

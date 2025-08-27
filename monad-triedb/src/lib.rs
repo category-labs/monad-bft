@@ -157,6 +157,8 @@ pub unsafe extern "C" fn traverse_callback(
 
 impl TriedbHandle {
     pub fn try_new(dbdir_path: &Path) -> Option<Self> {
+        monad_cxx::init_cxx_logging(tracing::Level::WARN);
+
         let path = CString::new(dbdir_path.to_str().expect("invalid path"))
             .expect("failed to create CString");
 

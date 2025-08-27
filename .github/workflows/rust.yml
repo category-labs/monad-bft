@@ -28,7 +28,7 @@ env:
   CC: gcc-15
   CFLAGS: -march=haswell
   CXX: g++-15
-  CXXFLAGS: -march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL
+  CXXFLAGS: -march=haswell
   TRIEDB_TARGET: triedb_driver
 
 jobs:
