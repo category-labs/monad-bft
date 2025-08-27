@@ -19,7 +19,7 @@
 //! be used which can then be converted into SystemTransaction(s) and
 //! added to the block.
 
-use alloy_primitives::{Address, B256, Bytes, hex};
+use alloy_primitives::{hex, Address, Bytes, B256};
 use monad_consensus_types::block::ConsensusBlockHeader;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -83,6 +83,10 @@ impl SystemTransaction {
         SYSTEM_SENDER_ETH_ADDRESS
     }
 
+    pub const fn signer_ref(&self) -> &'static Address {
+        &SYSTEM_SENDER_ETH_ADDRESS
+    }
+
     pub fn nonce(&self) -> u64 {
         // TODO use actual nonce from transaction
         0
@@ -102,7 +106,7 @@ impl From<SystemCall> for SystemTransaction {
 
 #[cfg(test)]
 mod test_utils {
-    use alloy_consensus::{SignableTransaction, TxEnvelope, TxLegacy, transaction::Recovered};
+    use alloy_consensus::{transaction::Recovered, SignableTransaction, TxEnvelope, TxLegacy};
     use alloy_primitives::{Address, Bytes, TxKind};
     use alloy_signer::SignerSync;
     use alloy_signer_local::LocalSigner;
