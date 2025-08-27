@@ -217,6 +217,16 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
             rng: self.rng,
         };
 
+        // if self initializes config as a validator, make sure it's indeed in the validator set
+        if state.self_role == PeerDiscoveryRole::ValidatorNone
+            || state.self_role == PeerDiscoveryRole::ValidatorPublisher
+        {
+            assert!(
+                state.check_current_epoch_validator(&state.self_id),
+                "incorrectly set as validator"
+            );
+        }
+
         let mut cmds = Vec::new();
         self.bootstrap_peers
             .into_iter()
@@ -528,16 +538,12 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
             .is_some_and(|validators| validators.contains(peer_id))
     }
 
-    // a helper function check if a node is a validator in the next epoch
-    fn check_next_epoch_validator(&self, peer_id: &NodeId<CertificateSignaturePubKey<ST>>) -> bool {
-        self.epoch_validators
-            .get(&(self.current_epoch + Epoch(1)))
-            .is_some_and(|validators| validators.contains(peer_id))
-    }
-
     // a helper function to check if a node is a validator in the current or next epoch
     fn check_validator_membership(&self, peer_id: &NodeId<CertificateSignaturePubKey<ST>>) -> bool {
-        self.check_current_epoch_validator(peer_id) || self.check_next_epoch_validator(peer_id)
+        let current_epoch_validators = self.epoch_validators.get(&self.current_epoch);
+        let next_epoch_validators = self.epoch_validators.get(&(self.current_epoch + Epoch(1)));
+        current_epoch_validators.is_some_and(|validators| validators.contains(peer_id))
+            || next_epoch_validators.is_some_and(|validators| validators.contains(peer_id))
     }
 
     // a helper function to check if a node is a validator or a pinned full node
@@ -1244,7 +1250,7 @@ where
                     .collect();
 
                 for validator in validators {
-                    if self.routing_info.contains_key(&validator) {
+                    if let Some(name_record) = self.routing_info.get(&validator) {
                         // send ping to advertise name record
                         cmds.push(PeerDiscoveryCommand::RouterCommand {
                             target: validator,
@@ -1255,6 +1261,20 @@ where
                         });
                     }
                 }
+            }
+
+            // when a validator is demoted to a full node, defaults to FullNodeClient
+            if (self.self_role == PeerDiscoveryRole::ValidatorNone
+                || self.self_role == PeerDiscoveryRole::ValidatorPublisher)
+                && !self.check_current_epoch_validator(&self.self_id)
+            {
+                debug!(?epoch, "validator demoted to full node");
+                self.self_role = PeerDiscoveryRole::FullNodeClient;
+                // clear connection info
+                self.participation_info.iter_mut().for_each(|(_, info)| {
+                    info.status = SecondaryRaptorcastConnectionStatus::None;
+                });
+                cmds.extend(self.look_for_upstream_validators());
             }
         }
 
@@ -1276,25 +1296,8 @@ where
             "updating validator set in peer discovery"
         );
 
-        let mut cmds = Vec::new();
+        let cmds = Vec::new();
         self.epoch_validators.insert(epoch, validators);
-
-        // validator set update are done during epoch boundary block
-        // if a validator is going to be demoted to a full node, switch role to FullNodeClient
-        // and start looking for upstream validators
-        if epoch == self.current_epoch + Epoch(1)
-            && (self.self_role == PeerDiscoveryRole::ValidatorNone
-                || self.self_role == PeerDiscoveryRole::ValidatorPublisher)
-            && !self.check_next_epoch_validator(&self.self_id)
-        {
-            debug!(?epoch, "validator demoted to full node");
-            self.self_role = PeerDiscoveryRole::FullNodeClient;
-            // clear connection info
-            self.participation_info.iter_mut().for_each(|(_, info)| {
-                info.status = SecondaryRaptorcastConnectionStatus::None;
-            });
-            cmds.extend(self.look_for_upstream_validators());
-        }
 
         cmds
     }
