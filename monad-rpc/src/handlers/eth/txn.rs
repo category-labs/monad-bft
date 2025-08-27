@@ -208,8 +208,7 @@ const MAX_CONCURRENT_SEND_RAW_TX: usize = 1_000;
 #[tracing::instrument(level = "debug", skip_all)]
 /// Submits a raw transaction. For EIP-4844 transactions, the raw form must be the network form.
 /// This means it includes the blobs, KZG commitments, and KZG proofs.
-pub async fn monad_eth_sendRawTransaction<T: Triedb>(
-    triedb_env: &T,
+pub async fn monad_eth_sendRawTransaction(
     txpool_bridge_client: &EthTxPoolBridgeClient,
     base_fee_per_gas: impl BaseFeePerGas,
     params: MonadEthSendRawTransactionParams,
@@ -462,7 +461,6 @@ mod tests {
         for (idx, case) in expected_failures.into_iter().enumerate() {
             assert!(
                 monad_eth_sendRawTransaction(
-                    &triedb,
                     &EthTxPoolBridgeClient::for_testing(),
                     FixedFee::new(2000),
                     case,
