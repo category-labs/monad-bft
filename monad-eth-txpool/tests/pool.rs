@@ -1004,20 +1004,22 @@ fn test_tx_invalid_chain_id() {
 
 #[test]
 fn test_same_account_priority_fee_ordering() {
-    let tx_higher = make_eip1559_tx(S1, BASE_FEE + 50, 20, GAS_LIMIT, 0, 10);
-    let tx_lower = make_eip1559_tx(S1, BASE_FEE + 100, 10, GAS_LIMIT, 0, 10);
+    let tx_a = make_eip1559_tx(S1, (BASE_FEE_PER_GAS + 50).into(), 20, GAS_LIMIT, 0, 10);
+    let tx_b = make_eip1559_tx(S1, (BASE_FEE_PER_GAS + 100).into(), 10, GAS_LIMIT, 0, 10);
+    let tx_c = make_eip1559_tx(S1, (BASE_FEE_PER_GAS + 100).into(), 20, GAS_LIMIT, 0, 10);
+    let tx_d = make_eip1559_tx(S1, (BASE_FEE_PER_GAS + 101).into(), 20, GAS_LIMIT, 0, 10);
 
-    for (tx1, tx2) in [(&tx_higher, &tx_lower), (&tx_lower, &tx_higher)] {
+    for (tx1, tx2, tx3, tx4) in [(&tx_a, &tx_b, &tx_c, &tx_d), (&tx_b, &tx_a, &tx_c, &tx_d)] {
         run_simple([
             TxPoolTestEvent::InsertTxs {
-                txs: vec![(tx1, true), (tx2, tx2 == &tx_higher)],
+                txs: vec![(tx1, true), (tx2, false), (tx3, tx1 == &tx_a), (tx4, true)],
                 expected_pool_size_change: 1,
             },
             TxPoolTestEvent::CreateProposal {
                 base_fee: BASE_FEE_PER_GAS,
-                tx_limit: 2,
-                gas_limit: GAS_LIMIT * 2,
-                expected_txs: vec![&tx_higher],
+                tx_limit: 4,
+                gas_limit: GAS_LIMIT * 4,
+                expected_txs: vec![&tx_d],
                 add_to_blocktree: false,
             },
         ]);

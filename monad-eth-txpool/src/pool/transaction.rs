@@ -155,11 +155,9 @@ impl ValidEthTransaction {
         self.owned
     }
 
-    pub fn has_higher_priority(&self, other: &Self, base_fee: u64) -> bool {
-        let self_effective_gas_price = self.tx.effective_gas_price(Some(base_fee));
-        let other_effective_gas_price = other.tx.effective_gas_price(Some(base_fee));
-
-        self_effective_gas_price > other_effective_gas_price
+    pub fn has_higher_priority(&self, other: &Self, _base_fee: u64) -> bool {
+        self.tx.max_fee_per_gas() > other.tx.max_fee_per_gas()
+            && self.tx.max_priority_fee_per_gas() >= other.tx.max_priority_fee_per_gas()
     }
 
     pub fn get_if_forwardable<const MIN_SEQNUM_DIFF: u64, const MAX_RETRIES: usize>(
