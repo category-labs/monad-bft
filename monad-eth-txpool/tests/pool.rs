@@ -30,7 +30,10 @@ use monad_consensus_types::{
 };
 use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
 use monad_eth_block_policy::EthBlockPolicy;
-use monad_eth_testutil::{generate_block_with_txs, make_eip1559_tx, make_legacy_tx, recover_tx};
+use monad_eth_testutil::{
+    generate_block_with_txs, make_eip1559_tx, make_eip7702_tx, make_legacy_tx,
+    make_signed_authorization, recover_tx, secret_to_eth_address,
+};
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
 use monad_eth_txpool_types::EthTxPoolSnapshot;
 use monad_eth_types::Balance;
@@ -100,6 +103,10 @@ enum TxPoolTestEvent<'a> {
     CommitPendingBlocks {
         num_blocks: usize,
         expected_committed_seq_num: u64,
+    },
+    AssertNonce {
+        address: Address,
+        nonce: u64,
     },
     Block(Arc<dyn Fn(&mut EthTxPool<SignatureType, SignatureCollectionType, StateBackendType>)>),
 }
@@ -310,6 +317,29 @@ fn run_custom_iter<const N: usize>(
                 assert_eq!(
                     expected_committed_seq_num,
                     eth_block_policy.get_last_commit().0
+                );
+            }
+            TxPoolTestEvent::AssertNonce {
+                address,
+                nonce: expected_nonce,
+            } => {
+                let mut nonces = eth_block_policy
+                    .get_account_base_nonces(
+                        SeqNum(current_seq_num),
+                        &state_backend,
+                        &pending_blocks.iter().collect_vec(),
+                        [&address].into_iter(),
+                    )
+                    .unwrap();
+
+                let (lookup_address, nonce) = nonces.pop_first().unwrap();
+                assert_eq!(&address, lookup_address);
+
+                assert!(nonces.is_empty());
+
+                assert_eq!(
+                    expected_nonce, nonce,
+                    "expected nonce does not match actual nonce"
                 );
             }
             TxPoolTestEvent::Block(f) => f(&mut pool),
@@ -1205,4 +1235,122 @@ fn test_proposal_tx_low_base_fee() {
             add_to_blocktree: false,
         },
     ]);
+}
+
+#[test]
+#[should_panic]
+fn test_eip7702_valid_authorization_changes_nonce() {
+    let tx1 = make_eip7702_tx(
+        S1,
+        BASE_FEE + 1,
+        1,
+        GAS_LIMIT,
+        0,
+        vec![make_signed_authorization(S2, secret_to_eth_address(S1), 0)],
+        10,
+    );
+
+    let tx2 = make_legacy_tx(S2, BASE_FEE, GAS_LIMIT, 1, 0);
+
+    run_simple([
+        TxPoolTestEvent::InsertTxs {
+            txs: vec![(&tx1, true), (&tx2, true)],
+            expected_pool_size_change: 2,
+        },
+        TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
+            tx_limit: 2,
+            gas_limit: 2 * GAS_LIMIT,
+            expected_txs: vec![&tx1, &tx2],
+            add_to_blocktree: false,
+        },
+        TxPoolTestEvent::AssertNonce {
+            address: secret_to_eth_address(S1),
+            nonce: 1,
+        },
+        TxPoolTestEvent::AssertNonce {
+            address: secret_to_eth_address(S2),
+            nonce: 2,
+        },
+    ]);
+}
+
+#[test]
+#[should_panic]
+fn test_eip7702_authorization_nonce_higher() {
+    let tx1 = make_eip7702_tx(
+        S1,
+        BASE_FEE + 1,
+        1,
+        GAS_LIMIT,
+        0,
+        vec![make_signed_authorization(S2, secret_to_eth_address(S1), 1)],
+        10,
+    );
+
+    let tx2 = make_legacy_tx(S2, BASE_FEE, GAS_LIMIT, 0, 0);
+
+    run_simple([
+        TxPoolTestEvent::InsertTxs {
+            txs: vec![(&tx1, true), (&tx2, true)],
+            expected_pool_size_change: 2,
+        },
+        TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
+            tx_limit: 2,
+            gas_limit: 2 * GAS_LIMIT,
+            expected_txs: vec![&tx1, &tx2],
+            add_to_blocktree: false,
+        },
+        TxPoolTestEvent::AssertNonce {
+            address: secret_to_eth_address(S1),
+            nonce: 1,
+        },
+        TxPoolTestEvent::AssertNonce {
+            address: secret_to_eth_address(S2),
+            nonce: 1,
+        },
+    ]);
+}
+
+#[test]
+#[should_panic]
+fn test_eip7702_authorization_nonce_lower() {
+    let tx1 = make_legacy_tx(S2, BASE_FEE + 2, GAS_LIMIT, 0, 0);
+    let tx2 = make_eip7702_tx(
+        S1,
+        BASE_FEE + 1,
+        1,
+        GAS_LIMIT,
+        0,
+        vec![make_signed_authorization(S2, secret_to_eth_address(S1), 0)],
+        10,
+    );
+    let tx3 = make_legacy_tx(S2, BASE_FEE, GAS_LIMIT, 1, 0);
+
+    run_custom(
+        make_test_block_policy,
+        Some(BTreeMap::from_iter([(secret_to_eth_address(S2), 1)])),
+        [
+            TxPoolTestEvent::InsertTxs {
+                txs: vec![(&tx1, true), (&tx2, true), (&tx3, true)],
+                expected_pool_size_change: 2,
+            },
+            TxPoolTestEvent::CreateProposal {
+                base_fee: BASE_FEE_PER_GAS,
+                tx_limit: 3,
+                gas_limit: 3 * GAS_LIMIT,
+                expected_txs: vec![&tx1, &tx2, &tx3],
+                add_to_blocktree: false,
+            },
+            TxPoolTestEvent::AssertNonce {
+                address: secret_to_eth_address(S1),
+                nonce: 1,
+            },
+            TxPoolTestEvent::AssertNonce {
+                address: secret_to_eth_address(S2),
+                nonce: 2,
+            },
+        ],
+    );
 }
