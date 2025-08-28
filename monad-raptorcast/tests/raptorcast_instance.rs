@@ -36,7 +36,7 @@ use monad_peer_discovery::mock::NopDiscovery;
 use monad_raptor::SOURCE_SYMBOLS_MAX;
 use monad_raptorcast::{
     new_defaulted_raptorcast_for_tests,
-    udp::{build_messages, build_messages_with_length, MAX_REDUNDANCY},
+    udp::{build_messages, build_messages_with_length},
     util::{BuildTarget, EpochValidators, Redundancy},
     RaptorCast, RaptorCastEvent,
 };
@@ -278,9 +278,9 @@ pub fn valid_rebroadcast() {
         &tx_keypair,
         DEFAULT_SEGMENT_SIZE,
         message,
-        MAX_REDUNDANCY, // redundancy,
-        0,              // epoch_no
-        0,              // unix_ts_ms
+        Redundancy::from_u8(3), // redundancy,
+        0,                      // epoch_no
+        0,                      // unix_ts_ms
         BuildTarget::Raptorcast(epoch_validators),
         &known_addresses,
     );
