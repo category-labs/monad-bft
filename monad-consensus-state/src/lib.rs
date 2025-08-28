@@ -1945,7 +1945,7 @@ mod test {
 
     const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;
     const GAS_LIMIT: u64 = 30000;
-    const RESERVE_BALANCE: u128 = 1_000_000_000_000_000_000;
+    const RESERVE_BALANCE: u128 = 10_000_000_000_000_000_000;
 
     static CHAIN_PARAMS: ChainParams = ChainParams {
         tx_limit: 10_000,

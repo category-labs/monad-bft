@@ -26,6 +26,7 @@ use alloy_consensus::{
 };
 use alloy_primitives::Address;
 use alloy_rlp::Encodable;
+use itertools::Itertools;
 use monad_consensus_types::{
     block::{BlockPolicy, ConsensusBlockHeader, ConsensusFullBlock, TxnFee, TxnFees},
     block_validator::{BlockValidationError, BlockValidator},
@@ -188,8 +189,27 @@ where
                     first_txn_value: eth_txn.value(),
                     first_txn_gas: compute_txn_max_gas_cost(eth_txn),
                     max_gas_cost: Balance::ZERO,
+                    is_delegated: false,
                 });
-            debug!(seq_num = ?header.seq_num, address = ?eth_txn.signer(), nonce = ?eth_txn.nonce(), ?txn_fee_entry, "TxnFeeEntry");
+            debug!(?txn_fee_entry, address = ?eth_txn.signer(), "TxnFeeEntry");
+
+            if eth_txn.is_eip7702() {
+                if let Some(auth_list) = eth_txn.authorization_list() {
+                    let authorities = auth_list
+                        .iter()
+                        .map(|a| a.recover_authority())
+                        .collect_vec();
+                    for result in authorities {
+                        if let Ok(authority) = result {
+                            let txn_fee = txn_fees.entry(authority).or_default();
+                            txn_fee.is_delegated = true;
+                        } else {
+                            debug!("Error recovering authority {:?}", result);
+                            return Err(BlockValidationError::TxnError);
+                        }
+                    }
+                }
+            }
         }
 
         let total_gas: u64 = eth_txns.iter().map(|tx| tx.gas_limit()).sum();

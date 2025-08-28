@@ -1242,7 +1242,6 @@ fn test_proposal_tx_low_base_fee() {
 }
 
 #[test]
-#[should_panic]
 fn test_eip7702_valid_authorization_changes_nonce() {
     let tx1 = make_eip7702_tx(
         S1,
@@ -1298,7 +1297,6 @@ fn test_eip7702_valid_authorization_changes_nonce() {
 }
 
 #[test]
-#[should_panic]
 fn test_eip7702_authorization_nonce_higher() {
     let tx1 = make_eip7702_tx(
         S1,
@@ -1336,7 +1334,6 @@ fn test_eip7702_authorization_nonce_higher() {
 }
 
 #[test]
-#[should_panic]
 fn test_eip7702_authorization_nonce_lower() {
     let tx1 = make_eip7702_tx(
         S1,

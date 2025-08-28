@@ -260,6 +260,7 @@ pub fn generate_consensus_test_block(
                 first_txn_value: eth_txn.value(),
                 first_txn_gas: compute_txn_max_gas_cost(eth_txn),
                 max_gas_cost: Balance::ZERO,
+                is_delegated: false,
             });
     }
 
