@@ -24,6 +24,8 @@ use non_deterministic_storage::NonDeterministicStorageTxGenerator;
 use reserve_balance::ReserveBalanceGenerator;
 use self_destruct::SelfDestructTxGenerator;
 use storage_deletes::StorageDeletesTxGenerator;
+use system_key_normal::SystemKeyNormalTxGenerator;
+use system_spam::SystemTransactionSpamGenerator;
 use uniswap::UniswapGenerator;
 
 use crate::{
@@ -41,6 +43,8 @@ mod non_deterministic_storage;
 mod reserve_balance;
 mod self_destruct;
 mod storage_deletes;
+mod system_key_normal;
+mod system_spam;
 mod uniswap;
 
 pub fn make_generator(
@@ -109,6 +113,23 @@ pub fn make_generator(
         GenMode::ReserveBalance(_) => Box::new(ReserveBalanceGenerator {
             recipient_keys,
             num_drain_txs: 2,
+        }),
+        GenMode::SystemSpam(_) => Box::new(SystemTransactionSpamGenerator {
+            recipient_keys,
+            tx_per_sender,
+            system_nonce: 0,
+        }),
+        GenMode::SystemKeyNormal(_) => Box::new(SystemKeyNormalTxGenerator {
+            recipient_keys,
+            tx_per_sender,
+            system_nonce: 0,
+            random_priority_fee: false,
+        }),
+        GenMode::SystemKeyNormalRandomPriorityFee(_) => Box::new(SystemKeyNormalTxGenerator {
+            recipient_keys,
+            tx_per_sender,
+            system_nonce: 0,
+            random_priority_fee: true,
         }),
     })
 }

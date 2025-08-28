@@ -205,6 +205,9 @@ impl Config {
             GenMode::Uniswap(..) => 10,
             GenMode::HighCallDataLowGasLimit(..) => 30,
             GenMode::ReserveBalance(..) => 1,
+            GenMode::SystemSpam(..) => 500,
+            GenMode::SystemKeyNormal(..) => 500,
+            GenMode::SystemKeyNormalRandomPriorityFee(..) => 500,
         }
     }
 
@@ -226,6 +229,9 @@ impl Config {
             GenMode::HighCallDataLowGasLimit(..) => 3,
             GenMode::Uniswap(..) => 20,
             GenMode::ReserveBalance(..) => 100,
+            GenMode::SystemSpam(..) => 1,
+            GenMode::SystemKeyNormal(..) => 1,
+            GenMode::SystemKeyNormalRandomPriorityFee(..) => 1,
         }
     }
 
@@ -247,6 +253,9 @@ impl Config {
             GenMode::ECMul(..) => 100,
             GenMode::Uniswap(..) => 200,
             GenMode::ReserveBalance(..) => 2500,
+            GenMode::SystemSpam(..) => 1,
+            GenMode::SystemKeyNormal(..) => 1,
+            GenMode::SystemKeyNormalRandomPriorityFee(..) => 1,
         }
     }
 
@@ -272,6 +281,9 @@ impl Config {
             GenMode::ECMul(..) => ECMUL,
             GenMode::Uniswap(..) => Uniswap,
             GenMode::ReserveBalance(..) => None,
+            GenMode::SystemSpam(..) => None,
+            GenMode::SystemKeyNormal(..) => None,
+            GenMode::SystemKeyNormalRandomPriorityFee(..) => None,
         }
     }
 
@@ -381,6 +393,9 @@ pub enum GenMode {
     ECMul(ECMulConfig),
     Uniswap(UniswapConfig),
     ReserveBalance(ReserveBalanceConfig),
+    SystemSpam(SystemSpamConfig),
+    SystemKeyNormal(SystemKeyNormalConfig),
+    SystemKeyNormalRandomPriorityFee(SystemKeyNormalRandomPriorityFeeConfig),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -427,6 +442,15 @@ pub struct UniswapConfig {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReserveBalanceConfig {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemSpamConfig {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemKeyNormalConfig {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemKeyNormalRandomPriorityFeeConfig {}
 
 fn default_tx_type() -> TxType {
     TxType::ERC20

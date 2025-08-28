@@ -247,7 +247,7 @@ fn generate_sender_groups<'a>(
     traffic_gen: &'a TrafficGen,
 ) -> impl Iterator<Item = AccountsWithTime> + 'a {
     let mut rng = SmallRng::seed_from_u64(traffic_gen.sender_seed);
-    let num_groups = config.senders(traffic_gen) / config.sender_group_size(traffic_gen);
+    let num_groups = (config.senders(traffic_gen) / config.sender_group_size(traffic_gen)).max(1);
     let mut key_iter = config.root_private_keys.iter();
 
     (0..num_groups).map(move |_| AccountsWithTime {
