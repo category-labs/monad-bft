@@ -15,6 +15,7 @@
 
 use std::{collections::HashMap, future::ready};
 
+use alloy_consensus::{Block, Header, TxEnvelope};
 use monad_types::SeqNum;
 
 use crate::triedb_env::*;
@@ -22,6 +23,8 @@ use crate::triedb_env::*;
 #[derive(Debug, Default)]
 pub struct MockTriedb {
     latest_block: u64,
+    finalized_blocks: HashMap<SeqNum, Block<TxEnvelope>>,
+    receipts: HashMap<SeqNum, Vec<ReceiptWithLogIndex>>,
     accounts: HashMap<EthAddress, Account>,
     tx_locations: HashMap<EthTxHash, TransactionLocation>,
     call_frames: HashMap<TransactionLocation, Vec<u8>>,
@@ -51,6 +54,14 @@ impl MockTriedb {
 
     pub fn set_code(&mut self, code: String) {
         self.code = code;
+    }
+
+    pub fn set_finalized_block(&mut self, block_num: SeqNum, block: Block<TxEnvelope>) {
+        self.finalized_blocks.insert(block_num, block);
+    }
+
+    pub fn set_receipts(&mut self, block_num: SeqNum, receipts: Vec<ReceiptWithLogIndex>) {
+        self.receipts.insert(block_num, receipts);
     }
 }
 
@@ -110,10 +121,13 @@ impl Triedb for MockTriedb {
 
     fn get_receipts(
         &self,
-        _block_key: BlockKey,
+        block_key: BlockKey,
     ) -> impl std::future::Future<Output = Result<Vec<ReceiptWithLogIndex>, String>> + Send + Sync
     {
-        ready(Ok(vec![]))
+        self.receipts.get(&block_key.seq_num()).map_or_else(
+            || ready(Ok(vec![])),
+            |rcpts| ready(Ok(rcpts.clone())),
+        )
     }
 
     fn get_transaction(
@@ -127,17 +141,37 @@ impl Triedb for MockTriedb {
 
     fn get_transactions(
         &self,
-        _block_key: BlockKey,
+        block_key: BlockKey,
     ) -> impl std::future::Future<Output = Result<Vec<TxEnvelopeWithSender>, String>> + Send + Sync
-    {
-        ready(Ok(vec![]))
+    {   self.finalized_blocks.get(&block_key.seq_num()).map_or_else(
+            || ready(Ok(vec![])),
+            |blk| {
+                let txns = blk
+                    .body
+                    .transactions
+                    .iter()
+                    .cloned()
+                    .map(|tx| TxEnvelopeWithSender {
+                        tx: tx.clone(),
+                        sender: tx.recover_signer().expect("should recover sender"),
+                    })
+                    .collect();
+                ready(Ok(txns))
+            },
+        )
     }
 
     fn get_block_header(
         &self,
-        _block_key: BlockKey,
+        block_key: BlockKey,
     ) -> impl std::future::Future<Output = Result<Option<BlockHeader>, String>> + Send + Sync {
-        ready(Ok(None))
+        self.finalized_blocks.get(block_key.seq_num()).map_or_else(
+            || ready(Ok(None)),
+            |blk| ready(Ok(Some(BlockHeader {
+                hash: blk.header.hash_slow(),
+                header: blk.header.clone(),
+            }))),
+        )
     }
 
     fn get_transaction_location_by_hash(

@@ -20,7 +20,7 @@ use std::{
 
 use alloy_consensus::{Header, Transaction, TxEnvelope};
 use alloy_primitives::{Address, TxKind, U256, U64};
-use alloy_rpc_types::FeeHistory;
+use alloy_rpc_types::{FeeHistory, TransactionReceipt};
 use itertools::Itertools;
 use monad_ethcall::{CallResult, EthCallExecutor, StateOverrideSet};
 use monad_rpc_docs::rpc;
@@ -449,7 +449,6 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
                 None
             } else {
                 Some(percentiles)
-                // Some(vec![vec![0; percentiles.len()]; block_count as usize])
             }
         }
         None => None,
@@ -457,10 +456,10 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
 
     // Get all blocks from oldest block to the header - 1
     let oldest_block = header.number.saturating_sub(block_count);
-
     let mut base_fee_per_gas_history = vec![base_fee_per_gas.into(); (block_count + 1) as usize];
-    let mut gas_used_ratio_history = vec![gas_used_ratio; block_count as usize];
-    let mut rewards = vec![vec![]; block_count as usize];
+    let mut gas_used_ratio_history = vec![gas_used_ratio; (block_count + 1) as usize];
+    let mut rewards = vec![vec![]; (block_count + 1) as usize];
+
 
     for (idx, blk_num) in (oldest_block..=header.number).enumerate() {
         let block = chain_state
@@ -471,48 +470,86 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
             .await
             .map_err(|_| JsonRpcError::internal_error("could not get block data".into()))?;
 
+        let receipts = chain_state.get_block_receipts(BlockTagOrHash::BlockTags(BlockTags::Number(Quantity(blk_num)))).await.map_err(|_| JsonRpcError::internal_error("could not get block receipts".into()))?;
+
         let header = block.header;
+        let base_fee = header.base_fee_per_gas.unwrap_or_default();
         base_fee_per_gas_history[idx] = header.base_fee_per_gas.unwrap_or_default().into();
         gas_used_ratio_history[idx] = (header.gas_used as f64).div(header.gas_limit as f64);
 
         let txns: Vec<alloy_rpc_types::Transaction> = block
             .transactions
             .into_transactions()
-            .sorted_by(|a, b| a.priority_fee_or_price().cmp(&b.priority_fee_or_price()))
             .collect::<Vec<_>>();
 
-        // Get block transactions for calculating the percenatile rewards.
-        let percentile_rewards = match percentiles {
-            Some(ref percentiles) => percentiles
-                .iter()
-                .map(|&pct| {
-                    let idx = ((txns.len() - 1) as f64 * pct).round() as usize;
-                    txns.get(idx)
-                        .map(|tx| tx.priority_fee_or_price())
-                        .unwrap_or(0)
-                })
-                .collect::<Vec<_>>(),
-            None => vec![],
-        };
+        let receipts = receipts.into_iter().map(|r| r.0)
+            .collect::<Vec<_>>();
+
+
+        // Rewards are the requested percentiles of the effective priority fees per gas. Sorted in ascending order and weighted by gas used.
+        let percentile_rewards = calculate_fee_history_rewards(txns, receipts, base_fee, header.gas_used, percentiles.as_ref());
 
         rewards[idx] = percentile_rewards;
     }
 
-    // TODO: retrieve fee parameters from historical blocks. For now, return a hacky default
     Ok(MonadFeeHistory(FeeHistory {
         base_fee_per_gas: base_fee_per_gas_history,
         gas_used_ratio: gas_used_ratio_history,
         // TODO: proper calculation of blob fee
-        base_fee_per_blob_gas: vec![base_fee_per_gas.into(); (block_count + 1) as usize],
-        blob_gas_used_ratio: vec![0.0; block_count as usize],
+        base_fee_per_blob_gas: vec![0; (block_count + 1) as usize],
+        blob_gas_used_ratio: vec![0.0; (block_count + 1) as usize],
         oldest_block: header.number.saturating_sub(block_count),
-        reward: percentiles.map(|_| Some(rewards)).unwrap_or(None),
+        reward: Some(rewards),
     }))
+}
+
+fn calculate_fee_history_rewards(transactions: Vec<alloy_rpc_types::Transaction>, receipts: Vec<TransactionReceipt>, base_fee: u64, block_gas_used: u64, percentiles: Option<&Vec<f64>>) -> Vec<u128> {
+    if percentiles.is_none() {
+        return vec![];
+    }
+
+    if transactions.is_empty() {
+        return vec![0; percentiles.unwrap().len()];
+    }
+
+    // Get the reward and gas used for each transaction using receipt.
+    let gas_and_rewards = transactions.iter().zip(receipts).map(|(tx, receipt)| {
+        let gas_used = receipt.gas_used;
+        let reward = tx.effective_tip_per_gas(base_fee).unwrap_or_default();
+
+        (gas_used, reward)
+    }).sorted_by_key(|(gas_used, _)| *gas_used).collect::<Vec<_>>();
+
+    let mut idx = 0;
+    let mut cumulative_gas_used: u128 = 0;
+    let mut rewards  = Vec::new();
+
+    for pct in percentiles.unwrap() {
+
+        let thres = (block_gas_used as f64 * pct / 100.0).round() as u128;
+        while cumulative_gas_used < thres && idx < transactions.len() - 1 {
+            cumulative_gas_used += gas_and_rewards[idx].0;
+            idx += 1;
+        }
+        rewards.push(gas_and_rewards[idx].1 as u128);
+    }
+
+    rewards
 }
 
 #[cfg(test)]
 mod tests {
+    use std::default;
+
+    use alloy_consensus::{Block, ReceiptEnvelope, SignableTransaction, TxEip1559};
+    use alloy_primitives::FixedBytes;
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
     use monad_ethcall::{FailureCallResult, SuccessCallResult};
+    use monad_triedb_utils::mock_triedb::{self, MockTriedb};
+    use rand::rngs::mock;
+    use monad_triedb_utils::triedb_env::ReceiptWithLogIndex;
+    use monad_eth_testutil::make_receipt;
 
     use super::*;
     use crate::handlers::eth::call::CallRequest;
@@ -642,5 +679,93 @@ mod tests {
         assert_eq!(result.unwrap(), Quantity(60_000));
     }
 
+    fn make_block(num: u64, txns: Vec<TxEnvelope>) -> Block<TxEnvelope> {
+        let mut blk = Block::<TxEnvelope>::default();
+        blk.header.gas_limit = 30_000_000;
+        blk.header.gas_used = txns.iter().map(|t| t.gas_limit()).sum();
+        blk.header.base_fee_per_gas = Some(1_000);
+        blk.header.number = num;
+        blk.body.transactions = txns;
+        blk
+    }
+
+    fn make_tx(
+        sender: FixedBytes<32>,
+        max_fee_per_gas: u128,
+        max_priority_fee_per_gas: u128,
+        gas_limit: u64,
+        nonce: u64,
+        chain_id: u64,
+    ) -> TxEnvelope {
+        let transaction = TxEip1559 {
+            chain_id,
+            nonce,
+            gas_limit,
+            max_fee_per_gas,
+            max_priority_fee_per_gas,
+            to: TxKind::Call(Address::repeat_byte(0u8)),
+            value: Default::default(),
+            access_list: Default::default(),
+            input: vec![].into(),
+        };
+
+        let signer = PrivateKeySigner::from_bytes(&sender).unwrap();
+        let signature = signer
+            .sign_hash_sync(&transaction.signature_hash())
+            .unwrap();
+        transaction.into_signed(signature).into()
+    }
+
     // call eth fee history, with various blocks.
+    #[tokio::test]
+    async fn test_eth_fee_history() {
+        let mut mock_triedb = MockTriedb::default();
+        mock_triedb.set_latest_block(1000);
+        let sender = FixedBytes::<32>::from([1u8; 32]);
+
+        // Fetch fee history for an empty block.
+        mock_triedb.set_finalized_block(SeqNum(1000), make_block(1000, vec![]));
+        mock_triedb.set_finalized_block(SeqNum(999), make_block(999, vec![]));
+        
+        let chain_state = ChainState::new(None,mock_triedb, None);
+        let res = monad_eth_feeHistory(&chain_state, MonadEthHistoryParams {
+            block_count: Quantity(1),
+            newest_block: BlockTags::Latest,
+            reward_percentiles: Some(vec![0.0, 25.0, 50.0, 75.0, 100.0]),
+        }).await.expect("should get fee history");
+        assert_eq!(res.0.oldest_block, 999);
+        assert_eq!(res.0.base_fee_per_blob_gas, vec![0, 0]);
+        assert_eq!(res.0.blob_gas_used_ratio, vec![0.0, 0.0]);
+        assert_eq!(res.0.gas_used_ratio, vec![0.0, 0.0]);
+        assert_eq!(res.0.base_fee_per_gas, vec![1_000, 1_000]);
+        assert_eq!(res.0.reward, Some(vec![vec![0, 0, 0, 0, 0], vec![0, 0, 0, 0, 0]]));
+
+
+        // Fetch fee history for blocks that have 4 transactions. 
+        let mut txs = Vec::new();
+        let mut receipts = Vec::new();
+        for _ in 0..4 {
+            let tx = make_tx(sender, 2000, 1000, 21_000_000, 1, 1);
+            txs.push(tx);
+            receipts.push(ReceiptWithLogIndex {
+                receipt: ReceiptEnvelope::Eip1559(make_receipt(0)),
+                starting_log_index: 0,
+            });
+        }
+        let mut mock_triedb = MockTriedb::default();
+        mock_triedb.set_latest_block(1000);
+        mock_triedb.set_finalized_block(SeqNum(1000), make_block(1000, txs.clone()));
+        mock_triedb.set_finalized_block(SeqNum(999), make_block(999, txs));
+        mock_triedb.set_receipts(SeqNum(1000), receipts.clone());
+        mock_triedb.set_receipts(SeqNum(999), receipts);
+
+        let chain_state = ChainState::new(None,mock_triedb, None);
+        let res = monad_eth_feeHistory(&chain_state, MonadEthHistoryParams {
+            block_count: Quantity(1),
+            newest_block: BlockTags::Latest,
+            reward_percentiles: Some(vec![25.0]),
+        }).await.expect("should get fee history");
+        dbg!(res);
+    }
+
 }
