@@ -190,6 +190,12 @@ impl Add for Epoch {
     }
 }
 
+impl Epoch {
+    pub fn checked_sub(self, count: usize) -> Option<Self> {
+        self.0.checked_sub(count as u64).map(Epoch)
+    }
+}
+
 impl Debug for Epoch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
