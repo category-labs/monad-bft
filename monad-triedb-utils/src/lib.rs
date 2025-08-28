@@ -185,7 +185,7 @@ impl TriedbReader {
                                 debug!(?res, block_id = ?seq_num.0, ?eth_account, "account code_data");
                                 match res {
                                     Some(data) => {
-                                        if data.len() >= 3 {
+                                        if data.len() == 23 {
                                             let delegation_code = &data[0..3];
                                             eth_account.is_delegated =
                                                 delegation_code == [0xef, 0x01, 0x00];

@@ -835,7 +835,7 @@ where
 
     fn system_transaction_nonce_check(
         &self,
-        system_txns: &Vec<SystemTransaction>,
+        system_txns: &[SystemTransaction],
         account_nonces: &mut BTreeMap<&Address, u64>,
     ) -> Result<(), BlockPolicyError> {
         for sys_txn in system_txns.iter() {
@@ -936,8 +936,8 @@ where
 
     fn extract_signers(
         &self,
-        validated_txns: &Vec<Recovered<TxEnvelope>>,
-        system_txns: &Vec<SystemTransaction>,
+        validated_txns: &[Recovered<TxEnvelope>],
+        system_txns: &[SystemTransaction],
     ) -> Result<(Vec<Address>, BTreeSet<Address>), BlockPolicyError> {
         // TODO fix this unnecessary copy into a new vec to generate an owned Address
         let mut authority_addresses: BTreeSet<Address> = BTreeSet::new();

@@ -64,7 +64,7 @@ pub fn rlp_decode_account(account_rlp: Vec<u8>) -> Option<EthAccount> {
         nonce,
         balance,
         code_hash: code_hash.map(B256::from),
-        is_delegated,
+        is_delegated, // TODO: is_delegated is not part of RLP, needs to be moved out of this struct for consistency.
     })
 }
 
