@@ -21,6 +21,7 @@ monad-types = { workspace = true }
 monad-validator = { workspace = true }
 
 alloy-consensus = { workspace = true, features = ["k256"] }
+alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 indexmap = { workspace = true }

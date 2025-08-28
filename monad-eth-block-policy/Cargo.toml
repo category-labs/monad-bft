@@ -18,6 +18,7 @@ monad-system-calls = { workspace = true }
 monad-types = { workspace = true }
 monad-validator = { workspace = true }
 
+alloy-eips = { workspace = true }
 alloy-consensus = { workspace = true }
 alloy-primitives = { workspace = true }
 itertools = { workspace = true }

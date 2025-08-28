@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     marker::PhantomData,
     ops::{Deref, Range, RangeFrom},
 };
@@ -23,6 +23,7 @@ use alloy_consensus::{
     transaction::{Recovered, Transaction},
     TxEnvelope,
 };
+use alloy_eips::eip7702::SignedAuthorization;
 use alloy_primitives::{Address, TxHash, U256};
 use itertools::Itertools;
 use monad_consensus_types::{
@@ -346,13 +347,15 @@ pub struct EthBlockPolicyBlockValidator {
 
 fn is_possibly_emptying_transaction(
     block_seq_num_of_curr_txn: SeqNum,
-    block_seqnum_of_latest_txn: SeqNum,
+    balance_state: &AccountBalanceState,
     execution_delay: SeqNum,
 ) -> bool {
     // txn T is emptying if there is no "prior txn" i.e. a txn from the same sender sent from block P so that P >= block_number(T) - k + 1.
-    let blocks_since_latest_txn =
-        block_seq_num_of_curr_txn.max(block_seqnum_of_latest_txn) - block_seqnum_of_latest_txn;
-    blocks_since_latest_txn > execution_delay - SeqNum(1)
+    let blocks_since_latest_txn = block_seq_num_of_curr_txn
+        .max(balance_state.block_seqnum_of_latest_txn)
+        - balance_state.block_seqnum_of_latest_txn;
+
+    !balance_state.is_delegated && blocks_since_latest_txn > (execution_delay - SeqNum(1))
 }
 
 impl BlockPolicyBlockValidator for EthBlockPolicyBlockValidator
@@ -376,7 +379,7 @@ where
     ) -> Result<(), BlockPolicyError> {
         let has_emptying_transaction = is_possibly_emptying_transaction(
             self.block_seq_num,
-            account_balance.block_seqnum_of_latest_txn,
+            account_balance,
             self.execution_delay,
         );
 
@@ -474,7 +477,7 @@ where
 
         let is_emptying_transaction = is_possibly_emptying_transaction(
             self.block_seq_num,
-            account_balance.block_seqnum_of_latest_txn,
+            account_balance,
             self.execution_delay,
         );
 
@@ -645,6 +648,14 @@ where
         self.last_commit
     }
 
+    pub fn get_chain_id(&self) -> u64 {
+        self.chain_id
+    }
+
+    pub fn max_reserve_balance(&self) -> Balance {
+        self.max_reserve_balance
+    }
+
     fn get_block_index(
         &self,
         extending_blocks: &Option<&Vec<&EthValidatedBlock<ST, SCT>>>,
@@ -739,6 +750,7 @@ where
                             remaining_reserve_balance: status.balance.min(self.max_reserve_balance),
                             max_reserve_balance: self.max_reserve_balance,
                             block_seqnum_of_latest_txn: base_seq_num, // most pessimistic assumption
+                            is_delegated: status.is_delegated,
                         }
                     },
                 )
@@ -821,12 +833,154 @@ where
         account_balances
     }
 
-    pub fn get_chain_id(&self) -> u64 {
-        self.chain_id
+    fn system_transaction_nonce_check(
+        &self,
+        system_txns: &[SystemTransaction],
+        account_nonces: &mut BTreeMap<&Address, u64>,
+    ) -> Result<(), BlockPolicyError> {
+        for sys_txn in system_txns.iter() {
+            let sys_txn_signer = sys_txn.signer();
+            let sys_txn_nonce = sys_txn.nonce();
+
+            let expected_nonce = account_nonces
+                .get_mut(&sys_txn_signer)
+                .expect("account_nonces should have been populated");
+
+            if &sys_txn_nonce != expected_nonce {
+                warn!(
+                    ?sys_txn_nonce,
+                    ?expected_nonce,
+                    "block not coherent, invalid nonce for system transaction"
+                );
+                return Err(BlockPolicyError::BlockNotCoherent);
+            }
+            *expected_nonce += 1;
+        }
+
+        Ok(())
     }
 
-    pub fn max_reserve_balance(&self) -> Balance {
-        self.max_reserve_balance
+    // this function checks the validity of nonces for a regular transaction
+    fn nonce_check_helper(
+        &self,
+        txn: &Recovered<TxEnvelope>,
+        account_nonces: &mut BTreeMap<&Address, u64>,
+    ) -> Result<(), BlockPolicyError> {
+        let eth_address = txn.signer();
+        let txn_nonce = txn.nonce();
+
+        let expected_nonce = account_nonces
+            .get_mut(&eth_address)
+            .expect("account_nonces should have been populated");
+
+        if &txn_nonce != expected_nonce {
+            warn!(
+                txn_nonce = ?txn_nonce,
+                expected_nonce = ?expected_nonce,
+                "block not coherent, invalid nonce"
+            );
+            return Err(BlockPolicyError::BlockNotCoherent);
+        }
+
+        Ok(())
+    }
+
+    // https://eips.ethereum.org/EIPS/eip-7702#behavior
+    // the nonce of authority is only incremented if the behavior checks
+    // for the tuple pass
+    // this function performs those checks
+    fn eip_7702_valid_nonce_update(
+        &self,
+        auth_list: &[SignedAuthorization],
+        account_nonces: &mut BTreeMap<&Address, u64>,
+    ) {
+        for (result, nonce, code_address, chain_id) in auth_list
+            .iter()
+            .map(|a| (a.recover_authority(), a.nonce(), a.address(), a.chain_id()))
+        {
+            match result {
+                Ok(authority) => {
+                    debug!(?code_address, ?nonce, ?authority, "Authority");
+
+                    if chain_id != 0_u64 || chain_id != self.get_chain_id() {
+                        continue;
+                    }
+
+                    //FIXME: check that authority is empty or already delegated
+
+                    let expected_nonce = account_nonces.get_mut(&authority);
+                    match expected_nonce {
+                        Some(n) => {
+                            if *n != nonce + 1 {
+                                warn!(expected_nonce = ?*n, auth_tuple_nonce = nonce, ?authority, "authority nonce error");
+                                continue;
+                            }
+
+                            *n += 1;
+                        }
+                        None => {
+                            //FIXME:
+                            // if account is not found in the account_nonces map, should nonce be
+                            // considered 0?
+
+                            warn!(?authority, "authority no nonce");
+                        }
+                    }
+                }
+                Err(error) => {
+                    continue;
+                }
+            }
+        }
+    }
+
+    fn extract_signers(
+        &self,
+        validated_txns: &[Recovered<TxEnvelope>],
+        system_txns: &[SystemTransaction],
+    ) -> Result<(Vec<Address>, BTreeSet<Address>), BlockPolicyError> {
+        // TODO fix this unnecessary copy into a new vec to generate an owned Address
+        let mut authority_addresses: BTreeSet<Address> = BTreeSet::new();
+        let mut tx_signers: Vec<Address> = Vec::new();
+
+        for tx_signer in validated_txns.iter().map(|txn| {
+            if txn.is_eip7702() {
+                match txn.authorization_list() {
+                    Some(auth_list) => {
+                        for result in auth_list.iter().map(|a| a.recover_authority()) {
+                            match result {
+                                Ok(authority) => {
+                                    authority_addresses.insert(authority);
+                                }
+                                Err(error) => {
+                                    warn!(?error, "invalid authority signature");
+                                }
+                            }
+                        }
+                    }
+                    None => {
+                        warn!("empty authorization list is invalid");
+                        return Err(BlockPolicyError::Eip7702Error);
+                    }
+                }
+            };
+
+            Ok(txn.signer())
+        }) {
+            match tx_signer {
+                Ok(address) => tx_signers.push(address),
+                Err(err) => {
+                    return Err(err);
+                }
+            }
+        }
+
+        tx_signers.extend(authority_addresses.iter().cloned());
+
+        let mut system_tx_signers = system_txns.iter().map(|txn| txn.signer());
+        tx_signers.extend(&mut system_tx_signers);
+
+        Ok((tx_signers, authority_addresses))
     }
 }
 
@@ -845,7 +999,7 @@ where
         blocktree_root: RootInfo,
         state_backend: &SBT,
     ) -> Result<(), BlockPolicyError> {
-        trace!(?block, "check_coherency");
+        debug!(?block, "check_coherency");
 
         let first_block = extending_blocks
             .iter()
@@ -899,14 +1053,8 @@ where
             return Err(BlockPolicyError::ExecutionResultMismatch);
         }
 
-        let system_tx_signers = block.system_txns.iter().map(|txn| txn.signer());
-        // TODO fix this unnecessary copy into a new vec to generate an owned Address
-        let tx_signers = block
-            .validated_txns
-            .iter()
-            .map(|txn| txn.signer())
-            .chain(system_tx_signers)
-            .collect_vec();
+        let (tx_signers, authority_addresses) =
+            self.extract_signers(&block.validated_txns, &block.system_txns)?;
 
         // these must be updated as we go through txs in the block
         let mut account_nonces = self.get_account_base_nonces(
@@ -923,48 +1071,41 @@ where
             tx_signers.iter(),
         )?;
 
-        for sys_txn in block.system_txns.iter() {
-            let sys_txn_signer = sys_txn.signer();
-            let sys_txn_nonce = sys_txn.nonce();
+        for authority in &authority_addresses {
+            let account_balance = account_balances
+                .get_mut(authority)
+                .expect("account_balances should have been populated for delegated accounts");
 
-            let expected_nonce = account_nonces
-                .get_mut(&sys_txn_signer)
-                .expect("account_nonces should have been populated");
-
-            if &sys_txn_nonce != expected_nonce {
-                warn!(
-                    seq_num =? block.header().seq_num,
-                    round =? block.header().block_round,
-                    "block not coherent, invalid nonce for system transaction"
-                );
-                return Err(BlockPolicyError::BlockNotCoherent);
-            }
-            *expected_nonce += 1;
+            debug!(?authority, "Setting account to is_delegated: true");
+            account_balance.is_delegated = true;
         }
 
         let mut validator =
             EthBlockPolicyBlockValidator::new(block.get_seq_num(), self.execution_delay)?;
 
+        self.system_transaction_nonce_check(&block.system_txns, &mut account_nonces)?;
+
         for txn in block.validated_txns.iter() {
-            let eth_address = txn.signer();
-            let txn_nonce = txn.nonce();
-
-            let expected_nonce = account_nonces
-                .get_mut(&eth_address)
-                .expect("account_nonces should have been populated");
-
-            if &txn_nonce != expected_nonce {
-                warn!(
-                    seq_num =? block.header().seq_num,
-                    round =? block.header().block_round,
-                    "block not coherent, invalid nonce"
-                );
-                return Err(BlockPolicyError::BlockNotCoherent);
-            }
-
+            self.nonce_check_helper(txn, &mut account_nonces)?;
             validator.try_add_transaction(&mut account_balances, txn)?;
-            *expected_nonce += 1;
+
+            let sender = txn.signer();
+            let sender_nonce = account_nonces
+                .get_mut(&sender)
+                .expect("account_nonces should have been populated");
+            *sender_nonce += 1;
+
+            //https://eips.ethereum.org/EIPS/eip-7702#behavior
+            // "The authorization list is processed before the execution portion
+            // of the transaction begins, but after the sender’s nonce is incremented."
+            if txn.is_eip7702() {
+                debug!(?sender, "eip-7702 transaction");
+                if let Some(auth_list) = txn.authorization_list() {
+                    self.eip_7702_valid_nonce_update(auth_list, &mut account_nonces);
+                }
+            }
         }
+
         Ok(())
     }
 
@@ -1387,6 +1528,7 @@ mod test {
                             first_txn_value: Balance::from(100),
                             first_txn_gas: Balance::from(10),
                             max_gas_cost: Balance::from(90),
+                            is_delegated: false,
                         },
                     ),
                     (
@@ -1395,6 +1537,7 @@ mod test {
                             first_txn_value: Balance::from(200),
                             first_txn_gas: Balance::from(10),
                             max_gas_cost: Balance::from(190),
+                            is_delegated: false,
                         },
                     ),
                 ]),
@@ -1416,6 +1559,7 @@ mod test {
                             first_txn_value: Balance::from(150),
                             first_txn_gas: Balance::from(10),
                             max_gas_cost: Balance::from(140),
+                            is_delegated: false,
                         },
                     ),
                     (
@@ -1424,6 +1568,7 @@ mod test {
                             first_txn_value: Balance::from(300),
                             first_txn_gas: Balance::from(10),
                             max_gas_cost: Balance::from(290),
+                            is_delegated: false,
                         },
                     ),
                 ]),
@@ -1445,6 +1590,7 @@ mod test {
                             first_txn_value: Balance::from(250),
                             first_txn_gas: Balance::from(10),
                             max_gas_cost: Balance::from(240),
+                            is_delegated: false,
                         },
                     ),
                     (
@@ -1453,6 +1599,7 @@ mod test {
                             first_txn_value: Balance::from(350),
                             first_txn_gas: Balance::from(10),
                             max_gas_cost: Balance::from(0),
+                            is_delegated: false,
                         },
                     ),
                 ]),
@@ -1469,6 +1616,7 @@ mod test {
             block_seqnum_of_latest_txn: GENESIS_SEQ_NUM,
             remaining_reserve_balance: Balance::from(250),
             max_reserve_balance,
+            is_delegated: false,
         };
         let res = buffer.update_account_balance(
             &mut account_balance_address_1,
@@ -1487,6 +1635,7 @@ mod test {
             block_seqnum_of_latest_txn: GENESIS_SEQ_NUM,
             remaining_reserve_balance: Balance::from(250),
             max_reserve_balance,
+            is_delegated: false,
         };
         let res = buffer.update_account_balance(
             &mut account_balance_address_2,
@@ -1509,6 +1658,7 @@ mod test {
             block_seqnum_of_latest_txn: GENESIS_SEQ_NUM,
             remaining_reserve_balance: Balance::from(250),
             max_reserve_balance,
+            is_delegated: false,
         };
         let res = buffer.update_account_balance(
             &mut account_balance_address_3,
@@ -1578,6 +1728,7 @@ mod test {
                 remaining_reserve_balance: min_balance,
                 block_seqnum_of_latest_txn: latest_seq_num,
                 max_reserve_balance: reserve_balance,
+                is_delegated: false,
             },
         );
 
@@ -1597,6 +1748,7 @@ mod test {
                 remaining_reserve_balance: min_balance,
                 block_seqnum_of_latest_txn: latest_seq_num,
                 max_reserve_balance: reserve_balance,
+                is_delegated: false,
             },
         );
 
@@ -1632,6 +1784,7 @@ mod test {
                 remaining_reserve_balance: min_balance,
                 block_seqnum_of_latest_txn: latest_seq_num,
                 max_reserve_balance: reserve_balance,
+                is_delegated: false,
             },
         );
 
@@ -1651,6 +1804,7 @@ mod test {
                 remaining_reserve_balance: min_balance - Balance::from(1),
                 block_seqnum_of_latest_txn: latest_seq_num,
                 max_reserve_balance: reserve_balance,
+                is_delegated: false,
             },
         );
 
@@ -1687,6 +1841,7 @@ mod test {
                 remaining_reserve_balance: min_balance,
                 block_seqnum_of_latest_txn: latest_seq_num,
                 max_reserve_balance: reserve_balance,
+                is_delegated: false,
             },
         );
 
@@ -1723,6 +1878,7 @@ mod test {
                 remaining_reserve_balance: Balance::ZERO,
                 block_seqnum_of_latest_txn: latest_seq_num,
                 max_reserve_balance: reserve_balance,
+                is_delegated: false,
             },
         );
 
@@ -1745,6 +1901,7 @@ mod test {
                 remaining_reserve_balance: min_reserve,
                 block_seqnum_of_latest_txn: latest_seq_num,
                 max_reserve_balance: reserve_balance,
+                is_delegated: false,
             },
         );
 
@@ -1779,6 +1936,7 @@ mod test {
                 remaining_reserve_balance: Balance::ZERO,
                 block_seqnum_of_latest_txn: latest_seq_num,
                 max_reserve_balance: reserve_balance,
+                is_delegated: false,
             },
         );
 
@@ -1800,6 +1958,7 @@ mod test {
                 remaining_reserve_balance: min_reserve,
                 block_seqnum_of_latest_txn: latest_seq_num,
                 max_reserve_balance: reserve_balance,
+                is_delegated: false,
             },
         );
 
@@ -1853,6 +2012,7 @@ mod test {
             remaining_reserve_balance: reserve_balance,
             block_seqnum_of_latest_txn: SeqNum(0),
             max_reserve_balance,
+            is_delegated: false,
         };
 
         let txn = make_test_eip1559_tx(txn_value, 0, txn_gas_limit, S1);
@@ -1902,6 +2062,7 @@ mod test {
             remaining_reserve_balance: reserve_balance,
             block_seqnum_of_latest_txn: SeqNum(0),
             max_reserve_balance,
+            is_delegated: false,
         };
 
         let txns = txns
@@ -1953,6 +2114,7 @@ mod test {
             first_txn_value: Balance::from(first_txn_value),
             first_txn_gas: Balance::from(first_txn_gas),
             max_gas_cost: Balance::from(max_gas_cost),
+            is_delegated: false,
         }
     }
 
@@ -2047,6 +2209,7 @@ mod test {
             remaining_reserve_balance: reserve_balance,
             block_seqnum_of_latest_txn,
             max_reserve_balance,
+            is_delegated: false,
         };
 
         let blk_fees = blk_fees

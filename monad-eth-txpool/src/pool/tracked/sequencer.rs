@@ -19,17 +19,18 @@ use std::{
 };
 
 use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
-use alloy_primitives::Address;
+use alloy_eips::eip7702::Authorization;
+use alloy_primitives::{Address, U256};
 use indexmap::IndexMap;
 use monad_consensus_types::block::{AccountBalanceState, BlockPolicyBlockValidator};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{
-    AccountNonceRetrievable, EthBlockPolicyBlockValidator, EthValidatedBlock,
+    AccountNonceRetrievable, EthBlockPolicy, EthBlockPolicyBlockValidator, EthValidatedBlock,
 };
 use monad_validator::signature_collection::SignatureCollection;
-use tracing::{debug, error, trace};
+use tracing::{debug, error, trace, warn};
 
 use super::list::TrackedTxList;
 use crate::pool::transaction::ValidEthTransaction;
@@ -37,14 +38,33 @@ use crate::pool::transaction::ValidEthTransaction;
 #[derive(Debug, PartialEq, Eq)]
 struct OrderedTx<'a> {
     tx: &'a ValidEthTransaction,
+    valid_signed_authorizations: Vec<(Address, &'a Authorization)>,
     effective_tip_per_gas: u128,
 }
 
 impl<'a> OrderedTx<'a> {
-    fn new(tx: &'a ValidEthTransaction, base_fee: u64) -> Option<Self> {
+    fn new(tx: &'a ValidEthTransaction, chain_id: u64, base_fee: u64) -> Option<Self> {
+        let effective_tip_per_gas = tx.raw().effective_tip_per_gas(base_fee)?;
+
         Some(Self {
             tx,
-            effective_tip_per_gas: tx.raw().effective_tip_per_gas(base_fee)?,
+            valid_signed_authorizations: tx
+                .raw()
+                .authorization_list()
+                .into_iter()
+                .flatten()
+                .flat_map(|signed_authorization| {
+                    if signed_authorization.chain_id != chain_id {
+                        return None;
+                    }
+
+                    signed_authorization
+                        .recover_authority()
+                        .ok()
+                        .map(|authority| (authority, signed_authorization.inner()))
+                })
+                .collect(),
+            effective_tip_per_gas,
         })
     }
 }
@@ -93,6 +113,7 @@ impl<'a> ProposalSequencer<'a> {
     pub fn new<ST, SCT>(
         tracked_txs: &'a IndexMap<Address, TrackedTxList>,
         extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
+        chain_id: u64,
         base_fee: u64,
     ) -> Self
     where
@@ -107,7 +128,7 @@ impl<'a> ProposalSequencer<'a> {
         for (address, tx_list) in tracked_txs {
             let mut queued = tx_list
                 .get_queued(pending_account_nonces.get(address).cloned())
-                .map_while(|tx| OrderedTx::new(tx, base_fee));
+                .map_while(|tx| OrderedTx::new(tx, chain_id, base_fee));
 
             let Some(tx) = queued.next() else {
                 continue;
@@ -145,23 +166,43 @@ impl<'a> ProposalSequencer<'a> {
         )
     }
 
-    pub fn build_proposal(
+    pub fn authority_addresses<'s>(&'s self) -> impl Iterator<Item = &'s Address> {
+        self.heap.iter().flat_map(
+            |OrderedTxGroup {
+                 tx,
+                 virtual_time: _,
+                 address: _,
+                 queued,
+             }| {
+                std::iter::once(tx)
+                    .chain(queued.iter())
+                    .flat_map(|tx| tx.valid_signed_authorizations.iter())
+                    .map(|(authority, _)| authority)
+            },
+        )
+    }
+
+    pub fn build_proposal<ST, SCT>(
         mut self,
         tx_limit: usize,
         proposal_gas_limit: u64,
         proposal_byte_limit: u64,
+        block_policy: &EthBlockPolicy<ST, SCT>,
         mut account_balances: BTreeMap<&Address, AccountBalanceState>,
+        mut authority_nonces: BTreeMap<&'a Address, u64>,
         mut validator: EthBlockPolicyBlockValidator,
-    ) -> Proposal {
+    ) -> Proposal
+    where
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    {
         let mut proposal = Proposal::default();
 
-        while proposal.txs.len() < tx_limit {
+        let mut authority_nonce_deltas = BTreeMap::<Address, usize>::default();
+
+        'proposal: while proposal.txs.len() < tx_limit {
             let Some(OrderedTxGroup {
-                tx:
-                    OrderedTx {
-                        tx,
-                        effective_tip_per_gas: _,
-                    },
+                mut tx,
                 virtual_time: _,
                 address,
                 mut queued,
@@ -170,6 +211,19 @@ impl<'a> ProposalSequencer<'a> {
                 break;
             };
 
+            if let Some(authority_nonce_delta) = authority_nonce_deltas.remove(address) {
+                for _ in 0..authority_nonce_delta {
+                    let Some(next_tx) = queued.pop_front() else {
+                        continue 'proposal;
+                    };
+
+                    tx = next_tx;
+                }
+
+                self.push(address, tx, queued);
+                continue;
+            }
+
             if Self::try_add_tx_to_proposal(
                 proposal_gas_limit,
                 proposal_byte_limit,
@@ -177,10 +231,55 @@ impl<'a> ProposalSequencer<'a> {
                 &mut validator,
                 &mut proposal,
                 address,
-                tx,
+                tx.tx,
             ) {
-                if let Some(tx) = queued.pop_front() {
-                    self.push(address, tx, queued);
+                if let Some(next_tx) = queued.pop_front() {
+                    self.push(address, next_tx, queued);
+                }
+
+                if let Some(authority_nonce) = authority_nonces.get_mut(tx.tx.signer_ref()) {
+                    if authority_nonce != tx.tx.nonce() {
+                        warn!(
+                            tx = ?tx.tx,
+                            ?address,
+                            ?authority_nonce,
+                            "txpool authority nonce does not match tx nonce"
+                        );
+                        break 'proposal;
+                    }
+
+                    *authority_nonce += 1;
+                }
+
+                for (authority, authorization) in tx.valid_signed_authorizations {
+                    if authorization.chain_id != block_policy.get_chain_id() {
+                        warn!(
+                            tx = ?tx.tx,
+                            ?address,
+                            ?authority,
+                            ?authorization,
+                            "txpool looked up nonces for invalid chain id authorization"
+                        );
+                        continue;
+                    }
+
+                    let Some(authority_nonce) = authority_nonces.get_mut(&authority) else {
+                        error!(
+                            tx = ?tx.tx,
+                            ?address,
+                            ?authority,
+                            ?authorization,
+                            "txpool missing expected authority nonce"
+                        );
+                        break 'proposal;
+                    };
+
+                    if authority_nonce != &authorization.nonce {
+                        continue;
+                    }
+
+                    *authority_nonce += 1;
+                    *authority_nonce_deltas.entry(authority).or_default() += 1;
                 }
             }
         }
