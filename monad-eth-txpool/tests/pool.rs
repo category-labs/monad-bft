@@ -106,6 +106,7 @@ enum TxPoolTestEvent<'a> {
 
 fn run_custom_iter<const N: usize>(
     mut eth_block_policy: EthBlockPolicy<SignatureType, SignatureCollectionType>,
+    max_account_balance: Balance,
     nonces_override: Option<BTreeMap<Address, u64>>,
     events: [TxPoolTestEvent<'_>; N],
     owned: bool,
@@ -137,7 +138,11 @@ fn run_custom_iter<const N: usize>(
                 .collect()
         };
 
-        InMemoryStateInner::new(Balance::MAX, SeqNum(4), InMemoryBlockState::genesis(nonces))
+        InMemoryStateInner::new(
+            max_account_balance,
+            SeqNum(4),
+            InMemoryBlockState::genesis(nonces),
+        )
     };
 
     let mut pool = EthTxPool::default_testing();
@@ -319,12 +324,14 @@ fn run_custom_iter<const N: usize>(
 
 fn run_custom<const N: usize>(
     eth_block_policy_generator: impl Fn() -> EthBlockPolicy<SignatureType, SignatureCollectionType>,
+    max_account_balance: Balance,
     nonces_override: Option<BTreeMap<Address, u64>>,
     events: [TxPoolTestEvent<'_>; N],
 ) {
     for owned in [false, true] {
         run_custom_iter(
             eth_block_policy_generator(),
+            max_account_balance,
             nonces_override.clone(),
             events.clone(),
             owned,
@@ -333,7 +340,7 @@ fn run_custom<const N: usize>(
 }
 
 fn run_simple<const N: usize>(events: [TxPoolTestEvent<'_>; N]) {
-    run_custom(make_test_block_policy, None, events);
+    run_custom(make_test_block_policy, Balance::MAX, None, events);
 }
 
 #[test]
@@ -730,6 +737,7 @@ fn test_nonce_exists_in_committed_block() {
 
     run_custom(
         make_test_block_policy,
+        Balance::MAX,
         Some(nonces),
         [
             TxPoolTestEvent::InsertTxs {
@@ -749,11 +757,12 @@ fn test_nonce_exists_in_committed_block() {
 
 #[test]
 #[traced_test]
-fn test_unknown_account() {
+fn test_insert_unknown_account() {
     let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
 
     run_custom(
         make_test_block_policy,
+        Balance::MAX,
         Some(BTreeMap::default()),
         [
             TxPoolTestEvent::InsertTxs {
@@ -763,6 +772,53 @@ fn test_unknown_account() {
             TxPoolTestEvent::Block(Arc::new(|pool| {
                 assert!(pool.is_empty());
             })),
+            TxPoolTestEvent::CreateProposal {
+                base_fee: BASE_FEE_PER_GAS,
+                tx_limit: 1,
+                gas_limit: GAS_LIMIT,
+                expected_txs: vec![],
+                add_to_blocktree: true,
+            },
+        ],
+    );
+}
+
+#[test]
+#[traced_test]
+fn test_insert_low_balance() {
+    let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
+
+    run_custom(
+        make_test_block_policy,
+        Balance::ZERO,
+        None,
+        [
+            TxPoolTestEvent::InsertTxs {
+                txs: vec![(&tx1, false)],
+                expected_pool_size_change: 0,
+            },
+            TxPoolTestEvent::Block(Arc::new(|pool| {
+                assert!(pool.is_empty());
+            })),
+            TxPoolTestEvent::CreateProposal {
+                base_fee: BASE_FEE_PER_GAS,
+                tx_limit: 1,
+                gas_limit: GAS_LIMIT,
+                expected_txs: vec![],
+                add_to_blocktree: true,
+            },
+        ],
+    );
+
+    run_custom(
+        make_test_block_policy,
+        Balance::ONE,
+        None,
+        [
+            TxPoolTestEvent::InsertTxs {
+                txs: vec![(&tx1, true)],
+                expected_pool_size_change: 1,
+            },
             TxPoolTestEvent::CreateProposal {
                 base_fee: BASE_FEE_PER_GAS,
                 tx_limit: 1,
@@ -994,6 +1050,7 @@ fn test_tx_invalid_chain_id() {
 
     run_custom(
         || EthBlockPolicy::new(GENESIS_SEQ_NUM, 0, 1),
+        Balance::MAX,
         None,
         [TxPoolTestEvent::InsertTxs {
             txs: vec![(&tx1, true)],

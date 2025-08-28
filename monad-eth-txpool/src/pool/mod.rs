@@ -18,7 +18,7 @@ use std::time::Duration;
 use alloy_consensus::{
     constants::EMPTY_WITHDRAWALS, transaction::Recovered, TxEnvelope, EMPTY_OMMER_ROOT_HASH,
 };
-use alloy_primitives::Address;
+use alloy_primitives::{Address, U256};
 use alloy_rlp::Encodable;
 use itertools::Itertools;
 use monad_consensus_types::{block::ProposedExecutionInputs, payload::RoundSignature};
@@ -181,15 +181,13 @@ where
         let last_commit_base_fee = last_commit.execution_inputs.base_fee_per_gas;
 
         for tx in txs {
-            let account_balance = account_balances
+            if account_balances
                 .get(tx.signer_ref())
-                .cloned()
-                .unwrap_or_default();
-
-            let Some(_new_account_balance) = tx.apply_max_value(account_balance) else {
+                .is_none_or(U256::is_zero)
+            {
                 event_tracker.drop(tx.hash(), EthTxPoolDropReason::InsufficientBalance);
                 continue;
-            };
+            }
 
             let Some(tx) = self
                 .tracked
