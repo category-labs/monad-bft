@@ -271,10 +271,10 @@ pub fn generate_consensus_test_block(
         .fold(BTreeMap::new(), |mut map, (address, nonce)| {
             match map.entry(address) {
                 std::collections::btree_map::Entry::Vacant(v) => {
-                    v.insert(nonce);
+                    v.insert(nonce + 1);
                 }
                 std::collections::btree_map::Entry::Occupied(mut o) => {
-                    o.insert(nonce.max(*o.get()));
+                    o.insert(nonce.max(*o.get()) + 1);
                 }
             }
             map
@@ -300,7 +300,7 @@ pub fn generate_block_with_txs(
         block: test_block.block,
         system_txns: Vec::new(),
         validated_txns: test_block.validated_txns,
-        nonces: test_block.nonces,
+        nonces: Some(test_block.nonces),
         txn_fees: test_block.txn_fees,
     }
 }

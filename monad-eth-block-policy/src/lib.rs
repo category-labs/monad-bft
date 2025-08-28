@@ -88,7 +88,8 @@ where
     pub block: ConsensusFullBlock<ST, SCT, EthExecutionProtocol>,
     pub system_txns: Vec<SystemTransaction>,
     pub validated_txns: Vec<Recovered<TxEnvelope>>,
-    pub nonces: BTreeMap<Address, Nonce>,
+    // nonces are populated during check_coherency, None otherwise
+    pub nonces: Option<BTreeMap<Address, Nonce>>,
     pub txn_fees: TxnFees,
 }
 
@@ -114,7 +115,7 @@ where
 
     /// Returns the highest tx nonce per account in the block
     pub fn get_nonces(&self) -> &BTreeMap<Address, u64> {
-        &self.nonces
+        &self.nonces.as_ref().expect("nonces should be populated")
     }
 
     pub fn get_total_gas(&self) -> u64 {
@@ -146,15 +147,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     fn get_account_nonces(&self) -> BTreeMap<Address, Nonce> {
-        let mut account_nonces = BTreeMap::new();
-        let block_nonces = self.get_nonces();
-        for (&address, &txn_nonce) in block_nonces {
-            // account_nonce is the number of txns the account has sent. It's
-            // one higher than the last txn nonce
-            let acc_nonce = txn_nonce + 1;
-            account_nonces.insert(address, acc_nonce);
-        }
-        account_nonces
+        self.get_nonces().clone()
     }
 }
 
@@ -995,7 +988,7 @@ where
         extending_blocks: Vec<&Self::ValidatedBlock>,
         blocktree_root: RootInfo,
         state_backend: &SBT,
-    ) -> Result<(), BlockPolicyError> {
+    ) -> Result<Self::ValidatedBlock, BlockPolicyError> {
         debug!(?block, "check_coherency");
 
         let first_block = extending_blocks
@@ -1096,7 +1089,18 @@ where
             }
         }
 
-        Ok(())
+        Ok(EthValidatedBlock {
+            block: block.block.clone(),
+            system_txns: block.system_txns.clone(),
+            validated_txns: block.validated_txns.clone(),
+            nonces: Some(
+                account_nonces
+                    .into_iter()
+                    .map(|(k, v)| (k.clone(), v))
+                    .collect(),
+            ),
+            txn_fees: block.txn_fees.clone(),
+        })
     }
 
     fn get_expected_execution_results(
@@ -1232,7 +1236,7 @@ mod test {
             block: consensus_test_block.block,
             system_txns: Vec::new(),
             validated_txns: consensus_test_block.validated_txns,
-            nonces: consensus_test_block.nonces,
+            nonces: Some(consensus_test_block.nonces),
             txn_fees: consensus_test_block.txn_fees,
         }
     }
@@ -1668,7 +1672,10 @@ mod test {
         // balance of signer at block n-3
         let gas_cost = 50000 * BASE_FEE_PER_GAS as u128;
         let state_backend = NopStateBackend {
-            balances: BTreeMap::from([(signer1, U256::from(gas_cost)), (signer2, U256::from(gas_cost))]),
+            balances: BTreeMap::from([
+                (signer1, U256::from(gas_cost)),
+                (signer2, U256::from(gas_cost)),
+            ]),
             ..Default::default()
         };
 

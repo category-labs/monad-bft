@@ -266,8 +266,7 @@ where
                 self.root.info,
                 state_backend,
             ) {
-                Ok(()) => {
-                    let next_block = next_block.clone();
+                Ok(next_block) => {
                     self.tree
                         .set_coherent(&next_block_id, true)
                         .expect("should be in tree");

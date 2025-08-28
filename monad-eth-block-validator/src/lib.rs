@@ -87,7 +87,7 @@ where
         proposal_gas_limit: u64,
         proposal_byte_limit: u64,
         max_code_size: usize,
-    ) -> Result<(SystemTransactions, ValidatedTxns, NonceMap, TxnFees), BlockValidationError> {
+    ) -> Result<(SystemTransactions, ValidatedTxns, TxnFees), BlockValidationError> {
         let EthBlockBody {
             transactions,
             ommers,
@@ -131,22 +131,7 @@ where
                 }
             };
 
-        // recover the account nonces for system txns
-        let mut nonces = BTreeMap::new();
-
-        // duplicate check. this is also done in SystemTransactionValidator
-        for sys_txn in &system_txns {
-            let maybe_old_nonce = nonces.insert(sys_txn.signer(), sys_txn.nonce());
-            // A block is invalid if we see a smaller or equal nonce
-            // after the first or if there is a nonce gap
-            if let Some(old_nonce) = maybe_old_nonce {
-                if sys_txn.nonce() != old_nonce + 1 {
-                    return Err(BlockValidationError::SystemTxnError);
-                }
-            }
-        }
-
-        // recover the account nonces and txn fee for user txns
+        // recover the txn fee for user txns
         let mut txn_fees: TxnFees = TxnFees::default();
 
         for eth_txn in eth_txns.iter() {
@@ -165,16 +150,6 @@ where
             // update this when base fee is included in consensus proposal
             if eth_txn.max_fee_per_gas() < BASE_FEE_PER_GAS.into() {
                 return Err(BlockValidationError::TxnError);
-            }
-
-            let maybe_old_nonce = nonces.insert(eth_txn.signer(), eth_txn.nonce());
-            // txn iteration is following the same order as they are in the
-            // block. A block is invalid if we see a smaller or equal nonce
-            // after the first or if there is a nonce gap
-            if let Some(old_nonce) = maybe_old_nonce {
-                if eth_txn.nonce() != old_nonce + 1 {
-                    return Err(BlockValidationError::TxnError);
-                }
             }
 
             let txn_fee_entry = txn_fees
@@ -210,19 +185,6 @@ where
                                     continue;
                                 }
 
-                                match nonces.get_mut(&authority) {
-                                    Some(n) => {
-                                        if *n + 1 != nonce {
-                                            debug!(expected_nonce = ?*n+1, auth_tuple_nonce = nonce, ?authority, "authority nonce error");
-                                            continue;
-                                        }
-                                        *n += 1;
-                                    }
-                                    None => {
-                                        nonces.insert(authority, nonce);
-                                    }
-                                }
-
                                 let txn_fee = txn_fees.entry(authority).or_default();
                                 txn_fee.is_delegated = true;
                             }
@@ -254,7 +216,7 @@ where
             return Err(BlockValidationError::TxnError);
         }
 
-        Ok((system_txns, eth_txns, nonces, txn_fees))
+        Ok((system_txns, eth_txns, txn_fees))
     }
 
     fn validate_block_header(
@@ -380,7 +342,7 @@ where
     >{
         self.validate_block_header(&header, &body, author_pubkey, proposal_gas_limit)?;
 
-        if let Ok((system_txns, validated_txns, nonces, txn_fees)) = self.validate_block_body(
+        if let Ok((system_txns, validated_txns, txn_fees)) = self.validate_block_body(
             &header,
             &body,
             tx_limit,
@@ -393,7 +355,7 @@ where
                 block,
                 system_txns,
                 validated_txns,
-                nonces,
+                nonces: None,
                 txn_fees,
             })
         } else {
