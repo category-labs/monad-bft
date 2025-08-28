@@ -227,7 +227,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
 
             let encoding_symbol_id = parsed_message.chunk_id.into();
 
-            tracing::trace!(
+            tracing::debug!(
                 src_addr = ?message.src_addr,
                 app_message_len = ?parsed_message.app_message_len,
                 self_id =? self.self_id,
