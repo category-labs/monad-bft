@@ -17,8 +17,9 @@ use std::{collections::BTreeMap, iter::repeat_n};
 
 use alloy_consensus::{
     transaction::Recovered, Eip658Value, Receipt, ReceiptWithBloom, SignableTransaction,
-    Transaction, TxEip1559, TxEnvelope, TxLegacy,
+    Transaction, TxEip1559, TxEip7702, TxEnvelope, TxLegacy,
 };
+use alloy_eips::eip7702::{Authorization, SignedAuthorization};
 use alloy_primitives::{keccak256, Address, Bloom, FixedBytes, Log, LogData, TxKind, U256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
@@ -120,6 +121,53 @@ pub fn make_eip1559_tx_with_value(
         .sign_hash_sync(&transaction.signature_hash())
         .unwrap();
     transaction.into_signed(signature).into()
+}
+
+pub fn make_eip7702_tx(
+    sender: FixedBytes<32>,
+    max_fee_per_gas: u128,
+    max_priority_fee_per_gas: u128,
+    gas_limit: u64,
+    nonce: u64,
+    authorization_list: Vec<SignedAuthorization>,
+    input_len: usize,
+) -> TxEnvelope {
+    let transaction = TxEip7702 {
+        chain_id: 1337,
+        nonce,
+        gas_limit,
+        max_fee_per_gas,
+        max_priority_fee_per_gas,
+        to: Address::repeat_byte(0u8),
+        value: Default::default(),
+        access_list: Default::default(),
+        authorization_list,
+        input: vec![0; input_len].into(),
+    };
+
+    let signer = PrivateKeySigner::from_bytes(&sender).unwrap();
+    let signature = signer
+        .sign_hash_sync(&transaction.signature_hash())
+        .unwrap();
+    transaction.into_signed(signature).into()
+}
+
+pub fn make_signed_authorization(
+    authority: FixedBytes<32>,
+    address: Address,
+    nonce: u64,
+) -> SignedAuthorization {
+    let authorization = Authorization {
+        chain_id: 1337,
+        address,
+        nonce,
+    };
+
+    let signer = PrivateKeySigner::from_bytes(&authority).unwrap();
+    let signature = signer
+        .sign_hash_sync(&authorization.signature_hash())
+        .unwrap();
+    authorization.into_signed(signature).into()
 }
 
 pub fn recover_tx(tx: TxEnvelope) -> Recovered<TxEnvelope> {
