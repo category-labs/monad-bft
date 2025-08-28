@@ -355,11 +355,11 @@ where
                                 break;
                             }
                         }
-                        self.peer_discovery_driver
-                            .lock()
-                            .unwrap()
-                            .update(PeerDiscoveryEvent::UpdateCurrentRound { round, epoch });
                     }
+                    self.peer_discovery_driver
+                        .lock()
+                        .unwrap()
+                        .update(PeerDiscoveryEvent::UpdateCurrentRound { round, epoch });
                 }
                 RouterCommand::AddEpochValidatorSet {
                     epoch,
