@@ -232,7 +232,11 @@ where
 {
     type Transaction;
 
-    fn new(block_seq_num: SeqNum, execution_delay: SeqNum) -> Result<Self, BlockPolicyError>;
+    fn new(
+        block_seq_num: SeqNum,
+        execution_delay: SeqNum,
+        base_fee: u64,
+    ) -> Result<Self, BlockPolicyError>;
 
     fn try_apply_block_fees(
         &mut self,

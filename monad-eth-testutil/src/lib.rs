@@ -40,6 +40,8 @@ use monad_testutil::signing::MockSignatures;
 use monad_types::{Balance, Epoch, NodeId, Round, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 
+const BASE_FEE: u64 = 100_000_000_000;
+
 pub struct ConsensusTestBlock<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
@@ -209,11 +211,11 @@ pub fn generate_consensus_test_block(
             .and_modify(|e| {
                 e.max_gas_cost = e
                     .max_gas_cost
-                    .saturating_add(compute_txn_max_gas_cost(eth_txn));
+                    .saturating_add(compute_txn_max_gas_cost(eth_txn, BASE_FEE));
             })
             .or_insert(TxnFee {
                 first_txn_value: eth_txn.value(),
-                first_txn_gas: compute_txn_max_gas_cost(eth_txn),
+                first_txn_gas: compute_txn_max_gas_cost(eth_txn, BASE_FEE),
                 max_gas_cost: Balance::ZERO,
             });
     }

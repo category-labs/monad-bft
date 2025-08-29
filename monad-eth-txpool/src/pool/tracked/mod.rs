@@ -229,8 +229,11 @@ where
             "txpool sequencing transactions"
         );
 
-        let mut validator =
-            EthBlockPolicyBlockValidator::new(proposed_seq_num, block_policy.execution_delay)?;
+        let mut validator = EthBlockPolicyBlockValidator::new(
+            proposed_seq_num,
+            block_policy.execution_delay,
+            base_fee,
+        )?;
 
         let proposal = sequencer.build_proposal(
             tx_limit,

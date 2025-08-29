@@ -85,8 +85,9 @@ impl ValidEthTransaction {
             return None;
         }
 
-        let max_value = compute_txn_max_value(&tx);
-        let max_gas_cost = compute_txn_max_gas_cost(&tx);
+        // TODO(misha): use a method that can put readl base_fee to txn at some point.
+        let max_value = compute_txn_max_value(&tx, last_commit.base_fee);
+        let max_gas_cost = compute_txn_max_gas_cost(&tx, last_commit.base_fee);
 
         Some(Self {
             tx,

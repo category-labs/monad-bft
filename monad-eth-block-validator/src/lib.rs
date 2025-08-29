@@ -181,11 +181,11 @@ where
                 .and_modify(|e| {
                     e.max_gas_cost = e
                         .max_gas_cost
-                        .saturating_add(compute_txn_max_gas_cost(eth_txn));
+                        .saturating_add(compute_txn_max_gas_cost(eth_txn, base_fee));
                 })
                 .or_insert(TxnFee {
                     first_txn_value: eth_txn.value(),
-                    first_txn_gas: compute_txn_max_gas_cost(eth_txn),
+                    first_txn_gas: compute_txn_max_gas_cost(eth_txn, base_fee),
                     max_gas_cost: Balance::ZERO,
                 });
             debug!(seq_num = ?header.seq_num, address = ?eth_txn.signer(), nonce = ?eth_txn.nonce(), ?txn_fee_entry, "TxnFeeEntry");

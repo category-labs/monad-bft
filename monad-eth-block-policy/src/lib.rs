@@ -55,17 +55,17 @@ pub enum ReserveBalanceCheck {
     Validate,
 }
 
-pub fn compute_txn_max_value(txn: &TxEnvelope) -> U256 {
+pub fn compute_txn_max_value(txn: &TxEnvelope, base_fee: u64) -> U256 {
     let txn_value = txn.value();
-    let gas_cost = compute_txn_max_gas_cost(txn);
+    let gas_cost = compute_txn_max_gas_cost(txn, base_fee);
     txn_value.saturating_add(gas_cost)
 }
 
-pub fn compute_txn_max_gas_cost(txn: &TxEnvelope) -> U256 {
+pub fn compute_txn_max_gas_cost(txn: &TxEnvelope, base_fee: u64) -> U256 {
     let gas_limit = U256::from(txn.gas_limit());
     let max_fee = U256::from(txn.max_fee_per_gas());
     let priority_fee = U256::from(txn.max_priority_fee_per_gas().unwrap_or(0));
-    let base_fee = U256::from(100_000_000u64); //TODO: Use actual value once implemented
+    let base_fee = U256::from(base_fee);
     let gas_bid = max_fee.min(base_fee.saturating_add(priority_fee));
     gas_limit.checked_mul(gas_bid).expect("no overflow")
 }
@@ -290,8 +290,11 @@ where
                 "Reserve balance check range is not contiguous"
             );
             if let Some(block_txn_fees) = block.fees.get(eth_address) {
-                let mut validator =
-                    EthBlockPolicyBlockValidator::new(block.seq_num, execution_delay)?;
+                let mut validator = EthBlockPolicyBlockValidator::new(
+                    block.seq_num,
+                    execution_delay,
+                    block.base_fee,
+                )?;
                 trace!(
                     "applying fees for block {:?}, curr acc balance: {:?}",
                     block.seq_num,
@@ -364,6 +367,7 @@ where
 pub struct EthBlockPolicyBlockValidator {
     block_seq_num: SeqNum,
     execution_delay: SeqNum,
+    base_fee: u64,
 }
 
 fn is_possibly_emptying_transaction(
@@ -383,10 +387,15 @@ where
 {
     type Transaction = Recovered<TxEnvelope>;
 
-    fn new(block_seq_num: SeqNum, execution_delay: SeqNum) -> Result<Self, BlockPolicyError> {
+    fn new(
+        block_seq_num: SeqNum,
+        execution_delay: SeqNum,
+        base_fee: u64,
+    ) -> Result<Self, BlockPolicyError> {
         Ok(Self {
             block_seq_num,
             execution_delay,
+            base_fee,
         })
     }
 
@@ -502,7 +511,7 @@ where
 
         // if an account for txn T is not delegated and has no prior txns, then T can charge into reserve.
         if is_emptying_transaction {
-            let txn_max_gas = compute_txn_max_gas_cost(txn);
+            let txn_max_gas = compute_txn_max_gas_cost(txn, self.base_fee);
             if account_balance.balance < txn_max_gas {
                 debug!(
                     seq_num =?self.block_seq_num,
@@ -517,7 +526,7 @@ where
                 ));
             }
 
-            let txn_max_cost = compute_txn_max_value(txn);
+            let txn_max_cost = compute_txn_max_value(txn, self.base_fee);
             let estimated_balance = account_balance.balance.saturating_sub(txn_max_cost);
             let reserve_balance = account_balance.max_reserve_balance.min(estimated_balance);
 
@@ -541,7 +550,7 @@ where
             account_balance.remaining_reserve_balance = reserve_balance;
             account_balance.block_seqnum_of_latest_txn = self.block_seq_num;
         } else {
-            let txn_max_gas = compute_txn_max_gas_cost(txn);
+            let txn_max_gas = compute_txn_max_gas_cost(txn, self.base_fee);
             if account_balance.remaining_reserve_balance < txn_max_gas {
                 debug!(
                     seq_num =?self.block_seq_num,
@@ -824,6 +833,7 @@ where
                                     let mut validator = EthBlockPolicyBlockValidator::new(
                                         extending_block.get_seq_num(),
                                         self.execution_delay,
+                                        extending_block.get_base_fee(),
                                     )?;
 
                                     validator.try_apply_block_fees(
@@ -1076,8 +1086,11 @@ where
             *expected_nonce += 1;
         }
 
-        let mut validator =
-            EthBlockPolicyBlockValidator::new(block.get_seq_num(), self.execution_delay)?;
+        let mut validator = EthBlockPolicyBlockValidator::new(
+            block.get_seq_num(),
+            self.execution_delay,
+            block.get_base_fee(),
+        )?;
 
         for txn in block.validated_txns.iter() {
             let eth_address = txn.signer();
@@ -1284,6 +1297,7 @@ mod test {
         let mut validator = EthBlockPolicyBlockValidator::new(
             incoming_block.get_seq_num(),
             block_policy.execution_delay,
+            BASE_FEE,
         )?;
 
         for txn in incoming_block.validated_txns.iter() {
@@ -1748,7 +1762,7 @@ mod test {
             let signature = sign_tx(&tx.signature_hash());
             let tx_envelope = TxEnvelope::from(tx.into_signed(signature));
 
-            let result = compute_txn_max_value(&tx_envelope);
+            let result = compute_txn_max_value(&tx_envelope, BASE_FEE);
 
             let gas_cost_u256 = U256::from(gas_limit).checked_mul(U256::from(max_fee_per_gas)).expect("overflow should not occur with U256overflow should not occur with U256");
             let expected_max_value = U256::from(value).saturating_add(gas_cost_u256);
@@ -1766,7 +1780,7 @@ mod test {
         let tx = make_test_tx(50000, txn_value, 0, S1);
         let txs = vec![tx.clone()];
         let signer = tx.recover_signer().unwrap();
-        let min_balance = compute_txn_max_gas_cost(&tx);
+        let min_balance = compute_txn_max_gas_cost(&tx, BASE_FEE);
 
         let mut account_balances: BTreeMap<&Address, AccountBalanceState> = BTreeMap::new();
         account_balances.insert(
@@ -1779,7 +1793,8 @@ mod test {
             },
         );
 
-        let mut validator = EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY).unwrap();
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
 
         for txn in txs.iter() {
             assert!(validator
@@ -1798,7 +1813,8 @@ mod test {
             },
         );
 
-        let mut validator = EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY).unwrap();
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
 
         for txn in txs.iter() {
             assert!(
@@ -1820,7 +1836,7 @@ mod test {
         let tx = make_test_tx(50000, txn_value, 0, S1);
         let txs = vec![tx.clone()];
         let signer = tx.recover_signer().unwrap();
-        let min_balance = compute_txn_max_gas_cost(&tx);
+        let min_balance = compute_txn_max_gas_cost(&tx, BASE_FEE);
 
         let mut account_balances: BTreeMap<&Address, AccountBalanceState> = BTreeMap::new();
         account_balances.insert(
@@ -1833,7 +1849,8 @@ mod test {
             },
         );
 
-        let mut validator = EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY).unwrap();
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
 
         for txn in txs.iter() {
             assert!(validator
@@ -1852,7 +1869,8 @@ mod test {
             },
         );
 
-        let mut validator = EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY).unwrap();
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
 
         for txn in txs.iter() {
             assert!(
@@ -1873,7 +1891,7 @@ mod test {
 
         let tx = make_test_tx(50000, txn_value, 0, S1);
         let txs = vec![tx.clone()];
-        let min_balance = compute_txn_max_gas_cost(&tx);
+        let min_balance = compute_txn_max_gas_cost(&tx, BASE_FEE);
 
         let address = Address(FixedBytes([0x11; 20]));
 
@@ -1888,7 +1906,8 @@ mod test {
             },
         );
 
-        let mut validator = EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY).unwrap();
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
 
         for txn in txs.iter() {
             assert!(
@@ -1910,7 +1929,7 @@ mod test {
         let tx = make_test_tx(50000, txn_value, 0, S1);
         let txs = vec![tx.clone()];
         let signer = tx.recover_signer().unwrap();
-        let min_balance = compute_txn_max_value(&tx);
+        let min_balance = compute_txn_max_value(&tx, BASE_FEE);
 
         // Empty reserve balance
         let mut account_balances: BTreeMap<&Address, AccountBalanceState> = BTreeMap::new();
@@ -1924,7 +1943,8 @@ mod test {
             },
         );
 
-        let mut validator = EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY).unwrap();
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
 
         for txn in txs.iter() {
             assert!(validator
@@ -1934,7 +1954,7 @@ mod test {
 
         // Overdraft
         let block_seq_num = latest_seq_num;
-        let min_reserve = compute_txn_max_gas_cost(&tx);
+        let min_reserve = compute_txn_max_gas_cost(&tx, BASE_FEE);
         let mut account_balances: BTreeMap<&Address, AccountBalanceState> = BTreeMap::new();
         account_balances.insert(
             &signer,
@@ -1946,7 +1966,8 @@ mod test {
             },
         );
 
-        let mut validator = EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY).unwrap();
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
 
         for txn in txs.iter() {
             assert!(validator
@@ -1967,7 +1988,8 @@ mod test {
         let signer = tx1.recover_signer().unwrap();
 
         let txs = vec![tx1.clone(), tx2.clone()];
-        let min_balance = compute_txn_max_value(&tx1) + compute_txn_max_gas_cost(&tx2);
+        let min_balance =
+            compute_txn_max_value(&tx1, BASE_FEE) + compute_txn_max_gas_cost(&tx2, BASE_FEE);
 
         let mut account_balances: BTreeMap<&Address, AccountBalanceState> = BTreeMap::new();
         account_balances.insert(
@@ -1980,7 +2002,8 @@ mod test {
             },
         );
 
-        let mut validator = EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY).unwrap();
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
 
         for txn in txs.iter() {
             assert!(validator
@@ -1988,7 +2011,8 @@ mod test {
                 .is_ok());
         }
 
-        let min_reserve = compute_txn_max_gas_cost(&tx1) + compute_txn_max_gas_cost(&tx2);
+        let min_reserve =
+            compute_txn_max_gas_cost(&tx1, BASE_FEE) + compute_txn_max_gas_cost(&tx2, BASE_FEE);
 
         let mut account_balances: BTreeMap<&Address, AccountBalanceState> = BTreeMap::new();
         account_balances.insert(
@@ -2001,7 +2025,8 @@ mod test {
             },
         );
 
-        let mut validator = EthBlockPolicyBlockValidator::new(latest_seq_num, EXEC_DELAY).unwrap();
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(latest_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
 
         for txn in txs.iter() {
             assert!(validator
@@ -2059,7 +2084,8 @@ mod test {
         let mut account_balances: BTreeMap<&Address, AccountBalanceState> = BTreeMap::new();
         account_balances.insert(&signer, abs);
 
-        let mut validator = EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY).unwrap();
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
 
         assert_eq!(
             validator.try_add_transaction(&mut account_balances, &txn),
@@ -2125,7 +2151,8 @@ mod test {
         txn: &Recovered<TxEnvelope>,
         expect: Result<(), BlockPolicyError>,
     ) {
-        let mut validator = EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY).unwrap();
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
 
         assert_eq!(
             validator.try_add_transaction(account_balances, txn),
@@ -2162,7 +2189,8 @@ mod test {
         expected_remaining_reserve: Balance,
         expect: Result<(), BlockPolicyError>,
     ) {
-        let mut validator = EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY).unwrap();
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
 
         assert_eq!(
             validator.try_apply_block_fees(account_balance, fees, eth_address),
