@@ -16,7 +16,9 @@
 use core::str;
 
 use aws_config::SdkConfig;
-use aws_sdk_s3::{error::SdkError, primitives::ByteStream, Client};
+use aws_sdk_s3::{
+    error::SdkError, operation::create_bucket::CreateBucketError, primitives::ByteStream, Client,
+};
 use bytes::Bytes;
 use eyre::{Context, Result};
 use tracing::trace;
@@ -25,27 +27,47 @@ use super::{kvstore_get_metrics, KVStoreType, MetricsResultExt};
 use crate::{metrics::Metrics, prelude::*};
 
 #[derive(Clone)]
-pub struct S3Bucket {
-    client: Client,
+pub struct Bucket {
+    pub(crate) client: Client,
     pub bucket: String,
     metrics: Metrics,
 }
 
-impl S3Bucket {
+impl Bucket {
     pub fn new(bucket: String, sdk_config: &SdkConfig, metrics: Metrics) -> Self {
-        S3Bucket::from_client(bucket, Client::new(sdk_config), metrics)
+        Bucket::from_client(bucket, Client::new(sdk_config), metrics)
     }
 
     pub fn from_client(bucket: String, client: Client, metrics: Metrics) -> Self {
-        S3Bucket {
+        Bucket {
             bucket,
             client,
             metrics,
         }
     }
+
+    pub async fn create_bucket(&self) -> Result<()> {
+        match self
+            .client
+            .create_bucket()
+            .bucket(&self.bucket)
+            .send()
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(SdkError::ServiceError(service_err)) => match service_err.err() {
+                CreateBucketError::BucketAlreadyExists(_)
+                | CreateBucketError::BucketAlreadyOwnedByYou(_) => Ok(()),
+                _ => {
+                    Err(SdkError::ServiceError(service_err)).wrap_err("Failed to create bucket")?
+                }
+            },
+            Err(e) => Err(e.into()),
+        }
+    }
 }
 
-impl KVReader for S3Bucket {
+impl KVReader for Bucket {
     async fn get(&self, key: &str) -> Result<Option<Bytes>> {
         trace!(key, "S3 get");
         let req = self
@@ -94,7 +116,7 @@ impl KVReader for S3Bucket {
     }
 }
 
-impl KVStore for S3Bucket {
+impl KVStore for Bucket {
     // Upload rlp-encoded bytes with retry
     async fn put(&self, key: impl AsRef<str>, data: Vec<u8>) -> Result<()> {
         let key = key.as_ref();
@@ -167,5 +189,32 @@ impl KVStore for S3Bucket {
             .wrap_err_with(|| format!("Failed to delete, retries exhausted. Key: {}", key))?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{cli::AwsCliArgs, test_utils::TestMinioContainer};
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_s3_bucket() {
+        let minio = TestMinioContainer::new().await.unwrap();
+
+        // connect to minio
+        let arg_string = format!(
+            "aws test-bucket  --endpoint http://127.0.0.1:{port} --access-key-id minioadmin --secret-access-key minioadmin",
+            port = minio.port
+        );
+        let sdk_config = AwsCliArgs::parse(&arg_string).unwrap().config().await;
+
+        let bucket = Bucket::new("test-bucket".to_string(), &sdk_config, Metrics::none());
+
+        bucket.create_bucket().await.unwrap();
+
+        bucket.put("test-key", vec![1, 2, 3]).await.unwrap();
+        let value = bucket.get("test-key").await.unwrap().unwrap();
+        assert_eq!(value, Bytes::from(vec![1, 2, 3]));
     }
 }

@@ -76,7 +76,7 @@ async fn main() -> Result<()> {
 
     // Initialize S3 bucket
     info!("Initializing S3 bucket: {}", args.bucket);
-    let s3 = S3Bucket::new(args.bucket.clone(), &aws_config, metrics.clone());
+    let s3 = Bucket::new(args.bucket.clone(), &aws_config, metrics.clone());
 
     match args.mode {
         cli::Mode::Checker(checker_args) => {
