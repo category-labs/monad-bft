@@ -235,7 +235,7 @@ impl<'ring> ExecEventRef<'ring> {
 pub struct ExecEventRingFlowInfo {
     block_seqno: u64,
     txn_idx: Option<usize>,
-    account_idx: Option<usize>,
+    account_idx: u64,
 }
 
 impl EventDecoder for ExecEventDecoder {
@@ -255,9 +255,7 @@ impl EventDecoder for ExecEventDecoder {
             txn_idx: user[ffi::MONAD_FLOW_TXN_ID as usize]
                 .checked_sub(1)
                 .map(|txn_idx| txn_idx.try_into().unwrap()),
-            account_idx: user[ffi::MONAD_FLOW_ACCOUNT_INDEX as usize]
-                .checked_sub(1)
-                .map(|account_idx| account_idx.try_into().unwrap()),
+            account_idx: user[ffi::MONAD_FLOW_ACCOUNT_INDEX as usize],
         }
     }
 
