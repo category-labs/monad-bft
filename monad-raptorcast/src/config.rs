@@ -79,7 +79,7 @@ where
     /// A value of 2 == send 2x total payload size.
     /// Higher values make the broadcasting more tolerant to UDP packet drops.
     /// This applies to raptor-casting across validator
-    pub raptor10_redundancy: u8,
+    pub raptor10_redundancy: f32,
 }
 
 impl<ST> Default for RaptorCastConfigPrimary<ST>
@@ -89,7 +89,7 @@ where
     fn default() -> RaptorCastConfigPrimary<ST> {
         RaptorCastConfigPrimary {
             fullnode_dedicated: Vec::new(),
-            raptor10_redundancy: 3, // for validators
+            raptor10_redundancy: 2.5f32, // for validators
         }
     }
 }
@@ -104,7 +104,7 @@ where
     /// A value of 2 == send 2x total payload size.
     /// Higher values make the broadcasting more tolerant to UDP packet drops.
     /// This applies to raptor-casting across full-nodes
-    pub raptor10_redundancy: u8,
+    pub raptor10_redundancy: f32,
 
     /// Client mode if we are a full-node, publisher mode if we are a validator.
     /// None if we are not participating in any raptor-casting to full-nodes.
@@ -117,7 +117,7 @@ where
 {
     fn default() -> RaptorCastConfigSecondary<ST> {
         RaptorCastConfigSecondary {
-            raptor10_redundancy: 2,              // for full-nodes
+            raptor10_redundancy: 2f32,           // for full-nodes
             mode: SecondaryRaptorCastMode::None, // no raptorcasting to full-nodes
         }
     }

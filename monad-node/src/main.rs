@@ -735,7 +735,7 @@ where
             mtu: network_config.mtu,
             udp_message_max_age_ms: network_config.udp_message_max_age_ms,
             primary_instance: RaptorCastConfigPrimary {
-                raptor10_redundancy: node_config.raptor10_validator_redundancy_factor,
+                raptor10_redundancy: 2.5f32,
                 fullnode_dedicated: full_nodes
                     .iter()
                     .map(|full_node| NodeId::new(full_node.secp256k1_pubkey))

@@ -133,7 +133,7 @@ where
             "RaptorCastSecondary::new()",
         );
 
-        if raptor10_redundancy < 1 {
+        if raptor10_redundancy < 1f32 {
             panic!(
                 "Configuration value raptor10_redundancy must be equal or greater than 1, \
                 but got {}. This is a bug in the configuration for the secondary instance.",
@@ -144,7 +144,8 @@ where
         Self {
             role,
             signing_key: config.shared_key.clone(),
-            raptor10_redundancy: Redundancy::from_u8(raptor10_redundancy),
+            raptor10_redundancy: Redundancy::from_f32(raptor10_redundancy)
+                .expect("secondary raptor10_redundancy doesn't fit"),
             curr_epoch: Epoch(0),
             mtu: config.mtu,
             dataplane_writer,

@@ -344,7 +344,7 @@ where
                             primary_instance: Default::default(),
                             secondary_instance: FullNodeRaptorCastConfig {
                                 mode: SecondaryRaptorCastModeConfig::None,
-                                raptor10_fullnode_redundancy_factor: 2,
+                                raptor10_fullnode_redundancy_factor: 2f32,
                                 full_nodes_prioritized: FullNodeConfig { identities: vec![] },
                                 round_span: Round(10),
                                 invite_lookahead: Round(5),
