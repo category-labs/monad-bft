@@ -33,10 +33,9 @@ use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_eip1559_tx, make_legacy_tx, recover_tx};
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
 use monad_eth_txpool_types::EthTxPoolSnapshot;
-use monad_eth_types::Balance;
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
-use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
+use monad_types::{Balance, Round, SeqNum, GENESIS_SEQ_NUM};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing_test::traced_test;
 
@@ -77,7 +76,12 @@ type SignatureCollectionType = MockSignatures<SignatureType>;
 type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
 
 fn make_test_block_policy() -> EthBlockPolicy<SignatureType, SignatureCollectionType> {
-    EthBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY, 1337)
+    EthBlockPolicy::new(
+        GENESIS_SEQ_NUM,
+        EXECUTION_DELAY,
+        1337,
+        100_000_000_000_000_000_000,
+    )
 }
 
 #[derive(Clone)]
@@ -993,7 +997,7 @@ fn test_tx_invalid_chain_id() {
     };
 
     run_custom(
-        || EthBlockPolicy::new(GENESIS_SEQ_NUM, 0, 1),
+        || EthBlockPolicy::new(GENESIS_SEQ_NUM, 0, 1, 1_000_000_000_000_000_000),
         None,
         [TxPoolTestEvent::InsertTxs {
             txs: vec![(&tx1, true)],

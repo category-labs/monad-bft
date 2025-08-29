@@ -24,10 +24,10 @@ use alloy_consensus::{
     transaction::{Recovered, Transaction},
     TxEnvelope, EMPTY_OMMER_ROOT_HASH,
 };
-use alloy_primitives::{Address, U256};
+use alloy_primitives::Address;
 use alloy_rlp::Encodable;
 use monad_consensus_types::{
-    block::{BlockPolicy, ConsensusBlockHeader, ConsensusFullBlock},
+    block::{BlockPolicy, ConsensusBlockHeader, ConsensusFullBlock, TxnFee, TxnFees},
     block_validator::{BlockValidationError, BlockValidator},
     payload::ConsensusBlockBody,
 };
@@ -35,19 +35,19 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{
-    compute_txn_max_value, validation::static_validate_transaction, EthBlockPolicy,
+    compute_txn_max_gas_cost, validation::static_validate_transaction, EthBlockPolicy,
     EthValidatedBlock,
 };
-use monad_eth_types::{EthBlockBody, EthExecutionProtocol, Nonce, ProposedEthHeader};
+use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader};
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
 use monad_system_calls::{validator::SystemTransactionValidator, SystemTransaction};
+use monad_types::{Balance, Nonce};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing::{debug, trace_span, warn};
 
 type NonceMap = BTreeMap<Address, Nonce>;
-type TxnFeeMap = BTreeMap<Address, U256>;
 type SystemTransactions = Vec<SystemTransaction>;
 type ValidatedTxns = Vec<Recovered<TxEnvelope>>;
 
@@ -88,8 +88,7 @@ where
         proposal_byte_limit: u64,
         base_fee: u64,
         max_code_size: usize,
-    ) -> Result<(SystemTransactions, ValidatedTxns, NonceMap, TxnFeeMap), BlockValidationError>
-    {
+    ) -> Result<(SystemTransactions, ValidatedTxns, NonceMap, TxnFees), BlockValidationError> {
         let EthBlockBody {
             transactions,
             ommers,
@@ -149,9 +148,9 @@ where
         }
 
         // recover the account nonces and txn fee for user txns
-        let mut txn_fees: BTreeMap<Address, U256> = BTreeMap::new();
+        let mut txn_fees: TxnFees = TxnFees::default();
 
-        for eth_txn in &eth_txns {
+        for eth_txn in eth_txns.iter() {
             if static_validate_transaction(
                 eth_txn,
                 self.chain_id,
@@ -177,9 +176,19 @@ where
                 }
             }
 
-            let txn_fee_entry = txn_fees.entry(eth_txn.signer()).or_insert(U256::ZERO);
-
-            *txn_fee_entry = txn_fee_entry.saturating_add(compute_txn_max_value(eth_txn));
+            let txn_fee_entry = txn_fees
+                .entry(eth_txn.signer())
+                .and_modify(|e| {
+                    e.max_gas_cost = e
+                        .max_gas_cost
+                        .saturating_add(compute_txn_max_gas_cost(eth_txn, base_fee));
+                })
+                .or_insert(TxnFee {
+                    first_txn_value: eth_txn.value(),
+                    first_txn_gas: compute_txn_max_gas_cost(eth_txn, base_fee),
+                    max_gas_cost: Balance::ZERO,
+                });
+            debug!(seq_num = ?header.seq_num, address = ?eth_txn.signer(), nonce = ?eth_txn.nonce(), ?txn_fee_entry, "TxnFeeEntry");
         }
 
         let total_gas: u64 = eth_txns.iter().map(|tx| tx.gas_limit()).sum();
@@ -350,7 +359,7 @@ where
 #[cfg(test)]
 mod test {
     use alloy_consensus::Signed;
-    use alloy_primitives::{PrimitiveSignature, B256};
+    use alloy_primitives::{PrimitiveSignature, B256, U256};
     use monad_consensus_types::{
         payload::{ConsensusBlockBodyId, ConsensusBlockBodyInner, RoundSignature},
         quorum_certificate::QuorumCertificate,
