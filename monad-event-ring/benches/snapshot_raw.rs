@@ -15,7 +15,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
 use monad_event_ring::{
-    BytesDecoder, DecodedEventRing, EventDescriptorPayload, EventNextResult, SnapshotEventRing,
+    BytesDecoder, DecodedEventRing, EventNextResult, EventPayloadResult, SnapshotEventRing,
 };
 
 fn bench_snapshot(c: &mut Criterion) {
@@ -60,7 +60,7 @@ fn bench_snapshot(c: &mut Criterion) {
             |event_reader| loop {
                 match event_reader.next_descriptor() {
                     EventNextResult::Ready(event_descriptor) => {
-                        let actual_payload: EventDescriptorPayload<Option<u8>> = event_descriptor
+                        let actual_payload: EventPayloadResult<Option<u8>> = event_descriptor
                             .try_filter_map_raw(|_, bytes| {
                                 black_box(Some(bytes.first().cloned().unwrap_or_default()))
                             });

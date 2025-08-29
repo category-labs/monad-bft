@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use itertools::Itertools;
-use monad_event_ring::{EventDescriptor, EventDescriptorPayload};
+use monad_event_ring::{EventDescriptor, EventPayloadResult};
 
 use self::state::{BlockReassemblyState, TxnReassemblyState};
 use super::{BlockBuilderError, BlockBuilderResult, ReassemblyError};
@@ -52,11 +52,9 @@ impl ExecutedBlockBuilder {
         } else {
             Self::select_block_event_refs::<false>
         }) {
-            EventDescriptorPayload::Payload(Some(exec_event)) => {
-                self.process_exec_event(exec_event)
-            }
-            EventDescriptorPayload::Payload(None) => None,
-            EventDescriptorPayload::Expired => {
+            EventPayloadResult::Ready(Some(exec_event)) => self.process_exec_event(exec_event),
+            EventPayloadResult::Ready(None) => None,
+            EventPayloadResult::Expired => {
                 self.reset();
 
                 Some(Err(BlockBuilderError::PayloadExpired))

@@ -30,7 +30,7 @@
 //! Next, create an event ring and start consuming events!
 //!
 //! ```no_run
-//! # use monad_event_ring::{DecodedEventRing, EventDescriptor, EventDescriptorPayload, EventNextResult};
+//! # use monad_event_ring::{DecodedEventRing, EventDescriptor, EventPayloadResult, EventNextResult};
 //! # use monad_exec_events::{ExecEventRing};
 //! #
 //! # let event_ring_path: &'static str = unimplemented!();
@@ -53,11 +53,11 @@
 //!     };
 //!
 //!     match event_descriptor.try_read() {
-//!         EventDescriptorPayload::Expired => {
+//!         EventPayloadResult::Expired => {
 //!             // Handle EventRing payload expiry (similar to gap)!
 //!             unimplemented!();
 //!         }
-//!         EventDescriptorPayload::Payload(exec_event) => {
+//!         EventPayloadResult::Ready(exec_event) => {
 //!             // Do something with the event!
 //!         }
 //!     }
