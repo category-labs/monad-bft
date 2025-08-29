@@ -34,7 +34,7 @@ pub struct FullNodeRaptorCastConfig<P: PubKey> {
 
     #[serde(bound = "P:PubKey")]
     pub full_nodes_prioritized: FullNodeConfig<P>,
-    pub raptor10_fullnode_redundancy_factor: u8, // validator -> full-nodes
+    pub raptor10_fullnode_redundancy_factor: f32, // validator -> full-nodes
 
     // config for Publisher
     pub round_span: Round,

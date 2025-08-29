@@ -128,7 +128,7 @@ where
         dataplane_writer: DataplaneWriter,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
     ) -> Self {
-        if config.primary_instance.raptor10_redundancy < 1 {
+        if config.primary_instance.raptor10_redundancy < 1f32 {
             panic!(
                 "Configuration value raptor10_redundancy must be equal or greater than 1, \
                 but got {}. This is a bug in the configuration for the primary instance.",
@@ -153,7 +153,8 @@ where
             peer_discovery_driver,
 
             signing_key: config.shared_key.clone(),
-            redundancy: Redundancy::from_u8(config.primary_instance.raptor10_redundancy),
+            redundancy: Redundancy::from_f32(config.primary_instance.raptor10_redundancy)
+                .expect("primary raptor10_redundancy doesn't fit"),
 
             current_epoch: Epoch(0),
 
@@ -311,7 +312,7 @@ where
         primary_instance: Default::default(),
         secondary_instance: FullNodeRaptorCastConfig {
             mode: SecondaryRaptorCastModeConfig::None,
-            raptor10_fullnode_redundancy_factor: 2,
+            raptor10_fullnode_redundancy_factor: 2f32,
             full_nodes_prioritized: FullNodeConfig { identities: vec![] },
             round_span: Round(10),
             invite_lookahead: Round(5),
