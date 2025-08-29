@@ -1209,62 +1209,6 @@ mod test {
         ))
     }
 
-    /*
-        // add committed blocks to buffer
-        let mut buffer = CommittedBlkBuffer::<SignatureType, SignatureCollectionType>::new(3);
-        let block1 = CommittedBlock {
-            block_id: BlockId(Hash(Default::default())),
-            round: Round(0),
-            nonces: BlockAccountNonce {
-                nonces: BTreeMap::from([(address1, 1), (address2, 1)]),
-            },
-            fees: BlockTxnFees {
-                txn_fees: BTreeMap::from([
-                    (address1, Balance::from(100)),
-                    (address2, Balance::from(200)),
-                ]),
-            },
-            base_fee: BASE_FEE,
-            base_fee_trend: BASE_FEE_TREND,
-            base_fee_moment: BASE_FEE_MOMENT,
-            block_gas_usage: 0, // not used in this test
-        };
-
-        let block2 = CommittedBlock {
-            block_id: BlockId(Hash(Default::default())),
-            round: Round(0),
-            nonces: BlockAccountNonce {
-                nonces: BTreeMap::from([(address1, 2), (address3, 1)]),
-            },
-            fees: BlockTxnFees {
-                txn_fees: BTreeMap::from([
-                    (address1, Balance::from(150)),
-                    (address3, Balance::from(300)),
-                ]),
-            },
-            base_fee: BASE_FEE,
-            base_fee_trend: BASE_FEE_TREND,
-            base_fee_moment: BASE_FEE_MOMENT,
-            block_gas_usage: 0, // not used in this test
-        };
-
-        let block3 = CommittedBlock {
-            block_id: BlockId(Hash(Default::default())),
-            round: Round(0),
-            nonces: BlockAccountNonce {
-                nonces: BTreeMap::from([(address2, 2), (address3, 2)]),
-            },
-            fees: BlockTxnFees {
-                txn_fees: BTreeMap::from([
-                    (address2, Balance::from(250)),
-                    (address3, Balance::from(350)),
-                ]),
-            },
-            base_fee: BASE_FEE,
-            base_fee_trend: BASE_FEE_TREND,
-            base_fee_moment: BASE_FEE_MOMENT,
-            block_gas_usage: 0, // not used in this test
-    */
     fn make_test_block(
         round: Round,
         seq_num: SeqNum,
@@ -1437,7 +1381,7 @@ mod test {
 
         // first tx doesn't dip into reserve balance, second tx has max reserve balance to spend from
         let tx1 = make_test_tx(50000, 0, 0, S1);
-        let tx2 = make_test_tx(20_000_000, HALF_ETHER, 1, S1);
+        let tx2 = make_test_tx(10_000_000, HALF_ETHER, 1, S1);
         let txs = BTreeMap::from([(4, vec![tx1, tx2.clone()])]); // txs in block n
 
         // balance of signer at block n-3
@@ -1498,7 +1442,7 @@ mod test {
 
         // first tx doesn't dip into reserve balance, second tx has max reserve balance to spend from
         let tx1 = make_test_tx(50000, 0, 0, S1);
-        let tx2 = make_test_tx(20_000_000, HALF_ETHER, 1, S1);
+        let tx2 = make_test_tx(10_000_000, HALF_ETHER, 1, S1);
         // first tx in block n-2, second tx in block n
         let txs = BTreeMap::from([(2, vec![tx1]), (4, vec![tx2.clone()])]);
 
