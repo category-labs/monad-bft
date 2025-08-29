@@ -49,6 +49,7 @@ pub enum TransactionError {
     InvalidChainId,
     MaxPriorityFeeTooHigh,
     InitCodeLimitExceeded,
+    EncodedLengthLimitExceeded,
     GasLimitTooLow,
     GasLimitTooHigh,
     UnsupportedTransactionType,
@@ -81,6 +82,7 @@ impl EthTxPoolDropReason {
                 TransactionError::InvalidChainId => "Invalid chain ID",
                 TransactionError::MaxPriorityFeeTooHigh => "Max priority fee too high",
                 TransactionError::InitCodeLimitExceeded => "Init code size limit exceeded",
+                TransactionError::EncodedLengthLimitExceeded => "Encoded length limit exceeded",
                 TransactionError::GasLimitTooLow => "Gas limit too low",
                 TransactionError::GasLimitTooHigh => "Exceeds block gas limit",
                 TransactionError::UnsupportedTransactionType => {
