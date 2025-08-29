@@ -17,7 +17,7 @@ use std::marker::PhantomData;
 
 pub(crate) use self::raw::RawEventDescriptor;
 use self::raw::RawEventDescriptorInfo;
-use crate::{EventDecoder, EventDescriptorPayload};
+use crate::{EventDecoder, EventPayloadResult};
 
 mod raw;
 
@@ -44,7 +44,7 @@ where
 
     /// Attempts to read the payload associated with this event descriptor as the associated
     /// [`T::Event`](EventDecoder::Event) type.
-    pub fn try_read(&self) -> EventDescriptorPayload<D::Event> {
+    pub fn try_read(&self) -> EventPayloadResult<D::Event> {
         self.raw.try_filter_map(|raw_info, bytes| {
             let info = EventDescriptorInfo::new(raw_info);
 
@@ -67,17 +67,16 @@ where
     /// `f`'s execution, it is possible for the underlying paylod bytes to be partially or
     /// completely overwritten which invalidates the zero-copy
     /// [`D::EventRef`](EventDecoder::EventRef). In this case, the result of the `filter_map` must
-    /// be discarded, which is expressed through the [`EventDescriptorPayload::Expired`] variant.
-    /// This requirement is further hinted at through the type definition for `f` which is
-    /// intentionally a function pointer instead of a closure to avoid accidentally setting state
-    /// outside the `filter_map`. Downstream consumers should **not** attempt to circumvent this
-    /// behavior.
+    /// be discarded, which is expressed through the [`EventPayloadResult::Expired`] variant. This
+    /// requirement is further hinted at through the type definition for `f` which is intentionally
+    /// a function pointer instead of a closure to avoid accidentally setting state outside the
+    /// `filter_map`. Downstream consumers should **not** attempt to circumvent this behavior.
     ///
     /// </div>
     pub fn try_filter_map<R: 'static>(
         &self,
         f: fn(event_ref: D::EventRef<'_>) -> Option<R>,
-    ) -> EventDescriptorPayload<Option<R>> {
+    ) -> EventPayloadResult<Option<R>> {
         self.raw.try_filter_map(move |raw_info, bytes| {
             let info = EventDescriptorInfo::new(raw_info);
 
@@ -102,7 +101,7 @@ where
     pub fn try_filter_map_raw<R: 'static>(
         &self,
         f: fn(info: EventDescriptorInfo<D>, payload_bytes: &[u8]) -> Option<R>,
-    ) -> EventDescriptorPayload<Option<R>> {
+    ) -> EventPayloadResult<Option<R>> {
         self.raw.try_filter_map(move |raw_info, bytes| {
             let info = EventDescriptorInfo::new(raw_info);
 

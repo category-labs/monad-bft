@@ -68,21 +68,21 @@ impl<'ring> EventNextResult<RawEventDescriptor<'ring>> {
 /// The result of attempting to read the payload from an
 /// [`EventDescriptor`](crate::EventDescriptor).
 #[derive(Debug)]
-pub enum EventDescriptorPayload<T> {
+pub enum EventPayloadResult<T> {
     /// The payload was successfully retrieved.
-    Payload(T),
+    Ready(T),
 
     /// The payload's bytes were overwritten while reading them and the result is thus invalid.
     Expired,
 }
 
-impl<T> EventDescriptorPayload<T> {
-    /// Maps the event descriptor [`Payload`](EventDescriptorPayload::Payload) variant to another
-    /// type using the provided lambda.
-    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> EventDescriptorPayload<U> {
+impl<T> EventPayloadResult<T> {
+    /// Maps the event descriptor [`Payload`](EventPayloadResult::Ready) variant to another type
+    /// using the provided lambda.
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> EventPayloadResult<U> {
         match self {
-            EventDescriptorPayload::Payload(payload) => EventDescriptorPayload::Payload(f(payload)),
-            EventDescriptorPayload::Expired => EventDescriptorPayload::Expired,
+            EventPayloadResult::Ready(payload) => EventPayloadResult::Ready(f(payload)),
+            EventPayloadResult::Expired => EventPayloadResult::Expired,
         }
     }
 }
