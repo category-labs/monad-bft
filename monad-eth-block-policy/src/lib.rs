@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::BTreeMap,
+    collections::{btree_map::Entry as BTreeMapEntry, BTreeMap, HashSet},
     marker::PhantomData,
     ops::{Deref, Range, RangeFrom},
 };
@@ -45,10 +45,6 @@ use tracing::{debug, trace, warn};
 
 pub mod validation;
 
-/// Retriever trait for account nonces from block(s)
-pub trait AccountNonceRetrievable {
-    fn get_account_nonces(&self) -> BTreeMap<Address, Nonce>;
-}
 pub enum ReserveBalanceCheck {
     Insert,
     Propose,
@@ -76,6 +72,97 @@ struct BlockLookupIndex {
     is_finalized: bool,
 }
 
+#[derive(Clone, Debug)]
+pub enum NonceUsage {
+    Known(u64),
+    Possible(Vec<u64>),
+}
+
+impl NonceUsage {
+    pub fn merge(&mut self, nonce_usage: &Self) {
+        match nonce_usage {
+            Self::Known(nonce) => {
+                *self = Self::Known(*nonce);
+            }
+            Self::Possible(possible_nonces) => match self {
+                Self::Known(nonce) => {
+                    for possible_nonce in possible_nonces {
+                        if *nonce + 1 == *possible_nonce {
+                            *nonce += 1;
+                        }
+                    }
+                }
+                Self::Possible(existing_possible_nonces) => {
+                    existing_possible_nonces.extend(possible_nonces);
+                }
+            },
+        }
+    }
+
+    pub fn apply_to_account_nonce(&self, account_nonce: u64) -> u64 {
+        match self {
+            NonceUsage::Known(nonce) => *nonce + 1,
+            NonceUsage::Possible(possible_nonces) => {
+                Self::apply_possible_nonces_to_account_nonce(account_nonce, &possible_nonces)
+            }
+        }
+    }
+
+    pub fn apply_possible_nonces_to_account_nonce(
+        mut account_nonce: u64,
+        possible_nonces: &Vec<u64>,
+    ) -> u64 {
+        for possible_nonce in possible_nonces {
+            if *possible_nonce == account_nonce {
+                account_nonce += 1
+            }
+        }
+
+        account_nonce
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct NonceUsageMap {
+    map: BTreeMap<Address, NonceUsage>,
+}
+
+impl NonceUsageMap {
+    pub fn get(&self, address: &Address) -> Option<&NonceUsage> {
+        self.map.get(address)
+    }
+
+    pub fn merge_next_block(&mut self, next: &Self) {
+        for (address, nonce_usage) in next.map.iter() {
+            match self.map.entry(*address) {
+                BTreeMapEntry::Vacant(v) => {
+                    v.insert(nonce_usage.to_owned());
+                }
+                BTreeMapEntry::Occupied(o) => {
+                    o.into_mut().merge(nonce_usage);
+                }
+            }
+        }
+    }
+
+    pub fn add_known(&mut self, signer: Address, nonce: u64) -> Option<NonceUsage> {
+        self.map.insert(signer, NonceUsage::Known(nonce))
+    }
+
+    pub fn entry(&mut self, address: Address) -> BTreeMapEntry<'_, Address, NonceUsage> {
+        self.map.entry(address)
+    }
+
+    pub fn into_map(self) -> BTreeMap<Address, NonceUsage> {
+        self.map
+    }
+}
+
+/// Retriever trait for account nonces from block(s)
+pub trait NonceUsageRetrievable {
+    fn get_nonce_usages(&self) -> NonceUsageMap;
+}
+
 /// A consensus block that has gone through the EthereumValidator and makes the decoded and
 /// verified transactions available to access
 #[derive(Debug, Clone)]
@@ -87,7 +174,7 @@ where
     pub block: ConsensusFullBlock<ST, SCT, EthExecutionProtocol>,
     pub system_txns: Vec<SystemTransaction>,
     pub validated_txns: Vec<Recovered<TxEnvelope>>,
-    pub nonces: BTreeMap<Address, Nonce>,
+    pub nonce_usages: NonceUsageMap,
     pub txn_fees: TxnFees,
 }
 
@@ -121,15 +208,36 @@ where
         self.validated_txns.iter().map(|t| *t.tx_hash()).collect()
     }
 
-    /// Returns the highest tx nonce per account in the block
-    pub fn get_nonces(&self) -> &BTreeMap<Address, u64> {
-        &self.nonces
-    }
-
     pub fn get_total_gas(&self) -> u64 {
         self.validated_txns
             .iter()
             .fold(0, |acc, tx| acc + tx.gas_limit())
+    }
+}
+
+impl<ST, SCT> NonceUsageRetrievable for EthValidatedBlock<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    fn get_nonce_usages(&self) -> NonceUsageMap {
+        self.nonce_usages.clone()
+    }
+}
+
+impl<ST, SCT> NonceUsageRetrievable for Vec<&EthValidatedBlock<ST, SCT>>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    fn get_nonce_usages(&self) -> NonceUsageMap {
+        let mut nonce_usages = NonceUsageMap::default();
+
+        for block in self.iter() {
+            nonce_usages.merge_next_block(&block.nonce_usages);
+        }
+
+        nonce_usages
     }
 }
 
@@ -149,52 +257,6 @@ where
 {
 }
 
-impl<ST, SCT> AccountNonceRetrievable for EthValidatedBlock<ST, SCT>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-{
-    fn get_account_nonces(&self) -> BTreeMap<Address, Nonce> {
-        let mut account_nonces = BTreeMap::new();
-        let block_nonces = self.get_nonces();
-        for (&address, &txn_nonce) in block_nonces {
-            // account_nonce is the number of txns the account has sent. It's
-            // one higher than the last txn nonce
-            let acc_nonce = txn_nonce + 1;
-            account_nonces.insert(address, acc_nonce);
-        }
-        account_nonces
-    }
-}
-
-impl<ST, SCT> AccountNonceRetrievable for Vec<&EthValidatedBlock<ST, SCT>>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-{
-    fn get_account_nonces(&self) -> BTreeMap<Address, Nonce> {
-        let mut account_nonces = BTreeMap::new();
-        for block in self.iter() {
-            let block_account_nonces = block.get_account_nonces();
-            for (address, account_nonce) in block_account_nonces {
-                account_nonces.insert(address, account_nonce);
-            }
-        }
-        account_nonces
-    }
-}
-
-#[derive(Debug)]
-struct BlockAccountNonce {
-    nonces: BTreeMap<Address, Nonce>,
-}
-
-impl BlockAccountNonce {
-    fn get(&self, eth_address: &Address) -> Option<Nonce> {
-        self.nonces.get(eth_address).cloned()
-    }
-}
-
 #[derive(Debug)]
 struct BlockTxnFeeStates {
     txn_fees: TxnFees,
@@ -211,7 +273,7 @@ struct CommittedBlock {
     block_id: BlockId,
     round: Round,
     seq_num: SeqNum,
-    nonces: BlockAccountNonce,
+    nonce_usages: NonceUsageMap,
     fees: BlockTxnFeeStates,
 
     base_fee: u64,
@@ -240,20 +302,6 @@ where
 
             _phantom: Default::default(),
         }
-    }
-
-    fn get_nonce(&self, eth_address: &Address) -> Option<Nonce> {
-        let mut maybe_account_nonce = None;
-
-        for block in self.blocks.values() {
-            if let Some(nonce) = block.nonces.get(eth_address) {
-                if let Some(old_account_nonce) = maybe_account_nonce {
-                    assert!(nonce > old_account_nonce);
-                }
-                maybe_account_nonce = Some(nonce);
-            }
-        }
-        maybe_account_nonce
     }
 
     fn update_account_balance(
@@ -347,9 +395,7 @@ where
                     block_id: block.get_id(),
                     round: block.get_block_round(),
                     seq_num: block.get_seq_num(),
-                    nonces: BlockAccountNonce {
-                        nonces: block.get_account_nonces(),
-                    },
+                    nonce_usages: block.nonce_usages.clone(),
                     fees: BlockTxnFeeStates {
                         txn_fees: block.txn_fees.clone()
                     },
@@ -634,20 +680,33 @@ where
         // 3. LRU cache of triedb nonces
         // 4. triedb query
         let mut account_nonces = BTreeMap::default();
-        let pending_block_nonces = extending_blocks.get_account_nonces();
+
+        let mut cached_nonce_usages = NonceUsageMap::default();
+
+        for nonce_usages in self
+            .committed_cache
+            .blocks
+            .values()
+            .map(|block| &block.nonce_usages)
+            .chain(extending_blocks.iter().map(|block| &block.nonce_usages))
+        {
+            cached_nonce_usages.merge_next_block(nonce_usages);
+        }
+
         let mut cache_misses = Vec::new();
+
         for address in addresses.unique() {
-            if let Some(&pending_nonce) = pending_block_nonces.get(address) {
-                // hit cache level 1
-                account_nonces.insert(address, pending_nonce);
-                continue;
+            match cached_nonce_usages.get(address) {
+                Some(NonceUsage::Known(nonce)) => {
+                    account_nonces.insert(address, *nonce + 1);
+                }
+                Some(NonceUsage::Possible(possible)) => {
+                    cache_misses.push((address, Some(possible)));
+                }
+                None => {
+                    cache_misses.push((address, None));
+                }
             }
-            if let Some(committed_nonce) = self.committed_cache.get_nonce(address) {
-                // hit cache level 2
-                account_nonces.insert(address, committed_nonce);
-                continue;
-            }
-            cache_misses.push(address)
         }
 
         // the cached account nonce must overlap with latest triedb, i.e.
@@ -659,15 +718,22 @@ where
         let cache_miss_statuses = self.get_account_statuses(
             state_backend,
             &Some(extending_blocks),
-            cache_misses.iter().copied(),
+            cache_misses.iter().map(|(address, _)| *address),
             &base_seq_num,
         )?;
-        account_nonces.extend(
-            cache_misses
-                .into_iter()
-                .zip_eq(cache_miss_statuses)
-                .map(|(address, status)| (address, status.map_or(0, |status| status.nonce))),
-        );
+
+        account_nonces.extend(cache_misses.into_iter().zip_eq(cache_miss_statuses).map(
+            |((address, possible_nonces), status)| {
+                let nonce = status.map_or(0, |status| status.nonce);
+
+                (
+                    address,
+                    possible_nonces.map_or(nonce, |possible_nonces| {
+                        NonceUsage::apply_possible_nonces_to_account_nonce(nonce, possible_nonces)
+                    }),
+                )
+            },
+        ));
 
         Ok(account_nonces)
     }
@@ -1219,7 +1285,10 @@ mod test {
             block: consensus_test_block.block,
             system_txns: Vec::new(),
             validated_txns: consensus_test_block.validated_txns,
-            nonces: consensus_test_block.nonces,
+            nonce_usages: unsafe {
+                // Workaround for type resolution failure due to circular dependency
+                std::mem::transmute(consensus_test_block.nonce_usages)
+            },
             txn_fees: consensus_test_block.txn_fees,
         }
     }
@@ -1520,8 +1589,11 @@ mod test {
             block_id: BlockId(Hash(Default::default())),
             round: Round(0),
             seq_num: SeqNum(1),
-            nonces: BlockAccountNonce {
-                nonces: BTreeMap::from([(address1, 1), (address2, 1)]),
+            nonce_usages: NonceUsageMap {
+                map: BTreeMap::from([
+                    (address1, NonceUsage::Known(1)),
+                    (address2, NonceUsage::Known(1)),
+                ]),
             },
             fees: BlockTxnFeeStates {
                 txn_fees: BTreeMap::from([
@@ -1553,8 +1625,11 @@ mod test {
             block_id: BlockId(Hash(Default::default())),
             round: Round(0),
             seq_num: SeqNum(2),
-            nonces: BlockAccountNonce {
-                nonces: BTreeMap::from([(address1, 2), (address3, 1)]),
+            nonce_usages: NonceUsageMap {
+                map: BTreeMap::from([
+                    (address1, NonceUsage::Known(2)),
+                    (address3, NonceUsage::Known(1)),
+                ]),
             },
             fees: BlockTxnFeeStates {
                 txn_fees: BTreeMap::from([
@@ -1586,8 +1661,11 @@ mod test {
             block_id: BlockId(Hash(Default::default())),
             round: Round(0),
             seq_num: SeqNum(3),
-            nonces: BlockAccountNonce {
-                nonces: BTreeMap::from([(address2, 2), (address3, 2)]),
+            nonce_usages: NonceUsageMap {
+                map: BTreeMap::from([
+                    (address2, NonceUsage::Known(2)),
+                    (address3, NonceUsage::Known(2)),
+                ]),
             },
             fees: BlockTxnFeeStates {
                 txn_fees: BTreeMap::from([

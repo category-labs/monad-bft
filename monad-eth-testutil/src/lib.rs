@@ -33,7 +33,9 @@ use monad_crypto::{
     },
     NopKeyPair, NopSignature,
 };
-use monad_eth_block_policy::{compute_txn_max_gas_cost, EthValidatedBlock};
+use monad_eth_block_policy::{
+    compute_txn_max_gas_cost, EthValidatedBlock, NonceUsage, NonceUsageMap,
+};
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader};
 use monad_secp::KeyPair;
 use monad_testutil::signing::MockSignatures;
@@ -49,7 +51,7 @@ where
 {
     pub block: ConsensusFullBlock<ST, SCT, EthExecutionProtocol>,
     pub validated_txns: Vec<Recovered<TxEnvelope>>,
-    pub nonces: BTreeMap<Address, u64>,
+    pub nonce_usages: NonceUsageMap,
     pub txn_fees: BTreeMap<Address, TxnFee>,
 }
 
@@ -188,21 +190,47 @@ pub fn generate_consensus_test_block(
         monad_tfm::base_fee::GENESIS_BASE_FEE_MOMENT,
     );
 
-    let nonces = txs.iter().map(|t| (t.signer(), t.nonce())).fold(
-        BTreeMap::default(),
-        |mut map, (address, nonce)| {
-            match map.entry(address) {
-                std::collections::btree_map::Entry::Vacant(v) => {
-                    v.insert(nonce);
-                }
-                std::collections::btree_map::Entry::Occupied(mut o) => {
-                    o.insert(nonce.max(*o.get()));
+    let nonce_usages = txs
+        .iter()
+        .flat_map(|t| {
+            let mut pairs = vec![(t.signer(), NonceUsage::Known(t.nonce()))];
+
+            if t.is_eip7702() {
+                if let Some(auth_list) = t.authorization_list() {
+                    for auth in auth_list {
+                        let authority = auth.recover_authority().unwrap();
+                        pairs.push((authority, NonceUsage::Possible(vec![auth.nonce()])));
+                        // TODO(andr-dev): Enable after EIP7702 delegated flag added
+                        // txn_fees
+                        //     .entry(authority)
+                        //     .and_modify(|e| {
+                        //         e.is_delegated = true;
+                        //     })
+                        //     .or_insert(TxnFee {
+                        //         first_txn_value: Balance::ZERO,
+                        //         first_txn_gas: Balance::ZERO,
+                        //         max_gas_cost: Balance::ZERO,
+                        //         is_delegated: true,
+                        //     });
+                    }
                 }
             }
-
-            map
-        },
-    );
+            pairs
+        })
+        .fold(
+            NonceUsageMap::default(),
+            |mut map, (address, nonce_usage)| {
+                match map.entry(address) {
+                    std::collections::btree_map::Entry::Vacant(v) => {
+                        v.insert(nonce_usage);
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut o) => {
+                        o.get_mut().merge(&nonce_usage);
+                    }
+                }
+                map
+            },
+        );
 
     let mut txn_fees: BTreeMap<_, TxnFee> = BTreeMap::new();
     for eth_txn in txs.iter() {
@@ -223,7 +251,7 @@ pub fn generate_consensus_test_block(
     ConsensusTestBlock {
         block: ConsensusFullBlock::new(header, body).expect("header doesn't match body"),
         validated_txns: txs,
-        nonces,
+        nonce_usages,
         txn_fees,
     }
 }
@@ -240,7 +268,7 @@ pub fn generate_block_with_txs(
         block: test_block.block,
         system_txns: Vec::new(),
         validated_txns: test_block.validated_txns,
-        nonces: test_block.nonces,
+        nonce_usages: test_block.nonce_usages,
         txn_fees: test_block.txn_fees,
     }
 }

@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{btree_map::Entry as BTreeMapEntry, VecDeque},
     marker::PhantomData,
 };
 
@@ -24,7 +24,6 @@ use alloy_consensus::{
     transaction::{Recovered, Transaction},
     TxEnvelope, EMPTY_OMMER_ROOT_HASH,
 };
-use alloy_primitives::Address;
 use alloy_rlp::Encodable;
 use monad_consensus_types::{
     block::{BlockPolicy, ConsensusBlockHeader, ConsensusFullBlock, TxnFee, TxnFees},
@@ -36,18 +35,17 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_block_policy::{
     compute_txn_max_gas_cost, validation::static_validate_transaction, EthBlockPolicy,
-    EthValidatedBlock,
+    EthValidatedBlock, NonceUsage, NonceUsageMap,
 };
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader};
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
 use monad_system_calls::{validator::SystemTransactionValidator, SystemTransaction};
-use monad_types::{Balance, Nonce};
+use monad_types::Balance;
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use tracing::{debug, trace_span, warn};
+use tracing::{debug, trace, trace_span, warn};
 
-type NonceMap = BTreeMap<Address, Nonce>;
 type SystemTransactions = Vec<SystemTransaction>;
 type ValidatedTxns = Vec<Recovered<TxEnvelope>>;
 
@@ -88,7 +86,8 @@ where
         proposal_byte_limit: u64,
         base_fee: u64,
         max_code_size: usize,
-    ) -> Result<(SystemTransactions, ValidatedTxns, NonceMap, TxnFees), BlockValidationError> {
+    ) -> Result<(SystemTransactions, ValidatedTxns, NonceUsageMap, TxnFees), BlockValidationError>
+    {
         let EthBlockBody {
             transactions,
             ommers,
@@ -133,16 +132,25 @@ where
             };
 
         // recover the account nonces for system txns
-        let mut nonces = BTreeMap::new();
+        let mut nonce_usages = NonceUsageMap::default();
 
         // duplicate check. this is also done in SystemTransactionValidator
         for sys_txn in &system_txns {
-            let maybe_old_nonce = nonces.insert(sys_txn.signer(), sys_txn.nonce());
+            let maybe_old_nonce_usage = nonce_usages.add_known(sys_txn.signer(), sys_txn.nonce());
             // A block is invalid if we see a smaller or equal nonce
             // after the first or if there is a nonce gap
-            if let Some(old_nonce) = maybe_old_nonce {
-                if sys_txn.nonce() != old_nonce + 1 {
+            if let Some(old_nonce_usage) = maybe_old_nonce_usage {
+                let Some(expected_nonce) = sys_txn.nonce().checked_sub(1) else {
                     return Err(BlockValidationError::SystemTxnError);
+                };
+
+                match old_nonce_usage {
+                    NonceUsage::Known(old_nonce) => {
+                        if expected_nonce != old_nonce {
+                            return Err(BlockValidationError::SystemTxnError);
+                        }
+                    }
+                    NonceUsage::Possible(_) => {}
                 }
             }
         }
@@ -166,13 +174,22 @@ where
                 return Err(BlockValidationError::TxnError);
             }
 
-            let maybe_old_nonce = nonces.insert(eth_txn.signer(), eth_txn.nonce());
+            let maybe_old_nonce_usage = nonce_usages.add_known(eth_txn.signer(), eth_txn.nonce());
             // txn iteration is following the same order as they are in the
             // block. A block is invalid if we see a smaller or equal nonce
             // after the first or if there is a nonce gap
-            if let Some(old_nonce) = maybe_old_nonce {
-                if eth_txn.nonce() != old_nonce + 1 {
+            if let Some(old_nonce_usage) = maybe_old_nonce_usage {
+                let Some(expected_nonce) = eth_txn.nonce().checked_sub(1) else {
                     return Err(BlockValidationError::TxnError);
+                };
+
+                match old_nonce_usage {
+                    NonceUsage::Known(old_nonce) => {
+                        if expected_nonce != old_nonce {
+                            return Err(BlockValidationError::TxnError);
+                        }
+                    }
+                    NonceUsage::Possible(_) => {}
                 }
             }
 
@@ -188,7 +205,47 @@ where
                     first_txn_gas: compute_txn_max_gas_cost(eth_txn, base_fee),
                     max_gas_cost: Balance::ZERO,
                 });
+
             debug!(seq_num = ?header.seq_num, address = ?eth_txn.signer(), nonce = ?eth_txn.nonce(), ?txn_fee_entry, "TxnFeeEntry");
+
+            if eth_txn.is_eip7702() {
+                if let Some(auth_list) = eth_txn.authorization_list() {
+                    for (authority, authorization) in auth_list.iter().flat_map(|authorization| {
+                        authorization
+                            .recover_authority()
+                            .ok()
+                            .map(|authority| (authority, authorization.inner()))
+                    }) {
+                        trace!(address =? authorization.address, nonce =? authorization.nonce, ?authority, "Signed authority");
+
+                        if authorization.chain_id != 0_u64
+                            && authorization.chain_id != self.chain_id
+                        {
+                            continue;
+                        }
+
+                        match nonce_usages.entry(authority) {
+                            BTreeMapEntry::Occupied(nonce_usage) => match nonce_usage.into_mut() {
+                                NonceUsage::Known(nonce) => {
+                                    if *nonce + 1 == authorization.nonce {
+                                        *nonce += 1;
+                                    }
+                                }
+                                NonceUsage::Possible(possible_nonces) => {
+                                    possible_nonces.push(authorization.nonce);
+                                }
+                            },
+                            BTreeMapEntry::Vacant(nonce_usage) => {
+                                nonce_usage.insert(NonceUsage::Possible(vec![authorization.nonce]));
+                            }
+                        }
+
+                        // TODO(andr-dev): Enable after EIP7702 delegated flag added
+                        // let txn_fee = txn_fees.entry(authority).or_default();
+                        // txn_fee.is_delegated = true;
+                    }
+                }
+            }
         }
 
         let total_gas: u64 = eth_txns.iter().map(|tx| tx.gas_limit()).sum();
@@ -210,7 +267,7 @@ where
             return Err(BlockValidationError::TxnError);
         }
 
-        Ok((system_txns, eth_txns, nonces, txn_fees))
+        Ok((system_txns, eth_txns, nonce_usages, txn_fees))
     }
 
     fn validate_block_header(
@@ -333,7 +390,7 @@ where
     >{
         self.validate_block_header(&header, &body, author_pubkey, proposal_gas_limit)?;
 
-        if let Ok((system_txns, validated_txns, nonces, txn_fees)) = self.validate_block_body(
+        if let Ok((system_txns, validated_txns, nonce_usages, txn_fees)) = self.validate_block_body(
             &header,
             &body,
             tx_limit,
@@ -347,7 +404,7 @@ where
                 block,
                 system_txns,
                 validated_txns,
-                nonces,
+                nonce_usages,
                 txn_fees,
             })
         } else {
