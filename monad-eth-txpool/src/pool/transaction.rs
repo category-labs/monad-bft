@@ -16,6 +16,7 @@
 use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
 use alloy_primitives::{Address, TxHash};
 use alloy_rlp::Encodable;
+use monad_chain_config::{execution_revision::ExecutionChainParams, revision::ChainParams};
 use monad_consensus_types::block::ConsensusBlockHeader;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -23,7 +24,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_block_policy::{
     compute_txn_max_value, validation::static_validate_transaction, EthBlockPolicy,
 };
-use monad_eth_txpool_types::EthTxPoolDropReason;
+use monad_eth_txpool_types::{EthTxPoolDropReason, TransactionError};
 use monad_eth_types::{Balance, EthExecutionProtocol, Nonce};
 use monad_system_calls::validator::SystemTransactionValidator;
 use monad_tfm::base_fee::MIN_BASE_FEE;
@@ -46,11 +47,11 @@ impl ValidEthTransaction {
     pub fn validate<ST, SCT>(
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         block_policy: &EthBlockPolicy<ST, SCT>,
-        proposal_gas_limit: u64,
-        max_code_size: usize,
+        last_commit: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
+        chain_params: &ChainParams,
+        execution_params: &ExecutionChainParams,
         tx: Recovered<TxEnvelope>,
         owned: bool,
-        last_commit: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
     ) -> Option<Self>
     where
         ST: CertificateSignatureRecoverable,
@@ -70,28 +71,43 @@ impl ValidEthTransaction {
             return None;
         }
 
-        if let Err(err) = static_validate_transaction(
-            &tx,
-            block_policy.get_chain_id(),
-            proposal_gas_limit,
-            max_code_size,
-        ) {
-            event_tracker.drop(
-                tx.tx_hash().to_owned(),
-                EthTxPoolDropReason::NotWellFormed(err),
-            );
-            return None;
-        }
-
         let max_value = compute_txn_max_value(&tx);
 
-        Some(Self {
+        let this = Self {
             tx,
             owned,
             forward_last_seqnum: last_commit.seq_num,
             forward_retries: 0,
             max_value,
-        })
+        };
+
+        if let Err(error) = this.static_validate(block_policy, chain_params, execution_params) {
+            event_tracker.drop(
+                this.tx.tx_hash().to_owned(),
+                EthTxPoolDropReason::NotWellFormed(error),
+            );
+            return None;
+        }
+
+        Some(this)
+    }
+
+    pub fn static_validate<ST, SCT>(
+        &self,
+        block_policy: &EthBlockPolicy<ST, SCT>,
+        chain_params: &ChainParams,
+        execution_params: &ExecutionChainParams,
+    ) -> Result<(), TransactionError>
+    where
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    {
+        static_validate_transaction(
+            &self.tx,
+            block_policy.get_chain_id(),
+            chain_params.proposal_gas_limit,
+            execution_params.max_code_size,
+        )
     }
 
     pub fn apply_max_value(&self, account_balance: Balance) -> Option<Balance> {

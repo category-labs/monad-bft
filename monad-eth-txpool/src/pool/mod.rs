@@ -21,6 +21,7 @@ use alloy_consensus::{
 use alloy_primitives::{Address, U256};
 use alloy_rlp::Encodable;
 use itertools::Itertools;
+use monad_chain_config::{execution_revision::ExecutionChainParams, revision::ChainParams};
 use monad_consensus_types::{block::ProposedExecutionInputs, payload::RoundSignature};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -144,11 +145,18 @@ where
                 ValidEthTransaction::validate(
                     event_tracker,
                     block_policy,
-                    self.proposal_gas_limit,
-                    self.max_code_size,
+                    last_commit,
+                    &ChainParams {
+                        tx_limit: 0,
+                        proposal_gas_limit: self.proposal_gas_limit,
+                        proposal_byte_limit: 0,
+                        vote_pace: Duration::ZERO,
+                    },
+                    &ExecutionChainParams {
+                        max_code_size: self.max_code_size,
+                    },
                     tx,
                     owned,
-                    last_commit,
                 )
             })
             .collect_vec();
