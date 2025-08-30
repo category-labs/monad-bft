@@ -22,6 +22,7 @@ use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use alloy_rlp::Decodable;
 use bytes::Bytes;
 use futures::Stream;
+use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
 use monad_consensus_types::block::{
     BlockPolicy, MockExecutionBody, MockExecutionProposedHeader, MockExecutionProtocol,
     ProposedExecutionInputs,
@@ -96,7 +97,7 @@ where
     SBT: StateBackend<ST, SCT>,
 {
     // This field is only populated when the execution protocol is EthExecutionProtocol
-    eth: Option<(EthTxPool<ST, SCT, SBT>, BPT, SBT)>,
+    eth: Option<(EthTxPool<ST, SCT, SBT, MockChainRevision>, BPT, SBT)>,
 
     events: VecDeque<MempoolEvent<ST, SCT, EPT>>,
     waker: Option<Waker>,
@@ -289,7 +290,11 @@ where
                             block_policy,
                             &committed_block,
                         );
-                        pool.update_committed_block(&mut event_tracker, committed_block);
+                        pool.update_committed_block(
+                            &mut event_tracker,
+                            &MockChainConfig::DEFAULT,
+                            committed_block,
+                        );
                     }
                 }
                 TxPoolCommand::Reset {
@@ -299,7 +304,11 @@ where
                         block_policy,
                         last_delay_committed_blocks.iter().collect(),
                     );
-                    pool.reset(&mut event_tracker, last_delay_committed_blocks);
+                    pool.reset(
+                        &mut event_tracker,
+                        &MockChainConfig::DEFAULT,
+                        last_delay_committed_blocks,
+                    );
                 }
                 TxPoolCommand::InsertForwardedTxs { sender: _, txs } => {
                     pool.insert_txs(

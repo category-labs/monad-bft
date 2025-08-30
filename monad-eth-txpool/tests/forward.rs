@@ -16,6 +16,7 @@
 use std::collections::BTreeMap;
 
 use alloy_primitives::{hex, B256};
+use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
 use monad_crypto::NopSignature;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, recover_tx};
@@ -44,6 +45,7 @@ fn with_txpool(
             SignatureType,
             SignatureCollectionType,
             InMemoryState<SignatureType, SignatureCollectionType>,
+            MockChainRevision,
         >,
         &mut EthTxPoolEventTracker,
     ),
@@ -68,6 +70,7 @@ fn with_txpool(
 
     pool.update_committed_block(
         &mut event_tracker,
+        &MockChainConfig::DEFAULT,
         generate_block_with_txs(Round(0), SeqNum(0), BASE_FEE, Vec::default()),
     );
 
@@ -108,6 +111,7 @@ fn test_simple() {
         for (idx, forwardable) in [0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0].into_iter().enumerate() {
             pool.update_committed_block(
                 event_tracker,
+                &MockChainConfig::DEFAULT,
                 generate_block_with_txs(
                     Round(idx as u64 + 1),
                     SeqNum(idx as u64 + 1),
@@ -143,6 +147,7 @@ fn test_forwarded() {
         for idx in 0..128 {
             pool.update_committed_block(
                 event_tracker,
+                &MockChainConfig::DEFAULT,
                 generate_block_with_txs(
                     Round(idx as u64 + 1),
                     SeqNum(idx as u64 + 1),
@@ -173,6 +178,7 @@ fn test_multiple_sequential_commits() {
             for _ in 0..128 {
                 pool.update_committed_block(
                     event_tracker,
+                    &MockChainConfig::DEFAULT,
                     generate_block_with_txs(
                         Round(round_seqnum),
                         SeqNum(round_seqnum),
@@ -213,6 +219,7 @@ fn test_base_fee() {
             for _ in 0..128 {
                 pool.update_committed_block(
                     event_tracker,
+                    &MockChainConfig::DEFAULT,
                     generate_block_with_txs(
                         Round(round),
                         SeqNum(round),
@@ -232,6 +239,7 @@ fn test_base_fee() {
 
             pool.update_committed_block(
                 event_tracker,
+                &MockChainConfig::DEFAULT,
                 generate_block_with_txs(Round(round), SeqNum(round), BASE_FEE, Vec::default()),
             );
             round += 1;
@@ -247,6 +255,7 @@ fn test_base_fee() {
         for _ in 0..128 {
             pool.update_committed_block(
                 event_tracker,
+                &MockChainConfig::DEFAULT,
                 generate_block_with_txs(Round(round), SeqNum(round), BASE_FEE, Vec::default()),
             );
             round += 1;

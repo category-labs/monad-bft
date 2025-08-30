@@ -16,6 +16,7 @@
 use std::collections::BTreeMap;
 
 use criterion::{criterion_group, criterion_main, Criterion};
+use monad_chain_config::MockChainConfig;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::generate_block_with_txs;
 use monad_eth_txpool::{EthTxPoolEventTracker, EthTxPoolMetrics};
@@ -46,7 +47,12 @@ fn criterion_benchmark(c: &mut Criterion) {
 
             let metrics = EthTxPoolMetrics::default();
 
-            let pool = BenchController::create_pool(&block_policy, Vec::default(), &metrics);
+            let pool = BenchController::create_pool(
+                &block_policy,
+                &MockChainConfig::DEFAULT,
+                Vec::default(),
+                &metrics,
+            );
 
             (
                 pool,
@@ -57,6 +63,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         |(pool, metrics, block)| {
             pool.update_committed_block(
                 &mut EthTxPoolEventTracker::new(metrics, &mut BTreeMap::default()),
+                &MockChainConfig::DEFAULT,
                 block.to_owned(),
             );
         },

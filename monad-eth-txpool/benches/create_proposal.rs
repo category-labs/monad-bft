@@ -39,6 +39,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         "create_proposal",
         |controller_config| BenchController::setup(&block_policy, controller_config.clone()),
         |BenchController {
+             chain_config: _,
              state_backend,
              block_policy,
              pool,

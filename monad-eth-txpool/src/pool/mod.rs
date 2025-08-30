@@ -21,7 +21,11 @@ use alloy_consensus::{
 use alloy_primitives::{Address, U256};
 use alloy_rlp::Encodable;
 use itertools::Itertools;
-use monad_chain_config::{execution_revision::ExecutionChainParams, revision::ChainParams};
+use monad_chain_config::{
+    execution_revision::MonadExecutionRevision,
+    revision::{ChainRevision, MockChainRevision},
+    ChainConfig,
+};
 use monad_consensus_types::{block::ProposedExecutionInputs, payload::RoundSignature};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -31,7 +35,7 @@ use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason, E
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_system_calls::generate_system_calls;
-use monad_types::SeqNum;
+use monad_types::{Round, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::{info, warn};
 
@@ -50,55 +54,45 @@ const INSERT_TXS_MAX_PROMOTE: usize = 256;
 const PENDING_MAX_PROMOTE: usize = 128;
 
 #[derive(Clone, Debug)]
-pub struct EthTxPool<ST, SCT, SBT>
+pub struct EthTxPool<ST, SCT, SBT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend<ST, SCT>,
+    CRT: ChainRevision,
 {
-    do_local_insert: bool,
     pending: PendingTxMap,
     tracked: TrackedTxMap<ST, SCT, SBT>,
-    // current proposal_gas_limit. On insert_tx, we validate that tx.gas_limit
-    // <= proposal_gas_limit to reject anything that can't possibly fit in a
-    // block. Create proposal doesn't rely on this value
-    proposal_gas_limit: u64,
 
-    max_code_size: usize,
+    chain_revision: CRT,
+    execution_revision: MonadExecutionRevision,
+
+    do_local_insert: bool,
 }
 
-impl<ST, SCT, SBT> EthTxPool<ST, SCT, SBT>
+impl<ST, SCT, SBT, CRT> EthTxPool<ST, SCT, SBT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend<ST, SCT>,
+    CRT: ChainRevision,
 {
     pub fn new(
-        do_local_insert: bool,
         soft_tx_expiry: Duration,
         hard_tx_expiry: Duration,
-        proposal_gas_limit: u64,
-        max_code_size: usize,
+        chain_revision: CRT,
+        execution_revision: MonadExecutionRevision,
+        do_local_insert: bool,
     ) -> Self {
         Self {
-            do_local_insert,
             pending: PendingTxMap::default(),
             tracked: TrackedTxMap::new(soft_tx_expiry, hard_tx_expiry),
-            proposal_gas_limit,
-            max_code_size,
-        }
-    }
 
-    pub fn default_testing() -> Self {
-        const PROPOSAL_GAS_LIMIT: u64 = 300_000_000;
-        const MAX_CODE_SIZE: usize = 0x6000;
-        Self::new(
-            true,
-            Duration::from_secs(60),
-            Duration::from_secs(60),
-            PROPOSAL_GAS_LIMIT,
-            MAX_CODE_SIZE,
-        )
+            chain_revision,
+            execution_revision,
+
+            do_local_insert,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -110,14 +104,6 @@ where
             .num_txs()
             .checked_add(self.tracked.num_txs())
             .expect("pool size does not overflow")
-    }
-
-    pub fn set_tx_gas_limit(&mut self, proposal_gas_limit: u64) {
-        self.proposal_gas_limit = proposal_gas_limit
-    }
-
-    pub fn set_max_code_size(&mut self, max_code_size: usize) {
-        self.max_code_size = max_code_size
     }
 
     pub fn insert_txs(
@@ -146,15 +132,8 @@ where
                     event_tracker,
                     block_policy,
                     last_commit,
-                    &ChainParams {
-                        tx_limit: 0,
-                        proposal_gas_limit: self.proposal_gas_limit,
-                        proposal_byte_limit: 0,
-                        vote_pace: Duration::ZERO,
-                    },
-                    &ExecutionChainParams {
-                        max_code_size: self.max_code_size,
-                    },
+                    self.chain_revision.chain_params(),
+                    self.execution_revision.execution_chain_params(),
                     tx,
                     owned,
                 )
@@ -335,17 +314,69 @@ where
         Ok(ProposedExecutionInputs { header, body })
     }
 
+    pub fn enter_round(&mut self, chain_config: &impl ChainConfig<CRT>, round: Round) {
+        let chain_revision = chain_config.get_chain_revision(round);
+
+        if chain_revision.chain_params() != self.chain_revision.chain_params() {
+            self.chain_revision = chain_revision;
+            info!(chain_params =? self.chain_revision.chain_params(), "updating chain revision");
+
+            self.static_validate_all_txs();
+        }
+    }
+
     pub fn update_committed_block(
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
+        chain_config: &impl ChainConfig<CRT>,
         committed_block: EthValidatedBlock<ST, SCT>,
     ) {
+        let execution_revision = chain_config
+            .get_execution_chain_revision(committed_block.header().execution_inputs.timestamp);
+
         self.tracked
             .update_committed_block(event_tracker, committed_block, &mut self.pending);
 
         self.tracked.evict_expired_txs(event_tracker);
 
+        if self.execution_revision != execution_revision {
+            self.execution_revision = execution_revision;
+            info!(execution_revision =? self.execution_revision, "updating execution revision");
+
+            self.static_validate_all_txs();
+        }
+
         self.update_aggregate_metrics(event_tracker);
+    }
+
+    pub fn reset(
+        &mut self,
+        event_tracker: &mut EthTxPoolEventTracker<'_>,
+        chain_config: &impl ChainConfig<CRT>,
+        last_delay_committed_blocks: Vec<EthValidatedBlock<ST, SCT>>,
+    ) {
+        let execution_revision = chain_config.get_execution_chain_revision(
+            last_delay_committed_blocks
+                .last()
+                .map_or(0, |committed_block| {
+                    committed_block.header().execution_inputs.timestamp
+                }),
+        );
+
+        self.tracked.reset(last_delay_committed_blocks);
+
+        if self.execution_revision != execution_revision {
+            self.execution_revision = execution_revision;
+            info!(execution_revision =? self.execution_revision, "updating execution revision");
+
+            self.static_validate_all_txs();
+        }
+
+        self.update_aggregate_metrics(event_tracker);
+    }
+
+    pub fn static_validate_all_txs(&mut self) {
+        // TODO (andr-dev): Run static validation on all txs again
     }
 
     pub fn get_forwardable_txs<const MIN_SEQNUM_DIFF: u64, const MAX_RETRIES: usize>(
@@ -367,16 +398,6 @@ where
                     )
                 }),
         )
-    }
-
-    pub fn reset(
-        &mut self,
-        event_tracker: &mut EthTxPoolEventTracker<'_>,
-        last_delay_committed_blocks: Vec<EthValidatedBlock<ST, SCT>>,
-    ) {
-        self.tracked.reset(last_delay_committed_blocks);
-
-        self.update_aggregate_metrics(event_tracker);
     }
 
     fn update_aggregate_metrics(&self, event_tracker: &mut EthTxPoolEventTracker<'_>) {
@@ -416,5 +437,22 @@ where
         let sys_calls = generate_system_calls();
 
         Vec::new()
+    }
+}
+
+impl<ST, SCT, SBT> EthTxPool<ST, SCT, SBT, monad_chain_config::revision::MockChainRevision>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    SBT: StateBackend<ST, SCT>,
+{
+    pub fn default_testing() -> Self {
+        Self::new(
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+            MockChainRevision::DEFAULT,
+            MonadExecutionRevision::LATEST,
+            true,
+        )
     }
 }

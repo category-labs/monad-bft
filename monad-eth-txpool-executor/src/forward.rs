@@ -22,6 +22,7 @@ use std::{
 
 use alloy_consensus::TxEnvelope;
 use bytes::Bytes;
+use monad_chain_config::revision::ChainRevision;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -160,11 +161,12 @@ impl EthTxPoolForwardingManagerProjected<'_> {
         }
     }
 
-    pub fn add_egress_txs<ST, SCT, SBT>(&mut self, pool: &mut EthTxPool<ST, SCT, SBT>)
+    pub fn add_egress_txs<ST, SCT, SBT, CRT>(&mut self, pool: &mut EthTxPool<ST, SCT, SBT, CRT>)
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         SBT: StateBackend<ST, SCT>,
+        CRT: ChainRevision,
     {
         let Some(forwardable_txs) =
             pool.get_forwardable_txs::<EGRESS_MIN_COMMITTED_SEQ_NUM_DIFF, EGRESS_MAX_RETRIES>()

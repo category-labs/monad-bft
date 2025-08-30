@@ -23,6 +23,7 @@ use alloy_primitives::{hex, Address, TxKind, B256, U256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use itertools::Itertools;
+use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
 use monad_consensus_types::{
     block::{BlockPolicy, GENESIS_TIMESTAMP},
     payload::RoundSignature,
@@ -104,7 +105,18 @@ enum TxPoolTestEvent<'a> {
         num_blocks: usize,
         expected_committed_seq_num: u64,
     },
-    Block(Arc<dyn Fn(&mut EthTxPool<SignatureType, SignatureCollectionType, StateBackendType>)>),
+    Block(
+        Arc<
+            dyn Fn(
+                &mut EthTxPool<
+                    SignatureType,
+                    SignatureCollectionType,
+                    StateBackendType,
+                    MockChainRevision,
+                >,
+            ),
+        >,
+    ),
 }
 
 fn run_custom_iter<const N: usize>(
@@ -155,6 +167,7 @@ fn run_custom_iter<const N: usize>(
 
     pool.update_committed_block(
         &mut event_tracker,
+        &MockChainConfig::DEFAULT,
         generate_block_with_txs(Round(0), SeqNum(0), BASE_FEE_PER_GAS, Vec::default()),
     );
 
@@ -313,7 +326,11 @@ fn run_custom_iter<const N: usize>(
                         &block,
                     );
 
-                    pool.update_committed_block(&mut event_tracker, block);
+                    pool.update_committed_block(
+                        &mut event_tracker,
+                        &MockChainConfig::DEFAULT,
+                        block,
+                    );
                 }
 
                 assert_eq!(

@@ -6040,6 +6040,7 @@ dependencies = [
  "bytes",
  "futures",
  "monad-blocksync",
+ "monad-chain-config",
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-block-policy",

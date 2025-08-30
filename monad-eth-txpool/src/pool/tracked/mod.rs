@@ -73,7 +73,7 @@ where
     // evict expired txs through the entry API.
     txs: IndexMap<Address, TrackedTxList>,
 
-    _phantom: PhantomData<(ST, SCT, SBT)>,
+    _phantom: PhantomData<(SBT,)>,
 }
 
 impl<ST, SCT, SBT> TrackedTxMap<ST, SCT, SBT>

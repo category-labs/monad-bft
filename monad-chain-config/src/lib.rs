@@ -13,12 +13,17 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use execution_revision::MonadExecutionRevision;
 use monad_types::Round;
-use revision::{ChainParams, ChainRevision, MockChainRevision, MonadChainRevision};
 use serde::Deserialize;
 use thiserror::Error;
 use tracing::{info, warn};
+
+use self::{
+    execution_revision::MonadExecutionRevision,
+    revision::{
+        ChainParams, ChainRevision, MockChainRevision, MonadChainRevision, CHAIN_PARAMS_LATEST,
+    },
+};
 
 pub mod execution_revision;
 pub mod revision;
@@ -176,7 +181,11 @@ pub struct MockChainConfig {
 }
 
 impl MockChainConfig {
-    pub fn new(chain_params: &'static ChainParams) -> Self {
+    pub const DEFAULT: Self = Self {
+        chain_params: &CHAIN_PARAMS_LATEST,
+    };
+
+    pub const fn new(chain_params: &'static ChainParams) -> Self {
         Self { chain_params }
     }
 }

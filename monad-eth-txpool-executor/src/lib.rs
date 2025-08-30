@@ -40,7 +40,7 @@ use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
-use monad_types::DropTimer;
+use monad_types::{DropTimer, Round};
 use monad_updaters::TokioTaskUpdater;
 use monad_validator::signature_collection::SignatureCollection;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -70,7 +70,7 @@ where
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
-    pool: EthTxPool<ST, SCT, SBT>,
+    pool: EthTxPool<ST, SCT, SBT, CRT>,
     ipc: Pin<Box<EthTxPoolIpcServer>>,
 
     reset: EthTxPoolResetTrigger,
@@ -104,11 +104,12 @@ where
         block_policy: EthBlockPolicy<ST, SCT>,
         state_backend: SBT,
         ipc_config: EthTxPoolIpcConfig,
-        do_local_insert: bool,
         soft_tx_expiry: Duration,
         hard_tx_expiry: Duration,
         chain_config: CCT,
-        proposal_gas_limit: u64,
+        round: Round,
+        execution_timestamp_s: u64,
+        do_local_insert: bool,
     ) -> io::Result<TokioTaskUpdater<Pin<Box<Self>>, MonadEvent<ST, SCT, EthExecutionProtocol>>>
     {
         let ipc = Box::pin(EthTxPoolIpcServer::new(ipc_config)?);
@@ -131,12 +132,11 @@ where
 
                 move |command_rx, event_tx| {
                     let pool = EthTxPool::new(
-                        do_local_insert,
                         soft_tx_expiry,
                         hard_tx_expiry,
-                        proposal_gas_limit,
-                        // it's safe to default max_code_size to zero because it gets set on commit + reset
-                        0,
+                        chain_config.get_chain_revision(round),
+                        chain_config.get_execution_chain_revision(execution_timestamp_s),
+                        do_local_insert,
                     );
 
                     Self {
@@ -230,15 +230,11 @@ where
                         self.preload_manager
                             .update_committed_block(&committed_block);
 
-                        let execution_revision = self.chain_config.get_execution_chain_revision(
-                            committed_block.header().execution_inputs.timestamp,
+                        self.pool.update_committed_block(
+                            &mut event_tracker,
+                            &self.chain_config,
+                            committed_block,
                         );
-                        self.pool.set_max_code_size(
-                            execution_revision.execution_chain_params().max_code_size,
-                        );
-
-                        self.pool
-                            .update_committed_block(&mut event_tracker, committed_block);
                     }
 
                     self.forwarding_manager
@@ -358,12 +354,7 @@ where
                     round,
                     upcoming_leader_rounds,
                 } => {
-                    let proposal_gas_limit = self
-                        .chain_config
-                        .get_chain_revision(round)
-                        .chain_params()
-                        .proposal_gas_limit;
-                    self.pool.set_tx_gas_limit(proposal_gas_limit);
+                    self.pool.enter_round(&self.chain_config, round);
 
                     debug!(
                         ?round,
@@ -385,17 +376,11 @@ where
                         last_delay_committed_blocks.iter().collect(),
                     );
 
-                    if let Some(block) = last_delay_committed_blocks.last() {
-                        let execution_revision = self.chain_config.get_execution_chain_revision(
-                            block.header().execution_inputs.timestamp,
-                        );
-                        self.pool.set_max_code_size(
-                            execution_revision.execution_chain_params().max_code_size,
-                        );
-                    }
-
-                    self.pool
-                        .reset(&mut event_tracker, last_delay_committed_blocks);
+                    self.pool.reset(
+                        &mut event_tracker,
+                        &self.chain_config,
+                        last_delay_committed_blocks,
+                    );
 
                     self.reset.set_reset();
                 }

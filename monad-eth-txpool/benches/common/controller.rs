@@ -19,6 +19,7 @@ use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
 use alloy_primitives::{Uint, B256};
 use alloy_rlp::Encodable;
 use itertools::Itertools;
+use monad_chain_config::{revision::MockChainRevision, ChainConfig, MockChainConfig};
 use monad_crypto::NopSignature;
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, recover_tx};
@@ -37,10 +38,12 @@ pub type SignatureType = NopSignature;
 pub type SignatureCollectionType = MockSignatures<NopSignature>;
 pub type BlockPolicyType = EthBlockPolicy<SignatureType, SignatureCollectionType>;
 pub type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
-pub type Pool = EthTxPool<SignatureType, SignatureCollectionType, StateBackendType>;
+pub type Pool =
+    EthTxPool<SignatureType, SignatureCollectionType, StateBackendType, MockChainRevision>;
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct BenchControllerConfig {
+    pub chain_config: MockChainConfig,
     pub accounts: usize,
     pub txs: usize,
     pub nonce_var: usize,
@@ -49,6 +52,7 @@ pub struct BenchControllerConfig {
 }
 
 pub struct BenchController<'a> {
+    pub chain_config: MockChainConfig,
     pub block_policy: &'a BlockPolicyType,
     pub state_backend: StateBackendType,
     pub pool: Pool,
@@ -62,6 +66,7 @@ pub struct BenchController<'a> {
 impl<'a> BenchController<'a> {
     pub fn setup(block_policy: &'a BlockPolicyType, config: BenchControllerConfig) -> Self {
         let BenchControllerConfig {
+            chain_config,
             accounts,
             txs,
             nonce_var,
@@ -85,9 +90,10 @@ impl<'a> BenchController<'a> {
         let state_backend = Self::generate_state_backend_for_txs(&txs);
 
         let metrics = EthTxPoolMetrics::default();
-        let pool = Self::create_pool(block_policy, txs, &metrics);
+        let pool = Self::create_pool(block_policy, &chain_config, txs, &metrics);
 
         Self {
+            chain_config,
             block_policy,
             state_backend,
             pool,
@@ -112,6 +118,7 @@ impl<'a> BenchController<'a> {
 
     pub fn create_pool(
         block_policy: &BlockPolicyType,
+        chain_config: &impl ChainConfig<MockChainRevision>,
         txs: Vec<Recovered<TxEnvelope>>,
         metrics: &EthTxPoolMetrics,
     ) -> Pool {
@@ -119,6 +126,7 @@ impl<'a> BenchController<'a> {
 
         pool.update_committed_block(
             &mut EthTxPoolEventTracker::new(metrics, &mut BTreeMap::default()),
+            chain_config,
             generate_block_with_txs(
                 Round(0),
                 block_policy.get_last_commit(),

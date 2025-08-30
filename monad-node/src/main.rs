@@ -27,7 +27,6 @@ use alloy_rlp::{Decodable, Encodable};
 use chrono::Utc;
 use clap::CommandFactory;
 use futures_util::{FutureExt, StreamExt};
-use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     metrics::Metrics,
@@ -322,22 +321,18 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
                 queued_batches_watermark: node_state.node_config.ipc_queued_batches_watermark
                     as usize,
             },
-            true,
             // TODO(andr-dev): Add tx_expiry to node config
             Duration::from_secs(15),
             Duration::from_secs(5 * 60),
             node_state.chain_config,
             node_state
-                .chain_config
-                .get_chain_revision(
-                    node_state
-                        .forkpoint_config
-                        .high_certificate
-                        .qc()
-                        .get_round(),
-                )
-                .chain_params()
-                .proposal_gas_limit,
+                .forkpoint_config
+                .high_certificate
+                .qc()
+                .get_round(),
+            // TODO(andr-dev): Use timestamp from last commit in ledger
+            0,
+            true,
         )
         .expect("txpool ipc succeeds"),
         control_panel: ControlPanelIpcReceiver::new(
