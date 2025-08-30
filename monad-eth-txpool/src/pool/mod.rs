@@ -67,6 +67,8 @@ where
     proposal_gas_limit: u64,
 
     max_code_size: usize,
+
+    tfm_enabled: bool,
 }
 
 impl<ST, SCT, SBT> EthTxPool<ST, SCT, SBT>
@@ -81,6 +83,7 @@ where
         hard_tx_expiry: Duration,
         proposal_gas_limit: u64,
         max_code_size: usize,
+        tfm_enabled: bool,
     ) -> Self {
         Self {
             do_local_insert,
@@ -88,18 +91,21 @@ where
             tracked: TrackedTxMap::new(soft_tx_expiry, hard_tx_expiry),
             proposal_gas_limit,
             max_code_size,
+            tfm_enabled,
         }
     }
 
     pub fn default_testing() -> Self {
         const PROPOSAL_GAS_LIMIT: u64 = 300_000_000;
         const MAX_CODE_SIZE: usize = 0x6000;
+        const TFM_ENABLED: bool = true;
         Self::new(
             true,
             Duration::from_secs(60),
             Duration::from_secs(60),
             PROPOSAL_GAS_LIMIT,
             MAX_CODE_SIZE,
+            TFM_ENABLED,
         )
     }
 
@@ -120,6 +126,10 @@ where
 
     pub fn set_max_code_size(&mut self, max_code_size: usize) {
         self.max_code_size = max_code_size
+    }
+
+    pub fn set_tfm_enabled(&mut self, tfm_enabled: bool) {
+        self.tfm_enabled = tfm_enabled
     }
 
     pub fn insert_txs(
@@ -297,6 +307,7 @@ where
             extending_blocks.iter().collect(),
             state_backend,
             &mut self.pending,
+            self.tfm_enabled,
         )?;
 
         let body = EthBlockBody {

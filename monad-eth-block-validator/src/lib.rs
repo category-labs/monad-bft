@@ -35,8 +35,8 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{
-    compute_txn_max_gas_cost, validation::static_validate_transaction, EthBlockPolicy,
-    EthValidatedBlock,
+    compute_max_txn_cost, compute_txn_max_gas_cost, validation::static_validate_transaction,
+    EthBlockPolicy, EthValidatedBlock,
 };
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader};
 use monad_secp::RecoverableAddress;
@@ -63,6 +63,8 @@ where
     /// chain id
     pub chain_id: u64,
 
+    pub tfm_enable: bool,
+
     _phantom: PhantomData<(ST, SCT, SBT)>,
 }
 
@@ -75,6 +77,7 @@ where
     pub fn new(chain_id: u64) -> Self {
         Self {
             chain_id,
+            tfm_enable: true,
             _phantom: PhantomData,
         }
     }
@@ -182,11 +185,13 @@ where
                     e.max_gas_cost = e
                         .max_gas_cost
                         .saturating_add(compute_txn_max_gas_cost(eth_txn, base_fee));
+                    e.max_txn_cost = e.max_txn_cost.saturating_add(compute_max_txn_cost(eth_txn));
                 })
                 .or_insert(TxnFee {
                     first_txn_value: eth_txn.value(),
                     first_txn_gas: compute_txn_max_gas_cost(eth_txn, base_fee),
                     max_gas_cost: Balance::ZERO,
+                    max_txn_cost: compute_max_txn_cost(eth_txn),
                 });
             debug!(seq_num = ?header.seq_num, address = ?eth_txn.signer(), nonce = ?eth_txn.nonce(), ?txn_fee_entry, "TxnFeeEntry");
         }

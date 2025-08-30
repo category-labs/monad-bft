@@ -1270,6 +1270,7 @@ where
                     proposal_byte_limit,
                     max_reserve_balance: _,
                     vote_pace: _,
+                    tfm_enabled: _,
                 } = self
                     .consensus_config
                     .chain_config

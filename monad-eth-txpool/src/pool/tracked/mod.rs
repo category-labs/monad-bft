@@ -156,6 +156,7 @@ where
         extending_blocks: Vec<&EthValidatedBlock<ST, SCT>>,
         state_backend: &SBT,
         pending: &mut PendingTxMap,
+        tfm_enabled: bool,
     ) -> Result<Vec<Recovered<TxEnvelope>>, BlockPolicyError> {
         let Some(last_commit) = &self.last_commit else {
             return Ok(Vec::new());
@@ -229,10 +230,11 @@ where
             "txpool sequencing transactions"
         );
 
-        let mut validator = EthBlockPolicyBlockValidator::new(
+        let validator = EthBlockPolicyBlockValidator::new(
             proposed_seq_num,
             block_policy.execution_delay,
             base_fee,
+            tfm_enabled,
         )?;
 
         let proposal = sequencer.build_proposal(

@@ -27,6 +27,7 @@ pub enum MonadChainRevision {
     V_0_7_0,
     V_0_8_0,
     V_0_10_0,
+    V_0_11_0,
 }
 
 impl ChainRevision for MonadChainRevision {
@@ -35,6 +36,7 @@ impl ChainRevision for MonadChainRevision {
             MonadChainRevision::V_0_7_0 => &CHAIN_PARAMS_V_0_7_0,
             MonadChainRevision::V_0_8_0 => &CHAIN_PARAMS_V_0_8_0,
             MonadChainRevision::V_0_10_0 => &CHAIN_PARAMS_V_0_10_0,
+            MonadChainRevision::V_0_11_0 => &CHAIN_PARAMS_V_0_11_0,
         }
     }
 }
@@ -58,6 +60,7 @@ pub struct ChainParams {
     pub proposal_byte_limit: u64,
     pub max_reserve_balance: u128,
     pub vote_pace: Duration,
+    pub tfm_enabled: bool,
 }
 
 const CHAIN_PARAMS_V_0_7_0: ChainParams = ChainParams {
@@ -66,6 +69,7 @@ const CHAIN_PARAMS_V_0_7_0: ChainParams = ChainParams {
     proposal_byte_limit: 4_000_000,
     max_reserve_balance: 100_000_000_000_000_000_000, // 100 MON
     vote_pace: Duration::from_millis(1000),
+    tfm_enabled: false,
 };
 
 const CHAIN_PARAMS_V_0_8_0: ChainParams = ChainParams {
@@ -74,6 +78,7 @@ const CHAIN_PARAMS_V_0_8_0: ChainParams = ChainParams {
     proposal_byte_limit: 2_000_000,
     max_reserve_balance: 100_000_000_000_000_000_000, // 100 MON
     vote_pace: Duration::from_millis(500),
+    tfm_enabled: false,
 };
 
 const CHAIN_PARAMS_V_0_10_0: ChainParams = ChainParams {
@@ -82,6 +87,16 @@ const CHAIN_PARAMS_V_0_10_0: ChainParams = ChainParams {
     proposal_byte_limit: 2_000_000,
     max_reserve_balance: 100_000_000_000_000_000_000, // 100 MON
     vote_pace: Duration::from_millis(400),
+    tfm_enabled: false,
+};
+
+const CHAIN_PARAMS_V_0_11_0: ChainParams = ChainParams {
+    tx_limit: 5_000,
+    proposal_gas_limit: 150_000_000,
+    proposal_byte_limit: 2_000_000,
+    max_reserve_balance: 100_000_000_000_000_000_000, // 100 MON
+    vote_pace: Duration::from_millis(400),
+    tfm_enabled: true,
 };
 
 #[cfg(test)]
@@ -92,5 +107,6 @@ mod test {
     fn chain_revision_ord() {
         assert!(MonadChainRevision::V_0_7_0 < MonadChainRevision::V_0_8_0);
         assert!(MonadChainRevision::V_0_8_0 < MonadChainRevision::V_0_10_0);
+        assert!(MonadChainRevision::V_0_10_0 < MonadChainRevision::V_0_11_0);
     }
 }

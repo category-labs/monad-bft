@@ -137,6 +137,7 @@ where
                         proposal_gas_limit,
                         // it's safe to default max_code_size to zero because it gets set on commit + reset
                         0,
+                        false, // FIXME:misha add default value
                     );
 
                     Self {
@@ -358,12 +359,13 @@ where
                     round,
                     upcoming_leader_rounds,
                 } => {
-                    let proposal_gas_limit = self
-                        .chain_config
-                        .get_chain_revision(round)
-                        .chain_params()
-                        .proposal_gas_limit;
-                    self.pool.set_tx_gas_limit(proposal_gas_limit);
+                    let chain_params = self.chain_config.get_chain_revision(round).chain_params();
+
+                    self.pool.set_tx_gas_limit(chain_params.proposal_gas_limit);
+                    BlockPolicy::<ST, SCT, EthExecutionProtocol, SBT>::set_tfm_enabled(
+                        &mut self.block_policy,
+                        chain_params.tfm_enabled,
+                    );
 
                     debug!(
                         ?round,

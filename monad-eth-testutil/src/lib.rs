@@ -33,7 +33,7 @@ use monad_crypto::{
     },
     NopKeyPair, NopSignature,
 };
-use monad_eth_block_policy::{compute_txn_max_gas_cost, EthValidatedBlock};
+use monad_eth_block_policy::{compute_max_txn_cost, compute_txn_max_gas_cost, EthValidatedBlock};
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader};
 use monad_secp::KeyPair;
 use monad_testutil::signing::MockSignatures;
@@ -217,6 +217,7 @@ pub fn generate_consensus_test_block(
                 first_txn_value: eth_txn.value(),
                 first_txn_gas: compute_txn_max_gas_cost(eth_txn, BASE_FEE),
                 max_gas_cost: Balance::ZERO,
+                max_txn_cost: compute_max_txn_cost(eth_txn),
             });
     }
 

@@ -212,6 +212,7 @@ pub struct TxnFee {
     pub first_txn_value: Balance,
     pub first_txn_gas: Balance,
     pub max_gas_cost: Balance,
+    pub max_txn_cost: Balance, // Used for pre TFM validation
 }
 
 impl Default for TxnFee {
@@ -220,6 +221,7 @@ impl Default for TxnFee {
             first_txn_value: Balance::ZERO,
             first_txn_gas: Balance::ZERO,
             max_gas_cost: Balance::ZERO,
+            max_txn_cost: Balance::ZERO,
         }
     }
 }
@@ -236,6 +238,7 @@ where
         block_seq_num: SeqNum,
         execution_delay: SeqNum,
         base_fee: u64,
+        tfm_enabled: bool,
     ) -> Result<Self, BlockPolicyError>;
 
     fn try_apply_block_fees(
@@ -291,6 +294,9 @@ where
     // TODO delete this function, pass recently committed blocks to check_coherency instead
     // This way, BlockPolicy doesn't need to be mutated
     fn reset(&mut self, last_delay_committed_blocks: Vec<&Self::ValidatedBlock>);
+
+    // TODO delete this function and use chain_config directly
+    fn set_tfm_enabled(&mut self, tfm_enabled: bool);
 }
 
 /// A block policy which does not validate the inner contents of the block
@@ -383,6 +389,7 @@ where
 
     fn update_committed_block(&mut self, _: &Self::ValidatedBlock) {}
     fn reset(&mut self, _: Vec<&Self::ValidatedBlock>) {}
+    fn set_tfm_enabled(&mut self, tfm_enabled: bool) {}
 }
 
 #[derive(Debug, Clone, RlpEncodable, RlpDecodable)]

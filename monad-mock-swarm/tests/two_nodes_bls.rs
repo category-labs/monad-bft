@@ -114,6 +114,7 @@ static CHAIN_PARAMS: ChainParams = ChainParams {
     proposal_byte_limit: 4_000_000,
     max_reserve_balance: 1_000_000_000_000_000_000,
     vote_pace: Duration::from_millis(5),
+    tfm_enabled: true,
 };
 
 #[test]

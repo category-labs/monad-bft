@@ -55,6 +55,17 @@ pub enum ReserveBalanceCheck {
     Validate,
 }
 
+pub fn compute_max_txn_cost(txn: &TxEnvelope) -> U256 {
+    let txn_value = txn.value();
+    let gas_limit = U256::from(txn.gas_limit());
+    let max_fee = U256::from(txn.max_fee_per_gas());
+    let priority_fee = U256::from(txn.max_priority_fee_per_gas().unwrap_or(0));
+    let max_gas_cost = gas_limit
+        .checked_mul(max_fee.checked_add(priority_fee).expect("no overflow"))
+        .expect("no overflow");
+    txn_value.saturating_add(max_gas_cost)
+}
+
 pub fn compute_txn_max_value(txn: &TxEnvelope, base_fee: u64) -> U256 {
     let txn_value = txn.value();
     let gas_cost = compute_txn_max_gas_cost(txn, base_fee);
@@ -263,12 +274,14 @@ where
         execution_delay: SeqNum,
         emptying_txn_check_block_range: Range<SeqNum>,
         reserve_balance_check_block_range: RangeFrom<SeqNum>,
+        tfm_enabled: bool,
     ) -> Result<SeqNum, BlockPolicyError> {
         trace!(
             ?emptying_txn_check_block_range,
             ?reserve_balance_check_block_range,
             ?account_balance,
             ?eth_address,
+            ?tfm_enabled,
             "before update_account_balance"
         );
 
@@ -294,6 +307,7 @@ where
                     block.seq_num,
                     execution_delay,
                     block.base_fee,
+                    tfm_enabled,
                 )?;
                 trace!(
                     "applying fees for block {:?}, curr acc balance: {:?}",
@@ -368,6 +382,7 @@ pub struct EthBlockPolicyBlockValidator {
     block_seq_num: SeqNum,
     execution_delay: SeqNum,
     base_fee: u64,
+    tfm_enabled: bool,
 }
 
 fn is_possibly_emptying_transaction(
@@ -391,11 +406,13 @@ where
         block_seq_num: SeqNum,
         execution_delay: SeqNum,
         base_fee: u64,
+        tfm_enabled: bool,
     ) -> Result<Self, BlockPolicyError> {
         Ok(Self {
             block_seq_num,
             execution_delay,
             base_fee,
+            tfm_enabled,
         })
     }
 
@@ -405,6 +422,37 @@ where
         block_txn_fees: &TxnFee,
         eth_address: &Address,
     ) -> Result<(), BlockPolicyError> {
+        if !self.tfm_enabled {
+            if account_balance.balance < block_txn_fees.max_txn_cost {
+                debug!(
+                    seq_num =?self.block_seq_num,
+                    ?account_balance,
+                    block_txn_cost =?block_txn_fees.max_txn_cost,
+                    "TFM disabled. block can not be accepted insufficient balance"
+                );
+                return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+                    BlockPolicyBlockValidatorError::InsufficientBalance,
+                ));
+            }
+
+            let estimated_balance = account_balance
+                .balance
+                .saturating_sub(block_txn_fees.max_txn_cost);
+            account_balance.remaining_reserve_balance =
+                estimated_balance.min(account_balance.max_reserve_balance);
+            account_balance.balance = estimated_balance;
+            account_balance.block_seqnum_of_latest_txn = self.block_seq_num;
+
+            debug!(
+                "TFM disabled updated balance: {:?} \
+                        txn max cost {:?} \
+                        block seq_num {:?} \
+                        address: {:?}",
+                account_balance, block_txn_fees.max_txn_cost, self.block_seq_num, eth_address,
+            );
+            return Ok(());
+        }
+
         let has_emptying_transaction = is_possibly_emptying_transaction(
             self.block_seq_num,
             account_balance.block_seqnum_of_latest_txn,
@@ -503,6 +551,37 @@ where
             ));
         };
 
+        if !self.tfm_enabled {
+            let txn_cost = compute_max_txn_cost(txn);
+            if account_balance.balance < txn_cost {
+                debug!(
+                    seq_num =?self.block_seq_num,
+                    ?account_balance,
+                    ?txn_cost,
+                    ?txn,
+                    "TFM disabled. txn can not be accepted insufficient balance"
+                );
+                return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+                    BlockPolicyBlockValidatorError::InsufficientBalance,
+                ));
+            }
+
+            let estimated_balance = account_balance.balance.saturating_sub(txn_cost);
+            account_balance.remaining_reserve_balance =
+                estimated_balance.min(account_balance.max_reserve_balance);
+            account_balance.balance = estimated_balance;
+            account_balance.block_seqnum_of_latest_txn = self.block_seq_num;
+
+            debug!(
+                "TFM disabled. updated balance: {:?} \
+                        txn cost {:?} \
+                        block seq_num {:?} \
+                        address: {:?}",
+                account_balance, txn_cost, self.block_seq_num, eth_address,
+            );
+            return Ok(());
+        }
+
         let is_emptying_transaction = is_possibly_emptying_transaction(
             self.block_seq_num,
             account_balance.block_seqnum_of_latest_txn,
@@ -595,6 +674,8 @@ where
     chain_id: u64,
 
     max_reserve_balance: Balance,
+
+    tfm_enabled: bool,
 }
 
 impl<ST, SCT> EthBlockPolicy<ST, SCT>
@@ -616,6 +697,7 @@ where
             execution_delay: SeqNum(execution_delay),
             chain_id,
             max_reserve_balance: Balance::from(max_reserve_balance),
+            tfm_enabled: false,
         }
     }
 
@@ -810,6 +892,7 @@ where
                         self.execution_delay,
                         emptying_txn_check_block_range,
                         reserve_balance_check_block_range,
+                        self.tfm_enabled,
                     )?;
 
                     // check for emptying txs and reserve balance in extending blocks
@@ -821,6 +904,7 @@ where
 
                         for extending_block in next_blocks {
                             assert_eq!(next_validate, extending_block.get_seq_num());
+
                             if let Some(txn_fee) = extending_block.txn_fees.get(address) {
                                 // if still within check emptying range, update latest tx seq num
                                 // otherwise check for reserve balance
@@ -834,6 +918,7 @@ where
                                         extending_block.get_seq_num(),
                                         self.execution_delay,
                                         extending_block.get_base_fee(),
+                                        self.tfm_enabled,
                                     )?;
 
                                     validator.try_apply_block_fees(
@@ -1090,6 +1175,7 @@ where
             block.get_seq_num(),
             self.execution_delay,
             block.get_base_fee(),
+            self.tfm_enabled,
         )?;
 
         for txn in block.validated_txns.iter() {
@@ -1149,6 +1235,10 @@ where
             self.committed_cache.update_committed_block(block);
         }
     }
+
+    fn set_tfm_enabled(&mut self, tfm_enabled: bool) {
+        self.tfm_enabled = tfm_enabled;
+    }
 }
 
 #[cfg(test)]
@@ -1170,6 +1260,7 @@ mod test {
 
     use super::*;
 
+    const TFM_ENABLED: bool = true;
     const BASE_FEE: u64 = 100_000_000_000;
     const BASE_FEE_TREND: u64 = 0;
     const BASE_FEE_MOMENT: u64 = 0;
@@ -1242,6 +1333,7 @@ mod test {
             incoming_block.get_seq_num(),
             block_policy.execution_delay,
             BASE_FEE,
+            TFM_ENABLED,
         )?;
 
         for txn in incoming_block.validated_txns.iter() {
@@ -1266,6 +1358,8 @@ mod test {
             1337,
             RESERVE_BALANCE,
         );
+
+        BlockPolicy::<_, _, _, StateBackendType>::set_tfm_enabled(&mut block_policy, true);
 
         // Build 5 sequential blocks (n-4 .. n)
         let seq_num = 18;
@@ -1531,6 +1625,7 @@ mod test {
                             first_txn_value: Balance::from(100),
                             first_txn_gas: Balance::from(10),
                             max_gas_cost: Balance::from(90),
+                            max_txn_cost: Balance::ZERO,
                         },
                     ),
                     (
@@ -1539,6 +1634,7 @@ mod test {
                             first_txn_value: Balance::from(200),
                             first_txn_gas: Balance::from(10),
                             max_gas_cost: Balance::from(190),
+                            max_txn_cost: Balance::ZERO,
                         },
                     ),
                 ]),
@@ -1564,6 +1660,7 @@ mod test {
                             first_txn_value: Balance::from(150),
                             first_txn_gas: Balance::from(10),
                             max_gas_cost: Balance::from(140),
+                            max_txn_cost: Balance::ZERO,
                         },
                     ),
                     (
@@ -1572,6 +1669,7 @@ mod test {
                             first_txn_value: Balance::from(300),
                             first_txn_gas: Balance::from(10),
                             max_gas_cost: Balance::from(290),
+                            max_txn_cost: Balance::ZERO,
                         },
                     ),
                 ]),
@@ -1597,6 +1695,7 @@ mod test {
                             first_txn_value: Balance::from(250),
                             first_txn_gas: Balance::from(10),
                             max_gas_cost: Balance::from(240),
+                            max_txn_cost: Balance::ZERO,
                         },
                     ),
                     (
@@ -1605,6 +1704,7 @@ mod test {
                             first_txn_value: Balance::from(350),
                             first_txn_gas: Balance::from(10),
                             max_gas_cost: Balance::from(0),
+                            max_txn_cost: Balance::ZERO,
                         },
                     ),
                 ]),
@@ -1632,6 +1732,7 @@ mod test {
             EXEC_DELAY,
             SeqNum(4)..SeqNum(5),
             SeqNum(5)..,
+            TFM_ENABLED,
         );
         assert!(res.is_ok());
 
@@ -1650,6 +1751,7 @@ mod test {
             EXEC_DELAY,
             emptying_txn_check_block_range.clone(),
             reserve_balance_check_block_range.clone(),
+            TFM_ENABLED,
         );
         // no transaction in block2 (emptying transaction check)
         // gas cost + value more than balance in block3 (reserve balance check)
@@ -1672,6 +1774,7 @@ mod test {
             EXEC_DELAY,
             emptying_txn_check_block_range,
             reserve_balance_check_block_range,
+            TFM_ENABLED,
         );
         // has a transaction in block2 (emptying transaction check)
         // gas cost more than balance in block3 (reserve balance check)
@@ -1738,7 +1841,8 @@ mod test {
         );
 
         let mut validator =
-            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
+            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE, TFM_ENABLED)
+                .unwrap();
 
         for txn in txs.iter() {
             assert!(validator
@@ -1758,7 +1862,8 @@ mod test {
         );
 
         let mut validator =
-            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
+            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE, TFM_ENABLED)
+                .unwrap();
 
         for txn in txs.iter() {
             assert!(
@@ -1794,7 +1899,8 @@ mod test {
         );
 
         let mut validator =
-            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
+            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE, TFM_ENABLED)
+                .unwrap();
 
         for txn in txs.iter() {
             assert!(validator
@@ -1814,7 +1920,8 @@ mod test {
         );
 
         let mut validator =
-            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
+            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE, TFM_ENABLED)
+                .unwrap();
 
         for txn in txs.iter() {
             assert!(
@@ -1851,7 +1958,8 @@ mod test {
         );
 
         let mut validator =
-            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
+            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE, TFM_ENABLED)
+                .unwrap();
 
         for txn in txs.iter() {
             assert!(
@@ -1888,7 +1996,8 @@ mod test {
         );
 
         let mut validator =
-            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
+            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE, TFM_ENABLED)
+                .unwrap();
 
         for txn in txs.iter() {
             assert!(validator
@@ -1911,7 +2020,8 @@ mod test {
         );
 
         let mut validator =
-            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
+            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE, TFM_ENABLED)
+                .unwrap();
 
         for txn in txs.iter() {
             assert!(validator
@@ -1947,7 +2057,8 @@ mod test {
         );
 
         let mut validator =
-            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
+            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE, TFM_ENABLED)
+                .unwrap();
 
         for txn in txs.iter() {
             assert!(validator
@@ -1970,7 +2081,8 @@ mod test {
         );
 
         let mut validator =
-            EthBlockPolicyBlockValidator::new(latest_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
+            EthBlockPolicyBlockValidator::new(latest_seq_num, EXEC_DELAY, BASE_FEE, TFM_ENABLED)
+                .unwrap();
 
         for txn in txs.iter() {
             assert!(validator
@@ -2029,7 +2141,8 @@ mod test {
         account_balances.insert(&signer, abs);
 
         let mut validator =
-            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
+            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE, TFM_ENABLED)
+                .unwrap();
 
         assert_eq!(
             validator.try_add_transaction(&mut account_balances, &txn),
@@ -2096,7 +2209,8 @@ mod test {
         expect: Result<(), BlockPolicyError>,
     ) {
         let mut validator =
-            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
+            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE, TFM_ENABLED)
+                .unwrap();
 
         assert_eq!(
             validator.try_add_transaction(account_balances, txn),
@@ -2122,6 +2236,7 @@ mod test {
             first_txn_value: Balance::from(first_txn_value),
             first_txn_gas: Balance::from(first_txn_gas),
             max_gas_cost: Balance::from(max_gas_cost),
+            max_txn_cost: Balance::ZERO,
         }
     }
 
@@ -2134,7 +2249,8 @@ mod test {
         expect: Result<(), BlockPolicyError>,
     ) {
         let mut validator =
-            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
+            EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY, BASE_FEE, TFM_ENABLED)
+                .unwrap();
 
         assert_eq!(
             validator.try_apply_block_fees(account_balance, fees, eth_address),

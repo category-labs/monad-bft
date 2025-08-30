@@ -575,6 +575,7 @@ where
             proposal_byte_limit,
             max_reserve_balance: _,
             vote_pace: _,
+            tfm_enabled,
         } = self
             .config
             .chain_config
@@ -1346,6 +1347,15 @@ where
             // when epoch boundary block is committed, this updates
             // epoch manager records
             self.metrics.consensus_events.commit_block += 1;
+
+            let tfm_enabled = self
+                .config
+                .chain_config
+                .get_chain_revision(block.header().block_round)
+                .chain_params()
+                .tfm_enabled;
+            self.block_policy.set_tfm_enabled(tfm_enabled);
+
             self.block_policy.update_committed_block(block);
             self.epoch_manager
                 .schedule_epoch_start(block.header().seq_num, block.get_block_round());
@@ -1953,6 +1963,7 @@ mod test {
         proposal_byte_limit: 4_000_000,
         max_reserve_balance: RESERVE_BALANCE,
         vote_pace: Duration::from_millis(1000),
+        tfm_enabled: true,
     };
 
     type SignatureType = NopSignature;
