@@ -23,7 +23,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_types::{EthAccount, EthHeader, Nonce};
-use monad_types::{BlockId, Round, SeqNum, Stake};
+use monad_types::{BlockId, Epoch, Round, SeqNum, Stake};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 
 pub use self::{
@@ -68,9 +68,10 @@ where
     /// Fetches latest block from storage backend
     fn raw_read_latest_finalized_block(&self) -> Option<SeqNum>;
 
-    fn read_next_valset(
+    fn read_valset_at_block(
         &self,
         block_num: SeqNum,
+        requested_epoch: Epoch,
     ) -> Vec<(SCT::NodeIdPubKey, SignatureCollectionPubKeyType<SCT>, Stake)>;
 
     fn total_db_lookups(&self) -> u64;
@@ -130,12 +131,17 @@ where
         state.raw_read_latest_finalized_block()
     }
 
-    fn read_next_valset(
+    fn read_valset_at_block(
         &self,
         block_num: SeqNum,
-    ) -> Vec<(SCT::NodeIdPubKey, SignatureCollectionPubKeyType<SCT>, Stake)> {
+        requested_epoch: Epoch,
+    ) -> Vec<(
+        <SCT as SignatureCollection>::NodeIdPubKey,
+        SignatureCollectionPubKeyType<SCT>,
+        Stake,
+    )> {
         let state = self.lock().unwrap();
-        state.read_next_valset(block_num)
+        state.read_valset_at_block(block_num, requested_epoch)
     }
 
     fn total_db_lookups(&self) -> u64 {

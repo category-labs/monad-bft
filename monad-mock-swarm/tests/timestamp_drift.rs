@@ -32,7 +32,7 @@ use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
 use monad_state_backend::InMemoryStateInner;
 use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
 use monad_transformer::{GenericTransformer, LatencyTransformer, ID};
-use monad_types::{NodeId, Round, SeqNum};
+use monad_types::{NodeId, SeqNum};
 use monad_updaters::{
     ledger::MockLedger, statesync::MockStateSyncExecutor, txpool::MockTxPoolExecutor,
     val_set::MockValSetUpdaterNop,
@@ -64,8 +64,6 @@ fn drift_one_node() {
         SeqNum(4),                           // execution_delay
         delta,                               // delta
         MockChainConfig::new(&CHAIN_PARAMS), // chain config
-        SeqNum(2000),                        // epoch_length
-        Round(50),                           // epoch_start_delay
         SeqNum(100),                         // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs

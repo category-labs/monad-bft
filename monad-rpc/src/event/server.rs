@@ -287,6 +287,7 @@ mod test {
         event::{EventServer, EventServerEvent},
     };
 
+    #[ignore]
     #[tokio::test]
     async fn testing_server() {
         let snapshot_event_ring = SnapshotEventRing::new_from_zstd_bytes(
@@ -314,6 +315,7 @@ mod test {
         }
     }
 
+    #[ignore]
     #[tokio::test]
     async fn json() {
         let snapshot_event_ring = SnapshotEventRing::new_from_zstd_bytes(

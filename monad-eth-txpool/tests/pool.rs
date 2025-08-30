@@ -27,7 +27,10 @@ use monad_consensus_types::{
     block::{BlockPolicy, GENESIS_TIMESTAMP},
     payload::RoundSignature,
 };
-use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
+use monad_crypto::{
+    certificate_signature::{CertificateKeyPair, PubKey},
+    NopKeyPair, NopPubKey, NopSignature,
+};
 use monad_eth_block_policy::{
     validation::{TFM_MAX_EIP2718_ENCODED_LENGTH, TFM_MAX_GAS_LIMIT},
     EthBlockPolicy,
@@ -38,7 +41,7 @@ use monad_eth_txpool_types::EthTxPoolSnapshot;
 use monad_eth_types::Balance;
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
-use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
+use monad_types::{Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing_test::traced_test;
 
@@ -79,7 +82,7 @@ type SignatureCollectionType = MockSignatures<SignatureType>;
 type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
 
 fn make_test_block_policy() -> EthBlockPolicy<SignatureType, SignatureCollectionType> {
-    EthBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY, 1337)
+    EthBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY, 20143)
 }
 
 #[derive(Clone)]
@@ -257,6 +260,8 @@ fn run_custom_iter<const N: usize>(
                         byte_limit,
                         [0_u8; 20],
                         GENESIS_TIMESTAMP + current_seq_num as u128,
+                        NodeId::new(NopPubKey::from_bytes(&[0_u8; 32]).unwrap()),
+                        Epoch(1),
                         RoundSignature::new(Round(0), &mock_keypair),
                         pending_blocks.iter().cloned().collect_vec(),
                         &eth_block_policy,

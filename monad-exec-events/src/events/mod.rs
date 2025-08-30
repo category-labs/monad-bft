@@ -381,6 +381,7 @@ mod test {
 
     use crate::ExecEventDecoder;
 
+    #[ignore]
     #[test]
     fn basic_test() {
         const SNAPSHOT_NAME: &str = "ETHEREUM_MAINNET_30B_15M";

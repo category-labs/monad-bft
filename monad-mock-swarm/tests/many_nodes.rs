@@ -61,8 +61,6 @@ fn many_nodes_noser() {
         SeqNum(4),                           // execution_delay
         delta,                               // delta
         MockChainConfig::new(&CHAIN_PARAMS), // chain config
-        SeqNum(2000),                        // epoch_length
-        Round(50),                           // epoch_start_delay
         SeqNum(100),                         // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs
@@ -128,8 +126,6 @@ fn many_nodes_noser_one_offline() {
         SeqNum(4),                           // execution_delay
         delta,                               // delta
         MockChainConfig::new(&CHAIN_PARAMS), // chain config
-        SeqNum(2000),                        // epoch_length
-        Round(50),                           // epoch_start_delay
         SeqNum(100),                         // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs

@@ -31,7 +31,7 @@ use monad_eth_types::{EthAccount, EthHeader};
 use monad_secp::{PubKey, SecpSignature};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_triedb::TriedbHandle;
-use monad_types::{BlockId, Hash, SeqNum, Stake};
+use monad_types::{BlockId, Epoch, Hash, SeqNum, Stake};
 use tracing::{debug, trace, warn};
 
 use crate::{
@@ -290,8 +290,12 @@ impl StateBackend<SecpSignature, BlsSignatureCollection<PubKey>> for TriedbReade
         self.get_latest_finalized_block()
     }
 
-    fn read_next_valset(&self, _block_num: SeqNum) -> Vec<(PubKey, BlsPubKey, Stake)> {
-        unimplemented!()
+    fn read_valset_at_block(
+        &self,
+        block_num: SeqNum,
+        requested_epoch: Epoch,
+    ) -> Vec<(PubKey, BlsPubKey, Stake)> {
+        self.handle.read_valset_at_block(block_num, requested_epoch)
     }
 
     fn total_db_lookups(&self) -> u64 {

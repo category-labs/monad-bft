@@ -27,7 +27,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_types::{EthAccount, EthHeader};
 use monad_state_backend::{StateBackend, StateBackendError};
-use monad_types::{BlockId, DropTimer, SeqNum, Stake};
+use monad_types::{BlockId, DropTimer, Epoch, SeqNum, Stake};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use tracing::warn;
 
@@ -195,11 +195,13 @@ where
         self.state_backend.raw_read_latest_finalized_block()
     }
 
-    fn read_next_valset(
+    fn read_valset_at_block(
         &self,
-        _block_num: SeqNum,
+        block_num: SeqNum,
+        requested_epoch: Epoch,
     ) -> Vec<(SCT::NodeIdPubKey, SignatureCollectionPubKeyType<SCT>, Stake)> {
-        unimplemented!()
+        self.state_backend
+            .read_valset_at_block(block_num, requested_epoch)
     }
 
     fn total_db_lookups(&self) -> u64 {

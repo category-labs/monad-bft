@@ -21,18 +21,19 @@ use alloy_consensus::{
 use alloy_primitives::{Address, U256};
 use alloy_rlp::Encodable;
 use itertools::Itertools;
+use monad_chain_config::{revision::CHAIN_PARAMS_LATEST, MockChainConfig};
 use monad_consensus_types::{block::ProposedExecutionInputs, payload::RoundSignature};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason, EthTxPoolSnapshot};
-use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader};
+use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ExtractEthAddress, ProposedEthHeader};
 use monad_state_backend::{StateBackend, StateBackendError};
-use monad_system_calls::generate_system_calls;
-use monad_types::SeqNum;
+use monad_system_calls::{SystemTransactionGenerator, SYSTEM_SENDER_ETH_ADDRESS};
+use monad_types::{Epoch, NodeId, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use self::{pending::PendingTxMap, tracked::TrackedTxMap, transaction::ValidEthTransaction};
 use crate::EthTxPoolEventTracker;
@@ -64,6 +65,8 @@ where
     proposal_gas_limit: u64,
 
     max_code_size: usize,
+
+    sys_tx_generator: SystemTransactionGenerator,
 }
 
 impl<ST, SCT, SBT> EthTxPool<ST, SCT, SBT>
@@ -71,6 +74,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend<ST, SCT>,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
 {
     pub fn new(
         do_local_insert: bool,
@@ -78,10 +82,12 @@ where
         hard_tx_expiry: Duration,
         proposal_gas_limit: u64,
         max_code_size: usize,
+        sys_tx_generator: SystemTransactionGenerator,
     ) -> Self {
         Self {
             do_local_insert,
             pending: PendingTxMap::default(),
+            sys_tx_generator,
             tracked: TrackedTxMap::new(soft_tx_expiry, hard_tx_expiry),
             proposal_gas_limit,
             max_code_size,
@@ -97,6 +103,7 @@ where
             Duration::from_secs(60),
             PROPOSAL_GAS_LIMIT,
             MAX_CODE_SIZE,
+            SystemTransactionGenerator::new(MockChainConfig::new(&CHAIN_PARAMS_LATEST)),
         )
     }
 
@@ -246,6 +253,8 @@ where
         proposal_byte_limit: u64,
         beneficiary: [u8; 20],
         timestamp_ns: u128,
+        node_id: NodeId<CertificateSignaturePubKey<ST>>,
+        epoch: Epoch,
         round_signature: RoundSignature<SCT::SignatureType>,
         extending_blocks: Vec<EthValidatedBlock<ST, SCT>>,
 
@@ -266,7 +275,15 @@ where
         // u64::MAX seconds is ~500 Billion years
         assert!(timestamp_seconds < u64::MAX.into());
 
-        let system_transactions = self.get_system_transactions();
+        let self_eth_address = node_id.pubkey().get_eth_address();
+        let system_transactions = self.get_system_transactions(
+            proposed_seq_num,
+            epoch,
+            self_eth_address,
+            &extending_blocks.iter().collect(),
+            block_policy,
+            state_backend,
+        )?;
         let system_txs_size: u64 = system_transactions
             .iter()
             .map(|tx| tx.length() as u64)
@@ -404,9 +421,53 @@ where
             .collect()
     }
 
-    fn get_system_transactions(&self) -> Vec<Recovered<TxEnvelope>> {
-        let sys_calls = generate_system_calls();
+    fn get_system_transactions(
+        &self,
+        proposed_seq_num: SeqNum,
+        proposed_epoch: Epoch,
+        block_author: Address,
+        extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
+        block_policy: &EthBlockPolicy<ST, SCT>,
+        state_backend: &SBT,
+    ) -> Result<Vec<Recovered<TxEnvelope>>, StateBackendError> {
+        // TODO this should be inside SystemTransactionGenerator to prevent
+        // exposing SYSTEM_SENDER_ETH_ADDRESS outside the crate
+        let next_system_txn_nonce = *block_policy
+            .get_account_base_nonces(
+                proposed_seq_num,
+                state_backend,
+                extending_blocks,
+                [SYSTEM_SENDER_ETH_ADDRESS].iter(),
+            )?
+            .get(&SYSTEM_SENDER_ETH_ADDRESS)
+            .unwrap();
 
-        Vec::new()
+        let parent_block_epoch = {
+            if let Some(extending_block) = extending_blocks.last() {
+                extending_block.get_epoch()
+            } else {
+                assert_eq!(proposed_seq_num, block_policy.get_last_commit() + SeqNum(1));
+                block_policy.get_last_commit_epoch()
+            }
+        };
+
+        let sys_txns = self.sys_tx_generator.generate_system_transactions(
+            proposed_seq_num,
+            proposed_epoch,
+            parent_block_epoch,
+            block_author,
+            next_system_txn_nonce,
+        );
+
+        debug!(
+            ?proposed_seq_num,
+            ?sys_txns,
+            "generated system transactions"
+        );
+
+        Ok(sys_txns
+            .into_iter()
+            .map(|sys_txn| sys_txn.into())
+            .collect_vec())
     }
 }

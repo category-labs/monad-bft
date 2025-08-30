@@ -23,7 +23,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_types::{EthAccount, EthHeader};
-use monad_types::{BlockId, SeqNum, Stake};
+use monad_types::{BlockId, Epoch, SeqNum, Stake};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use tracing::warn;
 
@@ -57,8 +57,9 @@ where
     RawReadLatestFinalizedBlock {
         tx: mpsc::SyncSender<Option<SeqNum>>,
     },
-    ReadNextValidatorData {
+    ReadValidatorSetAtBlock {
         block_num: SeqNum,
+        requested_epoch: Epoch,
         tx: mpsc::SyncSender<
             Vec<(
                 CertificateSignaturePubKey<ST>,
@@ -165,12 +166,14 @@ where
         )
     }
 
-    fn read_next_valset(
+    fn read_valset_at_block(
         &self,
         block_num: SeqNum,
+        requested_epoch: Epoch,
     ) -> Vec<(SCT::NodeIdPubKey, SignatureCollectionPubKeyType<SCT>, Stake)> {
-        self.send_and_recv_request(|tx| StateBackendThreadRequest::ReadNextValidatorData {
+        self.send_and_recv_request(|tx| StateBackendThreadRequest::ReadValidatorSetAtBlock {
             block_num,
+            requested_epoch,
             tx,
         })
     }
@@ -253,8 +256,12 @@ where
                     tx.send(state_backend.raw_read_latest_finalized_block())
                         .expect("StateBackendThreadClient is alive");
                 }
-                StateBackendThreadRequest::ReadNextValidatorData { block_num, tx } => {
-                    tx.send(state_backend.read_next_valset(block_num))
+                StateBackendThreadRequest::ReadValidatorSetAtBlock {
+                    block_num,
+                    requested_epoch,
+                    tx,
+                } => {
+                    tx.send(state_backend.read_valset_at_block(block_num, requested_epoch))
                         .expect("StateBackendThreadClient is alive");
                 }
                 StateBackendThreadRequest::TotalDbLookups { tx } => {

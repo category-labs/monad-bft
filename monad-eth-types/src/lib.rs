@@ -18,6 +18,8 @@ use std::fmt::Debug;
 use alloy_consensus::{Header, TxEnvelope};
 use alloy_primitives::{Address, B256, U256};
 use alloy_rlp::{RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
+use monad_crypto::NopPubKey;
+use monad_secp::PubKey as SecpPubkey;
 use monad_types::{ExecutionProtocol, FinalizedHeader, SeqNum};
 
 pub mod serde;
@@ -27,6 +29,22 @@ pub const EMPTY_RLP_TX_LIST: u8 = 0xc0;
 
 pub type Nonce = u64;
 pub type Balance = U256;
+
+pub trait ExtractEthAddress {
+    fn get_eth_address(&self) -> Address;
+}
+
+impl ExtractEthAddress for NopPubKey {
+    fn get_eth_address(&self) -> Address {
+        Address::new([0_u8; 20])
+    }
+}
+
+impl ExtractEthAddress for SecpPubkey {
+    fn get_eth_address(&self) -> Address {
+        Address::from_raw_public_key(&Self::bytes(self)[1..])
+    }
+}
 
 #[derive(Debug, Copy, Clone)]
 pub struct EthAccount {

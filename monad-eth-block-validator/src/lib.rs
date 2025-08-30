@@ -26,6 +26,7 @@ use alloy_consensus::{
 };
 use alloy_primitives::{Address, U256};
 use alloy_rlp::Encodable;
+use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::{
     block::{BlockPolicy, ConsensusBlockHeader, ConsensusFullBlock},
     block_validator::{BlockValidationError, BlockValidator},
@@ -38,7 +39,9 @@ use monad_eth_block_policy::{
     compute_txn_max_value, validation::static_validate_transaction, EthBlockPolicy,
     EthValidatedBlock,
 };
-use monad_eth_types::{EthBlockBody, EthExecutionProtocol, Nonce, ProposedEthHeader};
+use monad_eth_types::{
+    EthBlockBody, EthExecutionProtocol, ExtractEthAddress, Nonce, ProposedEthHeader,
+};
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
 use monad_system_calls::{validator::SystemTransactionValidator, SystemTransaction};
@@ -62,6 +65,7 @@ where
 {
     /// chain id
     pub chain_id: u64,
+    pub system_tx_validator: SystemTransactionValidator,
 
     _phantom: PhantomData<(ST, SCT, SBT)>,
 }
@@ -71,10 +75,16 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend<ST, SCT>,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
 {
-    pub fn new(chain_id: u64) -> Self {
+    pub fn new<CCT, CRT>(chain_config: CCT) -> Self
+    where
+        CCT: ChainConfig<CRT>,
+        CRT: ChainRevision,
+    {
         Self {
-            chain_id,
+            chain_id: chain_config.chain_id(),
+            system_tx_validator: SystemTransactionValidator::new(chain_config),
             _phantom: PhantomData,
         }
     }
@@ -121,17 +131,16 @@ where
             .collect::<Result<_, monad_secp::Error>>()
             .map_err(|_err| BlockValidationError::TxnError)?;
 
-        let (system_txns, eth_txns) =
-            match SystemTransactionValidator::validate_and_extract_system_transactions(
-                header,
-                recovered_txns,
-            ) {
-                Ok((system_txns, eth_txns)) => (system_txns, eth_txns),
-                Err(err) => {
-                    debug!(?err, "system transaction validator error");
-                    return Err(BlockValidationError::SystemTxnError);
-                }
-            };
+        let (system_txns, eth_txns) = match self
+            .system_tx_validator
+            .validate_and_extract_system_transactions(header, recovered_txns)
+        {
+            Ok((system_txns, eth_txns)) => (system_txns, eth_txns),
+            Err(err) => {
+                debug!(?err, "system transaction validator error");
+                return Err(BlockValidationError::SystemTxnError);
+            }
+        };
 
         // recover the account nonces for system txns
         let mut nonces = BTreeMap::new();
@@ -298,6 +307,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend<ST, SCT>,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
 {
     #[tracing::instrument(
         level = "debug", 
@@ -349,8 +359,11 @@ where
 
 #[cfg(test)]
 mod test {
+    use std::time::Duration;
+
     use alloy_consensus::Signed;
     use alloy_primitives::{PrimitiveSignature, B256};
+    use monad_chain_config::{revision::ChainParams, MockChainConfig};
     use monad_consensus_types::{
         payload::{ConsensusBlockBodyId, ConsensusBlockBodyInner, RoundSignature},
         quorum_certificate::QuorumCertificate,
@@ -369,6 +382,13 @@ mod test {
 
     const PROPOSAL_GAS_LIMIT: u64 = 300_000_000;
     const PROPOSAL_SIZE_LIMIT: u64 = 4_000_000;
+
+    static CHAIN_PARAMS: ChainParams = ChainParams {
+        tx_limit: 10_000,
+        proposal_gas_limit: 300_000_000,
+        proposal_byte_limit: 4_000_000,
+        vote_pace: Duration::from_millis(1000),
+    };
 
     fn get_header(
         payload_id: ConsensusBlockBodyId,
@@ -398,7 +418,7 @@ mod test {
             NopSignature,
             MockSignatures<NopSignature>,
             InMemoryState<NopSignature, MockSignatures<NopSignature>>,
-        > = EthValidator::new(1337);
+        > = EthValidator::new(MockChainConfig::new(&CHAIN_PARAMS));
 
         // txn1 with nonce 1 while txn2 with nonce 3 (there is a nonce gap)
         let txn1 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 1, 10);
@@ -434,7 +454,7 @@ mod test {
             NopSignature,
             MockSignatures<NopSignature>,
             InMemoryState<NopSignature, MockSignatures<NopSignature>>,
-        > = EthValidator::new(1337);
+        > = EthValidator::new(MockChainConfig::new(&CHAIN_PARAMS));
 
         // total gas used is 400_000_000 which is higher than block gas limit
         let txn1 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 200_000_000, 1, 10);
@@ -470,7 +490,7 @@ mod test {
             NopSignature,
             MockSignatures<NopSignature>,
             InMemoryState<NopSignature, MockSignatures<NopSignature>>,
-        > = EthValidator::new(1337);
+        > = EthValidator::new(MockChainConfig::new(&CHAIN_PARAMS));
 
         // tx limit per block is 1
         let txn1 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 1, 10);
@@ -506,7 +526,7 @@ mod test {
             NopSignature,
             MockSignatures<NopSignature>,
             InMemoryState<NopSignature, MockSignatures<NopSignature>>,
-        > = EthValidator::new(1337);
+        > = EthValidator::new(MockChainConfig::new(&CHAIN_PARAMS));
 
         // proposal limit is 4MB
         let txn1 = make_legacy_tx(
@@ -547,7 +567,7 @@ mod test {
             NopSignature,
             MockSignatures<NopSignature>,
             InMemoryState<NopSignature, MockSignatures<NopSignature>>,
-        > = EthValidator::new(1337);
+        > = EthValidator::new(MockChainConfig::new(&CHAIN_PARAMS));
 
         let valid_txn = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 1, 10);
 

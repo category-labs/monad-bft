@@ -222,12 +222,10 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(Balance::MAX, SeqNum::MAX),
-            SeqNum::MAX,                         // execution_delay
-            delta,                               // delta
-            MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            epoch_length,                        // epoch_length
-            Round(20),                           // epoch_start_delay
-            SeqNum(100),                         // state_sync_threshold
+            SeqNum::MAX, // execution_delay
+            delta,       // delta
+            MockChainConfig::new_with_epoch_params(&CHAIN_PARAMS, epoch_length, Round(20)), // chain config
+            SeqNum(100), // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
             .iter()
@@ -321,12 +319,10 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(Balance::MAX, SeqNum::MAX),
-            SeqNum::MAX,                         // execution_delay
-            delta,                               // delta
-            MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            epoch_length,                        // epoch_length
-            Round(20),                           // epoch_start_delay
-            SeqNum(100),                         // state_sync_threshold
+            SeqNum::MAX, // execution_delay
+            delta,       // delta
+            MockChainConfig::new_with_epoch_params(&CHAIN_PARAMS, epoch_length, Round(20)), // chain config
+            SeqNum(100), // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
             .iter()
@@ -493,12 +489,10 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(Balance::MAX, SeqNum::MAX),
-            SeqNum::MAX,                         // execution_delay
-            Duration::from_millis(delta),        // delta
-            MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            epoch_length,                        // epoch_length
-            Round(20),                           // epoch_start_delay
-            SeqNum(100),                         // state_sync_threshold
+            SeqNum::MAX,                  // execution_delay
+            Duration::from_millis(delta), // delta
+            MockChainConfig::new_with_epoch_params(&CHAIN_PARAMS, epoch_length, Round(20)), // chain config
+            SeqNum(100), // state_sync_threshold
         );
 
         let genesis_validators: Vec<NodeId<NopPubKey>> = state_configs[0].locked_epoch_validators
@@ -712,12 +706,10 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(Balance::MAX, SeqNum(4)),
-            SeqNum(4),                           // execution_delay
-            delta,                               // delta
-            MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            epoch_length,                        // epoch_length
-            epoch_start_delay,                   // epoch_start_delay
-            SeqNum(100),                         // state_sync_threshold
+            SeqNum(4), // execution_delay
+            delta,     // delta
+            MockChainConfig::new_with_epoch_params(&CHAIN_PARAMS, epoch_length, epoch_start_delay), // chain config
+            SeqNum(100), // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
             .iter()
