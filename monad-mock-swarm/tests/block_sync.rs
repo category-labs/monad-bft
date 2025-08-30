@@ -45,7 +45,7 @@ mod test {
         DropTransformer, GenericTransformer, LatencyTransformer, PartitionTransformer,
         PeriodicTransformer, ID,
     };
-    use monad_types::{NodeId, Round, SeqNum};
+    use monad_types::{NodeId, SeqNum};
     use monad_updaters::{
         ledger::{MockLedger, MockableLedger},
         statesync::MockStateSyncExecutor,
@@ -77,8 +77,6 @@ mod test {
             SeqNum::MAX,                         // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            SeqNum(2000),                        // epoch_length
-            Round(50),                           // epoch_start_delay
             SeqNum(1000),                        // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
@@ -200,8 +198,6 @@ mod test {
             SeqNum::MAX,                         // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            SeqNum(2000),                        // epoch_length
-            Round(50),                           // epoch_start_delay
             SeqNum(100),                         // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
@@ -285,8 +281,6 @@ mod test {
             SeqNum::MAX,                         // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            SeqNum(2000),                        // epoch_length
-            Round(50),                           // epoch_start_delay
             SeqNum(100),                         // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
@@ -425,8 +419,6 @@ mod test {
             SeqNum::MAX,                         // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            SeqNum(2000),                        // epoch_length
-            Round(50),                           // epoch_start_delay
             SeqNum(2000),                        // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs

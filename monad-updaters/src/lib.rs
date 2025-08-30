@@ -18,7 +18,7 @@ use std::{future::Future, pin::Pin};
 use futures::Stream;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 
-pub mod checkpoint;
+pub mod config_file;
 pub mod ledger;
 pub mod loopback;
 pub mod parent;

@@ -217,7 +217,7 @@ mod test {
     #[test]
     fn test_static_validate_transaction() {
         let address = Address(FixedBytes([0x11; 20]));
-        const CHAIN_ID: u64 = 1337;
+        const CHAIN_ID: u64 = 20143;
         const PROPOSAL_GAS_LIMIT: u64 = 300_000_000;
 
         // tx exceeds tfm encoded length limit
@@ -389,7 +389,7 @@ mod test {
 
     #[test]
     fn test_compute_floor_data_gas() {
-        const CHAIN_ID: u64 = 1337;
+        const CHAIN_ID: u64 = 20143;
         let tx = TxEip1559 {
             chain_id: CHAIN_ID,
             nonce: 0,
@@ -410,7 +410,7 @@ mod test {
 
     #[test]
     fn test_compute_intrinsic_gas() {
-        const CHAIN_ID: u64 = 1337;
+        const CHAIN_ID: u64 = 20143;
         let tx = TxEip1559 {
             chain_id: CHAIN_ID,
             nonce: 0,

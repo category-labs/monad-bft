@@ -30,7 +30,7 @@ use monad_transformer::{
     DropTransformer, GenericTransformer, LatencyTransformer, PeriodicTransformer,
     RandLatencyTransformer, ID,
 };
-use monad_types::{NodeId, Round, SeqNum};
+use monad_types::{NodeId, SeqNum};
 use monad_updaters::{
     ledger::MockLedger, statesync::MockStateSyncExecutor, txpool::MockTxPoolExecutor,
     val_set::MockValSetUpdaterNop,
@@ -68,8 +68,6 @@ pub fn simulation_make() -> *mut Simulation {
             SeqNum(4),                           // execution_delay
             Duration::from_millis(50),           // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            SeqNum(2000),                        // epoch_length
-            Round(50),                           // epoch_start_delay
             SeqNum(100),                         // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs

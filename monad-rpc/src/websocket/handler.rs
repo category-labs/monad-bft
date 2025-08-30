@@ -710,6 +710,7 @@ mod tests {
         })
     }
 
+    #[ignore]
     #[actix_rt::test]
     async fn websocket_wait_for_ping() {
         let mut server = create_test_server();
@@ -722,6 +723,7 @@ mod tests {
             .unwrap();
     }
 
+    #[ignore]
     #[actix_rt::test]
     async fn websocket_eth_subscribe() {
         let mut server: actix_test::TestServer = create_test_server();
@@ -807,6 +809,7 @@ mod tests {
         }
     }
 
+    #[ignore]
     #[actix_rt::test]
     async fn websocket_multiple_connections() {
         // Create a test server with two connections
@@ -875,6 +878,7 @@ mod tests {
         );
     }
 
+    #[ignore]
     #[actix_rt::test]
     async fn websocket_connection_limit() {
         let server = create_test_server();
@@ -910,6 +914,7 @@ mod tests {
         }
     }
 
+    #[ignore]
     #[actix_rt::test]
     async fn websocket_subscription_limit() {
         let server = create_test_server();

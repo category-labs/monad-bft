@@ -23,6 +23,9 @@
 
 #include <category/core/byte_string.hpp>
 #include <category/core/nibble.h>
+#include <category/execution/monad/staking/read_valset.hpp>
+#include <category/execution/monad/staking/util/validator.h>
+#include <category/mpt/db.hpp>
 #include <category/mpt/db.hpp>
 #include <category/mpt/ondisk_db_config.hpp>
 #include <category/mpt/traverse.hpp>
@@ -255,6 +258,9 @@ namespace detail
 
     struct GetNodeReceiver
     {
+        using ResultType =
+            monad::async::result<std::shared_ptr<monad::mpt::CacheNode>>;
+
         monad::mpt::detail::TraverseSender traverse_sender;
         TraverseReceiver traverse_receiver;
 
@@ -267,8 +273,7 @@ namespace detail
         }
 
         void set_value(
-            monad::async::erased_connected_operation *state,
-            monad::async::result<monad::mpt::Node::UniquePtr> res)
+            monad::async::erased_connected_operation *state, ResultType res)
         {
             if (!res) {
                 traverse_receiver.callback(
@@ -280,7 +285,9 @@ namespace detail
                     0);
             }
             else {
-                traverse_sender.traverse_root = std::move(res).assume_value();
+                traverse_sender.traverse_root =
+                    monad::mpt::copy_node<monad::mpt::Node>(
+                        res.assume_value().get());
                 (new auto(monad::async::connect(
                      std::move(traverse_sender), std::move(traverse_receiver))))
                     ->initiate();
@@ -426,4 +433,34 @@ uint64_t triedb_earliest_finalized_block(triedb *db)
 {
     uint64_t earliest_finalized_block = db->db_.get_earliest_version();
     return earliest_finalized_block;
+}
+
+validator_set alloc_valset(uint64_t length)
+{
+    auto *validators = new validator_data[length];
+    return validator_set{.validators = validators, .length = length};
+}
+
+void free_valset(validator_set valset) {
+    delete[] valset.validators;
+}
+
+validator_set_result read_valset(triedb *db, size_t block_num, uint64_t requested_epoch) {
+    auto monad_valset = monad_validator_set{.validator = nullptr, .length = 0};
+    int result = monad::staking::read_valset(
+        db->db_, block_num, requested_epoch, &monad_valset
+    );
+
+    auto valdator_set = alloc_valset(monad_valset.length);
+    for (uint64_t i = 0; i < monad_valset.length; i += 1) {
+        std::memcpy(valdator_set.validators[i].secp_pubkey,
+                    monad_valset.validator[i].secp_pubkey, 33);
+        std::memcpy(valdator_set.validators[i].bls_pubkey,
+                    monad_valset.validator[i].bls_pubkey, 48);
+        std::memcpy(valdator_set.validators[i].stake,
+                    monad_valset.validator[i].stake.bytes, 32);
+    }
+    monad_free_valset(&monad_valset);
+
+    return validator_set_result{.result = result, .validator_set = valdator_set};
 }

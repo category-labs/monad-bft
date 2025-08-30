@@ -24,18 +24,18 @@
 use std::collections::VecDeque;
 
 use alloy_consensus::{Transaction, TxEnvelope, transaction::Recovered};
-use alloy_primitives::{Address, Bytes, TxKind, U256};
+use alloy_primitives::{Address, TxKind};
+use monad_chain_config::{ChainConfig, revision::ChainRevision};
 use monad_consensus_types::block::ConsensusBlockHeader;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_types::EthExecutionProtocol;
+use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
+use monad_types::{Epoch, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::debug;
 
-use crate::{
-    SYSTEM_SENDER_ETH_ADDRESS, SystemCall, SystemTransaction, generate_system_calls_from_header,
-};
+use crate::{SYSTEM_SENDER_ETH_ADDRESS, SystemCall, SystemTransaction, generate_system_calls};
 
 #[derive(Debug)]
 pub enum SystemTransactionError {
@@ -44,9 +44,9 @@ pub enum SystemTransactionError {
     NonZeroGasPrice,
     NonZeroGasLimit,
     InvalidTxKind,
-    NonZeroValue,
-    UnexpectedDestAddress { expected: Address },
-    UnexpectedInput { expected: Bytes },
+    UnexpectedDestAddress,
+    UnexpectedInput,
+    UnexpectedValue,
 }
 
 #[derive(Debug)]
@@ -57,17 +57,32 @@ pub enum SystemTransactionValidationError {
     SystemTransactionError(SystemTransactionError),
 }
 
-pub struct SystemTransactionValidator {}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SystemTransactionValidator {
+    epoch_length: SeqNum,
+    staking_activation: Epoch,
+}
 
 impl SystemTransactionValidator {
+    pub fn new<CCT, CRT>(chain_config: CCT) -> Self
+    where
+        CCT: ChainConfig<CRT>,
+        CRT: ChainRevision,
+    {
+        Self {
+            epoch_length: chain_config.get_epoch_length(),
+            staking_activation: chain_config.get_staking_activation(),
+        }
+    }
+
+    // Used to validate sender of user transactions in RPC and TxPool
     pub fn is_system_sender(address: Address) -> bool {
         address == SYSTEM_SENDER_ETH_ADDRESS
     }
 
-    // used to check if a user transaction calls a restricted function
+    // Used to validate inputs of user transactions in RPC and TxPool
     pub fn is_restricted_system_call(txn: &Recovered<TxEnvelope>) -> bool {
-        // TODO check if txn invokes any supported system call
-        false
+        SystemCall::is_restricted_system_call(txn)
     }
 
     fn static_validate_system_transaction(
@@ -93,33 +108,28 @@ impl SystemTransactionValidator {
             return Err(SystemTransactionError::InvalidTxKind);
         }
 
-        if txn.tx().value() != U256::ZERO {
-            return Err(SystemTransactionError::NonZeroValue);
-        }
-
         Ok(())
     }
 
     fn validate_system_transaction_input(
         expected_sys_call: SystemCall,
-        sys_txn: &Recovered<TxEnvelope>,
+        sys_txn: Recovered<TxEnvelope>,
     ) -> Result<SystemTransaction, SystemTransactionError> {
-        // verify destination address, function selector and function input
-
-        // TODO remove error
-        Err(SystemTransactionError::NonZeroValue)
+        expected_sys_call.validate_system_transaction_input(sys_txn)
     }
 
     fn validate_system_transaction(
         expected_sys_call: SystemCall,
-        sys_txn: &Recovered<TxEnvelope>,
+        sys_txn: Recovered<TxEnvelope>,
     ) -> Result<SystemTransaction, SystemTransactionError> {
-        Self::static_validate_system_transaction(sys_txn)?;
+        Self::static_validate_system_transaction(&sys_txn)?;
 
         Self::validate_system_transaction_input(expected_sys_call, sys_txn)
     }
 
+    // Used to extract expected systems transactions in block validator
     pub fn validate_and_extract_system_transactions<ST, SCT>(
+        &self,
         block_header: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
         mut txns: VecDeque<Recovered<TxEnvelope>>,
     ) -> Result<
@@ -127,20 +137,38 @@ impl SystemTransactionValidator {
         SystemTransactionValidationError,
     >
     where
+        CertificateSignaturePubKey<ST>: ExtractEthAddress,
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
         let mut validated_sys_txns = Vec::new();
 
-        let expected_sys_calls = generate_system_calls_from_header(block_header);
+        let address = block_header.author.pubkey().get_eth_address();
+        let expected_sys_calls = generate_system_calls(
+            self.epoch_length,
+            self.staking_activation,
+            block_header.seq_num,
+            block_header.epoch,
+            block_header.qc.get_epoch(),
+            address,
+        );
         let mut curr_sys_sender_nonce = None;
         for expected_sys_call in expected_sys_calls {
             let Some(sys_txn) = txns.pop_front() else {
                 return Err(SystemTransactionValidationError::MissingSystemTransaction);
             };
 
-            match Self::validate_system_transaction(expected_sys_call, &sys_txn) {
+            match Self::validate_system_transaction(expected_sys_call, sys_txn) {
                 Ok(validated_sys_txn) => {
+                    // system sender nonce must be sequential
+                    if let Some(old_nonce) = curr_sys_sender_nonce {
+                        if validated_sys_txn.nonce() != old_nonce + 1 {
+                            debug!(?validated_sys_txn, "invalid system transaction nonce");
+                            return Err(SystemTransactionValidationError::NonSequentialNonces);
+                        }
+                    }
+                    curr_sys_sender_nonce = Some(validated_sys_txn.nonce());
+
                     validated_sys_txns.push(validated_sys_txn);
                 }
                 Err(err) => {
@@ -149,15 +177,6 @@ impl SystemTransactionValidator {
                     ));
                 }
             }
-
-            // system sender nonce must be sequential
-            if let Some(old_nonce) = curr_sys_sender_nonce {
-                if sys_txn.nonce() != old_nonce + 1 {
-                    debug!(?sys_txn, "invalid system transaction nonce");
-                    return Err(SystemTransactionValidationError::NonSequentialNonces);
-                }
-            }
-            curr_sys_sender_nonce = Some(sys_txn.nonce())
         }
 
         for user_txn in &txns {
@@ -176,11 +195,14 @@ impl SystemTransactionValidator {
 
 #[cfg(test)]
 mod test {
+    use std::time::Duration;
+
     use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope, transaction::Recovered};
     use alloy_eips::eip2930::AccessList;
-    use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+    use alloy_primitives::{Address, B256, Bytes, TxKind};
     use alloy_signer::SignerSync;
     use alloy_signer_local::LocalSigner;
+    use monad_chain_config::{MockChainConfig, revision::ChainParams};
     use monad_consensus_types::{
         block::ConsensusBlockHeader,
         payload::{ConsensusBlockBodyId, RoundSignature},
@@ -200,6 +222,12 @@ mod test {
         },
     };
 
+    static CHAIN_PARAMS: ChainParams = ChainParams {
+        tx_limit: 10_000,
+        proposal_gas_limit: 300_000_000,
+        proposal_byte_limit: 4_000_000,
+        vote_pace: Duration::from_millis(1000),
+    };
     const BASE_FEE: u64 = 100_000_000_000;
     const BASE_FEE_TREND: u64 = 0;
     const BASE_FEE_MOMENT: u64 = 0;
@@ -284,17 +312,6 @@ mod test {
     }
 
     #[test]
-    fn test_invalid_value() {
-        let mut tx = get_valid_system_transaction();
-        tx.value = U256::ONE;
-        let invalid_tx = sign_with_system_sender(tx);
-        assert!(matches!(
-            SystemTransactionValidator::static_validate_system_transaction(&invalid_tx),
-            Err(SystemTransactionError::NonZeroValue)
-        ));
-    }
-
-    #[test]
     fn test_unexpected_system_txn() {
         let unsigned_tx1 = make_legacy_tx(B256::repeat_byte(0xAu8), 0, 0, 0, 10);
         let signer = unsigned_tx1.recover_signer().unwrap();
@@ -325,11 +342,9 @@ mod test {
             BASE_FEE_TREND,
             BASE_FEE_MOMENT,
         );
+        let sys_tx_validator = SystemTransactionValidator::new(MockChainConfig::new(&CHAIN_PARAMS));
 
-        let result = SystemTransactionValidator::validate_and_extract_system_transactions(
-            &block_header,
-            txs,
-        );
+        let result = sys_tx_validator.validate_and_extract_system_transactions(&block_header, txs);
         assert!(matches!(
             result,
             Err(SystemTransactionValidationError::UnexpectedSystemTransaction)

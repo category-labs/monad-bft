@@ -174,6 +174,10 @@ impl Default for RoundSpan {
 )]
 pub struct Epoch(pub u64);
 
+impl Epoch {
+    pub const MAX: Epoch = Epoch(u64::MAX);
+}
+
 impl AsRef<[u8]> for Epoch {
     fn as_ref(&self) -> &[u8] {
         self.0.as_bytes()
@@ -188,6 +192,18 @@ impl Add for Epoch {
             self.0
                 .checked_add(rhs.0)
                 .unwrap_or_else(|| panic!("{:?} + {:?}", self.0, rhs.0)),
+        )
+    }
+}
+
+impl Sub for Epoch {
+    type Output = Self;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        Epoch(
+            self.0
+                .checked_sub(rhs.0)
+                .unwrap_or_else(|| panic!("{:?} - {:?}", self.0, rhs.0)),
         )
     }
 }
@@ -214,39 +230,16 @@ impl Debug for Epoch {
     PartialEq,
     PartialOrd,
     AsBytes,
+    Serialize,
     Deserialize,
     RlpEncodableWrapper,
     RlpDecodableWrapper,
 )]
-pub struct SeqNum(
-    // FIXME get rid of this, we won't have u64::MAX
-    /// Some serde libraries e.g. toml represent numbers as i64 so they don't
-    /// support serializing u64::MAX, which is used as the genesis qc sequence
-    /// number. Converting to string first gets around this limitation
-    #[serde(deserialize_with = "deserialize_big_u64")]
-    pub u64,
-);
+pub struct SeqNum(pub u64);
 
 impl SeqNum {
     pub const MIN: SeqNum = SeqNum(u64::MIN);
     pub const MAX: SeqNum = SeqNum(u64::MAX);
-}
-
-impl Serialize for SeqNum {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.0.to_string())
-    }
-}
-
-fn deserialize_big_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let buf = <String as Deserialize>::deserialize(deserializer)?;
-    u64::from_str(&buf).map_err(<D::Error as serde::de::Error>::custom)
 }
 
 impl AsRef<[u8]> for SeqNum {

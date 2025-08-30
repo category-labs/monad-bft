@@ -42,7 +42,7 @@ pub fn make_legacy_tx(
     input_len: usize,
 ) -> TxEnvelope {
     let transaction = TxLegacy {
-        chain_id: Some(1337),
+        chain_id: Some(20143),
         nonce,
         gas_price,
         gas_limit,
@@ -67,7 +67,7 @@ pub fn make_eip1559_tx(
     input_len: usize,
 ) -> TxEnvelope {
     let transaction = TxEip1559 {
-        chain_id: 1337,
+        chain_id: 20143,
         nonce,
         gas_limit,
         max_fee_per_gas,
