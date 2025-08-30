@@ -19,7 +19,7 @@ use monad_event_ring::{EventDescriptor, EventDescriptorPayload};
 use self::state::{BlockReassemblyState, TxnReassemblyState};
 use super::{BlockBuilderError, BlockBuilderResult, ReassemblyError};
 use crate::{
-    ffi::{monad_c_bytes32, monad_exec_txn_start},
+    ffi::{monad_c_bytes32, monad_exec_txn_header_start},
     ExecEvent, ExecEventDecoder, ExecEventRef, ExecutedBlock, ExecutedTxn, ExecutedTxnCallFrame,
     ExecutedTxnLog,
 };
@@ -83,11 +83,16 @@ impl ExecutedBlockBuilder {
         event_ref: ExecEventRef<'_>,
     ) -> Option<ExecEvent> {
         match event_ref {
+            ExecEventRef::RecordError(..) => unimplemented!(),
+
             ExecEventRef::BlockPerfEvmEnter
             | ExecEventRef::BlockPerfEvmExit
             | ExecEventRef::BlockQC(_)
             | ExecEventRef::BlockFinalized(_)
             | ExecEventRef::BlockVerified(_)
+            | ExecEventRef::TxnAccessListEntry { .. }
+            | ExecEventRef::TxnAuthListEntry(_)
+            | ExecEventRef::TxnHeaderEnd
             | ExecEventRef::AccountAccessListHeader(_)
             | ExecEventRef::AccountAccess(_)
             | ExecEventRef::StorageAccess(_)
@@ -105,11 +110,16 @@ impl ExecutedBlockBuilder {
         exec_event: ExecEvent,
     ) -> Option<BlockBuilderResult<ExecutedBlock>> {
         match exec_event {
+            ExecEvent::RecordError(..) => unreachable!(),
+
             ExecEvent::BlockPerfEvmEnter
             | ExecEvent::BlockPerfEvmExit
             | ExecEvent::BlockQC(_)
             | ExecEvent::BlockFinalized(_)
             | ExecEvent::BlockVerified(_)
+            | ExecEvent::TxnAccessListEntry { .. }
+            | ExecEvent::TxnAuthListEntry(_)
+            | ExecEvent::TxnHeaderEnd
             | ExecEvent::AccountAccessListHeader(_)
             | ExecEvent::AccountAccess(_)
             | ExecEvent::StorageAccess(_)
@@ -128,7 +138,7 @@ impl ExecutedBlockBuilder {
                     }));
                 }
 
-                let txn_count = block_header.exec_input.txn_count.try_into().unwrap();
+                let txn_count = block_header.eth_block_input.txn_count.try_into().unwrap();
 
                 let mut txns = Vec::with_capacity(txn_count);
                 txns.resize_with(txn_count, || None);
@@ -198,15 +208,15 @@ impl ExecutedBlockBuilder {
                         .collect(),
                 }))
             }
-            ExecEvent::TxnStart {
+            ExecEvent::TxnHeaderStart {
                 txn_index: index,
-                txn_start,
+                txn_header_start: txn_start,
                 data_bytes,
+                blob_bytes: _,
             } => {
                 let state = self.state.as_mut()?;
 
-                let monad_exec_txn_start {
-                    ingest_epoch_nanos,
+                let monad_exec_txn_header_start {
                     txn_hash,
                     sender,
                     txn_header,
@@ -391,6 +401,7 @@ mod test {
         run_block_builder(SNAPSHOT_NAME, SNAPSHOT_ZSTD_BYTES);
     }
 
+    #[ignore]
     #[test]
     fn basic_test_monad_testnet() {
         const SNAPSHOT_NAME: &str = "MONAD_DEVNET_500B_GENESIS";

@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use monad_event_ring::{
-    ffi::{monad_event_content_type, MONAD_EVENT_CONTENT_TYPE_EXEC},
+    ffi::{monad_event_content_type, monad_event_record_error, MONAD_EVENT_CONTENT_TYPE_EXEC},
     EventDecoder, EventDescriptorInfo,
 };
 
@@ -24,8 +24,9 @@ use crate::ffi::{
     monad_exec_account_access_list_header, monad_exec_block_end, monad_exec_block_finalized,
     monad_exec_block_qc, monad_exec_block_reject, monad_exec_block_start,
     monad_exec_block_verified, monad_exec_evm_error, monad_exec_storage_access,
-    monad_exec_txn_call_frame, monad_exec_txn_evm_output, monad_exec_txn_log,
-    monad_exec_txn_reject, monad_exec_txn_start,
+    monad_exec_txn_access_list_entry, monad_exec_txn_auth_list_entry, monad_exec_txn_call_frame,
+    monad_exec_txn_evm_output, monad_exec_txn_header_start, monad_exec_txn_log,
+    monad_exec_txn_reject,
 };
 
 mod bytes;
@@ -43,6 +44,7 @@ pub struct ExecEventDecoder;
 #[allow(missing_docs)]
 #[derive(Clone, Debug)]
 pub enum ExecEvent {
+    RecordError(monad_event_record_error),
     BlockStart(monad_exec_block_start),
     BlockReject(monad_exec_block_reject),
     BlockPerfEvmEnter,
@@ -51,11 +53,18 @@ pub enum ExecEvent {
     BlockQC(monad_exec_block_qc),
     BlockFinalized(monad_exec_block_finalized),
     BlockVerified(monad_exec_block_verified),
-    TxnStart {
+    TxnHeaderStart {
         txn_index: usize,
-        txn_start: monad_exec_txn_start,
+        txn_header_start: monad_exec_txn_header_start,
         data_bytes: Box<[u8]>,
+        blob_bytes: Box<[u8]>,
     },
+    TxnAccessListEntry {
+        txn_access_list_entry: monad_exec_txn_access_list_entry,
+        storage_key_bytes: Box<[u8]>,
+    },
+    TxnAuthListEntry(monad_exec_txn_auth_list_entry),
+    TxnHeaderEnd,
     TxnReject {
         txn_index: usize,
         reject: monad_exec_txn_reject,
@@ -94,6 +103,7 @@ pub enum ExecEvent {
 #[allow(missing_docs)]
 #[derive(Copy, Clone, Debug)]
 pub enum ExecEventRef<'ring> {
+    RecordError(&'ring monad_event_record_error),
     BlockStart(&'ring monad_exec_block_start),
     BlockReject(&'ring monad_exec_block_reject),
     BlockPerfEvmEnter,
@@ -102,11 +112,18 @@ pub enum ExecEventRef<'ring> {
     BlockQC(&'ring monad_exec_block_qc),
     BlockFinalized(&'ring monad_exec_block_finalized),
     BlockVerified(&'ring monad_exec_block_verified),
-    TxnStart {
+    TxnHeaderStart {
         txn_index: usize,
-        txn_start: &'ring monad_exec_txn_start,
+        txn_header_start: &'ring monad_exec_txn_header_start,
         data_bytes: &'ring [u8],
+        blob_bytes: &'ring [u8],
     },
+    TxnAccessListEntry {
+        txn_access_list_entry: &'ring monad_exec_txn_access_list_entry,
+        storage_key_bytes: &'ring [u8],
+    },
+    TxnAuthListEntry(&'ring monad_exec_txn_auth_list_entry),
+    TxnHeaderEnd,
     TxnReject {
         txn_index: usize,
         reject: &'ring monad_exec_txn_reject,
@@ -140,6 +157,7 @@ impl<'ring> ExecEventRef<'ring> {
     /// Converts the [`ExecEventRef`] to its owned variant [`ExecEvent`].
     pub fn into_owned(self) -> ExecEvent {
         match self {
+            Self::RecordError(record_error) => ExecEvent::RecordError(*record_error),
             Self::BlockStart(block_start) => ExecEvent::BlockStart(*block_start),
             Self::BlockReject(block_reject) => ExecEvent::BlockReject(*block_reject),
             Self::BlockPerfEvmEnter => ExecEvent::BlockPerfEvmEnter,
@@ -148,15 +166,28 @@ impl<'ring> ExecEventRef<'ring> {
             Self::BlockQC(block_qc) => ExecEvent::BlockQC(*block_qc),
             Self::BlockFinalized(block_finalized) => ExecEvent::BlockFinalized(*block_finalized),
             Self::BlockVerified(block_verified) => ExecEvent::BlockVerified(*block_verified),
-            Self::TxnStart {
+            Self::TxnHeaderStart {
                 txn_index,
-                txn_start,
+                txn_header_start: txn_start,
                 data_bytes,
-            } => ExecEvent::TxnStart {
+                blob_bytes: blobs,
+            } => ExecEvent::TxnHeaderStart {
                 txn_index,
-                txn_start: *txn_start,
+                txn_header_start: *txn_start,
                 data_bytes: data_bytes.to_vec().into_boxed_slice(),
+                blob_bytes: blobs.to_vec().into_boxed_slice(),
             },
+            Self::TxnAccessListEntry {
+                txn_access_list_entry,
+                storage_key_bytes: storage_keys,
+            } => ExecEvent::TxnAccessListEntry {
+                txn_access_list_entry: *txn_access_list_entry,
+                storage_key_bytes: storage_keys.to_vec().into_boxed_slice(),
+            },
+            Self::TxnAuthListEntry(txn_auth_list_entry) => {
+                ExecEvent::TxnAuthListEntry(*txn_auth_list_entry)
+            }
+            Self::TxnHeaderEnd => ExecEvent::TxnHeaderEnd,
             Self::TxnReject { txn_index, reject } => ExecEvent::TxnReject {
                 txn_index,
                 reject: *reject,
@@ -241,6 +272,9 @@ impl EventDecoder for ExecEventDecoder {
             ffi::MONAD_EXEC_NONE => {
                 panic!("ExecEventDecoder encountered NONE event_type");
             }
+            ffi::MONAD_EXEC_RECORD_ERROR => {
+                ExecEventRef::RecordError(ref_from_bytes(bytes).expect("RecordError event valid"))
+            }
             ffi::MONAD_EXEC_BLOCK_START => {
                 ExecEventRef::BlockStart(ref_from_bytes(bytes).expect("BlockStart event valid"))
             }
@@ -267,21 +301,60 @@ impl EventDecoder for ExecEventDecoder {
             ffi::MONAD_EXEC_BLOCK_VERIFIED => ExecEventRef::BlockVerified(
                 ref_from_bytes(bytes).expect("BlockVerified event valid"),
             ),
-            ffi::MONAD_EXEC_TXN_START => {
-                let (txn_start, [data_bytes]) =
-                    ref_from_bytes_with_trailing::<monad_exec_txn_start, 1>(bytes, |txn_start| {
-                        [txn_start.txn_header.data_length.try_into().unwrap()]
-                    })
-                    .expect("TxnStart event valid");
+            ffi::MONAD_EXEC_TXN_HEADER_START => {
+                let (txn_header_start, [data_bytes, blob_bytes]) =
+                    ref_from_bytes_with_trailing::<monad_exec_txn_header_start, 2>(
+                        bytes,
+                        |txn_header_start| {
+                            [
+                                txn_header_start.txn_header.data_length.try_into().unwrap(),
+                                TryInto::<usize>::try_into(
+                                    txn_header_start.txn_header.blob_versioned_hash_length,
+                                )
+                                .unwrap()
+                                .checked_mul(size_of::<ffi::monad_c_bytes32>())
+                                .unwrap(),
+                            ]
+                        },
+                    )
+                    .expect("TxnHeaderStart event valid");
 
-                ExecEventRef::TxnStart {
+                ExecEventRef::TxnHeaderStart {
                     txn_index: info
                         .flow_info
                         .txn_idx
-                        .expect("TxnStart event has txn_idx in flow_info"),
-                    txn_start,
+                        .expect("TxnHeaderStart event has txn_idx in flow_info"),
+                    txn_header_start,
                     data_bytes,
+                    blob_bytes,
                 }
+            }
+            ffi::MONAD_EXEC_TXN_ACCESS_LIST_ENTRY => {
+                let (txn_access_list_entry, [storage_key_bytes]) =
+                    ref_from_bytes_with_trailing::<monad_exec_txn_access_list_entry, 1>(
+                        bytes,
+                        |txn_access_list_entry| {
+                            [TryInto::<usize>::try_into(
+                                txn_access_list_entry.entry.storage_key_count,
+                            )
+                            .unwrap()
+                            .checked_mul(size_of::<ffi::monad_c_bytes32>())
+                            .unwrap()]
+                        },
+                    )
+                    .expect("TxnAccessListEntry event valid");
+
+                ExecEventRef::TxnAccessListEntry {
+                    txn_access_list_entry,
+                    storage_key_bytes,
+                }
+            }
+            ffi::MONAD_EXEC_TXN_AUTH_LIST_ENTRY => ExecEventRef::TxnAuthListEntry(
+                ref_from_bytes(bytes).expect("TxnAuthListEntry event valid"),
+            ),
+            ffi::MONAD_EXEC_TXN_HEADER_END => {
+                assert_eq!(bytes.len(), 0, "TxnHeaderEnd payload is empty");
+                ExecEventRef::TxnHeaderEnd
             }
             ffi::MONAD_EXEC_TXN_REJECT => ExecEventRef::TxnReject {
                 txn_index: info
