@@ -38,33 +38,35 @@ impl ExecutedBlock {
     pub fn to_alloy_header(&self) -> alloy_consensus::Header {
         alloy_consensus::Header {
             parent_hash: alloy_primitives::B256::from(self.start.parent_eth_hash.bytes),
-            ommers_hash: alloy_primitives::B256::from(self.start.exec_input.ommers_hash.bytes),
-            beneficiary: alloy_primitives::Address::from(self.start.exec_input.beneficiary.bytes),
+            ommers_hash: alloy_primitives::B256::from(self.start.eth_block_input.ommers_hash.bytes),
+            beneficiary: alloy_primitives::Address::from(
+                self.start.eth_block_input.beneficiary.bytes,
+            ),
             state_root: alloy_primitives::B256::from(self.end.exec_output.state_root.bytes),
             transactions_root: alloy_primitives::B256::from(
-                self.start.exec_input.transactions_root.bytes,
+                self.start.eth_block_input.transactions_root.bytes,
             ),
             receipts_root: alloy_primitives::B256::from(self.end.exec_output.receipts_root.bytes),
             logs_bloom: alloy_primitives::Bloom::from(self.end.exec_output.logs_bloom.bytes),
-            difficulty: alloy_primitives::U256::from(self.start.exec_input.difficulty),
-            number: self.start.exec_input.number,
-            gas_limit: self.start.exec_input.gas_limit,
+            difficulty: alloy_primitives::U256::from(self.start.eth_block_input.difficulty),
+            number: self.start.eth_block_input.number,
+            gas_limit: self.start.eth_block_input.gas_limit,
             gas_used: self.end.exec_output.gas_used,
-            timestamp: self.start.exec_input.timestamp,
+            timestamp: self.start.eth_block_input.timestamp,
             extra_data: alloy_primitives::Bytes::copy_from_slice(
-                &self.start.exec_input.extra_data.bytes
-                    [0..self.start.exec_input.extra_data_length as usize],
+                &self.start.eth_block_input.extra_data.bytes
+                    [0..self.start.eth_block_input.extra_data_length as usize],
             ),
-            mix_hash: alloy_primitives::B256::from(self.start.exec_input.prev_randao.bytes),
-            nonce: alloy_primitives::B64::from(self.start.exec_input.nonce.bytes),
+            mix_hash: alloy_primitives::B256::from(self.start.eth_block_input.prev_randao.bytes),
+            nonce: alloy_primitives::B64::from(self.start.eth_block_input.nonce.bytes),
             base_fee_per_gas: alloy_primitives::U256::from_limbs(
-                self.start.exec_input.base_fee_per_gas.limbs,
+                self.start.eth_block_input.base_fee_per_gas.limbs,
             )
             .try_into()
             .ok(),
             withdrawals_root: {
                 let withdrawals_root =
-                    alloy_primitives::B256::from(self.start.exec_input.withdrawals_root.bytes);
+                    alloy_primitives::B256::from(self.start.eth_block_input.withdrawals_root.bytes);
 
                 (!withdrawals_root.const_is_zero()).then_some(withdrawals_root)
             },
@@ -138,8 +140,8 @@ impl ExecutedBlock {
                 block_hash: Some(alloy_primitives::FixedBytes::from(
                     self.end.eth_block_hash.bytes,
                 )),
-                block_number: Some(self.start.exec_input.number),
-                block_timestamp: Some(self.start.exec_input.timestamp),
+                block_number: Some(self.start.eth_block_input.number),
+                block_timestamp: Some(self.start.eth_block_input.timestamp),
                 transaction_hash: Some(alloy_primitives::FixedBytes::from(tx_hash.bytes)),
                 transaction_index: Some(tx_idx as u64),
                 log_index: Some(log_idx as u64),
