@@ -63,6 +63,9 @@ pub struct ChainParams {
     // Max proposal size in bytes (average transactions ~400 bytes)
     pub proposal_byte_limit: u64,
     pub vote_pace: Duration,
+
+    pub tfm: bool,
+    pub eip_7702: bool,
 }
 
 const CHAIN_PARAMS_V_0_7_0: ChainParams = ChainParams {
@@ -70,6 +73,9 @@ const CHAIN_PARAMS_V_0_7_0: ChainParams = ChainParams {
     proposal_gas_limit: 300_000_000,
     proposal_byte_limit: 4_000_000,
     vote_pace: Duration::from_millis(1000),
+
+    tfm: false,
+    eip_7702: false,
 };
 
 const CHAIN_PARAMS_V_0_8_0: ChainParams = ChainParams {
@@ -77,6 +83,9 @@ const CHAIN_PARAMS_V_0_8_0: ChainParams = ChainParams {
     proposal_gas_limit: 150_000_000,
     proposal_byte_limit: 2_000_000,
     vote_pace: Duration::from_millis(500),
+
+    tfm: false,
+    eip_7702: false,
 };
 
 const CHAIN_PARAMS_V_0_10_0: ChainParams = ChainParams {
@@ -84,6 +93,9 @@ const CHAIN_PARAMS_V_0_10_0: ChainParams = ChainParams {
     proposal_gas_limit: 150_000_000,
     proposal_byte_limit: 2_000_000,
     vote_pace: Duration::from_millis(400),
+
+    tfm: false,
+    eip_7702: false,
 };
 
 #[cfg(test)]

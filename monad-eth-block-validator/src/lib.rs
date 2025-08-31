@@ -490,6 +490,9 @@ mod test {
                     proposal_gas_limit: PROPOSAL_GAS_LIMIT,
                     proposal_byte_limit: PROPOSAL_SIZE_LIMIT,
                     vote_pace: Duration::ZERO,
+
+                    tfm: false,
+                    eip_7702: false,
                 }),
             );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));

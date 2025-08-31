@@ -440,6 +440,9 @@ mod test {
         proposal_gas_limit: 300_000_000,
         proposal_byte_limit: 4_000_000,
         vote_pace: Duration::from_millis(0),
+
+        tfm: false,
+        eip_7702: false,
     };
 
     fn get_high_qc<SCT: SignatureCollection>(

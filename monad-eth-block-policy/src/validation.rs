@@ -24,7 +24,7 @@ pub fn static_validate_transaction(
     chain_params: &ChainParams,
     execution_chain_params: &ExecutionChainParams,
 ) -> Result<(), TransactionError> {
-    if tx.is_eip4844() || tx.is_eip7702() {
+    if tx.is_eip4844() {
         return Err(TransactionError::UnsupportedTransactionType);
     }
 
@@ -47,7 +47,7 @@ pub fn static_validate_transaction(
 
     // post Ethereum Prague fork validation
     // includes EIP-7623 validation
-    EthPragueForkValidation::validate(tx)?;
+    EthPragueForkValidation::validate(tx, chain_params)?;
 
     Ok(())
 }
@@ -156,8 +156,11 @@ impl EthShanghaiForkValidation {
 
 struct EthPragueForkValidation;
 impl EthPragueForkValidation {
-    fn validate(tx: &TxEnvelope) -> Result<(), TransactionError> {
-        Self::eip_7623(tx)
+    fn validate(tx: &TxEnvelope, chain_params: &ChainParams) -> Result<(), TransactionError> {
+        Self::eip_7623(tx)?;
+        Self::eip_7702(tx, chain_params)?;
+
+        Ok(())
     }
 
     fn eip_7623(tx: &TxEnvelope) -> Result<(), TransactionError> {
@@ -165,6 +168,27 @@ impl EthPragueForkValidation {
         if tx.gas_limit() < floor_data_gas {
             return Err(TransactionError::GasLimitTooLow);
         }
+        Ok(())
+    }
+
+    fn eip_7702(tx: &TxEnvelope, chain_params: &ChainParams) -> Result<(), TransactionError> {
+        if !tx.is_eip7702() {
+            return Ok(());
+        }
+
+        if !chain_params.eip_7702 {
+            return Err(TransactionError::UnsupportedTransactionType);
+        }
+
+        match tx.authorization_list() {
+            Some(auth_list) => {
+                if auth_list.is_empty() {
+                    return Err(TransactionError::AuthorizationListEmpty);
+                }
+            }
+            None => return Err(TransactionError::AuthorizationListEmpty),
+        }
+
         Ok(())
     }
 }
@@ -231,6 +255,9 @@ mod test {
             proposal_gas_limit,
             proposal_byte_limit: MockChainRevision::DEFAULT.chain_params.proposal_byte_limit,
             vote_pace: MockChainRevision::DEFAULT.chain_params.vote_pace,
+
+            tfm: false,
+            eip_7702: false,
         }
     }
 
