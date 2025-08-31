@@ -113,8 +113,8 @@ impl ValidEthTransaction {
         static_validate_transaction(
             &self.tx,
             block_policy.get_chain_id(),
-            chain_params.proposal_gas_limit,
-            execution_params.max_code_size,
+            chain_params,
+            execution_params,
         )
     }
 

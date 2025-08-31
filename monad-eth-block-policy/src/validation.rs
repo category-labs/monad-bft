@@ -14,16 +14,21 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use alloy_consensus::{Transaction, TxEnvelope};
+use monad_chain_config::{execution_revision::ExecutionChainParams, revision::ChainParams};
 use monad_eth_txpool_types::TransactionError;
 
 /// Stateless helper function to check validity of an Ethereum transaction
 pub fn static_validate_transaction(
     tx: &TxEnvelope,
     chain_id: u64,
-    proposal_gas_limit: u64,
-    max_code_size: usize,
+    chain_params: &ChainParams,
+    execution_chain_params: &ExecutionChainParams,
 ) -> Result<(), TransactionError> {
-    TfmValidator::validate(tx, proposal_gas_limit)?;
+    if tx.is_eip4844() || tx.is_eip7702() {
+        return Err(TransactionError::UnsupportedTransactionType);
+    }
+
+    TfmValidator::validate(tx, chain_params)?;
 
     // post Ethereum Homestead fork validation
     // includes EIP-155 validation
@@ -35,7 +40,7 @@ pub fn static_validate_transaction(
 
     // post Ethereum Shanghai fork validation
     // includes EIP-3860 validation
-    EthShanghaiForkValidation::validate(tx, max_code_size)?;
+    EthShanghaiForkValidation::validate(tx, execution_chain_params)?;
 
     // Ethereum Yellow paper intrinsic gas validation
     YellowPaperValidation::validate(tx)?;
@@ -44,19 +49,15 @@ pub fn static_validate_transaction(
     // includes EIP-7623 validation
     EthPragueForkValidation::validate(tx)?;
 
-    if tx.is_eip4844() || tx.is_eip7702() {
-        return Err(TransactionError::UnsupportedTransactionType);
-    }
-
     Ok(())
 }
 
-pub const TFM_MAX_EIP2718_ENCODED_LENGTH: usize = 192 * 1024;
+pub const TFM_MAX_EIP2718_ENCODED_LENGTH: usize = 384 * 1024;
 pub const TFM_MAX_GAS_LIMIT: u64 = 30_000_000;
 
 struct TfmValidator;
 impl TfmValidator {
-    fn validate(tx: &TxEnvelope, proposal_gas_limit: u64) -> Result<(), TransactionError> {
+    fn validate(tx: &TxEnvelope, chain_params: &ChainParams) -> Result<(), TransactionError> {
         if tx.eip2718_encoded_length() > TFM_MAX_EIP2718_ENCODED_LENGTH {
             return Err(TransactionError::EncodedLengthLimitExceeded);
         }
@@ -65,7 +66,7 @@ impl TfmValidator {
             return Err(TransactionError::GasLimitTooHigh);
         }
 
-        if tx.gas_limit() > proposal_gas_limit {
+        if tx.gas_limit() > chain_params.proposal_gas_limit {
             return Err(TransactionError::GasLimitTooHigh);
         }
 
@@ -78,6 +79,7 @@ impl YellowPaperValidation {
     fn validate(tx: &TxEnvelope) -> Result<(), TransactionError> {
         Self::intrinsic_gas_validation(tx)
     }
+
     fn intrinsic_gas_validation(tx: &TxEnvelope) -> Result<(), TransactionError> {
         // YP eq. 62 - intrinsic gas validation
         let intrinsic_gas = compute_intrinsic_gas(tx);
@@ -94,6 +96,7 @@ impl EthHomesteadForkValidation {
         Self::eip_2(tx)?;
         Self::eip_155(tx, chain_id)
     }
+
     fn eip_2(tx: &TxEnvelope) -> Result<(), TransactionError> {
         // verify that s is in the lower half of the curve
         if tx.signature().normalize_s().is_some() {
@@ -101,6 +104,7 @@ impl EthHomesteadForkValidation {
         }
         Ok(())
     }
+
     fn eip_155(tx: &TxEnvelope, chain_id: u64) -> Result<(), TransactionError> {
         // We still allow legacy transactions without chain_id specified to pass through
         if let Some(tx_chain_id) = tx.chain_id() {
@@ -117,6 +121,7 @@ impl EthLondonForkValidation {
     fn validate(tx: &TxEnvelope) -> Result<(), TransactionError> {
         Self::eip_1559(tx)
     }
+
     fn eip_1559(tx: &TxEnvelope) -> Result<(), TransactionError> {
         if let Some(max_priority_fee) = tx.max_priority_fee_per_gas() {
             if max_priority_fee > tx.max_fee_per_gas() {
@@ -129,12 +134,19 @@ impl EthLondonForkValidation {
 
 struct EthShanghaiForkValidation;
 impl EthShanghaiForkValidation {
-    fn validate(tx: &TxEnvelope, max_code_size: usize) -> Result<(), TransactionError> {
-        Self::eip_3860(tx, max_code_size)
+    fn validate(
+        tx: &TxEnvelope,
+        execution_chain_params: &ExecutionChainParams,
+    ) -> Result<(), TransactionError> {
+        Self::eip_3860(tx, execution_chain_params)
     }
-    fn eip_3860(tx: &TxEnvelope, max_code_size: usize) -> Result<(), TransactionError> {
+
+    fn eip_3860(
+        tx: &TxEnvelope,
+        execution_chain_params: &ExecutionChainParams,
+    ) -> Result<(), TransactionError> {
         // max init_code is (2 * max_code_size)
-        let max_init_code_size: usize = 2 * max_code_size;
+        let max_init_code_size: usize = 2 * execution_chain_params.max_code_size;
         if tx.kind().is_create() && tx.input().len() > max_init_code_size {
             return Err(TransactionError::InitCodeLimitExceeded);
         }
@@ -147,6 +159,7 @@ impl EthPragueForkValidation {
     fn validate(tx: &TxEnvelope) -> Result<(), TransactionError> {
         Self::eip_7623(tx)
     }
+
     fn eip_7623(tx: &TxEnvelope) -> Result<(), TransactionError> {
         let floor_data_gas = compute_floor_data_gas(tx);
         if tx.gas_limit() < floor_data_gas {
@@ -205,8 +218,21 @@ mod test {
     use alloy_primitives::{Address, Bytes, FixedBytes, PrimitiveSignature, TxKind, B256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
+    use monad_chain_config::{
+        execution_revision::MonadExecutionRevision, revision::MockChainRevision, ChainConfig,
+        MockChainConfig,
+    };
 
     use super::*;
+
+    fn chain_params_with_gas_limit(proposal_gas_limit: u64) -> ChainParams {
+        ChainParams {
+            tx_limit: MockChainRevision::DEFAULT.chain_params.tx_limit,
+            proposal_gas_limit,
+            proposal_byte_limit: MockChainRevision::DEFAULT.chain_params.proposal_byte_limit,
+            vote_pace: MockChainRevision::DEFAULT.chain_params.vote_pace,
+        }
+    }
 
     fn sign_tx(signature_hash: &FixedBytes<32>) -> PrimitiveSignature {
         let secret_key = B256::repeat_byte(0xAu8).to_string();
@@ -217,8 +243,8 @@ mod test {
     #[test]
     fn test_static_validate_transaction() {
         let address = Address(FixedBytes([0x11; 20]));
-        const CHAIN_ID: u64 = 1337;
-        const PROPOSAL_GAS_LIMIT: u64 = 300_000_000;
+
+        let chain_id: u64 = MockChainConfig::DEFAULT.chain_id();
 
         // tx exceeds tfm encoded length limit
         let tx_exceeds_length_limit = TxLegacy {
@@ -239,7 +265,12 @@ mod test {
             TFM_MAX_EIP2718_ENCODED_LENGTH + 1
         );
 
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
+        let result = static_validate_transaction(
+            &txn.into(),
+            chain_id,
+            MockChainRevision::DEFAULT.chain_params,
+            MonadExecutionRevision::LATEST.execution_chain_params(),
+        );
         assert!(matches!(
             result,
             Err(TransactionError::EncodedLengthLimitExceeded)
@@ -257,13 +288,17 @@ mod test {
         let signature = sign_tx(&tx_exceeds_length_limit.signature_hash());
         let txn = tx_exceeds_length_limit.into_signed(signature);
 
-        let result =
-            static_validate_transaction(&txn.into(), CHAIN_ID, TFM_MAX_GAS_LIMIT + 2, 0x6000);
+        let result = static_validate_transaction(
+            &txn.into(),
+            chain_id,
+            &chain_params_with_gas_limit(TFM_MAX_GAS_LIMIT + 2),
+            MonadExecutionRevision::LATEST.execution_chain_params(),
+        );
         assert!(matches!(result, Err(TransactionError::GasLimitTooHigh)));
 
         // transaction with gas limit higher than block gas limit
         let tx_gas_limit_too_high = TxEip1559 {
-            chain_id: CHAIN_ID,
+            chain_id,
             nonce: 0,
             to: TxKind::Call(address),
             max_fee_per_gas: 1000,
@@ -275,8 +310,12 @@ mod test {
         let signature = sign_tx(&tx_gas_limit_too_high.signature_hash());
         let txn = tx_gas_limit_too_high.into_signed(signature);
 
-        let result =
-            static_validate_transaction(&txn.into(), CHAIN_ID, TFM_MAX_GAS_LIMIT - 2, 0x6000);
+        let result = static_validate_transaction(
+            &txn.into(),
+            chain_id,
+            &chain_params_with_gas_limit(TFM_MAX_GAS_LIMIT - 2),
+            MonadExecutionRevision::LATEST.execution_chain_params(),
+        );
         assert!(matches!(result, Err(TransactionError::GasLimitTooHigh)));
 
         // pre EIP-155 transaction with no chain id is allowed
@@ -291,12 +330,17 @@ mod test {
         let signature = sign_tx(&tx_no_chain_id.signature_hash());
         let txn = tx_no_chain_id.into_signed(signature);
 
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
+        let result = static_validate_transaction(
+            &txn.into(),
+            chain_id,
+            MockChainRevision::DEFAULT.chain_params,
+            MonadExecutionRevision::LATEST.execution_chain_params(),
+        );
         assert!(matches!(result, Ok(())));
 
         // transaction with incorrect chain id
         let tx_invalid_chain_id = TxEip1559 {
-            chain_id: CHAIN_ID - 1,
+            chain_id: chain_id - 1,
             nonce: 0,
             to: TxKind::Call(address),
             max_fee_per_gas: 1000,
@@ -307,13 +351,24 @@ mod test {
         let signature = sign_tx(&tx_invalid_chain_id.signature_hash());
         let txn = tx_invalid_chain_id.into_signed(signature);
 
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
+        let result = static_validate_transaction(
+            &txn.into(),
+            chain_id,
+            MockChainRevision::DEFAULT.chain_params,
+            MonadExecutionRevision::LATEST.execution_chain_params(),
+        );
         assert!(matches!(result, Err(TransactionError::InvalidChainId)));
 
-        // contract deployment transaction with input data larger than 2 * 0x6000 (initcode limit)
-        let input = vec![0; 2 * 0x6000 + 1];
+        // contract deployment transaction with input data larger than 2 * max_code_size (initcode limit)
+        let input = vec![
+            0;
+            2 * MonadExecutionRevision::LATEST
+                .execution_chain_params()
+                .max_code_size
+                + 1
+        ];
         let tx_over_initcode_limit = TxEip1559 {
-            chain_id: CHAIN_ID,
+            chain_id,
             nonce: 0,
             to: TxKind::Create,
             max_fee_per_gas: 10000,
@@ -325,7 +380,12 @@ mod test {
         let signature = sign_tx(&tx_over_initcode_limit.signature_hash());
         let txn = tx_over_initcode_limit.into_signed(signature);
 
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
+        let result = static_validate_transaction(
+            &txn.into(),
+            chain_id,
+            MockChainRevision::DEFAULT.chain_params,
+            MonadExecutionRevision::LATEST.execution_chain_params(),
+        );
         assert!(matches!(
             result,
             Err(TransactionError::InitCodeLimitExceeded)
@@ -333,7 +393,7 @@ mod test {
 
         // transaction with larger max priority fee than max fee per gas
         let tx_priority_fee_too_high = TxEip1559 {
-            chain_id: CHAIN_ID,
+            chain_id,
             nonce: 0,
             to: TxKind::Call(address),
             max_fee_per_gas: 1000,
@@ -345,7 +405,12 @@ mod test {
         let signature = sign_tx(&tx_priority_fee_too_high.signature_hash());
         let txn = tx_priority_fee_too_high.into_signed(signature);
 
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
+        let result = static_validate_transaction(
+            &txn.into(),
+            chain_id,
+            MockChainRevision::DEFAULT.chain_params,
+            MonadExecutionRevision::LATEST.execution_chain_params(),
+        );
         assert!(matches!(
             result,
             Err(TransactionError::MaxPriorityFeeTooHigh)
@@ -353,7 +418,7 @@ mod test {
 
         // transaction with gas limit lower than intrinsic gas
         let tx_gas_limit_too_low = TxEip1559 {
-            chain_id: CHAIN_ID,
+            chain_id,
             nonce: 0,
             to: TxKind::Call(address),
             max_fee_per_gas: 1000,
@@ -365,13 +430,18 @@ mod test {
         let signature = sign_tx(&tx_gas_limit_too_low.signature_hash());
         let txn = tx_gas_limit_too_low.into_signed(signature);
 
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
+        let result = static_validate_transaction(
+            &txn.into(),
+            chain_id,
+            MockChainRevision::DEFAULT.chain_params,
+            MonadExecutionRevision::LATEST.execution_chain_params(),
+        );
         assert!(matches!(result, Err(TransactionError::GasLimitTooLow)));
 
         // transaction with gas limit lower than floor data gas
         // floor data gas is 21000 + (zero byte * 10) + (non-zero byte * 40)
         let tx_gas_limit_too_low_data = TxEip1559 {
-            chain_id: CHAIN_ID,
+            chain_id,
             nonce: 0,
             to: TxKind::Call(address),
             max_fee_per_gas: 1000,
@@ -383,7 +453,12 @@ mod test {
         let signature = sign_tx(&tx_gas_limit_too_low_data.signature_hash());
         let txn = tx_gas_limit_too_low_data.into_signed(signature);
 
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
+        let result = static_validate_transaction(
+            &txn.into(),
+            chain_id,
+            MockChainRevision::DEFAULT.chain_params,
+            MonadExecutionRevision::LATEST.execution_chain_params(),
+        );
         assert!(matches!(result, Err(TransactionError::GasLimitTooLow)));
     }
 

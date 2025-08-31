@@ -312,8 +312,8 @@ where
             if static_validate_transaction(
                 eth_txn,
                 chain_config.chain_id(),
-                chain_params.proposal_gas_limit,
-                execution_chain_params.max_code_size,
+                chain_params,
+                execution_chain_params,
             )
             .is_err()
             {
