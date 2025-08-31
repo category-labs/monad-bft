@@ -21,6 +21,7 @@ use alloy_consensus::{
 };
 use alloy_primitives::{Address, TxHash, U256};
 use itertools::Itertools;
+use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::{
     block::{BlockPolicy, BlockPolicyError, ConsensusFullBlock},
     checkpoint::RootInfo,
@@ -325,7 +326,7 @@ where
 
 /// A block policy for ethereum payloads
 #[derive(Debug)]
-pub struct EthBlockPolicy<ST, SCT>
+pub struct EthBlockPolicy<ST, SCT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -340,12 +341,16 @@ where
 
     /// Chain ID
     chain_id: u64,
+
+    _phantom: PhantomData<(CCT, CRT)>,
 }
 
-impl<ST, SCT> EthBlockPolicy<ST, SCT>
+impl<ST, SCT, CCT, CRT> EthBlockPolicy<ST, SCT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     pub fn new(
         last_commit: SeqNum, // TODO deprecate
@@ -357,6 +362,7 @@ where
             last_commit,
             execution_delay: SeqNum(execution_delay),
             chain_id,
+            _phantom: PhantomData,
         }
     }
 
@@ -675,11 +681,14 @@ where
     }
 }
 
-impl<ST, SCT, SBT> BlockPolicy<ST, SCT, EthExecutionProtocol, SBT> for EthBlockPolicy<ST, SCT>
+impl<ST, SCT, SBT, CCT, CRT> BlockPolicy<ST, SCT, EthExecutionProtocol, SBT, CCT, CRT>
+    for EthBlockPolicy<ST, SCT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     type ValidatedBlock = EthValidatedBlock<ST, SCT>;
 

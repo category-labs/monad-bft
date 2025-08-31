@@ -318,6 +318,8 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
         S::ExecutionProtocolType,
         S::BlockPolicyType,
         S::StateBackendType,
+        S::ChainConfigType,
+        S::ChainRevisionType,
     >;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {

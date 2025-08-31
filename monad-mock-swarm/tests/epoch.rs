@@ -118,6 +118,8 @@ mod test {
             Self::ExecutionProtocolType,
             Self::BlockPolicyType,
             Self::StateBackendType,
+            Self::ChainConfigType,
+            Self::ChainRevisionType,
         >;
         type StateSyncExecutor = MockStateSyncExecutor<
             Self::SignatureType,

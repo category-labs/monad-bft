@@ -23,6 +23,7 @@ use monad_blocksync::{
     blocksync::BlockSyncSelfRequester,
     messages::message::{BlockSyncRequestMessage, BlockSyncResponseMessage},
 };
+use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus::{
     messages::consensus_message::ConsensusMessage,
     validation::signing::{Unvalidated, Unverified},
@@ -437,13 +438,15 @@ pub enum ConfigReloadCommand {
     ReloadConfig,
 }
 
-pub enum TxPoolCommand<ST, SCT, EPT, BPT, SBT>
+pub enum TxPoolCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     /// Used to update the nonces of tracked txs
     BlockCommit(Vec<BPT::ValidatedBlock>),
@@ -485,13 +488,15 @@ where
     },
 }
 
-impl<ST, SCT, EPT, BPT, SBT> Debug for TxPoolCommand<ST, SCT, EPT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> Debug for TxPoolCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -555,13 +560,15 @@ where
     }
 }
 
-pub enum Command<E, OM, ST, SCT, EPT, BPT, SBT>
+pub enum Command<E, OM, ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     RouterCommand(RouterCommand<ST, OM>),
     TimerCommand(TimerCommand<E>),
@@ -570,20 +577,23 @@ where
     ValSetCommand(ValSetCommand),
     TimestampCommand(TimestampCommand),
 
-    TxPoolCommand(TxPoolCommand<ST, SCT, EPT, BPT, SBT>),
+    TxPoolCommand(TxPoolCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>),
     ControlPanelCommand(ControlPanelCommand<ST>),
     LoopbackCommand(LoopbackCommand<E>),
     StateSyncCommand(StateSyncCommand<ST, EPT>),
     ConfigReloadCommand(ConfigReloadCommand),
 }
 
-impl<E, OM, ST, SCT, EPT, BPT, SBT> Debug for Command<E, OM, ST, SCT, EPT, BPT, SBT>
+impl<E, OM, ST, SCT, EPT, BPT, SBT, CCT, CRT> Debug
+    for Command<E, OM, ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -608,13 +618,15 @@ where
     }
 }
 
-impl<E, OM, ST, SCT, EPT, BPT, SBT> Command<E, OM, ST, SCT, EPT, BPT, SBT>
+impl<E, OM, ST, SCT, EPT, BPT, SBT, CCT, CRT> Command<E, OM, ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     pub fn split_commands(
         commands: Vec<Self>,
@@ -625,7 +637,7 @@ where
         Vec<ConfigFileCommand<ST, SCT, EPT>>,
         Vec<ValSetCommand>,
         Vec<TimestampCommand>,
-        Vec<TxPoolCommand<ST, SCT, EPT, BPT, SBT>>,
+        Vec<TxPoolCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>>,
         Vec<ControlPanelCommand<ST>>,
         Vec<LoopbackCommand<E>>,
         Vec<StateSyncCommand<ST, EPT>>,

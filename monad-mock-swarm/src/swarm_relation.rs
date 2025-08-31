@@ -77,6 +77,8 @@ where
             Self::SignatureCollectionType,
             Self::ExecutionProtocolType,
             Self::StateBackendType,
+            Self::ChainConfigType,
+            Self::ChainRevisionType,
         > + Send
         + Sync
         + Unpin;
@@ -163,6 +165,8 @@ where
                 Self::SignatureCollectionType,
                 Self::ExecutionProtocolType,
             >,
+            ChainConfig = Self::ChainConfigType,
+            ChainRevision = Self::ChainRevisionType,
         > + Send
         + Sync
         + Unpin;
@@ -281,6 +285,8 @@ impl SwarmRelation for DebugSwarmRelation {
                 ExecutionProtocol = Self::ExecutionProtocolType,
                 BlockPolicy = Self::BlockPolicyType,
                 StateBackend = Self::StateBackendType,
+                ChainConfig = Self::ChainConfigType,
+                ChainRevision = Self::ChainRevisionType,
                 Event = MonadEvent<
                     Self::SignatureType,
                     Self::SignatureCollectionType,
@@ -292,6 +298,8 @@ impl SwarmRelation for DebugSwarmRelation {
                     Self::ExecutionProtocolType,
                     Self::BlockPolicyType,
                     Self::StateBackendType,
+                    Self::ChainConfigType,
+                    Self::ChainRevisionType,
                 >,
                 Item = MonadEvent<
                     Self::SignatureType,
@@ -365,6 +373,8 @@ impl SwarmRelation for NoSerSwarm {
         Self::ExecutionProtocolType,
         Self::BlockPolicyType,
         Self::StateBackendType,
+        Self::ChainConfigType,
+        Self::ChainRevisionType,
     >;
     type StateSyncExecutor = MockStateSyncExecutor<
         Self::SignatureType,
@@ -421,6 +431,8 @@ impl SwarmRelation for BytesSwarm {
         Self::ExecutionProtocolType,
         Self::BlockPolicyType,
         Self::StateBackendType,
+        Self::ChainConfigType,
+        Self::ChainRevisionType,
     >;
     type StateSyncExecutor = MockStateSyncExecutor<
         Self::SignatureType,
@@ -480,6 +492,8 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
         Self::ExecutionProtocolType,
         Self::BlockPolicyType,
         Self::StateBackendType,
+        Self::ChainConfigType,
+        Self::ChainRevisionType,
     >;
     type StateSyncExecutor = MockStateSyncExecutor<
         Self::SignatureType,

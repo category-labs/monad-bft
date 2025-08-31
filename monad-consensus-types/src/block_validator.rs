@@ -54,7 +54,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
@@ -103,7 +103,14 @@ where
         _author_pubkey: Option<&SignatureCollectionPubKeyType<SCT>>,
         _chain_config: &MockChainConfig,
     ) -> Result<
-        <PassthruBlockPolicy as BlockPolicy<ST, SCT, EPT, InMemoryState<ST, SCT>>>::ValidatedBlock,
+        <PassthruBlockPolicy as BlockPolicy<
+            ST,
+            SCT,
+            EPT,
+            InMemoryState<ST, SCT>,
+            MockChainConfig,
+            MockChainRevision,
+        >>::ValidatedBlock,
         BlockValidationError,
     > {
         let full_block = ConsensusFullBlock::new(header, body)?;

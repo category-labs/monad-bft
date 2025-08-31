@@ -43,7 +43,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
@@ -70,7 +70,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
@@ -156,7 +156,7 @@ where
     command: BlockSyncCommand<ST, SCT, EPT>,
 }
 
-impl<ST, SCT, EPT, BPT, SBT> From<WrappedBlockSyncCommand<ST, SCT, EPT>>
+impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> From<WrappedBlockSyncCommand<ST, SCT, EPT>>
     for Vec<
         Command<
             MonadEvent<ST, SCT, EPT>,
@@ -166,14 +166,18 @@ impl<ST, SCT, EPT, BPT, SBT> From<WrappedBlockSyncCommand<ST, SCT, EPT>>
             EPT,
             BPT,
             SBT,
+            CCT,
+            CRT,
         >,
     >
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     fn from(wrapped: WrappedBlockSyncCommand<ST, SCT, EPT>) -> Self {
         match wrapped.command {

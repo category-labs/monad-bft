@@ -16,7 +16,11 @@
 use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
 use alloy_primitives::{Address, TxHash};
 use alloy_rlp::Encodable;
-use monad_chain_config::{execution_revision::ExecutionChainParams, revision::ChainParams};
+use monad_chain_config::{
+    execution_revision::ExecutionChainParams,
+    revision::{ChainParams, ChainRevision},
+    ChainConfig,
+};
 use monad_consensus_types::block::ConsensusBlockHeader;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -44,9 +48,9 @@ pub struct ValidEthTransaction {
 }
 
 impl ValidEthTransaction {
-    pub fn validate<ST, SCT>(
+    pub fn validate<ST, SCT, CCT, CRT>(
         event_tracker: &mut EthTxPoolEventTracker<'_>,
-        block_policy: &EthBlockPolicy<ST, SCT>,
+        block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
         last_commit: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
         chain_params: &ChainParams,
         execution_params: &ExecutionChainParams,
@@ -56,6 +60,8 @@ impl ValidEthTransaction {
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        CCT: ChainConfig<CRT>,
+        CRT: ChainRevision,
     {
         if SystemTransactionValidator::is_system_sender(tx.signer()) {
             return None;
@@ -92,15 +98,17 @@ impl ValidEthTransaction {
         Some(this)
     }
 
-    pub fn static_validate<ST, SCT>(
+    pub fn static_validate<ST, SCT, CCT, CRT>(
         &self,
-        block_policy: &EthBlockPolicy<ST, SCT>,
+        block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
         chain_params: &ChainParams,
         execution_params: &ExecutionChainParams,
     ) -> Result<(), TransactionError>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        CCT: ChainConfig<CRT>,
+        CRT: ChainRevision,
     {
         static_validate_transaction(
             &self.tx,

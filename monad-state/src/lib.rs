@@ -290,8 +290,10 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     Sync {
         high_certificate: RoundCertificate<ST, SCT, EPT>,
@@ -313,7 +315,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
@@ -360,7 +362,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -406,7 +408,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -441,7 +443,7 @@ where
         self.nodeid.pubkey()
     }
 
-    pub fn blocktree(&self) -> Option<&BlockTree<ST, SCT, EPT, BPT, SBT>> {
+    pub fn blocktree(&self) -> Option<&BlockTree<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         match &self.consensus {
             ConsensusMode::Sync { .. } => None,
             ConsensusMode::Live(consensus) => Some(consensus.blocktree()),
@@ -749,7 +751,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
@@ -779,7 +781,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -800,6 +802,8 @@ where
                 EPT,
                 BPT,
                 SBT,
+                CCT,
+                CRT,
             >,
         >,
     ) {
@@ -884,7 +888,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -904,6 +908,8 @@ where
             EPT,
             BPT,
             SBT,
+            CCT,
+            CRT,
         >,
     > {
         match event {
@@ -933,7 +939,7 @@ where
 
                 let mut cmds = consensus_cmds
                     .into_iter()
-                    .flat_map(Into::<Vec<Command<_, _, _, _, _, _, _>>>::into)
+                    .flat_map(Into::<Vec<Command<_, _, _, _, _, _, _, _, _>>>::into)
                     .collect::<Vec<_>>();
 
                 if take_checkpoint {
@@ -950,7 +956,7 @@ where
 
                 block_sync_cmds
                     .into_iter()
-                    .flat_map(Into::<Vec<Command<_, _, _, _, _, _, _>>>::into)
+                    .flat_map(Into::<Vec<Command<_, _, _, _, _, _, _, _, _>>>::into)
                     .collect::<Vec<_>>()
             }
 
@@ -959,7 +965,7 @@ where
 
                 validator_cmds
                     .into_iter()
-                    .flat_map(Into::<Vec<Command<_, _, _, _, _, _, _>>>::into)
+                    .flat_map(Into::<Vec<Command<_, _, _, _, _, _, _, _, _>>>::into)
                     .collect::<Vec<_>>()
             }
 
@@ -1144,6 +1150,8 @@ where
             EPT,
             BPT,
             SBT,
+            CCT,
+            CRT,
         >,
     > {
         let ConsensusMode::Sync {

@@ -82,7 +82,8 @@ type SignatureType = NopSignature;
 type SignatureCollectionType = MockSignatures<SignatureType>;
 type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
 
-fn make_test_block_policy() -> EthBlockPolicy<SignatureType, SignatureCollectionType> {
+fn make_test_block_policy(
+) -> EthBlockPolicy<SignatureType, SignatureCollectionType, MockChainConfig, MockChainRevision> {
     EthBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY, 1337)
 }
 
@@ -115,6 +116,7 @@ enum TxPoolTestEvent<'a> {
                     SignatureType,
                     SignatureCollectionType,
                     StateBackendType,
+                    MockChainConfig,
                     MockChainRevision,
                 >,
             ),
@@ -123,7 +125,12 @@ enum TxPoolTestEvent<'a> {
 }
 
 fn run_custom_iter<const N: usize>(
-    mut eth_block_policy: EthBlockPolicy<SignatureType, SignatureCollectionType>,
+    mut eth_block_policy: EthBlockPolicy<
+        SignatureType,
+        SignatureCollectionType,
+        MockChainConfig,
+        MockChainRevision,
+    >,
     max_account_balance: Balance,
     nonces_override: Option<BTreeMap<Address, u64>>,
     events: [TxPoolTestEvent<'_>; N],
@@ -327,7 +334,7 @@ fn run_custom_iter<const N: usize>(
                         .pop_front()
                         .expect("missing block in blocktree");
 
-                    BlockPolicy::<_, _, _, StateBackendType>::update_committed_block(
+                    BlockPolicy::<_, _, _, StateBackendType, _, _>::update_committed_block(
                         &mut eth_block_policy,
                         &block,
                     );
@@ -350,7 +357,12 @@ fn run_custom_iter<const N: usize>(
 }
 
 fn run_custom<const N: usize>(
-    eth_block_policy_generator: impl Fn() -> EthBlockPolicy<SignatureType, SignatureCollectionType>,
+    eth_block_policy_generator: impl Fn() -> EthBlockPolicy<
+        SignatureType,
+        SignatureCollectionType,
+        MockChainConfig,
+        MockChainRevision,
+    >,
     max_account_balance: Balance,
     nonces_override: Option<BTreeMap<Address, u64>>,
     events: [TxPoolTestEvent<'_>; N],

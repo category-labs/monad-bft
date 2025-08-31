@@ -17,6 +17,7 @@ use std::collections::BTreeMap;
 
 use common::SignatureType;
 use criterion::{criterion_group, criterion_main, Criterion};
+use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
 use monad_types::GENESIS_SEQ_NUM;
@@ -28,8 +29,12 @@ mod common;
 fn criterion_benchmark(c: &mut Criterion) {
     // TODO: change this to something more meaningful, i.e. what's is the block
     // policy state we want to benchmark
-    let block_policy: EthBlockPolicy<SignatureType, SignatureCollectionType> =
-        EthBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY, 1337);
+    let block_policy: EthBlockPolicy<
+        SignatureType,
+        SignatureCollectionType,
+        MockChainConfig,
+        MockChainRevision,
+    > = EthBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY, 1337);
 
     run_txpool_benches(
         c,

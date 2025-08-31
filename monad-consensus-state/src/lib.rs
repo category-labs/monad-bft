@@ -75,12 +75,14 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     /// Prospective blocks are stored here while they wait to be
     /// committed
-    pending_block_tree: BlockTree<ST, SCT, EPT, BPT, SBT>,
+    pending_block_tree: BlockTree<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
     /// State machine to track collected votes for proposals
     vote_state: VoteState<SCT>,
     /// State machine to track collected no-endorsements for proposals
@@ -102,10 +104,10 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
-    CCT: PartialEq,
-    CRT: PartialEq,
+    CCT: ChainConfig<CRT> + PartialEq,
+    CRT: ChainRevision + PartialEq,
 {
     fn eq(&self, other: &Self) -> bool {
         self.pending_block_tree.eq(&other.pending_block_tree)
@@ -121,10 +123,10 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
-    CCT: Debug,
-    CRT: Debug,
+    CCT: ChainConfig<CRT> + Debug,
+    CRT: ChainRevision + Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ConsensusState")
@@ -157,7 +159,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -235,7 +237,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
@@ -274,7 +276,7 @@ where
         }
     }
 
-    pub fn blocktree(&self) -> &BlockTree<ST, SCT, EPT, BPT, SBT> {
+    pub fn blocktree(&self) -> &BlockTree<ST, SCT, EPT, BPT, SBT, CCT, CRT> {
         &self.pending_block_tree
     }
 
@@ -289,7 +291,7 @@ where
     #[must_use]
     pub fn request_blocks_if_missing_ancestor(
         &mut self,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         let high_qc = self.pacemaker.high_certificate().qc();
         let Some(range) = self.pending_block_tree.maybe_fill_path_to_root(high_qc) else {
             return Vec::new();
@@ -316,7 +318,9 @@ where
     }
 
     #[must_use]
-    fn request_tip_if_missing(&mut self) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+    fn request_tip_if_missing(
+        &mut self,
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         let RoundCertificate::Tc(tc) = self.pacemaker.high_certificate() else {
             return Vec::new();
         };
@@ -361,7 +365,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -373,7 +377,7 @@ where
     pub fn handle_timeout_expiry(
         &mut self,
         timeout_round: Round,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         let mut cmds = Vec::new();
 
         if timeout_round < self.consensus.pacemaker.get_current_round() {
@@ -439,7 +443,7 @@ where
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
         p: ProposalMessage<ST, SCT, EPT>,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         let block_id = p.tip.block_header.get_id();
         debug!(?author, proposal = ?p, ?block_id, "proposal message");
         self.metrics.consensus_events.handle_proposal += 1;
@@ -679,7 +683,7 @@ where
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
         vote_msg: VoteMessage<SCT>,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         debug!(?author, ?vote_msg, "vote message");
         let vote_round = vote_msg.vote.round;
         if vote_round < self.consensus.pacemaker.get_current_round() {
@@ -754,7 +758,7 @@ where
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
         timeout_message: TimeoutMessage<ST, SCT, EPT>,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         let mut cmds = Vec::new();
         let timeout = timeout_message.as_ref();
         if timeout.tminfo.round < self.consensus.pacemaker.get_current_round() {
@@ -842,7 +846,7 @@ where
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
         round_recovery: RoundRecoveryMessage<ST, SCT, EPT>,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         info!(?author, ?round_recovery, "received round recovery request");
         self.metrics.consensus_events.handle_round_recovery += 1;
 
@@ -938,7 +942,7 @@ where
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
         no_endorsement_msg: NoEndorsementMessage<SCT>,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         debug!(?author, ?no_endorsement_msg, "no endorsement message");
         if no_endorsement_msg.msg.round < self.consensus.pacemaker.get_current_round() {
             self.metrics.consensus_events.old_no_endorsement_received += 1;
@@ -990,7 +994,7 @@ where
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
         advance_round_msg: AdvanceRoundMessage<ST, SCT, EPT>,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         debug!(?author, ?advance_round_msg, "advance round message");
         self.metrics.consensus_events.handle_advance_round += 1;
         match &advance_round_msg.last_round_certificate {
@@ -1010,7 +1014,7 @@ where
         &mut self,
         block_range: BlockRange,
         full_blocks: Vec<ConsensusFullBlock<ST, SCT, EPT>>,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         let mut cmds = vec![];
 
         let record = self
@@ -1057,7 +1061,7 @@ where
     pub fn handle_vote_timer(
         &mut self,
         round: Round,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         let Some(OutgoingVoteStatus::VoteReady(v)) = self.consensus.scheduled_vote else {
             self.consensus.scheduled_vote = Some(OutgoingVoteStatus::TimerFired);
             return vec![];
@@ -1072,7 +1076,7 @@ where
         &mut self,
         round: Round,
         vote: Vote,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         let mut cmds = Vec::new();
         let vote_msg = VoteMessage::<SCT>::new(vote, self.cert_keypair);
         let message = ConsensusMessage {
@@ -1137,7 +1141,7 @@ where
     pub fn process_qc(
         &mut self,
         qc: &QuorumCertificate<SCT>,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         if qc.info.round < self.consensus.pacemaker.get_current_round() {
             self.metrics.consensus_events.process_old_qc += 1;
             return Vec::new();
@@ -1211,7 +1215,7 @@ where
     pub fn process_tc(
         &mut self,
         tc: &TimeoutCertificate<ST, SCT, EPT>,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         if tc.round < self.consensus.pacemaker.get_current_round() {
             self.metrics.consensus_events.process_old_tc += 1;
             return Vec::new();
@@ -1275,7 +1279,7 @@ where
     fn try_commit(
         &mut self,
         qc: &QuorumCertificate<SCT>,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         let mut cmds = Vec::new();
         debug!(?qc, "try committing blocks using qc");
 
@@ -1345,7 +1349,7 @@ where
             Option<TimeoutCertificate<ST, SCT, EPT>>,
             ConsensusTip<ST, SCT, EPT>,
         )>,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         trace!(?block, "adding block to blocktree");
 
         let mut cmds = Vec::new();
@@ -1374,7 +1378,7 @@ where
     fn try_update_coherency(
         &mut self,
         updated_block_id: BlockId,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         let mut cmds = Vec::new();
         for newly_coherent_block in self.consensus.pending_block_tree.try_update_coherency(
             self.metrics,
@@ -1404,7 +1408,7 @@ where
     }
 
     #[must_use]
-    fn maybe_statesync(&mut self) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+    fn maybe_statesync(&mut self) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         let Some(high_qc_seq_num) = self
             .consensus
             .pending_block_tree
@@ -1428,7 +1432,7 @@ where
         &mut self,
         last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
         tip: ConsensusTip<ST, SCT, EPT>,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         let mut cmds = Vec::new();
         let proposal_round = self.consensus.pacemaker.get_current_round();
 
@@ -1550,7 +1554,7 @@ where
 
     /// This function is (and must be) idempotent
     #[must_use]
-    fn try_propose(&mut self) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+    fn try_propose(&mut self) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         let mut cmds = Vec::new();
 
         let round = self.consensus.pacemaker.get_current_round();
@@ -1933,16 +1937,19 @@ mod test {
 
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<SignatureType>;
-    type BlockPolicyType = EthBlockPolicy<SignatureType, SignatureCollectionType>;
+    type BlockPolicyType =
+        EthBlockPolicy<SignatureType, SignatureCollectionType, ChainConfigType, ChainRevisionType>;
     type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
     type BlockValidatorType = EthBlockValidator<SignatureType, SignatureCollectionType>;
+    type ChainConfigType = MockChainConfig;
+    type ChainRevisionType = MockChainRevision;
 
     struct NodeContext<ST, SCT, BPT, SBT, BVT, VTF, LT>
     where
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
+        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT, MockChainConfig, MockChainRevision>,
         SBT: StateBackend<ST, SCT> + StateBackendTest<ST, SCT>,
         BVT: BlockValidator<
             ST,
@@ -1989,7 +1996,7 @@ mod test {
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
+        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT, MockChainConfig, MockChainRevision>,
         SBT: StateBackend<ST, SCT> + StateBackendTest<ST, SCT>,
         BVT: BlockValidator<
             ST,
@@ -2043,7 +2050,17 @@ mod test {
             &mut self,
             author: NodeId<SCT::NodeIdPubKey>,
             p: ProposalMessage<ST, SCT, EthExecutionProtocol>,
-        ) -> Vec<ConsensusCommand<ST, SCT, EthExecutionProtocol, BPT, SBT>> {
+        ) -> Vec<
+            ConsensusCommand<
+                ST,
+                SCT,
+                EthExecutionProtocol,
+                BPT,
+                SBT,
+                MockChainConfig,
+                MockChainRevision,
+            >,
+        > {
             self.wrapped_state().handle_proposal_message(author, p)
         }
 
@@ -2051,7 +2068,17 @@ mod test {
             &mut self,
             author: NodeId<SCT::NodeIdPubKey>,
             p: TimeoutMessage<ST, SCT, EthExecutionProtocol>,
-        ) -> Vec<ConsensusCommand<ST, SCT, EthExecutionProtocol, BPT, SBT>> {
+        ) -> Vec<
+            ConsensusCommand<
+                ST,
+                SCT,
+                EthExecutionProtocol,
+                BPT,
+                SBT,
+                MockChainConfig,
+                MockChainRevision,
+            >,
+        > {
             self.wrapped_state().handle_timeout_message(author, p)
         }
 
@@ -2059,7 +2086,17 @@ mod test {
             &mut self,
             author: NodeId<SCT::NodeIdPubKey>,
             p: VoteMessage<SCT>,
-        ) -> Vec<ConsensusCommand<ST, SCT, EthExecutionProtocol, BPT, SBT>> {
+        ) -> Vec<
+            ConsensusCommand<
+                ST,
+                SCT,
+                EthExecutionProtocol,
+                BPT,
+                SBT,
+                MockChainConfig,
+                MockChainRevision,
+            >,
+        > {
             self.wrapped_state().handle_vote_message(author, p)
         }
 
@@ -2067,7 +2104,17 @@ mod test {
             &mut self,
             block_range: BlockRange,
             full_blocks: Vec<ConsensusFullBlock<ST, SCT, EthExecutionProtocol>>,
-        ) -> Vec<ConsensusCommand<ST, SCT, EthExecutionProtocol, BPT, SBT>> {
+        ) -> Vec<
+            ConsensusCommand<
+                ST,
+                SCT,
+                EthExecutionProtocol,
+                BPT,
+                SBT,
+                MockChainConfig,
+                MockChainRevision,
+            >,
+        > {
             self.wrapped_state()
                 .handle_block_sync(block_range, full_blocks)
         }
@@ -2229,7 +2276,7 @@ mod test {
     fn setup<
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
+        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT, MockChainConfig, MockChainRevision>,
         SBT: StateBackend<ST, SCT> + StateBackendTest<ST, SCT>,
         BVT: BlockValidator<ST, SCT, EthExecutionProtocol, BPT, SBT, MockChainConfig, MockChainRevision>,
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
@@ -2364,12 +2411,22 @@ mod test {
     }
 
     fn extract_vote_msgs<ST, SCT, BPT, SBT>(
-        cmds: Vec<ConsensusCommand<ST, SCT, EthExecutionProtocol, BPT, SBT>>,
+        cmds: Vec<
+            ConsensusCommand<
+                ST,
+                SCT,
+                EthExecutionProtocol,
+                BPT,
+                SBT,
+                MockChainConfig,
+                MockChainRevision,
+            >,
+        >,
     ) -> Vec<VoteMessage<SCT>>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
+        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT, MockChainConfig, MockChainRevision>,
         SBT: StateBackend<ST, SCT>,
     {
         cmds.into_iter()
@@ -2387,12 +2444,22 @@ mod test {
     }
 
     fn extract_schedule_vote_timer<ST, SCT, BPT, SBT>(
-        cmds: Vec<ConsensusCommand<ST, SCT, EthExecutionProtocol, BPT, SBT>>,
+        cmds: Vec<
+            ConsensusCommand<
+                ST,
+                SCT,
+                EthExecutionProtocol,
+                BPT,
+                SBT,
+                MockChainConfig,
+                MockChainRevision,
+            >,
+        >,
     ) -> Vec<Round>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
+        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT, MockChainConfig, MockChainRevision>,
         SBT: StateBackend<ST, SCT>,
     {
         cmds.into_iter()
@@ -2404,12 +2471,23 @@ mod test {
     }
 
     fn extract_create_proposal_command_round<ST, SCT, BPT, SBT>(
-        cmds: Vec<ConsensusCommand<ST, SCT, EthExecutionProtocol, BPT, SBT>>,
+        cmds: Vec<
+            ConsensusCommand<
+                ST,
+                SCT,
+                EthExecutionProtocol,
+                BPT,
+                SBT,
+                MockChainConfig,
+                MockChainRevision,
+            >,
+        >,
     ) -> Round
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT> + std::fmt::Debug,
+        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT, MockChainConfig, MockChainRevision>
+            + std::fmt::Debug,
         SBT: StateBackend<ST, SCT> + std::fmt::Debug,
     {
         cmds.iter()
@@ -2421,12 +2499,22 @@ mod test {
     }
 
     fn extract_blocksync_requests<ST, SCT, BPT, SBT>(
-        cmds: Vec<ConsensusCommand<ST, SCT, EthExecutionProtocol, BPT, SBT>>,
+        cmds: Vec<
+            ConsensusCommand<
+                ST,
+                SCT,
+                EthExecutionProtocol,
+                BPT,
+                SBT,
+                MockChainConfig,
+                MockChainRevision,
+            >,
+        >,
     ) -> Vec<BlockRange>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
+        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT, MockChainConfig, MockChainRevision>,
         SBT: StateBackend<ST, SCT>,
     {
         cmds.into_iter()
@@ -2438,13 +2526,13 @@ mod test {
     }
 
     fn find_proposal_broadcast<ST, SCT, EPT, BPT, SBT>(
-        cmds: Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>>,
+        cmds: Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>>,
     ) -> Option<ProposalMessage<ST, SCT, EPT>>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
-        BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+        BPT: BlockPolicy<ST, SCT, EPT, SBT, MockChainConfig, MockChainRevision>,
         SBT: StateBackend<ST, SCT>,
     {
         cmds.iter().find_map(|c| match c {
@@ -2460,13 +2548,13 @@ mod test {
     }
 
     fn find_vote_message<ST, SCT, EPT, BPT, SBT>(
-        cmds: &[ConsensusCommand<ST, SCT, EPT, BPT, SBT>],
-    ) -> Option<&ConsensusCommand<ST, SCT, EPT, BPT, SBT>>
+        cmds: &[ConsensusCommand<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>],
+    ) -> Option<&ConsensusCommand<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
-        BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+        BPT: BlockPolicy<ST, SCT, EPT, SBT, MockChainConfig, MockChainRevision>,
         SBT: StateBackend<ST, SCT>,
     {
         cmds.iter().find(|c| match c {
@@ -2479,13 +2567,13 @@ mod test {
     }
 
     fn extract_proposal_commit_rounds<ST, SCT, EPT, BPT, SBT>(
-        cmds: Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>>,
+        cmds: Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>>,
     ) -> Vec<Round>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
-        BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+        BPT: BlockPolicy<ST, SCT, EPT, SBT, MockChainConfig, MockChainRevision>,
         SBT: StateBackend<ST, SCT>,
     {
         cmds.iter()
@@ -2499,13 +2587,13 @@ mod test {
     }
 
     fn find_blocksync_request<ST, SCT, EPT, BPT, SBT>(
-        cmds: &[ConsensusCommand<ST, SCT, EPT, BPT, SBT>],
-    ) -> Option<&ConsensusCommand<ST, SCT, EPT, BPT, SBT>>
+        cmds: &[ConsensusCommand<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>],
+    ) -> Option<&ConsensusCommand<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
-        BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+        BPT: BlockPolicy<ST, SCT, EPT, SBT, MockChainConfig, MockChainRevision>,
         SBT: StateBackend<ST, SCT>,
     {
         cmds.iter()
@@ -2513,13 +2601,13 @@ mod test {
     }
 
     fn find_commit_cmds<ST, SCT, EPT, BPT, SBT>(
-        cmds: &[ConsensusCommand<ST, SCT, EPT, BPT, SBT>],
+        cmds: &[ConsensusCommand<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>],
     ) -> Vec<BPT::ValidatedBlock>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
-        BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+        BPT: BlockPolicy<ST, SCT, EPT, SBT, MockChainConfig, MockChainRevision>,
         SBT: StateBackend<ST, SCT>,
     {
         cmds.iter()
@@ -2533,13 +2621,13 @@ mod test {
     }
 
     fn find_timestamp_update_cmd<ST, SCT, EPT, BPT, SBT>(
-        cmds: &[ConsensusCommand<ST, SCT, EPT, BPT, SBT>],
-    ) -> Option<&ConsensusCommand<ST, SCT, EPT, BPT, SBT>>
+        cmds: &[ConsensusCommand<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>],
+    ) -> Option<&ConsensusCommand<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
-        BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+        BPT: BlockPolicy<ST, SCT, EPT, SBT, MockChainConfig, MockChainRevision>,
         SBT: StateBackend<ST, SCT>,
     {
         cmds.iter()

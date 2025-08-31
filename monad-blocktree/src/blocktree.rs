@@ -18,6 +18,7 @@ use std::{
     fmt::{self, Debug},
 };
 
+use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::{
     block::{BlockPolicy, BlockPolicyError, BlockRange, ConsensusBlockHeader},
     checkpoint::RootInfo,
@@ -40,28 +41,32 @@ struct Root {
     children_blocks: Vec<BlockId>,
 }
 
-pub struct BlockTree<ST, SCT, EPT, BPT, SBT>
+pub struct BlockTree<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     /// The round and block_id of last committed block
     root: Root,
     /// Uncommitted blocks
     /// First level of blocks in the tree have block.get_parent_id() == root.block_id
-    tree: Tree<ST, SCT, EPT, BPT, SBT>,
+    tree: Tree<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
 }
 
-impl<ST, SCT, EPT, BPT, SBT> Debug for BlockTree<ST, SCT, EPT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> Debug for BlockTree<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BlockTree")
@@ -71,36 +76,43 @@ where
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT> PartialEq<Self> for BlockTree<ST, SCT, EPT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> PartialEq<Self>
+    for BlockTree<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     fn eq(&self, other: &Self) -> bool {
         self.root == other.root && self.tree == other.tree
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT> Eq for BlockTree<ST, SCT, EPT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> Eq for BlockTree<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
 }
 
-impl<ST, SCT, EPT, BPT, SBT> BlockTree<ST, SCT, EPT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> BlockTree<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     pub fn new(root: RootInfo) -> Self {
         Self {
@@ -461,7 +473,7 @@ where
         !self.tree.contains_key(&b.get_id()) && b.block_round > self.root.info.round
     }
 
-    pub fn tree(&self) -> &Tree<ST, SCT, EPT, BPT, SBT> {
+    pub fn tree(&self) -> &Tree<ST, SCT, EPT, BPT, SBT, CCT, CRT> {
         &self.tree
     }
 
@@ -489,7 +501,10 @@ where
         self.tree.get_payload(block_body_id).cloned()
     }
 
-    pub fn get_entry(&self, block_id: &BlockId) -> Option<&BlockTreeEntry<ST, SCT, EPT, BPT, SBT>> {
+    pub fn get_entry(
+        &self,
+        block_id: &BlockId,
+    ) -> Option<&BlockTreeEntry<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         self.tree.get(block_id)
     }
 
@@ -512,6 +527,7 @@ where
 
 #[cfg(test)]
 mod test {
+    use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
     use monad_consensus_types::{
         block::{
             ConsensusBlockHeader, ConsensusFullBlock, MockExecutionBody,
@@ -546,12 +562,16 @@ mod test {
     type ExecutionProtocolType = MockExecutionProtocol;
     type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
     type BlockPolicyType = PassthruBlockPolicy;
+    type ChainConfigType = MockChainConfig;
+    type ChainRevisionType = MockChainRevision;
     type BlockTreeType = BlockTree<
         SignatureType,
         SignatureCollectionType,
         ExecutionProtocolType,
         BlockPolicyType,
         StateBackendType,
+        ChainConfigType,
+        ChainRevisionType,
     >;
     type PubKeyType = CertificateSignaturePubKey<SignatureType>;
     type Block =

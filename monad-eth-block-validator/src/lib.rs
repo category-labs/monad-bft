@@ -76,7 +76,7 @@ where
 
 // FIXME: add specific error returns for the different failures
 impl<ST, SCT, SBT, CCT, CRT>
-    BlockValidator<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT, CCT, CRT>
+    BlockValidator<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT, CCT, CRT>, SBT, CCT, CRT>
     for EthBlockValidator<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
@@ -98,14 +98,16 @@ where
         author_pubkey: Option<&SignatureCollectionPubKeyType<SCT>>,
         chain_config: &CCT,
     ) -> Result<
-        <EthBlockPolicy<ST, SCT> as BlockPolicy<
+        <EthBlockPolicy<ST, SCT, CCT, CRT> as BlockPolicy<
             ST,
             SCT,
             EthExecutionProtocol,
             SBT,
+            CCT,
+            CRT,
         >>::ValidatedBlock,
         BlockValidationError,
-    >{
+    > {
         let chain_params = chain_config
             .get_chain_revision(header.block_round)
             .chain_params();

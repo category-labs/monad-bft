@@ -19,6 +19,7 @@ use std::{
     ops::Deref,
 };
 
+use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::{
     block::BlockPolicy,
     payload::{ConsensusBlockBody, ConsensusBlockBodyId},
@@ -30,15 +31,17 @@ use monad_state_backend::StateBackend;
 use monad_types::{BlockId, ExecutionProtocol};
 use monad_validator::signature_collection::SignatureCollection;
 
-pub struct Tree<ST, SCT, EPT, BPT, SBT>
+pub struct Tree<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
-    tree: HashMap<BlockId, BlockTreeEntry<ST, SCT, EPT, BPT, SBT>>,
+    tree: HashMap<BlockId, BlockTreeEntry<ST, SCT, EPT, BPT, SBT, CCT, CRT>>,
     payloads: HashMap<ConsensusBlockBodyId, BlockBodyIndex<EPT>>,
 }
 
@@ -52,13 +55,15 @@ where
     active_blocks: HashSet<BlockId>,
 }
 
-impl<ST, SCT, EPT, BPT, SBT> Tree<ST, SCT, EPT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> Tree<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     pub(crate) fn set_coherent(&mut self, block_id: &BlockId, coherent: bool) -> Option<()> {
         self.tree.get_mut(block_id)?.is_coherent = coherent;
@@ -68,7 +73,7 @@ where
     pub(crate) fn remove(
         &mut self,
         block_id: &BlockId,
-    ) -> Option<BlockTreeEntry<ST, SCT, EPT, BPT, SBT>> {
+    ) -> Option<BlockTreeEntry<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         let maybe_removed = self.tree.remove(block_id);
         if let Some(removed) = &maybe_removed {
             let payload_id = removed.validated_block.get_body_id();
@@ -140,28 +145,32 @@ where
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT> Deref for Tree<ST, SCT, EPT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> Deref for Tree<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
-    type Target = HashMap<BlockId, BlockTreeEntry<ST, SCT, EPT, BPT, SBT>>;
+    type Target = HashMap<BlockId, BlockTreeEntry<ST, SCT, EPT, BPT, SBT, CCT, CRT>>;
 
     fn deref(&self) -> &Self::Target {
         &self.tree
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT> Default for Tree<ST, SCT, EPT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> Default for Tree<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     fn default() -> Self {
         Self {
@@ -171,13 +180,15 @@ where
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT> Debug for Tree<ST, SCT, EPT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> Debug for Tree<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Tree")
@@ -187,36 +198,42 @@ where
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT> PartialEq<Self> for Tree<ST, SCT, EPT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> PartialEq<Self> for Tree<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     fn eq(&self, other: &Self) -> bool {
         self.tree == other.tree && self.payloads == other.payloads
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT> Eq for Tree<ST, SCT, EPT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> Eq for Tree<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
 }
 
-pub struct BlockTreeEntry<ST, SCT, EPT, BPT, SBT>
+pub struct BlockTreeEntry<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     pub validated_block: BPT::ValidatedBlock,
     /// A blocktree entry is coherent if there is a path to root from the entry and it
@@ -226,13 +243,15 @@ where
     pub children_blocks: Vec<BlockId>,
 }
 
-impl<ST, SCT, EPT, BPT, SBT> Clone for BlockTreeEntry<ST, SCT, EPT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> Clone for BlockTreeEntry<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     fn clone(&self) -> Self {
         Self {
@@ -243,13 +262,15 @@ where
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT> Debug for BlockTreeEntry<ST, SCT, EPT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> Debug for BlockTreeEntry<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BlockTreeEntry")
@@ -260,13 +281,16 @@ where
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT> PartialEq<Self> for BlockTreeEntry<ST, SCT, EPT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> PartialEq<Self>
+    for BlockTreeEntry<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     fn eq(&self, other: &Self) -> bool {
         self.validated_block == other.validated_block
@@ -275,12 +299,14 @@ where
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT> Eq for BlockTreeEntry<ST, SCT, EPT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> Eq for BlockTreeEntry<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
 }

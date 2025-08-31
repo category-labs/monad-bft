@@ -45,14 +45,19 @@ fn with_txpool(
             SignatureType,
             SignatureCollectionType,
             InMemoryState<SignatureType, SignatureCollectionType>,
+            MockChainConfig,
             MockChainRevision,
         >,
         &mut EthTxPoolEventTracker,
     ),
 ) {
     let tx = recover_tx(make_legacy_tx(S1, BASE_FEE.into(), 100_000, 0, 10));
-    let eth_block_policy =
-        EthBlockPolicy::<SignatureType, SignatureCollectionType>::new(GENESIS_SEQ_NUM, 4, 1337);
+    let eth_block_policy = EthBlockPolicy::<
+        SignatureType,
+        SignatureCollectionType,
+        MockChainConfig,
+        MockChainRevision,
+    >::new(GENESIS_SEQ_NUM, 4, 1337);
     let state_backend = InMemoryStateInner::new(
         Balance::MAX,
         SeqNum(4),

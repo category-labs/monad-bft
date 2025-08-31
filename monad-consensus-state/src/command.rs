@@ -15,6 +15,7 @@
 
 use std::time::Duration;
 
+use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus::{
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
@@ -41,13 +42,15 @@ use monad_validator::signature_collection::{SignatureCollection, SignatureCollec
 /// Command type that the consensus state-machine outputs
 /// This is converted to a monad-executor-glue::Command at the top-level monad-state
 #[derive(Debug)]
-pub enum ConsensusCommand<ST, SCT, EPT, BPT, SBT>
+pub enum ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     EnterRound(Epoch, Round),
     /// Attempt to send a message to RouterTarget
@@ -88,7 +91,7 @@ where
         delayed_execution_results: Vec<EPT::FinalizedHeader>,
     },
     /// Commit blocks to ledger
-    CommitBlocks(OptimisticPolicyCommit<ST, SCT, EPT, BPT, SBT>),
+    CommitBlocks(OptimisticPolicyCommit<ST, SCT, EPT, BPT, SBT, CCT, CRT>),
     /// Requests BlockSync
     /// Serviced by block_sync in MonadState
     RequestSync(BlockRange),
@@ -112,13 +115,15 @@ where
     },
 }
 
-impl<ST, SCT, EPT, BPT, SBT> ConsensusCommand<ST, SCT, EPT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     pub fn from_pacemaker_command(
         keypair: &ST::KeyPairType,
@@ -172,13 +177,16 @@ where
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT> From<VoteStateCommand> for ConsensusCommand<ST, SCT, EPT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> From<VoteStateCommand>
+    for ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     fn from(value: VoteStateCommand) -> Self {
         //TODO-3 VoteStateCommand used for evidence collection

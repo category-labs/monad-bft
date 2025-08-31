@@ -19,6 +19,7 @@ use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use alloy_primitives::Address;
 use indexmap::{map::Entry as IndexMapEntry, IndexMap};
 use itertools::Itertools;
+use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::block::ConsensusBlockHeader;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -59,7 +60,7 @@ const MAX_PROMOTABLE_ON_CREATE_PROPOSAL: usize = 1024 * 10;
 /// account_nonce stored in the TrackedTxList which is guaranteed to be the correct
 /// account_nonce for the seqnum stored in last_commit_seq_num.
 #[derive(Clone, Debug)]
-pub struct TrackedTxMap<ST, SCT, SBT>
+pub struct TrackedTxMap<ST, SCT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -73,14 +74,16 @@ where
     // evict expired txs through the entry API.
     txs: IndexMap<Address, TrackedTxList>,
 
-    _phantom: PhantomData<(SBT,)>,
+    _phantom: PhantomData<(SBT, CCT, CRT)>,
 }
 
-impl<ST, SCT, SBT> TrackedTxMap<ST, SCT, SBT>
+impl<ST, SCT, SBT, CCT, CRT> TrackedTxMap<ST, SCT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     pub fn new(soft_tx_expiry: Duration, hard_tx_expiry: Duration) -> Self {
         Self {
@@ -150,7 +153,7 @@ where
         tx_limit: usize,
         proposal_gas_limit: u64,
         proposal_byte_limit: u64,
-        block_policy: &EthBlockPolicy<ST, SCT>,
+        block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
         extending_blocks: Vec<&EthValidatedBlock<ST, SCT>>,
         state_backend: &SBT,
         pending: &mut PendingTxMap,
@@ -256,7 +259,7 @@ where
     pub fn try_promote_pending(
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
-        block_policy: &EthBlockPolicy<ST, SCT>,
+        block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
         state_backend: &SBT,
         pending: &mut PendingTxMap,
         min_promotable: usize,

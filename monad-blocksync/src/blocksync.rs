@@ -19,6 +19,7 @@ use alloy_rlp::{encode_list, Decodable, Encodable, Header};
 use bytes::BufMut;
 use itertools::Itertools;
 use monad_blocktree::blocktree::BlockTree;
+use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::{
     block::{BlockPolicy, BlockRange, ConsensusBlockHeader, ConsensusFullBlock},
     metrics::Metrics,
@@ -225,30 +226,34 @@ where
     }
 }
 
-pub enum BlockCache<'a, ST, SCT, EPT, BPT, SBT>
+pub enum BlockCache<'a, ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
-    BlockTree(&'a BlockTree<ST, SCT, EPT, BPT, SBT>),
+    BlockTree(&'a BlockTree<ST, SCT, EPT, BPT, SBT, CCT, CRT>),
     BlockBuffer(&'a HashMap<ConsensusBlockBodyId, ConsensusBlockBody<EPT>>),
 }
 
-pub struct BlockSyncWrapper<'a, ST, SCT, EPT, BPT, SBT, VTF>
+pub struct BlockSyncWrapper<'a, ST, SCT, EPT, BPT, SBT, VTF, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     pub block_sync: &'a mut BlockSync<ST, SCT, EPT>,
 
-    pub block_cache: BlockCache<'a, ST, SCT, EPT, BPT, SBT>,
+    pub block_cache: BlockCache<'a, ST, SCT, EPT, BPT, SBT, CCT, CRT>,
     pub metrics: &'a mut Metrics,
     pub nodeid: &'a NodeId<SCT::NodeIdPubKey>,
     pub current_epoch: Epoch,
@@ -256,14 +261,17 @@ where
     pub val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF> BlockSyncWrapper<'_, ST, SCT, EPT, BPT, SBT, VTF>
+impl<ST, SCT, EPT, BPT, SBT, VTF, CCT, CRT>
+    BlockSyncWrapper<'_, ST, SCT, EPT, BPT, SBT, VTF, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     #[must_use]
     pub fn handle_self_request(
@@ -1069,6 +1077,7 @@ mod test {
     use bytes::Bytes;
     use itertools::Itertools;
     use monad_blocktree::blocktree::BlockTree;
+    use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
     use monad_consensus_types::{
         block::{
             BlockPolicy, BlockRange, ConsensusBlockHeader, ConsensusFullBlock, MockExecutionBody,
@@ -1125,7 +1134,7 @@ mod test {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
-        BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+        BPT: BlockPolicy<ST, SCT, EPT, SBT, MockChainConfig, MockChainRevision>,
         SBT: StateBackend<ST, SCT>,
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -1133,7 +1142,7 @@ mod test {
         block_sync: BlockSync<ST, SCT, EPT>,
 
         // TODO: include BlockBuffer
-        blocktree: BlockTree<ST, SCT, EPT, BPT, SBT>,
+        blocktree: BlockTree<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>,
         metrics: Metrics,
         self_node_id: NodeId<SCT::NodeIdPubKey>,
         peer_id: NodeId<SCT::NodeIdPubKey>,
@@ -1153,6 +1162,8 @@ mod test {
     type BlockPolicyType = PassthruBlockPolicy;
     type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
     type LeaderElectionType = SimpleRoundRobin<PubKeyType>;
+    type ChainConfigType = MockChainConfig;
+    type ChainRevisionType = MockChainRevision;
 
     impl<BPT, SBT, VTF, LT>
         BlockSyncContext<
@@ -1165,7 +1176,14 @@ mod test {
             LT,
         >
     where
-        BPT: BlockPolicy<SignatureType, SignatureCollectionType, ExecutionProtocolType, SBT>,
+        BPT: BlockPolicy<
+            SignatureType,
+            SignatureCollectionType,
+            ExecutionProtocolType,
+            SBT,
+            ChainConfigType,
+            ChainRevisionType,
+        >,
         SBT: StateBackend<SignatureType, SignatureCollectionType>,
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>>,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>>,
@@ -1179,6 +1197,8 @@ mod test {
             BPT,
             SBT,
             VTF,
+            ChainConfigType,
+            ChainRevisionType,
         > {
             let block_cache = BlockCache::BlockTree(&self.blocktree);
             BlockSyncWrapper {

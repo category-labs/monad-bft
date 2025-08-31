@@ -4787,6 +4787,7 @@ dependencies = [
  "bytes",
  "itertools 0.10.5",
  "monad-blocktree",
+ "monad-chain-config",
  "monad-consensus-types",
  "monad-crypto",
  "monad-multi-sig",
@@ -4804,6 +4805,7 @@ dependencies = [
 name = "monad-blocktree"
 version = "0.1.0"
 dependencies = [
+ "monad-chain-config",
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-types",
@@ -5027,6 +5029,7 @@ dependencies = [
  "alloy-signer",
  "alloy-signer-local",
  "itertools 0.10.5",
+ "monad-chain-config",
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-txpool-types",
@@ -5309,6 +5312,7 @@ dependencies = [
  "criterion",
  "futures",
  "monad-blocksync",
+ "monad-chain-config",
  "monad-consensus",
  "monad-consensus-types",
  "monad-crypto",

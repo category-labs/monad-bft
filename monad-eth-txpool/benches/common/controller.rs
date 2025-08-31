@@ -36,10 +36,16 @@ const TRANSACTION_SIZE_BYTES: usize = 400;
 
 pub type SignatureType = NopSignature;
 pub type SignatureCollectionType = MockSignatures<NopSignature>;
-pub type BlockPolicyType = EthBlockPolicy<SignatureType, SignatureCollectionType>;
+pub type BlockPolicyType =
+    EthBlockPolicy<SignatureType, SignatureCollectionType, MockChainConfig, MockChainRevision>;
 pub type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
-pub type Pool =
-    EthTxPool<SignatureType, SignatureCollectionType, StateBackendType, MockChainRevision>;
+pub type Pool = EthTxPool<
+    SignatureType,
+    SignatureCollectionType,
+    StateBackendType,
+    MockChainConfig,
+    MockChainRevision,
+>;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct BenchControllerConfig {

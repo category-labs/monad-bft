@@ -69,7 +69,12 @@ mod test {
         type SignatureCollectionType = MultiSig<Self::SignatureType>;
         type ExecutionProtocolType = EthExecutionProtocol;
         type StateBackendType = InMemoryState<Self::SignatureType, Self::SignatureCollectionType>;
-        type BlockPolicyType = EthBlockPolicy<Self::SignatureType, Self::SignatureCollectionType>;
+        type BlockPolicyType = EthBlockPolicy<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::ChainConfigType,
+            Self::ChainRevisionType,
+        >;
         type ChainConfigType = MockChainConfig;
         type ChainRevisionType = MockChainRevision;
 
@@ -115,6 +120,8 @@ mod test {
             Self::ExecutionProtocolType,
             Self::BlockPolicyType,
             Self::StateBackendType,
+            Self::ChainConfigType,
+            Self::ChainRevisionType,
         >;
         type StateSyncExecutor = MockStateSyncExecutor<
             Self::SignatureType,

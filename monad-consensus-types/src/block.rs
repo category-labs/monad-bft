@@ -18,6 +18,10 @@ use std::{fmt::Debug, ops::Deref};
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use auto_impl::auto_impl;
 use bytes::Bytes;
+use monad_chain_config::{
+    revision::{ChainRevision, MockChainRevision},
+    ChainConfig, MockChainConfig,
+};
 use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
     hasher::{Hasher, HasherType},
@@ -176,12 +180,14 @@ impl From<StateBackendError> for BlockPolicyError {
 
 /// Trait that represents how inner contents of a block should be validated
 #[auto_impl(Box)]
-pub trait BlockPolicy<ST, SCT, EPT, SBT>
+pub trait BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     type ValidatedBlock: Sized
         + Clone
@@ -249,7 +255,9 @@ where
     }
 }
 
-impl<ST, SCT, EPT> BlockPolicy<ST, SCT, EPT, InMemoryState<ST, SCT>> for PassthruBlockPolicy
+impl<ST, SCT, EPT>
+    BlockPolicy<ST, SCT, EPT, InMemoryState<ST, SCT>, MockChainConfig, MockChainRevision>
+    for PassthruBlockPolicy
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -450,13 +458,15 @@ impl FinalizedHeader for MockExecutionFinalizedHeader {
 // which uses the "Encodable" trait to simply write the bytes to a file without needing to inspect
 // the body itself.
 #[derive(Debug)]
-pub enum OptimisticPolicyCommit<ST, SCT, EPT, BPT, SBT>
+pub enum OptimisticPolicyCommit<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     Proposed(BPT::ValidatedBlock),
     Finalized(BPT::ValidatedBlock),
@@ -472,16 +482,19 @@ where
     Proposed(ConsensusFullBlock<ST, SCT, EPT>),
     Finalized(ConsensusFullBlock<ST, SCT, EPT>),
 }
-impl<ST, SCT, EPT, BPT, SBT> From<&OptimisticPolicyCommit<ST, SCT, EPT, BPT, SBT>>
+impl<ST, SCT, EPT, BPT, SBT, CCT, CRT>
+    From<&OptimisticPolicyCommit<ST, SCT, EPT, BPT, SBT, CCT, CRT>>
     for OptimisticCommit<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
-    fn from(value: &OptimisticPolicyCommit<ST, SCT, EPT, BPT, SBT>) -> Self {
+    fn from(value: &OptimisticPolicyCommit<ST, SCT, EPT, BPT, SBT, CCT, CRT>) -> Self {
         match value {
             OptimisticPolicyCommit::Proposed(block) => Self::Proposed(block.deref().to_owned()),
             OptimisticPolicyCommit::Finalized(block) => Self::Finalized(block.deref().to_owned()),

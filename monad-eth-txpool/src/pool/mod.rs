@@ -24,7 +24,7 @@ use itertools::Itertools;
 use monad_chain_config::{
     execution_revision::MonadExecutionRevision,
     revision::{ChainRevision, MockChainRevision},
-    ChainConfig,
+    ChainConfig, MockChainConfig,
 };
 use monad_consensus_types::{block::ProposedExecutionInputs, payload::RoundSignature};
 use monad_crypto::certificate_signature::{
@@ -54,15 +54,16 @@ const INSERT_TXS_MAX_PROMOTE: usize = 256;
 const PENDING_MAX_PROMOTE: usize = 128;
 
 #[derive(Clone, Debug)]
-pub struct EthTxPool<ST, SCT, SBT, CRT>
+pub struct EthTxPool<ST, SCT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
     pending: PendingTxMap,
-    tracked: TrackedTxMap<ST, SCT, SBT>,
+    tracked: TrackedTxMap<ST, SCT, SBT, CCT, CRT>,
 
     chain_revision: CRT,
     execution_revision: MonadExecutionRevision,
@@ -70,13 +71,14 @@ where
     do_local_insert: bool,
 }
 
-impl<ST, SCT, SBT, CRT> EthTxPool<ST, SCT, SBT, CRT>
+impl<ST, SCT, SBT, CCT, CRT> EthTxPool<ST, SCT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend<ST, SCT>,
-    CertificateSignaturePubKey<ST>: ExtractEthAddress,
+    CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
 {
     pub fn new(
         soft_tx_expiry: Duration,
@@ -110,7 +112,7 @@ where
     pub fn insert_txs(
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
-        block_policy: &EthBlockPolicy<ST, SCT>,
+        block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
         state_backend: &SBT,
         txs: Vec<Recovered<TxEnvelope>>,
         owned: bool,
@@ -209,7 +211,7 @@ where
     pub fn promote_pending(
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
-        block_policy: &EthBlockPolicy<ST, SCT>,
+        block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
         state_backend: &SBT,
     ) {
         if !self.tracked.try_promote_pending(
@@ -239,7 +241,7 @@ where
         round_signature: RoundSignature<SCT::SignatureType>,
         extending_blocks: Vec<EthValidatedBlock<ST, SCT>>,
 
-        block_policy: &EthBlockPolicy<ST, SCT>,
+        block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
         state_backend: &SBT,
         chain_config: &impl ChainConfig<CRT>,
     ) -> Result<ProposedExecutionInputs<EthExecutionProtocol>, StateBackendError> {
@@ -452,7 +454,7 @@ where
         proposed_epoch: Epoch,
         block_author: Address,
         extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
-        block_policy: &EthBlockPolicy<ST, SCT>,
+        block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
         state_backend: &SBT,
         chain_config: &impl ChainConfig<CRT>,
     ) -> Result<Vec<Recovered<TxEnvelope>>, StateBackendError> {
@@ -499,7 +501,7 @@ where
     }
 }
 
-impl<ST, SCT, SBT> EthTxPool<ST, SCT, SBT, monad_chain_config::revision::MockChainRevision>
+impl<ST, SCT, SBT> EthTxPool<ST, SCT, SBT, MockChainConfig, MockChainRevision>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,

@@ -70,11 +70,11 @@ where
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
-    pool: EthTxPool<ST, SCT, SBT, CRT>,
+    pool: EthTxPool<ST, SCT, SBT, CCT, CRT>,
     ipc: Pin<Box<EthTxPoolIpcServer>>,
 
     reset: EthTxPoolResetTrigger,
-    block_policy: EthBlockPolicy<ST, SCT>,
+    block_policy: EthBlockPolicy<ST, SCT, CCT, CRT>,
     state_backend: SBT,
     chain_config: CCT,
 
@@ -102,7 +102,7 @@ where
     Self: Unpin,
 {
     pub fn new(
-        block_policy: EthBlockPolicy<ST, SCT>,
+        block_policy: EthBlockPolicy<ST, SCT, CCT, CRT>,
         state_backend: SBT,
         ipc_config: EthTxPoolIpcConfig,
         soft_tx_expiry: Duration,
@@ -172,7 +172,17 @@ where
     async fn run(
         mut self,
         mut command_rx: mpsc::Receiver<
-            Vec<TxPoolCommand<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT>>,
+            Vec<
+                TxPoolCommand<
+                    ST,
+                    SCT,
+                    EthExecutionProtocol,
+                    EthBlockPolicy<ST, SCT, CCT, CRT>,
+                    SBT,
+                    CCT,
+                    CRT,
+                >,
+            >,
         >,
         event_tx: mpsc::Sender<MonadEvent<ST, SCT, EthExecutionProtocol>>,
     ) {
@@ -211,7 +221,15 @@ where
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
-    type Command = TxPoolCommand<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT>;
+    type Command = TxPoolCommand<
+        ST,
+        SCT,
+        EthExecutionProtocol,
+        EthBlockPolicy<ST, SCT, CCT, CRT>,
+        SBT,
+        CCT,
+        CRT,
+    >;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let _span = debug_span!("txpool exec").entered();
@@ -224,7 +242,7 @@ where
                 TxPoolCommand::BlockCommit(committed_blocks) => {
                     let _span = debug_span!("block commit").entered();
                     for committed_block in committed_blocks {
-                        BlockPolicy::<ST, SCT, EthExecutionProtocol, SBT>::update_committed_block(
+                        BlockPolicy::<ST, SCT, EthExecutionProtocol, SBT, CCT, CRT>::update_committed_block(
                             &mut self.block_policy,
                             &committed_block,
                         );
@@ -377,7 +395,7 @@ where
                 TxPoolCommand::Reset {
                     last_delay_committed_blocks,
                 } => {
-                    BlockPolicy::<ST, SCT, EthExecutionProtocol, SBT>::reset(
+                    BlockPolicy::<ST, SCT, EthExecutionProtocol, SBT, CCT, CRT>::reset(
                         &mut self.block_policy,
                         last_delay_committed_blocks.iter().collect(),
                     );

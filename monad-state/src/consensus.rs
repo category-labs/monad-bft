@@ -63,7 +63,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -100,7 +100,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     SBT: StateBackend<ST, SCT>,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
@@ -137,7 +137,7 @@ where
     pub(super) fn update(
         &mut self,
         event: ConsensusEvent<ST, SCT, EPT>,
-    ) -> Vec<WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+    ) -> Vec<WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         let live = match self.consensus {
             ConsensusMode::Live(live) => live,
             ConsensusMode::Sync {
@@ -321,6 +321,8 @@ where
             EPT,
             BPT,
             SBT,
+            CCT,
+            CRT,
         >,
     > {
         let Some(consensus) = self.try_build_state_wrapper() else {
@@ -424,7 +426,7 @@ where
         &mut self,
         author: NodeId<CertificateSignaturePubKey<ST>>,
         validated_proposal: ProposalMessage<ST, SCT, EPT>,
-    ) -> Vec<WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+    ) -> Vec<WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         let ConsensusMode::Live(mode) = self.consensus else {
             unreachable!("handle_validated_proposal when not live")
         };
@@ -503,7 +505,7 @@ where
         message: Unverified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>,
     ) -> Result<
         Verified<ST, Validated<ConsensusMessage<ST, SCT, EPT>>>,
-        Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>>,
+        Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>>,
     > {
         let verified_message = message
             .verify(epoch_manager, val_epoch_map, &sender.pubkey())
@@ -559,8 +561,8 @@ where
 
     fn filter_cmds(
         &self,
-        consensus_cmds: impl Iterator<Item = ConsensusCommand<ST, SCT, EPT, BPT, SBT>>,
-    ) -> impl Iterator<Item = ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+        consensus_cmds: impl Iterator<Item = ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>>,
+    ) -> impl Iterator<Item = ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         let role = self.get_role();
 
         consensus_cmds.filter(move |cmd| {
@@ -584,8 +586,8 @@ where
 
     pub(super) fn wrap(
         &mut self,
-        command: ConsensusCommand<ST, SCT, EPT, BPT, SBT>,
-    ) -> WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT> {
+        command: ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
+    ) -> WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT> {
         WrappedConsensusCommand {
             upcoming_leader_rounds: self
                 .try_build_state_wrapper()
@@ -596,19 +598,22 @@ where
     }
 }
 
-pub(super) struct WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT>
+pub(super) struct WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     upcoming_leader_rounds: Vec<Round>,
-    pub command: ConsensusCommand<ST, SCT, EPT, BPT, SBT>,
+    pub command: ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
 }
 
-impl<ST, SCT, EPT, BPT, SBT> From<WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT>>
+impl<ST, SCT, EPT, BPT, SBT, CCT, CRT>
+    From<WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>>
     for Vec<
         Command<
             MonadEvent<ST, SCT, EPT>,
@@ -618,22 +623,26 @@ impl<ST, SCT, EPT, BPT, SBT> From<WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT
             EPT,
             BPT,
             SBT,
+            CCT,
+            CRT,
         >,
     >
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
-    fn from(wrapped: WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT>) -> Self {
+    fn from(wrapped: WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>) -> Self {
         let WrappedConsensusCommand {
             upcoming_leader_rounds,
             command,
         } = wrapped;
 
-        let mut parent_cmds: Vec<Command<_, _, _, _, _, _, _>> = Vec::new();
+        let mut parent_cmds: Vec<Command<_, _, _, _, _, _, _, _, _>> = Vec::new();
 
         match command {
             ConsensusCommand::EnterRound(epoch, round) => {

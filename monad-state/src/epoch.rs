@@ -37,7 +37,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -62,7 +62,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -91,7 +91,7 @@ where
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT> From<EpochCommand<SCT>>
+impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> From<EpochCommand<SCT>>
     for Vec<
         Command<
             MonadEvent<ST, SCT, EPT>,
@@ -101,14 +101,18 @@ impl<ST, SCT, EPT, BPT, SBT> From<EpochCommand<SCT>>
             EPT,
             BPT,
             SBT,
+            CCT,
+            CRT,
         >,
     >
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     fn from(command: EpochCommand<SCT>) -> Self {
         match command {
