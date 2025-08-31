@@ -258,7 +258,7 @@ where
             let (vset, vmap) = validators
                 .get(&epoch)
                 .ok_or(validation::Error::ValidatorSetDataUnavailable)?;
-            let leader = election.get_leader(round, vset.get_members());
+            let leader = election.get_leader(round, epoch, vset.get_members());
             Ok((vset, vmap, leader))
         };
 
@@ -765,8 +765,6 @@ where
     pub locked_epoch_validators: Vec<ValidatorSetDataWithEpoch<SCT>>,
     pub key: ST::KeyPairType,
     pub certkey: SignatureCollectionKeyPairType<SCT>,
-    pub epoch_length: SeqNum,
-    pub epoch_start_delay: Round,
     pub beneficiary: [u8; 20],
     pub block_sync_override_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
 
@@ -817,8 +815,8 @@ where
         let val_epoch_map = ValidatorsEpochMapping::new(self.validator_set_factory);
 
         let epoch_manager = EpochManager::new(
-            self.epoch_length,
-            self.epoch_start_delay,
+            self.consensus_config.chain_config.get_epoch_length(),
+            self.consensus_config.chain_config.get_epoch_start_delay(),
             &self.forkpoint.get_epoch_starts(),
         );
 
@@ -939,8 +937,8 @@ where
                     .collect::<Vec<_>>();
 
                 if take_checkpoint {
-                    if let Some(checkpoint) = ConsensusChildState::new(self).checkpoint() {
-                        cmds.push(Command::CheckpointCommand(checkpoint));
+                    if let Some(checkpoint_cmd) = ConsensusChildState::new(self).checkpoint() {
+                        cmds.push(Command::ConfigFileCommand(checkpoint_cmd));
                     }
                 }
 
@@ -1439,7 +1437,7 @@ mod test {
             })
             .collect();
 
-        (forkpoint, validator_sets, WeightedRoundRobin::default())
+        (forkpoint, validator_sets, WeightedRoundRobin::new(Epoch(1)))
     }
 
     #[test]

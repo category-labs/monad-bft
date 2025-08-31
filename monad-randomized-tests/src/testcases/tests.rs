@@ -33,7 +33,7 @@ use monad_transformer::{
     GenericTransformer, LatencyTransformer, PartitionTransformer, RandLatencyTransformer,
     ReplayTransformer, TransformerReplayOrder, ID,
 };
-use monad_types::{NodeId, Round, SeqNum};
+use monad_types::{NodeId, SeqNum};
 use monad_updaters::{
     ledger::MockLedger, statesync::MockStateSyncExecutor, txpool::MockTxPoolExecutor,
     val_set::MockValSetUpdaterNop,
@@ -60,8 +60,6 @@ fn random_latency_test(latency_seed: u64) {
         SeqNum(4),                           // execution_delay
         Duration::from_millis(250),          // delta
         MockChainConfig::new(&CHAIN_PARAMS), // chain config
-        SeqNum(2000),                        // epoch_length
-        Round(50),                           // epoch_start_delay
         SeqNum(100),                         // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs
@@ -128,8 +126,6 @@ fn delayed_message_test(latency_seed: u64) {
         SeqNum(4),                                        // execution_delay
         Duration::from_millis(2),                         // delta
         MockChainConfig::new(&CHAIN_PARAMS_NO_VOTE_PACE), // chain config
-        SeqNum(2000),                                     // epoch_length
-        Round(50),                                        // epoch_start_delay
         SeqNum(100),                                      // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs

@@ -31,7 +31,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_types::{Balance, EthAccount, EthExecutionProtocol, EthHeader, Nonce};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_system_calls::SystemTransaction;
-use monad_types::{BlockId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_SEQ_NUM};
+use monad_types::{BlockId, Epoch, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_SEQ_NUM};
 use monad_validator::signature_collection::SignatureCollection;
 use sorted_vector_map::SortedVectorMap;
 use tracing::{trace, warn};
@@ -196,6 +196,7 @@ impl BlockTxnFees {
 struct CommittedBlock {
     block_id: BlockId,
     round: Round,
+    epoch: Epoch,
 
     nonces: BlockAccountNonce,
     fees: BlockTxnFees,
@@ -231,6 +232,12 @@ where
 
             _phantom: Default::default(),
         }
+    }
+
+    fn get_epoch(&self, seq_num: SeqNum) -> Option<Epoch> {
+        self.blocks
+            .get(&seq_num)
+            .map(|committed_block| committed_block.epoch)
     }
 
     fn get_nonce(&self, eth_address: &Address) -> Option<Nonce> {
@@ -298,6 +305,7 @@ where
                 CommittedBlock {
                     block_id: block.get_id(),
                     round: block.get_block_round(),
+                    epoch: block.get_epoch(),
                     nonces: BlockAccountNonce {
                         nonces: block.get_account_nonces(),
                     },
@@ -328,7 +336,6 @@ where
     // last execution-delay committed blocks
     committed_cache: CommittedBlkBuffer<ST, SCT>,
 
-    /// Cost for including transaction in the consensus
     execution_delay: SeqNum,
 
     /// Chain ID
@@ -408,6 +415,16 @@ where
 
     pub fn get_last_commit(&self) -> SeqNum {
         self.last_commit
+    }
+
+    pub fn get_last_commit_epoch(&self) -> Epoch {
+        if self.last_commit == GENESIS_SEQ_NUM {
+            Epoch(1)
+        } else {
+            self.committed_cache
+                .get_epoch(self.last_commit)
+                .expect("last committed block in committed cache")
+        }
     }
 
     fn get_block_index(
@@ -936,6 +953,7 @@ mod test {
         let block1 = CommittedBlock {
             block_id: BlockId(Hash(Default::default())),
             round: Round(0),
+            epoch: Epoch(1),
             nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address1, 1), (address2, 1)]),
             },
@@ -954,6 +972,7 @@ mod test {
         let block2 = CommittedBlock {
             block_id: BlockId(Hash(Default::default())),
             round: Round(0),
+            epoch: Epoch(1),
             nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address1, 2), (address3, 1)]),
             },
@@ -972,6 +991,7 @@ mod test {
         let block3 = CommittedBlock {
             block_id: BlockId(Hash(Default::default())),
             round: Round(0),
+            epoch: Epoch(1),
             nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address2, 2), (address3, 2)]),
             },
@@ -1033,6 +1053,7 @@ mod test {
         let block1 = CommittedBlock {
             block_id: BlockId(Hash(Default::default())),
             round: Round(0),
+            epoch: Epoch(1),
             nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address1, 1), (address2, 1)]),
             },
@@ -1051,6 +1072,7 @@ mod test {
         let block2 = CommittedBlock {
             block_id: BlockId(Hash(Default::default())),
             round: Round(0),
+            epoch: Epoch(1),
             nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address1, 2), (address3, 1)]),
             },
@@ -1069,6 +1091,7 @@ mod test {
         let block3 = CommittedBlock {
             block_id: BlockId(Hash(Default::default())),
             round: Round(0),
+            epoch: Epoch(1),
             nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address2, 2), (address3, 2)]),
             },

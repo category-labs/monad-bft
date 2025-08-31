@@ -32,12 +32,12 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason, EthTxPoolSnapshot};
-use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader};
+use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ExtractEthAddress, ProposedEthHeader};
 use monad_state_backend::{StateBackend, StateBackendError};
-use monad_system_calls::generate_system_calls;
-use monad_types::{Round, SeqNum};
+use monad_system_calls::{SystemTransactionGenerator, SYSTEM_SENDER_ETH_ADDRESS};
+use monad_types::{Epoch, NodeId, Round, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use self::{pending::PendingTxMap, tracked::TrackedTxMap, transaction::ValidEthTransaction};
 use crate::EthTxPoolEventTracker;
@@ -75,6 +75,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend<ST, SCT>,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
     CRT: ChainRevision,
 {
     pub fn new(
@@ -233,11 +234,14 @@ where
         proposal_byte_limit: u64,
         beneficiary: [u8; 20],
         timestamp_ns: u128,
+        node_id: NodeId<CertificateSignaturePubKey<ST>>,
+        epoch: Epoch,
         round_signature: RoundSignature<SCT::SignatureType>,
         extending_blocks: Vec<EthValidatedBlock<ST, SCT>>,
 
         block_policy: &EthBlockPolicy<ST, SCT>,
         state_backend: &SBT,
+        chain_config: &impl ChainConfig<CRT>,
     ) -> Result<ProposedExecutionInputs<EthExecutionProtocol>, StateBackendError> {
         info!(
             ?proposed_seq_num,
@@ -253,7 +257,16 @@ where
         // u64::MAX seconds is ~500 Billion years
         assert!(timestamp_seconds < u64::MAX.into());
 
-        let system_transactions = self.get_system_transactions();
+        let self_eth_address = node_id.pubkey().get_eth_address();
+        let system_transactions = self.get_system_transactions(
+            proposed_seq_num,
+            epoch,
+            self_eth_address,
+            &extending_blocks.iter().collect(),
+            block_policy,
+            state_backend,
+            chain_config,
+        )?;
         let system_txs_size: u64 = system_transactions
             .iter()
             .map(|tx| tx.length() as u64)
@@ -433,10 +446,56 @@ where
             .collect()
     }
 
-    fn get_system_transactions(&self) -> Vec<Recovered<TxEnvelope>> {
-        let sys_calls = generate_system_calls();
+    fn get_system_transactions(
+        &self,
+        proposed_seq_num: SeqNum,
+        proposed_epoch: Epoch,
+        block_author: Address,
+        extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
+        block_policy: &EthBlockPolicy<ST, SCT>,
+        state_backend: &SBT,
+        chain_config: &impl ChainConfig<CRT>,
+    ) -> Result<Vec<Recovered<TxEnvelope>>, StateBackendError> {
+        // TODO this should be inside SystemTransactionGenerator to prevent
+        // exposing SYSTEM_SENDER_ETH_ADDRESS outside the crate
+        let next_system_txn_nonce = *block_policy
+            .get_account_base_nonces(
+                proposed_seq_num,
+                state_backend,
+                extending_blocks,
+                [SYSTEM_SENDER_ETH_ADDRESS].iter(),
+            )?
+            .get(&SYSTEM_SENDER_ETH_ADDRESS)
+            .unwrap();
 
-        Vec::new()
+        let parent_block_epoch = {
+            if let Some(extending_block) = extending_blocks.last() {
+                extending_block.get_epoch()
+            } else {
+                assert_eq!(proposed_seq_num, block_policy.get_last_commit() + SeqNum(1));
+                block_policy.get_last_commit_epoch()
+            }
+        };
+
+        let sys_txns = SystemTransactionGenerator::generate_system_transactions(
+            proposed_seq_num,
+            proposed_epoch,
+            parent_block_epoch,
+            block_author,
+            next_system_txn_nonce,
+            chain_config,
+        );
+
+        debug!(
+            ?proposed_seq_num,
+            ?sys_txns,
+            "generated system transactions"
+        );
+
+        Ok(sys_txns
+            .into_iter()
+            .map(|sys_txn| sys_txn.into())
+            .collect_vec())
     }
 }
 
@@ -445,6 +504,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend<ST, SCT>,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
 {
     pub fn default_testing() -> Self {
         Self::new(

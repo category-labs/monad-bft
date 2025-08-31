@@ -27,7 +27,6 @@ use alloy_consensus::{
 use alloy_primitives::{Address, U256};
 use alloy_rlp::Encodable;
 use monad_chain_config::{
-    execution_revision::ExecutionChainParams,
     revision::{ChainParams, ChainRevision},
     ChainConfig,
 };
@@ -43,7 +42,9 @@ use monad_eth_block_policy::{
     compute_txn_max_value, validation::static_validate_transaction, EthBlockPolicy,
     EthValidatedBlock,
 };
-use monad_eth_types::{EthBlockBody, EthExecutionProtocol, Nonce, ProposedEthHeader};
+use monad_eth_types::{
+    EthBlockBody, EthExecutionProtocol, ExtractEthAddress, Nonce, ProposedEthHeader,
+};
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
 use monad_system_calls::{validator::SystemTransactionValidator, SystemTransaction};
@@ -81,6 +82,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend<ST, SCT>,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -110,24 +112,9 @@ where
 
         Self::validate_block_header(&header, &body, author_pubkey, chain_params)?;
 
-        let execution_chain_params = {
-            let timestamp_s: u64 = (header.timestamp_ns / 1_000_000_000)
-                .try_into()
-                // we don't assert because timestamp_ns is untrusted
-                .unwrap_or(u64::MAX);
-
-            chain_config
-                .get_execution_chain_revision(timestamp_s)
-                .execution_chain_params()
-        };
-
-        if let Ok((system_txns, validated_txns, nonces, txn_fees)) = Self::validate_block_body(
-            &header,
-            &body,
-            chain_config.chain_id(),
-            chain_params,
-            execution_chain_params,
-        ) {
+        if let Ok((system_txns, validated_txns, nonces, txn_fees)) =
+            Self::validate_block_body(&header, &body, chain_config)
+        {
             let block = ConsensusFullBlock::new(header, body)?;
             Ok(EthValidatedBlock {
                 block,
@@ -146,6 +133,7 @@ impl<ST, SCT> EthBlockValidator<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
 {
     fn validate_block_header(
         header: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
@@ -232,14 +220,30 @@ where
         Ok(())
     }
 
-    fn validate_block_body(
+    fn validate_block_body<CCT, CRT>(
         header: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
         body: &ConsensusBlockBody<EthExecutionProtocol>,
-        chain_id: u64,
-        chain_params: &ChainParams,
-        execution_chain_params: &ExecutionChainParams,
+        chain_config: &CCT,
     ) -> Result<(SystemTransactions, ValidatedTxns, NonceMap, TxnFeeMap), BlockValidationError>
+    where
+        CCT: ChainConfig<CRT>,
+        CRT: ChainRevision,
     {
+        let chain_params = chain_config
+            .get_chain_revision(header.block_round)
+            .chain_params();
+
+        let execution_chain_params = {
+            let timestamp_s: u64 = (header.timestamp_ns / 1_000_000_000)
+                .try_into()
+                // we don't assert because timestamp_ns is untrusted
+                .unwrap_or(u64::MAX);
+
+            chain_config
+                .get_execution_chain_revision(timestamp_s)
+                .execution_chain_params()
+        };
+
         let EthBlockBody {
             transactions,
             ommers,
@@ -275,6 +279,7 @@ where
             match SystemTransactionValidator::validate_and_extract_system_transactions(
                 header,
                 recovered_txns,
+                chain_config,
             ) {
                 Ok((system_txns, eth_txns)) => (system_txns, eth_txns),
                 Err(err) => {
@@ -304,7 +309,7 @@ where
         for eth_txn in &eth_txns {
             if static_validate_transaction(
                 eth_txn,
-                chain_id,
+                chain_config.chain_id(),
                 chain_params.proposal_gas_limit,
                 execution_chain_params.max_code_size,
             )
@@ -361,6 +366,7 @@ mod test {
 
     use alloy_consensus::Signed;
     use alloy_primitives::{PrimitiveSignature, B256};
+    use monad_chain_config::{revision::ChainParams, MockChainConfig};
     use monad_consensus_types::{
         payload::{ConsensusBlockBodyId, ConsensusBlockBodyInner, RoundSignature},
         quorum_certificate::QuorumCertificate,
@@ -423,16 +429,7 @@ mod test {
             EthBlockValidator::<NopSignature, MockSignatures<NopSignature>>::validate_block_body(
                 &header,
                 &payload,
-                1337,
-                &ChainParams {
-                    tx_limit: 10,
-                    proposal_gas_limit: PROPOSAL_GAS_LIMIT,
-                    proposal_byte_limit: PROPOSAL_SIZE_LIMIT,
-                    vote_pace: Duration::ZERO,
-                },
-                &ExecutionChainParams {
-                    max_code_size: 0x6000,
-                },
+                &MockChainConfig::DEFAULT,
             );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
     }
@@ -459,16 +456,7 @@ mod test {
             EthBlockValidator::<NopSignature, MockSignatures<NopSignature>>::validate_block_body(
                 &header,
                 &payload,
-                1337,
-                &ChainParams {
-                    tx_limit: 10,
-                    proposal_gas_limit: PROPOSAL_GAS_LIMIT,
-                    proposal_byte_limit: PROPOSAL_SIZE_LIMIT,
-                    vote_pace: Duration::ZERO,
-                },
-                &ExecutionChainParams {
-                    max_code_size: 0x6000,
-                },
+                &MockChainConfig::DEFAULT,
             );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
     }
@@ -495,16 +483,12 @@ mod test {
             EthBlockValidator::<NopSignature, MockSignatures<NopSignature>>::validate_block_body(
                 &header,
                 &payload,
-                1337,
-                &ChainParams {
+                &MockChainConfig::new(&ChainParams {
                     tx_limit: 1,
                     proposal_gas_limit: PROPOSAL_GAS_LIMIT,
                     proposal_byte_limit: PROPOSAL_SIZE_LIMIT,
                     vote_pace: Duration::ZERO,
-                },
-                &ExecutionChainParams {
-                    max_code_size: 0x6000,
-                },
+                }),
             );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
     }
@@ -536,16 +520,7 @@ mod test {
             EthBlockValidator::<NopSignature, MockSignatures<NopSignature>>::validate_block_body(
                 &header,
                 &payload,
-                1337,
-                &ChainParams {
-                    tx_limit: 10,
-                    proposal_gas_limit: PROPOSAL_GAS_LIMIT,
-                    proposal_byte_limit: PROPOSAL_SIZE_LIMIT,
-                    vote_pace: Duration::ZERO,
-                },
-                &ExecutionChainParams {
-                    max_code_size: 0x6000,
-                },
+                &MockChainConfig::DEFAULT,
             );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
     }
@@ -570,16 +545,7 @@ mod test {
             EthBlockValidator::<NopSignature, MockSignatures<NopSignature>>::validate_block_body(
                 &header,
                 &payload,
-                1337,
-                &ChainParams {
-                    tx_limit: 10,
-                    proposal_gas_limit: PROPOSAL_GAS_LIMIT,
-                    proposal_byte_limit: PROPOSAL_SIZE_LIMIT,
-                    vote_pace: Duration::ZERO,
-                },
-                &ExecutionChainParams {
-                    max_code_size: 0x6000,
-                },
+                &MockChainConfig::DEFAULT,
             );
         assert!(result.is_ok());
 
@@ -625,16 +591,7 @@ mod test {
             EthBlockValidator::<NopSignature, MockSignatures<NopSignature>>::validate_block_body(
                 &header,
                 &payload,
-                1337,
-                &ChainParams {
-                    tx_limit: 10,
-                    proposal_gas_limit: PROPOSAL_GAS_LIMIT,
-                    proposal_byte_limit: PROPOSAL_SIZE_LIMIT,
-                    vote_pace: Duration::ZERO,
-                },
-                &ExecutionChainParams {
-                    max_code_size: 0x6000,
-                },
+                &MockChainConfig::DEFAULT,
             );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
     }

@@ -145,8 +145,6 @@ where
                 )
                 .unwrap(),
 
-                epoch_length: self.state_config.epoch_length,
-                epoch_start_delay: self.state_config.epoch_start_delay,
                 beneficiary: self.state_config.beneficiary,
                 block_sync_override_peers: self.state_config.block_sync_override_peers.clone(),
 
@@ -387,8 +385,6 @@ where
             key,
             certkey,
 
-            epoch_length: SeqNum(2000),
-            epoch_start_delay: Round(50),
             beneficiary: Default::default(),
             block_sync_override_peers: Default::default(),
 

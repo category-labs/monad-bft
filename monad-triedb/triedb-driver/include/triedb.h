@@ -81,6 +81,28 @@ uint64_t triedb_latest_verified_block(triedb *);
 // returns MAX if doesn't exist
 uint64_t triedb_earliest_finalized_block(triedb *);
 
+#pragma pack(push, 1)
+
+typedef struct validator_data
+{
+    uint8_t secp_pubkey[33];
+    uint8_t bls_pubkey[48];
+    // big endian u256
+    uint8_t stake[32];
+} validator_data;
+
+typedef struct validator_set
+{
+    struct validator_data *validators;
+    uint64_t length;
+} validator_set;
+
+#pragma pack(pop)
+
+void free_valset(validator_set*);
+
+validator_set* read_valset(triedb *, size_t block_num, uint64_t requested_epoch);
+
 #ifdef __cplusplus
 }
 #endif

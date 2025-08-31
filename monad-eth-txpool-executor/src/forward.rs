@@ -27,6 +27,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_txpool::EthTxPool;
+use monad_eth_types::ExtractEthAddress;
 use monad_state_backend::StateBackend;
 use monad_validator::signature_collection::SignatureCollection;
 use pin_project::pin_project;
@@ -166,6 +167,7 @@ impl EthTxPoolForwardingManagerProjected<'_> {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         SBT: StateBackend<ST, SCT>,
+        CertificateSignaturePubKey<ST>: ExtractEthAddress,
         CRT: ChainRevision,
     {
         let Some(forwardable_txs) =

@@ -19,10 +19,12 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include <category/core/byte_string.hpp>
 #include <category/core/nibble.h>
+#include <category/execution/monad/staking/read_valset.hpp>
 #include <category/mpt/db.hpp>
 #include <category/mpt/ondisk_db_config.hpp>
 #include <category/mpt/traverse.hpp>
@@ -430,4 +432,32 @@ uint64_t triedb_earliest_finalized_block(triedb *db)
 {
     uint64_t earliest_finalized_block = db->db_.get_earliest_version();
     return earliest_finalized_block;
+}
+
+validator_set* alloc_valset(uint64_t length)
+{
+    auto *validators = new validator_data[length];
+    return new validator_set{.validators = validators, .length = length};
+}
+
+void free_valset(validator_set* valset) {
+    delete[] valset->validators;
+    delete valset;
+}
+
+validator_set* read_valset(triedb *db, size_t block_num, uint64_t requested_epoch) {
+    auto ret = monad::staking::read_valset(db->db_, block_num, requested_epoch);
+    if (!ret.has_value()) {
+        return nullptr;
+    }
+
+    uint64_t length = ret.value().size();
+    auto valset = alloc_valset(length);
+    for (uint64_t i = 0; i < length; i++) {
+        std::memcpy(valset->validators[i].secp_pubkey, ret.value()[i].secp_pubkey, 33);
+        std::memcpy(valset->validators[i].bls_pubkey, ret.value()[i].bls_pubkey, 48);
+        std::memcpy(valset->validators[i].stake, ret.value()[i].stake.bytes, 32);
+    }
+
+    return valset;
 }

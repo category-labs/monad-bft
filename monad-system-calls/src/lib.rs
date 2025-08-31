@@ -19,84 +19,206 @@
 //! be used which can then be converted into SystemTransaction(s) and
 //! added to the block.
 
-use alloy_primitives::{Address, B256, Bytes, hex};
-use monad_consensus_types::block::ConsensusBlockHeader;
-use monad_crypto::certificate_signature::{
-    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+use alloy_consensus::{
+    SignableTransaction, Transaction, TxEnvelope, TxLegacy, transaction::Recovered,
 };
-use monad_eth_types::EthExecutionProtocol;
-use monad_validator::signature_collection::SignatureCollection;
+use alloy_primitives::{Address, B256, U256, hex};
+use alloy_rlp::Encodable;
+use alloy_signer::SignerSync;
+use alloy_signer_local::PrivateKeySigner;
+use monad_chain_config::{ChainConfig, revision::ChainRevision};
+use monad_types::{Epoch, GENESIS_SEQ_NUM, SeqNum};
+use staking_contract::{StakingContractCall, StakingContractTransaction};
+use validator::SystemTransactionError;
 
+pub mod staking_contract;
 pub mod validator;
 
 // Private key used to sign system transactions
 const SYSTEM_SENDER_PRIV_KEY: B256 = B256::new(hex!(
     "b0358e6d701a955d9926676f227e40172763296b317ff554e49cdf2c2c35f8a7"
 ));
-const SYSTEM_SENDER_ETH_ADDRESS: Address =
+pub const SYSTEM_SENDER_ETH_ADDRESS: Address =
     Address::new(hex!("0x6f49a8F621353f12378d0046E7d7e4b9B249DC9e"));
 
-// A system call is a destination address, system call function selector
-// and function input data
-pub struct SystemCall(SystemCallInner);
+fn sign_with_system_sender(transaction: TxLegacy) -> Recovered<TxEnvelope> {
+    let signer = PrivateKeySigner::from_bytes(&SYSTEM_SENDER_PRIV_KEY).unwrap();
+    let signature = signer
+        .sign_hash_sync(&transaction.signature_hash())
+        .unwrap();
+    let signed = transaction.into_signed(signature);
 
-enum SystemCallInner {}
+    Recovered::new_unchecked(TxEnvelope::Legacy(signed), SYSTEM_SENDER_ETH_ADDRESS)
+}
+
+enum SystemCall {
+    StakingContractCall(StakingContractCall),
+}
 
 impl SystemCall {
-    fn get_dest_address(&self) -> Address {
-        Address::new([0_u8; 20])
+    // Used to validate inputs of user transactions in RPC and TxPool
+    pub fn is_restricted_system_call(txn: &Recovered<TxEnvelope>) -> bool {
+        StakingContractCall::is_restricted_staking_contract_call(txn)
     }
 
-    fn get_function_selector(&self) -> Bytes {
-        Bytes::new()
+    // Used to validate inputs of the expected system transactions
+    pub fn validate_system_transaction_input(
+        self,
+        sys_txn: Recovered<TxEnvelope>,
+    ) -> Result<SystemTransaction, SystemTransactionError> {
+        match self {
+            Self::StakingContractCall(staking_sys_call) => staking_sys_call
+                .validate_system_transaction_input(sys_txn)
+                .map(SystemTransaction::StakingContractTransaction),
+        }
     }
 
-    fn get_input_data(&self) -> Bytes {
-        Bytes::new()
+    fn into_signed_transaction(self, chain_id: u64, nonce: u64) -> SystemTransaction {
+        match self {
+            Self::StakingContractCall(staking_sys_call) => {
+                SystemTransaction::StakingContractTransaction(
+                    staking_sys_call.into_signed_transaction(chain_id, nonce),
+                )
+            }
+        }
     }
-}
-
-// Used by a round leader to generate system calls for the proposing block
-pub fn generate_system_calls() -> Vec<SystemCall> {
-    Vec::new()
-}
-
-// Used by a validator to generate expected system calls for a block
-fn generate_system_calls_from_header<ST, SCT>(
-    block_header: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
-) -> Vec<SystemCall>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-{
-    Vec::new()
 }
 
 #[derive(Debug, Clone)]
-pub struct SystemTransaction(SystemTransactionInner);
-
-#[derive(Debug, Clone)]
-enum SystemTransactionInner {}
+pub enum SystemTransaction {
+    StakingContractTransaction(StakingContractTransaction),
+}
 
 impl SystemTransaction {
     pub fn signer(&self) -> Address {
-        SYSTEM_SENDER_ETH_ADDRESS
-    }
+        let signer = match &self {
+            Self::StakingContractTransaction(staking_transaction) => {
+                staking_transaction.inner().signer()
+            }
+        };
+        assert_eq!(signer, SYSTEM_SENDER_ETH_ADDRESS);
 
+        signer
+    }
     pub fn nonce(&self) -> u64 {
-        // TODO use actual nonce from transaction
-        0
+        match &self {
+            Self::StakingContractTransaction(staking_transaction) => {
+                staking_transaction.inner().nonce()
+            }
+        }
     }
 
     pub fn length(&self) -> usize {
-        // TODO use actual rlp length
-        0
+        match &self {
+            Self::StakingContractTransaction(staking_transaction) => {
+                staking_transaction.inner().length()
+            }
+        }
     }
 }
 
-impl From<SystemCall> for SystemTransaction {
-    fn from(sys_call: SystemCall) -> Self {
-        match sys_call {}
+impl From<SystemTransaction> for Recovered<TxEnvelope> {
+    fn from(sys_txn: SystemTransaction) -> Self {
+        match sys_txn {
+            SystemTransaction::StakingContractTransaction(staking_txn) => staking_txn.into_inner(),
+        }
+    }
+}
+
+fn generate_system_calls<CCT, CRT>(
+    proposed_seq_num: SeqNum,
+    proposed_epoch: Epoch,
+    parent_block_epoch: Epoch,
+    block_author_address: Address,
+    chain_config: &CCT,
+) -> Vec<SystemCall>
+where
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
+{
+    let epoch_length = chain_config.get_epoch_length();
+    let staking_activation = chain_config.get_staking_activation();
+
+    let mut system_calls = Vec::new();
+
+    // If staking activates in Epoch N, generate snapshot transactions
+    // starting at the boundary of Epoch N-1
+    let generate_snapshot_txn = proposed_seq_num.is_epoch_end(epoch_length)
+        && proposed_seq_num.get_locked_epoch(epoch_length) >= staking_activation;
+    if generate_snapshot_txn {
+        system_calls.push(SystemCall::StakingContractCall(
+            StakingContractCall::Snapshot,
+        ));
+    }
+
+    // If staking activates in Epoch N, generate epoch change transactions
+    // starting at Epoch N-1
+    // Special case: If staking starts at Epoch 2, generate epoch change
+    // as the first transaction in Epoch 1
+    let is_first_epoch_block =
+        parent_block_epoch != proposed_epoch && proposed_epoch >= staking_activation - Epoch(1);
+    let is_genesis_block =
+        proposed_seq_num == GENESIS_SEQ_NUM + SeqNum(1) && staking_activation == Epoch(2);
+    let generate_epoch_change_txn = is_first_epoch_block || is_genesis_block;
+    if generate_epoch_change_txn {
+        system_calls.push(SystemCall::StakingContractCall(
+            StakingContractCall::EpochChange {
+                new_epoch: proposed_epoch,
+            },
+        ));
+    }
+
+    // If staking activates in Epoch N, generate reward transactions
+    // starting at the first block in Epoch N
+    let generate_reward_txn = proposed_epoch >= staking_activation;
+    if generate_reward_txn {
+        system_calls.push(SystemCall::StakingContractCall(
+            StakingContractCall::Reward {
+                block_author_address,
+                block_reward: U256::from(StakingContractCall::MON)
+                    * U256::from(StakingContractCall::BLOCK_REWARD_MON),
+            },
+        ));
+    }
+
+    system_calls
+}
+
+#[derive(Clone, Debug)]
+pub struct SystemTransactionGenerator;
+
+impl SystemTransactionGenerator {
+    // Used by a round leader to generate system calls for the proposing block
+    pub fn generate_system_transactions<CCT, CRT>(
+        proposed_seq_num: SeqNum,
+        proposed_epoch: Epoch,
+        parent_block_epoch: Epoch,
+        block_author: Address,
+        mut next_system_txn_nonce: u64,
+        chain_config: &CCT,
+    ) -> Vec<SystemTransaction>
+    where
+        CCT: ChainConfig<CRT>,
+        CRT: ChainRevision,
+    {
+        let system_calls = generate_system_calls(
+            proposed_seq_num,
+            proposed_epoch,
+            parent_block_epoch,
+            block_author,
+            chain_config,
+        );
+
+        system_calls
+            .into_iter()
+            .map(|sys_call| {
+                let system_txn = sys_call
+                    .into_signed_transaction(chain_config.chain_id(), next_system_txn_nonce);
+                next_system_txn_nonce += 1;
+
+                system_txn
+            })
+            .collect()
     }
 }
 

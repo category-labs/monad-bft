@@ -26,7 +26,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_types::{Balance, EthAccount, EthHeader, Nonce};
 use monad_types::{
-    BlockId, Round, SeqNum, Stake, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM,
+    BlockId, Epoch, Round, SeqNum, Stake, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM,
 };
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use serde::{Deserialize, Serialize};
@@ -329,11 +329,14 @@ where
             .copied()
     }
 
-    fn read_next_valset(
+    fn read_valset_at_block(
         &self,
         _block_num: SeqNum,
+        _requested_epoch: Epoch,
     ) -> Vec<(SCT::NodeIdPubKey, SignatureCollectionPubKeyType<SCT>, Stake)> {
-        unimplemented!()
+        // TODO validator set updates for tests are done in-line in
+        // MockValSetUpdater(s) right now. should be done from here instead
+        unimplemented!("can't fetch validator set from InMemoryState")
     }
 
     fn total_db_lookups(&self) -> u64 {

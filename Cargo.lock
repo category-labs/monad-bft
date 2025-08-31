@@ -5230,6 +5230,8 @@ dependencies = [
  "alloy-consensus",
  "alloy-primitives",
  "alloy-rlp",
+ "monad-crypto",
+ "monad-secp",
  "monad-types",
  "serde",
 ]
@@ -5833,8 +5835,10 @@ dependencies = [
  "alloy-consensus",
  "alloy-eips",
  "alloy-primitives",
+ "alloy-rlp",
  "alloy-signer",
  "alloy-signer-local",
+ "monad-chain-config",
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-testutil",
@@ -5937,10 +5941,15 @@ dependencies = [
 name = "monad-triedb"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "bindgen 0.71.1",
  "cmake",
  "futures",
+ "monad-bls",
+ "monad-crypto",
  "monad-cxx",
+ "monad-secp",
+ "monad-types",
  "tracing",
 ]
 
@@ -6042,6 +6051,7 @@ dependencies = [
  "bytes",
  "futures",
  "monad-blocksync",
+ "monad-bls",
  "monad-chain-config",
  "monad-consensus-types",
  "monad-crypto",
@@ -6051,6 +6061,7 @@ dependencies = [
  "monad-executor",
  "monad-executor-glue",
  "monad-node-config",
+ "monad-secp",
  "monad-state-backend",
  "monad-tfm",
  "monad-types",

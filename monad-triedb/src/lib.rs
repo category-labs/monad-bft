@@ -15,16 +15,21 @@
 
 use std::{
     cmp::Ordering,
+    collections::HashSet,
     ffi::CString,
     path::Path,
-    ptr::{null, null_mut},
+    ptr::{null, null_mut, slice_from_raw_parts},
     sync::{
         atomic::{AtomicUsize, Ordering::SeqCst},
         Arc,
     },
 };
 
+use alloy_primitives::U256;
 use futures::channel::oneshot::Sender;
+use monad_bls::BlsPubKey;
+use monad_crypto::certificate_signature::PubKey;
+use monad_types::{Epoch, SeqNum, Stake};
 use tracing::{debug, error};
 
 #[allow(dead_code, non_camel_case_types, non_upper_case_globals)]
@@ -461,6 +466,62 @@ impl TriedbHandle {
         } else {
             Some(maybe_earliest_finalized_block)
         }
+    }
+
+    pub fn read_valset_at_block(
+        &self,
+        block_num: SeqNum,
+        requested_epoch: Epoch,
+    ) -> Vec<(monad_secp::PubKey, BlsPubKey, Stake)> {
+        let result_ptr = unsafe {
+            bindings::read_valset(
+                self.db_ptr,
+                block_num
+                    .0
+                    .try_into()
+                    .expect("block_num doesn't fit in usize"),
+                requested_epoch.0,
+            )
+        };
+
+        // assert read valset didn't fail
+        assert!(!result_ptr.is_null());
+
+        let val_set_ptr = unsafe { (*result_ptr).validators };
+        let val_set_length: usize = unsafe {
+            (*result_ptr)
+                .length
+                .try_into()
+                .expect("val_set_length doesn't fit in usize")
+        };
+        let val_set = unsafe {
+            slice_from_raw_parts(val_set_ptr, val_set_length)
+                .as_ref()
+                .unwrap()
+        };
+
+        let mut validator_set = Vec::new();
+        for validator_data in val_set {
+            let secp_pubkey =
+                monad_secp::PubKey::from_bytes(validator_data.secp_pubkey.as_slice()).unwrap();
+            let bls_pubkey = BlsPubKey::from_bytes(validator_data.bls_pubkey.as_slice()).unwrap();
+            let stake = Stake::from(U256::from_be_bytes(validator_data.stake));
+            validator_set.push((secp_pubkey, bls_pubkey, stake));
+        }
+
+        unsafe { bindings::free_valset(result_ptr) };
+
+        let mut unique_secp_keys = HashSet::new();
+        let mut unique_bls_keys = HashSet::new();
+        for (secp_key, bls_key, _) in &validator_set {
+            assert!(!unique_secp_keys.contains(secp_key));
+            unique_secp_keys.insert(*secp_key);
+
+            assert!(!unique_bls_keys.contains(bls_key));
+            unique_bls_keys.insert(*bls_key);
+        }
+
+        validator_set
     }
 }
 

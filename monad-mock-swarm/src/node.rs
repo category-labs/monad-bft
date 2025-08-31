@@ -134,8 +134,6 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 state_backend: self.state_builder.state_backend,
                 key: self.state_builder.key,
                 certkey: self.state_builder.certkey,
-                epoch_length: self.state_builder.epoch_length,
-                epoch_start_delay: self.state_builder.epoch_start_delay,
                 beneficiary: self.state_builder.beneficiary,
                 forkpoint: self.state_builder.forkpoint,
                 locked_epoch_validators: self.state_builder.locked_epoch_validators,

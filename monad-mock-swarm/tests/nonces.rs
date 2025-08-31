@@ -138,6 +138,9 @@ mod test {
         num_nodes: u16,
         existing_accounts: impl IntoIterator<Item = Address>,
     ) -> Nodes<EthSwarm> {
+        let epoch_length = SeqNum(2000);
+        let chain_config =
+            MockChainConfig::new_with_epoch_params(&CHAIN_PARAMS, epoch_length, Round(50));
         let execution_delay = SeqNum(4);
 
         let existing_nonces: BTreeMap<_, _> =
@@ -164,8 +167,6 @@ mod test {
             execution_delay, // execution_delay
             CONSENSUS_DELTA, // delta
             chain_config,    // chain config
-            SeqNum(2000),    // epoch_length
-            Round(50),       // epoch_start_delay
             SeqNum(100),     // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
@@ -183,7 +184,7 @@ mod test {
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockValSetUpdaterNop::new(validators.validators.clone(), SeqNum(2000)),
+                        MockValSetUpdaterNop::new(validators.validators.clone(), epoch_length),
                         MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
                         MockEthLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(

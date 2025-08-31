@@ -36,7 +36,7 @@ use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_state::VerifiedMonadMessage;
 use monad_types::NodeId;
 use monad_updaters::{
-    checkpoint::MockCheckpoint, ledger::MockableLedger, loopback::LoopbackExecutor,
+    config_file::MockConfigFile, ledger::MockableLedger, loopback::LoopbackExecutor,
     statesync::MockableStateSync, timestamp::TimestampAdjuster, txpool::MockableTxPool,
     val_set::MockableValSetUpdater,
 };
@@ -46,8 +46,8 @@ use crate::swarm_relation::SwarmRelation;
 
 pub struct MockExecutor<S: SwarmRelation> {
     ledger: S::Ledger,
-    checkpoint:
-        MockCheckpoint<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>,
+    config_file:
+        MockConfigFile<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>,
     val_set: S::ValSetUpdater,
     loopback: LoopbackExecutor<
         MonadEvent<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>,
@@ -203,7 +203,7 @@ impl<S: SwarmRelation> MockExecutor<S> {
         tick: Duration,
     ) -> Self {
         Self {
-            checkpoint: Default::default(),
+            config_file: Default::default(),
             ledger,
             val_set,
             txpool,
@@ -222,10 +222,7 @@ impl<S: SwarmRelation> MockExecutor<S> {
         &self,
     ) -> Option<Checkpoint<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>>
     {
-        self.checkpoint
-            .checkpoint
-            .as_ref()
-            .map(|c| c.checkpoint.clone())
+        self.config_file.checkpoint.clone()
     }
 
     pub fn next_round_timeout(&self) -> Option<RoundTimer> {
@@ -328,7 +325,7 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
             router_cmds,
             timer_cmds,
             ledger_cmds,
-            checkpoint_cmds,
+            config_file_cmds,
             val_set_cmds,
             timestamp_cmds,
             txpool_cmds,
@@ -370,7 +367,7 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
 
         self.ledger.exec(ledger_cmds);
         self.txpool.exec(txpool_cmds);
-        self.checkpoint.exec(checkpoint_cmds);
+        self.config_file.exec(config_file_cmds);
         self.val_set.exec(val_set_cmds);
         self.loopback.exec(loopback_cmds);
         self.statesync.exec(statesync_cmds);

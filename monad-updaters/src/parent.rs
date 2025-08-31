@@ -28,7 +28,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
-    CheckpointCommand, Command, ConfigReloadCommand, ControlPanelCommand, LedgerCommand,
+    Command, ConfigFileCommand, ConfigReloadCommand, ControlPanelCommand, LedgerCommand,
     LoopbackCommand, RouterCommand, StateSyncCommand, TimerCommand, TimestampCommand,
     TxPoolCommand, ValSetCommand,
 };
@@ -38,7 +38,7 @@ use monad_validator::signature_collection::SignatureCollection;
 
 const GAUGE_PARENT_TOTAL_EXEC_US: &str = "monad.executor.parent.total_exec_us";
 const GAUGE_LEDGER_TOTAL_EXEC_US: &str = "monad.executor.ledger.total_exec_us";
-const GAUGE_CHECKPOINT_TOTAL_EXEC_US: &str = "monad.executor.checkpoint.total_exec_us";
+const GAUGE_CONFIG_FILE_TOTAL_EXEC_US: &str = "monad.executor.config_file.total_exec_us";
 const GAUGE_TXPOOL_TOTAL_EXEC_US: &str = "monad.executor.txpool.total_exec_us";
 const GAUGE_ROUTER_TOTAL_EXEC_US: &str = "monad.executor.router.total_exec_us";
 const GAUGE_STATESYNC_TOTAL_EXEC_US: &str = "monad.executor.statesync.total_exec_us";
@@ -58,7 +58,7 @@ pub struct ParentExecutor<R, T, L, C, V, TS, TP, CP, LO, SS, CL> {
     pub router: R,
     pub timer: T,
     pub ledger: L,
-    pub checkpoint: C,
+    pub config_file: C,
     pub val_set: V,
     pub timestamp: TS,
     pub txpool: TP,
@@ -75,7 +75,7 @@ where
     RE: Executor<Command = RouterCommand<ST, OM>>,
     TE: Executor<Command = TimerCommand<E>>,
     LE: Executor<Command = LedgerCommand<ST, SCT, EPT>>,
-    CE: Executor<Command = CheckpointCommand<ST, SCT, EPT>>,
+    CE: Executor<Command = ConfigFileCommand<ST, SCT, EPT>>,
     SE: Executor<Command = ValSetCommand>,
     TSE: Executor<Command = TimestampCommand>,
 
@@ -100,7 +100,7 @@ where
             router_cmds,
             timer_cmds,
             ledger_cmds,
-            checkpoint_cmds,
+            config_file_cmds,
             val_set_cmds,
             timestamp_cmds,
             txpool_cmds,
@@ -117,8 +117,8 @@ where
         guard
             .metrics
             .record(GAUGE_LEDGER_TOTAL_EXEC_US, || self.ledger.exec(ledger_cmds));
-        guard.metrics.record(GAUGE_CHECKPOINT_TOTAL_EXEC_US, || {
-            self.checkpoint.exec(checkpoint_cmds)
+        guard.metrics.record(GAUGE_CONFIG_FILE_TOTAL_EXEC_US, || {
+            self.config_file.exec(config_file_cmds)
         });
         self.val_set.exec(val_set_cmds);
         self.timestamp.exec(timestamp_cmds);
@@ -139,7 +139,7 @@ where
             .chain(self.router.metrics())
             .chain(self.timer.metrics())
             .chain(self.ledger.metrics())
-            .chain(self.checkpoint.metrics())
+            .chain(self.config_file.metrics())
             .chain(self.val_set.metrics())
             .chain(self.timestamp.metrics())
             .chain(self.txpool.metrics())

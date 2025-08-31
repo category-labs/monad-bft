@@ -25,7 +25,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_mock_swarm::{mock_swarm::Nodes, swarm_relation::SwarmRelation};
 use monad_state::{Forkpoint, MonadStateBuilder};
-use monad_types::{ExecutionProtocol, Round, SeqNum};
+use monad_types::{ExecutionProtocol, SeqNum};
 use monad_updaters::ledger::MockableLedger;
 use monad_validator::{signature_collection::SignatureCollection, validator_set::ValidatorSetType};
 
@@ -43,8 +43,6 @@ pub fn make_state_configs<S: SwarmRelation>(
     execution_delay: SeqNum,
     delta: Duration,
     chain_config: S::ChainConfigType,
-    epoch_length: SeqNum,
-    epoch_start_delay: Round,
     statesync_threshold: SeqNum,
 ) -> Vec<
     MonadStateBuilder<
@@ -104,8 +102,6 @@ pub fn make_state_configs<S: SwarmRelation>(
             key,
             certkey,
 
-            epoch_length,
-            epoch_start_delay,
             beneficiary: Default::default(),
             block_sync_override_peers: Default::default(),
 

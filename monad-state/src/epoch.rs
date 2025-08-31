@@ -16,13 +16,15 @@
 use std::marker::PhantomData;
 
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
-use monad_consensus_types::{block::BlockPolicy, block_validator::BlockValidator};
-use monad_crypto::certificate_signature::{
-    CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
+use monad_consensus_types::{
+    block::BlockPolicy, block_validator::BlockValidator, validator_data::ValidatorSetDataWithEpoch,
 };
-use monad_executor_glue::{Command, MonadEvent, RouterCommand, ValidatorEvent};
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
+use monad_executor_glue::{Command, ConfigFileCommand, MonadEvent, RouterCommand, ValidatorEvent};
 use monad_state_backend::StateBackend;
-use monad_types::{Epoch, ExecutionProtocol, NodeId, Stake};
+use monad_types::ExecutionProtocol;
 use monad_validator::{
     signature_collection::SignatureCollection, validator_mapping::ValidatorMapping,
     validator_set::ValidatorSetTypeFactory, validators_epoch_mapping::ValidatorsEpochMapping,
@@ -47,11 +49,11 @@ where
     _phantom: PhantomData<(ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT)>,
 }
 
-pub(super) enum EpochCommand<PT>
+pub(super) enum EpochCommand<SCT>
 where
-    PT: PubKey,
+    SCT: SignatureCollection,
 {
-    AddEpochValidatorSet(Epoch, Vec<(NodeId<PT>, Stake)>),
+    AddEpochValidatorSet(ValidatorSetDataWithEpoch<SCT>),
 }
 
 impl<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
@@ -75,10 +77,7 @@ where
             _phantom: PhantomData,
         }
     }
-    pub(super) fn update(
-        &mut self,
-        event: ValidatorEvent<SCT>,
-    ) -> Vec<EpochCommand<SCT::NodeIdPubKey>> {
+    pub(super) fn update(&mut self, event: ValidatorEvent<SCT>) -> Vec<EpochCommand<SCT>> {
         match event {
             ValidatorEvent::UpdateValidators(vset) => {
                 self.val_epoch_map.insert(
@@ -86,16 +85,13 @@ where
                     vset.validators.get_stakes(),
                     ValidatorMapping::new(vset.validators.get_cert_pubkeys()),
                 );
-                vec![EpochCommand::AddEpochValidatorSet(
-                    vset.epoch,
-                    vset.validators.get_stakes(),
-                )]
+                vec![EpochCommand::AddEpochValidatorSet(vset)]
             }
         }
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT> From<EpochCommand<CertificateSignaturePubKey<ST>>>
+impl<ST, SCT, EPT, BPT, SBT> From<EpochCommand<SCT>>
     for Vec<
         Command<
             MonadEvent<ST, SCT, EPT>,
@@ -114,15 +110,18 @@ where
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend<ST, SCT>,
 {
-    fn from(command: EpochCommand<CertificateSignaturePubKey<ST>>) -> Self {
+    fn from(command: EpochCommand<SCT>) -> Self {
         match command {
-            EpochCommand::AddEpochValidatorSet(epoch, validator_set) => {
-                vec![Command::RouterCommand(
-                    RouterCommand::AddEpochValidatorSet {
-                        epoch,
-                        validator_set,
-                    },
-                )]
+            EpochCommand::AddEpochValidatorSet(validator_set_data) => {
+                vec![
+                    Command::RouterCommand(RouterCommand::AddEpochValidatorSet {
+                        epoch: validator_set_data.epoch,
+                        validator_set: validator_set_data.validators.get_stakes(),
+                    }),
+                    Command::ConfigFileCommand(ConfigFileCommand::ValidatorSetData {
+                        validator_set_data,
+                    }),
+                ]
             }
         }
     }

@@ -27,6 +27,7 @@ use alloy_rlp::{Decodable, Encodable};
 use chrono::Utc;
 use clap::CommandFactory;
 use futures_util::{FutureExt, StreamExt};
+use monad_chain_config::ChainConfig;
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     metrics::Metrics,
@@ -64,7 +65,7 @@ use monad_triedb_cache::StateBackendCache;
 use monad_triedb_utils::TriedbReader;
 use monad_types::{DropTimer, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_updaters::{
-    checkpoint::FileCheckpoint, config_loader::ConfigLoader, loopback::LoopbackExecutor,
+    config_file::ConfigFile, config_loader::ConfigLoader, loopback::LoopbackExecutor,
     parent::ParentExecutor, timer::TokioTimer, tokio_timestamp::TokioTimestamp,
     triedb_val_set::ValSetUpdater,
 };
@@ -239,9 +240,6 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
         current_round,
     );
 
-    let epoch_length = SeqNum(50_000); // TODO configurable
-    let epoch_start_delay = Round(5_000); // TODO configurable
-
     let statesync_threshold: usize = node_state.node_config.statesync_threshold.into();
 
     _ = std::fs::remove_file(node_state.mempool_ipc_path.as_path());
@@ -304,11 +302,16 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
         router,
         timer: TokioTimer::default(),
         ledger: MonadBlockFileLedger::new(node_state.ledger_path),
-        checkpoint: FileCheckpoint::new(node_state.forkpoint_path),
+        config_file: ConfigFile::new(
+            node_state.forkpoint_path,
+            node_state.validators_path.clone(),
+            node_state.chain_config,
+        ),
         val_set: ValSetUpdater::new(
-            &node_state.triedb_path,
-            &node_state.validators_path,
-            epoch_length,
+            node_state.validators_path,
+            node_state.chain_config.get_epoch_length(),
+            node_state.chain_config.get_staking_activation(),
+            state_backend.clone(),
         ),
         timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
         txpool: EthTxPoolExecutor::new(
@@ -386,14 +389,12 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
 
     let builder = MonadStateBuilder {
         validator_set_factory: ValidatorSetFactory::default(),
-        leader_election: WeightedRoundRobin::default(),
+        leader_election: WeightedRoundRobin::new(node_state.chain_config.get_staking_activation()),
         block_validator: EthBlockValidator::default(),
         block_policy: create_block_policy(),
         state_backend,
         key: node_state.secp256k1_identity,
         certkey: node_state.bls12_381_identity,
-        epoch_length,
-        epoch_start_delay,
         beneficiary: node_state.node_config.beneficiary.into(),
         locked_epoch_validators,
         forkpoint: node_state.forkpoint_config.into(),

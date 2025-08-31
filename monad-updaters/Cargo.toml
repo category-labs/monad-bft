@@ -10,6 +10,7 @@ bench = false
 
 [dependencies]
 monad-blocksync = { workspace = true }
+monad-bls = { workspace = true, optional = true }
 monad-chain-config = { workspace = true }
 monad-consensus-types = { workspace = true }
 monad-crypto = { workspace = true }
@@ -19,6 +20,7 @@ monad-eth-types = { workspace = true }
 monad-executor = { workspace = true }
 monad-executor-glue = { workspace = true }
 monad-node-config = { workspace = true }
+monad-secp = { workspace = true, optional = true }
 monad-state-backend = { workspace = true }
 monad-tfm = { workspace = true }
 monad-types = { workspace = true }
@@ -43,4 +45,4 @@ tracing = { workspace = true }
 ntest = { workspace = true }
 
 [features]
-monad-triedb = []
+monad-triedb = ["dep:monad-bls","dep:monad-secp"]

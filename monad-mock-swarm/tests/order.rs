@@ -37,7 +37,7 @@ use monad_transformer::{
     GenericTransformer, LatencyTransformer, PartitionTransformer, ReplayTransformer,
     TransformerReplayOrder, ID,
 };
-use monad_types::{NodeId, Round, SeqNum};
+use monad_types::{NodeId, SeqNum};
 use monad_updaters::{
     ledger::{MockLedger, MockableLedger},
     statesync::MockStateSyncExecutor,
@@ -114,8 +114,6 @@ fn all_messages_delayed(direction: TransformerReplayOrder) -> Result<(), String>
         SeqNum(1),                           // execution_delay
         delta,                               // delta
         MockChainConfig::new(&CHAIN_PARAMS), // chain config
-        SeqNum(2000),                        // epoch_length
-        Round(50),                           // epoch_start_delay
         SeqNum(100),                         // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs

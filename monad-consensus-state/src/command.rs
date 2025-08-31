@@ -35,7 +35,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_state_backend::StateBackend;
-use monad_types::{Epoch, ExecutionProtocol, Round, RouterTarget, SeqNum};
+use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionKeyPairType};
 
 /// Command type that the consensus state-machine outputs
@@ -69,6 +69,7 @@ where
     ScheduleReset,
     /// Creates a proposal
     CreateProposal {
+        node_id: NodeId<CertificateSignaturePubKey<ST>>,
         epoch: Epoch,
         round: Round,
         seq_num: SeqNum,
