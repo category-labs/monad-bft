@@ -65,6 +65,7 @@ where
     pending: PendingTxMap,
     tracked: TrackedTxMap<ST, SCT, SBT, CCT, CRT>,
 
+    chain_id: u64,
     chain_revision: CRT,
     execution_revision: MonadExecutionRevision,
 
@@ -83,6 +84,7 @@ where
     pub fn new(
         soft_tx_expiry: Duration,
         hard_tx_expiry: Duration,
+        chain_id: u64,
         chain_revision: CRT,
         execution_revision: MonadExecutionRevision,
         do_local_insert: bool,
@@ -91,6 +93,7 @@ where
             pending: PendingTxMap::default(),
             tracked: TrackedTxMap::new(soft_tx_expiry, hard_tx_expiry),
 
+            chain_id,
             chain_revision,
             execution_revision,
 
@@ -134,8 +137,8 @@ where
             .filter_map(|tx| {
                 ValidEthTransaction::validate(
                     event_tracker,
-                    block_policy,
                     last_commit,
+                    self.chain_id,
                     self.chain_revision.chain_params(),
                     self.execution_revision.execution_chain_params(),
                     tx,
@@ -333,6 +336,15 @@ where
     }
 
     pub fn enter_round(&mut self, chain_config: &impl ChainConfig<CRT>, round: Round) {
+        let chain_id = chain_config.chain_id();
+
+        if self.chain_id != chain_id {
+            panic!(
+                "txpool chain id changed from {} to {}",
+                self.chain_id, chain_id
+            );
+        }
+
         let chain_revision = chain_config.get_chain_revision(round);
 
         if chain_revision.chain_params() != self.chain_revision.chain_params() {
@@ -515,6 +527,7 @@ where
         Self::new(
             Duration::from_secs(60),
             Duration::from_secs(60),
+            MockChainConfig::DEFAULT.chain_id(),
             MockChainRevision::DEFAULT,
             MonadExecutionRevision::LATEST,
             true,

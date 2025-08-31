@@ -16,18 +16,12 @@
 use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
 use alloy_primitives::{Address, TxHash};
 use alloy_rlp::Encodable;
-use monad_chain_config::{
-    execution_revision::ExecutionChainParams,
-    revision::{ChainParams, ChainRevision},
-    ChainConfig,
-};
+use monad_chain_config::{execution_revision::ExecutionChainParams, revision::ChainParams};
 use monad_consensus_types::block::ConsensusBlockHeader;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_block_policy::{
-    compute_txn_max_value, validation::static_validate_transaction, EthBlockPolicy,
-};
+use monad_eth_block_policy::{compute_txn_max_value, validation::static_validate_transaction};
 use monad_eth_txpool_types::{EthTxPoolDropReason, TransactionError};
 use monad_eth_types::{Balance, EthExecutionProtocol, Nonce};
 use monad_system_calls::validator::SystemTransactionValidator;
@@ -48,10 +42,10 @@ pub struct ValidEthTransaction {
 }
 
 impl ValidEthTransaction {
-    pub fn validate<ST, SCT, CCT, CRT>(
+    pub fn validate<ST, SCT>(
         event_tracker: &mut EthTxPoolEventTracker<'_>,
-        block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
         last_commit: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
+        chain_id: u64,
         chain_params: &ChainParams,
         execution_params: &ExecutionChainParams,
         tx: Recovered<TxEnvelope>,
@@ -60,8 +54,6 @@ impl ValidEthTransaction {
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        CCT: ChainConfig<CRT>,
-        CRT: ChainRevision,
     {
         if SystemTransactionValidator::is_system_sender(tx.signer()) {
             return None;
@@ -87,7 +79,7 @@ impl ValidEthTransaction {
             max_value,
         };
 
-        if let Err(error) = this.static_validate(block_policy, chain_params, execution_params) {
+        if let Err(error) = this.static_validate(chain_id, chain_params, execution_params) {
             event_tracker.drop(
                 this.tx.tx_hash().to_owned(),
                 EthTxPoolDropReason::NotWellFormed(error),
@@ -98,24 +90,13 @@ impl ValidEthTransaction {
         Some(this)
     }
 
-    pub fn static_validate<ST, SCT, CCT, CRT>(
+    pub fn static_validate(
         &self,
-        block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
+        chain_id: u64,
         chain_params: &ChainParams,
         execution_params: &ExecutionChainParams,
-    ) -> Result<(), TransactionError>
-    where
-        ST: CertificateSignatureRecoverable,
-        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        CCT: ChainConfig<CRT>,
-        CRT: ChainRevision,
-    {
-        static_validate_transaction(
-            &self.tx,
-            block_policy.get_chain_id(),
-            chain_params,
-            execution_params,
-        )
+    ) -> Result<(), TransactionError> {
+        static_validate_transaction(&self.tx, chain_id, chain_params, execution_params)
     }
 
     pub fn apply_max_value(&self, account_balance: Balance) -> Option<Balance> {

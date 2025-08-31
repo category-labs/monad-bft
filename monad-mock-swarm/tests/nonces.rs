@@ -25,7 +25,7 @@ mod test {
     use itertools::Itertools;
     use monad_chain_config::{
         revision::{ChainParams, MockChainRevision},
-        ChainConfig, MockChainConfig,
+        MockChainConfig,
     };
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
@@ -158,8 +158,7 @@ mod test {
 
         let chain_config = MockChainConfig::new(&CHAIN_PARAMS);
 
-        let create_block_policy =
-            || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, chain_config.chain_id());
+        let create_block_policy = || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0);
 
         let state_configs = make_state_configs::<EthSwarm>(
             num_nodes,

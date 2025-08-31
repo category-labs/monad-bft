@@ -35,7 +35,7 @@ const BASE_FEE: u64 = 100_000_000_000;
 fn criterion_benchmark(c: &mut Criterion) {
     // TODO: change this to something more meaningful, i.e. what's is the block
     // policy state we want to benchmark
-    let block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY, 1337);
+    let block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY);
 
     let mock_keypair = NopKeyPair::from_bytes(&mut [5_u8; 32]).unwrap();
     run_txpool_benches(

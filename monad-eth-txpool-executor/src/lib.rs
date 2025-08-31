@@ -135,6 +135,7 @@ where
                     let pool = EthTxPool::new(
                         soft_tx_expiry,
                         hard_tx_expiry,
+                        chain_config.chain_id(),
                         chain_config.get_chain_revision(round),
                         chain_config.get_execution_chain_revision(execution_timestamp_s),
                         do_local_insert,

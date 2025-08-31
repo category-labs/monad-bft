@@ -340,11 +340,6 @@ where
     committed_cache: CommittedBlkBuffer<ST, SCT, CCT, CRT>,
 
     execution_delay: SeqNum,
-
-    /// Chain ID
-    chain_id: u64,
-
-    _phantom: PhantomData<(CCT, CRT)>,
 }
 
 impl<ST, SCT, CCT, CRT> EthBlockPolicy<ST, SCT, CCT, CRT>
@@ -357,14 +352,11 @@ where
     pub fn new(
         last_commit: SeqNum, // TODO deprecate
         execution_delay: u64,
-        chain_id: u64,
     ) -> Self {
         Self {
             committed_cache: CommittedBlkBuffer::new(execution_delay as usize),
             last_commit,
             execution_delay: SeqNum(execution_delay),
-            chain_id,
-            _phantom: PhantomData,
         }
     }
 
@@ -677,10 +669,6 @@ where
             parent_trend,
             parent_moment,
         )
-    }
-
-    pub fn get_chain_id(&self) -> u64 {
-        self.chain_id
     }
 }
 

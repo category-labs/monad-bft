@@ -57,7 +57,7 @@ fn with_txpool(
         SignatureCollectionType,
         MockChainConfig,
         MockChainRevision,
-    >::new(GENESIS_SEQ_NUM, 4, 1337);
+    >::new(GENESIS_SEQ_NUM, 4);
     let state_backend = InMemoryStateInner::new(
         Balance::MAX,
         SeqNum(4),

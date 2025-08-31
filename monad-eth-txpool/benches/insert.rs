@@ -34,7 +34,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         SignatureCollectionType,
         MockChainConfig,
         MockChainRevision,
-    > = EthBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY, 1337);
+    > = EthBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY);
 
     run_txpool_benches(
         c,

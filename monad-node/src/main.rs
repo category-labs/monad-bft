@@ -282,7 +282,6 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
         EthBlockPolicy::new(
             GENESIS_SEQ_NUM, // FIXME: MonadStateBuilder is responsible for updating this to forkpoint root if necessary
             EXECUTION_DELAY,
-            node_state.node_config.chain_id,
         )
     };
 

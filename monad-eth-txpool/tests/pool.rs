@@ -84,7 +84,7 @@ type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
 
 fn make_test_block_policy(
 ) -> EthBlockPolicy<SignatureType, SignatureCollectionType, MockChainConfig, MockChainRevision> {
-    EthBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY, 1337)
+    EthBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY)
 }
 
 #[derive(Clone)]
@@ -1122,7 +1122,7 @@ fn test_tx_invalid_chain_id() {
     };
 
     run_custom(
-        || EthBlockPolicy::new(GENESIS_SEQ_NUM, 0, 1),
+        || EthBlockPolicy::new(GENESIS_SEQ_NUM, 0),
         Balance::MAX,
         None,
         [TxPoolTestEvent::InsertTxs {

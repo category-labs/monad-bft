@@ -297,13 +297,7 @@ fn forkpoint_restart_f(
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
         EthBlockValidator::default,
-        || {
-            EthBlockPolicy::new(
-                GENESIS_SEQ_NUM,
-                state_root_delay.0,
-                10, // chain_id
-            )
-        },
+        || EthBlockPolicy::new(GENESIS_SEQ_NUM, state_root_delay.0),
         || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
         state_root_delay,
         delta,               // delta
@@ -311,13 +305,7 @@ fn forkpoint_restart_f(
         statesync_threshold, // state_sync_threshold
     );
 
-    let create_block_policy = || {
-        EthBlockPolicy::new(
-            GENESIS_SEQ_NUM,
-            state_root_delay.0,
-            10, // chain_id
-        )
-    };
+    let create_block_policy = || EthBlockPolicy::new(GENESIS_SEQ_NUM, state_root_delay.0);
 
     // Enumerate different restarting node id to cover all the leader cases
     for (_i, restart_pubkey) in state_configs
@@ -349,13 +337,7 @@ fn forkpoint_restart_f(
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
             EthBlockValidator::default,
-            || {
-                EthBlockPolicy::new(
-                    GENESIS_SEQ_NUM,
-                    state_root_delay.0,
-                    10, // chain_id
-                )
-            },
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, state_root_delay.0),
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
             state_root_delay,    // execution_delay
             delta,               // delta
@@ -633,13 +615,7 @@ fn forkpoint_restart_below_all(
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
         EthBlockValidator::default,
-        || {
-            EthBlockPolicy::new(
-                GENESIS_SEQ_NUM,
-                state_root_delay.0,
-                10, // chain_id
-            )
-        },
+        || EthBlockPolicy::new(GENESIS_SEQ_NUM, state_root_delay.0),
         || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
         state_root_delay,    // execution_delay
         delta,               // delta
@@ -662,13 +638,7 @@ fn forkpoint_restart_below_all(
 
     let c_iter = comb_iters.into_iter().flatten();
 
-    let create_block_policy = || {
-        EthBlockPolicy::new(
-            GENESIS_SEQ_NUM,
-            state_root_delay.0,
-            10, // chain_id
-        )
-    };
+    let create_block_policy = || EthBlockPolicy::new(GENESIS_SEQ_NUM, state_root_delay.0);
 
     for restart_pubkeys in c_iter {
         let restart_node_ids = restart_pubkeys
