@@ -1285,6 +1285,7 @@ where
                         // we don't need to validate bls pubkey fields (randao)
                         // this is because these blocks are already committed by majority
                         None,
+                        self.consensus_config.chain_config.chain_id(),
                         *tx_limit,
                         *proposal_gas_limit,
                         *proposal_byte_limit,

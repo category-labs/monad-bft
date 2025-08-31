@@ -387,7 +387,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
     let builder = MonadStateBuilder {
         validator_set_factory: ValidatorSetFactory::default(),
         leader_election: WeightedRoundRobin::default(),
-        block_validator: EthBlockValidator::new(node_state.node_config.chain_id),
+        block_validator: EthBlockValidator::default(),
         block_policy: create_block_policy(),
         state_backend,
         key: node_state.secp256k1_identity,

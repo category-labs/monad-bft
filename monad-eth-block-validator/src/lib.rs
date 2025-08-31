@@ -53,16 +53,77 @@ type ValidatedTxns = Vec<Recovered<TxEnvelope>>;
 
 /// Validates transactions as valid Ethereum transactions and also validates that
 /// the list of transactions will create a valid Ethereum block
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct EthBlockValidator<ST, SCT>
+pub struct EthBlockValidator<ST, SCT>(PhantomData<(ST, SCT)>)
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>;
+
+impl<ST, SCT> Default for EthBlockValidator<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    /// chain id
-    pub chain_id: u64,
+    fn default() -> Self {
+        Self(PhantomData)
+    }
+}
 
-    _phantom: PhantomData<(ST, SCT)>,
+// FIXME: add specific error returns for the different failures
+impl<ST, SCT, SBT> BlockValidator<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT>
+    for EthBlockValidator<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    SBT: StateBackend<ST, SCT>,
+{
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(seq_num = header.seq_num.as_u64())
+    )]
+    fn validate(
+        &self,
+        header: ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
+        body: ConsensusBlockBody<EthExecutionProtocol>,
+        author_pubkey: Option<&SignatureCollectionPubKeyType<SCT>>,
+        chain_id: u64,
+        tx_limit: usize,
+        proposal_gas_limit: u64,
+        proposal_byte_limit:  u64,
+        max_code_size: usize,
+    ) -> Result<
+        <EthBlockPolicy<ST, SCT> as BlockPolicy<
+            ST,
+            SCT,
+            EthExecutionProtocol,
+            SBT,
+        >>::ValidatedBlock,
+        BlockValidationError,
+    >{
+        Self::validate_block_header(&header, &body, author_pubkey, proposal_gas_limit)?;
+
+        if let Ok((system_txns, validated_txns, nonces, txn_fees)) = Self::validate_block_body(
+            &header,
+            &body,
+            chain_id,
+            tx_limit,
+            proposal_gas_limit,
+            proposal_byte_limit,
+            header.base_fee,
+            max_code_size,
+        ) {
+            let block = ConsensusFullBlock::new(header, body)?;
+            Ok(EthValidatedBlock {
+                block,
+                system_txns,
+                validated_txns,
+                nonces,
+                txn_fees,
+            })
+        } else {
+            Err(BlockValidationError::PayloadError)
+        }
+    }
 }
 
 impl<ST, SCT> EthBlockValidator<ST, SCT>
@@ -70,140 +131,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    pub fn new(chain_id: u64) -> Self {
-        Self {
-            chain_id,
-            _phantom: PhantomData,
-        }
-    }
-
-    fn validate_block_body(
-        &self,
-        header: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
-        body: &ConsensusBlockBody<EthExecutionProtocol>,
-        tx_limit: usize,
-        proposal_gas_limit: u64,
-        proposal_byte_limit: u64,
-        base_fee: u64,
-        max_code_size: usize,
-    ) -> Result<(SystemTransactions, ValidatedTxns, NonceMap, TxnFeeMap), BlockValidationError>
-    {
-        let EthBlockBody {
-            transactions,
-            ommers,
-            withdrawals,
-        } = &body.execution_body;
-
-        if !ommers.is_empty() {
-            return Err(BlockValidationError::PayloadError);
-        }
-
-        if !withdrawals.is_empty() {
-            return Err(BlockValidationError::PayloadError);
-        }
-
-        // early return if number of transactions exceed limit
-        // no need to individually validate transactions
-        if transactions.len() > tx_limit {
-            return Err(BlockValidationError::TxnError);
-        }
-
-        // recovering the signers verifies that these are valid signatures
-        let recovered_txns: VecDeque<Recovered<TxEnvelope>> = transactions
-            .into_par_iter()
-            .map(|tx| {
-                let _span = trace_span!("validator: recover signer").entered();
-                let signer = tx.secp256k1_recover()?;
-                Ok(Recovered::new_unchecked(tx.clone(), signer))
-            })
-            .collect::<Result<_, monad_secp::Error>>()
-            .map_err(|_err| BlockValidationError::TxnError)?;
-
-        let (system_txns, eth_txns) =
-            match SystemTransactionValidator::validate_and_extract_system_transactions(
-                header,
-                recovered_txns,
-            ) {
-                Ok((system_txns, eth_txns)) => (system_txns, eth_txns),
-                Err(err) => {
-                    debug!(?err, "system transaction validator error");
-                    return Err(BlockValidationError::SystemTxnError);
-                }
-            };
-
-        // recover the account nonces for system txns
-        let mut nonces = BTreeMap::new();
-
-        // duplicate check. this is also done in SystemTransactionValidator
-        for sys_txn in &system_txns {
-            let maybe_old_nonce = nonces.insert(sys_txn.signer(), sys_txn.nonce());
-            // A block is invalid if we see a smaller or equal nonce
-            // after the first or if there is a nonce gap
-            if let Some(old_nonce) = maybe_old_nonce {
-                if sys_txn.nonce() != old_nonce + 1 {
-                    return Err(BlockValidationError::SystemTxnError);
-                }
-            }
-        }
-
-        // recover the account nonces and txn fee for user txns
-        let mut txn_fees: BTreeMap<Address, U256> = BTreeMap::new();
-
-        for eth_txn in &eth_txns {
-            if static_validate_transaction(
-                eth_txn,
-                self.chain_id,
-                proposal_gas_limit,
-                max_code_size,
-            )
-            .is_err()
-            {
-                return Err(BlockValidationError::TxnError);
-            }
-
-            if eth_txn.max_fee_per_gas() < base_fee.into() {
-                return Err(BlockValidationError::TxnError);
-            }
-
-            let maybe_old_nonce = nonces.insert(eth_txn.signer(), eth_txn.nonce());
-            // txn iteration is following the same order as they are in the
-            // block. A block is invalid if we see a smaller or equal nonce
-            // after the first or if there is a nonce gap
-            if let Some(old_nonce) = maybe_old_nonce {
-                if eth_txn.nonce() != old_nonce + 1 {
-                    return Err(BlockValidationError::TxnError);
-                }
-            }
-
-            let txn_fee_entry = txn_fees.entry(eth_txn.signer()).or_insert(U256::ZERO);
-
-            *txn_fee_entry = txn_fee_entry.saturating_add(compute_txn_max_value(eth_txn));
-        }
-
-        let total_gas: u64 = eth_txns.iter().map(|tx| tx.gas_limit()).sum();
-        let system_txns_size: usize = system_txns.iter().map(|tx| tx.length()).sum();
-        let user_txns_size: usize = eth_txns.iter().map(|tx| tx.length()).sum();
-        let proposal_size = system_txns_size + user_txns_size;
-        debug!(
-            total_gas,
-            proposal_size,
-            txs = transactions.len(),
-            "proposal stats"
-        );
-
-        if total_gas > proposal_gas_limit {
-            return Err(BlockValidationError::TxnError);
-        }
-
-        if proposal_size as u64 > proposal_byte_limit {
-            return Err(BlockValidationError::TxnError);
-        }
-
-        Ok((system_txns, eth_txns, nonces, txn_fees))
-    }
-
     fn validate_block_header(
-        &self,
         header: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
         body: &ConsensusBlockBody<EthExecutionProtocol>,
         author_pubkey: Option<&SignatureCollectionPubKeyType<SCT>>,
@@ -287,61 +215,125 @@ where
 
         Ok(())
     }
-}
 
-// FIXME: add specific error returns for the different failures
-impl<ST, SCT, SBT> BlockValidator<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT>
-    for EthBlockValidator<ST, SCT>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend<ST, SCT>,
-{
-    #[tracing::instrument(
-        level = "debug", 
-        skip_all,
-        fields(seq_num = header.seq_num.as_u64())
-    )]
-    fn validate(
-        &self,
-        header: ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
-        body: ConsensusBlockBody<EthExecutionProtocol>,
-        author_pubkey: Option<&SignatureCollectionPubKeyType<SCT>>,
+    fn validate_block_body(
+        header: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
+        body: &ConsensusBlockBody<EthExecutionProtocol>,
+        chain_id: u64,
         tx_limit: usize,
         proposal_gas_limit: u64,
-        proposal_byte_limit:  u64,
+        proposal_byte_limit: u64,
+        base_fee: u64,
         max_code_size: usize,
-    ) -> Result<
-        <EthBlockPolicy<ST, SCT> as BlockPolicy<
-            ST,
-            SCT,
-            EthExecutionProtocol,
-            SBT,
-        >>::ValidatedBlock,
-        BlockValidationError,
-    >{
-        self.validate_block_header(&header, &body, author_pubkey, proposal_gas_limit)?;
+    ) -> Result<(SystemTransactions, ValidatedTxns, NonceMap, TxnFeeMap), BlockValidationError>
+    {
+        let EthBlockBody {
+            transactions,
+            ommers,
+            withdrawals,
+        } = &body.execution_body;
 
-        if let Ok((system_txns, validated_txns, nonces, txn_fees)) = self.validate_block_body(
-            &header,
-            &body,
-            tx_limit,
-            proposal_gas_limit,
-            proposal_byte_limit,
-            header.base_fee,
-            max_code_size,
-        ) {
-            let block = ConsensusFullBlock::new(header, body)?;
-            Ok(EthValidatedBlock {
-                block,
-                system_txns,
-                validated_txns,
-                nonces,
-                txn_fees,
-            })
-        } else {
-            Err(BlockValidationError::PayloadError)
+        if !ommers.is_empty() {
+            return Err(BlockValidationError::PayloadError);
         }
+
+        if !withdrawals.is_empty() {
+            return Err(BlockValidationError::PayloadError);
+        }
+
+        // early return if number of transactions exceed limit
+        // no need to individually validate transactions
+        if transactions.len() > tx_limit {
+            return Err(BlockValidationError::TxnError);
+        }
+
+        // recovering the signers verifies that these are valid signatures
+        let recovered_txns: VecDeque<Recovered<TxEnvelope>> = transactions
+            .into_par_iter()
+            .map(|tx| {
+                let _span = trace_span!("validator: recover signer").entered();
+                let signer = tx.secp256k1_recover()?;
+                Ok(Recovered::new_unchecked(tx.clone(), signer))
+            })
+            .collect::<Result<_, monad_secp::Error>>()
+            .map_err(|_err| BlockValidationError::TxnError)?;
+
+        let (system_txns, eth_txns) =
+            match SystemTransactionValidator::validate_and_extract_system_transactions(
+                header,
+                recovered_txns,
+            ) {
+                Ok((system_txns, eth_txns)) => (system_txns, eth_txns),
+                Err(err) => {
+                    debug!(?err, "system transaction validator error");
+                    return Err(BlockValidationError::SystemTxnError);
+                }
+            };
+
+        // recover the account nonces for system txns
+        let mut nonces = BTreeMap::new();
+
+        // duplicate check. this is also done in SystemTransactionValidator
+        for sys_txn in &system_txns {
+            let maybe_old_nonce = nonces.insert(sys_txn.signer(), sys_txn.nonce());
+            // A block is invalid if we see a smaller or equal nonce
+            // after the first or if there is a nonce gap
+            if let Some(old_nonce) = maybe_old_nonce {
+                if sys_txn.nonce() != old_nonce + 1 {
+                    return Err(BlockValidationError::SystemTxnError);
+                }
+            }
+        }
+
+        // recover the account nonces and txn fee for user txns
+        let mut txn_fees: BTreeMap<Address, U256> = BTreeMap::new();
+
+        for eth_txn in &eth_txns {
+            if static_validate_transaction(eth_txn, chain_id, proposal_gas_limit, max_code_size)
+                .is_err()
+            {
+                return Err(BlockValidationError::TxnError);
+            }
+
+            if eth_txn.max_fee_per_gas() < base_fee.into() {
+                return Err(BlockValidationError::TxnError);
+            }
+
+            let maybe_old_nonce = nonces.insert(eth_txn.signer(), eth_txn.nonce());
+            // txn iteration is following the same order as they are in the
+            // block. A block is invalid if we see a smaller or equal nonce
+            // after the first or if there is a nonce gap
+            if let Some(old_nonce) = maybe_old_nonce {
+                if eth_txn.nonce() != old_nonce + 1 {
+                    return Err(BlockValidationError::TxnError);
+                }
+            }
+
+            let txn_fee_entry = txn_fees.entry(eth_txn.signer()).or_insert(U256::ZERO);
+
+            *txn_fee_entry = txn_fee_entry.saturating_add(compute_txn_max_value(eth_txn));
+        }
+
+        let total_gas: u64 = eth_txns.iter().map(|tx| tx.gas_limit()).sum();
+        let system_txns_size: usize = system_txns.iter().map(|tx| tx.length()).sum();
+        let user_txns_size: usize = eth_txns.iter().map(|tx| tx.length()).sum();
+        let proposal_size = system_txns_size + user_txns_size;
+        debug!(
+            total_gas,
+            proposal_size,
+            txs = transactions.len(),
+            "proposal stats"
+        );
+
+        if total_gas > proposal_gas_limit {
+            return Err(BlockValidationError::TxnError);
+        }
+
+        if proposal_size as u64 > proposal_byte_limit {
+            return Err(BlockValidationError::TxnError);
+        }
+
+        Ok((system_txns, eth_txns, nonces, txn_fees))
     }
 }
 
@@ -391,9 +383,6 @@ mod test {
 
     #[test]
     fn test_invalid_block_with_nonce_gap() {
-        let block_validator: EthBlockValidator<NopSignature, MockSignatures<NopSignature>> =
-            EthBlockValidator::new(1337);
-
         // txn1 with nonce 1 while txn2 with nonce 3 (there is a nonce gap)
         let txn1 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 1, 10);
         let txn2 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 3, 10);
@@ -410,23 +399,22 @@ mod test {
         let header = get_header(payload.get_id());
 
         // block validation should return error
-        let result = block_validator.validate_block_body(
-            &header,
-            &payload,
-            10,
-            PROPOSAL_GAS_LIMIT,
-            PROPOSAL_SIZE_LIMIT,
-            BASE_FEE as u64,
-            0x6000,
-        );
+        let result =
+            EthBlockValidator::<NopSignature, MockSignatures<NopSignature>>::validate_block_body(
+                &header,
+                &payload,
+                1337,
+                10,
+                PROPOSAL_GAS_LIMIT,
+                PROPOSAL_SIZE_LIMIT,
+                BASE_FEE as u64,
+                0x6000,
+            );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
     }
 
     #[test]
     fn test_invalid_block_over_gas_limit() {
-        let block_validator: EthBlockValidator<NopSignature, MockSignatures<NopSignature>> =
-            EthBlockValidator::new(1337);
-
         // total gas used is 400_000_000 which is higher than block gas limit
         let txn1 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 200_000_000, 1, 10);
         let txn2 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 200_000_000, 2, 10);
@@ -443,23 +431,22 @@ mod test {
         let header = get_header(payload.get_id());
 
         // block validation should return error
-        let result = block_validator.validate_block_body(
-            &header,
-            &payload,
-            10,
-            PROPOSAL_GAS_LIMIT,
-            PROPOSAL_SIZE_LIMIT,
-            BASE_FEE as u64,
-            0x6000,
-        );
+        let result =
+            EthBlockValidator::<NopSignature, MockSignatures<NopSignature>>::validate_block_body(
+                &header,
+                &payload,
+                1337,
+                10,
+                PROPOSAL_GAS_LIMIT,
+                PROPOSAL_SIZE_LIMIT,
+                BASE_FEE as u64,
+                0x6000,
+            );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
     }
 
     #[test]
     fn test_invalid_block_over_tx_limit() {
-        let block_validator: EthBlockValidator<NopSignature, MockSignatures<NopSignature>> =
-            EthBlockValidator::new(1337);
-
         // tx limit per block is 1
         let txn1 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 1, 10);
         let txn2 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 2, 10);
@@ -476,23 +463,22 @@ mod test {
         let header = get_header(payload.get_id());
 
         // block validation should return error
-        let result = block_validator.validate_block_body(
-            &header,
-            &payload,
-            1,
-            PROPOSAL_GAS_LIMIT,
-            PROPOSAL_SIZE_LIMIT,
-            BASE_FEE as u64,
-            0x6000,
-        );
+        let result =
+            EthBlockValidator::<NopSignature, MockSignatures<NopSignature>>::validate_block_body(
+                &header,
+                &payload,
+                1337,
+                1,
+                PROPOSAL_GAS_LIMIT,
+                PROPOSAL_SIZE_LIMIT,
+                BASE_FEE as u64,
+                0x6000,
+            );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
     }
 
     #[test]
     fn test_invalid_block_over_size_limit() {
-        let block_validator: EthBlockValidator<NopSignature, MockSignatures<NopSignature>> =
-            EthBlockValidator::new(1337);
-
         // proposal limit is 4MB
         let txn1 = make_legacy_tx(
             B256::repeat_byte(0xAu8),
@@ -514,23 +500,22 @@ mod test {
         let header = get_header(payload.get_id());
 
         // block validation should return error
-        let result = block_validator.validate_block_body(
-            &header,
-            &payload,
-            10,
-            PROPOSAL_GAS_LIMIT,
-            PROPOSAL_SIZE_LIMIT,
-            BASE_FEE as u64,
-            0x6000,
-        );
+        let result =
+            EthBlockValidator::<NopSignature, MockSignatures<NopSignature>>::validate_block_body(
+                &header,
+                &payload,
+                1337,
+                10,
+                PROPOSAL_GAS_LIMIT,
+                PROPOSAL_SIZE_LIMIT,
+                BASE_FEE as u64,
+                0x6000,
+            );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
     }
 
     #[test]
     fn test_invalid_eip2_signature() {
-        let block_validator: EthBlockValidator<NopSignature, MockSignatures<NopSignature>> =
-            EthBlockValidator::new(1337);
-
         let valid_txn = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 1, 10);
 
         // create a block with the above transaction
@@ -545,15 +530,17 @@ mod test {
         let header = get_header(payload.get_id());
 
         // block validation should return Ok
-        let result = block_validator.validate_block_body(
-            &header,
-            &payload,
-            10,
-            PROPOSAL_GAS_LIMIT,
-            PROPOSAL_SIZE_LIMIT,
-            BASE_FEE as u64,
-            0x6000,
-        );
+        let result =
+            EthBlockValidator::<NopSignature, MockSignatures<NopSignature>>::validate_block_body(
+                &header,
+                &payload,
+                1337,
+                10,
+                PROPOSAL_GAS_LIMIT,
+                PROPOSAL_SIZE_LIMIT,
+                BASE_FEE as u64,
+                0x6000,
+            );
         assert!(result.is_ok());
 
         // ECDSA signature is malleable
@@ -594,15 +581,17 @@ mod test {
         let header = get_header(payload.get_id());
 
         // block validation should return Err
-        let result = block_validator.validate_block_body(
-            &header,
-            &payload,
-            10,
-            PROPOSAL_GAS_LIMIT,
-            PROPOSAL_SIZE_LIMIT,
-            BASE_FEE as u64,
-            0x6000,
-        );
+        let result =
+            EthBlockValidator::<NopSignature, MockSignatures<NopSignature>>::validate_block_body(
+                &header,
+                &payload,
+                1337,
+                10,
+                PROPOSAL_GAS_LIMIT,
+                PROPOSAL_SIZE_LIMIT,
+                BASE_FEE as u64,
+                0x6000,
+            );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
     }
 

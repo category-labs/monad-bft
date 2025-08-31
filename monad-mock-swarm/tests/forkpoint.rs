@@ -284,7 +284,7 @@ fn forkpoint_restart_f(
         4, // num_nodes
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
-        || EthBlockValidator::new(0),
+        EthBlockValidator::default,
         || {
             EthBlockPolicy::new(
                 GENESIS_SEQ_NUM,
@@ -323,7 +323,7 @@ fn forkpoint_restart_f(
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             create_block_policy,
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
             state_root_delay,                    // execution_delay
@@ -340,7 +340,7 @@ fn forkpoint_restart_f(
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             || {
                 EthBlockPolicy::new(
                     GENESIS_SEQ_NUM,
@@ -624,7 +624,7 @@ fn forkpoint_restart_below_all(
         num_nodes,
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
-        || EthBlockValidator::new(0),
+        EthBlockValidator::default,
         || {
             EthBlockPolicy::new(
                 GENESIS_SEQ_NUM,
@@ -676,7 +676,7 @@ fn forkpoint_restart_below_all(
             num_nodes,
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             create_block_policy,
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
             state_root_delay,                    // execution_delay
@@ -690,7 +690,7 @@ fn forkpoint_restart_below_all(
             num_nodes,
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             create_block_policy,
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
             state_root_delay,                    // execution_delay

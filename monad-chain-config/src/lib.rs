@@ -192,7 +192,7 @@ impl MockChainConfig {
 
 impl ChainConfig<MockChainRevision> for MockChainConfig {
     fn chain_id(&self) -> u64 {
-        20143
+        1337
     }
 
     fn get_chain_revision(&self, _round: Round) -> MockChainRevision {

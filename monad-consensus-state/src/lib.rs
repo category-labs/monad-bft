@@ -603,6 +603,7 @@ where
             header,
             body,
             Some(author_pubkey),
+            self.config.chain_config.chain_id(),
             *tx_limit,
             *proposal_gas_limit,
             *proposal_byte_limit,
@@ -2577,7 +2578,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
 
@@ -2654,7 +2655,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -2697,7 +2698,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -2757,7 +2758,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -2789,7 +2790,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -2851,7 +2852,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -2941,7 +2942,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -3026,7 +3027,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -3101,7 +3102,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let (n1, xs) = ctx.split_first_mut().unwrap();
@@ -3314,7 +3315,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -3363,7 +3364,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
 
@@ -3445,7 +3446,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
 
@@ -3551,7 +3552,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let mut blocks = vec![];
@@ -3622,7 +3623,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let mut blocks = vec![];
@@ -3668,7 +3669,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
 
@@ -3789,7 +3790,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let node = &mut ctx[0];
@@ -3869,7 +3870,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let mut blocks = vec![];
@@ -3936,7 +3937,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let mut blocks = vec![];
@@ -4041,7 +4042,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let mut blocks = vec![];
@@ -4137,7 +4138,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let mut blocks = vec![];
@@ -4249,7 +4250,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
 
@@ -4404,7 +4405,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let mut blocks = vec![];
@@ -4523,7 +4524,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let p1 = env.next_proposal(Vec::new());
@@ -4568,7 +4569,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
 
@@ -4629,7 +4630,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
 
@@ -4736,7 +4737,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
 
@@ -4861,7 +4862,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
 
@@ -5020,7 +5021,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
 
@@ -5136,7 +5137,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
 
@@ -5237,7 +5238,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthBlockValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
 
