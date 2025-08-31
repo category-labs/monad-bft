@@ -41,7 +41,7 @@ use monad_crypto::{
 };
 use monad_dataplane::DataplaneBuilder;
 use monad_eth_block_policy::EthBlockPolicy;
-use monad_eth_block_validator::EthValidator;
+use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig};
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
@@ -387,7 +387,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
     let builder = MonadStateBuilder {
         validator_set_factory: ValidatorSetFactory::default(),
         leader_election: WeightedRoundRobin::default(),
-        block_validator: EthValidator::new(node_state.node_config.chain_id),
+        block_validator: EthBlockValidator::new(node_state.node_config.chain_id),
         block_policy: create_block_policy(),
         state_backend,
         key: node_state.secp256k1_identity,

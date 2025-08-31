@@ -26,7 +26,7 @@ use monad_crypto::{
     NopSignature,
 };
 use monad_eth_block_policy::EthBlockPolicy;
-use monad_eth_block_validator::EthValidator;
+use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_types::{Balance, EthExecutionProtocol};
 use monad_mock_swarm::{
     mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
@@ -64,7 +64,7 @@ impl SwarmRelation for ForkpointSwarm {
         Self::ExecutionProtocolType,
     >;
 
-    type BlockValidator = EthValidator<Self::SignatureType, Self::SignatureCollectionType>;
+    type BlockValidator = EthBlockValidator<Self::SignatureType, Self::SignatureCollectionType>;
     type ValidatorSetTypeFactory =
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
@@ -284,7 +284,7 @@ fn forkpoint_restart_f(
         4, // num_nodes
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
-        || EthValidator::new(0),
+        || EthBlockValidator::new(0),
         || {
             EthBlockPolicy::new(
                 GENESIS_SEQ_NUM,
@@ -323,7 +323,7 @@ fn forkpoint_restart_f(
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            || EthValidator::new(0),
+            || EthBlockValidator::new(0),
             create_block_policy,
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
             state_root_delay,                    // execution_delay
@@ -340,7 +340,7 @@ fn forkpoint_restart_f(
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            || EthValidator::new(0),
+            || EthBlockValidator::new(0),
             || {
                 EthBlockPolicy::new(
                     GENESIS_SEQ_NUM,
@@ -624,7 +624,7 @@ fn forkpoint_restart_below_all(
         num_nodes,
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
-        || EthValidator::new(0),
+        || EthBlockValidator::new(0),
         || {
             EthBlockPolicy::new(
                 GENESIS_SEQ_NUM,
@@ -676,7 +676,7 @@ fn forkpoint_restart_below_all(
             num_nodes,
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            || EthValidator::new(0),
+            || EthBlockValidator::new(0),
             create_block_policy,
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
             state_root_delay,                    // execution_delay
@@ -690,7 +690,7 @@ fn forkpoint_restart_below_all(
             num_nodes,
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            || EthValidator::new(0),
+            || EthBlockValidator::new(0),
             create_block_policy,
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
             state_root_delay,                    // execution_delay

@@ -32,7 +32,7 @@ mod test {
         NopPubKey, NopSignature,
     };
     use monad_eth_block_policy::EthBlockPolicy;
-    use monad_eth_block_validator::EthValidator;
+    use monad_eth_block_validator::EthBlockValidator;
     use monad_eth_ledger::MockEthLedger;
     use monad_eth_testutil::{make_legacy_tx, secret_to_eth_address};
     use monad_eth_types::{Balance, EthExecutionProtocol};
@@ -79,7 +79,7 @@ mod test {
             Self::ExecutionProtocolType,
         >;
 
-        type BlockValidator = EthValidator<Self::SignatureType, Self::SignatureCollectionType>;
+        type BlockValidator = EthBlockValidator<Self::SignatureType, Self::SignatureCollectionType>;
         type ValidatorSetTypeFactory =
             ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
         type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
@@ -149,7 +149,7 @@ mod test {
             num_nodes,
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            || EthValidator::new(1337),
+            || EthBlockValidator::new(1337),
             create_block_policy,
             || {
                 InMemoryStateInner::new(

@@ -54,7 +54,7 @@ type ValidatedTxns = Vec<Recovered<TxEnvelope>>;
 /// Validates transactions as valid Ethereum transactions and also validates that
 /// the list of transactions will create a valid Ethereum block
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct EthValidator<ST, SCT>
+pub struct EthBlockValidator<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -65,7 +65,7 @@ where
     _phantom: PhantomData<(ST, SCT)>,
 }
 
-impl<ST, SCT> EthValidator<ST, SCT>
+impl<ST, SCT> EthBlockValidator<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -291,7 +291,7 @@ where
 
 // FIXME: add specific error returns for the different failures
 impl<ST, SCT, SBT> BlockValidator<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT>
-    for EthValidator<ST, SCT>
+    for EthBlockValidator<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -391,8 +391,8 @@ mod test {
 
     #[test]
     fn test_invalid_block_with_nonce_gap() {
-        let block_validator: EthValidator<NopSignature, MockSignatures<NopSignature>> =
-            EthValidator::new(1337);
+        let block_validator: EthBlockValidator<NopSignature, MockSignatures<NopSignature>> =
+            EthBlockValidator::new(1337);
 
         // txn1 with nonce 1 while txn2 with nonce 3 (there is a nonce gap)
         let txn1 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 1, 10);
@@ -424,8 +424,8 @@ mod test {
 
     #[test]
     fn test_invalid_block_over_gas_limit() {
-        let block_validator: EthValidator<NopSignature, MockSignatures<NopSignature>> =
-            EthValidator::new(1337);
+        let block_validator: EthBlockValidator<NopSignature, MockSignatures<NopSignature>> =
+            EthBlockValidator::new(1337);
 
         // total gas used is 400_000_000 which is higher than block gas limit
         let txn1 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 200_000_000, 1, 10);
@@ -457,8 +457,8 @@ mod test {
 
     #[test]
     fn test_invalid_block_over_tx_limit() {
-        let block_validator: EthValidator<NopSignature, MockSignatures<NopSignature>> =
-            EthValidator::new(1337);
+        let block_validator: EthBlockValidator<NopSignature, MockSignatures<NopSignature>> =
+            EthBlockValidator::new(1337);
 
         // tx limit per block is 1
         let txn1 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 1, 10);
@@ -490,8 +490,8 @@ mod test {
 
     #[test]
     fn test_invalid_block_over_size_limit() {
-        let block_validator: EthValidator<NopSignature, MockSignatures<NopSignature>> =
-            EthValidator::new(1337);
+        let block_validator: EthBlockValidator<NopSignature, MockSignatures<NopSignature>> =
+            EthBlockValidator::new(1337);
 
         // proposal limit is 4MB
         let txn1 = make_legacy_tx(
@@ -528,8 +528,8 @@ mod test {
 
     #[test]
     fn test_invalid_eip2_signature() {
-        let block_validator: EthValidator<NopSignature, MockSignatures<NopSignature>> =
-            EthValidator::new(1337);
+        let block_validator: EthBlockValidator<NopSignature, MockSignatures<NopSignature>> =
+            EthBlockValidator::new(1337);
 
         let valid_txn = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 1, 10);
 
