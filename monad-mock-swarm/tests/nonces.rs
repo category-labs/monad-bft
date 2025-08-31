@@ -79,11 +79,7 @@ mod test {
             Self::ExecutionProtocolType,
         >;
 
-        type BlockValidator = EthValidator<
-            Self::SignatureType,
-            Self::SignatureCollectionType,
-            Self::StateBackendType,
-        >;
+        type BlockValidator = EthValidator<Self::SignatureType, Self::SignatureCollectionType>;
         type ValidatorSetTypeFactory =
             ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
         type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;

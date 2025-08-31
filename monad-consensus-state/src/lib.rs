@@ -1957,8 +1957,7 @@ mod test {
     type SignatureCollectionType = MultiSig<SignatureType>;
     type BlockPolicyType = EthBlockPolicy<SignatureType, SignatureCollectionType>;
     type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
-    type BlockValidatorType =
-        EthValidator<SignatureType, SignatureCollectionType, StateBackendType>;
+    type BlockValidatorType = EthValidator<SignatureType, SignatureCollectionType>;
 
     struct NodeContext<ST, SCT, BPT, SBT, BVT, VTF, LT>
     where
