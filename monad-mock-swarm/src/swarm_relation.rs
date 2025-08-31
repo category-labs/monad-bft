@@ -95,6 +95,8 @@ where
             Self::ExecutionProtocolType,
             Self::BlockPolicyType,
             Self::StateBackendType,
+            Self::ChainConfigType,
+            Self::ChainRevisionType,
         > + Send
         + Sync
         + Unpin;
@@ -195,6 +197,8 @@ impl SwarmRelation for DebugSwarmRelation {
                 Self::ExecutionProtocolType,
                 Self::BlockPolicyType,
                 Self::StateBackendType,
+                Self::ChainConfigType,
+                Self::ChainRevisionType,
             > + Send
             + Sync,
     >;

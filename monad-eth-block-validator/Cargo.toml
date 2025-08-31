@@ -9,6 +9,7 @@ edition = "2021"
 bench = false
 
 [dependencies]
+monad-chain-config = { workspace = true }
 monad-consensus-types = { workspace = true }
 monad-crypto = { workspace = true }
 monad-eth-block-policy = { workspace = true }

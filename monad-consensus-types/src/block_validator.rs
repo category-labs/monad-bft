@@ -16,6 +16,10 @@
 use core::fmt::Debug;
 
 use auto_impl::auto_impl;
+use monad_chain_config::{
+    revision::{ChainRevision, MockChainRevision},
+    ChainConfig, MockChainConfig,
+};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -45,13 +49,15 @@ pub enum BlockValidationError {
 }
 
 #[auto_impl(Box)]
-pub trait BlockValidator<ST, SCT, EPT, BPT, SBT>
+pub trait BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     // TODO it would be less jank if the BLS pubkey was included in the block payload.
     //
@@ -68,19 +74,23 @@ where
         header: ConsensusBlockHeader<ST, SCT, EPT>,
         body: ConsensusBlockBody<EPT>,
         author_pubkey: Option<&SignatureCollectionPubKeyType<SCT>>,
-        chain_id: u64,
-        tx_limit: usize,
-        proposal_gas_limit: u64,
-        proposal_byte_limit: u64,
-        max_code_size: usize,
+        chain_config: &CCT,
     ) -> Result<BPT::ValidatedBlock, BlockValidationError>;
 }
 
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub struct MockValidator;
 
-impl<ST, SCT, EPT> BlockValidator<ST, SCT, EPT, PassthruBlockPolicy, InMemoryState<ST, SCT>>
-    for MockValidator
+impl<ST, SCT, EPT>
+    BlockValidator<
+        ST,
+        SCT,
+        EPT,
+        PassthruBlockPolicy,
+        InMemoryState<ST, SCT>,
+        MockChainConfig,
+        MockChainRevision,
+    > for MockValidator
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -91,11 +101,7 @@ where
         header: ConsensusBlockHeader<ST, SCT, EPT>,
         body: ConsensusBlockBody<EPT>,
         _author_pubkey: Option<&SignatureCollectionPubKeyType<SCT>>,
-        _chain_id: u64,
-        _tx_limit: usize,
-        _proposal_gas_limit: u64,
-        _proposal_byte_limit: u64,
-        _max_code_size: usize,
+        _chain_config: &MockChainConfig,
     ) -> Result<
         <PassthruBlockPolicy as BlockPolicy<ST, SCT, EPT, InMemoryState<ST, SCT>>>::ValidatedBlock,
         BlockValidationError,

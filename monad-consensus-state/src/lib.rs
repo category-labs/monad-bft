@@ -17,11 +17,7 @@ use std::{collections::BTreeMap, fmt::Debug, marker::PhantomData, time::Duration
 
 use itertools::Itertools;
 use monad_blocktree::blocktree::BlockTree;
-use monad_chain_config::{
-    execution_revision::ExecutionChainParams,
-    revision::{ChainParams, ChainRevision},
-    ChainConfig,
-};
+use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus::{
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
@@ -165,7 +161,7 @@ where
     SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -369,7 +365,7 @@ where
     SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -569,29 +565,6 @@ where
             return None;
         }
 
-        let ChainParams {
-            tx_limit,
-            proposal_gas_limit,
-            proposal_byte_limit,
-            vote_pace: _,
-        } = self
-            .config
-            .chain_config
-            .get_chain_revision(block_round)
-            .chain_params();
-
-        let ExecutionChainParams { max_code_size } = {
-            // u64::MAX seconds is ~500 Billion years
-            let timestamp_s: u64 = (header.timestamp_ns / 1_000_000_000)
-                .try_into()
-                // we don't assert because timestamp_ns is untrusted
-                .unwrap_or(u64::MAX);
-            self.config
-                .chain_config
-                .get_execution_chain_revision(timestamp_s)
-                .execution_chain_params()
-        };
-
         let author_pubkey = self
             .val_epoch_map
             .get_cert_pubkeys(&header.epoch)
@@ -599,15 +572,12 @@ where
             .map
             .get(&header.author)
             .expect("proposal author exists in validator_mapping");
+
         let block = match self.block_validator.validate(
             header,
             body,
             Some(author_pubkey),
-            self.config.chain_config.chain_id(),
-            *tx_limit,
-            *proposal_gas_limit,
-            *proposal_byte_limit,
-            *max_code_size,
+            &self.config.chain_config,
         ) {
             Ok(block) => block,
             Err(BlockValidationError::SystemTxnError) => {
@@ -1967,7 +1937,15 @@ mod test {
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
         SBT: StateBackend<ST, SCT> + StateBackendTest<ST, SCT>,
-        BVT: BlockValidator<ST, SCT, EthExecutionProtocol, BPT, SBT>,
+        BVT: BlockValidator<
+            ST,
+            SCT,
+            EthExecutionProtocol,
+            BPT,
+            SBT,
+            MockChainConfig,
+            MockChainRevision,
+        >,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
         consensus_state: ConsensusState<
@@ -2006,7 +1984,15 @@ mod test {
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
         SBT: StateBackend<ST, SCT> + StateBackendTest<ST, SCT>,
-        BVT: BlockValidator<ST, SCT, EthExecutionProtocol, BPT, SBT>,
+        BVT: BlockValidator<
+            ST,
+            SCT,
+            EthExecutionProtocol,
+            BPT,
+            SBT,
+            MockChainConfig,
+            MockChainRevision,
+        >,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
         fn wrapped_state(
@@ -2238,7 +2224,7 @@ mod test {
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
         SBT: StateBackend<ST, SCT> + StateBackendTest<ST, SCT>,
-        BVT: BlockValidator<ST, SCT, EthExecutionProtocol, BPT, SBT>,
+        BVT: BlockValidator<ST, SCT, EthExecutionProtocol, BPT, SBT, MockChainConfig, MockChainRevision>,
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
     >(

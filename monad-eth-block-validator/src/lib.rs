@@ -26,6 +26,11 @@ use alloy_consensus::{
 };
 use alloy_primitives::{Address, U256};
 use alloy_rlp::Encodable;
+use monad_chain_config::{
+    execution_revision::ExecutionChainParams,
+    revision::{ChainParams, ChainRevision},
+    ChainConfig,
+};
 use monad_consensus_types::{
     block::{BlockPolicy, ConsensusBlockHeader, ConsensusFullBlock},
     block_validator::{BlockValidationError, BlockValidator},
@@ -69,12 +74,15 @@ where
 }
 
 // FIXME: add specific error returns for the different failures
-impl<ST, SCT, SBT> BlockValidator<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT>
+impl<ST, SCT, SBT, CCT, CRT>
+    BlockValidator<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT, CCT, CRT>
     for EthBlockValidator<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     #[tracing::instrument(
         level = "debug",
@@ -86,11 +94,7 @@ where
         header: ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
         body: ConsensusBlockBody<EthExecutionProtocol>,
         author_pubkey: Option<&SignatureCollectionPubKeyType<SCT>>,
-        chain_id: u64,
-        tx_limit: usize,
-        proposal_gas_limit: u64,
-        proposal_byte_limit:  u64,
-        max_code_size: usize,
+        chain_config: &CCT,
     ) -> Result<
         <EthBlockPolicy<ST, SCT> as BlockPolicy<
             ST,
@@ -100,17 +104,29 @@ where
         >>::ValidatedBlock,
         BlockValidationError,
     >{
-        Self::validate_block_header(&header, &body, author_pubkey, proposal_gas_limit)?;
+        let chain_params = chain_config
+            .get_chain_revision(header.block_round)
+            .chain_params();
+
+        Self::validate_block_header(&header, &body, author_pubkey, chain_params)?;
+
+        let execution_chain_params = {
+            let timestamp_s: u64 = (header.timestamp_ns / 1_000_000_000)
+                .try_into()
+                // we don't assert because timestamp_ns is untrusted
+                .unwrap_or(u64::MAX);
+
+            chain_config
+                .get_execution_chain_revision(timestamp_s)
+                .execution_chain_params()
+        };
 
         if let Ok((system_txns, validated_txns, nonces, txn_fees)) = Self::validate_block_body(
             &header,
             &body,
-            chain_id,
-            tx_limit,
-            proposal_gas_limit,
-            proposal_byte_limit,
-            header.base_fee,
-            max_code_size,
+            chain_config.chain_id(),
+            chain_params,
+            execution_chain_params,
         ) {
             let block = ConsensusFullBlock::new(header, body)?;
             Ok(EthValidatedBlock {
@@ -135,7 +151,7 @@ where
         header: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
         body: &ConsensusBlockBody<EthExecutionProtocol>,
         author_pubkey: Option<&SignatureCollectionPubKeyType<SCT>>,
-        proposal_gas_limit: u64,
+        chain_params: &ChainParams,
     ) -> Result<(), BlockValidationError> {
         if header.block_body_id != body.get_id() {
             return Err(BlockValidationError::HeaderPayloadMismatchError);
@@ -185,7 +201,7 @@ where
         if number != &header.seq_num.0 {
             return Err(BlockValidationError::HeaderError);
         }
-        if gas_limit != &proposal_gas_limit {
+        if gas_limit != &chain_params.proposal_gas_limit {
             return Err(BlockValidationError::HeaderError);
         }
         if u128::from(*timestamp) != header.timestamp_ns / 1_000_000_000 {
@@ -220,11 +236,8 @@ where
         header: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
         body: &ConsensusBlockBody<EthExecutionProtocol>,
         chain_id: u64,
-        tx_limit: usize,
-        proposal_gas_limit: u64,
-        proposal_byte_limit: u64,
-        base_fee: u64,
-        max_code_size: usize,
+        chain_params: &ChainParams,
+        execution_chain_params: &ExecutionChainParams,
     ) -> Result<(SystemTransactions, ValidatedTxns, NonceMap, TxnFeeMap), BlockValidationError>
     {
         let EthBlockBody {
@@ -243,7 +256,7 @@ where
 
         // early return if number of transactions exceed limit
         // no need to individually validate transactions
-        if transactions.len() > tx_limit {
+        if transactions.len() > chain_params.tx_limit {
             return Err(BlockValidationError::TxnError);
         }
 
@@ -289,13 +302,18 @@ where
         let mut txn_fees: BTreeMap<Address, U256> = BTreeMap::new();
 
         for eth_txn in &eth_txns {
-            if static_validate_transaction(eth_txn, chain_id, proposal_gas_limit, max_code_size)
-                .is_err()
+            if static_validate_transaction(
+                eth_txn,
+                chain_id,
+                chain_params.proposal_gas_limit,
+                execution_chain_params.max_code_size,
+            )
+            .is_err()
             {
                 return Err(BlockValidationError::TxnError);
             }
 
-            if eth_txn.max_fee_per_gas() < base_fee.into() {
+            if eth_txn.max_fee_per_gas() < header.base_fee.into() {
                 return Err(BlockValidationError::TxnError);
             }
 
@@ -325,11 +343,11 @@ where
             "proposal stats"
         );
 
-        if total_gas > proposal_gas_limit {
+        if total_gas > chain_params.proposal_gas_limit {
             return Err(BlockValidationError::TxnError);
         }
 
-        if proposal_size as u64 > proposal_byte_limit {
+        if proposal_size as u64 > chain_params.proposal_byte_limit {
             return Err(BlockValidationError::TxnError);
         }
 
@@ -339,6 +357,8 @@ where
 
 #[cfg(test)]
 mod test {
+    use std::time::Duration;
+
     use alloy_consensus::Signed;
     use alloy_primitives::{PrimitiveSignature, B256};
     use monad_consensus_types::{
@@ -404,11 +424,15 @@ mod test {
                 &header,
                 &payload,
                 1337,
-                10,
-                PROPOSAL_GAS_LIMIT,
-                PROPOSAL_SIZE_LIMIT,
-                BASE_FEE as u64,
-                0x6000,
+                &ChainParams {
+                    tx_limit: 10,
+                    proposal_gas_limit: PROPOSAL_GAS_LIMIT,
+                    proposal_byte_limit: PROPOSAL_SIZE_LIMIT,
+                    vote_pace: Duration::ZERO,
+                },
+                &ExecutionChainParams {
+                    max_code_size: 0x6000,
+                },
             );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
     }
@@ -436,11 +460,15 @@ mod test {
                 &header,
                 &payload,
                 1337,
-                10,
-                PROPOSAL_GAS_LIMIT,
-                PROPOSAL_SIZE_LIMIT,
-                BASE_FEE as u64,
-                0x6000,
+                &ChainParams {
+                    tx_limit: 10,
+                    proposal_gas_limit: PROPOSAL_GAS_LIMIT,
+                    proposal_byte_limit: PROPOSAL_SIZE_LIMIT,
+                    vote_pace: Duration::ZERO,
+                },
+                &ExecutionChainParams {
+                    max_code_size: 0x6000,
+                },
             );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
     }
@@ -468,11 +496,15 @@ mod test {
                 &header,
                 &payload,
                 1337,
-                1,
-                PROPOSAL_GAS_LIMIT,
-                PROPOSAL_SIZE_LIMIT,
-                BASE_FEE as u64,
-                0x6000,
+                &ChainParams {
+                    tx_limit: 1,
+                    proposal_gas_limit: PROPOSAL_GAS_LIMIT,
+                    proposal_byte_limit: PROPOSAL_SIZE_LIMIT,
+                    vote_pace: Duration::ZERO,
+                },
+                &ExecutionChainParams {
+                    max_code_size: 0x6000,
+                },
             );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
     }
@@ -505,11 +537,15 @@ mod test {
                 &header,
                 &payload,
                 1337,
-                10,
-                PROPOSAL_GAS_LIMIT,
-                PROPOSAL_SIZE_LIMIT,
-                BASE_FEE as u64,
-                0x6000,
+                &ChainParams {
+                    tx_limit: 10,
+                    proposal_gas_limit: PROPOSAL_GAS_LIMIT,
+                    proposal_byte_limit: PROPOSAL_SIZE_LIMIT,
+                    vote_pace: Duration::ZERO,
+                },
+                &ExecutionChainParams {
+                    max_code_size: 0x6000,
+                },
             );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
     }
@@ -535,11 +571,15 @@ mod test {
                 &header,
                 &payload,
                 1337,
-                10,
-                PROPOSAL_GAS_LIMIT,
-                PROPOSAL_SIZE_LIMIT,
-                BASE_FEE as u64,
-                0x6000,
+                &ChainParams {
+                    tx_limit: 10,
+                    proposal_gas_limit: PROPOSAL_GAS_LIMIT,
+                    proposal_byte_limit: PROPOSAL_SIZE_LIMIT,
+                    vote_pace: Duration::ZERO,
+                },
+                &ExecutionChainParams {
+                    max_code_size: 0x6000,
+                },
             );
         assert!(result.is_ok());
 
@@ -586,11 +626,15 @@ mod test {
                 &header,
                 &payload,
                 1337,
-                10,
-                PROPOSAL_GAS_LIMIT,
-                PROPOSAL_SIZE_LIMIT,
-                BASE_FEE as u64,
-                0x6000,
+                &ChainParams {
+                    tx_limit: 10,
+                    proposal_gas_limit: PROPOSAL_GAS_LIMIT,
+                    proposal_byte_limit: PROPOSAL_SIZE_LIMIT,
+                    vote_pace: Duration::ZERO,
+                },
+                &ExecutionChainParams {
+                    max_code_size: 0x6000,
+                },
             );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
     }

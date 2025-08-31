@@ -24,11 +24,7 @@ use monad_blocksync::{
     messages::message::{BlockSyncRequestMessage, BlockSyncResponseMessage},
 };
 use monad_blocktree::blocktree::BlockTree;
-use monad_chain_config::{
-    execution_revision::ExecutionChainParams,
-    revision::{ChainParams, ChainRevision},
-    ChainConfig,
-};
+use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus::{
     messages::consensus_message::ConsensusMessage,
     validation::{
@@ -366,7 +362,7 @@ where
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend<ST, SCT>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
@@ -414,7 +410,7 @@ where
     SBT: StateBackend<ST, SCT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -756,7 +752,7 @@ where
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -789,7 +785,7 @@ where
     SBT: StateBackend<ST, SCT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -894,7 +890,7 @@ where
     SBT: StateBackend<ST, SCT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -1258,26 +1254,6 @@ where
         let last_delay_committed_blocks: Vec<_> = root_parent_chain
             .iter()
             .map(|full_block| {
-                let ChainParams {
-                    tx_limit,
-                    proposal_gas_limit,
-                    proposal_byte_limit,
-                    vote_pace: _,
-                } = self
-                    .consensus_config
-                    .chain_config
-                    .get_chain_revision(full_block.header().block_round)
-                    .chain_params();
-                let ExecutionChainParams { max_code_size } = {
-                    // u64::MAX seconds is ~500 Billion years
-                    let timestamp_s: u64 = (full_block.header().timestamp_ns / 1_000_000_000)
-                        .try_into()
-                        .unwrap();
-                    self.consensus_config
-                        .chain_config
-                        .get_execution_chain_revision(timestamp_s)
-                        .execution_chain_params()
-                };
                 self.block_validator
                     .validate(
                         full_block.header().clone(),
@@ -1285,11 +1261,7 @@ where
                         // we don't need to validate bls pubkey fields (randao)
                         // this is because these blocks are already committed by majority
                         None,
-                        self.consensus_config.chain_config.chain_id(),
-                        *tx_limit,
-                        *proposal_gas_limit,
-                        *proposal_byte_limit,
-                        *max_code_size,
+                        &self.consensus_config.chain_config,
                     )
                     .expect("majority committed invalid block")
             })
