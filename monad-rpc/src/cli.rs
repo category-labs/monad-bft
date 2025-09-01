@@ -100,9 +100,9 @@ pub struct Cli {
     #[arg(long, default_value_t = 64)]
     pub eth_call_executor_fibers: u32,
 
-    /// Set the size of the node cache when executing eth_call and eth_estimateGas
-    #[arg(long, default_value_t = 102400)]
-    pub eth_call_executor_node_lru_size: u32,
+    /// Set the memory limit of the node cache when executing eth_call and eth_estimateGas
+    #[arg(long, default_value_t = 100 << 20)] // 100 MB
+    pub eth_call_executor_node_lru_max_mem: u64,
 
     /// Set the gas limit for eth_call
     #[arg(long, default_value_t = 30_000_000)]
@@ -119,6 +119,10 @@ pub struct Cli {
     /// Set the maximum timeout (in seconds) for queuing when executing eth_call and eth_estimateGas
     #[arg(long, default_value_t = 30)]
     pub eth_call_executor_queuing_timeout: u32,
+
+    /// Set the memory limit of the node cache for RPC requests other than eth_call and eth_estimateGas
+    #[arg(long, default_value_t = 100 << 20)] // 100MB
+    pub triedb_node_lru_max_mem: u64,
 
     /// Set the max concurrent requests for triedb reads
     #[arg(long, default_value_t = 20_000)]

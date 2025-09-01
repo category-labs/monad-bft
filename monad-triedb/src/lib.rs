@@ -161,7 +161,7 @@ pub unsafe extern "C" fn traverse_callback(
 }
 
 impl TriedbHandle {
-    pub fn try_new(dbdir_path: &Path) -> Option<Self> {
+    pub fn try_new(dbdir_path: &Path, node_lru_max_mem: u64) -> Option<Self> {
         monad_cxx::init_cxx_logging(tracing::Level::WARN);
 
         let path = CString::new(dbdir_path.to_str().expect("invalid path"))
@@ -169,7 +169,9 @@ impl TriedbHandle {
 
         let mut db_ptr = null_mut();
 
-        let result = unsafe { bindings::triedb_open(path.as_c_str().as_ptr(), &mut db_ptr) };
+        let result = unsafe {
+            bindings::triedb_open(path.as_c_str().as_ptr(), &mut db_ptr, node_lru_max_mem)
+        };
 
         if result != 0 {
             debug!("triedb try_new error result: {}", result);

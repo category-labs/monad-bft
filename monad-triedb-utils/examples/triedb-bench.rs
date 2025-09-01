@@ -44,6 +44,9 @@ struct Args {
     #[arg(long, default_value_t = 1_000)]
     pub max_num_blocks: u64,
 
+    #[arg(long, default_value_t = 100 << 20)] // 100MB
+    pub node_lru_max_mem: u64,
+
     #[arg(long, default_value_t = 20_000)]
     pub max_buffered_read_requests: usize,
     #[arg(long, default_value_t = 10_000)]
@@ -92,7 +95,7 @@ async fn main() {
     let mut rng = StdRng::seed_from_u64(args.seed);
 
     let block_range = {
-        let reader = TriedbHandle::try_new(&args.triedb_path)
+        let reader = TriedbHandle::try_new(&args.triedb_path, args.node_lru_max_mem)
             .unwrap_or_else(|| panic!("failed to open triedb path: {:?}", &args.triedb_path));
         let latest_block = reader
             .latest_finalized_block()
@@ -106,6 +109,7 @@ async fn main() {
 
     let triedb_handle = TriedbEnv::new(
         &args.triedb_path,
+        args.node_lru_max_mem,
         args.max_buffered_read_requests,
         args.max_async_read_concurrency,
         args.max_buffered_traverse_requests,

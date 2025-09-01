@@ -156,6 +156,7 @@ async fn main() -> std::io::Result<()> {
     let triedb_env = args.triedb_path.clone().as_deref().map(|path| {
         TriedbEnv::new(
             path,
+            args.triedb_node_lru_max_mem,
             args.triedb_max_buffered_read_requests as usize,
             args.triedb_max_async_read_concurrency as usize,
             args.triedb_max_buffered_traverse_requests as usize,
@@ -257,7 +258,7 @@ async fn main() -> std::io::Result<()> {
         Arc::new(tokio::sync::Mutex::new(EthCallExecutor::new(
             args.eth_call_executor_threads,
             args.eth_call_executor_fibers,
-            args.eth_call_executor_node_lru_size,
+            args.eth_call_executor_node_lru_max_mem,
             args.eth_call_executor_queuing_timeout,
             path,
         )))
