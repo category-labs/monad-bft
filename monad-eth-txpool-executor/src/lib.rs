@@ -245,6 +245,7 @@ where
                         BlockPolicy::<ST, SCT, EthExecutionProtocol, SBT, CCT, CRT>::update_committed_block(
                             &mut self.block_policy,
                             &committed_block,
+                            &self.chain_config,
                         );
 
                         self.preload_manager
@@ -398,6 +399,7 @@ where
                     BlockPolicy::<ST, SCT, EthExecutionProtocol, SBT, CCT, CRT>::reset(
                         &mut self.block_policy,
                         last_delay_committed_blocks.iter().collect(),
+                        &self.chain_config,
                     );
 
                     self.pool.reset(
@@ -450,7 +452,7 @@ where
             reset,
             block_policy,
             state_backend,
-            chain_config: _,
+            chain_config,
 
             events_tx: _,
             events,
@@ -514,6 +516,7 @@ where
                 &mut EthTxPoolEventTracker::new(&metrics.pool, &mut ipc_events),
                 block_policy,
                 state_backend,
+                chain_config,
                 recovered_txs,
                 true,
                 |tx| {
@@ -563,6 +566,7 @@ where
                 &mut EthTxPoolEventTracker::new(&metrics.pool, &mut ipc_events),
                 block_policy,
                 state_backend,
+                chain_config,
                 recovered_txs,
                 false,
                 |tx| {
@@ -598,6 +602,7 @@ where
             if let Err(state_backend_error) = block_policy.compute_account_base_balances(
                 predicted_proposal_seqnum,
                 state_backend,
+                chain_config,
                 None,
                 addresses.iter(),
             ) {

@@ -1276,8 +1276,10 @@ where
             .collect();
 
         // reset block_policy and txpool
-        self.block_policy
-            .reset(last_delay_committed_blocks.iter().collect());
+        self.block_policy.reset(
+            last_delay_committed_blocks.iter().collect(),
+            &self.consensus_config.chain_config,
+        );
         commands.push(Command::TxPoolCommand(TxPoolCommand::Reset {
             last_delay_committed_blocks: last_delay_committed_blocks.clone(),
         }));

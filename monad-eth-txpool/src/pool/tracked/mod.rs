@@ -156,6 +156,7 @@ where
         block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
         extending_blocks: Vec<&EthValidatedBlock<ST, SCT>>,
         state_backend: &SBT,
+        chain_config: &CCT,
         pending: &mut PendingTxMap,
     ) -> Result<Vec<Recovered<TxEnvelope>>, StateBackendError> {
         let Some(last_commit) = &self.last_commit else {
@@ -214,6 +215,7 @@ where
                 block_policy.compute_account_base_balances(
                     proposed_seq_num,
                     state_backend,
+                    chain_config,
                     Some(&extending_blocks),
                     sequencer.addresses(),
                 )?,

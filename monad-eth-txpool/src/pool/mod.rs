@@ -114,6 +114,7 @@ where
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
         state_backend: &SBT,
+        chain_config: &CCT,
         txs: Vec<Recovered<TxEnvelope>>,
         owned: bool,
         mut on_insert: impl FnMut(&ValidEthTransaction),
@@ -154,6 +155,7 @@ where
         let account_balances = match block_policy.compute_account_base_balances(
             block_seq_num,
             state_backend,
+            chain_config,
             None,
             addresses.iter(),
         ) {
@@ -243,7 +245,7 @@ where
 
         block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
         state_backend: &SBT,
-        chain_config: &impl ChainConfig<CRT>,
+        chain_config: &CCT,
     ) -> Result<ProposedExecutionInputs<EthExecutionProtocol>, StateBackendError> {
         info!(
             ?proposed_seq_num,
@@ -284,6 +286,7 @@ where
             block_policy,
             extending_blocks.iter().collect(),
             state_backend,
+            chain_config,
             &mut self.pending,
         )?;
 

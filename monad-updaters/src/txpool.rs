@@ -354,7 +354,9 @@ where
                             MockChainConfig,
                             MockChainRevision,
                         >::update_committed_block(
-                            block_policy, &committed_block
+                            block_policy,
+                            &committed_block,
+                            &MockChainConfig::DEFAULT,
                         );
                         pool.update_committed_block(
                             &mut event_tracker,
@@ -374,7 +376,9 @@ where
                         MockChainConfig,
                         MockChainRevision,
                     >::reset(
-                        block_policy, last_delay_committed_blocks.iter().collect()
+                        block_policy,
+                        last_delay_committed_blocks.iter().collect(),
+                        &MockChainConfig::DEFAULT,
                     );
                     pool.reset(
                         &mut event_tracker,
@@ -387,6 +391,7 @@ where
                         &mut event_tracker,
                         block_policy,
                         state_backend,
+                        &MockChainConfig::DEFAULT,
                         txs.into_iter()
                             .filter_map(|raw_tx| {
                                 let tx = TxEnvelope::decode(&mut raw_tx.as_ref()).ok()?;
@@ -474,22 +479,20 @@ where
     }
 }
 
-impl<ST, SCT, SBT, CCT, CRT> MockableTxPool
+impl<ST, SCT, SBT> MockableTxPool
     for MockTxPoolExecutor<
         ST,
         SCT,
         EthExecutionProtocol,
-        EthBlockPolicy<ST, SCT, CCT, CRT>,
+        EthBlockPolicy<ST, SCT, MockChainConfig, MockChainRevision>,
         SBT,
-        CCT,
-        CRT,
+        MockChainConfig,
+        MockChainRevision,
     >
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend<ST, SCT>,
-    CCT: ChainConfig<CRT>,
-    CRT: ChainRevision,
     CertificateSignaturePubKey<ST>: ExtractEthAddress,
 
     Self: Executor<
@@ -497,20 +500,20 @@ where
                 ST,
                 SCT,
                 EthExecutionProtocol,
-                EthBlockPolicy<ST, SCT, CCT, CRT>,
+                EthBlockPolicy<ST, SCT, MockChainConfig, MockChainRevision>,
                 SBT,
-                CCT,
-                CRT,
+                MockChainConfig,
+                MockChainRevision,
             >,
         > + Unpin,
 {
     type Signature = ST;
     type SignatureCollection = SCT;
     type ExecutionProtocol = EthExecutionProtocol;
-    type BlockPolicy = EthBlockPolicy<ST, SCT, CCT, CRT>;
+    type BlockPolicy = EthBlockPolicy<ST, SCT, MockChainConfig, MockChainRevision>;
     type StateBackend = SBT;
-    type ChainConfig = CCT;
-    type ChainRevision = CRT;
+    type ChainConfig = MockChainConfig;
+    type ChainRevision = MockChainRevision;
 
     type Event = MonadEvent<ST, SCT, EthExecutionProtocol>;
 
@@ -535,6 +538,7 @@ where
             &mut EthTxPoolEventTracker::new(&self.metrics, &mut BTreeMap::default()),
             block_policy,
             state_backend,
+            &MockChainConfig::DEFAULT,
             vec![tx],
             true,
             |tx| {

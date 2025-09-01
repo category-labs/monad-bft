@@ -1322,7 +1322,8 @@ where
             // when epoch boundary block is committed, this updates
             // epoch manager records
             self.metrics.consensus_events.commit_block += 1;
-            self.block_policy.update_committed_block(block);
+            self.block_policy
+                .update_committed_block(block, &self.config.chain_config);
             self.epoch_manager
                 .schedule_epoch_start(block.header().seq_num, block.get_block_round());
 
@@ -1385,6 +1386,7 @@ where
             updated_block_id,
             self.block_policy,
             self.state_backend,
+            &self.config.chain_config,
         ) {
             debug!(
                 seq_num =? newly_coherent_block.header().seq_num,

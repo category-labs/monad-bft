@@ -202,6 +202,7 @@ fn run_custom_iter<const N: usize>(
                         &mut event_tracker,
                         &eth_block_policy,
                         &state_backend,
+                        &MockChainConfig::DEFAULT,
                         vec![tx.clone()],
                         owned,
                         |inserted_tx| {
@@ -237,6 +238,7 @@ fn run_custom_iter<const N: usize>(
                     &mut event_tracker,
                     &eth_block_policy,
                     &state_backend,
+                    &MockChainConfig::DEFAULT,
                     txs.into_iter()
                         .map(ToOwned::to_owned)
                         .map(recover_tx)
@@ -337,6 +339,7 @@ fn run_custom_iter<const N: usize>(
                     BlockPolicy::<_, _, _, StateBackendType, _, _>::update_committed_block(
                         &mut eth_block_policy,
                         &block,
+                        &MockChainConfig::DEFAULT,
                     );
 
                     pool.update_committed_block(

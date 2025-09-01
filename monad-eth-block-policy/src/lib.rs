@@ -209,11 +209,11 @@ struct CommittedBlock {
 }
 
 #[derive(Debug)]
-struct CommittedBlkBuffer<ST, SCT> {
+struct CommittedBlkBuffer<ST, SCT, CCT, CRT> {
     blocks: SortedVectorMap<SeqNum, CommittedBlock>,
     size: usize, // should be execution delay
 
-    _phantom: PhantomData<(ST, SCT)>,
+    _phantom: PhantomData<(ST, SCT, fn(&CCT, &CRT))>,
 }
 
 struct CommittedTxnFeeResult {
@@ -221,10 +221,12 @@ struct CommittedTxnFeeResult {
     next_validate: SeqNum, // next block number to validate; included for assertions only
 }
 
-impl<ST, SCT> CommittedBlkBuffer<ST, SCT>
+impl<ST, SCT, CCT, CRT> CommittedBlkBuffer<ST, SCT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     fn new(size: usize) -> Self {
         Self {
@@ -278,7 +280,7 @@ where
         }
     }
 
-    fn update_committed_block(&mut self, block: &EthValidatedBlock<ST, SCT>) {
+    fn update_committed_block(&mut self, block: &EthValidatedBlock<ST, SCT>, chain_config: &CCT) {
         let block_number = block.get_seq_num();
         if let Some((&last_block_num, _)) = self.blocks.last_key_value() {
             assert_eq!(last_block_num + SeqNum(1), block_number);
@@ -335,7 +337,7 @@ where
     last_commit: SeqNum,
 
     // last execution-delay committed blocks
-    committed_cache: CommittedBlkBuffer<ST, SCT>,
+    committed_cache: CommittedBlkBuffer<ST, SCT, CCT, CRT>,
 
     execution_delay: SeqNum,
 
@@ -493,6 +495,7 @@ where
         &self,
         consensus_block_seq_num: SeqNum,
         state_backend: &impl StateBackend<ST, SCT>,
+        chain_config: &CCT,
         extending_blocks: Option<&Vec<&EthValidatedBlock<ST, SCT>>>,
         addresses: impl Iterator<Item = &'a Address>,
     ) -> Result<BTreeMap<&'a Address, Balance>, StateBackendError>
@@ -698,6 +701,7 @@ where
         extending_blocks: Vec<&Self::ValidatedBlock>,
         blocktree_root: RootInfo,
         state_backend: &SBT,
+        chain_config: &CCT,
     ) -> Result<(), BlockPolicyError> {
         trace!(?block, "check_coherency");
         let first_block = extending_blocks
@@ -804,6 +808,7 @@ where
         let mut account_balances = self.compute_account_base_balances(
             block.get_seq_num(),
             state_backend,
+            chain_config,
             Some(&extending_blocks),
             tx_signers.iter(),
         )?;
@@ -908,17 +913,23 @@ where
         Ok(vec![expected_execution_result])
     }
 
-    fn update_committed_block(&mut self, block: &Self::ValidatedBlock) {
+    fn update_committed_block(&mut self, block: &Self::ValidatedBlock, chain_config: &CCT) {
         assert_eq!(block.get_seq_num(), self.last_commit + SeqNum(1));
         self.last_commit = block.get_seq_num();
-        self.committed_cache.update_committed_block(block);
+        self.committed_cache
+            .update_committed_block(block, chain_config);
     }
 
-    fn reset(&mut self, last_delay_committed_blocks: Vec<&Self::ValidatedBlock>) {
+    fn reset(
+        &mut self,
+        last_delay_committed_blocks: Vec<&Self::ValidatedBlock>,
+        chain_config: &CCT,
+    ) {
         self.committed_cache = CommittedBlkBuffer::new(self.committed_cache.size);
         for block in last_delay_committed_blocks {
             self.last_commit = block.get_seq_num();
-            self.committed_cache.update_committed_block(block);
+            self.committed_cache
+                .update_committed_block(block, chain_config);
         }
     }
 }
@@ -929,6 +940,7 @@ mod test {
     use alloy_primitives::{Address, FixedBytes, PrimitiveSignature, TxKind, B256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
+    use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
     use monad_crypto::NopSignature;
     use monad_testutil::signing::MockSignatures;
     use monad_types::{Hash, SeqNum};
@@ -958,7 +970,12 @@ mod test {
         let address4 = Address(FixedBytes([0x44; 20]));
 
         // add committed blocks to buffer
-        let mut buffer = CommittedBlkBuffer::<SignatureType, SignatureCollectionType>::new(3);
+        let mut buffer = CommittedBlkBuffer::<
+            SignatureType,
+            SignatureCollectionType,
+            MockChainConfig,
+            MockChainRevision,
+        >::new(3);
         let block1 = CommittedBlock {
             block_id: BlockId(Hash(Default::default())),
             round: Round(0),
@@ -1058,7 +1075,12 @@ mod test {
         let address3 = Address(FixedBytes([0x33; 20]));
 
         // add committed blocks to buffer
-        let mut buffer = CommittedBlkBuffer::<SignatureType, SignatureCollectionType>::new(3);
+        let mut buffer = CommittedBlkBuffer::<
+            SignatureType,
+            SignatureCollectionType,
+            MockChainConfig,
+            MockChainRevision,
+        >::new(3);
         let block1 = CommittedBlock {
             block_id: BlockId(Hash(Default::default())),
             round: Round(0),

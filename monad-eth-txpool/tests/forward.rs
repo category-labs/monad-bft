@@ -94,6 +94,7 @@ fn with_txpool(
         &mut event_tracker,
         &eth_block_policy,
         &state_backend,
+        &MockChainConfig::DEFAULT,
         vec![tx],
         insert_tx_owned,
         |_| {},

@@ -203,6 +203,7 @@ where
         extending_blocks: Vec<&Self::ValidatedBlock>,
         blocktree_root: RootInfo,
         state_backend: &SBT,
+        chain_cnfig: &CCT,
     ) -> Result<(), BlockPolicyError>;
 
     fn get_expected_execution_results(
@@ -214,11 +215,15 @@ where
 
     // TODO delete this function, pass recently committed blocks to check_coherency instead
     // This way, BlockPolicy doesn't need to be mutated
-    fn update_committed_block(&mut self, block: &Self::ValidatedBlock);
+    fn update_committed_block(&mut self, block: &Self::ValidatedBlock, chain_config: &CCT);
 
     // TODO delete this function, pass recently committed blocks to check_coherency instead
     // This way, BlockPolicy doesn't need to be mutated
-    fn reset(&mut self, last_delay_committed_blocks: Vec<&Self::ValidatedBlock>);
+    fn reset(
+        &mut self,
+        last_delay_committed_blocks: Vec<&Self::ValidatedBlock>,
+        chain_config: &CCT,
+    );
 }
 
 /// A block policy which does not validate the inner contents of the block
@@ -271,6 +276,7 @@ where
         extending_blocks: Vec<&Self::ValidatedBlock>,
         blocktree_root: RootInfo,
         state_backend: &InMemoryState<ST, SCT>,
+        chain_config: &MockChainConfig,
     ) -> Result<(), BlockPolicyError> {
         // check coherency against the block being extended or against the root of the blocktree if
         // there is no extending branch
@@ -311,8 +317,8 @@ where
         Ok(Vec::new())
     }
 
-    fn update_committed_block(&mut self, _: &Self::ValidatedBlock) {}
-    fn reset(&mut self, _: Vec<&Self::ValidatedBlock>) {}
+    fn update_committed_block(&mut self, _: &Self::ValidatedBlock, _: &MockChainConfig) {}
+    fn reset(&mut self, _: Vec<&Self::ValidatedBlock>, _: &MockChainConfig) {}
 }
 
 #[derive(Debug, Clone, RlpEncodable, RlpDecodable)]
