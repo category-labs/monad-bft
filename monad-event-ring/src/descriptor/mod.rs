@@ -137,7 +137,7 @@ where
         Self {
             seqno: raw.seqno,
             event_type: raw.event_type,
-            flow_info: D::transmute_flow_info(raw.user),
+            flow_info: D::transmute_flow_info(raw.content_ext),
         }
     }
 }

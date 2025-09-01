@@ -47,7 +47,7 @@ impl<'ring> RawEventDescriptor<'ring> {
             RawEventDescriptorInfo {
                 seqno: self.inner.seqno,
                 event_type: self.inner.event_type,
-                user: self.inner.user,
+                content_ext: self.inner.content_ext,
             },
             bytes,
         );
@@ -65,5 +65,5 @@ pub(crate) struct RawEventDescriptorInfo {
 
     pub event_type: u16,
 
-    pub user: [u64; 4],
+    pub content_ext: [u64; 4],
 }
