@@ -26,7 +26,7 @@ use monad_crypto::{
     NopSignature,
 };
 use monad_eth_block_policy::EthBlockPolicy;
-use monad_eth_block_validator::EthValidator;
+use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_types::{Balance, EthExecutionProtocol};
 use monad_mock_swarm::{
     mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
@@ -41,9 +41,9 @@ use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyT
 use monad_types::{NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_updaters::{
     ledger::{MockLedger, MockableLedger},
-    state_root_hash::MockStateRootHashNop,
     statesync::MockStateSyncExecutor,
     txpool::MockTxPoolExecutor,
+    val_set::MockValSetUpdaterNop,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use rayon::prelude::*;
@@ -53,7 +53,7 @@ impl SwarmRelation for ForkpointSwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
     type ExecutionProtocolType = EthExecutionProtocol;
-    type StateBackendType = InMemoryState;
+    type StateBackendType = InMemoryState<Self::SignatureType, Self::SignatureCollectionType>;
     type BlockPolicyType = EthBlockPolicy<Self::SignatureType, Self::SignatureCollectionType>;
     type ChainConfigType = MockChainConfig;
     type ChainRevisionType = MockChainRevision;
@@ -64,8 +64,7 @@ impl SwarmRelation for ForkpointSwarm {
         Self::ExecutionProtocolType,
     >;
 
-    type BlockValidator =
-        EthValidator<Self::SignatureType, Self::SignatureCollectionType, Self::StateBackendType>;
+    type BlockValidator = EthBlockValidator<Self::SignatureType, Self::SignatureCollectionType>;
     type ValidatorSetTypeFactory =
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
@@ -91,7 +90,7 @@ impl SwarmRelation for ForkpointSwarm {
         Self::TransportMessage,
     >;
 
-    type StateRootHashExecutor = MockStateRootHashNop<
+    type ValSetUpdater = MockValSetUpdaterNop<
         Self::SignatureType,
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,
@@ -124,14 +123,40 @@ fn test_forkpoint_restart_f_simple_blocksync() {
     let statesync_service_window = SeqNum::MAX;
 
     let blocks_before_failure = SeqNum(10);
+    let time_before_new_forkpoint = SeqNum(0);
     let recovery_time = SeqNum(statesync_threshold.0 / 2);
+    let finalization_delay = SeqNum(0);
     forkpoint_restart_f(
         blocks_before_failure,
+        time_before_new_forkpoint,
         recovery_time,
         epoch_length,
         statesync_threshold,
         statesync_service_window,
-        false,
+        finalization_delay,
+    );
+}
+
+// execution is delayed longer than state_root_delay
+// ensure that we don't statesync
+#[test]
+fn test_forkpoint_restart_f_delayed_execution_no_statesync() {
+    let epoch_length = SeqNum(200);
+    let statesync_threshold = SeqNum(100);
+    let statesync_service_window = SeqNum::MAX;
+
+    let blocks_before_failure = SeqNum(10);
+    let time_before_new_forkpoint = SeqNum(0);
+    let recovery_time = SeqNum(statesync_threshold.0 / 2);
+    let finalization_delay = SeqNum(8); // state_root_delay is 4
+    forkpoint_restart_f(
+        blocks_before_failure,
+        time_before_new_forkpoint,
+        recovery_time,
+        epoch_length,
+        statesync_threshold,
+        statesync_service_window,
+        finalization_delay,
     );
 }
 
@@ -142,18 +167,22 @@ fn test_forkpoint_restart_f_simple_statesync() {
     let statesync_service_window = SeqNum::MAX;
 
     let blocks_before_failure = SeqNum(10);
-    let recovery_time = SeqNum(statesync_threshold.0 * 3 / 2);
+    let time_before_new_forkpoint = SeqNum(statesync_threshold.0 * 3 / 2);
+    let recovery_time = time_before_new_forkpoint;
+    let finalization_delay = SeqNum(0);
     forkpoint_restart_f(
         blocks_before_failure,
+        time_before_new_forkpoint,
         recovery_time,
         epoch_length,
         statesync_threshold,
         statesync_service_window,
-        true,
+        finalization_delay,
     );
 }
 
 // statesync_service_window is less than recovery_time
+// the restarted forkpoint is more than recovery_time away from tip
 //
 // so this test only passes if the statesync target refreshing works in
 // monad-state/src/statesync.rs
@@ -164,14 +193,17 @@ fn test_forkpoint_restart_f_target_reset_statesync() {
     let statesync_service_window = SeqNum(50);
 
     let blocks_before_failure = SeqNum(10);
+    let time_before_new_forkpoint = SeqNum(10);
     let recovery_time = SeqNum(statesync_threshold.0 * 3 / 2);
+    let finalization_delay = SeqNum(0);
     forkpoint_restart_f(
         blocks_before_failure,
+        time_before_new_forkpoint,
         recovery_time,
         epoch_length,
         statesync_threshold,
         statesync_service_window,
-        false,
+        finalization_delay,
     );
 }
 
@@ -182,14 +214,17 @@ fn test_forkpoint_restart_f_epoch_boundary_statesync() {
     let statesync_service_window = SeqNum::MAX;
 
     let blocks_before_failure = SeqNum(275);
-    let recovery_time = SeqNum(statesync_threshold.0 * 3 / 2);
+    let time_before_new_forkpoint = SeqNum(statesync_threshold.0 * 3 / 2);
+    let recovery_time = time_before_new_forkpoint;
+    let finalization_delay = SeqNum(0);
     forkpoint_restart_f(
         blocks_before_failure,
+        time_before_new_forkpoint,
         recovery_time,
         epoch_length,
         statesync_threshold,
         statesync_service_window,
-        true,
+        finalization_delay,
     );
 }
 
@@ -204,6 +239,8 @@ fn test_forkpoint_restart_f() {
     let epoch_length = SeqNum(200);
     let statesync_threshold = SeqNum(100);
     let statesync_service_window = SeqNum::MAX;
+    let time_before_new_forkpoint = SeqNum(0);
+    let finalization_delay = SeqNum(0);
     // Epoch 1 and 2 are populated on genesis
     // This covers the case with generating validator set for epoch 3
     for before in 10..epoch_length.0 * 3 {
@@ -214,11 +251,12 @@ fn test_forkpoint_restart_f() {
                 let recovery_time = SeqNum(recovery);
                 forkpoint_restart_f(
                     blocks_before,
+                    time_before_new_forkpoint,
                     recovery_time,
                     epoch_length,
                     statesync_threshold,
                     statesync_service_window,
-                    false,
+                    finalization_delay,
                 );
             })
         });
@@ -231,19 +269,24 @@ fn test_forkpoint_restart_f() {
 /// forkpoint and blocksync
 fn forkpoint_restart_f(
     blocks_before_failure: SeqNum,
+    time_before_new_forkpoint: SeqNum,
     recovery_time: SeqNum,
     epoch_length: SeqNum,
     statesync_threshold: SeqNum,
     statesync_service_window: SeqNum,
-    fresh_forkpoint: bool,
+    finalization_delay: SeqNum,
 ) {
+    assert!(time_before_new_forkpoint <= recovery_time);
+
     let delta = Duration::from_millis(100);
     let state_root_delay = SeqNum(4);
+    let chain_config =
+        MockChainConfig::new_with_epoch_params(&CHAIN_PARAMS, epoch_length, Round(50));
     let state_configs = make_state_configs::<ForkpointSwarm>(
         4, // num_nodes
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
-        || EthValidator::new(0),
+        EthBlockValidator::default,
         || {
             EthBlockPolicy::new(
                 GENESIS_SEQ_NUM,
@@ -253,11 +296,9 @@ fn forkpoint_restart_f(
         },
         || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
         state_root_delay,
-        delta,                               // delta
-        MockChainConfig::new(&CHAIN_PARAMS), // chain config
-        epoch_length,                        // val_set_update_interval
-        Round(50),                           // epoch_start_delay
-        statesync_threshold,                 // state_sync_threshold
+        delta,               // delta
+        chain_config,        // chain config
+        statesync_threshold, // state_sync_threshold
     );
 
     let create_block_policy = || {
@@ -282,15 +323,13 @@ fn forkpoint_restart_f(
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             create_block_policy,
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
-            state_root_delay,                    // execution_delay
-            delta,                               // delta
-            MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            epoch_length,                        // val_set_update_interval
-            Round(50),                           // epoch_start_delay
-            statesync_threshold,                 // state_sync_threshold
+            state_root_delay,    // execution_delay
+            delta,               // delta
+            chain_config,        // chain config
+            statesync_threshold, // state_sync_threshold
         );
         let validators = state_configs[0].locked_epoch_validators[0]
             .validators
@@ -299,7 +338,7 @@ fn forkpoint_restart_f(
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             || {
                 EthBlockPolicy::new(
                     GENESIS_SEQ_NUM,
@@ -308,12 +347,10 @@ fn forkpoint_restart_f(
                 )
             },
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
-            state_root_delay,                    // execution_delay
-            delta,                               // delta
-            MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            epoch_length,                        // val_set_update_interval
-            Round(50),                           // epoch_start_delay
-            statesync_threshold,                 // state_sync_threshold
+            state_root_delay,    // execution_delay
+            delta,               // delta
+            chain_config,        // chain config
+            statesync_threshold, // state_sync_threshold
         );
 
         let mut restart_builder = state_configs_dup
@@ -335,9 +372,10 @@ fn forkpoint_restart_f(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockStateRootHashNop::new(validators.clone(), epoch_length),
+                        MockValSetUpdaterNop::new(validators.clone(), epoch_length),
                         MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
-                        MockLedger::new(state_backend.clone()),
+                        MockLedger::new(state_backend.clone())
+                            .with_finalization_delay(finalization_delay),
                         MockStateSyncExecutor::new(
                             state_backend,
                             validators
@@ -374,13 +412,15 @@ fn forkpoint_restart_f(
             .remove_state(&ID::new(restart_node_id))
             .expect("node exists");
 
-        let recover_block = blocks_before_failure + recovery_time;
-        while swarm
-            .step_until(&mut UntilTerminator::new().until_block(recover_block.0 as usize))
-            .is_some()
-        {}
-
-        let forkpoint = if fresh_forkpoint {
+        let forkpoint = if time_before_new_forkpoint == SeqNum(0) {
+            // Restart node from old forkpoint
+            failed_node.get_forkpoint()
+        } else {
+            let forkpoint_block = blocks_before_failure + time_before_new_forkpoint;
+            while swarm
+                .step_until(&mut UntilTerminator::new().until_block(forkpoint_block.0 as usize))
+                .is_some()
+            {}
             // Restart node from fresh forkpoint
             swarm
                 .states()
@@ -389,10 +429,14 @@ fn forkpoint_restart_f(
                 .1
                 .get_forkpoint()
                 .clone()
-        } else {
-            // Restart node from old forkpoint
-            failed_node.get_forkpoint()
         };
+
+        let recover_block = blocks_before_failure + recovery_time;
+        while swarm
+            .step_until(&mut UntilTerminator::new().until_block(recover_block.0 as usize))
+            .is_some()
+        {}
+
         let network_current_epoch = swarm
             .states()
             .iter()
@@ -425,14 +469,17 @@ fn forkpoint_restart_f(
             })
             .collect();
         restart_builder.forkpoint = forkpoint.clone();
+        restart_builder.state_backend = failed_node.state.state_backend().clone();
         let restart_builder_state_backend = restart_builder.state_backend.clone();
         swarm.add_state(NodeBuilder::new(
             ID::new(restart_node_id),
             restart_builder,
             NoSerRouterConfig::new(all_peers.clone()).build(),
-            MockStateRootHashNop::new(validators.clone(), epoch_length),
+            MockValSetUpdaterNop::new(validators.clone(), epoch_length),
             MockTxPoolExecutor::new(create_block_policy(), restart_builder_state_backend.clone()),
-            MockLedger::new(restart_builder_state_backend.clone()),
+            MockLedger::new(restart_builder_state_backend.clone())
+                .with_finalization_delay(finalization_delay)
+                .with_blocks(failed_node.executor.ledger()),
             MockStateSyncExecutor::new(
                 restart_builder_state_backend,
                 validators
@@ -472,6 +519,14 @@ fn forkpoint_restart_f(
             .consensus_events
             .trigger_state_sync
             > 0;
+        let state_sync_reset_target = restarted_node
+            .state
+            .metrics()
+            .consensus_events
+            .trigger_state_sync
+            > 1;
+        let should_reset_statesync_target =
+            (recovery_time - time_before_new_forkpoint) >= statesync_service_window;
         let invalid_epoch_error = restarted_node
             .state
             .metrics()
@@ -497,8 +552,9 @@ fn forkpoint_restart_f(
             .unwrap_or(false);
 
         let test_result = restarted_node_caught_up
-            || (state_sync_triggered && close_to_threshold)
-            || (invalid_epoch_error && epoch_cross_over);
+            && (!state_sync_triggered || close_to_threshold)
+            && (!state_sync_reset_target || should_reset_statesync_target)
+            && (!invalid_epoch_error || epoch_cross_over);
 
         assert!(
             test_result,
@@ -560,11 +616,13 @@ fn forkpoint_restart_below_all(
     let num_nodes = 4;
     let delta = Duration::from_millis(100);
     let state_root_delay = SeqNum(4);
+    let chain_config =
+        MockChainConfig::new_with_epoch_params(&CHAIN_PARAMS, epoch_length, Round(50));
     let state_configs = make_state_configs::<ForkpointSwarm>(
         num_nodes,
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
-        || EthValidator::new(0),
+        EthBlockValidator::default,
         || {
             EthBlockPolicy::new(
                 GENESIS_SEQ_NUM,
@@ -573,12 +631,10 @@ fn forkpoint_restart_below_all(
             )
         },
         || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
-        state_root_delay,                    // execution_delay
-        delta,                               // delta
-        MockChainConfig::new(&CHAIN_PARAMS), // chain config
-        epoch_length,                        // val_set_update_interval
-        Round(50),                           // epoch_start_delay
-        statesync_threshold,                 // state_sync_threshold
+        state_root_delay,    // execution_delay
+        delta,               // delta
+        chain_config,        // chain config
+        statesync_threshold, // state_sync_threshold
     );
     let validators = state_configs[0].locked_epoch_validators[0]
         .validators
@@ -616,29 +672,25 @@ fn forkpoint_restart_below_all(
             num_nodes,
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             create_block_policy,
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
-            state_root_delay,                    // execution_delay
-            delta,                               // delta
-            MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            epoch_length,                        // val_set_update_interval
-            Round(50),                           // epoch_start_delay
-            statesync_threshold,                 // state_sync_threshold
+            state_root_delay,    // execution_delay
+            delta,               // delta
+            chain_config,        // chain config
+            statesync_threshold, // state_sync_threshold
         );
         let mut state_configs_dup = make_state_configs::<ForkpointSwarm>(
             num_nodes,
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             create_block_policy,
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
-            state_root_delay,                    // execution_delay
-            delta,                               // delta
-            MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            epoch_length,                        // val_set_update_interval
-            Round(50),                           // epoch_start_delay
-            statesync_threshold,                 // state_sync_threshold
+            state_root_delay,    // execution_delay
+            delta,               // delta
+            chain_config,        // chain config
+            statesync_threshold, // state_sync_threshold
         );
 
         let all_peers: BTreeSet<_> = state_configs
@@ -655,7 +707,7 @@ fn forkpoint_restart_below_all(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockStateRootHashNop::new(validators.clone(), epoch_length),
+                        MockValSetUpdaterNop::new(validators.clone(), epoch_length),
                         MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
                         MockLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(
@@ -766,7 +818,7 @@ fn forkpoint_restart_below_all(
                 ID::new(node_id),
                 builder,
                 NoSerRouterConfig::new(all_peers.clone()).build(),
-                MockStateRootHashNop::new(validators.clone(), epoch_length),
+                MockValSetUpdaterNop::new(validators.clone(), epoch_length),
                 MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
                 MockLedger::new(state_backend.clone()),
                 MockStateSyncExecutor::new(

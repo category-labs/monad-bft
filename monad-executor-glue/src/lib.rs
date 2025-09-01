@@ -37,7 +37,6 @@ use monad_consensus_types::{
     no_endorsement::FreshProposalCertificate,
     payload::{ConsensusBlockBodyId, RoundSignature},
     quorum_certificate::{QuorumCertificate, TimestampAdjustment},
-    signature_collection::SignatureCollection,
     timeout::TimeoutCertificate,
     validator_data::ValidatorSetDataWithEpoch,
 };
@@ -49,6 +48,7 @@ use monad_types::{
     deserialize_certificate_signature, deserialize_pubkey, serialize_certificate_signature,
     serialize_pubkey, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum, Stake,
 };
+use monad_validator::signature_collection::SignatureCollection;
 use serde::{Deserialize, Serialize};
 
 const STATESYNC_NETWORK_MESSAGE_NAME: &str = "StateSyncNetworkMessage";
@@ -185,18 +185,23 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct CheckpointCommand<ST, SCT, EPT>
+pub enum ConfigFileCommand<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    pub root_seq_num: SeqNum,
-    pub checkpoint: Checkpoint<ST, SCT, EPT>,
+    Checkpoint {
+        root_seq_num: SeqNum,
+        checkpoint: Checkpoint<ST, SCT, EPT>,
+    },
+    ValidatorSetData {
+        validator_set_data: ValidatorSetDataWithEpoch<SCT>,
+    },
 }
 
 #[derive(Debug)]
-pub enum StateRootHashCommand {
+pub enum ValSetCommand {
     NotifyFinalized(SeqNum),
 }
 
@@ -438,12 +443,13 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     /// Used to update the nonces of tracked txs
     BlockCommit(Vec<BPT::ValidatedBlock>),
 
     CreateProposal {
+        node_id: NodeId<CertificateSignaturePubKey<ST>>,
         epoch: Epoch,
         round: Round,
         seq_num: SeqNum,
@@ -485,12 +491,13 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::BlockCommit(arg0) => f.debug_tuple("BlockCommit").field(arg0).finish(),
             Self::CreateProposal {
+                node_id,
                 epoch,
                 round,
                 seq_num,
@@ -507,6 +514,7 @@ where
                 delayed_execution_results,
             } => f
                 .debug_struct("CreateProposal")
+                .field("node_id", node_id)
                 .field("epoch", epoch)
                 .field("round", round)
                 .field("seq_num", seq_num)
@@ -553,13 +561,13 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     RouterCommand(RouterCommand<ST, OM>),
     TimerCommand(TimerCommand<E>),
     LedgerCommand(LedgerCommand<ST, SCT, EPT>),
-    CheckpointCommand(CheckpointCommand<ST, SCT, EPT>),
-    StateRootHashCommand(StateRootHashCommand),
+    ConfigFileCommand(ConfigFileCommand<ST, SCT, EPT>),
+    ValSetCommand(ValSetCommand),
     TimestampCommand(TimestampCommand),
 
     TxPoolCommand(TxPoolCommand<ST, SCT, EPT, BPT, SBT>),
@@ -575,19 +583,17 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::RouterCommand(arg0) => f.debug_tuple("RouterCommand").field(arg0).finish(),
             Self::TimerCommand(arg0) => f.debug_tuple("TimerCommand").field(arg0).finish(),
             Self::LedgerCommand(arg0) => f.debug_tuple("LedgerCommand").field(arg0).finish(),
-            Self::CheckpointCommand(arg0) => {
-                f.debug_tuple("CheckpointCommand").field(arg0).finish()
+            Self::ConfigFileCommand(arg0) => {
+                f.debug_tuple("ConfigFileCommand").field(arg0).finish()
             }
-            Self::StateRootHashCommand(arg0) => {
-                f.debug_tuple("StateRootHashCommand").field(arg0).finish()
-            }
+            Self::ValSetCommand(arg0) => f.debug_tuple("ValSetCommand").field(arg0).finish(),
             Self::TimestampCommand(arg0) => f.debug_tuple("TimestampCommand").field(arg0).finish(),
             Self::TxPoolCommand(arg0) => f.debug_tuple("TxPoolCommand").field(arg0).finish(),
             Self::ControlPanelCommand(arg0) => {
@@ -608,7 +614,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     pub fn split_commands(
         commands: Vec<Self>,
@@ -616,8 +622,8 @@ where
         Vec<RouterCommand<ST, OM>>,
         Vec<TimerCommand<E>>,
         Vec<LedgerCommand<ST, SCT, EPT>>,
-        Vec<CheckpointCommand<ST, SCT, EPT>>,
-        Vec<StateRootHashCommand>,
+        Vec<ConfigFileCommand<ST, SCT, EPT>>,
+        Vec<ValSetCommand>,
         Vec<TimestampCommand>,
         Vec<TxPoolCommand<ST, SCT, EPT, BPT, SBT>>,
         Vec<ControlPanelCommand<ST>>,
@@ -628,8 +634,8 @@ where
         let mut router_cmds = Vec::new();
         let mut timer_cmds = Vec::new();
         let mut ledger_cmds = Vec::new();
-        let mut checkpoint_cmds = Vec::new();
-        let mut state_root_hash_cmds = Vec::new();
+        let mut config_file_cmds = Vec::new();
+        let mut val_set_cmds = Vec::new();
         let mut timestamp_cmds = Vec::new();
         let mut txpool_cmds = Vec::new();
         let mut control_panel_cmds = Vec::new();
@@ -642,8 +648,8 @@ where
                 Command::RouterCommand(cmd) => router_cmds.push(cmd),
                 Command::TimerCommand(cmd) => timer_cmds.push(cmd),
                 Command::LedgerCommand(cmd) => ledger_cmds.push(cmd),
-                Command::CheckpointCommand(cmd) => checkpoint_cmds.push(cmd),
-                Command::StateRootHashCommand(cmd) => state_root_hash_cmds.push(cmd),
+                Command::ConfigFileCommand(cmd) => config_file_cmds.push(cmd),
+                Command::ValSetCommand(cmd) => val_set_cmds.push(cmd),
                 Command::TimestampCommand(cmd) => timestamp_cmds.push(cmd),
                 Command::TxPoolCommand(cmd) => txpool_cmds.push(cmd),
                 Command::ControlPanelCommand(cmd) => control_panel_cmds.push(cmd),
@@ -657,8 +663,8 @@ where
             router_cmds,
             timer_cmds,
             ledger_cmds,
-            checkpoint_cmds,
-            state_root_hash_cmds,
+            config_file_cmds,
+            val_set_cmds,
             timestamp_cmds,
             txpool_cmds,
             control_panel_cmds,
@@ -1013,6 +1019,9 @@ where
         high_qc: QuorumCertificate<SCT>,
         timestamp_ns: u128,
         round_signature: RoundSignature<SCT::SignatureType>,
+        base_fee: u64,
+        base_fee_trend: u64,
+        base_fee_moment: u64,
         delayed_execution_results: Vec<EPT::FinalizedHeader>,
         proposed_execution_inputs: ProposedExecutionInputs<EPT>,
         last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
@@ -1044,6 +1053,9 @@ where
                 high_qc,
                 timestamp_ns,
                 round_signature,
+                base_fee,
+                base_fee_trend,
+                base_fee_moment,
                 delayed_execution_results,
                 proposed_execution_inputs,
                 last_round_tc,
@@ -1073,7 +1085,7 @@ where
                     }
                 }
 
-                let enc: [&dyn Encodable; 11] = [
+                let enc: [&dyn Encodable; 14] = [
                     &1u8,
                     epoch,
                     round,
@@ -1081,6 +1093,9 @@ where
                     high_qc,
                     timestamp_ns,
                     round_signature,
+                    base_fee,
+                    base_fee_trend,
+                    base_fee_moment,
                     delayed_execution_results,
                     proposed_execution_inputs,
                     &tc_buf,
@@ -1116,6 +1131,9 @@ where
                 let high_qc = QuorumCertificate::<SCT>::decode(&mut payload)?;
                 let timestamp_ns = u128::decode(&mut payload)?;
                 let round_signature = RoundSignature::<SCT::SignatureType>::decode(&mut payload)?;
+                let base_fee = u64::decode(&mut payload)?;
+                let base_fee_trend = u64::decode(&mut payload)?;
+                let base_fee_moment = u64::decode(&mut payload)?;
                 let delayed_execution_results = Vec::<EPT::FinalizedHeader>::decode(&mut payload)?;
                 let proposed_execution_inputs =
                     ProposedExecutionInputs::<EPT>::decode(&mut payload)?;
@@ -1146,6 +1164,9 @@ where
                     high_qc,
                     timestamp_ns,
                     round_signature,
+                    base_fee,
+                    base_fee_trend,
+                    base_fee_moment,
                     delayed_execution_results,
                     proposed_execution_inputs,
                     last_round_tc: tc,
@@ -1183,6 +1204,9 @@ where
                 high_qc,
                 timestamp_ns,
                 round_signature,
+                base_fee,
+                base_fee_trend,
+                base_fee_moment,
                 delayed_execution_results,
                 proposed_execution_inputs,
                 last_round_tc,
@@ -1195,6 +1219,9 @@ where
                 .field("high_qc", high_qc)
                 .field("timestamp_ns", timestamp_ns)
                 .field("round_signature", round_signature)
+                .field("base_fee", &base_fee)
+                .field("base_fee_trend", &base_fee_trend.cast_signed())
+                .field("base_fee_moment", &base_fee_moment)
                 .field("delayed_execution_results", delayed_execution_results)
                 .field("proposed_execution_inputs", proposed_execution_inputs)
                 .field("last_round_tc", last_round_tc)

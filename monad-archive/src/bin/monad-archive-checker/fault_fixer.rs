@@ -24,11 +24,11 @@ use tracing::{debug, error, info, warn};
 use crate::{
     model::{CheckerModel, Fault, FaultKind},
     rechecker_v2::recheck_chunk_from_scratch,
-    CHUNK_SIZE,
 };
 
 /// Runs the fault fixer once across all replicas or specified replicas
 /// Returns summary statistics of fixed/failed counts
+#[allow(clippy::too_many_arguments)]
 pub async fn run_fixer(
     model: &CheckerModel,
     metrics: &Metrics,
@@ -37,6 +37,7 @@ pub async fn run_fixer(
     specific_replicas: Option<Vec<String>>,
     start: Option<u64>,
     end: Option<u64>,
+    concurrency: usize,
 ) -> Result<(usize, usize)> {
     let replicas: Vec<String> = if let Some(replicas) = specific_replicas {
         // Validate that specified replicas exist
@@ -54,8 +55,6 @@ pub async fn run_fixer(
     let mut total_failed = 0;
 
     for replica in replicas {
-        let latest_checked = model.get_latest_checked_for_replica(&replica).await?;
-
         // If dry run, print header for this replica
         if dry_run {
             info!("DRY RUN: Scanning replica '{}' for faults...", replica);
@@ -63,25 +62,20 @@ pub async fn run_fixer(
             info!("Fixing faults for replica '{}'...", replica);
         }
 
-        let start_idx = if let Some(start) = start {
-            start / CHUNK_SIZE
-        } else {
-            0
-        };
-
-        let end_idx = if let Some(end) = end {
-            end.min(latest_checked) / CHUNK_SIZE
-        } else {
-            latest_checked / CHUNK_SIZE
-        };
+        let chunk_starts = model
+            .find_chunk_starts_with_faults_by_replica(&replica, start, end)
+            .await?;
+        info!(
+            ?chunk_starts,
+            "Found {} chunks with faults",
+            chunk_starts.len()
+        );
 
         // Process chunks of CHUNK_SIZE blocks at a time
-        let (replica_fixed, replica_failed) = stream::iter(start_idx..end_idx)
-            .map(|idx| {
+        let (replica_fixed, replica_failed) = stream::iter(chunk_starts)
+            .map(|chunk_start| {
                 let replica = replica.clone();
                 async move {
-                    let chunk_start = idx * CHUNK_SIZE;
-
                     // Get current faults for this chunk
                     let faults = model.get_faults_chunk(&replica, chunk_start).await?;
                     if faults.is_empty() {
@@ -101,6 +95,7 @@ pub async fn run_fixer(
                         metrics,
                         dry_run,
                         &faults,
+                        concurrency,
                     )
                     .await?;
 
@@ -112,7 +107,8 @@ pub async fn run_fixer(
                         info!("Verifying fixes for chunk starting at {}...", chunk_start);
 
                         // Recheck the chunk from scratch
-                        recheck_chunk_from_scratch(model, chunk_start, dry_run).await?;
+                        recheck_chunk_from_scratch(model, chunk_start, dry_run, concurrency)
+                            .await?;
 
                         // Get the updated faults for this replica
                         let remaining_faults =
@@ -135,7 +131,7 @@ pub async fn run_fixer(
                     Ok((fixed, failed))
                 }
             })
-            .buffered(if dry_run { 1 } else { 2 })
+            .buffer_unordered(if dry_run { 1 } else { 2 })
             .try_fold((0, 0), |(fixed_count, failed_count), (fixed, failed)| {
                 futures::future::ready(Ok((fixed_count + fixed, failed_count + failed)))
             })
@@ -186,6 +182,7 @@ async fn fix_faults_in_range(
     metrics: &Metrics,
     dry_run: bool,
     faults: &[Fault],
+    concurrency: usize,
 ) -> Result<(usize, usize)> {
     if faults.is_empty() {
         return Ok((0, 0));
@@ -284,7 +281,7 @@ async fn fix_faults_in_range(
             );
             Ok(())
         })
-        .buffered(200)
+        .buffered(concurrency)
         .try_fold(0, |fixed_count, _| {
             futures::future::ready(Ok(fixed_count + 1))
         })
@@ -574,9 +571,17 @@ mod tests {
                 .await
                 .unwrap();
 
-            fix_faults_in_range(&model, chunk_start, replica_name, &metrics, false, &faults)
-                .await
-                .unwrap()
+            fix_faults_in_range(
+                &model,
+                chunk_start,
+                replica_name,
+                &metrics,
+                false,
+                &faults,
+                10,
+            )
+            .await
+            .unwrap()
         };
 
         // Verify both faults were fixed
@@ -686,6 +691,7 @@ mod tests {
             &metrics,
             true, // dry run
             &initial_faults,
+            10,
         )
         .await
         .unwrap();

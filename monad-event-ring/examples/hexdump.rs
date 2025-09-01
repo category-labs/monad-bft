@@ -18,7 +18,7 @@ use std::{path::PathBuf, time::Duration};
 use clap::Parser;
 use itertools::Itertools;
 use monad_event_ring::{
-    BytesDecoder, DecodedEventRing, EventDescriptorPayload, EventNextResult, EventRing,
+    BytesDecoder, DecodedEventRing, EventNextResult, EventPayloadResult, EventRing,
 };
 
 #[derive(Debug, Parser)]
@@ -63,9 +63,9 @@ fn main() {
                     .collect_vec(),
             ))
         }) {
-            EventDescriptorPayload::Expired => panic!("event ring payload expired"),
-            EventDescriptorPayload::Payload(None) => unreachable!(),
-            EventDescriptorPayload::Payload(Some(hexdump)) => hexdump,
+            EventPayloadResult::Expired => panic!("event ring payload expired"),
+            EventPayloadResult::Ready(None) => unreachable!(),
+            EventPayloadResult::Ready(Some(hexdump)) => hexdump,
         };
 
         println!(

@@ -24,11 +24,7 @@ use monad_blocksync::{
     messages::message::{BlockSyncRequestMessage, BlockSyncResponseMessage},
 };
 use monad_blocktree::blocktree::BlockTree;
-use monad_chain_config::{
-    execution_revision::ExecutionChainParams,
-    revision::{ChainParams, ChainRevision},
-    ChainConfig,
-};
+use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus::{
     messages::consensus_message::ConsensusMessage,
     validation::{
@@ -45,10 +41,8 @@ use monad_consensus_types::{
     checkpoint::{Checkpoint, LockedEpoch},
     metrics::Metrics,
     quorum_certificate::QuorumCertificate,
-    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     validation,
     validator_data::ValidatorSetDataWithEpoch,
-    voting::ValidatorMapping,
     RoundCertificate,
 };
 use monad_crypto::certificate_signature::{
@@ -57,18 +51,20 @@ use monad_crypto::certificate_signature::{
 use monad_executor_glue::{
     BlockSyncEvent, ClearMetrics, Command, ConfigEvent, ConfigReloadCommand, ConsensusEvent,
     ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers, LedgerCommand,
-    MempoolEvent, Message, MonadEvent, ReadCommand, ReloadConfig, RouterCommand,
-    StateRootHashCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, TxPoolCommand,
-    ValidatorEvent, WriteCommand,
+    MempoolEvent, Message, MonadEvent, ReadCommand, ReloadConfig, RouterCommand, StateSyncCommand,
+    StateSyncEvent, StateSyncNetworkMessage, TxPoolCommand, ValSetCommand, ValidatorEvent,
+    WriteCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{
     Epoch, ExecutionProtocol, MonadVersion, NodeId, Round, RouterTarget, SeqNum, GENESIS_BLOCK_ID,
-    GENESIS_ROUND,
+    GENESIS_ROUND, GENESIS_SEQ_NUM,
 };
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    validator_mapping::ValidatorMapping,
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
@@ -262,7 +258,7 @@ where
             let (vset, vmap) = validators
                 .get(&epoch)
                 .ok_or(validation::Error::ValidatorSetDataUnavailable)?;
-            let leader = election.get_leader(round, vset.get_members());
+            let leader = election.get_leader(round, epoch, vset.get_members());
             Ok((vset, vmap, leader))
         };
 
@@ -295,7 +291,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     Sync {
         high_certificate: RoundCertificate<ST, SCT, EPT>,
@@ -318,7 +314,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -365,8 +361,8 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    SBT: StateBackend<ST, SCT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
@@ -411,10 +407,10 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -754,9 +750,9 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -769,8 +765,6 @@ where
     pub locked_epoch_validators: Vec<ValidatorSetDataWithEpoch<SCT>>,
     pub key: ST::KeyPairType,
     pub certkey: SignatureCollectionKeyPairType<SCT>,
-    pub val_set_update_interval: SeqNum,
-    pub epoch_start_delay: Round,
     pub beneficiary: [u8; 20],
     pub block_sync_override_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
 
@@ -786,10 +780,10 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -821,8 +815,8 @@ where
         let val_epoch_map = ValidatorsEpochMapping::new(self.validator_set_factory);
 
         let epoch_manager = EpochManager::new(
-            self.val_set_update_interval,
-            self.epoch_start_delay,
+            self.consensus_config.chain_config.get_epoch_length(),
+            self.consensus_config.chain_config.get_epoch_start_delay(),
             &self.forkpoint.get_epoch_starts(),
         );
 
@@ -891,10 +885,10 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -943,8 +937,8 @@ where
                     .collect::<Vec<_>>();
 
                 if take_checkpoint {
-                    if let Some(checkpoint) = ConsensusChildState::new(self).checkpoint() {
-                        cmds.push(Command::CheckpointCommand(checkpoint));
+                    if let Some(checkpoint_cmd) = ConsensusChildState::new(self).checkpoint() {
+                        cmds.push(Command::ConfigFileCommand(checkpoint_cmd));
                     }
                 }
 
@@ -1026,20 +1020,8 @@ where
                     match maybe_target {
                         Some(target) if n >= target => {
                             assert_eq!(n, target);
-                            assert!(
-                                self.state_backend
-                                    .raw_read_earliest_finalized_block()
-                                    .expect("earliest_finalized doesn't exist")
-                                    <= n
-                            );
-                            assert!(
-                                self.state_backend
-                                    .raw_read_latest_finalized_block()
-                                    .expect("latest_finalized doesn't exist")
-                                    >= n
-                            );
 
-                            tracing::info!(?n, "done db statesync");
+                            tracing::info!(?target, ?n, "done db statesync");
                             *db_status = DbSyncStatus::Done;
 
                             self.maybe_start_consensus()
@@ -1200,47 +1182,59 @@ where
 
         if db_status == &DbSyncStatus::Waiting {
             *db_status = DbSyncStatus::Started;
+
             let delay = self.consensus_config.execution_delay;
-            let state_root_seq_num = root_seq_num.max(delay) - delay;
+            let delay_seq_num = root_seq_num.max(delay) - delay;
 
-            let latest_block = self.state_backend.raw_read_latest_finalized_block();
-            assert!(
-                latest_block.unwrap_or(SeqNum(0)) <= root_seq_num,
-                "tried to statesync backwards: {latest_block:?} <= {root_seq_num:?}"
-            );
+            let delay_block_id = {
+                let delay_child_seq_num = delay_seq_num + SeqNum(1);
 
-            if latest_block.is_none()
-                || latest_block.is_some_and(|latest_block| latest_block < state_root_seq_num)
-            {
-                let delayed_execution_result = block_buffer
-                    .root_delayed_execution_result()
-                    .expect("is DB state empty? use execution to populate genesis if so");
-                assert_eq!(
-                    delayed_execution_result.len(),
-                    1,
-                    "always 1 execution result after first k-1 blocks for now"
-                );
-                return vec![Command::StateSyncCommand(StateSyncCommand::RequestSync(
-                    delayed_execution_result
-                        .first()
-                        .expect("asserted 1 execution result")
-                        .clone(),
-                ))];
-            } else {
-                // if latest_block > state_root_seq_num, we can't RequestSync because we
-                // would be trying to sync backwards.
+                let delay_child_block = root_parent_chain
+                    .iter()
+                    .find(|block| block.get_seq_num() == delay_child_seq_num);
 
-                assert!(
-                    self.state_backend
-                        .raw_read_earliest_finalized_block()
-                        .expect("latest_finalized_block exists")
-                        <= state_root_seq_num
-                );
+                delay_child_block
+                    .map(|block| block.get_parent_id())
+                    .unwrap_or_else(|| {
+                        assert_eq!(
+                            root_seq_num,
+                            GENESIS_SEQ_NUM,
+                            "Root parent chain always contains `delay` blocks when `root_seq_num >= delay`"
+                        );
+
+                        GENESIS_BLOCK_ID
+                    })
+            };
+
+            // We use get_execution_result as a proxy to determine if the delay_block has been executed.
+            let delay_executed = self
+                .state_backend
+                .get_execution_result(&delay_block_id, &delay_seq_num, true)
+                .is_ok();
+
+            if delay_executed {
                 // TODO assert state root matches?
                 return self.update(MonadEvent::StateSyncEvent(StateSyncEvent::DoneSync(
-                    state_root_seq_num,
+                    delay_seq_num,
                 )));
             }
+
+            let delayed_execution_result = block_buffer
+                .root_delayed_execution_result()
+                .expect("is DB state empty? use execution to populate genesis if so");
+            assert_eq!(
+                delayed_execution_result.len(),
+                1,
+                "always 1 execution result after first k-1 blocks for now"
+            );
+
+            self.metrics.consensus_events.trigger_state_sync += 1;
+            return vec![Command::StateSyncCommand(StateSyncCommand::RequestSync(
+                delayed_execution_result
+                    .first()
+                    .expect("asserted 1 execution result")
+                    .clone(),
+            ))];
         } else if db_status == &DbSyncStatus::Started {
             tracing::info!(
                 ?db_status,
@@ -1258,26 +1252,6 @@ where
         let last_delay_committed_blocks: Vec<_> = root_parent_chain
             .iter()
             .map(|full_block| {
-                let ChainParams {
-                    tx_limit,
-                    proposal_gas_limit,
-                    proposal_byte_limit,
-                    vote_pace: _,
-                } = self
-                    .consensus_config
-                    .chain_config
-                    .get_chain_revision(full_block.header().block_round)
-                    .chain_params();
-                let ExecutionChainParams { max_code_size } = {
-                    // u64::MAX seconds is ~500 Billion years
-                    let timestamp_s: u64 = (full_block.header().timestamp_ns / 1_000_000_000)
-                        .try_into()
-                        .unwrap();
-                    self.consensus_config
-                        .chain_config
-                        .get_execution_chain_revision(timestamp_s)
-                        .execution_chain_params()
-                };
                 self.block_validator
                     .validate(
                         full_block.header().clone(),
@@ -1285,10 +1259,7 @@ where
                         // we don't need to validate bls pubkey fields (randao)
                         // this is because these blocks are already committed by majority
                         None,
-                        *tx_limit,
-                        *proposal_gas_limit,
-                        *proposal_byte_limit,
-                        *max_code_size,
+                        &self.consensus_config.chain_config,
                     )
                     .expect("majority committed invalid block")
             })
@@ -1311,9 +1282,9 @@ where
             commands.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
                 OptimisticCommit::Finalized(block.deref().to_owned()),
             )));
-            commands.push(Command::StateRootHashCommand(
-                StateRootHashCommand::NotifyFinalized(block.get_seq_num()),
-            ));
+            commands.push(Command::ValSetCommand(ValSetCommand::NotifyFinalized(
+                block.get_seq_num(),
+            )));
         }
 
         let cached_proposals = block_buffer.proposals().cloned().collect_vec();
@@ -1379,7 +1350,6 @@ mod test {
     use monad_bls::BlsSignatureCollection;
     use monad_consensus_types::{
         quorum_certificate::QuorumCertificate,
-        signature_collection::SignatureCollection,
         validator_data::{ValidatorData, ValidatorSetData, ValidatorsConfig},
         voting::Vote,
     };
@@ -1389,7 +1359,8 @@ mod test {
     use monad_testutil::validators::create_keys_w_validators;
     use monad_types::{BlockId, Hash, NodeId, Round, Stake};
     use monad_validator::{
-        validator_set::ValidatorSetFactory, weighted_round_robin::WeightedRoundRobin,
+        signature_collection::SignatureCollection, validator_set::ValidatorSetFactory,
+        weighted_round_robin::WeightedRoundRobin,
     };
 
     use super::*;
@@ -1466,7 +1437,7 @@ mod test {
             })
             .collect();
 
-        (forkpoint, validator_sets, WeightedRoundRobin::default())
+        (forkpoint, validator_sets, WeightedRoundRobin::new(Epoch(1)))
     }
 
     #[test]

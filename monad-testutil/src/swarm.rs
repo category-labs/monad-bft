@@ -18,7 +18,6 @@ use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::ConsensusFullBlock,
-    signature_collection::SignatureCollection,
     validator_data::{ValidatorSetData, ValidatorSetDataWithEpoch},
 };
 use monad_crypto::certificate_signature::{
@@ -26,9 +25,9 @@ use monad_crypto::certificate_signature::{
 };
 use monad_mock_swarm::{mock_swarm::Nodes, swarm_relation::SwarmRelation};
 use monad_state::{Forkpoint, MonadStateBuilder};
-use monad_types::{ExecutionProtocol, Round, SeqNum};
+use monad_types::{ExecutionProtocol, SeqNum};
 use monad_updaters::ledger::MockableLedger;
-use monad_validator::validator_set::ValidatorSetType;
+use monad_validator::{signature_collection::SignatureCollection, validator_set::ValidatorSetType};
 
 use crate::validators::create_keys_w_validators;
 
@@ -44,8 +43,6 @@ pub fn make_state_configs<S: SwarmRelation>(
     execution_delay: SeqNum,
     delta: Duration,
     chain_config: S::ChainConfigType,
-    val_set_update_interval: SeqNum,
-    epoch_start_delay: Round,
     statesync_threshold: SeqNum,
 ) -> Vec<
     MonadStateBuilder<
@@ -105,8 +102,6 @@ pub fn make_state_configs<S: SwarmRelation>(
             key,
             certkey,
 
-            val_set_update_interval,
-            epoch_start_delay,
             beneficiary: Default::default(),
             block_sync_override_peers: Default::default(),
 

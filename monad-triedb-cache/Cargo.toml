@@ -9,9 +9,11 @@ edition = "2021"
 bench = false
 
 [dependencies]
+monad-crypto = { workspace = true }
 monad-eth-types = { workspace = true }
 monad-state-backend = { workspace = true }
 monad-types = { workspace = true }
+monad-validator = { workspace = true }
 
 alloy-primitives = { workspace = true }
 itertools = { workspace = true }

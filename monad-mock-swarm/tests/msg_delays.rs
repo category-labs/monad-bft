@@ -32,10 +32,10 @@ use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
 use monad_state_backend::InMemoryStateInner;
 use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
 use monad_transformer::{GenericTransformer, XorLatencyTransformer, ID};
-use monad_types::{NodeId, Round, SeqNum};
+use monad_types::{NodeId, SeqNum};
 use monad_updaters::{
-    ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
-    txpool::MockTxPoolExecutor,
+    ledger::MockLedger, statesync::MockStateSyncExecutor, txpool::MockTxPoolExecutor,
+    val_set::MockValSetUpdaterNop,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 
@@ -61,8 +61,6 @@ fn two_nodes() {
         SeqNum(4),                           // execution_delay
         delta,                               // delta
         MockChainConfig::new(&CHAIN_PARAMS), // chain config
-        SeqNum(2000),                        // val_set_update_interval
-        Round(50),                           // epoch_start_delay
         SeqNum(100),                         // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs
@@ -80,7 +78,7 @@ fn two_nodes() {
                     ID::new(NodeId::new(state_builder.key.pubkey())),
                     state_builder,
                     NoSerRouterConfig::new(all_peers.clone()).build(),
-                    MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
+                    MockValSetUpdaterNop::new(validators.validators.clone(), SeqNum(2000)),
                     MockTxPoolExecutor::default(),
                     MockLedger::new(state_backend.clone()),
                     MockStateSyncExecutor::new(

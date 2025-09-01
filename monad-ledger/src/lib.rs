@@ -30,7 +30,6 @@ use monad_blocksync::messages::message::{
 use monad_consensus_types::{
     block::{BlockRange, ConsensusFullBlock, OptimisticCommit},
     payload::{ConsensusBlockBody, ConsensusBlockBodyId},
-    signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -39,6 +38,7 @@ use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
 use monad_types::{BlockId, Round, SeqNum, GENESIS_ROUND};
+use monad_validator::signature_collection::SignatureCollection;
 use tracing::{info, trace, warn};
 
 /// A ledger for committed Ethereum blocks

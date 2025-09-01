@@ -15,16 +15,16 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use monad_consensus_types::{
-    no_endorsement::NoEndorsementCertificate,
+use monad_consensus_types::no_endorsement::NoEndorsementCertificate;
+use monad_crypto::signing_domain;
+use monad_types::{NodeId, Round};
+use monad_validator::{
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
     },
-    voting::ValidatorMapping,
+    validator_mapping::ValidatorMapping,
+    validator_set::ValidatorSetType,
 };
-use monad_crypto::signing_domain;
-use monad_types::{NodeId, Round};
-use monad_validator::validator_set::ValidatorSetType;
 use tracing::{debug, error, info, warn};
 
 use crate::messages::message::NoEndorsementMessage;

@@ -38,6 +38,8 @@ pub(crate) mod buffer_ext;
 pub mod tcp;
 pub mod udp;
 
+pub(crate) use udp::UdpMessageType;
+
 pub struct DataplaneBuilder {
     local_addr: SocketAddr,
     trusted_addresses: Vec<IpAddr>,
@@ -46,6 +48,7 @@ pub struct DataplaneBuilder {
     udp_buffer_size: Option<usize>,
     tcp_config: TcpConfig,
     ban_duration: Duration,
+    direct_socket_port: Option<u16>,
 }
 
 impl DataplaneBuilder {
@@ -64,6 +67,7 @@ impl DataplaneBuilder {
                 per_ip_connections_limit: 100,
             },
             ban_duration: Duration::from_secs(5 * 60), // 5 minutes
+            direct_socket_port: None,
         }
     }
 
@@ -96,6 +100,12 @@ impl DataplaneBuilder {
         self
     }
 
+    /// with_direct_socket configures an additional UDP socket for direct peer communication
+    pub fn with_direct_socket(mut self, port: u16) -> Self {
+        self.direct_socket_port = Some(port);
+        self
+    }
+
     pub fn build(self) -> Dataplane {
         let DataplaneBuilder {
             local_addr,
@@ -104,11 +114,14 @@ impl DataplaneBuilder {
             trusted_addresses: trusted,
             tcp_config,
             ban_duration,
+            direct_socket_port,
         } = self;
 
         let (tcp_ingress_tx, tcp_ingress_rx) = mpsc::channel(TCP_INGRESS_CHANNEL_SIZE);
         let (tcp_egress_tx, tcp_egress_rx) = mpsc::channel(TCP_EGRESS_CHANNEL_SIZE);
         let (udp_ingress_tx, udp_ingress_rx) = mpsc::channel(UDP_INGRESS_CHANNEL_SIZE);
+        let (udp_direct_ingress_tx, udp_direct_ingress_rx) =
+            mpsc::channel(UDP_INGRESS_CHANNEL_SIZE);
         let (udp_egress_tx, udp_egress_rx) = mpsc::channel(UDP_EGRESS_CHANNEL_SIZE);
 
         let ready = Arc::new(AtomicBool::new(false));
@@ -142,10 +155,11 @@ impl DataplaneBuilder {
                                 tcp_ingress_tx,
                                 tcp_egress_rx,
                             );
-
                             udp::spawn_tasks(
                                 local_addr,
+                                direct_socket_port,
                                 udp_ingress_tx,
+                                udp_direct_ingress_tx,
                                 udp_egress_rx,
                                 up_bandwidth_mbps,
                                 udp_buffer_size,
@@ -166,7 +180,7 @@ impl DataplaneBuilder {
             banned_ips_tx,
             addrlist,
         );
-        let reader = DataplaneReader::new(tcp_ingress_rx, udp_ingress_rx);
+        let reader = DataplaneReader::new(tcp_ingress_rx, udp_ingress_rx, udp_direct_ingress_rx);
 
         Dataplane {
             writer,
@@ -185,6 +199,7 @@ pub struct Dataplane {
 pub struct DataplaneReader {
     tcp_ingress_rx: mpsc::Receiver<RecvTcpMsg>,
     udp_ingress_rx: mpsc::Receiver<RecvUdpMsg>,
+    udp_direct_ingress_rx: mpsc::Receiver<RecvUdpMsg>,
 }
 
 #[derive(Clone)]
@@ -228,6 +243,7 @@ impl BroadcastMsg {
                 UdpMsg {
                     payload: payload.clone(),
                     stride,
+                    msg_type: UdpMessageType::Broadcast,
                 },
             )
         })
@@ -247,8 +263,16 @@ impl UnicastMsg {
 
     fn into_iter(self) -> impl Iterator<Item = (SocketAddr, UdpMsg)> {
         let Self { msgs, stride } = self;
-        msgs.into_iter()
-            .map(move |(dst, payload)| (dst, UdpMsg { payload, stride }))
+        msgs.into_iter().map(move |(dst, payload)| {
+            (
+                dst,
+                UdpMsg {
+                    payload,
+                    stride,
+                    msg_type: UdpMessageType::Broadcast,
+                },
+            )
+        })
     }
 }
 
@@ -270,9 +294,10 @@ pub struct TcpMsg {
     pub completion: Option<oneshot::Sender<()>>,
 }
 
-pub struct UdpMsg {
-    pub payload: Bytes,
-    pub stride: u16,
+pub(crate) struct UdpMsg {
+    pub(crate) payload: Bytes,
+    pub(crate) stride: u16,
+    pub(crate) msg_type: UdpMessageType,
 }
 
 const TCP_INGRESS_CHANNEL_SIZE: usize = 1024;
@@ -327,12 +352,20 @@ impl Dataplane {
         self.reader.udp_read().await
     }
 
+    pub async fn udp_direct_read(&mut self) -> RecvUdpMsg {
+        self.reader.udp_direct_read().await
+    }
+
     pub fn udp_write_broadcast(&self, msg: BroadcastMsg) {
         self.writer.udp_write_broadcast(msg);
     }
 
     pub fn udp_write_unicast(&self, msg: UnicastMsg) {
         self.writer.udp_write_unicast(msg);
+    }
+
+    pub fn udp_write_direct(&self, dst: SocketAddr, payload: Bytes, stride: u16) {
+        self.writer.udp_write_direct(dst, payload, stride);
     }
 
     pub fn ready(&self) -> bool {
@@ -355,10 +388,12 @@ impl DataplaneReader {
     fn new(
         tcp_ingress_rx: mpsc::Receiver<RecvTcpMsg>,
         udp_ingress_rx: mpsc::Receiver<RecvUdpMsg>,
+        udp_direct_ingress_rx: mpsc::Receiver<RecvUdpMsg>,
     ) -> Self {
         Self {
             tcp_ingress_rx,
             udp_ingress_rx,
+            udp_direct_ingress_rx,
         }
     }
 
@@ -376,16 +411,29 @@ impl DataplaneReader {
         }
     }
 
+    pub async fn udp_direct_read(&mut self) -> RecvUdpMsg {
+        match self.udp_direct_ingress_rx.recv().await {
+            Some(msg) => msg,
+            None => panic!("udp_direct_ingress_rx channel closed"),
+        }
+    }
+
     pub fn split(self) -> (TcpReader, UdpReader) {
         (
             TcpReader(self.tcp_ingress_rx),
-            UdpReader(self.udp_ingress_rx),
+            UdpReader {
+                udp_ingress_rx: self.udp_ingress_rx,
+                udp_direct_ingress_rx: self.udp_direct_ingress_rx,
+            },
         )
     }
 }
 
 pub struct TcpReader(mpsc::Receiver<RecvTcpMsg>);
-pub struct UdpReader(mpsc::Receiver<RecvUdpMsg>);
+pub struct UdpReader {
+    udp_ingress_rx: mpsc::Receiver<RecvUdpMsg>,
+    udp_direct_ingress_rx: mpsc::Receiver<RecvUdpMsg>,
+}
 
 impl TcpReader {
     pub async fn read(&mut self) -> RecvTcpMsg {
@@ -398,9 +446,16 @@ impl TcpReader {
 
 impl UdpReader {
     pub async fn read(&mut self) -> RecvUdpMsg {
-        match self.0.recv().await {
+        match self.udp_ingress_rx.recv().await {
             Some(msg) => msg,
             None => panic!("udp_ingress_rx channel closed"),
+        }
+    }
+
+    pub async fn direct_read(&mut self) -> RecvUdpMsg {
+        match self.udp_direct_ingress_rx.recv().await {
+            Some(msg) => msg,
+            None => panic!("udp_direct_ingress_rx channel closed"),
         }
     }
 }
@@ -559,5 +614,30 @@ impl DataplaneWriter {
         self.inner
             .tcp_control_map
             .disconnect_socket(addr.ip(), addr.port());
+    }
+
+    pub fn udp_write_direct(&self, dst: SocketAddr, payload: Bytes, stride: u16) {
+        let msg_length = payload.len();
+        let udp_msg = UdpMsg {
+            payload,
+            stride,
+            msg_type: UdpMessageType::Direct,
+        };
+
+        match self.inner.udp_egress_tx.try_send((dst, udp_msg)) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                let udp_msgs_dropped = self.inner.udp_msgs_dropped.fetch_add(1, Ordering::Relaxed);
+
+                warn!(
+                    num_msgs_dropped = 1,
+                    total_udp_msgs_dropped = udp_msgs_dropped,
+                    ?dst,
+                    msg_length,
+                    "udp_egress_tx channel full, dropping direct message"
+                );
+            }
+            Err(TrySendError::Closed(_)) => panic!("udp_egress_tx channel closed"),
+        }
     }
 }

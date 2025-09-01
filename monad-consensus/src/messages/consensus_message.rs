@@ -16,11 +16,11 @@
 use std::fmt::Debug;
 
 use alloy_rlp::{encode_list, Decodable, Encodable, Header, RlpDecodable, RlpEncodable};
-use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_types::{ExecutionProtocol, Round};
+use monad_validator::signature_collection::SignatureCollection;
 
 use crate::{
     messages::message::{

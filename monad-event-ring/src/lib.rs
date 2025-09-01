@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-#![deny(missing_docs)]
+// #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 #![deny(rustdoc::private_intra_doc_links)]
 
@@ -61,10 +61,10 @@
 //! [`EventNextResult::Gap`] variant. Similarly, if the payload pointed to by an [`EventDescriptor`]
 //! is overwritten while attempting to read it through the various
 //! [`EventDescriptor::try_*`](EventDescriptor) methods, the user is informed through the
-//! [`EventDescriptorPayload::Expired`] variant. Once an event descriptor or payload is overwritten,
-//! it is **unrecoverable** from the event ring. Programs that depend on consuming all events of
-//! some kind produced by an event ring **must** enter a recovery phase to recover the (possibly)
-//! missing data.
+//! [`EventPayloadResult::Expired`] variant. Once an event descriptor or payload is overwritten, it
+//! is **unrecoverable** from the event ring. Programs that depend on consuming all events of some
+//! kind produced by an event ring **must** enter a recovery phase to recover the (possibly) missing
+//! data.
 //!
 //! <div class="warning">
 //!

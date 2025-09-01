@@ -55,9 +55,9 @@ mod test {
     use monad_types::{Epoch, NodeId, Round, SeqNum};
     use monad_updaters::{
         ledger::{MockLedger, MockableLedger},
-        state_root_hash::{MockStateRootHashNop, MockStateRootHashSwap},
         statesync::MockStateSyncExecutor,
         txpool::MockTxPoolExecutor,
+        val_set::{MockValSetUpdaterNop, MockValSetUpdaterSwap},
     };
     use monad_validator::{
         simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory,
@@ -68,7 +68,7 @@ mod test {
         type SignatureType = NopSignature;
         type SignatureCollectionType = MultiSig<Self::SignatureType>;
         type ExecutionProtocolType = MockExecutionProtocol;
-        type StateBackendType = InMemoryState;
+        type StateBackendType = InMemoryState<Self::SignatureType, Self::SignatureCollectionType>;
         type BlockPolicyType = PassthruBlockPolicy;
         type ChainConfigType = MockChainConfig;
         type ChainRevisionType = MockChainRevision;
@@ -107,7 +107,7 @@ mod test {
             Self::TransportMessage,
         >;
 
-        type StateRootHashExecutor = MockStateRootHashSwap<
+        type ValSetUpdater = MockValSetUpdaterSwap<
             Self::SignatureType,
             Self::SignatureCollectionType,
             Self::ExecutionProtocolType,
@@ -153,7 +153,7 @@ mod test {
 
     fn verify_nodes_scheduled_epoch(
         nodes: Vec<&Node<impl SwarmRelation>>,
-        update_block_num: SeqNum,
+        boundary_block_num: SeqNum,
         expected_epoch: Epoch,
     ) -> Round {
         assert!(!nodes.is_empty());
@@ -161,18 +161,18 @@ mod test {
         let mut epoch_start_rounds = Vec::new();
 
         for node in nodes {
-            let mut update_block = None;
+            let mut boundary_block = None;
             for block in node.executor.ledger().get_finalized_blocks().values() {
-                if block.get_seq_num() == update_block_num {
-                    update_block = Some(block);
+                if block.get_seq_num() == boundary_block_num {
+                    boundary_block = Some(block);
                     break;
                 }
             }
-            let update_block = update_block.unwrap();
+            let boundary_block = boundary_block.unwrap();
 
-            let update_block_round = update_block.get_block_round();
+            let boundary_block_round = boundary_block.get_block_round();
             let epoch_manager = node.state.epoch_manager();
-            let epoch_start_round = update_block_round + epoch_manager.epoch_start_delay;
+            let epoch_start_round = boundary_block_round + epoch_manager.epoch_start_delay;
 
             // verify the epoch is scheduled correctly
             assert_ne!(
@@ -212,7 +212,7 @@ mod test {
 
     #[test]
     fn schedule_and_advance_epoch() {
-        let val_set_update_interval = SeqNum(1000);
+        let epoch_length = SeqNum(1000);
 
         let delta = Duration::from_millis(20);
         let state_configs = make_state_configs::<NoSerSwarm>(
@@ -222,12 +222,10 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(Balance::MAX, SeqNum::MAX),
-            SeqNum::MAX,                         // execution_delay
-            delta,                               // delta
-            MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            val_set_update_interval,             // val_set_update_interval
-            Round(20),                           // epoch_start_delay
-            SeqNum(100),                         // state_sync_threshold
+            SeqNum::MAX, // execution_delay
+            delta,       // delta
+            MockChainConfig::new_with_epoch_params(&CHAIN_PARAMS, epoch_length, Round(20)), // chain config
+            SeqNum(100), // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
             .iter()
@@ -244,10 +242,7 @@ mod test {
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockStateRootHashNop::new(
-                            validators.validators.clone(),
-                            val_set_update_interval,
-                        ),
+                        MockValSetUpdaterNop::new(validators.validators.clone(), epoch_length),
                         MockTxPoolExecutor::default(),
                         MockLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(
@@ -270,28 +265,28 @@ mod test {
 
         let mut nodes = swarm_config.build();
 
-        let update_block_num = val_set_update_interval - SeqNum(1);
+        let boundary_block_num = epoch_length - SeqNum(1);
         // terminates when any node produced more than `until_block` blocks. we
-        // want the longest ledger to be shorter than update_block_num
-        let mut term_before_update_block =
-            UntilTerminator::new().until_block((update_block_num.0) as usize - 2);
-        while nodes.step_until(&mut term_before_update_block).is_some() {}
+        // want the longest ledger to be shorter than boundary_block_num
+        let mut term_before_boundary_block =
+            UntilTerminator::new().until_block((boundary_block_num.0) as usize - 2);
+        while nodes.step_until(&mut term_before_boundary_block).is_some() {}
         // all nodes must still be in this epoch
         verify_nodes_in_epoch(nodes.states().values().collect_vec(), Epoch(1));
         // no one has committed the boundary block
         verify_nodes_not_schedule_epoch(nodes.states().values().collect_vec(), Epoch(2));
 
-        // terminates when one node commits more than `update_block_num` blocks.
-        // It ensures every node has committed `update_block_num` blocks
+        // terminates when one node commits more than `boundary_block_num` blocks.
+        // It ensures every node has committed `boundary_block_num` blocks
         let mut term_on_schedule_epoch =
-            UntilTerminator::new().until_block(update_block_num.0 as usize);
+            UntilTerminator::new().until_block(boundary_block_num.0 as usize);
         while nodes.step_until(&mut term_on_schedule_epoch).is_some() {}
 
         // all nodes must still be in the same epoch but schedule next epoch
         verify_nodes_in_epoch(nodes.states().values().collect_vec(), Epoch(1));
         let epoch_start_round = verify_nodes_scheduled_epoch(
             nodes.states().values().collect_vec(),
-            update_block_num,
+            boundary_block_num,
             Epoch(2),
         );
 
@@ -314,7 +309,7 @@ mod test {
 
     #[test]
     fn schedule_epoch_after_blocksync() {
-        let val_set_update_interval = SeqNum(1000);
+        let epoch_length = SeqNum(1000);
 
         let delta = Duration::from_millis(20);
         let state_configs = make_state_configs::<NoSerSwarm>(
@@ -324,12 +319,10 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(Balance::MAX, SeqNum::MAX),
-            SeqNum::MAX,                         // execution_delay
-            delta,                               // delta
-            MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            val_set_update_interval,             // val_set_update_interval
-            Round(20),                           // epoch_start_delay
-            SeqNum(100),                         // state_sync_threshold
+            SeqNum::MAX, // execution_delay
+            delta,       // delta
+            MockChainConfig::new_with_epoch_params(&CHAIN_PARAMS, epoch_length, Round(20)), // chain config
+            SeqNum(100), // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
             .iter()
@@ -349,10 +342,7 @@ mod test {
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockStateRootHashNop::new(
-                            validators.validators.clone(),
-                            val_set_update_interval,
-                        ),
+                        MockValSetUpdaterNop::new(validators.validators.clone(), epoch_length),
                         MockTxPoolExecutor::default(),
                         MockLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(
@@ -375,18 +365,18 @@ mod test {
 
         let mut nodes = swarm_config.build();
 
-        let update_block_num = val_set_update_interval - SeqNum(1);
+        let boundary_block_num = epoch_length - SeqNum(1);
 
-        let mut term_before_update_block =
-            UntilTerminator::new().until_block((update_block_num.0 - 2) as usize);
-        while nodes.step_until(&mut term_before_update_block).is_some() {}
+        let mut term_before_boundary_block =
+            UntilTerminator::new().until_block((boundary_block_num.0 - 2) as usize);
+        while nodes.step_until(&mut term_before_boundary_block).is_some() {}
         // verify all nodes are in epoch 1
         verify_nodes_in_epoch(nodes.states().values().collect_vec(), Epoch(1));
         verify_nodes_not_schedule_epoch(nodes.states().values().collect_vec(), Epoch(2));
 
         let node_ids = nodes.states().keys().copied().collect_vec();
         let mut verifier_before_blackout = MockSwarmVerifier::default().tick_range(
-            happy_path_tick_by_block(update_block_num.0 as usize - 2, delta),
+            happy_path_tick_by_block(boundary_block_num.0 as usize - 2, delta),
             delta,
         );
         verifier_before_blackout.metrics_happy_path(&node_ids, &nodes);
@@ -405,7 +395,7 @@ mod test {
         nodes.update_outbound_pipeline_for_all(blackout_pipeline);
 
         let mut term_on_schedule_epoch =
-            UntilTerminator::new().until_block(update_block_num.0 as usize + 1);
+            UntilTerminator::new().until_block(boundary_block_num.0 as usize + 1);
         while nodes.step_until(&mut term_on_schedule_epoch).is_some() {}
 
         let nodes_vec = nodes.states().values().collect_vec();
@@ -414,7 +404,7 @@ mod test {
 
         // verify the running nodes scheduled next epoch
         let epoch_start_round =
-            verify_nodes_scheduled_epoch(running_nodes.to_vec(), update_block_num, Epoch(2));
+            verify_nodes_scheduled_epoch(running_nodes.to_vec(), boundary_block_num, Epoch(2));
         // verify the blackout node didn't schedule next epoch
         assert_eq!(
             blackout_node
@@ -430,13 +420,13 @@ mod test {
 
         // run sufficiently long for the blackout node to finish blocksync
         let mut term_on_schedule_epoch_2 =
-            UntilTerminator::new().until_block((update_block_num.0 + 10) as usize);
+            UntilTerminator::new().until_block((boundary_block_num.0 + 10) as usize);
         while nodes.step_until(&mut term_on_schedule_epoch_2).is_some() {}
 
         // verify all nodes have scheduled next epoch (including blackout node)
         verify_nodes_scheduled_epoch(
             nodes.states().values().collect_vec(),
-            update_block_num,
+            boundary_block_num,
             Epoch(2),
         );
 
@@ -462,13 +452,13 @@ mod test {
             .metric_minimum(
                 &running_nodes_ids,
                 fetch_metric!(consensus_events.handle_proposal),
-                update_block_num.0 + 10,
+                boundary_block_num.0 + 10,
             )
             // vote for all blocks in ledger
             .metric_minimum(
                 &running_nodes_ids,
                 fetch_metric!(consensus_events.created_vote),
-                update_block_num.0 + 10,
+                boundary_block_num.0 + 10,
             )
             .metric_maximum(
                 &vec![blackout_node_id],
@@ -487,7 +477,7 @@ mod test {
 
     #[test]
     fn verify_correct_leaders_in_epoch() {
-        let val_set_update_interval = SeqNum(1000);
+        let epoch_length = SeqNum(1000);
 
         let delta = 40;
         let latency = 20;
@@ -499,12 +489,10 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(Balance::MAX, SeqNum::MAX),
-            SeqNum::MAX,                         // execution_delay
-            Duration::from_millis(delta),        // delta
-            MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            val_set_update_interval,             // val_set_update_interval
-            Round(20),                           // epoch_start_delay
-            SeqNum(100),                         // state_sync_threshold
+            SeqNum::MAX,                  // execution_delay
+            Duration::from_millis(delta), // delta
+            MockChainConfig::new_with_epoch_params(&CHAIN_PARAMS, epoch_length, Round(20)), // chain config
+            SeqNum(100), // state_sync_threshold
         );
 
         let genesis_validators: Vec<NodeId<NopPubKey>> = state_configs[0].locked_epoch_validators
@@ -540,10 +528,7 @@ mod test {
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockStateRootHashSwap::new(
-                            validators.validators.clone(),
-                            val_set_update_interval,
-                        ),
+                        MockValSetUpdaterSwap::new(validators.validators.clone(), epoch_length),
                         MockTxPoolExecutor::default(),
                         MockLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(
@@ -566,7 +551,7 @@ mod test {
 
         let mut nodes = swarm_config.build();
 
-        let boundary_block_1 = val_set_update_interval - SeqNum(1);
+        let boundary_block_1 = epoch_length - SeqNum(1);
 
         let mut term_on_schedule_epoch_2 =
             UntilTerminator::new().until_block(boundary_block_1.0 as usize + 1);
@@ -612,7 +597,7 @@ mod test {
         // all nodes must have advanced to next epoch
         verify_nodes_in_epoch(nodes.states().values().collect_vec(), Epoch(2));
 
-        let boundary_block_2 = SeqNum(val_set_update_interval.0 * 2) - SeqNum(1);
+        let boundary_block_2 = SeqNum(epoch_length.0 * 2) - SeqNum(1);
 
         let mut term_on_schedule_epoch_3 =
             UntilTerminator::new().until_block(boundary_block_2.0 as usize + 1);
@@ -712,11 +697,7 @@ mod test {
     #[test_case(SeqNum(100), Round(10), 1000; "update_interval: 100, epoch_start_delay: 10")]
     #[test_case(SeqNum(500), Round(10), 5000; "update_interval: 500, epoch_start_delay: 10")]
     #[test_case(SeqNum(2000), Round(50), 20000; "update_interval: 2000, epoch_start_delay: 50")]
-    fn validator_switching(
-        val_set_update_interval: SeqNum,
-        epoch_start_delay: Round,
-        until_block: usize,
-    ) {
+    fn validator_switching(epoch_length: SeqNum, epoch_start_delay: Round, until_block: usize) {
         let delta = Duration::from_millis(20);
         let state_configs = make_state_configs::<ValidatorSwapSwarm>(
             4, // num_nodes
@@ -725,12 +706,10 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(Balance::MAX, SeqNum(4)),
-            SeqNum(4),                           // execution_delay
-            delta,                               // delta
-            MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            val_set_update_interval,             // val_set_update_interval
-            epoch_start_delay,                   // epoch_start_delay
-            SeqNum(100),                         // state_sync_threshold
+            SeqNum(4), // execution_delay
+            delta,     // delta
+            MockChainConfig::new_with_epoch_params(&CHAIN_PARAMS, epoch_length, epoch_start_delay), // chain config
+            SeqNum(100), // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
             .iter()
@@ -747,10 +726,7 @@ mod test {
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockStateRootHashSwap::new(
-                            validators.validators.clone(),
-                            val_set_update_interval,
-                        ),
+                        MockValSetUpdaterSwap::new(validators.validators.clone(), epoch_length),
                         MockTxPoolExecutor::default(),
                         MockLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(

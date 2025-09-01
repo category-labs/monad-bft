@@ -24,12 +24,12 @@ use std::{
 use monad_consensus_types::{
     block::ConsensusBlockHeader,
     payload::{ConsensusBlockBody, ConsensusBlockBodyId},
-    signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_types::{BlockId, ExecutionProtocol, Hash};
+use monad_validator::signature_collection::SignatureCollection;
 
 pub const BLOCKDB_HEADERS_PATH: &str = "headers";
 const BLOCKDB_BODIES_PATH: &str = "bodies";

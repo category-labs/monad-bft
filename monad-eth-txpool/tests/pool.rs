@@ -20,27 +20,34 @@ use std::{
 
 use alloy_consensus::{transaction::Recovered, SignableTransaction, TxEnvelope, TxLegacy};
 use alloy_primitives::{hex, Address, TxKind, B256, U256};
-use alloy_rlp::Encodable;
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use itertools::Itertools;
+use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
 use monad_consensus_types::{
     block::{BlockPolicy, GENESIS_TIMESTAMP},
     payload::RoundSignature,
 };
-use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
-use monad_eth_block_policy::EthBlockPolicy;
+use monad_crypto::{
+    certificate_signature::{CertificateKeyPair, PubKey},
+    NopKeyPair, NopPubKey, NopSignature,
+};
+use monad_eth_block_policy::{
+    validation::{TFM_MAX_EIP2718_ENCODED_LENGTH, TFM_MAX_GAS_LIMIT},
+    EthBlockPolicy,
+};
 use monad_eth_testutil::{generate_block_with_txs, make_eip1559_tx, make_legacy_tx, recover_tx};
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
 use monad_eth_txpool_types::EthTxPoolSnapshot;
-use monad_eth_types::{Balance, BASE_FEE_PER_GAS};
+use monad_eth_types::Balance;
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
-use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
+use monad_types::{Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing_test::traced_test;
 
 const EXECUTION_DELAY: u64 = 4;
+const BASE_FEE_PER_GAS: u64 = 100_000_000_000;
 const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;
 const GAS_LIMIT: u64 = 30000;
 const PROPOSAL_GAS_LIMIT: u64 = 300_000_000;
@@ -73,7 +80,7 @@ const S5: B256 = B256::new(hex!(
 
 type SignatureType = NopSignature;
 type SignatureCollectionType = MockSignatures<SignatureType>;
-type StateBackendType = InMemoryState;
+type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
 
 fn make_test_block_policy() -> EthBlockPolicy<SignatureType, SignatureCollectionType> {
     EthBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY, 1337)
@@ -90,8 +97,10 @@ enum TxPoolTestEvent<'a> {
         should_insert: bool,
     },
     CreateProposal {
+        base_fee: u64,
         tx_limit: usize,
         gas_limit: u64,
+        byte_limit: u64,
         expected_txs: Vec<&'a TxEnvelope>,
         add_to_blocktree: bool,
     },
@@ -99,11 +108,23 @@ enum TxPoolTestEvent<'a> {
         num_blocks: usize,
         expected_committed_seq_num: u64,
     },
-    Block(Arc<dyn Fn(&mut EthTxPool<SignatureType, SignatureCollectionType, StateBackendType>)>),
+    Block(
+        Arc<
+            dyn Fn(
+                &mut EthTxPool<
+                    SignatureType,
+                    SignatureCollectionType,
+                    StateBackendType,
+                    MockChainRevision,
+                >,
+            ),
+        >,
+    ),
 }
 
 fn run_custom_iter<const N: usize>(
     mut eth_block_policy: EthBlockPolicy<SignatureType, SignatureCollectionType>,
+    max_account_balance: Balance,
     nonces_override: Option<BTreeMap<Address, u64>>,
     events: [TxPoolTestEvent<'_>; N],
     owned: bool,
@@ -135,17 +156,22 @@ fn run_custom_iter<const N: usize>(
                 .collect()
         };
 
-        InMemoryStateInner::new(Balance::MAX, SeqNum(4), InMemoryBlockState::genesis(nonces))
+        InMemoryStateInner::new(
+            max_account_balance,
+            SeqNum(4),
+            InMemoryBlockState::genesis(nonces),
+        )
     };
 
     let mut pool = EthTxPool::default_testing();
     let metrics = EthTxPoolMetrics::default();
-    let mut ipc_events = Vec::default();
+    let mut ipc_events = BTreeMap::default();
     let mut event_tracker = EthTxPoolEventTracker::new(&metrics, &mut ipc_events);
 
     pool.update_committed_block(
         &mut event_tracker,
-        generate_block_with_txs(Round(0), SeqNum(0), Vec::default()),
+        &MockChainConfig::DEFAULT,
+        generate_block_with_txs(Round(0), SeqNum(0), BASE_FEE_PER_GAS, Vec::default()),
     );
 
     let mut current_round = 1u64;
@@ -183,10 +209,7 @@ fn run_custom_iter<const N: usize>(
                     );
 
                     if should_insert && !was_inserted {
-                        panic!(
-                            "tx should have been inserted but was not! last event: {:?}",
-                            ipc_events.last()
-                        );
+                        panic!("tx should have been inserted but was not! events: {ipc_events:?}",);
                     }
                 }
 
@@ -232,8 +255,10 @@ fn run_custom_iter<const N: usize>(
                 );
             }
             TxPoolTestEvent::CreateProposal {
+                base_fee,
                 tx_limit,
                 gas_limit,
+                byte_limit,
                 expected_txs,
                 add_to_blocktree,
             } => {
@@ -242,15 +267,19 @@ fn run_custom_iter<const N: usize>(
                     .create_proposal(
                         &mut event_tracker,
                         SeqNum(current_seq_num),
+                        base_fee,
                         tx_limit,
                         gas_limit,
-                        PROPOSAL_SIZE_LIMIT,
+                        byte_limit,
                         [0_u8; 20],
                         GENESIS_TIMESTAMP + current_seq_num as u128,
+                        NodeId::new(NopPubKey::from_bytes(&[0_u8; 32]).unwrap()),
+                        Epoch(1),
                         RoundSignature::new(Round(0), &mock_keypair),
                         pending_blocks.iter().cloned().collect_vec(),
                         &eth_block_policy,
                         &state_backend,
+                        &MockChainConfig::DEFAULT,
                     )
                     .expect("create proposal succeeds");
 
@@ -272,6 +301,7 @@ fn run_custom_iter<const N: usize>(
                     let block = generate_block_with_txs(
                         Round(current_round),
                         SeqNum(current_seq_num),
+                        BASE_FEE_PER_GAS,
                         decoded_txns
                             .into_iter()
                             .map(|tx| {
@@ -302,7 +332,11 @@ fn run_custom_iter<const N: usize>(
                         &block,
                     );
 
-                    pool.update_committed_block(&mut event_tracker, block);
+                    pool.update_committed_block(
+                        &mut event_tracker,
+                        &MockChainConfig::DEFAULT,
+                        block,
+                    );
                 }
 
                 assert_eq!(
@@ -317,12 +351,14 @@ fn run_custom_iter<const N: usize>(
 
 fn run_custom<const N: usize>(
     eth_block_policy_generator: impl Fn() -> EthBlockPolicy<SignatureType, SignatureCollectionType>,
+    max_account_balance: Balance,
     nonces_override: Option<BTreeMap<Address, u64>>,
     events: [TxPoolTestEvent<'_>; N],
 ) {
     for owned in [false, true] {
         run_custom_iter(
             eth_block_policy_generator(),
+            max_account_balance,
             nonces_override.clone(),
             events.clone(),
             owned,
@@ -331,7 +367,7 @@ fn run_custom<const N: usize>(
 }
 
 fn run_simple<const N: usize>(events: [TxPoolTestEvent<'_>; N]) {
-    run_custom(make_test_block_policy, None, events);
+    run_custom(make_test_block_policy, Balance::MAX, None, events);
 }
 
 #[test]
@@ -345,8 +381,10 @@ fn test_insert_tx_exceeds_gas_limit() {
             expected_pool_size_change: 0,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 1,
             gas_limit: PROPOSAL_GAS_LIMIT,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
             expected_txs: vec![],
             add_to_blocktree: true,
         },
@@ -364,8 +402,10 @@ fn test_create_proposal_with_insufficient_tx_limit() {
             expected_pool_size_change: 1,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 0,
             gas_limit: GAS_LIMIT,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
             expected_txs: vec![],
             add_to_blocktree: true,
         },
@@ -378,9 +418,9 @@ fn test_create_proposal_with_insufficient_tx_limit() {
 #[test]
 #[traced_test]
 fn test_create_partial_proposal_with_insufficient_gas_limit() {
-    let tx1 = make_legacy_tx(S1, BASE_FEE, PROPOSAL_GAS_LIMIT / 2, 0, 10);
-    let tx2 = make_legacy_tx(S1, BASE_FEE, PROPOSAL_GAS_LIMIT / 2, 1, 10);
-    let tx3 = make_legacy_tx(S1, BASE_FEE, PROPOSAL_GAS_LIMIT / 2, 2, 10);
+    let tx1 = make_legacy_tx(S1, BASE_FEE, 100_000, 0, 10);
+    let tx2 = make_legacy_tx(S1, BASE_FEE, 100_000, 1, 10);
+    let tx3 = make_legacy_tx(S1, BASE_FEE, 100_000, 2, 10);
 
     run_simple([
         TxPoolTestEvent::InsertTxs {
@@ -388,8 +428,10 @@ fn test_create_partial_proposal_with_insufficient_gas_limit() {
             expected_pool_size_change: 3,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 3,
-            gas_limit: PROPOSAL_GAS_LIMIT,
+            gas_limit: 200_000,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
             expected_txs: vec![&tx1, &tx2],
             add_to_blocktree: true,
         },
@@ -411,8 +453,10 @@ fn test_basic_price_priority() {
             expected_pool_size_change: 2,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 2,
             gas_limit: GAS_LIMIT * 3,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
             expected_txs: vec![&tx2, &tx1],
             add_to_blocktree: true,
         },
@@ -434,8 +478,10 @@ fn test_resubmit_with_same_price() {
             expected_pool_size_change: 1,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 2,
             gas_limit: GAS_LIMIT * 2,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
             expected_txs: vec![&tx1],
             add_to_blocktree: true,
         },
@@ -454,8 +500,10 @@ fn test_resubmit_with_better_price() {
             expected_pool_size_change: 1,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 2,
             gas_limit: GAS_LIMIT * 3,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
             expected_txs: vec![&tx2],
             add_to_blocktree: true,
         },
@@ -484,8 +532,10 @@ fn nontrivial_example() {
             expected_pool_size_change: 9,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 1024 * GAS_LIMIT,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
             expected_txs: vec![&tx1, &tx7, &tx8, &tx9, &tx4, &tx2, &tx5, &tx3, &tx6],
             add_to_blocktree: true,
         },
@@ -511,8 +561,10 @@ fn another_non_trivial_example() {
             expected_pool_size_change: 6,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 1024 * GAS_LIMIT,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
             expected_txs: vec![&tx1, &tx5, &tx6, &tx3, &tx2, &tx4],
             add_to_blocktree: true,
         },
@@ -546,8 +598,10 @@ fn attacker_tries_to_include_transaction_with_large_gas_limit_to_exit_proposal_c
             expected_pool_size_change: 10,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
             expected_txs: vec![&tx2, &tx3, &tx4, &tx5, &tx6, &tx7, &tx8, &tx9, &tx10, &tx11],
             add_to_blocktree: true,
         },
@@ -557,17 +611,17 @@ fn attacker_tries_to_include_transaction_with_large_gas_limit_to_exit_proposal_c
 #[test]
 #[traced_test]
 fn suboptimal_block() {
-    let tx1 = make_legacy_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 0, 10);
-    let tx2 = make_legacy_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 1, 10);
-    let tx3 = make_legacy_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 2, 10);
-    let tx4 = make_legacy_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 3, 10);
-    let tx5 = make_legacy_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 4, 10);
-    let tx6 = make_legacy_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 5, 10);
-    let tx7 = make_legacy_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 6, 10);
-    let tx8 = make_legacy_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 7, 10);
-    let tx9 = make_legacy_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 8, 10);
-    let tx10 = make_legacy_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 9, 10);
-    let tx11 = make_legacy_tx(S1, 2 * BASE_FEE, PROPOSAL_GAS_LIMIT, 0, 10);
+    let tx1 = make_legacy_tx(S2, BASE_FEE, TFM_MAX_GAS_LIMIT / 10, 0, 10);
+    let tx2 = make_legacy_tx(S2, BASE_FEE, TFM_MAX_GAS_LIMIT / 10, 1, 10);
+    let tx3 = make_legacy_tx(S2, BASE_FEE, TFM_MAX_GAS_LIMIT / 10, 2, 10);
+    let tx4 = make_legacy_tx(S2, BASE_FEE, TFM_MAX_GAS_LIMIT / 10, 3, 10);
+    let tx5 = make_legacy_tx(S2, BASE_FEE, TFM_MAX_GAS_LIMIT / 10, 4, 10);
+    let tx6 = make_legacy_tx(S2, BASE_FEE, TFM_MAX_GAS_LIMIT / 10, 5, 10);
+    let tx7 = make_legacy_tx(S2, BASE_FEE, TFM_MAX_GAS_LIMIT / 10, 6, 10);
+    let tx8 = make_legacy_tx(S2, BASE_FEE, TFM_MAX_GAS_LIMIT / 10, 7, 10);
+    let tx9 = make_legacy_tx(S2, BASE_FEE, TFM_MAX_GAS_LIMIT / 10, 8, 10);
+    let tx10 = make_legacy_tx(S2, BASE_FEE, TFM_MAX_GAS_LIMIT / 10, 9, 10);
+    let tx11 = make_legacy_tx(S1, 2 * BASE_FEE, TFM_MAX_GAS_LIMIT, 0, 10);
 
     for reverse in [false, true] {
         let mut txs = vec![
@@ -584,8 +638,10 @@ fn suboptimal_block() {
                 expected_pool_size_change: 11,
             },
             TxPoolTestEvent::CreateProposal {
+                base_fee: BASE_FEE_PER_GAS,
                 tx_limit: 11,
-                gas_limit: PROPOSAL_GAS_LIMIT,
+                gas_limit: TFM_MAX_GAS_LIMIT,
+                byte_limit: PROPOSAL_SIZE_LIMIT,
                 expected_txs: vec![&tx11],
                 add_to_blocktree: true,
             },
@@ -627,8 +683,10 @@ fn insertion_order() {
             expected_pool_size_change: 10,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 10,
             gas_limit: 10 * GAS_LIMIT,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
             expected_txs: vec![&tx1, &tx3, &tx5, &tx7, &tx9, &tx2, &tx4, &tx6, &tx8, &tx10],
             add_to_blocktree: true,
         },
@@ -648,8 +706,10 @@ fn test_zero_nonce_included_in_block() {
             expected_pool_size_change: 1,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
             expected_txs: vec![&tx1],
             add_to_blocktree: true,
         },
@@ -669,8 +729,10 @@ fn test_nonce_gap() {
             expected_pool_size_change: 1,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
             expected_txs: vec![],
             add_to_blocktree: true,
         },
@@ -692,8 +754,10 @@ fn test_intermediary_nonce_gap() {
             expected_pool_size_change: 3,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
             expected_txs: vec![&tx1, &tx2],
             add_to_blocktree: true,
         },
@@ -714,6 +778,7 @@ fn test_nonce_exists_in_committed_block() {
 
     run_custom(
         make_test_block_policy,
+        Balance::MAX,
         Some(nonces),
         [
             TxPoolTestEvent::InsertTxs {
@@ -721,8 +786,10 @@ fn test_nonce_exists_in_committed_block() {
                 expected_pool_size_change: 1,
             },
             TxPoolTestEvent::CreateProposal {
+                base_fee: BASE_FEE_PER_GAS,
                 tx_limit: 128,
                 gas_limit: 10 * GAS_LIMIT,
+                byte_limit: PROPOSAL_SIZE_LIMIT,
                 expected_txs: vec![&tx2],
                 add_to_blocktree: true,
             },
@@ -732,11 +799,12 @@ fn test_nonce_exists_in_committed_block() {
 
 #[test]
 #[traced_test]
-fn test_unknown_account() {
+fn test_insert_unknown_account() {
     let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
 
     run_custom(
         make_test_block_policy,
+        Balance::MAX,
         Some(BTreeMap::default()),
         [
             TxPoolTestEvent::InsertTxs {
@@ -747,8 +815,59 @@ fn test_unknown_account() {
                 assert!(pool.is_empty());
             })),
             TxPoolTestEvent::CreateProposal {
+                base_fee: BASE_FEE_PER_GAS,
                 tx_limit: 1,
                 gas_limit: GAS_LIMIT,
+                byte_limit: PROPOSAL_SIZE_LIMIT,
+                expected_txs: vec![],
+                add_to_blocktree: true,
+            },
+        ],
+    );
+}
+
+#[test]
+#[traced_test]
+fn test_insert_low_balance() {
+    let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
+
+    run_custom(
+        make_test_block_policy,
+        Balance::ZERO,
+        None,
+        [
+            TxPoolTestEvent::InsertTxs {
+                txs: vec![(&tx1, false)],
+                expected_pool_size_change: 0,
+            },
+            TxPoolTestEvent::Block(Arc::new(|pool| {
+                assert!(pool.is_empty());
+            })),
+            TxPoolTestEvent::CreateProposal {
+                base_fee: BASE_FEE_PER_GAS,
+                tx_limit: 1,
+                gas_limit: GAS_LIMIT,
+                byte_limit: PROPOSAL_SIZE_LIMIT,
+                expected_txs: vec![],
+                add_to_blocktree: true,
+            },
+        ],
+    );
+
+    run_custom(
+        make_test_block_policy,
+        Balance::ONE,
+        None,
+        [
+            TxPoolTestEvent::InsertTxs {
+                txs: vec![(&tx1, true)],
+                expected_pool_size_change: 1,
+            },
+            TxPoolTestEvent::CreateProposal {
+                base_fee: BASE_FEE_PER_GAS,
+                tx_limit: 1,
+                gas_limit: GAS_LIMIT,
+                byte_limit: PROPOSAL_SIZE_LIMIT,
                 expected_txs: vec![],
                 add_to_blocktree: true,
             },
@@ -763,7 +882,7 @@ fn test_nonce_exists_in_pending_block() {
 
     // generate two transactions, both with nonce = 0
     let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
-    let tx2 = make_legacy_tx(S1, BASE_FEE + 1, GAS_LIMIT, 0, 1000);
+    let tx2 = make_legacy_tx(S1, BASE_FEE + 1, GAS_LIMIT, 0, 500);
 
     let tx3 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
 
@@ -773,8 +892,10 @@ fn test_nonce_exists_in_pending_block() {
             expected_pool_size_change: 1,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 1,
             gas_limit: GAS_LIMIT,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
             expected_txs: vec![&tx1],
             add_to_blocktree: true,
         },
@@ -783,8 +904,10 @@ fn test_nonce_exists_in_pending_block() {
             expected_pool_size_change: 1,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
             expected_txs: vec![&tx3],
             add_to_blocktree: true,
         },
@@ -806,8 +929,10 @@ fn test_combine_nonces_of_blocks() {
             expected_pool_size_change: 1,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
             expected_txs: vec![&tx1],
             add_to_blocktree: true,
         },
@@ -820,8 +945,10 @@ fn test_combine_nonces_of_blocks() {
             expected_pool_size_change: 1,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
             expected_txs: vec![&tx2],
             add_to_blocktree: true,
         },
@@ -830,8 +957,10 @@ fn test_combine_nonces_of_blocks() {
             expected_pool_size_change: 1,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
             expected_txs: vec![&tx3],
             add_to_blocktree: true,
         },
@@ -852,14 +981,18 @@ fn test_nonce_gap_maintained_across_proposals() {
             expected_pool_size_change: 3,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
             expected_txs: vec![&tx1, &tx2],
             add_to_blocktree: false,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
             expected_txs: vec![&tx1, &tx2],
             add_to_blocktree: false,
         },
@@ -869,14 +1002,18 @@ fn test_nonce_gap_maintained_across_proposals() {
         },
         // Even though proposals have been created, the txpool should still contain tx4!
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
             expected_txs: vec![&tx1, &tx2, &tx3, &tx4],
             add_to_blocktree: true,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
             expected_txs: vec![],
             add_to_blocktree: true,
         },
@@ -897,8 +1034,10 @@ fn test_nonce_gap_maintained_across_commit() {
             expected_pool_size_change: 3,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
             expected_txs: vec![&tx1, &tx2],
             add_to_blocktree: true,
         },
@@ -912,20 +1051,26 @@ fn test_nonce_gap_maintained_across_commit() {
         },
         // Even though block has been committed, the txpool should still contain tx4!
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
             expected_txs: vec![&tx3, &tx4],
             add_to_blocktree: false,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
             expected_txs: vec![&tx3, &tx4],
             add_to_blocktree: true,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
             expected_txs: vec![],
             add_to_blocktree: true,
         },
@@ -963,6 +1108,7 @@ fn test_tx_invalid_chain_id() {
 
     run_custom(
         || EthBlockPolicy::new(GENESIS_SEQ_NUM, 0, 1),
+        Balance::MAX,
         None,
         [TxPoolTestEvent::InsertTxs {
             txs: vec![(&tx1, true)],
@@ -973,19 +1119,23 @@ fn test_tx_invalid_chain_id() {
 
 #[test]
 fn test_same_account_priority_fee_ordering() {
-    let tx_higher = make_eip1559_tx(S1, (BASE_FEE_PER_GAS + 50).into(), 20, GAS_LIMIT, 0, 10);
-    let tx_lower = make_eip1559_tx(S1, (BASE_FEE_PER_GAS + 100).into(), 10, GAS_LIMIT, 0, 10);
+    let tx_a = make_eip1559_tx(S1, (BASE_FEE_PER_GAS + 50).into(), 20, GAS_LIMIT, 0, 10);
+    let tx_b = make_eip1559_tx(S1, (BASE_FEE_PER_GAS + 100).into(), 10, GAS_LIMIT, 0, 10);
+    let tx_c = make_eip1559_tx(S1, (BASE_FEE_PER_GAS + 100).into(), 20, GAS_LIMIT, 0, 10);
+    let tx_d = make_eip1559_tx(S1, (BASE_FEE_PER_GAS + 101).into(), 20, GAS_LIMIT, 0, 10);
 
-    for (tx1, tx2) in [(&tx_higher, &tx_lower), (&tx_lower, &tx_higher)] {
+    for (tx1, tx2, tx3, tx4) in [(&tx_a, &tx_b, &tx_c, &tx_d), (&tx_b, &tx_a, &tx_c, &tx_d)] {
         run_simple([
             TxPoolTestEvent::InsertTxs {
-                txs: vec![(tx1, true), (tx2, tx2 == &tx_higher)],
+                txs: vec![(tx1, true), (tx2, false), (tx3, tx1 == &tx_a), (tx4, true)],
                 expected_pool_size_change: 1,
             },
             TxPoolTestEvent::CreateProposal {
-                tx_limit: 2,
-                gas_limit: GAS_LIMIT * 2,
-                expected_txs: vec![&tx_higher],
+                base_fee: BASE_FEE_PER_GAS,
+                tx_limit: 4,
+                gas_limit: GAS_LIMIT * 4,
+                byte_limit: PROPOSAL_SIZE_LIMIT,
+                expected_txs: vec![&tx_d],
                 add_to_blocktree: false,
             },
         ]);
@@ -995,10 +1145,8 @@ fn test_same_account_priority_fee_ordering() {
 #[test]
 fn test_different_account_priority_fee_ordering() {
     for (addr1, addr2) in [(S1, S2), (S2, S1)] {
-        let tx_higher =
-            make_eip1559_tx(addr1, (BASE_FEE_PER_GAS + 50).into(), 20, GAS_LIMIT, 0, 10);
-        let tx_lower =
-            make_eip1559_tx(addr2, (BASE_FEE_PER_GAS + 100).into(), 10, GAS_LIMIT, 0, 10);
+        let tx_higher = make_eip1559_tx(addr1, BASE_FEE + 50, 20, GAS_LIMIT, 0, 10);
+        let tx_lower = make_eip1559_tx(addr2, BASE_FEE + 100, 10, GAS_LIMIT, 0, 10);
 
         for (tx1, tx2) in [(&tx_higher, &tx_lower), (&tx_lower, &tx_higher)] {
             run_simple([
@@ -1007,13 +1155,46 @@ fn test_different_account_priority_fee_ordering() {
                     expected_pool_size_change: 2,
                 },
                 TxPoolTestEvent::CreateProposal {
+                    base_fee: BASE_FEE_PER_GAS,
                     tx_limit: 2,
                     gas_limit: GAS_LIMIT * 2,
+                    byte_limit: PROPOSAL_SIZE_LIMIT,
                     expected_txs: vec![&tx_higher, &tx_lower],
                     add_to_blocktree: false,
                 },
             ]);
         }
+    }
+}
+
+#[test]
+fn test_eip1559_proposal_base_fee() {
+    let tx1 = make_eip1559_tx(S2, (BASE_FEE_PER_GAS + 10).into(), 10, GAS_LIMIT, 0, 10);
+    let tx2 = make_eip1559_tx(S1, (BASE_FEE_PER_GAS + 15).into(), 5, GAS_LIMIT, 0, 10);
+
+    for (txa, txb) in [(&tx1, &tx2), (&tx2, &tx1)] {
+        run_simple([
+            TxPoolTestEvent::InsertTxs {
+                txs: vec![(txa, true), (txb, true)],
+                expected_pool_size_change: 2,
+            },
+            TxPoolTestEvent::CreateProposal {
+                base_fee: BASE_FEE_PER_GAS,
+                tx_limit: 2,
+                gas_limit: 2 * GAS_LIMIT,
+                byte_limit: PROPOSAL_SIZE_LIMIT,
+                expected_txs: vec![&tx1, &tx2],
+                add_to_blocktree: false,
+            },
+            TxPoolTestEvent::CreateProposal {
+                base_fee: BASE_FEE_PER_GAS + 10,
+                tx_limit: 2,
+                gas_limit: 2 * GAS_LIMIT,
+                byte_limit: PROPOSAL_SIZE_LIMIT,
+                expected_txs: vec![&tx2, &tx1],
+                add_to_blocktree: false,
+            },
+        ]);
     }
 }
 
@@ -1042,8 +1223,10 @@ fn test_missing_chain_id() {
             expected_pool_size_change: 1,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 1,
             gas_limit: GAS_LIMIT,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
             expected_txs: vec![&tx],
             add_to_blocktree: true,
         },
@@ -1087,11 +1270,14 @@ fn test_exceed_byte_limit() {
     let tx1 = make_legacy_tx(
         S1,
         BASE_FEE,
-        100_000_000,
+        TFM_MAX_GAS_LIMIT,
         0,
-        PROPOSAL_SIZE_LIMIT as usize - 111,
+        TFM_MAX_EIP2718_ENCODED_LENGTH - 111,
     );
-    assert_eq!(tx1.length() as u64, PROPOSAL_SIZE_LIMIT);
+    assert_eq!(
+        recover_tx(tx1.clone()).eip2718_encoded_length(),
+        TFM_MAX_EIP2718_ENCODED_LENGTH
+    );
 
     let tx2 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
 
@@ -1101,16 +1287,57 @@ fn test_exceed_byte_limit() {
             expected_pool_size_change: 2,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 2,
             gas_limit: PROPOSAL_GAS_LIMIT,
+            byte_limit: TFM_MAX_EIP2718_ENCODED_LENGTH as u64 - 1,
+            expected_txs: vec![],
+            add_to_blocktree: true,
+        },
+        TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
+            tx_limit: 2,
+            gas_limit: PROPOSAL_GAS_LIMIT,
+            byte_limit: TFM_MAX_EIP2718_ENCODED_LENGTH as u64,
             expected_txs: vec![&tx1],
             add_to_blocktree: true,
         },
         TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
             tx_limit: 2,
             gas_limit: PROPOSAL_GAS_LIMIT,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
             expected_txs: vec![&tx2],
             add_to_blocktree: true,
+        },
+    ]);
+}
+
+#[test]
+#[traced_test]
+fn test_proposal_tx_low_base_fee() {
+    let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
+
+    run_simple([
+        TxPoolTestEvent::InsertTxs {
+            txs: vec![(&tx1, true)],
+            expected_pool_size_change: 1,
+        },
+        TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS + 1,
+            tx_limit: 1,
+            gas_limit: GAS_LIMIT,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
+            expected_txs: vec![],
+            add_to_blocktree: false,
+        },
+        TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
+            tx_limit: 1,
+            gas_limit: GAS_LIMIT,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
+            expected_txs: vec![&tx1],
+            add_to_blocktree: false,
         },
     ]);
 }

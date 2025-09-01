@@ -32,7 +32,6 @@ use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::BlockPolicy,
     block_validator::BlockValidator,
-    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     validator_data::{ValidatorSetData, ValidatorSetDataWithEpoch},
 };
 use monad_crypto::{
@@ -50,6 +49,7 @@ use monad_transformer::ID;
 use monad_types::{ExecutionProtocol, NodeId, Round, SeqNum};
 use monad_validator::{
     leader_election::LeaderElection,
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     validator_set::{ValidatorSetFactory, ValidatorSetType, ValidatorSetTypeFactory},
 };
 use serde::Deserialize;
@@ -93,10 +93,10 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -120,10 +120,10 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT> + Clone,
-    SBT: StateBackend + Clone,
+    SBT: StateBackend<ST, SCT> + Clone,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT> + Clone,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT> + Clone,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -145,8 +145,6 @@ where
                 )
                 .unwrap(),
 
-                val_set_update_interval: self.state_config.val_set_update_interval,
-                epoch_start_delay: self.state_config.epoch_start_delay,
                 beneficiary: self.state_config.beneficiary,
                 block_sync_override_peers: self.state_config.block_sync_override_peers.clone(),
 
@@ -173,10 +171,10 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
     CCT: ChainConfig<CRT> + Debug,
     CRT: ChainRevision + Debug,
 {
@@ -195,10 +193,10 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -216,10 +214,10 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -278,7 +276,10 @@ static CHAIN_PARAMS: ChainParams = ChainParams {
 pub fn read_twins_test<S>(path: &str) -> TwinsTestCase<S>
 where
     S: SwarmRelation<
-        StateBackendType = InMemoryState,
+        StateBackendType = InMemoryState<
+            <S as SwarmRelation>::SignatureType,
+            <S as SwarmRelation>::SignatureCollectionType,
+        >,
         ChainConfigType = MockChainConfig,
         ChainRevisionType = MockChainRevision,
     >,
@@ -384,8 +385,6 @@ where
             key,
             certkey,
 
-            val_set_update_interval: SeqNum(2000),
-            epoch_start_delay: Round(50),
             beneficiary: Default::default(),
             block_sync_override_peers: Default::default(),
 

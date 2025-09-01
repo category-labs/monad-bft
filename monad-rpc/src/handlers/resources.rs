@@ -28,7 +28,7 @@ use tracing_actix_web::RootSpanBuilder;
 
 use super::eth::call::EthCallStatsTracker;
 use crate::{
-    chainstate::ChainState, comparator::RpcComparator, fee::FixedFee, metrics::Metrics,
+    chainstate::ChainState, comparator::RpcComparator, metrics::Metrics,
     txpool::EthTxPoolBridgeClient,
 };
 
@@ -40,7 +40,6 @@ pub struct MonadRpcResources {
     pub eth_call_executor_fibers: usize,
     pub eth_call_stats_tracker: Option<Arc<EthCallStatsTracker>>,
     pub archive_reader: Option<ArchiveReader>,
-    pub base_fee_per_gas: FixedFee,
     pub chain_id: u64,
     pub chain_state: Option<ChainState<TriedbEnv>>,
     pub batch_request_limit: u16,
@@ -66,7 +65,6 @@ impl MonadRpcResources {
         eth_call_executor: Option<Arc<Mutex<EthCallExecutor>>>,
         eth_call_executor_fibers: usize,
         archive_reader: Option<ArchiveReader>,
-        fixed_base_fee: u128,
         chain_id: u64,
         chain_state: Option<ChainState<TriedbEnv>>,
         batch_request_limit: u16,
@@ -95,7 +93,6 @@ impl MonadRpcResources {
                 None
             },
             archive_reader,
-            base_fee_per_gas: FixedFee::new(fixed_base_fee),
             chain_id,
             chain_state,
             batch_request_limit,
@@ -128,8 +125,8 @@ impl RootSpanBuilder for MonadJsonRootSpanBuilder {
     }
 
     fn on_request_end<B: actix_web::body::MessageBody>(
-        span: tracing::Span,
-        outcome: &Result<ServiceResponse<B>, Error>,
+        _span: tracing::Span,
+        _outcome: &Result<ServiceResponse<B>, Error>,
     ) {
     }
 }

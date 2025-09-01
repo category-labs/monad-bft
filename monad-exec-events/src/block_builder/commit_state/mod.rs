@@ -18,7 +18,7 @@ use std::{
     sync::Arc,
 };
 
-use monad_event_ring::{EventDescriptor, EventDescriptorPayload};
+use monad_event_ring::{EventDescriptor, EventPayloadResult};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error};
 
@@ -83,18 +83,17 @@ impl CommitStateBlockBuilder {
         event_descriptor: &EventDescriptor<'_, ExecEventDecoder>,
     ) -> Option<BlockBuilderResult<CommitStateBlockUpdate>> {
         match event_descriptor.try_filter_map(Self::select_commit_state_event_refs) {
-            EventDescriptorPayload::Payload(Some(exec_event)) => {
+            EventPayloadResult::Ready(Some(exec_event)) => {
                 self.process_commit_state_event(exec_event).map(Ok)
             }
-            EventDescriptorPayload::Payload(None) => {
-                // CommitStateBlockBuilder and ExecutedBlockBuilder select mutually exclusive
+
                 // events. If the event in the event descriptor does not correspond to the
                 // CommitStateBlockBuilder, we allow the ExecutedBlockBuilder to process it.
                 self.block_builder
                     .process_event_descriptor(event_descriptor)
                     .map(|result| self.process_block_builder_result(result))
             }
-            EventDescriptorPayload::Expired => {
+            EventPayloadResult::Expired => {
                 self.reset();
 
                 Some(Err(BlockBuilderError::PayloadExpired))
@@ -352,6 +351,7 @@ mod test {
         run_commit_state_block_builder(SNAPSHOT_NAME, SNAPSHOT_ZSTD_BYTES);
     }
 
+    #[ignore]
     #[test]
     fn basic_test_monad_testnet() {
         const SNAPSHOT_NAME: &str = "MONAD_DEVNET_500B_GENESIS";

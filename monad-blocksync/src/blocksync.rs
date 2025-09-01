@@ -23,7 +23,6 @@ use monad_consensus_types::{
     block::{BlockPolicy, BlockRange, ConsensusBlockHeader, ConsensusFullBlock},
     metrics::Metrics,
     payload::{ConsensusBlockBody, ConsensusBlockBodyId},
-    signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
@@ -32,6 +31,7 @@ use monad_state_backend::StateBackend;
 use monad_types::{Epoch, ExecutionProtocol, NodeId, SeqNum, Stake};
 use monad_validator::{
     epoch_manager::EpochManager,
+    signature_collection::SignatureCollection,
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
     weighted_round_robin::{generate_random_validator_with_randomizer, randomize_256_with_rng},
@@ -231,7 +231,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     BlockTree(&'a BlockTree<ST, SCT, EPT, BPT, SBT>),
     BlockBuffer(&'a HashMap<ConsensusBlockBodyId, ConsensusBlockBody<EPT>>),
@@ -243,7 +243,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     pub block_sync: &'a mut BlockSync<ST, SCT, EPT>,
@@ -262,7 +262,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     #[must_use]
@@ -691,6 +691,12 @@ where
                     );
                     self_request.to = Some(to);
                     self.metrics.blocksync_events.self_headers_request += 1;
+
+                    debug!(
+                        ?to,
+                        ?block_range,
+                        "blocksync: header not found locally, sending request"
+                    );
                     cmds.push(BlockSyncCommand::SendRequest {
                         to,
                         request: BlockSyncRequestMessage::Headers(block_range),
@@ -796,6 +802,12 @@ where
                     );
                     self_request.to = Some(to);
                     self.metrics.blocksync_events.self_payload_request += 1;
+
+                    debug!(
+                        ?to,
+                        ?payload_id,
+                        "blocksync: payload not found locally, sending request"
+                    );
                     cmds.push(BlockSyncCommand::SendRequest {
                         to,
                         request: BlockSyncRequestMessage::Payload(payload_id),
@@ -982,7 +994,7 @@ where
                     self.block_sync.self_headers_requests.entry(block_range)
                 {
                     let self_request = entry.get_mut();
-                    if self_request.to.is_some() {
+                    if let Some(previous_to) = self_request.to {
                         let to = Self::pick_peer(
                             self.nodeid,
                             self.current_epoch,
@@ -991,6 +1003,13 @@ where
                             &mut self.block_sync.rng,
                         );
                         self_request.to = Some(to);
+
+                        debug!(
+                            ?previous_to,
+                            ?to,
+                            ?block_range,
+                            "blocksync: header request timed out, sending new request"
+                        );
                         cmds.push(BlockSyncCommand::SendRequest {
                             to,
                             request: BlockSyncRequestMessage::Headers(block_range),
@@ -1011,7 +1030,7 @@ where
                         return cmds;
                     };
 
-                    if self_request.to.is_some() {
+                    if let Some(previous_to) = self_request.to {
                         let to = Self::pick_peer(
                             self.nodeid,
                             self.current_epoch,
@@ -1020,6 +1039,13 @@ where
                             &mut self.block_sync.rng,
                         );
                         self_request.to = Some(to);
+
+                        debug!(
+                            ?previous_to,
+                            ?to,
+                            ?payload_id,
+                            "blocksync: payload request timed out, sending new request"
+                        );
                         cmds.push(BlockSyncCommand::SendRequest {
                             to,
                             request: BlockSyncRequestMessage::Payload(payload_id),
@@ -1055,8 +1081,7 @@ mod test {
             ConsensusBlockBody, ConsensusBlockBodyId, ConsensusBlockBodyInner, RoundSignature,
         },
         quorum_certificate::QuorumCertificate,
-        signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-        voting::{ValidatorMapping, Vote},
+        voting::Vote,
     };
     use monad_crypto::{
         certificate_signature::{
@@ -1075,7 +1100,9 @@ mod test {
     use monad_validator::{
         epoch_manager::EpochManager,
         leader_election::LeaderElection,
+        signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         simple_round_robin::SimpleRoundRobin,
+        validator_mapping::ValidatorMapping,
         validator_set::{ValidatorSetFactory, ValidatorSetType, ValidatorSetTypeFactory},
         validators_epoch_mapping::ValidatorsEpochMapping,
     };
@@ -1089,13 +1116,17 @@ mod test {
         messages::message::{BlockSyncRequestMessage, BlockSyncResponseMessage},
     };
 
+    const BASE_FEE: u64 = 100_000_000_000;
+    const BASE_FEE_TREND: u64 = 0;
+    const BASE_FEE_MOMENT: u64 = 0;
+
     struct BlockSyncContext<ST, SCT, EPT, BPT, SBT, VTF, LT>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
         BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
@@ -1120,7 +1151,7 @@ mod test {
     type SignatureCollectionType = MultiSig<NopSignature>;
     type ExecutionProtocolType = MockExecutionProtocol;
     type BlockPolicyType = PassthruBlockPolicy;
-    type StateBackendType = InMemoryState;
+    type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
     type LeaderElectionType = SimpleRoundRobin<PubKeyType>;
 
     impl<BPT, SBT, VTF, LT>
@@ -1135,7 +1166,7 @@ mod test {
         >
     where
         BPT: BlockPolicy<SignatureType, SignatureCollectionType, ExecutionProtocolType, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<SignatureType, SignatureCollectionType>,
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>>,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>>,
     {
@@ -1255,7 +1286,7 @@ mod test {
                     .get_val_set(&epoch)
                     .unwrap()
                     .get_members();
-                let leader = self.election.get_leader(round, validators).pubkey();
+                let leader = self.election.get_leader(round, epoch, validators).pubkey();
                 let (leader_key, leader_certkey) = self
                     .keys
                     .iter()
@@ -1276,6 +1307,9 @@ mod test {
                     seq_num,
                     timestamp,
                     RoundSignature::new(round, leader_certkey),
+                    BASE_FEE,
+                    BASE_FEE_TREND,
+                    BASE_FEE_MOMENT,
                 );
 
                 let validator_cert_pubkeys = self

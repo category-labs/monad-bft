@@ -20,7 +20,6 @@ use std::{
     ops::Range,
 };
 
-use alloy_primitives::U256;
 use bitvec::prelude::*;
 use bytes::{Bytes, BytesMut};
 use itertools::Itertools;
@@ -35,17 +34,22 @@ use monad_crypto::{
 use monad_dataplane::RecvUdpMsg;
 use monad_merkle::{MerkleHash, MerkleProof, MerkleTree};
 use monad_raptor::{ManagedDecoder, SOURCE_SYMBOLS_MIN};
-use monad_types::{Epoch, NodeId};
+use monad_types::{Epoch, NodeId, Stake};
 use rand::seq::SliceRandom;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::{
     util::{
-        compute_hash, AppMessageHash, BuildTarget, HexBytes, NodeIdHash, ReBroadcastGroupMap,
-        Redundancy,
+        compute_hash, AppMessageHash, BroadcastMode, BuildTarget, HexBytes, NodeIdHash,
+        ReBroadcastGroupMap, Redundancy,
     },
     SIGNATURE_SIZE,
 };
+
+const _: () = assert!(
+    MAX_MERKLE_TREE_DEPTH <= 0xF,
+    "merkle tree depth must be <= 4 bits"
+);
 
 pub const PENDING_MESSAGE_CACHE_SIZE: NonZero<usize> = unsafe { NonZero::new_unchecked(1_000) };
 
@@ -142,7 +146,6 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
         &mut self,
         group_map: &ReBroadcastGroupMap<ST>,
         rebroadcast: impl FnMut(Vec<NodeId<CertificateSignaturePubKey<ST>>>, Bytes, u16),
-        forward: impl FnMut(Bytes, u16),
         message: RecvUdpMsg,
     ) -> Vec<(NodeId<CertificateSignaturePubKey<ST>>, Bytes)> {
         let self_id = self.self_id;
@@ -150,19 +153,12 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
 
         let mut broadcast_batcher =
             BroadcastBatcher::new(self_id, rebroadcast, &message.payload, message.stride);
-        // batch packets forwarding to full nodes
-        let mut full_node_forward_batcher =
-            ForwardBatcher::new(self_id, forward, &message.payload, message.stride);
 
         let mut messages = Vec::new(); // The return result; decoded messages
 
         for payload_start_idx in (0..message.payload.len()).step_by(message.stride.into()) {
             // scoped variables are dropped in reverse order of declaration.
             // when *batch_guard is dropped, packets can get flushed
-            //
-            // Declaring (validator) batch guard last to give rebroadcast
-            // priorities to validators
-            let mut full_node_forward_batch_guard = full_node_forward_batcher.create_flush_guard();
             let mut batch_guard = broadcast_batcher.create_flush_guard();
 
             let payload_end_idx =
@@ -206,11 +202,32 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 continue;
             }
 
+            let maybe_broadcast_mode = match (
+                parsed_message.broadcast,
+                parsed_message.secondary_broadcast,
+            ) {
+                (true, false) => Some(BroadcastMode::Primary),
+                (false, true) => Some(BroadcastMode::Secondary),
+                (false, false) => None,
+                (true, true) => {
+                    // invalid to have both primary and secondary broadcast bit set
+                    debug!(
+                        ?parsed_message.author,
+                        "Receiving invalid message with both broadcast and secondary broadcast bit set"
+                    );
+                    continue;
+                }
+            };
+
             // Note: The check that parsed_message.author is valid is already
             // done in iterate_rebroadcast_peers(), but we want to drop invalid
             // chunks ASAP, before changing `recently_decoded_state`.
-            if parsed_message.broadcast {
-                if !group_map.check_source(Epoch(parsed_message.epoch), &parsed_message.author) {
+            if let Some(broadcast_mode) = maybe_broadcast_mode {
+                if !group_map.check_source(
+                    Epoch(parsed_message.epoch),
+                    &parsed_message.author,
+                    broadcast_mode,
+                ) {
                     tracing::debug!(
                         src_addr = ?message.src_addr,
                         author =? parsed_message.author,
@@ -252,11 +269,12 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
 
             let mut try_rebroadcast_symbol = || {
                 // rebroadcast raptorcast chunks if necessary
-                if parsed_message.broadcast {
+                if let Some(broadcast_mode) = maybe_broadcast_mode {
                     if self_hash == parsed_message.recipient_hash {
                         let maybe_targets = group_map.iterate_rebroadcast_peers(
                             Epoch(parsed_message.epoch),
                             &parsed_message.author,
+                            broadcast_mode,
                         );
                         if let Some(targets) = maybe_targets {
                             batch_guard.queue_broadcast(
@@ -267,9 +285,6 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                             )
                         }
                     }
-
-                    // forward all broadcast packets to full nodes
-                    full_node_forward_batch_guard.queue_forward(payload_start_idx, payload_end_idx);
                 }
             };
 
@@ -481,7 +496,9 @@ where
 /// - 65 bytes => Signature of sender over hash(rest of message up to merkle proof, concatenated with merkle root)
 /// - 2 bytes => Version: bumped on protocol updates
 /// - 1 bit => broadcast or not
-/// - 7 bits => Merkle tree depth
+/// - 1 bit => secondary broadcast or not (full-node raptorcast)
+/// - 2 bits => unused
+/// - 4 bits => Merkle tree depth
 /// - 8 bytes (u64) => Epoch #
 /// - 8 bytes (u64) => Unix timestamp in milliseconds
 /// - 20 bytes => first 20 bytes of hash of AppMessage
@@ -506,6 +523,7 @@ where
 //     signature: [u8; 65],
 //     version: u16,
 //     broadcast: bool,
+//     secondary_broadcast: bool,
 //     merkle_tree_depth: u8,
 //     epoch: u64,
 //     unix_ts_ms: u64,
@@ -523,7 +541,7 @@ where
 // }
 pub const HEADER_LEN: u16 = SIGNATURE_SIZE as u16 // Sender signature (65 bytes)
             + 2  // Version
-            + 1  // Broadcast bit, 7 bits for Merkle Tree Depth
+            + 1  // Broadcast bit, Secondary Broadcast bit, 2 unused bits, 4 bits for Merkle Tree Depth
             + 8  // Epoch #
             + 8  // Unix timestamp
             + 20 // AppMessage hash
@@ -620,10 +638,8 @@ where
     // in a single UDP datagram. Typically:
     //      data_size = 1452 - (108 + 24) - 100 = 1220
     let data_size = body_size.checked_sub(proof_size).expect("proof too big");
-    let is_raptor_broadcast = matches!(
-        build_target,
-        BuildTarget::Raptorcast(_) | BuildTarget::FullNodeRaptorCast(_)
-    );
+    let is_raptor_broadcast = matches!(build_target, BuildTarget::Raptorcast(_));
+    let is_secondary_raptor_broadcast = matches!(build_target, BuildTarget::FullNodeRaptorCast(_));
 
     // Determine how many UDP datagrams (packets) we need to send out. Each
     // datagram can only effectively transport `data_size` (~1220) bytes out of
@@ -637,9 +653,9 @@ where
             .scale(num_packets)
             .expect("redundancy-scaled num_packets doesn't fit in usize");
 
-        if let BuildTarget::Broadcast(epoch_validators) = &build_target {
+        if let BuildTarget::Broadcast(nodes) = &build_target {
             num_packets = num_packets
-                .checked_mul(epoch_validators.view().len())
+                .checked_mul(nodes.len())
                 .expect("num_packets doesn't fit in usize")
         }
 
@@ -683,7 +699,7 @@ where
 
     // the GSO-aware indices into `message`
     let mut outbound_gso_idx: Vec<(SocketAddr, Range<usize>)> = Vec::new();
-    let mut full_node_gso_idx: Vec<(SocketAddr, Range<usize>)> = Vec::new();
+
     // populate chunk_recipient and outbound_gso_idx
     match build_target {
         BuildTarget::PointToPoint(to) => {
@@ -694,16 +710,18 @@ where
                 );
                 return Vec::new();
             };
+
             outbound_gso_idx.push((*addr, 0..segment_size as usize * num_packets));
+            let node_hash = compute_hash(to);
             for (chunk_idx, (chunk_symbol_id, chunk_data)) in chunk_datas.iter_mut().enumerate() {
                 // populate chunk_recipient
-                chunk_data[0..20].copy_from_slice(&compute_hash(to).0);
+                chunk_data[0..20].copy_from_slice(node_hash.as_slice());
                 *chunk_symbol_id = Some(chunk_idx as u16);
             }
         }
-        BuildTarget::Broadcast(epoch_validators) => {
-            assert!(is_broadcast && !is_raptor_broadcast);
-            let total_validators = epoch_validators.view().len();
+        BuildTarget::Broadcast(nodes) => {
+            assert!(is_broadcast && !is_raptor_broadcast && !is_secondary_raptor_broadcast);
+            let total_validators = nodes.len();
             let mut running_validator_count = 0;
             tracing::debug!(
                 ?self_id,
@@ -715,7 +733,7 @@ where
                 ?app_message_hash,
                 "RaptorCast Broadcast v2v message"
             );
-            for (node_id, _validator) in epoch_validators.view().iter() {
+            for node_id in nodes.iter() {
                 let start_idx: usize = num_packets * running_validator_count / total_validators;
                 running_validator_count += 1;
                 let end_idx: usize = num_packets * running_validator_count / total_validators;
@@ -734,17 +752,18 @@ where
                         "RaptorCast build_message Broadcast not sending message, address unknown"
                     )
                 }
+                let node_hash = compute_hash(node_id);
                 for (chunk_idx, (chunk_symbol_id, chunk_data)) in
                     chunk_datas[start_idx..end_idx].iter_mut().enumerate()
                 {
                     // populate chunk_recipient
-                    chunk_data[0..20].copy_from_slice(&compute_hash(node_id).0);
+                    chunk_data[0..20].copy_from_slice(node_hash.as_slice());
                     *chunk_symbol_id = Some(chunk_idx as u16);
                 }
             }
         }
-        BuildTarget::Raptorcast((epoch_validators, full_nodes_view)) => {
-            assert!(is_broadcast && is_raptor_broadcast);
+        BuildTarget::Raptorcast(epoch_validators) => {
+            assert!(is_broadcast && is_raptor_broadcast && !is_secondary_raptor_broadcast);
 
             tracing::trace!(
                 ?self_id,
@@ -757,78 +776,58 @@ where
                 "RaptorCast v2v message"
             );
 
-            assert!(!epoch_validators.view().is_empty() || !full_nodes_view.view().is_empty());
+            assert!(!epoch_validators.is_empty());
 
-            if epoch_validators.view().is_empty() {
-                // generate chunks and self-assign if we're the only validator
-                // and have downstream full nodes
-                let self_node_id_hash = compute_hash(&NodeId::new(key.pubkey()));
-                let mut chunk_idx = 0_u16;
-                for (chunk_symbol_id, chunk_data) in chunk_datas.iter_mut() {
-                    // use self (only validator) as chunk recipient
-                    chunk_data[0..20].copy_from_slice(&self_node_id_hash.0);
-                    *chunk_symbol_id = Some(chunk_idx);
-                    chunk_idx += 1;
-                }
-            } else {
-                // generate chunks if epoch validators is not empty
-                // FIXME should self be included in total_stake?
-                let total_stake: U256 = epoch_validators
-                    .view()
-                    .values()
-                    .map(|validator| validator.stake.0)
-                    .sum();
-                let mut running_stake = U256::ZERO;
-                let mut chunk_idx = 0_u16;
-                let mut nodes: Vec<_> = epoch_validators.view().iter().collect();
-                // Group shuffling so chunks for small proposals aren't always assigned
-                // to the same nodes, until researchers come up with something better.
-                nodes.shuffle(&mut rand::thread_rng());
-                for (node_id, validator) in &nodes {
-                    let start_idx: usize =
-                        (U256::from(num_packets) * running_stake / total_stake).to::<usize>();
-                    running_stake += validator.stake.0;
-                    let end_idx: usize =
-                        (U256::from(num_packets) * running_stake / total_stake).to::<usize>();
+            // generate chunks if epoch validators is not empty
+            // FIXME should self be included in total_stake?
+            let total_stake: Stake = epoch_validators.total_stake();
 
-                    if start_idx == end_idx {
-                        continue;
-                    }
-                    if let Some(addr) = known_addresses.get(node_id) {
-                        outbound_gso_idx.push((
-                            *addr,
-                            start_idx * segment_size as usize..end_idx * segment_size as usize,
-                        ));
-                    } else {
-                        tracing::warn!(?node_id, "RaptorCast build_message Raptorcast not sending message, address unknown")
-                    }
-                    for (chunk_symbol_id, chunk_data) in chunk_datas[start_idx..end_idx].iter_mut()
-                    {
-                        // populate chunk_recipient
-                        chunk_data[0..20].copy_from_slice(&compute_hash(node_id).0);
-                        *chunk_symbol_id = Some(chunk_idx);
-                        chunk_idx += 1;
-                    }
-                }
+            if total_stake == Stake::ZERO {
+                tracing::warn!(
+                    ?self_id,
+                    "RaptorCast build_message got zero total stake, not sending message"
+                );
+                return Vec::new();
             }
 
-            // Dedicated full nodes get a copy of all raptorcast chunks.
-            // When our node is not the leader, chunks are forwarded in the handle_message path.
-            // When our node is the leader generating chunks, we're forwarding all chunks here.
-            for node_id in full_nodes_view.view() {
-                // TODO: assign a sub-segment of range to each full node
+            let mut running_stake = Stake::ZERO;
+            let mut chunk_idx = 0_u16;
+            let mut validator_set: Vec<_> = epoch_validators.iter().collect();
+            // Group shuffling so chunks for small proposals aren't always assigned
+            // to the same nodes, until researchers come up with something better.
+            validator_set.shuffle(&mut rand::thread_rng());
+            for (node_id, stake) in validator_set {
+                let start_idx: usize =
+                    (num_packets as f64 * (running_stake / total_stake)) as usize;
+                running_stake += stake;
+                let end_idx: usize = (num_packets as f64 * (running_stake / total_stake)) as usize;
+
+                if start_idx == end_idx {
+                    continue;
+                }
                 if let Some(addr) = known_addresses.get(node_id) {
-                    full_node_gso_idx.push((*addr, 0..(num_packets * segment_size as usize)));
+                    outbound_gso_idx.push((
+                        *addr,
+                        start_idx * segment_size as usize..end_idx * segment_size as usize,
+                    ));
                 } else {
                     tracing::warn!(
                         ?node_id,
-                        "not sending message to full node, address unknown"
-                    );
+                        "RaptorCast build_message Raptorcast not sending message, address unknown"
+                    )
+                }
+
+                let node_hash = compute_hash(node_id);
+                for (chunk_symbol_id, chunk_data) in chunk_datas[start_idx..end_idx].iter_mut() {
+                    // populate chunk_recipient
+                    chunk_data[0..20].copy_from_slice(node_hash.as_slice());
+                    *chunk_symbol_id = Some(chunk_idx);
+                    chunk_idx += 1;
                 }
             }
         }
         BuildTarget::FullNodeRaptorCast(group) => {
-            assert!(is_broadcast && is_raptor_broadcast);
+            assert!(is_broadcast && !is_raptor_broadcast && is_secondary_raptor_broadcast);
 
             tracing::trace!(
                 ?self_id,
@@ -862,9 +861,10 @@ where
                 } else {
                     tracing::warn!(?node_id, "not sending v2fn message, address unknown")
                 }
+                let node_hash = compute_hash(node_id);
                 for (chunk_symbol_id, chunk_data) in chunk_datas[start_idx..end_idx].iter_mut() {
                     // populate chunk_recipient
-                    chunk_data[0..20].copy_from_slice(&compute_hash(node_id).0);
+                    chunk_data[0..20].copy_from_slice(node_hash.as_slice());
                     *chunk_symbol_id = Some(chunk_idx);
                     chunk_idx += 1;
                 }
@@ -944,7 +944,9 @@ where
                 let (cursor_version, cursor) = cursor.split_at_mut(2);
                 cursor_version.copy_from_slice(&version.to_le_bytes());
                 let (cursor_broadcast_merkle_depth, cursor) = cursor.split_at_mut(1);
-                cursor_broadcast_merkle_depth[0] = ((is_raptor_broadcast as u8) << 7) | tree_depth;
+                cursor_broadcast_merkle_depth[0] = ((is_raptor_broadcast as u8) << 7)
+                    | ((is_secondary_raptor_broadcast as u8) << 6)
+                    | (tree_depth & 0b0000_1111); // tree_depth max 4 bits
                 let (cursor_epoch_no, cursor) = cursor.split_at_mut(8);
                 cursor_epoch_no.copy_from_slice(&epoch_no.to_le_bytes());
                 let (cursor_unix_ts_ms, cursor) = cursor.split_at_mut(8);
@@ -957,7 +959,7 @@ where
                 cursor.copy_from_slice(merkle_tree.root());
                 // 65 // Sender signature
                 // 2  // Version
-                // 1  // Broadcast bit, 7 bits for Merkle Tree Depth
+                // 1  // Broadcast bit, Secondary broadcast bit, 2 unused bits, 4 bits for Merkle Tree Depth
                 // 8  // Epoch #
                 // 8  // Unix timestamp
                 // 20 // AppMessage hash
@@ -991,16 +993,9 @@ where
 
     let message = message.freeze();
 
-    // FIXME: this doesn't guarantee priority to validators, as everything can
-    // be in one sendmmsg
-    let full_node_chunks = full_node_gso_idx
-        .into_iter()
-        .map(|(addr, range)| (addr, message.slice(range)));
-
     outbound_gso_idx
         .into_iter()
         .map(|(addr, range)| (addr, message.slice(range)))
-        .chain(full_node_chunks)
         .collect()
 }
 
@@ -1020,6 +1015,7 @@ where
     pub app_message_hash: AppMessageHash,
     pub app_message_len: u32,
     pub broadcast: bool,
+    pub secondary_broadcast: bool,
     pub recipient_hash: NodeIdHash, // if this matches our node_id, then we need to re-broadcast RaptorCast chunks
     pub chunk_id: u16,
     pub chunk: Bytes, // raptor-coded portion
@@ -1042,7 +1038,9 @@ pub enum MessageValidationError {
 /// - 65 bytes => Signature of sender over hash(rest of message up to merkle proof, concatenated with merkle root)
 /// - 2 bytes => Version: bumped on protocol updates
 /// - 1 bit => broadcast or not
-/// - 7 bits => Merkle tree depth
+/// - 1 bit => secondary broadcast or not (full-node raptorcast)
+/// - 2 bits => unused
+/// - 4 bits => Merkle tree depth
 /// - 8 bytes (u64) => Epoch #
 /// - 8 bytes (u64) => Unix timestamp
 /// - 20 bytes => first 20 bytes of hash of AppMessage
@@ -1089,8 +1087,9 @@ where
     }
 
     let cursor_broadcast_tree_depth = split_off(1)?[0];
-    let broadcast = (cursor_broadcast_tree_depth >> 7) != 0;
-    let tree_depth = cursor_broadcast_tree_depth & !(1 << 7);
+    let broadcast = (cursor_broadcast_tree_depth & (1 << 7)) != 0;
+    let secondary_broadcast = (cursor_broadcast_tree_depth & (1 << 6)) != 0;
+    let tree_depth = cursor_broadcast_tree_depth & 0b0000_1111; // bottom 4 bits
 
     if !(MIN_MERKLE_TREE_DEPTH..=MAX_MERKLE_TREE_DEPTH).contains(&tree_depth) {
         return Err(MessageValidationError::InvalidTreeDepth);
@@ -1194,6 +1193,7 @@ where
         app_message_hash,
         app_message_len,
         broadcast,
+        secondary_broadcast,
         recipient_hash,
         chunk_id,
         chunk: cursor_payload,
@@ -1345,114 +1345,6 @@ where
         }
     }
 }
-struct ForwardBatch {
-    start_idx: usize,
-    end_idx: usize,
-}
-pub(crate) struct ForwardBatcher<'a, F, PT>
-where
-    F: FnMut(Bytes, u16),
-    PT: PubKey,
-{
-    self_id: NodeId<PT>,
-    forward: F,
-    message: &'a Bytes,
-    stride: u16,
-
-    batch: Option<ForwardBatch>,
-}
-impl<F, PT> Drop for ForwardBatcher<'_, F, PT>
-where
-    F: FnMut(Bytes, u16),
-    PT: PubKey,
-{
-    fn drop(&mut self) {
-        self.flush()
-    }
-}
-impl<'a, F, PT> ForwardBatcher<'a, F, PT>
-where
-    F: FnMut(Bytes, u16),
-    PT: PubKey,
-{
-    pub fn new(self_id: NodeId<PT>, forward: F, message: &'a Bytes, stride: u16) -> Self {
-        Self {
-            self_id,
-            forward,
-            message,
-            stride,
-            batch: None,
-        }
-    }
-
-    pub fn create_flush_guard<'g>(&'g mut self) -> ForwardBatcherGuard<'a, 'g, F, PT>
-    where
-        'a: 'g,
-    {
-        ForwardBatcherGuard {
-            batcher: self,
-            flush_batch: true,
-        }
-    }
-
-    fn flush(&mut self) {
-        if let Some(batch) = self.batch.take() {
-            tracing::trace!(
-                self_id =? self.self_id,
-                num_bytes = batch.end_idx - batch.start_idx,
-                "forwarding chunks"
-            );
-            (self.forward)(
-                self.message.slice(batch.start_idx..batch.end_idx),
-                self.stride,
-            );
-        }
-    }
-}
-
-pub(crate) struct ForwardBatcherGuard<'a, 'g, F, PT>
-where
-    'a: 'g,
-    F: FnMut(Bytes, u16),
-    PT: PubKey,
-{
-    batcher: &'g mut ForwardBatcher<'a, F, PT>,
-    flush_batch: bool,
-}
-impl<'a, 'g, F, PT> ForwardBatcherGuard<'a, 'g, F, PT>
-where
-    'a: 'g,
-    F: FnMut(Bytes, u16),
-    PT: PubKey,
-{
-    pub(crate) fn queue_forward(&mut self, payload_start_idx: usize, payload_end_idx: usize) {
-        self.flush_batch = false;
-        // batch any contiguous message
-        if self.batcher.batch.as_ref().is_some() {
-            let batch = self.batcher.batch.as_mut().unwrap();
-            assert_eq!(batch.end_idx, payload_start_idx);
-            batch.end_idx = payload_end_idx;
-        } else {
-            self.batcher.flush();
-            self.batcher.batch = Some(ForwardBatch {
-                start_idx: payload_start_idx,
-                end_idx: payload_end_idx,
-            })
-        }
-    }
-}
-impl<'a, 'g, F, PT> Drop for ForwardBatcherGuard<'a, 'g, F, PT>
-where
-    'a: 'g,
-    F: FnMut(Bytes, u16),
-    PT: PubKey,
-{
-    fn drop(&mut self) {
-        if self.flush_batch {
-            self.batcher.flush();
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -1470,15 +1362,13 @@ mod tests {
     };
     use monad_dataplane::{udp::DEFAULT_SEGMENT_SIZE, RecvUdpMsg};
     use monad_secp::{KeyPair, SecpSignature};
-    use monad_types::{Epoch, NodeId, Stake};
+    use monad_types::{Epoch, NodeId, Round, RoundSpan, Stake};
     use rstest::*;
 
     use super::{MessageValidationError, UdpState};
     use crate::{
         udp::{build_messages, parse_message, SIGNATURE_CACHE_SIZE},
-        util::{
-            BuildTarget, EpochValidators, FullNodes, ReBroadcastGroupMap, Redundancy, Validator,
-        },
+        util::{BuildTarget, EpochValidators, Group, ReBroadcastGroupMap, Redundancy},
     };
 
     type SignatureType = SecpSignature;
@@ -1502,7 +1392,7 @@ mod tests {
         let validators = EpochValidators {
             validators: keys
                 .iter()
-                .map(|key| (NodeId::new(key.pubkey()), Validator { stake: Stake::ONE }))
+                .map(|key| (NodeId::new(key.pubkey()), Stake::ONE))
                 .collect(),
         };
 
@@ -1526,9 +1416,8 @@ mod tests {
 
     #[test]
     fn test_roundtrip() {
-        let (key, mut validators, known_addresses) = validator_set();
+        let (key, validators, known_addresses) = validator_set();
         let epoch_validators = validators.view_without(vec![&NodeId::new(key.pubkey())]);
-        let full_nodes = FullNodes::new(Vec::new());
 
         let app_message: Bytes = vec![1_u8; 1024 * 1024].into();
         let app_message_hash = {
@@ -1544,7 +1433,7 @@ mod tests {
             Redundancy::from_u8(2),
             EPOCH, // epoch_no
             UNIX_TS_MS,
-            BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
+            BuildTarget::Raptorcast(epoch_validators),
             &known_addresses,
         );
 
@@ -1568,9 +1457,8 @@ mod tests {
 
     #[test]
     fn test_bit_flip_parse_failure() {
-        let (key, mut validators, known_addresses) = validator_set();
+        let (key, validators, known_addresses) = validator_set();
         let epoch_validators = validators.view_without(vec![&NodeId::new(key.pubkey())]);
-        let full_nodes = FullNodes::new(Vec::new());
 
         let app_message: Bytes = vec![1_u8; 1024 * 2].into();
 
@@ -1581,7 +1469,7 @@ mod tests {
             Redundancy::from_u8(2),
             EPOCH, // epoch_no
             UNIX_TS_MS,
-            BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
+            BuildTarget::Raptorcast(epoch_validators),
             &known_addresses,
         );
 
@@ -1619,9 +1507,8 @@ mod tests {
 
     #[test]
     fn test_raptorcast_chunk_ids() {
-        let (key, mut validators, known_addresses) = validator_set();
+        let (key, validators, known_addresses) = validator_set();
         let epoch_validators = validators.view_without(vec![&NodeId::new(key.pubkey())]);
-        let full_nodes = FullNodes::new(Vec::new());
 
         let app_message: Bytes = vec![1_u8; 1024 * 1024].into();
 
@@ -1632,7 +1519,7 @@ mod tests {
             Redundancy::from_u8(2),
             EPOCH, // epoch_no
             UNIX_TS_MS,
-            BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
+            BuildTarget::Raptorcast(epoch_validators),
             &known_addresses,
         );
 
@@ -1653,8 +1540,66 @@ mod tests {
     }
 
     #[test]
+    fn test_broadcast_bit() {
+        let (key, validators, known_addresses) = validator_set();
+        let self_id = NodeId::new(key.pubkey());
+        let epoch_validators = validators.view_without(vec![&self_id]);
+        let full_nodes = Group::new_fullnode_group(
+            epoch_validators.iter_nodes().cloned().collect(),
+            &self_id,
+            self_id,
+            RoundSpan::new(Round(1), Round(100)).unwrap(),
+        );
+
+        let app_message: Bytes = vec![1_u8; 1024 * 1024].into();
+        let build_targets = vec![
+            BuildTarget::Raptorcast(epoch_validators),
+            BuildTarget::FullNodeRaptorCast(&full_nodes),
+        ];
+
+        for build_target in build_targets {
+            let messages = build_messages::<SignatureType>(
+                &key,
+                DEFAULT_SEGMENT_SIZE, // segment_size
+                app_message.clone(),
+                Redundancy::from_u8(2),
+                EPOCH, // epoch_no
+                UNIX_TS_MS,
+                build_target.clone(),
+                &known_addresses,
+            );
+
+            let mut signature_cache = LruCache::new(SIGNATURE_CACHE_SIZE);
+
+            for (_to, mut aggregate_message) in messages {
+                while !aggregate_message.is_empty() {
+                    let message = aggregate_message.split_to(DEFAULT_SEGMENT_SIZE.into());
+                    let parsed_message = parse_message::<SignatureType>(
+                        &mut signature_cache,
+                        message.clone(),
+                        u64::MAX,
+                    )
+                    .expect("valid message");
+
+                    match build_target {
+                        BuildTarget::Raptorcast(_) => {
+                            assert!(parsed_message.broadcast);
+                            assert!(!parsed_message.secondary_broadcast);
+                        }
+                        BuildTarget::FullNodeRaptorCast(_) => {
+                            assert!(!parsed_message.broadcast);
+                            assert!(parsed_message.secondary_broadcast);
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn test_broadcast_chunk_ids() {
-        let (key, mut validators, known_addresses) = validator_set();
+        let (key, validators, known_addresses) = validator_set();
         let epoch_validators = validators.view_without(vec![&NodeId::new(key.pubkey())]);
 
         let app_message: Bytes = vec![1_u8; 1024 * 8].into();
@@ -1666,7 +1611,7 @@ mod tests {
             Redundancy::from_u8(2),
             EPOCH, // epoch_no
             UNIX_TS_MS,
-            BuildTarget::Broadcast(epoch_validators),
+            BuildTarget::Broadcast(epoch_validators.into()),
             &known_addresses,
         );
 
@@ -1699,11 +1644,11 @@ mod tests {
     fn test_handle_message_stride_slice() {
         let (key, validators, _known_addresses) = validator_set();
         let self_id = NodeId::new(key.pubkey());
-        let mut group_map = ReBroadcastGroupMap::new(self_id, false);
+        let mut group_map = ReBroadcastGroupMap::new(self_id);
         let node_stake_pairs: Vec<_> = validators
             .validators
             .iter()
-            .map(|(node_id, validator)| (*node_id, validator.stake))
+            .map(|(node_id, stake)| (*node_id, *stake))
             .collect();
         group_map.push_group_validator_set(node_stake_pairs, Epoch(1));
 
@@ -1717,12 +1662,7 @@ mod tests {
             stride: 1024,
         };
 
-        udp_state.handle_message(
-            &group_map,
-            |_targets, _payload, _stride| {},
-            |_payload, _stride| {},
-            recv_msg,
-        );
+        udp_state.handle_message(&group_map, |_targets, _payload, _stride| {}, recv_msg);
     }
 
     #[rstest]
@@ -1741,7 +1681,7 @@ mod tests {
         #[case] max_age_ms: u64,
         #[case] should_succeed: bool,
     ) {
-        let (key, mut validators, known_addresses) = validator_set();
+        let (key, validators, known_addresses) = validator_set();
         let epoch_validators = validators.view_without(vec![&NodeId::new(key.pubkey())]);
         let mut signature_cache = LruCache::new(SIGNATURE_CACHE_SIZE);
 
@@ -1756,7 +1696,7 @@ mod tests {
             Redundancy::from_u8(1),
             0,
             test_timestamp,
-            BuildTarget::Broadcast(epoch_validators),
+            BuildTarget::Broadcast(epoch_validators.into()),
             &known_addresses,
         );
         let message = messages.into_iter().next().unwrap().1;

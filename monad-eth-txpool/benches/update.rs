@@ -13,7 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::collections::BTreeMap;
+
 use criterion::{criterion_group, criterion_main, Criterion};
+use monad_chain_config::MockChainConfig;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::generate_block_with_txs;
 use monad_eth_txpool::{EthTxPoolEventTracker, EthTxPoolMetrics};
@@ -22,6 +25,8 @@ use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
 use self::common::{run_txpool_benches, BenchController, EXECUTION_DELAY};
 
 mod common;
+
+const BASE_FEE_PER_GAS: u64 = 100_000_000_000;
 
 fn criterion_benchmark(c: &mut Criterion) {
     // TODO: change this to something more meaningful, i.e. what's is the block
@@ -42,17 +47,23 @@ fn criterion_benchmark(c: &mut Criterion) {
 
             let metrics = EthTxPoolMetrics::default();
 
-            let pool = BenchController::create_pool(&block_policy, Vec::default(), &metrics);
+            let pool = BenchController::create_pool(
+                &block_policy,
+                &MockChainConfig::DEFAULT,
+                Vec::default(),
+                &metrics,
+            );
 
             (
                 pool,
                 metrics,
-                generate_block_with_txs(Round(1), SeqNum(1), txs),
+                generate_block_with_txs(Round(1), SeqNum(1), BASE_FEE_PER_GAS, txs),
             )
         },
         |(pool, metrics, block)| {
             pool.update_committed_block(
-                &mut EthTxPoolEventTracker::new(metrics, &mut Vec::default()),
+                &mut EthTxPoolEventTracker::new(metrics, &mut BTreeMap::default()),
+                &MockChainConfig::DEFAULT,
                 block.to_owned(),
             );
         },

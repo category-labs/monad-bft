@@ -21,7 +21,6 @@ use monad_blocksync::blocksync::{
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::{
     block::BlockPolicy, block_validator::BlockValidator, metrics::Metrics,
-    signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -33,8 +32,8 @@ use monad_executor_glue::{
 use monad_state_backend::StateBackend;
 use monad_types::{ExecutionProtocol, NodeId, RouterTarget};
 use monad_validator::{
-    epoch_manager::EpochManager, validator_set::ValidatorSetTypeFactory,
-    validators_epoch_mapping::ValidatorsEpochMapping,
+    epoch_manager::EpochManager, signature_collection::SignatureCollection,
+    validator_set::ValidatorSetTypeFactory, validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
 use crate::{ConsensusMode, MonadState, VerifiedMonadMessage};
@@ -45,9 +44,11 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     block_sync: &'a mut BlockSync<ST, SCT, EPT>,
 
@@ -70,9 +71,9 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -172,7 +173,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     fn from(wrapped: WrappedBlockSyncCommand<ST, SCT, EPT>) -> Self {
         match wrapped.command {

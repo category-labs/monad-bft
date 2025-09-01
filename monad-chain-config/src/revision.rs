@@ -44,6 +44,12 @@ pub struct MockChainRevision {
     pub chain_params: &'static ChainParams,
 }
 
+impl MockChainRevision {
+    pub const DEFAULT: Self = Self {
+        chain_params: &CHAIN_PARAMS_LATEST,
+    };
+}
+
 impl ChainRevision for MockChainRevision {
     fn chain_params(&self) -> &'static ChainParams {
         self.chain_params

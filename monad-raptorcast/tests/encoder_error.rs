@@ -22,7 +22,7 @@ use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_raptor::SOURCE_SYMBOLS_MAX;
 use monad_raptorcast::{
     udp::build_messages,
-    util::{BuildTarget, EpochValidators, FullNodes, Redundancy, Validator},
+    util::{BuildTarget, EpochValidators, Redundancy},
 };
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{NodeId, Stake};
@@ -50,10 +50,10 @@ pub fn encoder_error() {
         })
         .collect_vec();
 
-    let mut validators = EpochValidators {
+    let validators = EpochValidators {
         validators: keys
             .iter()
-            .map(|key| (NodeId::new(key.pubkey()), Validator { stake: Stake::ONE }))
+            .map(|key| (NodeId::new(key.pubkey()), Stake::ONE))
             .collect(),
     };
 
@@ -68,7 +68,6 @@ pub fn encoder_error() {
         .collect();
 
     let epoch_validators = validators.view_without(vec![&NodeId::new(keys[0].pubkey())]);
-    let full_nodes = FullNodes::new(Vec::new());
 
     let _ = build_messages::<SecpSignature>(
         &keys[0],
@@ -77,7 +76,7 @@ pub fn encoder_error() {
         Redundancy::from_u8(1),
         0, // epoch_no
         0, // unix_ts_ms
-        BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
+        BuildTarget::Raptorcast(epoch_validators),
         &known_addresses,
     );
 }

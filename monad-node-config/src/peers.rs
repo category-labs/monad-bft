@@ -28,7 +28,6 @@ pub struct PeerDiscoveryConfig<ST: CertificateSignatureRecoverable> {
     #[serde(bound = "ST: CertificateSignatureRecoverable")]
     pub self_name_record_sig: ST,
 
-    pub ping_period: u64,
     pub refresh_period: u64,
     pub request_timeout: u64,
     pub unresponsive_prune_threshold: u32,

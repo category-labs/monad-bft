@@ -61,6 +61,7 @@ impl<CST: CertificateSignature> RoundSignature<CST> {
 pub struct ConsensusBlockBody<EPT>(Arc<ConsensusBlockBodyInner<EPT>>)
 where
     EPT: ExecutionProtocol;
+
 impl<EPT> ConsensusBlockBody<EPT>
 where
     EPT: ExecutionProtocol,

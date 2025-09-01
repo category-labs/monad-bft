@@ -28,7 +28,6 @@ use monad_blocksync::messages::message::{
 use monad_consensus_types::{
     block::{BlockRange, ConsensusFullBlock, OptimisticCommit},
     payload::ConsensusBlockBodyId,
-    signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -36,7 +35,8 @@ use monad_crypto::certificate_signature::{
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
 use monad_state_backend::{InMemoryState, StateBackendTest};
-use monad_types::{BlockId, ExecutionProtocol, Round, SeqNum};
+use monad_types::{BlockId, ExecutionProtocol, SeqNum};
+use monad_validator::signature_collection::SignatureCollection;
 
 pub trait MockableLedger:
     Executor<
@@ -92,13 +92,13 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    blocks: BTreeMap<Round, ConsensusFullBlock<ST, SCT, EPT>>,
-    block_ids: HashMap<BlockId, Round>,
+    blocks: HashMap<BlockId, ConsensusFullBlock<ST, SCT, EPT>>,
     committed_blocks: BTreeMap<SeqNum, ConsensusFullBlock<ST, SCT, EPT>>,
 
     events: VecDeque<BlockSyncEvent<ST, SCT, EPT>>,
 
-    state_backend: InMemoryState,
+    finalization_delay: SeqNum,
+    state_backend: InMemoryState<ST, SCT>,
 
     waker: Option<Waker>,
     _phantom: PhantomData<ST>,
@@ -110,18 +110,29 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    pub fn new(state_backend: InMemoryState) -> Self {
+    pub fn new(state_backend: InMemoryState<ST, SCT>) -> Self {
         Self {
             blocks: Default::default(),
-            block_ids: Default::default(),
             committed_blocks: Default::default(),
             events: Default::default(),
 
+            finalization_delay: SeqNum(0),
             state_backend,
 
             waker: Default::default(),
             _phantom: Default::default(),
         }
+    }
+
+    pub fn with_blocks(mut self, old_ledger: &Self) -> Self {
+        self.blocks = old_ledger.blocks.clone();
+        self.committed_blocks = old_ledger.committed_blocks.clone();
+        self
+    }
+
+    pub fn with_finalization_delay(mut self, finalization_delay: SeqNum) -> Self {
+        self.finalization_delay = finalization_delay;
+        self
     }
 
     fn get_headers(&self, block_range: BlockRange) -> BlockSyncHeadersResponse<ST, SCT, EPT> {
@@ -130,14 +141,10 @@ where
         let mut headers = VecDeque::new();
         while (headers.len() as u64) < block_range.num_blocks.0 {
             // TODO add max number of headers to read
-            let Some(block_round) = self.block_ids.get(&next_block_id) else {
+            let Some(block) = self.blocks.get(&next_block_id) else {
                 return BlockSyncHeadersResponse::NotAvailable(block_range);
             };
-            let block_header = self
-                .blocks
-                .get(block_round)
-                .expect("round to blockid invariant")
-                .header();
+            let block_header = block.header();
 
             headers.push_front(block_header.clone());
             next_block_id = block_header.get_parent_id();
@@ -179,32 +186,27 @@ where
                         block.get_parent_id(),
                         BTreeMap::default(), // TODO parse out txs
                     );
-                    match self.blocks.entry(block.get_block_round()) {
-                        std::collections::btree_map::Entry::Vacant(entry) => {
-                            let block_id = block.get_id();
-                            let round = block.get_block_round();
-                            entry.insert(block);
-                            self.block_ids.insert(block_id, round);
-                        }
-                        std::collections::btree_map::Entry::Occupied(mut entry) => {
-                            if entry.get() != &block {
-                                self.block_ids.remove(&entry.get().get_id());
-
-                                let block_id = block.get_id();
-                                let round = block.get_block_round();
-                                entry.insert(block);
-                                self.block_ids.insert(block_id, round);
-                            }
-                        }
-                    }
+                    self.blocks.insert(block.get_id(), block);
                 }
                 LedgerCommand::LedgerCommit(OptimisticCommit::Finalized(block)) => {
-                    self.committed_blocks
-                        .insert(block.get_seq_num(), block.clone());
-                    self.state_backend
-                        .lock()
-                        .unwrap()
-                        .ledger_commit(&block.get_id());
+                    if block.get_seq_num() <= self.finalization_delay {
+                        continue;
+                    }
+                    let finalize_seq_num = block.get_seq_num() - self.finalization_delay;
+                    let mut block = block;
+                    loop {
+                        if block.get_seq_num() == finalize_seq_num {
+                            self.committed_blocks
+                                .insert(block.get_seq_num(), block.clone());
+                            let mut state = self.state_backend.lock().unwrap();
+                            state.ledger_commit(&block.get_id(), &block.get_seq_num());
+                            break;
+                        }
+                        block = match self.blocks.get(&block.get_parent_id()) {
+                            None => break,
+                            Some(next_block) => next_block.clone(),
+                        };
+                    }
                 }
                 LedgerCommand::LedgerFetchHeaders(block_range) => {
                     self.events.push_back(BlockSyncEvent::SelfResponse {

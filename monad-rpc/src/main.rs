@@ -19,7 +19,6 @@ use actix_web::{web, App, HttpServer};
 use agent::AgentBuilder;
 use clap::Parser;
 use monad_archive::archive_reader::ArchiveReader;
-use monad_eth_types::BASE_FEE_PER_GAS;
 use monad_ethcall::EthCallExecutor;
 use monad_event_ring::EventRing;
 use monad_node_config::MonadNodeConfig;
@@ -135,7 +134,7 @@ async fn main() -> std::io::Result<()> {
 
     let mut print_message_timer = tokio::time::interval(Duration::from_secs(60));
     let mut retry_timer = tokio::time::interval(Duration::from_secs(1));
-    let (txpool_bridge_client, txpool_bridge_handle) = loop {
+    let (txpool_bridge_client, _txpool_bridge_handle) = loop {
         tokio::select! {
             _ = print_message_timer.tick() => {
                 info!("Waiting for statesync to complete");
@@ -331,7 +330,6 @@ async fn main() -> std::io::Result<()> {
         eth_call_executor,
         args.eth_call_executor_fibers as usize,
         archive_reader,
-        BASE_FEE_PER_GAS.into(),
         node_config.chain_id,
         chain_state,
         args.batch_request_limit,
@@ -354,6 +352,7 @@ async fn main() -> std::io::Result<()> {
     let ws_server_handle = if let Some(events_client) = events_client {
         let ws_app_data = app_state.clone();
         let conn_limit = websocket::handler::ConnectionLimit::new(args.ws_conn_limit);
+        let sub_limit = websocket::handler::SubscriptionLimit(args.ws_sub_per_conn_limit);
 
         args.ws_enabled.then(|| {
             HttpServer::new(move || {
@@ -361,6 +360,7 @@ async fn main() -> std::io::Result<()> {
                     .app_data(web::Data::new(conn_limit.clone()))
                     .app_data(web::Data::new(events_client.clone()))
                     .app_data(web::Data::new(ws_app_data.clone()))
+                    .app_data(web::Data::new(sub_limit.clone()))
                     .service(
                         web::resource("/").route(web::get().to(websocket::handler::ws_handler)),
                     )
@@ -434,7 +434,6 @@ mod tests {
     };
     use jsonrpc::Response;
     use monad_rpc::{
-        fee::FixedFee,
         handlers::eth::call::EthCallStatsTracker,
         jsonrpc::{self, JsonRpcError, RequestId, ResponseWrapper},
         txpool::EthTxPoolBridgeClient,
@@ -453,7 +452,6 @@ mod tests {
             eth_call_executor_fibers: 64,
             eth_call_stats_tracker: Some(Arc::new(EthCallStatsTracker::default())),
             archive_reader: None,
-            base_fee_per_gas: FixedFee::new(2000),
             chain_id: 1337,
             chain_state: None,
             batch_request_limit: 5,

@@ -13,31 +13,37 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::collections::BTreeMap;
+
 use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
 use alloy_primitives::{Uint, B256};
 use alloy_rlp::Encodable;
 use itertools::Itertools;
+use monad_chain_config::{revision::MockChainRevision, ChainConfig, MockChainConfig};
 use monad_crypto::NopSignature;
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, recover_tx};
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
-use monad_eth_types::{Balance, BASE_FEE_PER_GAS};
+use monad_eth_types::Balance;
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Round, SeqNum};
 use rand::{seq::SliceRandom, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
+const BASE_FEE_PER_GAS: u64 = 100_000_000_000;
 const TRANSACTION_SIZE_BYTES: usize = 400;
 
 pub type SignatureType = NopSignature;
 pub type SignatureCollectionType = MockSignatures<NopSignature>;
 pub type BlockPolicyType = EthBlockPolicy<SignatureType, SignatureCollectionType>;
-pub type StateBackendType = InMemoryState;
-pub type Pool = EthTxPool<SignatureType, SignatureCollectionType, StateBackendType>;
+pub type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
+pub type Pool =
+    EthTxPool<SignatureType, SignatureCollectionType, StateBackendType, MockChainRevision>;
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct BenchControllerConfig {
+    pub chain_config: MockChainConfig,
     pub accounts: usize,
     pub txs: usize,
     pub nonce_var: usize,
@@ -46,6 +52,7 @@ pub struct BenchControllerConfig {
 }
 
 pub struct BenchController<'a> {
+    pub chain_config: MockChainConfig,
     pub block_policy: &'a BlockPolicyType,
     pub state_backend: StateBackendType,
     pub pool: Pool,
@@ -59,6 +66,7 @@ pub struct BenchController<'a> {
 impl<'a> BenchController<'a> {
     pub fn setup(block_policy: &'a BlockPolicyType, config: BenchControllerConfig) -> Self {
         let BenchControllerConfig {
+            chain_config,
             accounts,
             txs,
             nonce_var,
@@ -82,9 +90,10 @@ impl<'a> BenchController<'a> {
         let state_backend = Self::generate_state_backend_for_txs(&txs);
 
         let metrics = EthTxPoolMetrics::default();
-        let pool = Self::create_pool(block_policy, txs, &metrics);
+        let pool = Self::create_pool(block_policy, &chain_config, txs, &metrics);
 
         Self {
+            chain_config,
             block_policy,
             state_backend,
             pool,
@@ -92,7 +101,12 @@ impl<'a> BenchController<'a> {
                 .into_iter()
                 .enumerate()
                 .map(|(idx, txs)| {
-                    generate_block_with_txs(Round(idx as u64 + 1), SeqNum(idx as u64 + 1), txs)
+                    generate_block_with_txs(
+                        Round(idx as u64 + 1),
+                        SeqNum(idx as u64 + 1),
+                        BASE_FEE_PER_GAS,
+                        txs,
+                    )
                 })
                 .collect_vec(),
             metrics,
@@ -104,14 +118,21 @@ impl<'a> BenchController<'a> {
 
     pub fn create_pool(
         block_policy: &BlockPolicyType,
+        chain_config: &impl ChainConfig<MockChainRevision>,
         txs: Vec<Recovered<TxEnvelope>>,
         metrics: &EthTxPoolMetrics,
     ) -> Pool {
         let mut pool = Pool::default_testing();
 
         pool.update_committed_block(
-            &mut EthTxPoolEventTracker::new(metrics, &mut Vec::default()),
-            generate_block_with_txs(Round(0), block_policy.get_last_commit(), txs),
+            &mut EthTxPoolEventTracker::new(metrics, &mut BTreeMap::default()),
+            chain_config,
+            generate_block_with_txs(
+                Round(0),
+                block_policy.get_last_commit(),
+                BASE_FEE_PER_GAS,
+                txs,
+            ),
         );
 
         pool

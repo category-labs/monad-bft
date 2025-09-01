@@ -110,6 +110,8 @@ impl<ST: CertificateSignatureRecoverable> MonadNameRecord<ST> {
 pub enum PeerDiscoveryEvent<ST: CertificateSignatureRecoverable> {
     SendPing {
         to: NodeId<CertificateSignaturePubKey<ST>>,
+        socket_address: SocketAddrV4,
+        ping: Ping<ST>,
     },
     PingRequest {
         from: NodeId<CertificateSignaturePubKey<ST>>,
@@ -141,6 +143,15 @@ pub enum PeerDiscoveryEvent<ST: CertificateSignatureRecoverable> {
         target: NodeId<CertificateSignaturePubKey<ST>>,
         lookup_id: u32,
     },
+    SendFullNodeRaptorcastRequest {
+        to: NodeId<CertificateSignaturePubKey<ST>>,
+    },
+    FullNodeRaptorcastRequest {
+        from: NodeId<CertificateSignaturePubKey<ST>>,
+    },
+    FullNodeRaptorcastResponse {
+        from: NodeId<CertificateSignaturePubKey<ST>>,
+    },
     UpdateCurrentRound {
         round: Round,
         epoch: Epoch,
@@ -165,9 +176,10 @@ pub enum TimerKind {
     PingTimeout,
     RetryPeerLookup { lookup_id: u32 },
     Refresh,
+    FullNodeRaptorcastRequest,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PeerDiscoveryTimerCommand<E, ST: CertificateSignatureRecoverable> {
     Schedule {
         node_id: NodeId<CertificateSignaturePubKey<ST>>,
@@ -181,13 +193,18 @@ pub enum PeerDiscoveryTimerCommand<E, ST: CertificateSignatureRecoverable> {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PeerDiscoveryMetricsCommand(ExecutorMetrics);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PeerDiscoveryCommand<ST: CertificateSignatureRecoverable> {
     RouterCommand {
         target: NodeId<CertificateSignaturePubKey<ST>>,
+        message: PeerDiscoveryMessage<ST>,
+    },
+    PingPongCommand {
+        target: NodeId<CertificateSignaturePubKey<ST>>,
+        socket_address: SocketAddrV4,
         message: PeerDiscoveryMessage<ST>,
     },
     TimerCommand(PeerDiscoveryTimerCommand<PeerDiscoveryEvent<ST>, ST>),
@@ -200,6 +217,8 @@ pub trait PeerDiscoveryAlgo {
     fn send_ping(
         &mut self,
         target: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+        socket_address: SocketAddrV4,
+        ping: Ping<Self::SignatureType>,
     ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
     fn handle_ping(
@@ -246,6 +265,21 @@ pub trait PeerDiscoveryAlgo {
         lookup_id: u32,
     ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
+    fn send_full_node_raptorcast_request(
+        &mut self,
+        to: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+    ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
+
+    fn handle_full_node_raptorcast_request(
+        &mut self,
+        from: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+    ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
+
+    fn handle_full_node_raptorcast_response(
+        &mut self,
+        from: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+    ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
+
     fn refresh(&mut self) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
     fn update_current_round(
@@ -273,6 +307,11 @@ pub trait PeerDiscoveryAlgo {
 
     fn metrics(&self) -> &ExecutorMetrics;
 
+    fn get_pending_addr_by_id(
+        &self,
+        id: &NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+    ) -> Option<SocketAddrV4>;
+
     fn get_addr_by_id(
         &self,
         id: &NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
@@ -282,7 +321,7 @@ pub trait PeerDiscoveryAlgo {
         &self,
     ) -> HashMap<NodeId<CertificateSignaturePubKey<Self::SignatureType>>, SocketAddrV4>;
 
-    fn get_fullnode_addrs(
+    fn get_secondary_fullnode_addrs(
         &self,
     ) -> HashMap<NodeId<CertificateSignaturePubKey<Self::SignatureType>>, SocketAddrV4>;
 

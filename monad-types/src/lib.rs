@@ -174,6 +174,10 @@ impl Default for RoundSpan {
 )]
 pub struct Epoch(pub u64);
 
+impl Epoch {
+    pub const MAX: Epoch = Epoch(u64::MAX);
+}
+
 impl AsRef<[u8]> for Epoch {
     fn as_ref(&self) -> &[u8] {
         self.0.as_bytes()
@@ -188,6 +192,18 @@ impl Add for Epoch {
             self.0
                 .checked_add(rhs.0)
                 .unwrap_or_else(|| panic!("{:?} + {:?}", self.0, rhs.0)),
+        )
+    }
+}
+
+impl Sub for Epoch {
+    type Output = Self;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        Epoch(
+            self.0
+                .checked_sub(rhs.0)
+                .unwrap_or_else(|| panic!("{:?} - {:?}", self.0, rhs.0)),
         )
     }
 }
@@ -214,39 +230,16 @@ impl Debug for Epoch {
     PartialEq,
     PartialOrd,
     AsBytes,
+    Serialize,
     Deserialize,
     RlpEncodableWrapper,
     RlpDecodableWrapper,
 )]
-pub struct SeqNum(
-    // FIXME get rid of this, we won't have u64::MAX
-    /// Some serde libraries e.g. toml represent numbers as i64 so they don't
-    /// support serializing u64::MAX, which is used as the genesis qc sequence
-    /// number. Converting to string first gets around this limitation
-    #[serde(deserialize_with = "deserialize_big_u64")]
-    pub u64,
-);
+pub struct SeqNum(pub u64);
 
 impl SeqNum {
     pub const MIN: SeqNum = SeqNum(u64::MIN);
     pub const MAX: SeqNum = SeqNum(u64::MAX);
-}
-
-impl Serialize for SeqNum {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.0.to_string())
-    }
-}
-
-fn deserialize_big_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let buf = <String as Deserialize>::deserialize(deserializer)?;
-    u64::from_str(&buf).map_err(<D::Error as serde::de::Error>::custom)
 }
 
 impl AsRef<[u8]> for SeqNum {
@@ -317,16 +310,16 @@ impl SeqNum {
     /// Compute the epoch that the sequence number belong to. It does NOT mean
     /// that the block is proposed in the epoch
     ///
-    /// [0, val_set_update_interval-1] -> Epoch 1
-    /// [val_set_update_interval, (2 * val_set_update_interval)-1] -> Epoch 2
-    pub fn to_epoch(&self, val_set_update_interval: SeqNum) -> Epoch {
-        Epoch((self.0 / val_set_update_interval.0) + 1)
+    /// [0, epoch_length-1] -> Epoch 1
+    /// [epoch_length, (2 * epoch_length)-1] -> Epoch 2
+    pub fn to_epoch(&self, epoch_length: SeqNum) -> Epoch {
+        Epoch((self.0 / epoch_length.0) + 1)
     }
 
     /// This tells us what the boundary block of the epoch is. Note that this only indicates when
     /// the next epoch's round is scheduled.
-    pub fn is_epoch_end(&self, val_set_update_interval: SeqNum) -> bool {
-        *self % val_set_update_interval == val_set_update_interval - SeqNum(1)
+    pub fn is_epoch_end(&self, epoch_length: SeqNum) -> bool {
+        *self % epoch_length == epoch_length - SeqNum(1)
     }
 
     /// Get the epoch number whose validator set is locked by this block. Should
@@ -334,9 +327,9 @@ impl SeqNum {
     ///
     /// Current design locks the info for epoch n + 1 by the end of epoch n. The
     /// validators have epoch_start_delay to prepare themselves for any duties
-    pub fn get_locked_epoch(&self, val_set_update_interval: SeqNum) -> Epoch {
-        assert!(self.is_epoch_end(val_set_update_interval));
-        (*self).to_epoch(val_set_update_interval) + Epoch(1)
+    pub fn get_locked_epoch(&self, epoch_length: SeqNum) -> Epoch {
+        assert!(self.is_epoch_end(epoch_length));
+        (*self).to_epoch(epoch_length) + Epoch(1)
     }
 
     pub fn as_u64(&self) -> u64 {
@@ -584,6 +577,14 @@ impl SubAssign for Stake {
     }
 }
 
+impl Div<Stake> for Stake {
+    type Output = f64;
+
+    fn div(self, rhs: Stake) -> f64 {
+        f64::from(self.0) / f64::from(rhs.0)
+    }
+}
+
 impl std::iter::Sum for Stake {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
         iter.fold(Stake::ZERO, |a, b| a + b)
@@ -755,12 +756,8 @@ mod test {
     #[test_case(SeqNum(199), Epoch(2), SeqNum(100); "sn_199_epoch_2")]
     #[test_case(SeqNum(200), Epoch(3), SeqNum(100); "sn_200_epoch_3")]
 
-    fn test_epoch_conversion(
-        seq_num: SeqNum,
-        expected_epoch: Epoch,
-        val_set_update_interval: SeqNum,
-    ) {
-        assert_eq!(seq_num.to_epoch(val_set_update_interval), expected_epoch);
+    fn test_epoch_conversion(seq_num: SeqNum, expected_epoch: Epoch, epoch_length: SeqNum) {
+        assert_eq!(seq_num.to_epoch(epoch_length), expected_epoch);
     }
 
     #[test]

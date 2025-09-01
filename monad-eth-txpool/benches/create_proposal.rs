@@ -13,16 +13,24 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::collections::BTreeMap;
+
 use criterion::{criterion_group, criterion_main, Criterion};
+use monad_chain_config::MockChainConfig;
 use monad_consensus_types::{block::GENESIS_TIMESTAMP, payload::RoundSignature};
-use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair};
+use monad_crypto::{
+    certificate_signature::{CertificateKeyPair, PubKey},
+    NopKeyPair, NopPubKey,
+};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::EthTxPoolEventTracker;
-use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
+use monad_types::{Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 
 use self::common::{run_txpool_benches, BenchController, EXECUTION_DELAY};
 
 mod common;
+
+const BASE_FEE: u64 = 100_000_000_000;
 
 fn criterion_benchmark(c: &mut Criterion) {
     // TODO: change this to something more meaningful, i.e. what's is the block
@@ -35,6 +43,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         "create_proposal",
         |controller_config| BenchController::setup(&block_policy, controller_config.clone()),
         |BenchController {
+             chain_config: _,
              state_backend,
              block_policy,
              pool,
@@ -45,8 +54,9 @@ fn criterion_benchmark(c: &mut Criterion) {
              proposal_byte_limit,
          }| {
             pool.create_proposal(
-                &mut EthTxPoolEventTracker::new(metrics, &mut Vec::default()),
+                &mut EthTxPoolEventTracker::new(metrics, &mut BTreeMap::default()),
                 block_policy.get_last_commit() + SeqNum(pending_blocks.len() as u64),
+                BASE_FEE,
                 *proposal_tx_limit,
                 *proposal_gas_limit,
                 *proposal_byte_limit,
@@ -54,10 +64,13 @@ fn criterion_benchmark(c: &mut Criterion) {
                 GENESIS_TIMESTAMP
                     + block_policy.get_last_commit().0 as u128
                     + pending_blocks.len() as u128,
+                NodeId::new(NopPubKey::from_bytes(&[0_u8; 32]).unwrap()),
+                Epoch(1),
                 RoundSignature::new(Round(0), &mock_keypair),
                 pending_blocks.to_owned(),
                 block_policy,
                 state_backend,
+                &MockChainConfig::DEFAULT,
             )
             .unwrap();
         },

@@ -13,34 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::BTreeMap;
-
 use alloy_rlp::{RlpDecodable, RlpEncodable};
-use monad_crypto::certificate_signature::{CertificateKeyPair, PubKey};
 use monad_types::*;
 use serde::{Deserialize, Serialize};
-
-/// Map validator NodeId to its Certificate PubKey
-pub struct ValidatorMapping<PT: PubKey, VKT: CertificateKeyPair> {
-    pub map: BTreeMap<NodeId<PT>, VKT::PubKeyType>,
-}
-
-impl<PT: PubKey, VKT: CertificateKeyPair> ValidatorMapping<PT, VKT> {
-    pub fn new(iter: impl IntoIterator<Item = (NodeId<PT>, VKT::PubKeyType)>) -> Self {
-        Self {
-            map: iter.into_iter().collect(),
-        }
-    }
-}
-
-impl<PT: PubKey, VKT: CertificateKeyPair> IntoIterator for ValidatorMapping<PT, VKT> {
-    type Item = (NodeId<PT>, VKT::PubKeyType);
-    type IntoIter = std::collections::btree_map::IntoIter<NodeId<PT>, VKT::PubKeyType>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.map.into_iter()
-    }
-}
 
 /// Vote for consensus proposals
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, RlpDecodable, RlpEncodable)]

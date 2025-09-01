@@ -24,17 +24,19 @@ use itertools::Itertools;
 use monad_consensus_types::{
     block::{BlockPolicy, BlockPolicyError, ConsensusFullBlock},
     checkpoint::RootInfo,
-    signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_txpool_types::TransactionError;
 use monad_eth_types::{Balance, EthAccount, EthExecutionProtocol, EthHeader, Nonce};
 use monad_state_backend::{StateBackend, StateBackendError};
-use monad_types::{BlockId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_SEQ_NUM};
+use monad_system_calls::SystemTransaction;
+use monad_types::{BlockId, Epoch, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_SEQ_NUM};
+use monad_validator::signature_collection::SignatureCollection;
 use sorted_vector_map::SortedVectorMap;
 use tracing::{trace, warn};
+
+pub mod validation;
 
 /// Retriever trait for account nonces from block(s)
 pub trait AccountNonceRetrievable {
@@ -46,97 +48,12 @@ pub enum ReserveBalanceCheck {
     Validate,
 }
 
-fn compute_intrinsic_gas(tx: &TxEnvelope) -> u64 {
-    // base stipend
-    let mut intrinsic_gas = 21000;
-
-    // YP, Eqn. 60, first summation
-    // 4 gas for each zero byte and 16 gas for each non zero byte
-    let zero_data_len = tx.input().iter().filter(|v| **v == 0).count() as u64;
-    let non_zero_data_len = tx.input().len() as u64 - zero_data_len;
-    intrinsic_gas += zero_data_len * 4;
-    // EIP-2028: Transaction data gas cost reduction (was originally 64 for non zero byte)
-    intrinsic_gas += non_zero_data_len * 16;
-
-    if tx.kind().is_create() {
-        // adds 32000 to intrinsic gas if transaction is contract creation
-        intrinsic_gas += 32000;
-        // EIP-3860: Limit and meter initcode
-        // Init code stipend for bytecode analysis
-        intrinsic_gas += ((tx.input().len() as u64 + 31) / 32) * 2;
-    }
-
-    // EIP-2930
-    let access_list = tx
-        .access_list()
-        .map(|list| list.0.as_slice())
-        .unwrap_or(&[]);
-    let accessed_slots: usize = access_list.iter().map(|item| item.storage_keys.len()).sum();
-    // each address in access list costs 2400 gas
-    intrinsic_gas += access_list.len() as u64 * 2400;
-    // each storage key in access list costs 1900 gas
-    intrinsic_gas += accessed_slots as u64 * 1900;
-
-    intrinsic_gas
-}
-
 pub fn compute_txn_max_value(txn: &TxEnvelope) -> U256 {
     let txn_value = txn.value();
     let gas_limit = U256::from(txn.gas_limit());
     let max_fee = U256::from(txn.max_fee_per_gas());
     let gas_cost = gas_limit.checked_mul(max_fee).expect("no overflow");
     txn_value.saturating_add(gas_cost)
-}
-
-/// Stateless helper function to check validity of an Ethereum transaction
-pub fn static_validate_transaction(
-    tx: &TxEnvelope,
-    chain_id: u64,
-    proposal_gas_limit: u64,
-    max_code_size: usize,
-) -> Result<(), TransactionError> {
-    // EIP-2 - verify that s is in the lower half of the curve
-    if tx.signature().normalize_s().is_some() {
-        return Err(TransactionError::UnsupportedTransactionType);
-    }
-
-    // EIP-155
-    // We allow legacy transactions without chain_id specified to pass through
-    if let Some(tx_chain_id) = tx.chain_id() {
-        if tx_chain_id != chain_id {
-            return Err(TransactionError::InvalidChainId);
-        }
-    }
-
-    // EIP-1559
-    if let Some(max_priority_fee) = tx.max_priority_fee_per_gas() {
-        if max_priority_fee > tx.max_fee_per_gas() {
-            return Err(TransactionError::MaxPriorityFeeTooHigh);
-        }
-    }
-
-    // EIP-3860
-    // max init_code is (2 * max_code_size)
-    let max_init_code_size: usize = 2 * max_code_size;
-    if tx.kind().is_create() && tx.input().len() > max_init_code_size {
-        return Err(TransactionError::InitCodeLimitExceeded);
-    }
-
-    // YP eq. 62 - intrinsic gas validation
-    let intrinsic_gas = compute_intrinsic_gas(tx);
-    if tx.gas_limit() < intrinsic_gas {
-        return Err(TransactionError::GasLimitTooLow);
-    }
-
-    if tx.gas_limit() > proposal_gas_limit {
-        return Err(TransactionError::GasLimitTooHigh);
-    }
-
-    if tx.is_eip4844() || tx.is_eip7702() {
-        return Err(TransactionError::UnsupportedTransactionType);
-    }
-
-    Ok(())
 }
 
 struct BlockLookupIndex {
@@ -154,9 +71,20 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     pub block: ConsensusFullBlock<ST, SCT, EthExecutionProtocol>,
+    pub system_txns: Vec<SystemTransaction>,
     pub validated_txns: Vec<Recovered<TxEnvelope>>,
     pub nonces: BTreeMap<Address, Nonce>,
     pub txn_fees: BTreeMap<Address, Balance>,
+}
+
+impl<ST, SCT> AsRef<EthValidatedBlock<ST, SCT>> for EthValidatedBlock<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    fn as_ref(&self) -> &EthValidatedBlock<ST, SCT> {
+        self
+    }
 }
 
 impl<ST, SCT> Deref for EthValidatedBlock<ST, SCT>
@@ -268,9 +196,15 @@ impl BlockTxnFees {
 struct CommittedBlock {
     block_id: BlockId,
     round: Round,
+    epoch: Epoch,
 
     nonces: BlockAccountNonce,
     fees: BlockTxnFees,
+
+    base_fee: u64,
+    base_fee_trend: u64,
+    base_fee_moment: u64,
+    block_gas_usage: u64,
 }
 
 #[derive(Debug)]
@@ -298,6 +232,12 @@ where
 
             _phantom: Default::default(),
         }
+    }
+
+    fn get_epoch(&self, seq_num: SeqNum) -> Option<Epoch> {
+        self.blocks
+            .get(&seq_num)
+            .map(|committed_block| committed_block.epoch)
     }
 
     fn get_nonce(&self, eth_address: &Address) -> Option<Nonce> {
@@ -356,6 +296,8 @@ where
             assert_eq!(self.blocks.len(), self.size);
         }
 
+        let block_gas_usage = block.get_total_gas();
+
         assert!(self
             .blocks
             .insert(
@@ -363,12 +305,18 @@ where
                 CommittedBlock {
                     block_id: block.get_id(),
                     round: block.get_block_round(),
+                    epoch: block.get_epoch(),
                     nonces: BlockAccountNonce {
                         nonces: block.get_account_nonces(),
                     },
                     fees: BlockTxnFees {
                         txn_fees: block.txn_fees.clone()
-                    }
+                    },
+
+                    base_fee: block.block.header().base_fee,
+                    base_fee_trend: block.block.header().base_fee_trend,
+                    base_fee_moment: block.block.header().base_fee_moment,
+                    block_gas_usage,
                 },
             )
             .is_none());
@@ -388,7 +336,6 @@ where
     // last execution-delay committed blocks
     committed_cache: CommittedBlkBuffer<ST, SCT>,
 
-    /// Cost for including transaction in the consensus
     execution_delay: SeqNum,
 
     /// Chain ID
@@ -417,7 +364,7 @@ where
     pub fn get_account_base_nonces<'a>(
         &self,
         consensus_block_seq_num: SeqNum,
-        state_backend: &impl StateBackend,
+        state_backend: &impl StateBackend<ST, SCT>,
         extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
         addresses: impl Iterator<Item = &'a Address>,
     ) -> Result<BTreeMap<&'a Address, Nonce>, StateBackendError> {
@@ -470,6 +417,16 @@ where
         self.last_commit
     }
 
+    pub fn get_last_commit_epoch(&self) -> Epoch {
+        if self.last_commit == GENESIS_SEQ_NUM {
+            Epoch(1)
+        } else {
+            self.committed_cache
+                .get_epoch(self.last_commit)
+                .expect("last committed block in committed cache")
+        }
+    }
+
     fn get_block_index(
         &self,
         extending_blocks: &Option<&Vec<&EthValidatedBlock<ST, SCT>>>,
@@ -511,7 +468,7 @@ where
 
     fn get_account_statuses<'a>(
         &self,
-        state_backend: &impl StateBackend,
+        state_backend: &impl StateBackend<ST, SCT>,
         extending_blocks: &Option<&Vec<&EthValidatedBlock<ST, SCT>>>,
         addresses: impl Iterator<Item = &'a Address>,
         base_seq_num: &SeqNum,
@@ -529,7 +486,7 @@ where
     pub fn compute_account_base_balances<'a>(
         &self,
         consensus_block_seq_num: SeqNum,
-        state_backend: &impl StateBackend,
+        state_backend: &impl StateBackend<ST, SCT>,
         extending_blocks: Option<&Vec<&EthValidatedBlock<ST, SCT>>>,
         addresses: impl Iterator<Item = &'a Address>,
     ) -> Result<BTreeMap<&'a Address, Balance>, StateBackendError>
@@ -634,6 +591,85 @@ where
         Ok(account_balances)
     }
 
+    fn get_parent_base_fee_fields<B>(&self, extending_blocks: &[B]) -> (u64, u64, u64, u64)
+    where
+        B: AsRef<EthValidatedBlock<ST, SCT>>,
+    {
+        // parent block is last block in extending_blocks or last_committed
+        // block if there's no extending branch
+        let (parent_base_fee, parent_trend, parent_moment, parent_gas_usage) =
+            if let Some(parent_block) = extending_blocks.last() {
+                let parent_gas_usage = parent_block
+                    .as_ref()
+                    .validated_txns
+                    .iter()
+                    .map(|txn| txn.gas_limit())
+                    .sum::<u64>();
+                (
+                    parent_block.as_ref().header().base_fee,
+                    parent_block.as_ref().header().base_fee_trend,
+                    parent_block.as_ref().header().base_fee_moment,
+                    parent_gas_usage,
+                )
+            } else {
+                // genesis block doesn't exist in committed_cache
+                // when upgrading, we treat the fork block as genesis block
+                if self.last_commit == GENESIS_SEQ_NUM {
+                    // genesis block
+                    (
+                        monad_tfm::base_fee::GENESIS_BASE_FEE,
+                        monad_tfm::base_fee::GENESIS_BASE_FEE_TREND,
+                        monad_tfm::base_fee::GENESIS_BASE_FEE_MOMENT,
+                        0,
+                    )
+                } else {
+                    let parent_block = self
+                        .committed_cache
+                        .blocks
+                        .get(&self.last_commit)
+                        .expect("last committed block must exist");
+                    (
+                        parent_block.base_fee,
+                        parent_block.base_fee_trend,
+                        parent_block.base_fee_moment,
+                        parent_block.block_gas_usage,
+                    )
+                }
+            };
+
+        (
+            parent_base_fee,
+            parent_trend,
+            parent_moment,
+            parent_gas_usage,
+        )
+    }
+
+    // TODO: introduce chain config to block policy to make parameters
+    // configurable
+    const BLOCK_GAS_LIMIT: u64 = 150_000_000;
+
+    /// return value
+    ///
+    /// (base_fee, base_fee_trend, base_fee_moment)
+    ///
+    /// base_fee unit: MON-wei
+    pub fn compute_base_fee<B>(&self, extending_blocks: &[B]) -> (u64, u64, u64)
+    where
+        B: AsRef<EthValidatedBlock<ST, SCT>>,
+    {
+        let (parent_base_fee, parent_trend, parent_moment, parent_gas_usage) =
+            self.get_parent_base_fee_fields(extending_blocks);
+
+        monad_tfm::base_fee::compute_base_fee(
+            Self::BLOCK_GAS_LIMIT,
+            parent_gas_usage,
+            parent_base_fee,
+            parent_trend,
+            parent_moment,
+        )
+    }
+
     pub fn get_chain_id(&self) -> u64 {
         self.chain_id
     }
@@ -643,7 +679,7 @@ impl<ST, SCT, SBT> BlockPolicy<ST, SCT, EthExecutionProtocol, SBT> for EthBlockP
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     type ValidatedBlock = EthValidatedBlock<ST, SCT>;
 
@@ -707,11 +743,46 @@ where
             return Err(BlockPolicyError::ExecutionResultMismatch);
         }
 
+        // verify base_fee fields
+        let (base_fee, base_fee_trend, base_fee_moment) = self.compute_base_fee(&extending_blocks);
+        if base_fee != block.header().base_fee {
+            warn!(
+                seq_num =? block.header().seq_num,
+                round =? block.header().block_round,
+                ?base_fee,
+                block_base_fee =? block.header().base_fee,
+                "block not coherent, base_fee mismatch"
+            );
+            return Err(BlockPolicyError::BaseFeeError);
+        }
+        if base_fee_trend != block.header().base_fee_trend {
+            warn!(
+                seq_num =? block.header().seq_num,
+                round =? block.header().block_round,
+                ?base_fee_trend,
+                block_base_fee_trend =? block.header().base_fee_trend,
+                "block not coherent, base_fee_trend mismatch"
+            );
+            return Err(BlockPolicyError::BaseFeeError);
+        }
+        if base_fee_moment != block.header().base_fee_moment {
+            warn!(
+                seq_num =? block.header().seq_num,
+                round =? block.header().block_round,
+                ?base_fee_moment,
+                block_base_fee_moment =? block.header().base_fee_moment,
+                "block not coherent, base_fee_moment mismatch"
+            );
+            return Err(BlockPolicyError::BaseFeeError);
+        }
+
+        let system_tx_signers = block.system_txns.iter().map(|txn| txn.signer());
         // TODO fix this unnecessary copy into a new vec to generate an owned Address
         let tx_signers = block
             .validated_txns
             .iter()
             .map(|txn| txn.signer())
+            .chain(system_tx_signers)
             .collect_vec();
         // these must be updated as we go through txs in the block
         let mut account_nonces = self.get_account_base_nonces(
@@ -727,6 +798,25 @@ where
             Some(&extending_blocks),
             tx_signers.iter(),
         )?;
+
+        for sys_txn in block.system_txns.iter() {
+            let sys_txn_signer = sys_txn.signer();
+            let sys_txn_nonce = sys_txn.nonce();
+
+            let expected_nonce = account_nonces
+                .get_mut(&sys_txn_signer)
+                .expect("account_nonces should have been populated");
+
+            if &sys_txn_nonce != expected_nonce {
+                warn!(
+                    seq_num =? block.header().seq_num,
+                    round =? block.header().block_round,
+                    "block not coherent, invalid nonce for system transaction"
+                );
+                return Err(BlockPolicyError::BlockNotCoherent);
+            }
+            *expected_nonce += 1;
+        }
 
         for txn in block.validated_txns.iter() {
             let eth_address = txn.signer();
@@ -826,10 +916,8 @@ where
 
 #[cfg(test)]
 mod test {
-    use std::str::FromStr;
-
-    use alloy_consensus::{SignableTransaction, TxEip1559, TxLegacy};
-    use alloy_primitives::{Address, Bytes, FixedBytes, PrimitiveSignature, TxKind, B256};
+    use alloy_consensus::{SignableTransaction, TxEip1559};
+    use alloy_primitives::{Address, FixedBytes, PrimitiveSignature, TxKind, B256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use monad_crypto::NopSignature;
@@ -838,6 +926,10 @@ mod test {
     use proptest::{prelude::*, strategy::Just};
 
     use super::*;
+
+    const BASE_FEE: u64 = 100_000_000_000;
+    const BASE_FEE_TREND: u64 = 0;
+    const BASE_FEE_MOMENT: u64 = 0;
 
     type SignatureType = NopSignature;
     type SignatureCollectionType = MockSignatures<SignatureType>;
@@ -861,6 +953,7 @@ mod test {
         let block1 = CommittedBlock {
             block_id: BlockId(Hash(Default::default())),
             round: Round(0),
+            epoch: Epoch(1),
             nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address1, 1), (address2, 1)]),
             },
@@ -870,11 +963,16 @@ mod test {
                     (address2, Balance::from(200)),
                 ]),
             },
+            base_fee: BASE_FEE,
+            base_fee_trend: BASE_FEE_TREND,
+            base_fee_moment: BASE_FEE_MOMENT,
+            block_gas_usage: 0, // not used in this test
         };
 
         let block2 = CommittedBlock {
             block_id: BlockId(Hash(Default::default())),
             round: Round(0),
+            epoch: Epoch(1),
             nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address1, 2), (address3, 1)]),
             },
@@ -884,11 +982,16 @@ mod test {
                     (address3, Balance::from(300)),
                 ]),
             },
+            base_fee: BASE_FEE,
+            base_fee_trend: BASE_FEE_TREND,
+            base_fee_moment: BASE_FEE_MOMENT,
+            block_gas_usage: 0, // not used in this test
         };
 
         let block3 = CommittedBlock {
             block_id: BlockId(Hash(Default::default())),
             round: Round(0),
+            epoch: Epoch(1),
             nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address2, 2), (address3, 2)]),
             },
@@ -898,6 +1001,10 @@ mod test {
                     (address3, Balance::from(350)),
                 ]),
             },
+            base_fee: BASE_FEE,
+            base_fee_trend: BASE_FEE_TREND,
+            base_fee_moment: BASE_FEE_MOMENT,
+            block_gas_usage: 0, // not used in this test
         };
 
         buffer.blocks.insert(SeqNum(1), block1);
@@ -946,6 +1053,7 @@ mod test {
         let block1 = CommittedBlock {
             block_id: BlockId(Hash(Default::default())),
             round: Round(0),
+            epoch: Epoch(1),
             nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address1, 1), (address2, 1)]),
             },
@@ -955,11 +1063,16 @@ mod test {
                     (address2, U256::MAX),
                 ]),
             },
+            base_fee: BASE_FEE,
+            base_fee_trend: BASE_FEE_TREND,
+            base_fee_moment: BASE_FEE_MOMENT,
+            block_gas_usage: 0, // not used in this test
         };
 
         let block2 = CommittedBlock {
             block_id: BlockId(Hash(Default::default())),
             round: Round(0),
+            epoch: Epoch(1),
             nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address1, 2), (address3, 1)]),
             },
@@ -969,11 +1082,16 @@ mod test {
                     (address3, U256::MAX.div_ceil(U256::from(2))),
                 ]),
             },
+            base_fee: BASE_FEE,
+            base_fee_trend: BASE_FEE_TREND,
+            base_fee_moment: BASE_FEE_MOMENT,
+            block_gas_usage: 0, // not used in this test
         };
 
         let block3 = CommittedBlock {
             block_id: BlockId(Hash(Default::default())),
             round: Round(0),
+            epoch: Epoch(1),
             nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address2, 2), (address3, 2)]),
             },
@@ -983,6 +1101,10 @@ mod test {
                     (address3, U256::MAX.div_ceil(U256::from(2)) + U256::from(1)),
                 ]),
             },
+            base_fee: BASE_FEE,
+            base_fee_trend: BASE_FEE_TREND,
+            base_fee_moment: BASE_FEE_MOMENT,
+            block_gas_usage: 0, // not used in this test
         };
 
         buffer.blocks.insert(SeqNum(1), block1);
@@ -1011,139 +1133,6 @@ mod test {
             buffer.compute_txn_fee(SeqNum(0), &address3).txn_fee,
             U256::MAX
         );
-    }
-
-    #[test]
-    fn test_static_validate_transaction() {
-        let address = Address(FixedBytes([0x11; 20]));
-        const CHAIN_ID: u64 = 1337;
-        const PROPOSAL_GAS_LIMIT: u64 = 300_000_000;
-
-        // pre EIP-155 transaction with no chain id is allowed
-        let tx_no_chain_id = TxLegacy {
-            chain_id: None,
-            nonce: 0,
-            to: TxKind::Call(address),
-            gas_price: 1000,
-            gas_limit: 1_000_000,
-            ..Default::default()
-        };
-        let signature = sign_tx(&tx_no_chain_id.signature_hash());
-        let txn = tx_no_chain_id.into_signed(signature);
-
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
-        assert!(matches!(result, Ok(())));
-
-        // transaction with incorrect chain id
-        let tx_invalid_chain_id = TxEip1559 {
-            chain_id: CHAIN_ID - 1,
-            nonce: 0,
-            to: TxKind::Call(address),
-            max_fee_per_gas: 1000,
-            max_priority_fee_per_gas: 10,
-            gas_limit: 1_000_000,
-            ..Default::default()
-        };
-        let signature = sign_tx(&tx_invalid_chain_id.signature_hash());
-        let txn = tx_invalid_chain_id.into_signed(signature);
-
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
-        assert!(matches!(result, Err(TransactionError::InvalidChainId)));
-
-        // contract deployment transaction with input data larger than 2 * 0x6000 (initcode limit)
-        let input = vec![0; 2 * 0x6000 + 1];
-        let tx_over_initcode_limit = TxEip1559 {
-            chain_id: CHAIN_ID,
-            nonce: 0,
-            to: TxKind::Create,
-            max_fee_per_gas: 10000,
-            max_priority_fee_per_gas: 10,
-            gas_limit: 1_000_000,
-            input: input.into(),
-            ..Default::default()
-        };
-        let signature = sign_tx(&tx_over_initcode_limit.signature_hash());
-        let txn = tx_over_initcode_limit.into_signed(signature);
-
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
-        assert!(matches!(
-            result,
-            Err(TransactionError::InitCodeLimitExceeded)
-        ));
-
-        // transaction with larger max priority fee than max fee per gas
-        let tx_priority_fee_too_high = TxEip1559 {
-            chain_id: CHAIN_ID,
-            nonce: 0,
-            to: TxKind::Call(address),
-            max_fee_per_gas: 1000,
-            max_priority_fee_per_gas: 10000,
-            gas_limit: 1_000_000,
-            input: vec![].into(),
-            ..Default::default()
-        };
-        let signature = sign_tx(&tx_priority_fee_too_high.signature_hash());
-        let txn = tx_priority_fee_too_high.into_signed(signature);
-
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
-        assert!(matches!(
-            result,
-            Err(TransactionError::MaxPriorityFeeTooHigh)
-        ));
-
-        // transaction with gas limit lower than intrinsic gas
-        let tx_gas_limit_too_low = TxEip1559 {
-            chain_id: CHAIN_ID,
-            nonce: 0,
-            to: TxKind::Call(address),
-            max_fee_per_gas: 1000,
-            max_priority_fee_per_gas: 10,
-            gas_limit: 20_000,
-            input: vec![].into(),
-            ..Default::default()
-        };
-        let signature = sign_tx(&tx_gas_limit_too_low.signature_hash());
-        let txn = tx_gas_limit_too_low.into_signed(signature);
-
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
-        assert!(matches!(result, Err(TransactionError::GasLimitTooLow)));
-
-        // transaction with gas limit higher than block gas limit
-        let tx_gas_limit_too_high = TxEip1559 {
-            chain_id: CHAIN_ID,
-            nonce: 0,
-            to: TxKind::Call(address),
-            max_fee_per_gas: 1000,
-            max_priority_fee_per_gas: 10,
-            gas_limit: PROPOSAL_GAS_LIMIT + 1,
-            input: vec![].into(),
-            ..Default::default()
-        };
-        let signature = sign_tx(&tx_gas_limit_too_high.signature_hash());
-        let txn = tx_gas_limit_too_high.into_signed(signature);
-
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
-        assert!(matches!(result, Err(TransactionError::GasLimitTooHigh)));
-    }
-
-    #[test]
-    fn test_compute_intrinsic_gas() {
-        const CHAIN_ID: u64 = 1337;
-        let tx = TxEip1559 {
-            chain_id: CHAIN_ID,
-            nonce: 0,
-            to: TxKind::Create,
-            max_fee_per_gas: 1000,
-            max_priority_fee_per_gas: 10,
-            gas_limit: 1_000_000,
-            input: Bytes::from_str("0x6040608081523462000414").unwrap(),
-            ..Default::default()
-        };
-        let signature = sign_tx(&tx.signature_hash());
-        let tx = tx.into_signed(signature);
-
-        let result = compute_intrinsic_gas(&tx.into());
-        assert_eq!(result, 53166);
     }
 
     proptest! {

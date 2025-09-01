@@ -42,6 +42,7 @@ fn main() {
         client_dst.display()
     );
     println!("cargo:rustc-link-lib=static=monad_event");
+    println!("cargo:rustc-link-lib=hugetlbfs");
 
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
 
@@ -51,7 +52,8 @@ fn main() {
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         .wrap_static_fns(true)
         .wrap_static_fns_path(out_dir.join(STATIC_FNS_PATH))
-        .derive_copy(false)
+        .derive_copy(true)
+        .derive_debug(true)
         .derive_partialeq(true)
         .derive_eq(true)
         .prepend_enum_name(false)

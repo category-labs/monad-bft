@@ -20,14 +20,14 @@ use std::{
 
 use alloy_rlp::{encode_list, BytesMut, Decodable, Encodable, RlpDecodable, RlpEncodable};
 use bitvec::prelude::*;
-use monad_consensus_types::{
+use monad_crypto::{certificate_signature::PubKey, signing_domain::SigningDomain};
+use monad_types::NodeId;
+use monad_validator::{
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
     },
-    voting::ValidatorMapping,
+    validator_mapping::ValidatorMapping,
 };
-use monad_crypto::{certificate_signature::PubKey, signing_domain::SigningDomain};
-use monad_types::NodeId;
 
 use crate::{bls::BlsAggregatePubKey, BlsAggregateSignature, BlsKeyPair, BlsSignature};
 
@@ -333,9 +333,6 @@ mod test {
 
     use alloy_rlp::Decodable;
     use bitvec::prelude::*;
-    use monad_consensus_types::signature_collection::{
-        SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
-    };
     use monad_crypto::{
         certificate_signature::{
             CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
@@ -348,7 +345,12 @@ mod test {
         validators::create_keys_w_validators,
     };
     use monad_types::NodeId;
-    use monad_validator::validator_set::ValidatorSetFactory;
+    use monad_validator::{
+        signature_collection::{
+            SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
+        },
+        validator_set::ValidatorSetFactory,
+    };
     use rand::{rngs::StdRng, seq::SliceRandom, SeedableRng};
     use test_case::test_case;
 

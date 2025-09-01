@@ -11,6 +11,3 @@ epoch = 1
 [[validator_sets]]
 epoch = 1
 round = 0
-
-[[validator_sets]]
-epoch = 2

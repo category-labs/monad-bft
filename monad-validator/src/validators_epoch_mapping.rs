@@ -15,13 +15,13 @@
 
 use std::collections::HashMap;
 
-use monad_consensus_types::{
-    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    voting::ValidatorMapping,
-};
 use monad_types::{Epoch, NodeId, Stake};
 
-use crate::validator_set::{ValidatorSetType, ValidatorSetTypeFactory};
+use crate::{
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    validator_mapping::ValidatorMapping,
+    validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
+};
 
 /// A mapping from Epoch -> (Validator Stakes, Validator Certificate Pubkeys).
 pub struct ValidatorsEpochMapping<VTF, SCT>

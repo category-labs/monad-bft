@@ -95,6 +95,10 @@ pub struct CheckerArgs {
     /// How frequently to recheck faults in minutes
     #[arg(long, default_value_t = 15.)]
     pub recheck_freq_min: f64,
+
+    /// How many blocks to process in parallel
+    #[arg(long, default_value_t = 20)]
+    pub concurrency: usize,
 }
 
 #[derive(Parser, Debug)]
@@ -122,6 +126,10 @@ pub struct Rechecker {
     /// Run continuously as a worker (default is to run once and exit)
     #[arg(long)]
     pub worker: bool,
+
+    /// How many blocks to process in parallel
+    #[arg(long, default_value_t = 20)]
+    pub concurrency: usize,
 }
 
 #[derive(Parser, Debug)]
@@ -146,6 +154,10 @@ pub struct FaultFixerArgs {
     /// End block (inclusive)
     #[clap(long)]
     pub end: Option<u64>,
+
+    /// How many blocks to process in parallel
+    #[arg(long, default_value_t = 20)]
+    pub concurrency: usize,
 }
 
 #[derive(Parser, Debug)]

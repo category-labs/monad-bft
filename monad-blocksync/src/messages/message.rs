@@ -17,12 +17,12 @@ use alloy_rlp::{bytes, encode_list, Decodable, Encodable, Header};
 use monad_consensus_types::{
     block::{BlockRange, ConsensusBlockHeader},
     payload::{ConsensusBlockBody, ConsensusBlockBodyId},
-    signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_types::ExecutionProtocol;
+use monad_validator::signature_collection::SignatureCollection;
 
 const BLOCK_SYNC_REQUEST_MESSAGE_NAME: &str = "BlockSyncRequestMessage";
 const BLOCK_SYNC_RESPONSE_MESSAGE_NAME: &str = "BlockSyncResponseMessage";

@@ -25,17 +25,17 @@ mod test {
     use itertools::Itertools;
     use monad_chain_config::{
         revision::{ChainParams, MockChainRevision},
-        MockChainConfig,
+        ChainConfig, MockChainConfig,
     };
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
         NopPubKey, NopSignature,
     };
     use monad_eth_block_policy::EthBlockPolicy;
-    use monad_eth_block_validator::EthValidator;
+    use monad_eth_block_validator::EthBlockValidator;
     use monad_eth_ledger::MockEthLedger;
     use monad_eth_testutil::{make_legacy_tx, secret_to_eth_address};
-    use monad_eth_types::{Balance, EthExecutionProtocol, BASE_FEE_PER_GAS};
+    use monad_eth_types::{Balance, EthExecutionProtocol};
     use monad_mock_swarm::{
         mock::TimestamperConfig,
         mock_swarm::{Nodes, SwarmBuilder},
@@ -55,8 +55,8 @@ mod test {
     };
     use monad_types::{NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
     use monad_updaters::{
-        ledger::MockableLedger, state_root_hash::MockStateRootHashNop,
-        statesync::MockStateSyncExecutor, txpool::MockTxPoolExecutor,
+        ledger::MockableLedger, statesync::MockStateSyncExecutor, txpool::MockTxPoolExecutor,
+        val_set::MockValSetUpdaterNop,
     };
     use monad_validator::{
         simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory,
@@ -68,7 +68,7 @@ mod test {
         type SignatureType = NopSignature;
         type SignatureCollectionType = MultiSig<Self::SignatureType>;
         type ExecutionProtocolType = EthExecutionProtocol;
-        type StateBackendType = InMemoryState;
+        type StateBackendType = InMemoryState<Self::SignatureType, Self::SignatureCollectionType>;
         type BlockPolicyType = EthBlockPolicy<Self::SignatureType, Self::SignatureCollectionType>;
         type ChainConfigType = MockChainConfig;
         type ChainRevisionType = MockChainRevision;
@@ -79,11 +79,7 @@ mod test {
             Self::ExecutionProtocolType,
         >;
 
-        type BlockValidator = EthValidator<
-            Self::SignatureType,
-            Self::SignatureCollectionType,
-            Self::StateBackendType,
-        >;
+        type BlockValidator = EthBlockValidator<Self::SignatureType, Self::SignatureCollectionType>;
         type ValidatorSetTypeFactory =
             ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
         type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
@@ -108,7 +104,7 @@ mod test {
             Self::TransportMessage,
         >;
 
-        type StateRootHashExecutor = MockStateRootHashNop<
+        type ValSetUpdater = MockValSetUpdaterNop<
             Self::SignatureType,
             Self::SignatureCollectionType,
             Self::ExecutionProtocolType,
@@ -128,7 +124,7 @@ mod test {
     }
 
     const CONSENSUS_DELTA: Duration = Duration::from_millis(100);
-    const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;
+    const BASE_FEE: u128 = monad_tfm::base_fee::MIN_BASE_FEE as u128;
     const GAS_LIMIT: u64 = 30000;
 
     static CHAIN_PARAMS: ChainParams = ChainParams {
@@ -142,18 +138,24 @@ mod test {
         num_nodes: u16,
         existing_accounts: impl IntoIterator<Item = Address>,
     ) -> Nodes<EthSwarm> {
+        let epoch_length = SeqNum(2000);
+        let chain_config =
+            MockChainConfig::new_with_epoch_params(&CHAIN_PARAMS, epoch_length, Round(50));
         let execution_delay = SeqNum(4);
 
         let existing_nonces: BTreeMap<_, _> =
             existing_accounts.into_iter().map(|acc| (acc, 0)).collect();
 
-        let create_block_policy = || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337);
+        let chain_config = MockChainConfig::new(&CHAIN_PARAMS);
+
+        let create_block_policy =
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, chain_config.chain_id());
 
         let state_configs = make_state_configs::<EthSwarm>(
             num_nodes,
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            || EthValidator::new(1337),
+            EthBlockValidator::default,
             create_block_policy,
             || {
                 InMemoryStateInner::new(
@@ -162,12 +164,10 @@ mod test {
                     InMemoryBlockState::genesis(existing_nonces.clone()),
                 )
             },
-            execution_delay,                     // execution_delay
-            CONSENSUS_DELTA,                     // delta
-            MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            SeqNum(2000),                        // val_set_update_interval
-            Round(50),                           // epoch_start_delay
-            SeqNum(100),                         // state_sync_threshold
+            execution_delay, // execution_delay
+            CONSENSUS_DELTA, // delta
+            chain_config,    // chain config
+            SeqNum(100),     // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
             .iter()
@@ -184,7 +184,7 @@ mod test {
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
+                        MockValSetUpdaterNop::new(validators.validators.clone(), epoch_length),
                         MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
                         MockEthLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(

@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     marker::PhantomData,
     net::{IpAddr, SocketAddr, ToSocketAddrs},
     process,
@@ -27,11 +27,10 @@ use alloy_rlp::{Decodable, Encodable};
 use chrono::Utc;
 use clap::CommandFactory;
 use futures_util::{FutureExt, StreamExt};
-use monad_chain_config::{revision::ChainRevision, ChainConfig};
+use monad_chain_config::ChainConfig;
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     metrics::Metrics,
-    signature_collection::SignatureCollection,
     validator_data::{ValidatorSetDataWithEpoch, ValidatorsConfig},
 };
 use monad_control_panel::{ipc::ControlPanelIpcReceiver, TracingReload};
@@ -43,7 +42,7 @@ use monad_crypto::{
 };
 use monad_dataplane::DataplaneBuilder;
 use monad_eth_block_policy::EthBlockPolicy;
-use monad_eth_block_validator::EthValidator;
+use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig};
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
@@ -53,15 +52,11 @@ use monad_node_config::{
     PeerDiscoveryConfig, SignatureCollectionType, SignatureType,
 };
 use monad_peer_discovery::{
-    discovery::{PeerDiscovery, PeerDiscoveryBuilder},
+    discovery::{PeerDiscovery, PeerDiscoveryBuilder, PeerDiscoveryRole},
     MonadNameRecord, NameRecord,
 };
 use monad_pprof::start_pprof_server;
-use monad_raptorcast::config::{
-    GroupSchedulingConfig, RaptorCastConfig, RaptorCastConfigPrimary, RaptorCastConfigSecondary,
-    RaptorCastConfigSecondaryClient, RaptorCastConfigSecondaryPublisher,
-    SecondaryRaptorCastModeConfig,
-};
+use monad_raptorcast::config::{RaptorCastConfig, RaptorCastConfigPrimary};
 use monad_router_multi::MultiRouter;
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::StateBackendThreadClient;
@@ -70,19 +65,20 @@ use monad_triedb_cache::StateBackendCache;
 use monad_triedb_utils::TriedbReader;
 use monad_types::{DropTimer, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_updaters::{
-    checkpoint::FileCheckpoint, config_loader::ConfigLoader, loopback::LoopbackExecutor,
+    config_file::ConfigFile, config_loader::ConfigLoader, loopback::LoopbackExecutor,
     parent::ParentExecutor, timer::TokioTimer, tokio_timestamp::TokioTimestamp,
-    triedb_state_root_hash::StateRootHashTriedbPoll,
+    triedb_val_set::ValSetUpdater,
 };
 use monad_validator::{
-    validator_set::ValidatorSetFactory, weighted_round_robin::WeightedRoundRobin,
+    signature_collection::SignatureCollection, validator_set::ValidatorSetFactory,
+    weighted_round_robin::WeightedRoundRobin,
 };
 use monad_wal::{wal::WALoggerConfig, PersistenceLoggerBuilder};
 use opentelemetry::metrics::MeterProvider;
 use opentelemetry_otlp::{MetricExporter, WithExportConfig};
 use rand_chacha::{rand_core::SeedableRng, ChaCha8Rng};
 use tokio::signal::unix::{signal, SignalKind};
-use tracing::{debug, error, event, info, warn, Instrument, Level};
+use tracing::{error, event, info, warn, Instrument, Level};
 use tracing_manytrace::{ManytraceLayer, TracingExtension};
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
@@ -244,9 +240,6 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
         current_round,
     );
 
-    let val_set_update_interval = SeqNum(50_000); // TODO configurable
-    let epoch_start_delay = Round(5_000); // TODO configurable
-
     let statesync_threshold: usize = node_state.node_config.statesync_threshold.into();
 
     _ = std::fs::remove_file(node_state.mempool_ipc_path.as_path());
@@ -309,11 +302,16 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
         router,
         timer: TokioTimer::default(),
         ledger: MonadBlockFileLedger::new(node_state.ledger_path),
-        checkpoint: FileCheckpoint::new(node_state.forkpoint_path),
-        state_root_hash: StateRootHashTriedbPoll::new(
-            &node_state.triedb_path,
-            &node_state.validators_path,
-            val_set_update_interval,
+        config_file: ConfigFile::new(
+            node_state.forkpoint_path,
+            node_state.validators_path.clone(),
+            node_state.chain_config,
+        ),
+        val_set: ValSetUpdater::new(
+            node_state.validators_path,
+            node_state.chain_config.get_epoch_length(),
+            node_state.chain_config.get_staking_activation(),
+            state_backend.clone(),
         ),
         timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
         txpool: EthTxPoolExecutor::new(
@@ -326,22 +324,18 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
                 queued_batches_watermark: node_state.node_config.ipc_queued_batches_watermark
                     as usize,
             },
-            true,
             // TODO(andr-dev): Add tx_expiry to node config
             Duration::from_secs(15),
             Duration::from_secs(5 * 60),
             node_state.chain_config,
             node_state
-                .chain_config
-                .get_chain_revision(
-                    node_state
-                        .forkpoint_config
-                        .high_certificate
-                        .qc()
-                        .get_round(),
-                )
-                .chain_params()
-                .proposal_gas_limit,
+                .forkpoint_config
+                .high_certificate
+                .qc()
+                .get_round(),
+            // TODO(andr-dev): Use timestamp from last commit in ledger
+            0,
+            true,
         )
         .expect("txpool ipc succeeds"),
         control_panel: ControlPanelIpcReceiver::new(
@@ -395,14 +389,12 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
 
     let builder = MonadStateBuilder {
         validator_set_factory: ValidatorSetFactory::default(),
-        leader_election: WeightedRoundRobin::default(),
-        block_validator: EthValidator::new(node_state.node_config.chain_id),
+        leader_election: WeightedRoundRobin::new(node_state.chain_config.get_staking_activation()),
+        block_validator: EthBlockValidator::default(),
         block_policy: create_block_policy(),
         state_backend,
         key: node_state.secp256k1_identity,
         certkey: node_state.bls12_381_identity,
-        val_set_update_interval,
-        epoch_start_delay,
         beneficiary: node_state.node_config.beneficiary.into(),
         locked_epoch_validators,
         forkpoint: node_state.forkpoint_config.into(),
@@ -629,7 +621,7 @@ where
     );
 
     // initial set of peers
-    let routing_info = bootstrap_nodes
+    let bootstrap_peers = bootstrap_nodes
         .peers
         .iter()
         .filter_map(|peer| {
@@ -671,88 +663,62 @@ where
         })
         .collect();
 
-    let epoch_validators = locked_epoch_validators
-        .iter()
-        .map(|epoch_validators| {
-            (
-                epoch_validators.epoch,
-                epoch_validators
-                    .validators
-                    .0
-                    .iter()
-                    .map(|validator| validator.node_id)
-                    .collect(),
-            )
-        })
-        .collect();
+    let epoch_validators: BTreeMap<Epoch, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>> =
+        locked_epoch_validators
+            .iter()
+            .map(|epoch_validators| {
+                (
+                    epoch_validators.epoch,
+                    epoch_validators
+                        .validators
+                        .0
+                        .iter()
+                        .map(|validator| validator.node_id)
+                        .collect(),
+                )
+            })
+            .collect();
     let mut pinned_full_nodes: BTreeSet<_> = full_nodes
         .iter()
         .map(|full_node| NodeId::new(full_node.secp256k1_pubkey))
         .collect();
 
-    let secondary_instance: RaptorCastConfigSecondary<ST> = {
-        if let Some(cfg_2nd) = node_config.fullnode_raptorcast {
-            match cfg_2nd.mode {
-                monad_node_config::fullnode_raptorcast::SecondaryRaptorCastModeConfig::None => {
-                    debug!("Configured with Secondary RaptorCast instance: None");
-                    RaptorCastConfigSecondary::default()
-                }
-
-                monad_node_config::fullnode_raptorcast::SecondaryRaptorCastModeConfig::Client => {
-                    debug!("Configured with Secondary RaptorCast instance: Client");
-                    RaptorCastConfigSecondary {
-                        raptor10_redundancy: cfg_2nd.raptor10_fullnode_redundancy_factor,
-                        mode: SecondaryRaptorCastModeConfig::Client(RaptorCastConfigSecondaryClient {
-                            bandwidth_cost_per_group_member: cfg_2nd.bandwidth_cost_per_group_member,
-                            bandwidth_capacity: cfg_2nd.bandwidth_capacity,
-                            invite_future_dist_min: cfg_2nd.invite_future_dist_min,
-                            invite_future_dist_max: cfg_2nd.invite_future_dist_max,
-                            invite_accept_heartbeat: Duration::from_millis(cfg_2nd.invite_accept_heartbeat_ms),
-                        })
-                    }
-                }
-
-                monad_node_config::fullnode_raptorcast::SecondaryRaptorCastModeConfig::Publisher => {
-                    debug!("Configured with Secondary RaptorCast instance: Publisher");
-                    let full_nodes_prioritized: Vec<NodeId<CertificateSignaturePubKey<ST>>> = cfg_2nd
-                        .full_nodes_prioritized
-                        .identities
-                        .iter()
-                        .map(|id| NodeId::new(id.secp256k1_pubkey))
-                        .collect();
-                    // also pin these full nodes in peer discovery
-                    pinned_full_nodes.extend(full_nodes_prioritized.iter());
-
-                    RaptorCastConfigSecondary {
-                        raptor10_redundancy: cfg_2nd.raptor10_fullnode_redundancy_factor,
-                        mode: SecondaryRaptorCastModeConfig::Publisher(RaptorCastConfigSecondaryPublisher {
-                            full_nodes_prioritized,
-                            group_scheduling: GroupSchedulingConfig {
-                                max_group_size: cfg_2nd.max_group_size,
-                                round_span: cfg_2nd.round_span,
-                                invite_lookahead: cfg_2nd.invite_lookahead,
-                                max_invite_wait: cfg_2nd.max_invite_wait,
-                                deadline_round_dist: cfg_2nd.deadline_round_dist,
-                                init_empty_round_span: cfg_2nd.init_empty_round_span,
-                            }
-                        })
-                    }
-                }
+    let self_peer_disc_role = match node_config.fullnode_raptorcast.mode {
+        monad_node_config::fullnode_raptorcast::SecondaryRaptorCastModeConfig::None => {
+            match epoch_validators
+                .get(&current_epoch)
+                .and_then(|validators| validators.get(&self_id))
+            {
+                Some(_) => PeerDiscoveryRole::ValidatorNone,
+                None => PeerDiscoveryRole::FullNodeNone,
             }
-        } else {
-            RaptorCastConfigSecondary::default()
+        }
+        monad_node_config::fullnode_raptorcast::SecondaryRaptorCastModeConfig::Client => {
+            PeerDiscoveryRole::FullNodeClient
+        }
+        monad_node_config::fullnode_raptorcast::SecondaryRaptorCastModeConfig::Publisher => {
+            // also pin prioritized full nodes in peer discovery
+            let full_nodes_prioritized: Vec<NodeId<CertificateSignaturePubKey<ST>>> = node_config
+                .fullnode_raptorcast
+                .full_nodes_prioritized
+                .identities
+                .iter()
+                .map(|id| NodeId::new(id.secp256k1_pubkey))
+                .collect();
+            pinned_full_nodes.extend(full_nodes_prioritized.iter());
+            PeerDiscoveryRole::ValidatorPublisher
         }
     };
 
     let peer_discovery_builder = PeerDiscoveryBuilder {
         self_id,
+        self_role: self_peer_disc_role,
         self_record,
         current_round,
         current_epoch,
-        epoch_validators,
+        epoch_validators: epoch_validators.clone(),
         pinned_full_nodes,
-        routing_info,
-        ping_period: Duration::from_secs(peer_discovery_config.ping_period),
+        bootstrap_peers,
         refresh_period: Duration::from_secs(peer_discovery_config.refresh_period),
         request_timeout: Duration::from_secs(peer_discovery_config.request_timeout),
         unresponsive_prune_threshold: peer_discovery_config.unresponsive_prune_threshold,
@@ -764,6 +730,7 @@ where
     };
 
     MultiRouter::new(
+        self_id,
         RaptorCastConfig {
             shared_key: Arc::new(identity),
             mtu: network_config.mtu,
@@ -775,10 +742,12 @@ where
                     .map(|full_node| NodeId::new(full_node.secp256k1_pubkey))
                     .collect(),
             },
-            secondary_instance,
+            secondary_instance: node_config.fullnode_raptorcast,
         },
         dp_builder,
         peer_discovery_builder,
+        current_epoch,
+        epoch_validators,
     )
 }
 

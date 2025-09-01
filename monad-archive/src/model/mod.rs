@@ -41,17 +41,18 @@ pub trait BlockDataReader: Clone {
     /// Get the latest block number for the given type (uploaded or indexed)
     async fn get_latest(&self, latest_kind: LatestKind) -> Result<Option<u64>>;
 
-    /// Get a block by its number, or return None if not found
-    async fn try_get_block_by_number(&self, block_num: u64) -> Result<Option<Block>>;
-
-    /// Get receipts for a block, or return None if not found
-    async fn try_get_block_receipts(&self, block_number: u64) -> Result<Option<BlockReceipts>>;
-
-    /// Get execution traces for a block, or return None if not found
-    async fn try_get_block_traces(&self, block_number: u64) -> Result<Option<BlockTraces>>;
+    /// Get a block by its hash, or return None if not found
+    async fn try_get_block_by_hash(&self, block_hash: &BlockHash) -> Result<Option<Block>>;
 
     /// Get a block by its hash
-    async fn get_block_by_hash(&self, block_hash: &BlockHash) -> Result<Block>;
+    async fn get_block_by_hash(&self, block_hash: &BlockHash) -> Result<Block> {
+        self.try_get_block_by_hash(block_hash)
+            .await
+            .and_then(|opt| opt.ok_or_eyre("Block not found"))
+    }
+
+    /// Get a block by its number, or return None if not found
+    async fn try_get_block_by_number(&self, block_num: u64) -> Result<Option<Block>>;
 
     /// Get a block by its number
     async fn get_block_by_number(&self, block_num: u64) -> Result<Block> {
@@ -60,12 +61,18 @@ pub trait BlockDataReader: Clone {
             .and_then(|opt| opt.ok_or_eyre("Block not found"))
     }
 
+    /// Get receipts for a block, or return None if not found
+    async fn try_get_block_receipts(&self, block_number: u64) -> Result<Option<BlockReceipts>>;
+
     /// Get receipts for a block
     async fn get_block_receipts(&self, block_number: u64) -> Result<BlockReceipts> {
         self.try_get_block_receipts(block_number)
             .await
             .and_then(|opt| opt.ok_or_eyre("Receipt not found"))
     }
+
+    /// Get execution traces for a block, or return None if not found
+    async fn try_get_block_traces(&self, block_number: u64) -> Result<Option<BlockTraces>>;
 
     /// Get execution traces for a block
     async fn get_block_traces(&self, block_number: u64) -> Result<BlockTraces> {

@@ -21,20 +21,18 @@ use std::{
 };
 
 use futures::Stream;
-use monad_consensus_types::{
-    signature_collection::SignatureCollection,
-    validator_data::{ValidatorSetData, ValidatorSetDataWithEpoch},
-};
+use monad_consensus_types::validator_data::{ValidatorSetData, ValidatorSetDataWithEpoch};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
-use monad_executor_glue::{MonadEvent, StateRootHashCommand};
+use monad_executor_glue::{MonadEvent, ValSetCommand};
 use monad_types::{Epoch, ExecutionProtocol, SeqNum};
+use monad_validator::signature_collection::SignatureCollection;
 use tracing::error;
 
-pub trait MockableStateRootHash:
-    Executor<Command = StateRootHashCommand> + Stream<Item = Self::Event> + Unpin
+pub trait MockableValSetUpdater:
+    Executor<Command = ValSetCommand> + Stream<Item = Self::Event> + Unpin
 {
     type Event;
     type SignatureCollection: SignatureCollection;
@@ -43,7 +41,7 @@ pub trait MockableStateRootHash:
     fn get_validator_set_data(&self, epoch: Epoch) -> ValidatorSetData<Self::SignatureCollection>;
 }
 
-impl<T: MockableStateRootHash + ?Sized> MockableStateRootHash for Box<T> {
+impl<T: MockableValSetUpdater + ?Sized> MockableValSetUpdater for Box<T> {
     type Event = T::Event;
     type SignatureCollection = T::SignatureCollection;
 
@@ -62,7 +60,7 @@ impl<T: MockableStateRootHash + ?Sized> MockableStateRootHash for Box<T> {
 /// Goal is to mimic the behaviour of execution receiving a commit
 /// and generating the state root hash and updating the staking contract,
 /// and sending it back to consensus.
-pub struct MockStateRootHashNop<ST, SCT, EPT>
+pub struct MockValSetUpdaterNop<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -71,7 +69,7 @@ where
     // validator set updates
     genesis_validator_data: ValidatorSetData<SCT>,
     next_val_data: Option<ValidatorSetDataWithEpoch<SCT>>,
-    val_set_update_interval: SeqNum,
+    epoch_length: SeqNum,
 
     enable_updates: bool,
 
@@ -80,20 +78,17 @@ where
     phantom: PhantomData<(ST, SCT, EPT)>,
 }
 
-impl<ST, SCT, EPT> MockStateRootHashNop<ST, SCT, EPT>
+impl<ST, SCT, EPT> MockValSetUpdaterNop<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    pub fn new(
-        genesis_validator_data: ValidatorSetData<SCT>,
-        val_set_update_interval: SeqNum,
-    ) -> Self {
+    pub fn new(genesis_validator_data: ValidatorSetData<SCT>, epoch_length: SeqNum) -> Self {
         Self {
             genesis_validator_data,
             next_val_data: None,
-            val_set_update_interval,
+            epoch_length,
 
             enable_updates: true,
 
@@ -109,15 +104,12 @@ where
     }
 
     fn jank_update_valset(&mut self, seq_num: SeqNum) {
-        if seq_num.is_epoch_end(self.val_set_update_interval) {
+        if seq_num.is_epoch_end(self.epoch_length) {
             if self.next_val_data.is_some() {
                 error!("Validator set data is not consumed");
             }
-            let locked_epoch = seq_num.get_locked_epoch(self.val_set_update_interval);
-            assert_eq!(
-                locked_epoch,
-                seq_num.to_epoch(self.val_set_update_interval) + Epoch(1)
-            );
+            let locked_epoch = seq_num.get_locked_epoch(self.epoch_length);
+            assert_eq!(locked_epoch, seq_num.to_epoch(self.epoch_length) + Epoch(1));
             self.next_val_data = Some(ValidatorSetDataWithEpoch {
                 epoch: locked_epoch,
                 validators: self.genesis_validator_data.clone(),
@@ -126,7 +118,7 @@ where
     }
 }
 
-impl<ST, SCT, EPT> MockableStateRootHash for MockStateRootHashNop<ST, SCT, EPT>
+impl<ST, SCT, EPT> MockableValSetUpdater for MockValSetUpdaterNop<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -147,20 +139,20 @@ where
     }
 }
 
-impl<ST, SCT, EPT> Executor for MockStateRootHashNop<ST, SCT, EPT>
+impl<ST, SCT, EPT> Executor for MockValSetUpdaterNop<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    type Command = StateRootHashCommand;
+    type Command = ValSetCommand;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut wake = false;
 
         for command in commands {
             match command {
-                StateRootHashCommand::NotifyFinalized(seq_num) => {
+                ValSetCommand::NotifyFinalized(seq_num) => {
                     self.jank_update_valset(seq_num);
                     wake = true;
                 }
@@ -178,7 +170,7 @@ where
     }
 }
 
-impl<ST, SCT, EPT> Stream for MockStateRootHashNop<ST, SCT, EPT>
+impl<ST, SCT, EPT> Stream for MockValSetUpdaterNop<ST, SCT, EPT>
 where
     Self: Unpin,
     ST: CertificateSignatureRecoverable,
@@ -214,10 +206,10 @@ where
     }
 }
 
-/// An updater that works the same as MockStateRootHashNop but switches
+/// An updater that works the same as MockValSetUpdaterNop but switches
 /// between two sets of validators every epoch.
 /// Goal is to mimic new validators joining and old validators leaving.
-pub struct MockStateRootHashSwap<ST, SCT, EPT>
+pub struct MockValSetUpdaterSwap<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -229,23 +221,20 @@ where
     val_data_1: ValidatorSetData<SCT>,
     val_data_2: ValidatorSetData<SCT>,
     next_val_data: Option<ValidatorSetDataWithEpoch<SCT>>,
-    val_set_update_interval: SeqNum,
+    epoch_length: SeqNum,
 
     waker: Option<Waker>,
     metrics: ExecutorMetrics,
     phantom: PhantomData<(ST, SCT, EPT)>,
 }
 
-impl<ST, SCT, EPT> MockStateRootHashSwap<ST, SCT, EPT>
+impl<ST, SCT, EPT> MockValSetUpdaterSwap<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    pub fn new(
-        genesis_validator_data: ValidatorSetData<SCT>,
-        val_set_update_interval: SeqNum,
-    ) -> Self {
+    pub fn new(genesis_validator_data: ValidatorSetData<SCT>, epoch_length: SeqNum) -> Self {
         let num_validators = genesis_validator_data.0.len();
         let mut val_data_1 = genesis_validator_data.0.clone();
         let val_data_2 = val_data_1.split_off(num_validators / 2);
@@ -256,7 +245,7 @@ where
             val_data_1: ValidatorSetData(val_data_1),
             val_data_2: ValidatorSetData(val_data_2),
             next_val_data: None,
-            val_set_update_interval,
+            epoch_length,
 
             waker: None,
             metrics: Default::default(),
@@ -265,15 +254,12 @@ where
     }
 
     fn jank_update_valset(&mut self, seq_num: SeqNum) {
-        if seq_num.is_epoch_end(self.val_set_update_interval) {
+        if seq_num.is_epoch_end(self.epoch_length) {
             if self.next_val_data.is_some() {
                 error!("Validator set data is not consumed");
             }
-            let locked_epoch = seq_num.get_locked_epoch(self.val_set_update_interval);
-            assert_eq!(
-                locked_epoch,
-                seq_num.to_epoch(self.val_set_update_interval) + Epoch(1)
-            );
+            let locked_epoch = seq_num.get_locked_epoch(self.epoch_length);
+            assert_eq!(locked_epoch, seq_num.to_epoch(self.epoch_length) + Epoch(1));
             self.next_val_data = if locked_epoch.0 % 2 == 0 {
                 Some(ValidatorSetDataWithEpoch {
                     epoch: locked_epoch,
@@ -289,7 +275,7 @@ where
     }
 }
 
-impl<ST, SCT, EPT> MockableStateRootHash for MockStateRootHashSwap<ST, SCT, EPT>
+impl<ST, SCT, EPT> MockableValSetUpdater for MockValSetUpdaterSwap<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -324,20 +310,20 @@ where
     }
 }
 
-impl<ST, SCT, EPT> Executor for MockStateRootHashSwap<ST, SCT, EPT>
+impl<ST, SCT, EPT> Executor for MockValSetUpdaterSwap<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    type Command = StateRootHashCommand;
+    type Command = ValSetCommand;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut wake = false;
 
         for command in commands {
             match command {
-                StateRootHashCommand::NotifyFinalized(seq_num) => {
+                ValSetCommand::NotifyFinalized(seq_num) => {
                     self.jank_update_valset(seq_num);
                     wake = true;
                 }
@@ -355,7 +341,7 @@ where
     }
 }
 
-impl<ST, SCT, EPT> Stream for MockStateRootHashSwap<ST, SCT, EPT>
+impl<ST, SCT, EPT> Stream for MockValSetUpdaterSwap<ST, SCT, EPT>
 where
     Self: Unpin,
     ST: CertificateSignatureRecoverable,

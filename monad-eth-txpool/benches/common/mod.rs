@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use criterion::{black_box, BatchSize, Criterion};
+use monad_chain_config::MockChainConfig;
 use monad_crypto::NopSignature;
 use monad_perf_util::PerfController;
 use monad_testutil::signing::MockSignatures;
@@ -32,6 +33,7 @@ const BENCH_CONFIGS: [(&str, BenchControllerConfig); 5] = [
     (
         "simple",
         BenchControllerConfig {
+            chain_config: MockChainConfig::DEFAULT,
             accounts: 10_000,
             txs: 10_000,
             nonce_var: 0,
@@ -42,6 +44,7 @@ const BENCH_CONFIGS: [(&str, BenchControllerConfig); 5] = [
     (
         "random",
         BenchControllerConfig {
+            chain_config: MockChainConfig::DEFAULT,
             accounts: 30_000,
             txs: 10_000,
             nonce_var: 0,
@@ -52,6 +55,7 @@ const BENCH_CONFIGS: [(&str, BenchControllerConfig); 5] = [
     (
         "duplicate_nonce",
         BenchControllerConfig {
+            chain_config: MockChainConfig::DEFAULT,
             accounts: 1_000,
             txs: 10_000,
             nonce_var: 0,
@@ -62,6 +66,7 @@ const BENCH_CONFIGS: [(&str, BenchControllerConfig); 5] = [
     (
         "increasing_nonce",
         BenchControllerConfig {
+            chain_config: MockChainConfig::DEFAULT,
             accounts: 100,
             txs: 10_000,
             nonce_var: 50,
@@ -72,6 +77,7 @@ const BENCH_CONFIGS: [(&str, BenchControllerConfig); 5] = [
     (
         "nonce_gaps",
         BenchControllerConfig {
+            chain_config: MockChainConfig::DEFAULT,
             accounts: 50,
             txs: 10_000,
             nonce_var: 100,

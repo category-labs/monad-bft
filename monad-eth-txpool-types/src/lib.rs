@@ -15,47 +15,32 @@
 
 use std::collections::HashSet;
 
-use alloy_primitives::{Address, TxHash, B256};
+use alloy_primitives::{Address, TxHash};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum EthTxPoolEvent {
+pub struct EthTxPoolEvent {
+    pub tx_hash: TxHash,
+    pub action: EthTxPoolEventType,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum EthTxPoolEventType {
     /// The tx was inserted into the txpool's (pending/tracked) tx list.
     Insert {
-        tx_hash: B256,
         address: Address,
         owned: bool,
         tracked: bool,
     },
 
-    /// A tx with a higher fee replaced an exixting tx.
-    ///
-    /// Note: The new tx is always placed in the same tx list as the original, preserving promotion
-    /// status.
-    Replace {
-        old_tx_hash: B256,
-        new_tx_hash: B256,
-        new_owned: bool,
-        tracked: bool,
-    },
+    /// The tx was committed and is thus finalized.
+    Commit,
 
     /// The tx was dropped for the attached reason.
-    Drop {
-        tx_hash: B256,
-        reason: EthTxPoolDropReason,
-    },
-
-    /// The tx was promoted from the txpool's pending tx list to it's tracked tx list.
-    Promoted { tx_hash: B256 },
-
-    /// The tx was committed and is thus finalized.
-    Commit { tx_hash: B256 },
+    Drop { reason: EthTxPoolDropReason },
 
     /// The tx timed out and was evicted.
-    Evict {
-        tx_hash: B256,
-        reason: EthTxPoolEvictReason,
-    },
+    Evict { reason: EthTxPoolEvictReason },
 }
 
 // allow for more fine grain debugging if needed
@@ -64,6 +49,7 @@ pub enum TransactionError {
     InvalidChainId,
     MaxPriorityFeeTooHigh,
     InitCodeLimitExceeded,
+    EncodedLengthLimitExceeded,
     GasLimitTooLow,
     GasLimitTooHigh,
     UnsupportedTransactionType,
@@ -77,6 +63,7 @@ pub enum EthTxPoolDropReason {
     FeeTooLow,
     InsufficientBalance,
     ExistingHigherPriority,
+    ReplacedByHigherPriority { replacement: TxHash },
     PoolFull,
     PoolNotReady,
     Internal(EthTxPoolInternalDropReason),
@@ -95,6 +82,7 @@ impl EthTxPoolDropReason {
                 TransactionError::InvalidChainId => "Invalid chain ID",
                 TransactionError::MaxPriorityFeeTooHigh => "Max priority fee too high",
                 TransactionError::InitCodeLimitExceeded => "Init code size limit exceeded",
+                TransactionError::EncodedLengthLimitExceeded => "Encoded length limit exceeded",
                 TransactionError::GasLimitTooLow => "Gas limit too low",
                 TransactionError::GasLimitTooHigh => "Exceeds block gas limit",
                 TransactionError::UnsupportedTransactionType => {
@@ -107,7 +95,10 @@ impl EthTxPoolDropReason {
             EthTxPoolDropReason::InsufficientBalance => "Signer had insufficient balance",
             EthTxPoolDropReason::PoolFull => "Transaction pool is full",
             EthTxPoolDropReason::ExistingHigherPriority => {
-                "Another transaction has higher priority"
+                "An existing transaction had higher priority"
+            }
+            EthTxPoolDropReason::ReplacedByHigherPriority { .. } => {
+                "A newer transaction had higher priority"
             }
             EthTxPoolDropReason::PoolNotReady => "Transaction pool is not ready",
             EthTxPoolDropReason::Internal(_) => "Internal error",

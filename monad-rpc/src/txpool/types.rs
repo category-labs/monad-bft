@@ -27,6 +27,5 @@ pub enum TxStatus {
     // Dead
     Dropped { reason: EthTxPoolDropReason },
     Evicted { reason: EthTxPoolEvictReason },
-    Replaced,
     Committed,
 }

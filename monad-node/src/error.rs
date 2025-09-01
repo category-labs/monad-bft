@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use clap::error::ErrorKind;
-use monad_consensus_types::signature_collection::SignatureCollection;
+use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionError};
 use opentelemetry_otlp::ExporterBuildError;
 use opentelemetry_sdk::trace::TraceError;
 use thiserror::Error;
@@ -54,7 +54,7 @@ pub enum NodeSetupError {
     #[error(transparent)]
     SignatureCollectionError(
         #[from]
-        monad_consensus_types::signature_collection::SignatureCollectionError<
+        SignatureCollectionError<
             <crate::SignatureCollectionType as SignatureCollection>::NodeIdPubKey,
             <crate::SignatureCollectionType as SignatureCollection>::SignatureType,
         >,

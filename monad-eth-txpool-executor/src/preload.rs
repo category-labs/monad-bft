@@ -23,12 +23,12 @@ use std::{
 use alloy_primitives::Address;
 use futures::FutureExt;
 use indexmap::IndexSet;
-use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::EthValidatedBlock;
 use monad_types::{Round, SeqNum};
+use monad_validator::signature_collection::SignatureCollection;
 use tokio::time::Sleep;
 use tracing::{debug, warn};
 

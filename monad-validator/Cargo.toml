@@ -9,13 +9,15 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-consensus-types = { workspace = true }
 monad-crypto = { workspace = true }
 monad-types = { workspace = true }
 
 alloy-primitives = { workspace = true, features = ["rand"] }
+alloy-rlp = { workspace = true }
 as-any = { workspace = true }
 auto_impl = { workspace = true }
+hex = { workspace = true }
+serde = { workspace = true }
 itertools = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }

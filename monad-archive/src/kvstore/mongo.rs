@@ -58,21 +58,37 @@ impl KeyValueDocument {
         match (self.value, self.chunks) {
             (Some(value), None) => Ok((self._id, Bytes::from(value.bytes))),
             (None, Some(chunks)) => {
+                info!(num_chunks = chunks, "Resolving chunks for {}", self._id);
                 let keys = (0..chunks)
                     .map(|chunk_num| chunk_id(&self._id, chunk_num))
                     .collect::<Vec<_>>();
-                let chunks = collection
-                    .find(doc! { "_id": {"$in": keys} })
-                    .await?
-                    .map(|x| x.wrap_err("Failed to get chunk"))
-                    .try_fold(Vec::new(), |mut acc, chunk| async move {
-                        acc.extend_from_slice(&chunk.value.wrap_err("Chunk has no value")?.bytes);
-                        Ok::<_, eyre::Error>(acc)
-                    })
-                    .await
-                    .wrap_err("Failed to resolve chunks")?;
 
-                Ok((self._id, Bytes::from(chunks)))
+                let mut chunks = collection
+                    .find(doc! { "_id": {"$in": &keys} })
+                    .await?
+                    .map(|x| {
+                        let doc = x.wrap_err("Failed to get chunk")?;
+                        eyre::Ok((doc._id, doc.value.wrap_err("Chunk has no value")?.bytes))
+                    })
+                    .try_collect::<HashMap<String, Vec<u8>>>()
+                    .await?;
+
+                info!(
+                    num_chunks = chunks.len(),
+                    "Resolved chunks for {}", self._id
+                );
+
+                // Sadly we didn't use zero padded chunk ids, so we need to sort the results by using the original keys
+                let mut bytes = Vec::with_capacity(chunks.len() * CHUNK_SIZE);
+                for key in keys {
+                    let Some(chunk) = chunks.remove(&key) else {
+                        return Err(eyre!("Chunk not found for key: {key}"));
+                    };
+                    bytes.extend_from_slice(&chunk);
+                }
+                // let bytes = chunks.values().flatten().cloned().collect::<Vec<_>>();
+
+                Ok((self._id, Bytes::from(bytes)))
             }
             _ => unreachable!("KeyValueDocument should either have value or chunks"),
         }
@@ -302,7 +318,7 @@ impl KVStore for MongoDbStorage {
 #[cfg(test)]
 pub mod mongo_tests {
     use super::*;
-    use crate::test_utils::TestMongoContainer;
+    use crate::{cli::get_aws_config, test_utils::TestMongoContainer};
 
     async fn setup() -> Result<(TestMongoContainer, MongoDbStorage)> {
         let container = TestMongoContainer::new().await?;
@@ -344,7 +360,10 @@ pub mod mongo_tests {
 
         // Test put
         let key = "test_key";
-        let value = b"a".repeat(CHUNK_SIZE * 10);
+        let mut value = b"a".repeat(CHUNK_SIZE * 10);
+        value.extend(&b"b".repeat(CHUNK_SIZE * 5));
+        value.extend(&b"c".repeat(CHUNK_SIZE * 5));
+
         storage.put(key, value.clone()).await.unwrap();
 
         // Test get
@@ -355,6 +374,52 @@ pub mod mongo_tests {
         // Test get nonexistent
         let result = storage.get("nonexistent").await.unwrap();
         assert!(result.is_none());
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_large_value_testnet_block_33174572() {
+        let (_container, storage) = setup().await.unwrap();
+
+        let reader = S3Bucket::new(
+            "testnet-ltu-032-0".to_string(),
+            &get_aws_config(None, 60).await,
+            Metrics::none(),
+        );
+        let reader = BlockDataArchive::new(reader);
+
+        let block_number = 33174572;
+        let block_data = reader
+            .get_block_data_with_offsets(block_number)
+            .await
+            .unwrap();
+
+        let writer = BlockDataArchive::new(storage.clone());
+        writer.archive_block(block_data.block).await.unwrap();
+        writer
+            .archive_traces(block_data.traces, block_number)
+            .await
+            .unwrap();
+        writer
+            .archive_receipts(block_data.receipts, block_number)
+            .await
+            .unwrap();
+
+        let mongo_block_data = writer
+            .get_block_data_with_offsets(block_number)
+            .await
+            .unwrap();
+
+        let indexer = TxIndexArchiver::new(storage.clone(), reader, 1024 * 1024 * 10);
+        indexer
+            .index_block(
+                mongo_block_data.block,
+                mongo_block_data.traces,
+                mongo_block_data.receipts,
+                mongo_block_data.offsets,
+            )
+            .await
+            .unwrap();
     }
 
     #[ignore]

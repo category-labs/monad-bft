@@ -13,7 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeMap, fmt};
+use std::{
+    collections::{BTreeMap, HashSet},
+    fmt,
+};
 
 use fixed::{types::extra::U11, FixedU16};
 use itertools::Itertools;
@@ -22,13 +25,14 @@ use monad_crypto::{
     hasher::{Hasher, HasherType},
 };
 use monad_types::{Epoch, NodeId, Round, RoundSpan, Stake};
+use tracing::{debug, warn};
 
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct EpochValidators<ST>
 where
     ST: CertificateSignatureRecoverable,
 {
-    pub validators: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Validator>,
+    pub validators: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Stake>,
 }
 
 impl<ST> EpochValidators<ST>
@@ -38,47 +42,69 @@ where
     /// Returns a view of the validator set without a given node. On ValidatorsView being dropped,
     /// the validator set is reverted back to normal.
     pub fn view_without(
-        &mut self,
+        &self,
         without: Vec<&NodeId<CertificateSignaturePubKey<ST>>>,
-    ) -> ValidatorsView<ST> {
-        let mut removed = Vec::new();
-        for without in without {
-            if let Some(removed_validator) = self.validators.remove(without) {
-                removed.push((*without, removed_validator));
-            }
-        }
+    ) -> ValidatorsView<'_, ST> {
         ValidatorsView {
-            view: &mut self.validators,
-            removed,
+            view: &self.validators,
+            without: without.into_iter().cloned().collect(),
         }
+    }
+
+    pub fn get(&self, node_id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<Stake> {
+        self.validators.get(node_id).copied()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.validators.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.validators.len()
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ValidatorsView<'a, ST>
 where
     ST: CertificateSignatureRecoverable,
 {
-    view: &'a mut BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Validator>,
-    removed: Vec<(NodeId<CertificateSignaturePubKey<ST>>, Validator)>,
+    view: &'a BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Stake>,
+    without: HashSet<NodeId<CertificateSignaturePubKey<ST>>>,
 }
+
 impl<ST> ValidatorsView<'_, ST>
 where
     ST: CertificateSignatureRecoverable,
 {
-    pub fn view(&self) -> &BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Validator> {
+    pub fn iter(
+        &self,
+    ) -> impl Iterator<Item = (&NodeId<CertificateSignaturePubKey<ST>>, Stake)> + '_ {
         self.view
+            .iter()
+            .filter(|(id, _)| !self.without.contains(id))
+            .map(|(id, stake)| (id, *stake))
     }
-}
 
-impl<ST> Drop for ValidatorsView<'_, ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
-    fn drop(&mut self) {
-        while let Some((without, removed_validator)) = self.removed.pop() {
-            self.view.insert(without, removed_validator);
+    pub fn iter_nodes(&self) -> impl Iterator<Item = &NodeId<CertificateSignaturePubKey<ST>>> + '_ {
+        self.view
+            .keys()
+            .filter(move |id| !self.without.contains(id))
+    }
+
+    pub fn len(&self) -> usize {
+        if self.without.is_empty() {
+            return self.view.len();
         }
+        self.iter().count()
+    }
+
+    pub fn total_stake(&self) -> Stake {
+        self.iter().map(|(_, stake)| stake).sum()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.view.is_empty() || self.len() == 0
     }
 }
 
@@ -109,33 +135,89 @@ impl<P: PubKey> FullNodes<P> {
 pub struct FullNodesView<'a, P: PubKey>(&'a Vec<NodeId<P>>);
 
 impl<P: PubKey> FullNodesView<'_, P> {
-    pub fn view(&self) -> &Vec<NodeId<P>> {
-        self.0
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &NodeId<P>> + '_ {
+        self.0.iter()
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct Validator {
-    pub stake: Stake,
+pub enum NodesView<'a, ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    Validators(ValidatorsView<'a, ST>),
+    FullNodes(FullNodesView<'a, CertificateSignaturePubKey<ST>>),
+}
+
+impl<'a, ST> From<ValidatorsView<'a, ST>> for NodesView<'a, ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    fn from(view: ValidatorsView<'a, ST>) -> Self {
+        NodesView::Validators(view)
+    }
+}
+
+impl<'a, ST> From<FullNodesView<'a, CertificateSignaturePubKey<ST>>> for NodesView<'a, ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    fn from(view: FullNodesView<'a, CertificateSignaturePubKey<ST>>) -> Self {
+        NodesView::FullNodes(view)
+    }
+}
+
+impl<'a, ST> NodesView<'a, ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    pub fn len(&self) -> usize {
+        match self {
+            NodesView::Validators(view) => view.len(),
+            NodesView::FullNodes(view) => view.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        match self {
+            NodesView::Validators(view) => view.is_empty(),
+            NodesView::FullNodes(view) => view.is_empty(),
+        }
+    }
+
+    pub fn iter(&self) -> Box<dyn Iterator<Item = &NodeId<CertificateSignaturePubKey<ST>>> + '_> {
+        match self {
+            NodesView::Validators(view) => Box::new(view.iter_nodes()),
+            NodesView::FullNodes(view) => Box::new(view.iter()),
+        }
+    }
 }
 
 // Argument for raptorcast send
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum BuildTarget<'a, ST: CertificateSignatureRecoverable> {
+    // raptorcast to a set of nodes without stake-based distribution
+    // of chunks.
     Broadcast(
         // validator stakes for given epoch_no, not including self
         // this MUST NOT BE EMPTY
-        ValidatorsView<'a, ST>,
+        NodesView<'a, ST>,
     ),
+    // raptorcast to a set of validators, chunks distributed by their
+    // proportion of stakes.
     Raptorcast(
-        (
-            // validator stakes for given epoch_no, not including self
-            // this MUST NOT BE EMPTY
-            // Contains Stake information per validator node id
-            ValidatorsView<'a, ST>,
-            // Dedicated full-nodes (rather than priority nodes)
-            FullNodesView<'a, CertificateSignaturePubKey<ST>>,
-        ),
+        // validator stakes for given epoch_no, not including self
+        // this MUST NOT BE EMPTY
+        // Contains Stake information per validator node id
+        ValidatorsView<'a, ST>,
     ),
     // sharded raptor-aware broadcast
     PointToPoint(&'a NodeId<CertificateSignaturePubKey<ST>>),
@@ -164,8 +246,20 @@ impl<const N: usize> std::fmt::Debug for HexBytes<N> {
     }
 }
 
+impl<const N: usize> HexBytes<N> {
+    pub fn as_slice(&self) -> &[u8; N] {
+        &self.0
+    }
+}
+
 pub type NodeIdHash = HexBytes<20>;
 pub type AppMessageHash = HexBytes<20>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BroadcastMode {
+    Primary,
+    Secondary,
+}
 
 // This represents a raptorcast group abstracted over the use cases below:
 // 1) Validator->Validator raptorcast recv & re-broadcast
@@ -315,10 +409,9 @@ where
             // Note that AuthorID is a validator and we will not find it among
             // the full-node ids in the group.
             if author_id != &root_vid {
-                tracing::warn!(
+                warn!(
                     "Author {} does not match raptorcast group validator id {}",
-                    author_id,
-                    root_vid
+                    author_id, root_vid
                 );
                 return self.empty_iterator();
             }
@@ -330,7 +423,7 @@ where
             // any nodeID before we know for sure the author_id is among them.
             let maybe_pos_author_id = self.sorted_other_peers.binary_search(author_id);
             if maybe_pos_author_id.is_err() {
-                tracing::warn!("Author {} is not a member of raptorcast group", author_id);
+                warn!("Author {} is not a member of raptorcast group", author_id);
                 return self.empty_iterator();
             }
             maybe_pos_author_id.unwrap()
@@ -356,14 +449,14 @@ where
             // Case for full-node raptorcasting
             let good = &root_vid == author_id;
             if !good {
-                tracing::debug!(?author_id, ?root_vid, "check_author_node_id (fn) failed");
+                debug!(?author_id, ?root_vid, "check_author_node_id (fn) failed");
             }
             good
         } else {
             // Case for validator-to-validator
             let good = self.sorted_other_peers.binary_search(author_id).is_ok();
             if !good {
-                tracing::debug!(?author_id, ?self.sorted_other_peers, "check_author_node_id (v2v) failed");
+                debug!(?author_id, ?self.sorted_other_peers, "check_author_node_id (v2v) failed");
             }
             good
         }
@@ -419,27 +512,17 @@ where
 
     // For Validator->fullnode re-raptorcasting
     fullnode_map: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Group<ST>>,
-
-    // Regarding re-raptorcasting from primary instance, if this.is_fullnode =
-    // = true,  then we are a full-node re-raptorcasting to other full-nodes.
-    // = false, then we are a validator re-raptorcasting to other validators,
-    //          or a dedicated full-node.
-    is_dynamic_fullnode: bool,
 }
 
 impl<ST> ReBroadcastGroupMap<ST>
 where
     ST: CertificateSignatureRecoverable,
 {
-    pub fn new(
-        our_node_id: NodeId<CertificateSignaturePubKey<ST>>,
-        is_dynamic_fullnode: bool,
-    ) -> Self {
+    pub fn new(our_node_id: NodeId<CertificateSignaturePubKey<ST>>) -> Self {
         Self {
             our_node_id,
             validator_map: BTreeMap::new(),
             fullnode_map: BTreeMap::new(),
-            is_dynamic_fullnode,
         }
     }
 
@@ -449,28 +532,33 @@ where
         &self,
         msg_epoch: Epoch,
         author_node_id: &NodeId<CertificateSignaturePubKey<ST>>,
+        broadcast_mode: BroadcastMode,
     ) -> bool {
-        if self.is_dynamic_fullnode {
-            // Source node id (validator) is already the key to the map, so
-            // we don't need to look into the group itself.
-            let author_found = self.fullnode_map.contains_key(author_node_id);
-            if !author_found {
-                tracing::debug!(?author_node_id, ?self.fullnode_map,
-                    "Validator author for v2fn group not found in fullnode_map");
+        match broadcast_mode {
+            BroadcastMode::Primary => {
+                // validator to validator raptorcast
+                if let Some(group) = self.validator_map.get(&msg_epoch) {
+                    let author_found = group.check_author_node_id(author_node_id);
+                    if !author_found {
+                        debug!(?author_node_id, ?self.validator_map,
+                            "Validator author for v2v group not found in validator_map");
+                    }
+                    author_found
+                } else {
+                    debug!(?msg_epoch, ?self.validator_map, "Epoch not found in validator_map");
+                    false
+                }
             }
-            return author_found;
-        }
-        if let Some(group) = self.validator_map.get(&msg_epoch) {
-            let author_found = group.check_author_node_id(author_node_id);
-            if !author_found {
-                tracing::debug!(?author_node_id, ?self.validator_map,
-                    "Validator author for v2v group not found in validator_map");
+            BroadcastMode::Secondary => {
+                // Source node id (validator) is already the key to the map, so
+                // we don't need to look into the group itself.
+                let author_found = self.fullnode_map.contains_key(author_node_id);
+                if !author_found {
+                    debug!(?author_node_id, ?self.fullnode_map,
+                        "Validator author for v2fn group not found in fullnode_map");
+                }
+                author_found
             }
-            author_found
-        } else {
-            tracing::debug!(?msg_epoch, ?self.validator_map,
-                "Epoch not found in validator_map");
-            false
         }
     }
 
@@ -483,12 +571,13 @@ where
         &self,
         msg_epoch: Epoch, // for validator-to-validator re-raptorcasting only
         msg_author: &NodeId<CertificateSignaturePubKey<ST>>, // skipped when iterating RaptorCast group
+        broadcast_mode: BroadcastMode,
     ) -> Option<GroupIterator<ST>> {
-        let maybe_group = if self.is_dynamic_fullnode {
-            self.fullnode_map.get(msg_author)
-        } else {
-            self.validator_map.get(&msg_epoch)
+        let maybe_group = match broadcast_mode {
+            BroadcastMode::Primary => self.validator_map.get(&msg_epoch),
+            BroadcastMode::Secondary => self.fullnode_map.get(msg_author),
         };
+
         if let Some(group) = maybe_group {
             // If there's no other peers in the group, then there's no one to broadcast to
             if group.size_excl_self() == 0 {
@@ -509,7 +598,7 @@ where
         let new_group = Group::new_validator_group(all_peers, &self.our_node_id);
         if let Some(existing_group) = self.validator_map.get(&epoch) {
             assert_eq!(existing_group, &new_group);
-            tracing::warn!("duplicate validator set update (this is safe but unexpected)")
+            warn!("duplicate validator set update (this is safe but unexpected)")
         } else {
             let replaced = self.validator_map.insert(epoch, new_group);
             assert!(replaced.is_none());
@@ -518,42 +607,35 @@ where
 
     // As Full-node: When secondary RaptorCast instance (Client) sends us a Group<>
     pub fn push_group_fullnodes(&mut self, group: Group<ST>) {
-        assert!(self.is_dynamic_fullnode);
         if let Some(old_grp) = self
             .fullnode_map
             .insert(*group.get_validator_id(), group.clone())
         {
-            tracing::debug!(new_group=?group, old_group=?old_grp, "Group replace");
+            debug!(new_group=?group, old_group=?old_grp, "Group replace");
         } else {
-            tracing::debug!(new_group=?group, "Group insert");
+            debug!(new_group=?group, "Group insert");
         }
     }
 
     pub fn delete_expired_groups(&mut self, curr_epoch: Epoch, curr_round: Round) {
-        let old_count;
-        let new_count;
-        if self.is_dynamic_fullnode {
-            old_count = self.fullnode_map.len();
-            // Keep current and future* groups.
-            // Note: normally the client will only send as groups that are
-            // currently active, but it is possible for the client to send us a
-            // group scheduled for the future when we (the non-dedicated full-node)
-            // aren't received proposals yet and hence do not know what the current
-            // round is.
-            self.fullnode_map
-                .retain(|_, group| curr_round < group.round_span.end);
-            new_count = self.fullnode_map.len();
-        } else {
-            old_count = self.validator_map.len();
-            self.validator_map
-                .retain(|key, _| *key + Epoch(1) >= curr_epoch);
-            new_count = self.validator_map.len();
-        }
-        tracing::debug!(
+        // Keep current and future* groups.
+        // Note: normally the client will only send as groups that are
+        // currently active, but it is possible for the client to send us a
+        // group scheduled for the future when we (the non-dedicated full-node)
+        // aren't received proposals yet and hence do not know what the current
+        // round is.
+        self.fullnode_map
+            .retain(|_, group| curr_round < group.round_span.end);
+
+        // clear old validator map
+        self.validator_map
+            .retain(|key, _| *key + Epoch(1) >= curr_epoch);
+
+        debug!(
             epoch=?curr_epoch,
             round=?curr_round,
-            ?old_count,
-            ?new_count,
+            validator_map_len=?self.validator_map.len(),
+            fullnode_map_len=?self.fullnode_map.len(),
             "RaptorCast delete_expired_groups",
         );
     }

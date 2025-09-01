@@ -34,8 +34,8 @@ pub enum LatestKind {
 
 #[derive(Clone)]
 pub struct ArchiveReader {
-    block_data_executor: Arc<FallbackExecutor<BlockDataReaderErased, BlockDataReaderErased>>,
-    index_executor: Arc<FallbackExecutor<IndexReaderImpl, IndexReaderImpl>>,
+    block_data_executor: Arc<FallbackExecutor<BlockDataReaderErased>>,
+    index_executor: Arc<FallbackExecutor<IndexReaderImpl>>,
     pub log_index: Option<LogsIndexArchiver>,
 }
 
@@ -176,7 +176,7 @@ impl ArchiveReader {
         failure_timeout: Option<Duration>,
     ) -> Self {
         if let Some(fallback) = fallback {
-            let failure_threshold = failure_threshold.unwrap_or(10);
+            let failure_threshold = failure_threshold.unwrap_or(100);
             let failure_timeout = failure_timeout.unwrap_or(Duration::from_secs(60 * 5));
 
             // Create new executors with the fallback readers
@@ -212,7 +212,7 @@ impl IndexReader for ArchiveReader {
     async fn get_tx_indexed_data(
         &self,
         tx_hash: &alloy_primitives::TxHash,
-    ) -> Result<TxIndexedData> {
+    ) -> Result<Option<TxIndexedData>> {
         self.index_executor
             .execute(|idx| idx.get_tx_indexed_data(tx_hash))
             .await
@@ -230,14 +230,14 @@ impl IndexReader for ArchiveReader {
     async fn get_tx(
         &self,
         tx_hash: &alloy_primitives::TxHash,
-    ) -> Result<(TxEnvelopeWithSender, HeaderSubset)> {
+    ) -> Result<Option<(TxEnvelopeWithSender, HeaderSubset)>> {
         self.index_executor.execute(|idx| idx.get_tx(tx_hash)).await
     }
 
     async fn get_trace(
         &self,
         tx_hash: &alloy_primitives::TxHash,
-    ) -> Result<(Vec<u8>, HeaderSubset)> {
+    ) -> Result<Option<(Vec<u8>, HeaderSubset)>> {
         self.index_executor
             .execute(|idx| idx.get_trace(tx_hash))
             .await
@@ -246,7 +246,7 @@ impl IndexReader for ArchiveReader {
     async fn get_receipt(
         &self,
         tx_hash: &alloy_primitives::TxHash,
-    ) -> Result<(ReceiptWithLogIndex, HeaderSubset)> {
+    ) -> Result<Option<(ReceiptWithLogIndex, HeaderSubset)>> {
         self.index_executor
             .execute(|idx| idx.get_receipt(tx_hash))
             .await
@@ -320,10 +320,19 @@ impl BlockDataReader for ArchiveReader {
             .execute(|bdr| bdr.try_get_block_traces(block_number))
             .await
     }
+
+    #[doc = " Get a block by its hash, or return None if not found"]
+    async fn try_get_block_by_hash(&self, block_hash: &BlockHash) -> Result<Option<Block>> {
+        self.block_data_executor
+            .execute(|bdr| bdr.try_get_block_by_hash(block_hash))
+            .await
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicBool;
+
     use super::*;
     use crate::{
         kvstore::memory::MemoryStorage,
@@ -339,6 +348,29 @@ mod tests {
         let bdr = BlockDataArchive::new(fallback.clone());
         let fallback = TxIndexArchiver::new(fallback, bdr, 1000);
         (primary, fallback)
+    }
+
+    fn setup_index_with_should_fail_ptr() -> (
+        TxIndexArchiver,
+        TxIndexArchiver,
+        Arc<AtomicBool>,
+        Arc<AtomicBool>,
+    ) {
+        let primary = MemoryStorage::new("primary");
+        let primary_should_fail_ptr = primary.should_fail.clone();
+        let bdr = BlockDataArchive::new(primary.clone());
+        let primary = TxIndexArchiver::new(primary, bdr, 1000);
+
+        let fallback = MemoryStorage::new("fallback");
+        let fallback_should_fail_ptr = fallback.should_fail.clone();
+        let bdr = BlockDataArchive::new(fallback.clone());
+        let fallback = TxIndexArchiver::new(fallback, bdr, 1000);
+        (
+            primary,
+            fallback,
+            primary_should_fail_ptr,
+            fallback_should_fail_ptr,
+        )
     }
 
     #[tokio::test]
@@ -369,7 +401,7 @@ mod tests {
             None,
         );
 
-        let (tx_ret, _) = reader.get_tx(tx.tx.tx_hash()).await.unwrap();
+        let (tx_ret, _) = reader.get_tx(tx.tx.tx_hash()).await.unwrap().unwrap();
         assert_eq!(tx_ret, tx);
     }
 
@@ -385,8 +417,8 @@ mod tests {
 
         let tx = mock_tx(123);
         let ret = reader.get_tx(tx.tx.tx_hash()).await;
-        assert!(ret.is_err());
-        assert!(ret.err().unwrap().to_string().contains("No data found in index for txhash: 159bcad22109fd9e0d5a3ba10d75a6f32386ca0112fabcc70ed100df937be54d"));
+        assert!(ret.is_ok());
+        assert!(ret.unwrap().is_none())
     }
 
     #[tokio::test]
@@ -407,12 +439,14 @@ mod tests {
 
         let tx = mock_tx(123);
         let ret = reader.get_tx(tx.tx.tx_hash()).await;
-        assert!(ret.is_err());
+        assert!(ret.is_ok());
+        assert!(ret.unwrap().is_none());
     }
 
     #[tokio::test]
     async fn test_get_tx_fallback() {
-        let (primary, fallback) = setup_index();
+        let (primary, fallback, primary_should_fail_ptr, _fallback_should_fail_ptr) =
+            setup_index_with_should_fail_ptr();
 
         let tx = mock_tx(123);
         fallback
@@ -438,7 +472,9 @@ mod tests {
             None,
         );
 
-        let (tx_ret, _) = reader.get_tx(tx.tx.tx_hash()).await.unwrap();
+        primary_should_fail_ptr.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let (tx_ret, _) = reader.get_tx(tx.tx.tx_hash()).await.unwrap().unwrap();
         assert_eq!(tx_ret, tx);
     }
 
@@ -590,7 +626,7 @@ mod tests {
             None,
         );
 
-        let reader = primary_reader.with_fallback(Some(fallback_reader), None, None);
+        let reader = primary_reader.with_fallback(Some(fallback_reader), Some(10), None);
 
         // First 10 requests should fail and use fallback
         for i in 0..10 {
@@ -686,7 +722,7 @@ mod tests {
                 None,
                 None,
             )),
-            None,
+            Some(10),
             None,
         );
 
@@ -766,10 +802,7 @@ mod tests {
             "Should fail when both primary and fallback fail"
         );
         assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("MemoryStorage simulated failure"),
+            format!("{:?}", result.unwrap_err()).contains("MemoryStorage simulated failure"),
             "Error should indicate storage failure"
         );
 
@@ -843,8 +876,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Create reader with SHORT timeout for testing (would need to modify the const)
-        // For now, we'll test the state machine logic
         let reader = ArchiveReader::new(
             primary_bdr.clone(),
             IndexReaderImpl::new(primary.clone(), primary_bdr.clone()),
@@ -858,7 +889,7 @@ mod tests {
                 None,
                 None,
             )),
-            None,
+            Some(10),
             None,
         );
 

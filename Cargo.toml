@@ -71,7 +71,9 @@ monad-secp = { path = "./monad-secp" }
 monad-state = { path = "./monad-state" }
 monad-state-backend = { path = "./monad-state-backend" }
 monad-statesync = { path = "./monad-statesync" }
+monad-system-calls = { path = "./monad-system-calls" }
 monad-testutil = { path = "./monad-testutil" }
+monad-tfm = { path = "./monad-tfm" }
 monad-tracing-timing = { path = "./monad-tracing-timing" }
 monad-transformer = { path = "./monad-transformer" }
 monad-triedb = { path = "./monad-triedb" }
@@ -119,7 +121,6 @@ aws-sdk-s3 = "1.58.0"
 base64 = "0.22.1"
 bincode = "1.3"
 bindgen = "0.71.1"
-bip32 = "0.5.3"
 bitvec = "1.0"
 blake3 = "1.5"
 blst = "0.3.15"
@@ -148,10 +149,11 @@ governor = "0.10"
 hex = "0.4"
 indexmap = "2.4.0"
 inotify = "0.11"
+k256 = { version = "0.13", features = ["hash2curve"] }
 inventory = "0.3"
 iset = "0.3.1"
 itertools = "0.10"
-jemalloc_pprof = "0.7"
+jemalloc_pprof = "0.8.1"
 libc = "0.2.153"
 lru = "0.12"
 lz4 = "1.28"
@@ -197,7 +199,6 @@ tempfile = "3.5"
 test-case = "3.0"
 thiserror = "1.0"
 tikv-jemallocator = "0.6"
-tiny-bip39 = "1.0"
 tiny-keccak = "2"
 tokio = { version = "1.39", features = ["sync"] }
 tokio-retry = "0.3.0"

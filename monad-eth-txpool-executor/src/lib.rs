@@ -14,14 +14,11 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     io,
     marker::PhantomData,
     pin::Pin,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
+    sync::{atomic::Ordering, Arc},
     task::Poll,
     time::Duration,
 };
@@ -31,20 +28,21 @@ use alloy_primitives::Address;
 use alloy_rlp::Decodable;
 use futures::Stream;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
-use monad_consensus_types::{block::BlockPolicy, signature_collection::SignatureCollection};
+use monad_consensus_types::block::BlockPolicy;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker};
-use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolEvent};
-use monad_eth_types::EthExecutionProtocol;
+use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolEventType};
+use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
-use monad_types::DropTimer;
+use monad_types::{DropTimer, Round};
 use monad_updaters::TokioTaskUpdater;
+use monad_validator::signature_collection::SignatureCollection;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tokio::{sync::mpsc, time::Instant};
 use tracing::{debug, debug_span, error, info, trace_span, warn};
@@ -68,11 +66,11 @@ pub struct EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
-    pool: EthTxPool<ST, SCT, SBT>,
+    pool: EthTxPool<ST, SCT, SBT, CRT>,
     ipc: Pin<Box<EthTxPoolIpcServer>>,
 
     reset: EthTxPoolResetTrigger,
@@ -97,7 +95,8 @@ impl<ST, SCT, SBT, CCT, CRT> EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend + Send + 'static,
+    SBT: StateBackend<ST, SCT> + Send + 'static,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
     CCT: ChainConfig<CRT> + Send + 'static,
     CRT: ChainRevision + Send + 'static,
     Self: Unpin,
@@ -106,11 +105,12 @@ where
         block_policy: EthBlockPolicy<ST, SCT>,
         state_backend: SBT,
         ipc_config: EthTxPoolIpcConfig,
-        do_local_insert: bool,
         soft_tx_expiry: Duration,
         hard_tx_expiry: Duration,
         chain_config: CCT,
-        proposal_gas_limit: u64,
+        round: Round,
+        execution_timestamp_s: u64,
+        do_local_insert: bool,
     ) -> io::Result<TokioTaskUpdater<Pin<Box<Self>>, MonadEvent<ST, SCT, EthExecutionProtocol>>>
     {
         let ipc = Box::pin(EthTxPoolIpcServer::new(ipc_config)?);
@@ -133,12 +133,11 @@ where
 
                 move |command_rx, event_tx| {
                     let pool = EthTxPool::new(
-                        do_local_insert,
                         soft_tx_expiry,
                         hard_tx_expiry,
-                        proposal_gas_limit,
-                        // it's safe to default max_code_size to zero because it gets set on commit + reset
-                        0,
+                        chain_config.get_chain_revision(round),
+                        chain_config.get_execution_chain_revision(execution_timestamp_s),
+                        do_local_insert,
                     );
 
                     Self {
@@ -207,7 +206,8 @@ impl<ST, SCT, SBT, CCT, CRT> Executor for EthTxPoolExecutor<ST, SCT, SBT, CCT, C
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -215,8 +215,8 @@ where
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let _span = debug_span!("txpool exec").entered();
-        let mut ipc_events = Vec::default();
 
+        let mut ipc_events = BTreeMap::default();
         let mut event_tracker = EthTxPoolEventTracker::new(&self.metrics.pool, &mut ipc_events);
 
         for command in commands {
@@ -232,15 +232,11 @@ where
                         self.preload_manager
                             .update_committed_block(&committed_block);
 
-                        let execution_revision = self.chain_config.get_execution_chain_revision(
-                            committed_block.header().execution_inputs.timestamp,
+                        self.pool.update_committed_block(
+                            &mut event_tracker,
+                            &self.chain_config,
+                            committed_block,
                         );
-                        self.pool.set_max_code_size(
-                            execution_revision.execution_chain_params().max_code_size,
-                        );
-
-                        self.pool
-                            .update_committed_block(&mut event_tracker, committed_block);
                     }
 
                     self.forwarding_manager
@@ -249,6 +245,7 @@ where
                         .add_egress_txs(&mut self.pool);
                 }
                 TxPoolCommand::CreateProposal {
+                    node_id,
                     epoch,
                     round,
                     seq_num,
@@ -256,11 +253,13 @@ where
                     round_signature,
                     last_round_tc,
                     fresh_proposal_certificate,
+
                     tx_limit,
                     proposal_gas_limit,
                     proposal_byte_limit,
                     beneficiary,
                     timestamp_ns,
+
                     extending_blocks,
                     delayed_execution_results,
                 } => {
@@ -270,18 +269,25 @@ where
 
                     let create_proposal_start = Instant::now();
 
+                    let (base_fee, base_fee_trend, base_fee_moment) =
+                        self.block_policy.compute_base_fee(&extending_blocks);
+
                     match self.pool.create_proposal(
                         &mut event_tracker,
                         seq_num,
+                        base_fee,
                         tx_limit,
                         proposal_gas_limit,
                         proposal_byte_limit,
                         beneficiary,
                         timestamp_ns,
+                        node_id,
+                        epoch,
                         round_signature.clone(),
                         extending_blocks,
                         &self.block_policy,
                         &self.state_backend,
+                        &self.chain_config,
                     ) {
                         Ok(proposed_execution_inputs) => {
                             let elapsed = create_proposal_start.elapsed();
@@ -299,6 +305,9 @@ where
                                     high_qc,
                                     timestamp_ns,
                                     round_signature,
+                                    base_fee,
+                                    base_fee_trend,
+                                    base_fee_moment,
                                     delayed_execution_results,
                                     proposed_execution_inputs,
                                     last_round_tc,
@@ -319,64 +328,39 @@ where
                         "txpool executor received forwarded txs"
                     );
 
-                    let num_invalid_bytes = AtomicU64::default();
-                    let num_invalid_signer = AtomicU64::default();
+                    let mut num_invalid_bytes = 0;
 
-                    let recovered_txs = txs
-                        .into_par_iter()
+                    let txs = txs
+                        .into_iter()
                         .filter_map(|raw_tx| {
-                            let Ok(tx) = TxEnvelope::decode(&mut raw_tx.as_ref()) else {
-                                num_invalid_bytes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                                return None;
-                            };
-
-                            let Ok(signer) = tx.secp256k1_recover() else {
-                                num_invalid_signer
-                                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                                return None;
-                            };
-
-                            Some(Recovered::new_unchecked(tx, signer))
+                            if let Ok(tx) = TxEnvelope::decode(&mut raw_tx.as_ref()) {
+                                Some(tx)
+                            } else {
+                                num_invalid_bytes += 1;
+                                None
+                            }
                         })
                         .collect::<Vec<_>>();
-
-                    let num_invalid_bytes =
-                        num_invalid_bytes.load(std::sync::atomic::Ordering::SeqCst);
-                    let num_invalid_signer =
-                        num_invalid_signer.load(std::sync::atomic::Ordering::SeqCst);
 
                     self.metrics
                         .reject_forwarded_invalid_bytes
                         .fetch_add(num_invalid_bytes, Ordering::SeqCst);
-                    self.metrics
-                        .reject_forwarded_invalid_signer
-                        .fetch_add(num_invalid_signer, Ordering::SeqCst);
 
-                    if num_invalid_bytes != 0 || num_invalid_signer != 0 {
-                        tracing::warn!(
-                            ?sender,
-                            ?num_invalid_bytes,
-                            ?num_invalid_signer,
-                            "invalid forwarded txs"
-                        );
+                    if num_invalid_bytes != 0 {
+                        tracing::warn!(?sender, ?num_invalid_bytes, "invalid forwarded txs");
                     }
 
                     self.forwarding_manager
                         .as_mut()
                         .project()
-                        .add_ingress_txs(recovered_txs);
+                        .add_ingress_txs(txs);
                 }
                 TxPoolCommand::EnterRound {
                     epoch: _,
                     round,
                     upcoming_leader_rounds,
                 } => {
-                    let proposal_gas_limit = self
-                        .chain_config
-                        .get_chain_revision(round)
-                        .chain_params()
-                        .proposal_gas_limit;
-                    self.pool.set_tx_gas_limit(proposal_gas_limit);
+                    self.pool.enter_round(&self.chain_config, round);
 
                     debug!(
                         ?round,
@@ -398,17 +382,11 @@ where
                         last_delay_committed_blocks.iter().collect(),
                     );
 
-                    if let Some(block) = last_delay_committed_blocks.last() {
-                        let execution_revision = self.chain_config.get_execution_chain_revision(
-                            block.header().execution_inputs.timestamp,
-                        );
-                        self.pool.set_max_code_size(
-                            execution_revision.execution_chain_params().max_code_size,
-                        );
-                    }
-
-                    self.pool
-                        .reset(&mut event_tracker, last_delay_committed_blocks);
+                    self.pool.reset(
+                        &mut event_tracker,
+                        &self.chain_config,
+                        last_delay_committed_blocks,
+                    );
 
                     self.reset.set_reset();
                 }
@@ -417,7 +395,7 @@ where
 
         self.metrics.update(&mut self.executor_metrics);
 
-        self.ipc.as_mut().broadcast_tx_events(&ipc_events);
+        self.ipc.as_mut().broadcast_tx_events(ipc_events);
     }
 
     fn metrics(&self) -> ExecutorMetricsChain {
@@ -429,7 +407,8 @@ impl<ST, SCT, SBT, CCT, CRT> Stream for EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 
@@ -487,27 +466,31 @@ where
         if let Poll::Ready(unvalidated_txs) = ipc.as_mut().poll_txs(cx, || pool.generate_snapshot())
         {
             let _span = debug_span!("ipc txs", len = unvalidated_txs.len()).entered();
-            let mut ipc_events = Vec::default();
-            let mut inserted_txs = Vec::default();
-            let mut inserted_addresses = HashSet::<Address>::default();
+
+            let mut ipc_events = BTreeMap::default();
 
             let recovered_txs = {
-                let (recovered_txs, dropped_txs): (Vec<_>, Vec<_>) =
+                let (recovered_txs, dropped_txs): (Vec<_>, BTreeMap<_, _>) =
                     unvalidated_txs.into_par_iter().partition_map(|tx| {
-                        let _span = trace_span!("txpool: recover signer").entered();
+                        let _span = trace_span!("txpool: ipc tx recover signer").entered();
                         match tx.secp256k1_recover() {
                             Ok(signer) => {
                                 rayon::iter::Either::Left(Recovered::new_unchecked(tx, signer))
                             }
-                            Err(_) => rayon::iter::Either::Right(EthTxPoolEvent::Drop {
-                                tx_hash: *tx.tx_hash(),
-                                reason: EthTxPoolDropReason::InvalidSignature,
-                            }),
+                            Err(_) => rayon::iter::Either::Right((
+                                *tx.tx_hash(),
+                                EthTxPoolEventType::Drop {
+                                    reason: EthTxPoolDropReason::InvalidSignature,
+                                },
+                            )),
                         }
                     });
-                ipc_events.extend_from_slice(&dropped_txs);
+                ipc_events.extend(dropped_txs);
                 recovered_txs
             };
+
+            let mut inserted_addresses = HashSet::<Address>::default();
+            let mut inserted_txs = Vec::default();
 
             pool.insert_txs(
                 &mut EthTxPoolEventTracker::new(&metrics.pool, &mut ipc_events),
@@ -523,7 +506,7 @@ where
             );
 
             metrics.update(executor_metrics);
-            ipc.as_mut().broadcast_tx_events(&ipc_events);
+            ipc.as_mut().broadcast_tx_events(ipc_events);
             preload_manager.add_requests(inserted_addresses.iter());
 
             return Poll::Ready(Some(MonadEvent::MempoolEvent(MempoolEvent::ForwardTxs(
@@ -531,17 +514,38 @@ where
             ))));
         }
 
-        let mut ipc_events = Vec::default();
+        let mut ipc_events = BTreeMap::default();
 
         while let Poll::Ready(forwarded_txs) = forwarding_manager.as_mut().poll_ingress(cx) {
             let _span = debug_span!("forwarded txs", len = forwarded_txs.len()).entered();
+
+            let recovered_txs = {
+                let (recovered_txs, dropped_txs): (Vec<_>, Vec<_>) =
+                    forwarded_txs.into_par_iter().partition_map(|tx| {
+                        let _span = trace_span!("txpool: forwarded tx recover signer").entered();
+                        match tx.secp256k1_recover() {
+                            Ok(signer) => {
+                                rayon::iter::Either::Left(Recovered::new_unchecked(tx, signer))
+                            }
+                            Err(_) => rayon::iter::Either::Right((
+                                *tx.tx_hash(),
+                                EthTxPoolEventType::Drop {
+                                    reason: EthTxPoolDropReason::InvalidSignature,
+                                },
+                            )),
+                        }
+                    });
+                ipc_events.extend(dropped_txs);
+                recovered_txs
+            };
+
             let mut inserted_addresses = HashSet::<Address>::default();
 
             pool.insert_txs(
                 &mut EthTxPoolEventTracker::new(&metrics.pool, &mut ipc_events),
                 block_policy,
                 state_backend,
-                forwarded_txs,
+                recovered_txs,
                 false,
                 |tx| {
                     inserted_addresses.insert(tx.signer());
@@ -598,7 +602,7 @@ where
         }
 
         metrics.update(executor_metrics);
-        ipc.as_mut().broadcast_tx_events(&ipc_events);
+        ipc.as_mut().broadcast_tx_events(ipc_events);
 
         Poll::Pending
     }

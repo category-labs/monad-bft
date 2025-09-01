@@ -143,7 +143,11 @@ where
         event: PeerDiscoveryEvent<ST>,
     ) -> Vec<RouterCommand<ST, PeerDiscoveryMessage<ST>>> {
         let cmds = match event {
-            PeerDiscoveryEvent::SendPing { to } => self.algo.send_ping(to),
+            PeerDiscoveryEvent::SendPing {
+                to,
+                socket_address,
+                ping,
+            } => self.algo.send_ping(to, socket_address, ping),
             PeerDiscoveryEvent::PingRequest { from, ping } => self.algo.handle_ping(from, ping),
             PeerDiscoveryEvent::PongResponse { from, pong } => self.algo.handle_pong(from, pong),
             PeerDiscoveryEvent::PingTimeout { to, ping_id } => {
@@ -167,6 +171,15 @@ where
                 target,
                 lookup_id,
             } => self.algo.handle_peer_lookup_timeout(to, target, lookup_id),
+            PeerDiscoveryEvent::SendFullNodeRaptorcastRequest { to } => {
+                self.algo.send_full_node_raptorcast_request(to)
+            }
+            PeerDiscoveryEvent::FullNodeRaptorcastRequest { from } => {
+                self.algo.handle_full_node_raptorcast_request(from)
+            }
+            PeerDiscoveryEvent::FullNodeRaptorcastResponse { from } => {
+                self.algo.handle_full_node_raptorcast_response(from)
+            }
             PeerDiscoveryEvent::UpdateCurrentRound { round, epoch } => {
                 self.algo.update_current_round(round, epoch)
             }
@@ -193,12 +206,15 @@ where
 
         for cmd in cmds {
             match cmd {
-                PeerDiscoveryCommand::RouterCommand { target, message } => {
-                    router_cmds.push(RouterCommand::Publish {
-                        target: RouterTarget::PointToPoint(target),
-                        message,
-                    })
-                }
+                PeerDiscoveryCommand::RouterCommand { target, message }
+                | PeerDiscoveryCommand::PingPongCommand {
+                    target,
+                    socket_address: _,
+                    message,
+                } => router_cmds.push(RouterCommand::Publish {
+                    target: RouterTarget::PointToPoint(target),
+                    message,
+                }),
                 PeerDiscoveryCommand::TimerCommand(peer_discovery_timer_command) => {
                     self.timer.exec(vec![peer_discovery_timer_command]);
                 }

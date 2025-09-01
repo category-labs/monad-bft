@@ -21,7 +21,6 @@ use monad_consensus_types::{
     checkpoint::RootInfo,
     payload::{ConsensusBlockBody, ConsensusBlockBodyId},
     quorum_certificate::QuorumCertificate,
-    signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -30,6 +29,7 @@ use monad_types::{
     BlockId, Epoch, ExecutionProtocol, NodeId, SeqNum, GENESIS_BLOCK_ID, GENESIS_ROUND,
     GENESIS_SEQ_NUM,
 };
+use monad_validator::signature_collection::SignatureCollection;
 
 /// BlockBuffer is responsible for tracking pending blocks mid-statesync
 /// It performs a function very similar to the blocktree, but specifically for statesync purposes

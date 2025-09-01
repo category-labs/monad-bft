@@ -29,7 +29,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
 use monad_eth_block_policy::{compute_txn_max_value, EthValidatedBlock};
-use monad_eth_types::EthBlockBody;
+use monad_eth_types::{EthBlockBody, ProposedEthHeader};
 use monad_secp::KeyPair;
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Epoch, NodeId, Round, SeqNum};
@@ -116,6 +116,7 @@ pub fn secret_to_eth_address(mut secret: FixedBytes<32>) -> Address {
 pub fn generate_block_with_txs(
     round: Round,
     seq_num: SeqNum,
+    base_fee: u64,
     txs: Vec<Recovered<TxEnvelope>>,
 ) -> EthValidatedBlock<NopSignature, MockSignatures<NopSignature>> {
     let body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
@@ -133,12 +134,19 @@ pub fn generate_block_with_txs(
         Epoch(1),
         round,
         Default::default(), // delayed_execution_results
-        Default::default(), // execution_inputs
+        // execution_inputs
+        ProposedEthHeader {
+            base_fee_per_gas: base_fee,
+            ..Default::default()
+        },
         body.get_id(),
         QuorumCertificate::genesis_qc(),
         seq_num,
         0,
         RoundSignature::new(Round(1), &keypair),
+        monad_tfm::base_fee::MIN_BASE_FEE,
+        monad_tfm::base_fee::GENESIS_BASE_FEE_TREND,
+        monad_tfm::base_fee::GENESIS_BASE_FEE_MOMENT,
     );
 
     let nonces = txs.iter().map(|t| (t.signer(), t.nonce())).fold(
@@ -167,6 +175,7 @@ pub fn generate_block_with_txs(
 
     EthValidatedBlock {
         block: ConsensusFullBlock::new(header, body).expect("header doesn't match body"),
+        system_txns: Vec::new(),
         validated_txns: txs,
         nonces,
         txn_fees,

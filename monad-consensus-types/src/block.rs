@@ -24,13 +24,13 @@ use monad_crypto::{
 };
 use monad_state_backend::{InMemoryState, StateBackend, StateBackendError};
 use monad_types::{BlockId, Epoch, ExecutionProtocol, FinalizedHeader, NodeId, Round, SeqNum};
+use monad_validator::signature_collection::SignatureCollection;
 
 use crate::{
     block_validator::BlockValidationError,
     checkpoint::RootInfo,
     payload::{ConsensusBlockBody, ConsensusBlockBodyId, RoundSignature},
     quorum_certificate::QuorumCertificate,
-    signature_collection::SignatureCollection,
 };
 
 pub const GENESIS_TIMESTAMP: u128 = 0;
@@ -72,6 +72,11 @@ where
     pub execution_inputs: EPT::ProposedHeader,
     /// identifier for the transaction payload of this block
     pub block_body_id: ConsensusBlockBodyId,
+
+    // Base fee update rule
+    pub base_fee: u64,
+    pub base_fee_trend: u64,
+    pub base_fee_moment: u64,
 }
 
 impl<ST, SCT, EPT> ConsensusBlockHeader<ST, SCT, EPT>
@@ -107,6 +112,9 @@ where
             .field("seq_num", &self.seq_num)
             .field("timestamp_ns", &self.timestamp_ns)
             .field("id", &self.get_id())
+            .field("base_fee", &self.base_fee)
+            .field("base_fee_trend", &self.base_fee_trend.cast_signed())
+            .field("base_fee_moment", &self.base_fee_moment)
             .finish_non_exhaustive()
     }
 }
@@ -129,6 +137,9 @@ where
         seq_num: SeqNum,
         timestamp_ns: u128,
         round_signature: RoundSignature<SCT::SignatureType>,
+        base_fee: u64,
+        base_fee_trend: u64,
+        base_fee_moment: u64,
     ) -> Self {
         Self {
             author,
@@ -141,6 +152,9 @@ where
             seq_num,
             timestamp_ns,
             round_signature,
+            base_fee,
+            base_fee_trend,
+            base_fee_moment,
         }
     }
 }
@@ -151,6 +165,7 @@ pub enum BlockPolicyError {
     StateBackendError(StateBackendError),
     TimestampError,
     ExecutionResultMismatch,
+    BaseFeeError,
 }
 
 impl From<StateBackendError> for BlockPolicyError {
@@ -166,7 +181,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     type ValidatedBlock: Sized
         + Clone
@@ -234,7 +249,7 @@ where
     }
 }
 
-impl<ST, SCT, EPT> BlockPolicy<ST, SCT, EPT, InMemoryState> for PassthruBlockPolicy
+impl<ST, SCT, EPT> BlockPolicy<ST, SCT, EPT, InMemoryState<ST, SCT>> for PassthruBlockPolicy
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -247,7 +262,7 @@ where
         block: &Self::ValidatedBlock,
         extending_blocks: Vec<&Self::ValidatedBlock>,
         blocktree_root: RootInfo,
-        state_backend: &InMemoryState,
+        state_backend: &InMemoryState<ST, SCT>,
     ) -> Result<(), BlockPolicyError> {
         // check coherency against the block being extended or against the root of the blocktree if
         // there is no extending branch
@@ -283,7 +298,7 @@ where
         &self,
         _block_seq_num: SeqNum,
         _extending_blocks: Vec<&Self::ValidatedBlock>,
-        _state_backend: &InMemoryState,
+        _state_backend: &InMemoryState<ST, SCT>,
     ) -> Result<Vec<EPT::FinalizedHeader>, StateBackendError> {
         Ok(Vec::new())
     }
@@ -371,6 +386,15 @@ where
     pub fn get_timestamp(&self) -> u128 {
         self.header.timestamp_ns
     }
+    pub fn get_base_fee(&self) -> u64 {
+        self.header.base_fee
+    }
+    pub fn get_base_fee_trend(&self) -> u64 {
+        self.header.base_fee_trend
+    }
+    pub fn get_base_fee_moment(&self) -> u64 {
+        self.header.base_fee_moment
+    }
     pub fn get_author(&self) -> &NodeId<CertificateSignaturePubKey<ST>> {
         &self.header.author
     }
@@ -432,7 +456,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     Proposed(BPT::ValidatedBlock),
     Finalized(BPT::ValidatedBlock),
@@ -455,7 +479,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     fn from(value: &OptimisticPolicyCommit<ST, SCT, EPT, BPT, SBT>) -> Self {
         match value {

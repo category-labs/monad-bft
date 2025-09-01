@@ -18,21 +18,26 @@ use std::time::Duration;
 use alloy_consensus::{
     constants::EMPTY_WITHDRAWALS, transaction::Recovered, TxEnvelope, EMPTY_OMMER_ROOT_HASH,
 };
-use alloy_primitives::Address;
+use alloy_primitives::{Address, U256};
+use alloy_rlp::Encodable;
 use itertools::Itertools;
-use monad_consensus_types::{
-    block::ProposedExecutionInputs, payload::RoundSignature,
-    signature_collection::SignatureCollection,
+use monad_chain_config::{
+    execution_revision::MonadExecutionRevision,
+    revision::{ChainRevision, MockChainRevision},
+    ChainConfig,
 };
+use monad_consensus_types::{block::ProposedExecutionInputs, payload::RoundSignature};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason, EthTxPoolSnapshot};
-use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader, BASE_FEE_PER_GAS};
+use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ExtractEthAddress, ProposedEthHeader};
 use monad_state_backend::{StateBackend, StateBackendError};
-use monad_types::SeqNum;
-use tracing::{info, warn};
+use monad_system_calls::{SystemTransactionGenerator, SYSTEM_SENDER_ETH_ADDRESS};
+use monad_types::{Epoch, NodeId, Round, SeqNum};
+use monad_validator::signature_collection::SignatureCollection;
+use tracing::{debug, info, warn};
 
 use self::{pending::PendingTxMap, tracked::TrackedTxMap, transaction::ValidEthTransaction};
 use crate::EthTxPoolEventTracker;
@@ -49,55 +54,46 @@ const INSERT_TXS_MAX_PROMOTE: usize = 256;
 const PENDING_MAX_PROMOTE: usize = 128;
 
 #[derive(Clone, Debug)]
-pub struct EthTxPool<ST, SCT, SBT>
+pub struct EthTxPool<ST, SCT, SBT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
+    CRT: ChainRevision,
 {
-    do_local_insert: bool,
     pending: PendingTxMap,
     tracked: TrackedTxMap<ST, SCT, SBT>,
-    // current proposal_gas_limit. On insert_tx, we validate that tx.gas_limit
-    // <= proposal_gas_limit to reject anything that can't possibly fit in a
-    // block. Create proposal doesn't rely on this value
-    proposal_gas_limit: u64,
 
-    max_code_size: usize,
+    chain_revision: CRT,
+    execution_revision: MonadExecutionRevision,
+
+    do_local_insert: bool,
 }
 
-impl<ST, SCT, SBT> EthTxPool<ST, SCT, SBT>
+impl<ST, SCT, SBT, CRT> EthTxPool<ST, SCT, SBT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
+    CRT: ChainRevision,
 {
     pub fn new(
-        do_local_insert: bool,
         soft_tx_expiry: Duration,
         hard_tx_expiry: Duration,
-        proposal_gas_limit: u64,
-        max_code_size: usize,
+        chain_revision: CRT,
+        execution_revision: MonadExecutionRevision,
+        do_local_insert: bool,
     ) -> Self {
         Self {
-            do_local_insert,
             pending: PendingTxMap::default(),
             tracked: TrackedTxMap::new(soft_tx_expiry, hard_tx_expiry),
-            proposal_gas_limit,
-            max_code_size,
-        }
-    }
 
-    pub fn default_testing() -> Self {
-        const PROPOSAL_GAS_LIMIT: u64 = 300_000_000;
-        const MAX_CODE_SIZE: usize = 0x6000;
-        Self::new(
-            true,
-            Duration::from_secs(60),
-            Duration::from_secs(60),
-            PROPOSAL_GAS_LIMIT,
-            MAX_CODE_SIZE,
-        )
+            chain_revision,
+            execution_revision,
+
+            do_local_insert,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -109,14 +105,6 @@ where
             .num_txs()
             .checked_add(self.tracked.num_txs())
             .expect("pool size does not overflow")
-    }
-
-    pub fn set_tx_gas_limit(&mut self, proposal_gas_limit: u64) {
-        self.proposal_gas_limit = proposal_gas_limit
-    }
-
-    pub fn set_max_code_size(&mut self, max_code_size: usize) {
-        self.max_code_size = max_code_size
     }
 
     pub fn insert_txs(
@@ -144,11 +132,11 @@ where
                 ValidEthTransaction::validate(
                     event_tracker,
                     block_policy,
-                    self.proposal_gas_limit,
-                    self.max_code_size,
+                    last_commit,
+                    self.chain_revision.chain_params(),
+                    self.execution_revision.execution_chain_params(),
                     tx,
                     owned,
-                    last_commit,
                 )
             })
             .collect_vec();
@@ -178,21 +166,24 @@ where
             }
         };
 
-        for tx in txs {
-            let account_balance = account_balances
-                .get(tx.signer_ref())
-                .cloned()
-                .unwrap_or_default();
+        let last_commit_base_fee = last_commit.execution_inputs.base_fee_per_gas;
 
-            let Some(_new_account_balance) = tx.apply_max_value(account_balance) else {
+        for tx in txs {
+            if account_balances
+                .get(tx.signer_ref())
+                .is_none_or(U256::is_zero)
+            {
                 event_tracker.drop(tx.hash(), EthTxPoolDropReason::InsufficientBalance);
                 continue;
-            };
+            }
 
             let Some(tx) = self
                 .tracked
                 .try_insert_tx(event_tracker, tx)
-                .unwrap_or_else(|tx| self.pending.try_insert_tx(event_tracker, tx))
+                .unwrap_or_else(|tx| {
+                    self.pending
+                        .try_insert_tx(event_tracker, tx, last_commit_base_fee)
+                })
             else {
                 continue;
             };
@@ -237,16 +228,20 @@ where
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         proposed_seq_num: SeqNum,
+        base_fee: u64,
         tx_limit: usize,
         proposal_gas_limit: u64,
         proposal_byte_limit: u64,
         beneficiary: [u8; 20],
         timestamp_ns: u128,
+        node_id: NodeId<CertificateSignaturePubKey<ST>>,
+        epoch: Epoch,
         round_signature: RoundSignature<SCT::SignatureType>,
         extending_blocks: Vec<EthValidatedBlock<ST, SCT>>,
 
         block_policy: &EthBlockPolicy<ST, SCT>,
         state_backend: &SBT,
+        chain_config: &impl ChainConfig<CRT>,
     ) -> Result<ProposedExecutionInputs<EthExecutionProtocol>, StateBackendError> {
         info!(
             ?proposed_seq_num,
@@ -262,12 +257,28 @@ where
         // u64::MAX seconds is ~500 Billion years
         assert!(timestamp_seconds < u64::MAX.into());
 
-        let transactions = self.tracked.create_proposal(
+        let self_eth_address = node_id.pubkey().get_eth_address();
+        let system_transactions = self.get_system_transactions(
+            proposed_seq_num,
+            epoch,
+            self_eth_address,
+            &extending_blocks.iter().collect(),
+            block_policy,
+            state_backend,
+            chain_config,
+        )?;
+        let system_txs_size: u64 = system_transactions
+            .iter()
+            .map(|tx| tx.length() as u64)
+            .sum();
+
+        let user_transactions = self.tracked.create_proposal(
             event_tracker,
             proposed_seq_num,
-            tx_limit,
+            base_fee,
+            tx_limit - system_transactions.len(),
             proposal_gas_limit,
-            proposal_byte_limit,
+            proposal_byte_limit - system_txs_size,
             block_policy,
             extending_blocks.iter().collect(),
             state_backend,
@@ -275,7 +286,11 @@ where
         )?;
 
         let body = EthBlockBody {
-            transactions: transactions.into_iter().map(|tx| tx.into_tx()).collect(),
+            transactions: system_transactions
+                .into_iter()
+                .chain(user_transactions)
+                .map(|tx| tx.into_tx())
+                .collect(),
             ommers: Vec::new(),
             withdrawals: Vec::new(),
         };
@@ -300,10 +315,11 @@ where
             mix_hash: round_signature.get_hash().0,
             nonce: [0_u8; 8],
             extra_data: [0_u8; 32],
-            base_fee_per_gas: BASE_FEE_PER_GAS,
+            base_fee_per_gas: base_fee,
             blob_gas_used: 0,
             excess_blob_gas: 0,
             parent_beacon_block_root: [0_u8; 32],
+            requests_hash: [0_u8; 32],
         };
 
         self.update_aggregate_metrics(event_tracker);
@@ -311,42 +327,90 @@ where
         Ok(ProposedExecutionInputs { header, body })
     }
 
+    pub fn enter_round(&mut self, chain_config: &impl ChainConfig<CRT>, round: Round) {
+        let chain_revision = chain_config.get_chain_revision(round);
+
+        if chain_revision.chain_params() != self.chain_revision.chain_params() {
+            self.chain_revision = chain_revision;
+            info!(chain_params =? self.chain_revision.chain_params(), "updating chain revision");
+
+            self.static_validate_all_txs();
+        }
+    }
+
     pub fn update_committed_block(
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
+        chain_config: &impl ChainConfig<CRT>,
         committed_block: EthValidatedBlock<ST, SCT>,
     ) {
+        let execution_revision = chain_config
+            .get_execution_chain_revision(committed_block.header().execution_inputs.timestamp);
+
         self.tracked
             .update_committed_block(event_tracker, committed_block, &mut self.pending);
 
         self.tracked.evict_expired_txs(event_tracker);
 
+        if self.execution_revision != execution_revision {
+            self.execution_revision = execution_revision;
+            info!(execution_revision =? self.execution_revision, "updating execution revision");
+
+            self.static_validate_all_txs();
+        }
+
         self.update_aggregate_metrics(event_tracker);
+    }
+
+    pub fn reset(
+        &mut self,
+        event_tracker: &mut EthTxPoolEventTracker<'_>,
+        chain_config: &impl ChainConfig<CRT>,
+        last_delay_committed_blocks: Vec<EthValidatedBlock<ST, SCT>>,
+    ) {
+        let execution_revision = chain_config.get_execution_chain_revision(
+            last_delay_committed_blocks
+                .last()
+                .map_or(0, |committed_block| {
+                    committed_block.header().execution_inputs.timestamp
+                }),
+        );
+
+        self.tracked.reset(last_delay_committed_blocks);
+
+        if self.execution_revision != execution_revision {
+            self.execution_revision = execution_revision;
+            info!(execution_revision =? self.execution_revision, "updating execution revision");
+
+            self.static_validate_all_txs();
+        }
+
+        self.update_aggregate_metrics(event_tracker);
+    }
+
+    pub fn static_validate_all_txs(&mut self) {
+        // TODO (andr-dev): Run static validation on all txs again
     }
 
     pub fn get_forwardable_txs<const MIN_SEQNUM_DIFF: u64, const MAX_RETRIES: usize>(
         &mut self,
     ) -> Option<impl Iterator<Item = &TxEnvelope>> {
-        let last_commit_seq_num = self.tracked.last_commit()?.seq_num;
+        let last_commit = self.tracked.last_commit()?;
+
+        let last_commit_seq_num = last_commit.seq_num;
+        let last_commit_base_fee = last_commit.execution_inputs.base_fee_per_gas;
 
         Some(
             self.pending
                 .iter_mut_txs()
                 .chain(self.tracked.iter_mut_txs())
                 .filter_map(move |tx| {
-                    tx.get_if_forwardable::<MIN_SEQNUM_DIFF, MAX_RETRIES>(last_commit_seq_num)
+                    tx.get_if_forwardable::<MIN_SEQNUM_DIFF, MAX_RETRIES>(
+                        last_commit_seq_num,
+                        last_commit_base_fee,
+                    )
                 }),
         )
-    }
-
-    pub fn reset(
-        &mut self,
-        event_tracker: &mut EthTxPoolEventTracker<'_>,
-        last_delay_committed_blocks: Vec<EthValidatedBlock<ST, SCT>>,
-    ) {
-        self.tracked.reset(last_delay_committed_blocks);
-
-        self.update_aggregate_metrics(event_tracker);
     }
 
     fn update_aggregate_metrics(&self, event_tracker: &mut EthTxPoolEventTracker<'_>) {
@@ -380,5 +444,75 @@ where
             .chain(self.pending.iter_txs().map(ValidEthTransaction::signer))
             .unique()
             .collect()
+    }
+
+    fn get_system_transactions(
+        &self,
+        proposed_seq_num: SeqNum,
+        proposed_epoch: Epoch,
+        block_author: Address,
+        extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
+        block_policy: &EthBlockPolicy<ST, SCT>,
+        state_backend: &SBT,
+        chain_config: &impl ChainConfig<CRT>,
+    ) -> Result<Vec<Recovered<TxEnvelope>>, StateBackendError> {
+        // TODO this should be inside SystemTransactionGenerator to prevent
+        // exposing SYSTEM_SENDER_ETH_ADDRESS outside the crate
+        let next_system_txn_nonce = *block_policy
+            .get_account_base_nonces(
+                proposed_seq_num,
+                state_backend,
+                extending_blocks,
+                [SYSTEM_SENDER_ETH_ADDRESS].iter(),
+            )?
+            .get(&SYSTEM_SENDER_ETH_ADDRESS)
+            .unwrap();
+
+        let parent_block_epoch = {
+            if let Some(extending_block) = extending_blocks.last() {
+                extending_block.get_epoch()
+            } else {
+                assert_eq!(proposed_seq_num, block_policy.get_last_commit() + SeqNum(1));
+                block_policy.get_last_commit_epoch()
+            }
+        };
+
+        let sys_txns = SystemTransactionGenerator::generate_system_transactions(
+            proposed_seq_num,
+            proposed_epoch,
+            parent_block_epoch,
+            block_author,
+            next_system_txn_nonce,
+            chain_config,
+        );
+
+        debug!(
+            ?proposed_seq_num,
+            ?sys_txns,
+            "generated system transactions"
+        );
+
+        Ok(sys_txns
+            .into_iter()
+            .map(|sys_txn| sys_txn.into())
+            .collect_vec())
+    }
+}
+
+impl<ST, SCT, SBT> EthTxPool<ST, SCT, SBT, monad_chain_config::revision::MockChainRevision>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    SBT: StateBackend<ST, SCT>,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
+{
+    pub fn default_testing() -> Self {
+        Self::new(
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+            MockChainRevision::DEFAULT,
+            MonadExecutionRevision::LATEST,
+            true,
+        )
     }
 }

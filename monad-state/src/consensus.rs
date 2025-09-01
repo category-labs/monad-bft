@@ -32,22 +32,22 @@ use monad_consensus_types::{
     block_validator::BlockValidator,
     metrics::Metrics,
     payload::{ConsensusBlockBody, ConsensusBlockBodyInner},
-    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     tip::ConsensusTip,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor_glue::{
-    BlockSyncEvent, CheckpointCommand, Command, ConsensusEvent, LedgerCommand, LoopbackCommand,
-    MempoolEvent, MonadEvent, RouterCommand, StateRootHashCommand, StateSyncEvent, TimeoutVariant,
-    TimerCommand, TimestampCommand, TxPoolCommand,
+    BlockSyncEvent, Command, ConfigFileCommand, ConsensusEvent, LedgerCommand, LoopbackCommand,
+    MempoolEvent, MonadEvent, RouterCommand, StateSyncEvent, TimeoutVariant, TimerCommand,
+    TimestampCommand, TxPoolCommand, ValSetCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{ExecutionProtocol, NodeId, Round, RouterTarget};
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
@@ -64,10 +64,10 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -99,11 +99,11 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -175,6 +175,7 @@ where
                                         consensus_tip =? new_root.seq_num,
                                         "setting new statesync target",
                                     );
+                                    self.metrics.consensus_events.trigger_state_sync += 1;
                                     cmds.push(self.wrap(ConsensusCommand::RequestStateSync {
                                         root: new_root,
                                         high_qc: new_high_qc,
@@ -341,6 +342,9 @@ where
                 seq_num,
                 timestamp_ns,
                 round_signature,
+                base_fee,
+                base_fee_trend,
+                base_fee_moment,
                 delayed_execution_results,
                 proposed_execution_inputs,
                 last_round_tc,
@@ -362,6 +366,9 @@ where
                     seq_num,
                     timestamp_ns,
                     round_signature,
+                    base_fee,
+                    base_fee_trend,
+                    base_fee_moment,
                 );
 
                 let p = ProposalMessage {
@@ -451,7 +458,7 @@ where
             .collect_vec()
     }
 
-    pub(super) fn checkpoint(&mut self) -> Option<CheckpointCommand<ST, SCT, EPT>> {
+    pub(super) fn checkpoint(&mut self) -> Option<ConfigFileCommand<ST, SCT, EPT>> {
         let ConsensusMode::Live(consensus) = self.consensus else {
             return None;
         };
@@ -477,7 +484,7 @@ where
             cert_keypair: self.cert_keypair,
         };
         let checkpoint = consensus.checkpoint();
-        Some(CheckpointCommand {
+        Some(ConfigFileCommand::Checkpoint {
             root_seq_num: consensus.consensus.blocktree().root().seq_num,
             checkpoint,
         })
@@ -595,7 +602,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     upcoming_leader_rounds: Vec<Round>,
     pub command: ConsensusCommand<ST, SCT, EPT, BPT, SBT>,
@@ -618,7 +625,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     fn from(wrapped: WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT>) -> Self {
         let WrappedConsensusCommand {
@@ -662,6 +669,7 @@ where
                 TimerCommand::ScheduleReset(TimeoutVariant::Pacemaker),
             )),
             ConsensusCommand::CreateProposal {
+                node_id,
                 epoch,
                 round,
                 seq_num,
@@ -680,6 +688,7 @@ where
                 delayed_execution_results,
             } => {
                 parent_cmds.push(Command::TxPoolCommand(TxPoolCommand::CreateProposal {
+                    node_id,
                     epoch,
                     round,
                     seq_num,
@@ -714,9 +723,9 @@ where
                         parent_cmds.push(Command::TxPoolCommand(TxPoolCommand::BlockCommit(vec![
                             block,
                         ])));
-                        parent_cmds.push(Command::StateRootHashCommand(
-                            StateRootHashCommand::NotifyFinalized(finalized_seq_num),
-                        ));
+                        parent_cmds.push(Command::ValSetCommand(ValSetCommand::NotifyFinalized(
+                            finalized_seq_num,
+                        )));
                     }
                 }
             }

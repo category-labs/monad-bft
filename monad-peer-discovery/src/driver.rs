@@ -15,7 +15,7 @@
 
 use std::{
     collections::{HashMap, VecDeque},
-    net::SocketAddr,
+    net::{SocketAddr, SocketAddrV4},
     task::{Context, Poll, Waker},
     time::Duration,
 };
@@ -27,7 +27,6 @@ use monad_crypto::certificate_signature::{
 use monad_executor::ExecutorMetrics;
 use monad_types::NodeId;
 use tokio_util::time::{DelayQueue, delay_queue::Key};
-use tracing::error;
 
 use crate::{
     MonadNameRecord, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryCommand,
@@ -35,9 +34,13 @@ use crate::{
 };
 
 pub enum PeerDiscoveryEmit<ST: CertificateSignatureRecoverable> {
-    // TODO: other output events
     RouterCommand {
         target: NodeId<CertificateSignaturePubKey<ST>>,
+        message: PeerDiscoveryMessage<ST>,
+    },
+    PingPongCommand {
+        target: NodeId<CertificateSignaturePubKey<ST>>,
+        socket_address: SocketAddrV4,
         message: PeerDiscoveryMessage<ST>,
     },
     MetricsCommand(ExecutorMetrics),
@@ -81,10 +84,6 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscTimers<ST> {
         if let Some((key, _event)) = self.events.remove(&(node_id, timer_kind)) {
             // DelayQueue timer panics if key is not found, which indicates a
             // logic error - inconsistency between timers and events
-            error!(
-                ?key,
-                "key is not present in peer discovery timer delay queue"
-            );
             self.timers.remove(&key);
         }
     }
@@ -173,7 +172,11 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
 
     pub fn update(&mut self, event: PeerDiscoveryEvent<PD::SignatureType>) {
         let cmds = match event {
-            PeerDiscoveryEvent::SendPing { to } => self.pd.send_ping(to),
+            PeerDiscoveryEvent::SendPing {
+                to,
+                socket_address,
+                ping,
+            } => self.pd.send_ping(to, socket_address, ping),
             PeerDiscoveryEvent::PingRequest { from, ping } => self.pd.handle_ping(from, ping),
             PeerDiscoveryEvent::PongResponse { from, pong } => self.pd.handle_pong(from, pong),
             PeerDiscoveryEvent::PingTimeout { to, ping_id } => {
@@ -195,6 +198,15 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
                 target,
                 lookup_id,
             } => self.pd.handle_peer_lookup_timeout(to, target, lookup_id),
+            PeerDiscoveryEvent::SendFullNodeRaptorcastRequest { to } => {
+                self.pd.send_full_node_raptorcast_request(to)
+            }
+            PeerDiscoveryEvent::FullNodeRaptorcastRequest { from } => {
+                self.pd.handle_full_node_raptorcast_request(from)
+            }
+            PeerDiscoveryEvent::FullNodeRaptorcastResponse { from } => {
+                self.pd.handle_full_node_raptorcast_response(from)
+            }
             PeerDiscoveryEvent::UpdateCurrentRound { round, epoch } => {
                 self.pd.update_current_round(round, epoch)
             }
@@ -219,6 +231,22 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
                 PeerDiscoveryCommand::RouterCommand { target, message } => {
                     self.pending_emits
                         .push_back(PeerDiscoveryEmit::RouterCommand { target, message });
+
+                    if let Some(waker) = self.waker.take() {
+                        waker.wake();
+                    }
+                }
+                PeerDiscoveryCommand::PingPongCommand {
+                    target,
+                    socket_address,
+                    message,
+                } => {
+                    self.pending_emits
+                        .push_back(PeerDiscoveryEmit::PingPongCommand {
+                            target,
+                            socket_address,
+                            message,
+                        });
 
                     if let Some(waker) = self.waker.take() {
                         waker.wake();
@@ -260,11 +288,11 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
             .collect()
     }
 
-    pub fn get_fullnode_addrs(
+    pub fn get_secondary_fullnode_addrs(
         &self,
     ) -> HashMap<NodeId<CertificateSignaturePubKey<PD::SignatureType>>, SocketAddr> {
         self.pd
-            .get_fullnode_addrs()
+            .get_secondary_fullnode_addrs()
             .into_iter()
             .map(|(k, v)| (k, SocketAddr::V4(v)))
             .collect()

@@ -32,12 +32,13 @@ use monad_crypto::certificate_signature::{
 use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
+use monad_peer_discovery::mock::NopDiscovery;
 use monad_raptor::SOURCE_SYMBOLS_MAX;
 use monad_raptorcast::{
     new_defaulted_raptorcast_for_tests,
     udp::{build_messages, build_messages_with_length, MAX_REDUNDANCY},
-    util::{BuildTarget, EpochValidators, FullNodes, Redundancy, Validator},
-    RaptorCastEvent,
+    util::{BuildTarget, EpochValidators, Redundancy},
+    RaptorCast, RaptorCastEvent,
 };
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{Deserializable, Epoch, NodeId, Serializable, Stake};
@@ -79,15 +80,11 @@ pub fn different_symbol_sizes() {
             _ => panic!(),
         };
 
-        let mut validators = EpochValidators {
-            validators: BTreeMap::from([
-                (rx_nodeid, Validator { stake: Stake::ONE }),
-                (tx_nodeid, Validator { stake: Stake::ONE }),
-            ]),
+        let validators = EpochValidators {
+            validators: BTreeMap::from([(rx_nodeid, Stake::ONE), (tx_nodeid, Stake::ONE)]),
         };
 
         let epoch_validators = validators.view_without(vec![&tx_nodeid]);
-        let full_nodes = FullNodes::new(Vec::new());
 
         let messages = build_messages::<SignatureType>(
             &tx_keypair,
@@ -96,7 +93,7 @@ pub fn different_symbol_sizes() {
             Redundancy::from_u8(2),
             0, // epoch_no
             0, // unix_ts_ms
-            BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
+            BuildTarget::Raptorcast(epoch_validators),
             &known_addresses,
         );
 
@@ -143,15 +140,11 @@ pub fn buffer_count_overflow() {
 
     let tx_socket = UdpSocket::bind(tx_addr).unwrap();
 
-    let mut validators = EpochValidators {
-        validators: BTreeMap::from([
-            (rx_nodeid, Validator { stake: Stake::ONE }),
-            (tx_nodeid, Validator { stake: Stake::ONE }),
-        ]),
+    let validators = EpochValidators {
+        validators: BTreeMap::from([(rx_nodeid, Stake::ONE), (tx_nodeid, Stake::ONE)]),
     };
 
     let epoch_validators = validators.view_without(vec![&tx_nodeid]);
-    let full_nodes = FullNodes::new(Vec::new());
 
     let messages = build_messages::<SignatureType>(
         &tx_keypair,
@@ -160,7 +153,7 @@ pub fn buffer_count_overflow() {
         Redundancy::from_u8(2),
         0, // epoch_no
         0, // unix_ts_ms
-        BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
+        BuildTarget::Raptorcast(epoch_validators),
         &known_addresses,
     );
 
@@ -198,15 +191,11 @@ pub fn oversized_message() {
 
     let tx_socket = UdpSocket::bind(tx_addr).unwrap();
 
-    let mut validators = EpochValidators {
-        validators: BTreeMap::from([
-            (rx_nodeid, Validator { stake: Stake::ONE }),
-            (tx_nodeid, Validator { stake: Stake::ONE }),
-        ]),
+    let validators = EpochValidators {
+        validators: BTreeMap::from([(rx_nodeid, Stake::ONE), (tx_nodeid, Stake::ONE)]),
     };
 
     let epoch_validators = validators.view_without(vec![&tx_nodeid]);
-    let full_nodes = FullNodes::new(Vec::new());
 
     let messages = build_messages_with_length::<SignatureType>(
         &tx_keypair,
@@ -218,7 +207,7 @@ pub fn oversized_message() {
         Redundancy::from_u8(2),
         0, // epoch_no
         0, // unix_ts_ms
-        BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
+        BuildTarget::Raptorcast(epoch_validators),
         &known_addresses,
     );
 
@@ -279,15 +268,11 @@ pub fn valid_rebroadcast() {
         .set_read_timeout(Some(Duration::from_millis(100)))
         .unwrap();
 
-    let mut validators = EpochValidators {
-        validators: BTreeMap::from([
-            (rx_nodeid, Validator { stake: Stake::ONE }),
-            (tx_nodeid, Validator { stake: Stake::ONE }),
-        ]),
+    let validators = EpochValidators {
+        validators: BTreeMap::from([(rx_nodeid, Stake::ONE), (tx_nodeid, Stake::ONE)]),
     };
 
     let epoch_validators = validators.view_without(vec![&tx_nodeid]);
-    let full_nodes = FullNodes::new(Vec::new());
 
     let messages = build_messages::<SignatureType>(
         &tx_keypair,
@@ -296,7 +281,7 @@ pub fn valid_rebroadcast() {
         MAX_REDUNDANCY, // redundancy,
         0,              // epoch_no
         0,              // unix_ts_ms
-        BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
+        BuildTarget::Raptorcast(epoch_validators),
         &known_addresses,
     );
 
@@ -500,4 +485,131 @@ where
             }
         }
     }
+}
+
+fn keypair(seed: u8) -> KeyPair {
+    <<SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::from_bytes(
+        &mut [seed; 32],
+    )
+    .unwrap()
+}
+
+fn setup_raptorcast_service(
+    keypair: KeyPair,
+    addr: SocketAddrV4,
+    known_addresses: &HashMap<NodeId<PubKeyType>, SocketAddrV4>,
+) -> RaptorCast<
+    SignatureType,
+    MockMessage,
+    MockMessage,
+    MockEvent<CertificateSignaturePubKey<SignatureType>>,
+    NopDiscovery<SignatureType>,
+> {
+    new_defaulted_raptorcast_for_tests::<
+        SignatureType,
+        MockMessage,
+        MockMessage,
+        <MockMessage as Message>::Event,
+    >(
+        SocketAddr::V4(addr),
+        known_addresses.clone(),
+        Arc::new(keypair),
+    )
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn publish_to_full_nodes() {
+    ONCE_SETUP.call_once(|| {
+        tracing_subscriber::fmt::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_span_events(FmtSpan::CLOSE)
+            .init();
+
+        // Cause the test to fail if any of the tokio runtime threads panic.  Taken from:
+        // https://stackoverflow.com/questions/35988775/how-can-i-cause-a-panic-on-a-thread-to-immediately-end-the-main-thread/36031130#36031130
+        let orig_panic_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |panic_info| {
+            orig_panic_hook(panic_info);
+            std::process::exit(1);
+        }));
+    });
+
+    // 1. Set up nodes
+    let validator_keypair = keypair(1);
+    let validator_nodeid = NodeId::new(validator_keypair.pubkey());
+    let validator_addr = "127.0.0.1:10020".parse().unwrap();
+
+    let full_node1_keypair = keypair(2);
+    let full_node1_id = NodeId::new(full_node1_keypair.pubkey());
+    let full_node1_addr = "127.0.0.1:10021".parse().unwrap();
+
+    let full_node2_keypair = keypair(3);
+    let full_node2_id = NodeId::new(full_node2_keypair.pubkey());
+    let full_node2_addr = "127.0.0.1:10022".parse().unwrap();
+
+    let known_addresses: HashMap<NodeId<PubKeyType>, SocketAddrV4> = [
+        (validator_nodeid, validator_addr),
+        (full_node1_id, full_node1_addr),
+        (full_node2_id, full_node2_addr),
+    ]
+    .into_iter()
+    .collect();
+
+    let validator_set = vec![(validator_nodeid, Stake::ONE)];
+
+    // 2. Create services
+    let mut validator_rc =
+        setup_raptorcast_service(validator_keypair, validator_addr, &known_addresses);
+    validator_rc.set_dedicated_full_nodes(vec![full_node1_id, full_node2_id]);
+
+    let mut full_node1_rc =
+        setup_raptorcast_service(full_node1_keypair, full_node1_addr, &known_addresses);
+    let mut full_node2_rc =
+        setup_raptorcast_service(full_node2_keypair, full_node2_addr, &known_addresses);
+
+    // 3. Set validator set for all nodes
+    for service in [&mut validator_rc, &mut full_node1_rc, &mut full_node2_rc] {
+        service.exec(vec![RouterCommand::AddEpochValidatorSet {
+            epoch: Epoch(0),
+            validator_set: validator_set.clone(),
+        }]);
+    }
+
+    // 4. Exhaust any remaining events
+    loop {
+        tokio::select! {
+            biased;
+            _ = validator_rc.next() => {},
+            _ = full_node1_rc.next() => {},
+            _ = full_node2_rc.next() => {},
+            _ = std::future::ready(()) => break,
+        }
+    }
+
+    // 5. Publish message from validator to full nodes
+    let message = MockMessage::new(42, 10000);
+    let command = RouterCommand::PublishToFullNodes {
+        epoch: Epoch(0),
+        message,
+    };
+    validator_rc.exec(vec![command]);
+
+    // 6. Assert full nodes receive the message
+    let timeout = Duration::from_secs(1);
+    let event1 = tokio::time::timeout(timeout, full_node1_rc.next())
+        .await
+        .expect("timeout")
+        .expect("stream ended");
+    let MockEvent((from, id)) = event1;
+    assert_eq!(from, validator_nodeid);
+    assert_eq!(id, 42);
+
+    let event2 = tokio::time::timeout(timeout, full_node2_rc.next())
+        .await
+        .expect("timeout")
+        .expect("stream ended");
+    let MockEvent((from, id)) = event2;
+    assert_eq!(from, validator_nodeid);
+    assert_eq!(id, 42);
 }

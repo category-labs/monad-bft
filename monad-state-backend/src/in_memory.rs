@@ -15,22 +15,33 @@
 
 use std::{
     collections::{BTreeMap, HashMap},
+    marker::PhantomData,
     sync::{Arc, Mutex},
 };
 
 use alloy_consensus::Header;
 use alloy_primitives::Address;
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_eth_types::{Balance, EthAccount, EthHeader, Nonce};
-use monad_types::{BlockId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM};
+use monad_types::{
+    BlockId, Epoch, Round, SeqNum, Stake, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM,
+};
+use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 
 use crate::{StateBackend, StateBackendError, StateBackendTest};
 
-pub type InMemoryState = Arc<Mutex<InMemoryStateInner>>;
+pub type InMemoryState<ST, SCT> = Arc<Mutex<InMemoryStateInner<ST, SCT>>>;
 
 #[derive(Debug, Clone)]
-pub struct InMemoryStateInner {
+pub struct InMemoryStateInner<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     commits: BTreeMap<SeqNum, InMemoryBlockState>,
     proposals: HashMap<BlockId, InMemoryBlockState>,
     /// InMemoryState doesn't have access to an execution engine. It returns
@@ -41,6 +52,8 @@ pub struct InMemoryStateInner {
 
     /// can be used to mess with eth-header execution results
     pub extra_data: u64,
+
+    _phantom: PhantomData<(ST, SCT)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,8 +77,15 @@ impl InMemoryBlockState {
     }
 }
 
-impl InMemoryStateInner {
-    pub fn genesis(max_account_balance: Balance, execution_delay: SeqNum) -> InMemoryState {
+impl<ST, SCT> InMemoryStateInner<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    pub fn genesis(
+        max_account_balance: Balance,
+        execution_delay: SeqNum,
+    ) -> InMemoryState<ST, SCT> {
         Arc::new(Mutex::new(Self {
             commits: std::iter::once((
                 GENESIS_SEQ_NUM,
@@ -75,20 +95,27 @@ impl InMemoryStateInner {
             proposals: Default::default(),
             max_account_balance,
             execution_delay,
+
             extra_data: 0,
+
+            _phantom: PhantomData,
         }))
     }
+
     pub fn new(
         max_account_balance: Balance,
         execution_delay: SeqNum,
         last_commit: InMemoryBlockState,
-    ) -> InMemoryState {
+    ) -> InMemoryState<ST, SCT> {
         Arc::new(Mutex::new(Self {
             commits: std::iter::once((last_commit.seq_num, last_commit)).collect(),
             proposals: Default::default(),
             max_account_balance,
             execution_delay,
+
             extra_data: 0,
+
+            _phantom: PhantomData,
         }))
     }
 
@@ -102,7 +129,11 @@ impl InMemoryStateInner {
     }
 }
 
-impl StateBackendTest for InMemoryStateInner {
+impl<ST, SCT> StateBackendTest<ST, SCT> for InMemoryStateInner<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     // new_account_nonces is the changeset of nonces from a given block
     // if account A's last tx nonce in a block is N, then new_account_nonces should include A=N+1
     // this is because N+1 is the next valid nonce for A
@@ -114,6 +145,15 @@ impl StateBackendTest for InMemoryStateInner {
         parent_id: BlockId,
         new_account_nonces: BTreeMap<Address, Nonce>,
     ) {
+        if self
+            .commits
+            .get(&seq_num)
+            .is_some_and(|committed| committed.block_id == block_id)
+        {
+            // we can repropose already-finalized blocks on startup
+            // this is part of the statesync process
+            return;
+        }
         assert!(
             seq_num
                 >= self
@@ -151,7 +191,17 @@ impl StateBackendTest for InMemoryStateInner {
         );
     }
 
-    fn ledger_commit(&mut self, block_id: &BlockId) {
+    fn ledger_commit(&mut self, block_id: &BlockId, seq_num: &SeqNum) {
+        if self
+            .commits
+            .get(seq_num)
+            .is_some_and(|committed| &committed.block_id == block_id)
+        {
+            // we can refinalize already-finalized blocks on startup
+            // this is part of the statesync process
+            return;
+        }
+
         let committed_proposal = self.proposals.remove(block_id).unwrap_or_else(|| {
             panic!(
                 "committed proposal that doesn't exist, block_id={:?}",
@@ -182,7 +232,11 @@ impl StateBackendTest for InMemoryStateInner {
     }
 }
 
-impl StateBackend for InMemoryStateInner {
+impl<ST, SCT> StateBackend<ST, SCT> for InMemoryStateInner<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     fn get_account_statuses<'a>(
         &self,
         block_id: &BlockId,
@@ -229,13 +283,33 @@ impl StateBackend for InMemoryStateInner {
 
     fn get_execution_result(
         &self,
-        _block_id: &BlockId,
+        block_id: &BlockId,
         seq_num: &SeqNum,
-        _is_finalized: bool,
+        is_finalized: bool,
     ) -> Result<EthHeader, StateBackendError> {
-        // TODO make this mock less trivial
+        let block = if is_finalized
+            && self
+                .raw_read_latest_finalized_block()
+                .is_some_and(|latest_seq_num| &latest_seq_num >= seq_num)
+        {
+            if self
+                .raw_read_earliest_finalized_block()
+                .is_some_and(|earliest_finalized| &earliest_finalized > seq_num)
+            {
+                return Err(StateBackendError::NeverAvailable);
+            }
+            self.commits.get(seq_num).unwrap()
+        } else {
+            self.proposals
+                .get(block_id)
+                .ok_or(StateBackendError::NotAvailableYet)?
+        };
+
+        assert_eq!(&block.block_id, block_id);
+        assert_eq!(&block.seq_num, seq_num);
+
         Ok(EthHeader(Header {
-            number: seq_num.0,
+            number: block.seq_num.0,
             gas_limit: self.extra_data,
             ..Default::default()
         }))
@@ -253,6 +327,16 @@ impl StateBackend for InMemoryStateInner {
             .last_key_value()
             .map(|(block, _)| block)
             .copied()
+    }
+
+    fn read_valset_at_block(
+        &self,
+        _block_num: SeqNum,
+        _requested_epoch: Epoch,
+    ) -> Vec<(SCT::NodeIdPubKey, SignatureCollectionPubKeyType<SCT>, Stake)> {
+        // TODO validator set updates for tests are done in-line in
+        // MockValSetUpdater(s) right now. should be done from here instead
+        unimplemented!("can't fetch validator set from InMemoryState")
     }
 
     fn total_db_lookups(&self) -> u64 {

@@ -18,6 +18,7 @@ use std::{sync::Arc, time::Duration};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_node_config::FullNodeRaptorCastConfig;
 use monad_types::{NodeId, Round};
 
 pub struct RaptorCastConfig<ST>
@@ -46,7 +47,7 @@ where
     // running as full-node.
     // Validators and full-nodes who do not want to participate in validator-
     // to-full-node raptor-casting may opt out of this.
-    pub secondary_instance: RaptorCastConfigSecondary<ST>,
+    pub secondary_instance: FullNodeRaptorCastConfig<CertificateSignaturePubKey<ST>>,
 }
 
 impl<ST> Clone for RaptorCastConfig<ST>
@@ -107,7 +108,7 @@ where
 
     /// Client mode if we are a full-node, publisher mode if we are a validator.
     /// None if we are not participating in any raptor-casting to full-nodes.
-    pub mode: SecondaryRaptorCastModeConfig<ST>,
+    pub mode: SecondaryRaptorCastMode<ST>,
 }
 
 impl<ST> Default for RaptorCastConfigSecondary<ST>
@@ -116,15 +117,15 @@ where
 {
     fn default() -> RaptorCastConfigSecondary<ST> {
         RaptorCastConfigSecondary {
-            raptor10_redundancy: 2,                    // for full-nodes
-            mode: SecondaryRaptorCastModeConfig::None, // no raptorcasting to full-nodes
+            raptor10_redundancy: 2,              // for full-nodes
+            mode: SecondaryRaptorCastMode::None, // no raptorcasting to full-nodes
         }
     }
 }
 
 /// Configuration for the secondary instance of RaptorCast (group of full-nodes)
 #[derive(Clone)]
-pub enum SecondaryRaptorCastModeConfig<ST>
+pub enum SecondaryRaptorCastMode<ST>
 where
     ST: CertificateSignatureRecoverable,
 {
@@ -135,10 +136,10 @@ where
 
 #[derive(Clone)]
 pub struct RaptorCastConfigSecondaryClient {
-    // This determines whether we as a full node will accept an invite to join
-    // some validator's temporary raptorcast group.
-    pub bandwidth_cost_per_group_member: u64,
-    pub bandwidth_capacity: u64,
+    // Maximum number of groups a full node will join at a time
+    pub max_num_group: usize,
+    // Maximum number of full nodes in a group
+    pub max_group_size: usize,
     // When being invited to a raptorcast group, we will only accept the invite
     // if the group is not too far or too soon in the future, unless we haven't
     // seen any proposals in `invite_accept_heartbeat`
@@ -150,8 +151,8 @@ pub struct RaptorCastConfigSecondaryClient {
 impl Default for RaptorCastConfigSecondaryClient {
     fn default() -> RaptorCastConfigSecondaryClient {
         RaptorCastConfigSecondaryClient {
-            bandwidth_cost_per_group_member: 1,
-            bandwidth_capacity: u64::MAX,
+            max_num_group: 3,
+            max_group_size: 50,
             invite_future_dist_min: Round(1),
             invite_future_dist_max: Round(600), // ~5 minutes into the future, with current round length of 500ms
             invite_accept_heartbeat: Duration::from_secs(10),

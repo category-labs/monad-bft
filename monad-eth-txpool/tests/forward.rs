@@ -16,11 +16,12 @@
 use std::collections::BTreeMap;
 
 use alloy_primitives::{hex, B256};
+use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
 use monad_crypto::NopSignature;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, recover_tx};
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
-use monad_eth_types::{Balance, BASE_FEE_PER_GAS};
+use monad_eth_types::Balance;
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
@@ -35,15 +36,21 @@ const S1: B256 = B256::new(hex!(
 
 const FORWARD_MIN_SEQ_NUM_DIFF: u64 = 3;
 const FORWARD_MAX_RETRIES: usize = 2;
+const BASE_FEE: u64 = 100_000_000_000;
 
 fn with_txpool(
     insert_tx_owned: bool,
     f: impl FnOnce(
-        EthTxPool<SignatureType, SignatureCollectionType, InMemoryState>,
+        EthTxPool<
+            SignatureType,
+            SignatureCollectionType,
+            InMemoryState<SignatureType, SignatureCollectionType>,
+            MockChainRevision,
+        >,
         &mut EthTxPoolEventTracker,
     ),
 ) {
-    let tx = recover_tx(make_legacy_tx(S1, BASE_FEE_PER_GAS.into(), 100_000, 0, 10));
+    let tx = recover_tx(make_legacy_tx(S1, BASE_FEE.into(), 100_000, 0, 10));
     let eth_block_policy =
         EthBlockPolicy::<SignatureType, SignatureCollectionType>::new(GENESIS_SEQ_NUM, 4, 1337);
     let state_backend = InMemoryStateInner::new(
@@ -54,7 +61,7 @@ fn with_txpool(
     let mut pool = EthTxPool::default_testing();
 
     let metrics = EthTxPoolMetrics::default();
-    let mut ipc_events = Vec::default();
+    let mut ipc_events = BTreeMap::default();
     let mut event_tracker = EthTxPoolEventTracker::new(&metrics, &mut ipc_events);
 
     assert!(pool
@@ -63,7 +70,8 @@ fn with_txpool(
 
     pool.update_committed_block(
         &mut event_tracker,
-        generate_block_with_txs(Round(0), SeqNum(0), Vec::default()),
+        &MockChainConfig::DEFAULT,
+        generate_block_with_txs(Round(0), SeqNum(0), BASE_FEE, Vec::default()),
     );
 
     assert_eq!(
@@ -74,7 +82,7 @@ fn with_txpool(
     );
 
     let metrics = EthTxPoolMetrics::default();
-    let mut ipc_events = Vec::default();
+    let mut ipc_events = BTreeMap::default();
     let mut event_tracker = EthTxPoolEventTracker::new(&metrics, &mut ipc_events);
 
     pool.insert_txs(
@@ -103,9 +111,11 @@ fn test_simple() {
         for (idx, forwardable) in [0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0].into_iter().enumerate() {
             pool.update_committed_block(
                 event_tracker,
+                &MockChainConfig::DEFAULT,
                 generate_block_with_txs(
                     Round(idx as u64 + 1),
                     SeqNum(idx as u64 + 1),
+                    BASE_FEE,
                     Vec::default(),
                 ),
             );
@@ -137,9 +147,11 @@ fn test_forwarded() {
         for idx in 0..128 {
             pool.update_committed_block(
                 event_tracker,
+                &MockChainConfig::DEFAULT,
                 generate_block_with_txs(
                     Round(idx as u64 + 1),
                     SeqNum(idx as u64 + 1),
+                    BASE_FEE,
                     Vec::default(),
                 ),
             );
@@ -166,9 +178,11 @@ fn test_multiple_sequential_commits() {
             for _ in 0..128 {
                 pool.update_committed_block(
                     event_tracker,
+                    &MockChainConfig::DEFAULT,
                     generate_block_with_txs(
                         Round(round_seqnum),
                         SeqNum(round_seqnum),
+                        BASE_FEE,
                         Vec::default(),
                     ),
                 );
@@ -192,6 +206,68 @@ fn test_multiple_sequential_commits() {
                     0
                 );
             }
+        }
+    });
+}
+
+#[test]
+fn test_base_fee() {
+    with_txpool(true, |mut pool, event_tracker| {
+        let mut round = 1;
+
+        for _ in 0..FORWARD_MAX_RETRIES {
+            for _ in 0..128 {
+                pool.update_committed_block(
+                    event_tracker,
+                    &MockChainConfig::DEFAULT,
+                    generate_block_with_txs(
+                        Round(round),
+                        SeqNum(round),
+                        BASE_FEE + 1,
+                        Vec::default(),
+                    ),
+                );
+                round += 1;
+
+                assert_eq!(
+                    pool.get_forwardable_txs::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
+                        .unwrap()
+                        .count(),
+                    0
+                );
+            }
+
+            pool.update_committed_block(
+                event_tracker,
+                &MockChainConfig::DEFAULT,
+                generate_block_with_txs(Round(round), SeqNum(round), BASE_FEE, Vec::default()),
+            );
+            round += 1;
+
+            assert_eq!(
+                pool.get_forwardable_txs::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
+                    .unwrap()
+                    .count(),
+                1
+            );
+        }
+
+        for _ in 0..128 {
+            pool.update_committed_block(
+                event_tracker,
+                &MockChainConfig::DEFAULT,
+                generate_block_with_txs(Round(round), SeqNum(round), BASE_FEE, Vec::default()),
+            );
+            round += 1;
+
+            // Subsequent calls do not produce the tx
+            //  -> Validates that forwarding is non-bursty
+            assert_eq!(
+                pool.get_forwardable_txs::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
+                    .unwrap()
+                    .count(),
+                0
+            );
         }
     });
 }

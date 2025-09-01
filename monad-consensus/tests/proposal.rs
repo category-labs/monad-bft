@@ -27,7 +27,6 @@ use monad_consensus_types::{
     no_endorsement::FreshProposalCertificate,
     payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
     quorum_certificate::QuorumCertificate,
-    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{
         HighExtend, HighTipRoundSigColTuple, NoTipCertificate, TimeoutCertificate, TimeoutInfo,
     },
@@ -52,10 +51,15 @@ use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, GENESIS_ROUND};
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     validator_set::{ValidatorSetFactory, ValidatorSetType},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
 use test_case::test_case;
+
+const BASE_FEE: u64 = 100_000_000_000;
+const BASE_FEE_TREND: u64 = 0;
+const BASE_FEE_MOMENT: u64 = 0;
 
 type SignatureType = NopSignature;
 type PubKeyType = CertificateSignaturePubKey<SignatureType>;
@@ -74,6 +78,7 @@ impl<PT: PubKey> LeaderElection for FakeLeaderElection<PT> {
     fn get_leader(
         &self,
         _round: Round,
+        _epoch: Epoch,
         _validators: &std::collections::BTreeMap<NodeId<Self::NodeIdPubKey>, monad_types::Stake>,
     ) -> NodeId<Self::NodeIdPubKey> {
         self.0
@@ -125,6 +130,9 @@ fn setup_block(
                 block_round,
                 &NopKeyPair::from_bytes(&mut [1_u8; 32]).unwrap(),
             ),
+            BASE_FEE,
+            BASE_FEE_TREND,
+            BASE_FEE_MOMENT,
         ),
         payload,
     )
@@ -1236,6 +1244,9 @@ fn test_validate_tc_invalid_tc_signature() {
                 block_round,
                 &NopKeyPair::from_bytes(&mut [1_u8; 32]).unwrap(),
             ),
+            BASE_FEE,
+            BASE_FEE_TREND,
+            BASE_FEE_MOMENT,
         );
 
     let proposal = ProposalMessage {

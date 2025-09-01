@@ -38,9 +38,11 @@ RUN apt update && apt install -y \
   libcap-dev \
   libcgroup-dev \
   libcli11-dev \
+  libcrypto++-dev \
   libgmock-dev \
   libgmp-dev \
   libgtest-dev \
+  libhugetlbfs-dev \
   libmimalloc-dev \
   libtbb-dev \
   liburing-dev \
@@ -69,7 +71,7 @@ ARG TRIEDB_TARGET=triedb_driver
 
 # Builder
 COPY . .
-RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" \
+RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" \
     CC=gcc-15 CXX=g++-15 cargo build --release \
     --bin monad-archiver \
     --bin monad-archive-checker \

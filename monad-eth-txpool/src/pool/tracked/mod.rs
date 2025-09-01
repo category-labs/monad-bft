@@ -19,21 +19,19 @@ use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use alloy_primitives::Address;
 use indexmap::{map::Entry as IndexMapEntry, IndexMap};
 use itertools::Itertools;
-use monad_consensus_types::{
-    block::ConsensusBlockHeader, signature_collection::SignatureCollection,
-};
+use monad_consensus_types::block::ConsensusBlockHeader;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason};
-use monad_eth_types::{Balance, EthExecutionProtocol};
+use monad_eth_types::EthExecutionProtocol;
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{DropTimer, SeqNum};
-use tracing::{debug, error, info, trace, warn};
-use tx_heap::TrackedTxHeapDrainAction;
+use monad_validator::signature_collection::SignatureCollection;
+use tracing::{debug, error, info, warn};
 
-use self::{list::TrackedTxList, tx_heap::TrackedTxHeap};
+use self::{list::TrackedTxList, sequencer::ProposalSequencer};
 use super::{
     pending::{PendingTxList, PendingTxMap},
     transaction::ValidEthTransaction,
@@ -41,7 +39,7 @@ use super::{
 use crate::EthTxPoolEventTracker;
 
 mod list;
-mod tx_heap;
+mod sequencer;
 
 // To produce 10k tx blocks, we need the tracked tx map to hold at least 20k addresses so that if
 // the block in the pending blocktree has 10k txs with 10k unique addresses that are also in the
@@ -65,7 +63,7 @@ pub struct TrackedTxMap<ST, SCT, SBT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     last_commit: Option<ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>>,
     soft_tx_expiry: Duration,
@@ -75,14 +73,14 @@ where
     // evict expired txs through the entry API.
     txs: IndexMap<Address, TrackedTxList>,
 
-    _phantom: PhantomData<(ST, SCT, SBT)>,
+    _phantom: PhantomData<(SBT,)>,
 }
 
 impl<ST, SCT, SBT> TrackedTxMap<ST, SCT, SBT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     pub fn new(soft_tx_expiry: Duration, hard_tx_expiry: Duration) -> Self {
         Self {
@@ -128,21 +126,27 @@ where
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         tx: ValidEthTransaction,
     ) -> Result<Option<&ValidEthTransaction>, ValidEthTransaction> {
-        if self.last_commit.is_none() {
+        let Some(last_commit) = self.last_commit.as_ref() else {
             return Err(tx);
-        }
+        };
 
         let Some(tx_list) = self.txs.get_mut(tx.signer_ref()) else {
             return Err(tx);
         };
 
-        Ok(tx_list.try_insert_tx(event_tracker, tx, self.hard_tx_expiry))
+        Ok(tx_list.try_insert_tx(
+            event_tracker,
+            tx,
+            last_commit.execution_inputs.base_fee_per_gas,
+            self.hard_tx_expiry,
+        ))
     }
 
     pub fn create_proposal(
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         proposed_seq_num: SeqNum,
+        base_fee: u64,
         tx_limit: usize,
         proposal_gas_limit: u64,
         proposal_byte_limit: u64,
@@ -190,8 +194,8 @@ where
             return Ok(Vec::new());
         }
 
-        let tx_heap = TrackedTxHeap::new(&self.txs, &extending_blocks);
-        let tx_heap_len = tx_heap.len();
+        let sequencer = ProposalSequencer::new(&self.txs, &extending_blocks, base_fee);
+        let sequencer_len = sequencer.len();
 
         let (account_balances, account_balance_lookups) = {
             let _timer = DropTimer::start(Duration::ZERO, |elapsed| {
@@ -208,7 +212,7 @@ where
                     proposed_seq_num,
                     state_backend,
                     Some(&extending_blocks),
-                    tx_heap.addresses(),
+                    sequencer.addresses(),
                 )?,
                 state_backend.total_db_lookups() - total_db_lookups_before,
             )
@@ -217,26 +221,24 @@ where
         info!(
             addresses = self.txs.len(),
             num_txs = self.num_txs(),
-            tx_heap_len,
-            tx_heap_len = tx_heap.len(),
+            sequencer_len,
             account_balances = account_balances.len(),
             ?account_balance_lookups,
             "txpool sequencing transactions"
         );
 
-        let (proposal_total_gas, proposal_tx_list) = self.create_proposal_tx_list(
+        let proposal = sequencer.build_proposal(
             tx_limit,
             proposal_gas_limit,
             proposal_byte_limit,
-            tx_heap,
             account_balances,
         );
 
-        let proposal_num_txs = proposal_tx_list.len();
+        let proposal_num_txs = proposal.txs.len();
 
         event_tracker.record_create_proposal(
             self.num_addresses(),
-            tx_heap_len,
+            sequencer_len,
             account_balance_lookups,
             proposal_num_txs,
         );
@@ -244,11 +246,11 @@ where
         info!(
             ?proposed_seq_num,
             ?proposal_num_txs,
-            proposal_total_gas,
+            proposal_total_gas = proposal.total_gas,
             "created proposal"
         );
 
-        Ok(proposal_tx_list)
+        Ok(proposal.txs)
     }
 
     pub fn try_promote_pending(
@@ -358,65 +360,6 @@ where
         }
 
         true
-    }
-
-    fn create_proposal_tx_list(
-        &self,
-        tx_limit: usize,
-        proposal_gas_limit: u64,
-        proposal_byte_limit: u64,
-        tx_heap: TrackedTxHeap<'_>,
-        mut account_balances: BTreeMap<&Address, Balance>,
-    ) -> (u64, Vec<Recovered<TxEnvelope>>) {
-        assert!(tx_limit > 0);
-
-        let mut txs = Vec::new();
-        let mut total_gas = 0u64;
-        let mut total_size = 0u64;
-
-        tx_heap.drain_in_order_while(|sender, tx| {
-            if total_gas
-                .checked_add(tx.gas_limit())
-                .is_none_or(|new_total_gas| new_total_gas > proposal_gas_limit)
-            {
-                return TrackedTxHeapDrainAction::Skip;
-            }
-
-            let tx_size = tx.size();
-            if total_size
-                .checked_add(tx_size)
-                .is_none_or(|new_total_size| new_total_size > proposal_byte_limit)
-            {
-                return TrackedTxHeapDrainAction::Skip;
-            }
-
-            let Some(account_balance) = account_balances.get_mut(sender) else {
-                error!(
-                    ?sender,
-                    "txpool create_proposal account_balances lookup failed"
-                );
-                return TrackedTxHeapDrainAction::Skip;
-            };
-
-            let Some(new_account_balance) = tx.apply_max_value(*account_balance) else {
-                return TrackedTxHeapDrainAction::Skip;
-            };
-
-            *account_balance = new_account_balance;
-
-            total_gas += tx.gas_limit();
-            total_size += tx_size;
-            trace!(txn_hash = ?tx.hash(), "txn included in proposal");
-            txs.push(tx.raw().to_owned());
-
-            if txs.len() < tx_limit {
-                TrackedTxHeapDrainAction::Continue
-            } else {
-                TrackedTxHeapDrainAction::Stop
-            }
-        });
-
-        (total_gas, txs)
     }
 
     pub fn update_committed_block(

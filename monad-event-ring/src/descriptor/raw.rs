@@ -15,7 +15,7 @@
 
 use crate::{
     ffi::{monad_event_descriptor, monad_event_ring_payload_check, monad_event_ring_payload_peek},
-    EventDescriptorPayload, RawEventRing,
+    EventPayloadResult, RawEventRing,
 };
 
 #[derive(Debug)]
@@ -38,9 +38,9 @@ impl<'ring> RawEventDescriptor<'ring> {
     pub(crate) fn try_filter_map<T>(
         &self,
         f: impl FnOnce(RawEventDescriptorInfo, &[u8]) -> T,
-    ) -> EventDescriptorPayload<T> {
+    ) -> EventPayloadResult<T> {
         let Some(bytes) = monad_event_ring_payload_peek(&self.ring.inner, &self.inner) else {
-            return EventDescriptorPayload::Expired;
+            return EventPayloadResult::Expired;
         };
 
         let value = f(
@@ -53,9 +53,9 @@ impl<'ring> RawEventDescriptor<'ring> {
         );
 
         if monad_event_ring_payload_check(&self.ring.inner, &self.inner) {
-            EventDescriptorPayload::Payload(value)
+            EventPayloadResult::Ready(value)
         } else {
-            EventDescriptorPayload::Expired
+            EventPayloadResult::Expired
         }
     }
 }

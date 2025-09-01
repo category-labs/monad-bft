@@ -17,11 +17,7 @@ use std::{collections::BTreeMap, fmt::Debug, marker::PhantomData, time::Duration
 
 use itertools::Itertools;
 use monad_blocktree::blocktree::BlockTree;
-use monad_chain_config::{
-    execution_revision::ExecutionChainParams,
-    revision::{ChainParams, ChainRevision},
-    ChainConfig,
-};
+use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus::{
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
@@ -45,7 +41,6 @@ use monad_consensus_types::{
     no_endorsement::{FreshProposalCertificate, NoEndorsement},
     payload::{ConsensusBlockBody, RoundSignature},
     quorum_certificate::QuorumCertificate,
-    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighExtend, HighExtendVote, NoTipCertificate, TimeoutCertificate},
     tip::ConsensusTip,
     voting::Vote,
@@ -59,6 +54,7 @@ use monad_types::{BlockId, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
@@ -80,7 +76,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     /// Prospective blocks are stored here while they wait to be
     /// committed
@@ -107,7 +103,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     CCT: PartialEq,
     CRT: PartialEq,
 {
@@ -126,7 +122,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     CCT: Debug,
     CRT: Debug,
 {
@@ -162,10 +158,10 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -234,29 +230,13 @@ where
     pub _phantom: PhantomData<CRT>,
 }
 
-/// Actions after state root validation
-#[derive(Debug)]
-pub enum StateRootAction {
-    /// StateRoot validation is successful, proceed to next steps
-    Proceed,
-    /// StateRoot validation is unsuccessful - there's a mismatch of StateRoots.
-    /// Reject the proposal immediately
-    Reject,
-    /// StateRoot validation is undecided - we haven't collect enough
-    /// information. Either the state root is missing because we haven't
-    /// received a majority quorum on the state root, or the state root is
-    /// out-of-range. It's ok to insert to the block tree and observe if a QC
-    /// forms on the block. But we shouldn't vote on the block
-    Defer,
-}
-
 impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -382,10 +362,10 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -411,7 +391,8 @@ where
                 .val_epoch_map
                 .get_val_set(&epoch)
                 .expect("validator set exists for local epoch");
-            self.election.get_leader(round, validator_set.get_members())
+            self.election
+                .get_leader(round, epoch, validator_set.get_members())
         };
 
         let timeout_round = self.consensus.pacemaker.get_current_round();
@@ -497,9 +478,9 @@ where
         // author, leader, round checks
         let pacemaker_round = self.consensus.pacemaker.get_current_round();
         let proposal_round = p.proposal_round;
-        let expected_leader = self
-            .election
-            .get_leader(proposal_round, validator_set.get_members());
+        let expected_leader =
+            self.election
+                .get_leader(proposal_round, epoch, validator_set.get_members());
         if proposal_round > pacemaker_round || author != expected_leader {
             debug!(
                 ?pacemaker_round,
@@ -578,35 +559,12 @@ where
             .val_epoch_map
             .get_val_set(&epoch)
             .expect("proposal message was verified");
-        let block_round_leader = self
-            .election
-            .get_leader(block_round, validator_set.get_members());
+        let block_round_leader =
+            self.election
+                .get_leader(block_round, epoch, validator_set.get_members());
         if block_author != block_round_leader {
             return None;
         }
-
-        let ChainParams {
-            tx_limit,
-            proposal_gas_limit,
-            proposal_byte_limit,
-            vote_pace: _,
-        } = self
-            .config
-            .chain_config
-            .get_chain_revision(block_round)
-            .chain_params();
-
-        let ExecutionChainParams { max_code_size } = {
-            // u64::MAX seconds is ~500 Billion years
-            let timestamp_s: u64 = (header.timestamp_ns / 1_000_000_000)
-                .try_into()
-                // we don't assert because timestamp_ns is untrusted
-                .unwrap_or(u64::MAX);
-            self.config
-                .chain_config
-                .get_execution_chain_revision(timestamp_s)
-                .execution_chain_params()
-        };
 
         let author_pubkey = self
             .val_epoch_map
@@ -615,16 +573,24 @@ where
             .map
             .get(&header.author)
             .expect("proposal author exists in validator_mapping");
+
         let block = match self.block_validator.validate(
             header,
             body,
             Some(author_pubkey),
-            *tx_limit,
-            *proposal_gas_limit,
-            *proposal_byte_limit,
-            *max_code_size,
+            &self.config.chain_config,
         ) {
             Ok(block) => block,
+            Err(BlockValidationError::SystemTxnError) => {
+                warn!(
+                    ?block_round,
+                    ?block_author,
+                    ?seq_num,
+                    "dropping proposal, system transaction validation failed"
+                );
+                self.metrics.consensus_events.failed_txn_validation += 1;
+                return None;
+            }
             Err(BlockValidationError::TxnError) => {
                 warn!(
                     ?block_round,
@@ -756,9 +722,9 @@ where
             // Note that this try_propose is superfluous because process_qc calls it internally
             cmds.extend(self.try_propose());
 
-            let vote_round_leader = self
-                .election
-                .get_leader(vote_round, validator_set.get_members());
+            let vote_round_leader =
+                self.election
+                    .get_leader(vote_round, epoch, validator_set.get_members());
             if self.nodeid == &vote_round_leader {
                 // Note that if we're also the leader of (vote_round + 1), we'll send QC(r) in
                 // both AdvanceRound(QC(r)) and Proposal(r+1). This is fine, as AdvanceRound(r)
@@ -815,7 +781,7 @@ where
         let process_certificate_cmds = self.process_qc(timeout.high_extend.qc());
         cmds.extend(process_certificate_cmds);
 
-        if let HighExtendVote::Tip(tip, vote_signature) = &timeout.high_extend {
+        if let HighExtendVote::Tip(tip, Some(vote_signature)) = &timeout.high_extend {
             let handle_vote_cmds = self.handle_vote_message(
                 author,
                 VoteMessage {
@@ -900,9 +866,9 @@ where
         // author, leader, round checks
         let pacemaker_round = self.consensus.pacemaker.get_current_round();
         let round = round_recovery.round;
-        let expected_leader = self
-            .election
-            .get_leader(pacemaker_round, validator_set.get_members());
+        let expected_leader =
+            self.election
+                .get_leader(pacemaker_round, epoch, validator_set.get_members());
         if round != pacemaker_round || author != expected_leader {
             debug!(
                 ?pacemaker_round,
@@ -1128,7 +1094,8 @@ where
                 .val_epoch_map
                 .get_val_set(&epoch)
                 .expect("looked up leader for invalid round");
-            self.election.get_leader(round, validator_set.get_members())
+            self.election
+                .get_leader(round, epoch, validator_set.get_members())
         };
         // leader for next round must be known
         let next_leader = get_leader(round + Round(1));
@@ -1597,7 +1564,9 @@ where
             todo!("handle non-existent validatorset for next round epoch");
         };
 
-        let leader = &self.election.get_leader(round, validator_set.get_members());
+        let leader = &self
+            .election
+            .get_leader(round, epoch, validator_set.get_members());
         trace!(?round, ?leader, "try propose");
 
         // check that self is leader
@@ -1791,6 +1760,7 @@ where
                 );
 
                 cmds.push(ConsensusCommand::CreateProposal {
+                    node_id: *self.nodeid,
                     epoch,
                     round,
                     seq_num: try_propose_seq_num,
@@ -1820,6 +1790,7 @@ where
 
                     beneficiary: *self.beneficiary,
                     timestamp_ns,
+
                     extending_blocks: pending_blocktree_blocks.into_iter().cloned().collect(),
                     delayed_execution_results,
                 });
@@ -1846,9 +1817,9 @@ where
                     todo!("handle non-existent validatorset for next k round epoch");
                 };
 
-                let leader = self
-                    .election
-                    .get_leader(round, next_validator_set.get_members());
+                let leader =
+                    self.election
+                        .get_leader(round, epoch, next_validator_set.get_members());
 
                 (leader, round)
             })
@@ -1903,9 +1874,8 @@ mod test {
         metrics::Metrics,
         payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
         quorum_certificate::QuorumCertificate,
-        signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         tip::ConsensusTip,
-        voting::{ValidatorMapping, Vote},
+        voting::Vote,
         RoundCertificate,
     };
     use monad_crypto::{
@@ -1916,9 +1886,9 @@ mod test {
         NopSignature,
     };
     use monad_eth_block_policy::EthBlockPolicy;
-    use monad_eth_block_validator::EthValidator;
+    use monad_eth_block_validator::EthBlockValidator;
     use monad_eth_types::{
-        Balance, EthBlockBody, EthExecutionProtocol, EthHeader, ProposedEthHeader, BASE_FEE_PER_GAS,
+        Balance, EthBlockBody, EthExecutionProtocol, EthHeader, ProposedEthHeader,
     };
     use monad_multi_sig::MultiSig;
     use monad_state_backend::{InMemoryState, InMemoryStateInner, StateBackend, StateBackendTest};
@@ -1934,12 +1904,13 @@ mod test {
     use monad_validator::{
         epoch_manager::EpochManager,
         leader_election::LeaderElection,
+        signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         simple_round_robin::SimpleRoundRobin,
+        validator_mapping::ValidatorMapping,
         validator_set::{ValidatorSetFactory, ValidatorSetType, ValidatorSetTypeFactory},
         validators_epoch_mapping::ValidatorsEpochMapping,
     };
     use test_case::test_case;
-    use tracing_test::traced_test;
 
     use crate::{
         timestamp::BlockTimestamp, ConsensusCommand, ConsensusConfig, ConsensusState,
@@ -1947,8 +1918,11 @@ mod test {
         NUM_LEADERS_SELF_UPCOMING,
     };
 
-    const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;
-    const GAS_LIMIT: u64 = 30000;
+    const BASE_FEE: u64 = 100_000_000_000;
+    const BASE_FEE_TREND: u64 = 0;
+    const BASE_FEE_MOMENT: u64 = 0;
+    const EPOCH_LENGTH: SeqNum = SeqNum(100);
+    const EPOCH_START_DELAY: Round = Round(20);
 
     static CHAIN_PARAMS: ChainParams = ChainParams {
         tx_limit: 10_000,
@@ -1960,9 +1934,8 @@ mod test {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<SignatureType>;
     type BlockPolicyType = EthBlockPolicy<SignatureType, SignatureCollectionType>;
-    type StateBackendType = InMemoryState;
-    type BlockValidatorType =
-        EthValidator<SignatureType, SignatureCollectionType, StateBackendType>;
+    type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
+    type BlockValidatorType = EthBlockValidator<SignatureType, SignatureCollectionType>;
 
     struct NodeContext<ST, SCT, BPT, SBT, BVT, VTF, LT>
     where
@@ -1970,8 +1943,16 @@ mod test {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
-        SBT: StateBackend + StateBackendTest,
-        BVT: BlockValidator<ST, SCT, EthExecutionProtocol, BPT, SBT>,
+        SBT: StateBackend<ST, SCT> + StateBackendTest<ST, SCT>,
+        BVT: BlockValidator<
+            ST,
+            SCT,
+            EthExecutionProtocol,
+            BPT,
+            SBT,
+            MockChainConfig,
+            MockChainRevision,
+        >,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
         consensus_state: ConsensusState<
@@ -2009,8 +1990,16 @@ mod test {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
-        SBT: StateBackend + StateBackendTest,
-        BVT: BlockValidator<ST, SCT, EthExecutionProtocol, BPT, SBT>,
+        SBT: StateBackend<ST, SCT> + StateBackendTest<ST, SCT>,
+        BVT: BlockValidator<
+            ST,
+            SCT,
+            EthExecutionProtocol,
+            BPT,
+            SBT,
+            MockChainConfig,
+            MockChainRevision,
+        >,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
         fn wrapped_state(
@@ -2084,7 +2073,8 @@ mod test {
         }
 
         fn ledger_commit(&mut self, block: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>) {
-            self.state_backend.ledger_commit(&block.get_id());
+            self.state_backend
+                .ledger_commit(&block.get_id(), &block.seq_num);
         }
 
         fn ledger_propose(&mut self, block: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>) {
@@ -2145,10 +2135,11 @@ mod test {
                     mix_hash: round_signature.get_hash().0,
                     nonce: [0_u8; 8],
                     extra_data: [0_u8; 32],
-                    base_fee_per_gas: BASE_FEE_PER_GAS,
+                    base_fee_per_gas: BASE_FEE,
                     blob_gas_used: 0,
                     excess_blob_gas: 0,
                     parent_beacon_block_root: [0_u8; 32],
+                    requests_hash: [0_u8; 32],
                 },
                 Vec::new(),
             )
@@ -2176,10 +2167,11 @@ mod test {
                     mix_hash: round_signature.get_hash().0,
                     nonce: [0_u8; 8],
                     extra_data: [0_u8; 32],
-                    base_fee_per_gas: BASE_FEE_PER_GAS,
+                    base_fee_per_gas: BASE_FEE,
                     blob_gas_used: 0,
                     excess_blob_gas: 0,
                     parent_beacon_block_root: [0_u8; 32],
+                    requests_hash: [0_u8; 32],
                 },
                 delayed_execution_results,
             )
@@ -2208,10 +2200,11 @@ mod test {
                     mix_hash: round_signature.get_hash().0,
                     nonce: [0_u8; 8],
                     extra_data: [0_u8; 32],
-                    base_fee_per_gas: BASE_FEE_PER_GAS,
+                    base_fee_per_gas: BASE_FEE,
                     blob_gas_used: 0,
                     excess_blob_gas: 0,
                     parent_beacon_block_root: [0_u8; 32],
+                    requests_hash: [0_u8; 32],
                 },
                 delayed_execution_results,
             )
@@ -2237,8 +2230,8 @@ mod test {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
-        SBT: StateBackend + StateBackendTest,
-        BVT: BlockValidator<ST, SCT, EthExecutionProtocol, BPT, SBT>,
+        SBT: StateBackend<ST, SCT> + StateBackendTest<ST, SCT>,
+        BVT: BlockValidator<ST, SCT, EthExecutionProtocol, BPT, SBT, MockChainConfig, MockChainRevision>,
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
     >(
@@ -2278,7 +2271,7 @@ mod test {
                     ValidatorMapping::new(val_cert_pubkeys.clone()),
                 );
                 let epoch_manager =
-                    EpochManager::new(SeqNum(100), Round(20), &[(Epoch(1), Round(0))]);
+                    EpochManager::new(EPOCH_LENGTH, EPOCH_START_DELAY, &[(Epoch(1), Round(0))]);
 
                 let default_key =
                     <ST::KeyPairType as CertificateKeyPair>::from_bytes(&mut [127; 32]).unwrap();
@@ -2377,7 +2370,7 @@ mod test {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
     {
         cmds.into_iter()
             .filter_map(|c| match c {
@@ -2400,7 +2393,7 @@ mod test {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
     {
         cmds.into_iter()
             .filter_map(|c| match c {
@@ -2417,7 +2410,7 @@ mod test {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT> + std::fmt::Debug,
-        SBT: StateBackend + std::fmt::Debug,
+        SBT: StateBackend<ST, SCT> + std::fmt::Debug,
     {
         cmds.iter()
             .find_map(|c| match c {
@@ -2434,7 +2427,7 @@ mod test {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
     {
         cmds.into_iter()
             .filter_map(|c| match c {
@@ -2452,7 +2445,7 @@ mod test {
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
         BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
     {
         cmds.iter().find_map(|c| match c {
             ConsensusCommand::Publish {
@@ -2474,7 +2467,7 @@ mod test {
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
         BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
     {
         cmds.iter().find(|c| match c {
             ConsensusCommand::Publish {
@@ -2493,7 +2486,7 @@ mod test {
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
         BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
     {
         cmds.iter()
             .filter_map(|c| match c {
@@ -2513,7 +2506,7 @@ mod test {
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
         BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
     {
         cmds.iter()
             .find(|c| matches!(c, ConsensusCommand::RequestSync { .. }))
@@ -2527,7 +2520,7 @@ mod test {
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
         BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
     {
         cmds.iter()
             .filter_map(|c| match c {
@@ -2547,7 +2540,7 @@ mod test {
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
         BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend<ST, SCT>,
     {
         cmds.iter()
             .find(|c| matches!(c, ConsensusCommand::TimestampUpdate(_)))
@@ -2560,7 +2553,6 @@ mod test {
     }
 
     // 2f+1 votes for a Vote leads to a QC locking -- ie, high_qc is set to that QC.
-    #[traced_test]
     #[test]
     fn lock_qc_high() {
         let num_state = 4;
@@ -2579,7 +2571,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
 
@@ -2656,7 +2648,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -2699,7 +2691,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -2759,7 +2751,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -2791,7 +2783,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -2853,7 +2845,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -2943,7 +2935,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -3028,7 +3020,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -3055,10 +3047,10 @@ mod test {
 
         let broadcast_cmd = pacemaker_cmds
             .iter()
-            .find(|cmd| matches!(cmd, PacemakerCommand::PrepareTimeout(_, _, _)))
+            .find(|cmd| matches!(cmd, PacemakerCommand::PrepareTimeout(_, _, _, _)))
             .unwrap();
 
-        let tmo = if let PacemakerCommand::PrepareTimeout(tmo, _, _) = broadcast_cmd {
+        let tmo = if let PacemakerCommand::PrepareTimeout(tmo, _, _, _) = broadcast_cmd {
             tmo
         } else {
             panic!()
@@ -3103,7 +3095,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let (n1, xs) = ctx.split_first_mut().unwrap();
@@ -3301,7 +3293,7 @@ mod test {
     #[test]
     fn test_missing_block() {
         let num_state = 4;
-        let execution_delay = SeqNum(1);
+        let execution_delay = SeqNum::MAX;
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -3316,7 +3308,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -3365,17 +3357,17 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
 
-        let mut wrapped_state = ctx[0].wrapped_state();
+        let n0 = &mut ctx[0];
 
-        // prepare 5 blocks
         for _ in 0..4 {
             let p = env.next_proposal(Vec::new());
             let (author, _, p) = p.destructure();
-            let _cmds = wrapped_state.handle_proposal_message(author, p);
+            let _cmds = n0.handle_proposal_message(author, p.clone());
+            n0.ledger_propose(&p.tip.block_header);
         }
         let p = env.next_proposal(vec![EthHeader(Header {
             number: 0,
@@ -3383,19 +3375,14 @@ mod test {
         })]);
         let (author, _, p) = p.destructure();
         let bid_1 = p.tip.block_header.get_id();
-        let _cmds = wrapped_state.handle_proposal_message(author, p);
+        let _cmds = n0.handle_proposal_message(author, p);
+
         // valid execution result, so is coherent
-        assert!(wrapped_state
-            .consensus
-            .pending_block_tree
-            .is_coherent(&bid_1));
+        assert!(n0.consensus_state.pending_block_tree.is_coherent(&bid_1));
 
-        assert_eq!(wrapped_state.consensus.get_current_round(), Round(5));
+        assert_eq!(n0.consensus_state.get_current_round(), Round(5));
 
-        assert_eq!(
-            wrapped_state.metrics.consensus_events.rx_execution_lagging,
-            0
-        );
+        assert_eq!(n0.metrics.consensus_events.rx_execution_lagging, 0);
 
         // Block 11 carries the state root hash from executing block 6 the state
         // root hash is missing. The certificates are processed - consensus enters new round and commit blocks, but it doesn't vote
@@ -3406,15 +3393,12 @@ mod test {
         let (author, _, p) = p.destructure();
         let bid_2 = p.tip.block_header.get_id();
 
-        let cmds = wrapped_state.handle_proposal_message(author, p);
+        let cmds = n0.handle_proposal_message(author, p);
         // invalid execution result, so incoherent and we don't vote
-        assert!(!wrapped_state
-            .consensus
-            .pending_block_tree
-            .is_coherent(&bid_2));
-        assert_eq!(wrapped_state.metrics.consensus_events.rx_bad_state_root, 1);
+        assert!(!n0.consensus_state.pending_block_tree.is_coherent(&bid_2));
+        assert_eq!(n0.metrics.consensus_events.rx_bad_state_root, 1);
 
-        assert_eq!(wrapped_state.consensus.get_current_round(), Round(6));
+        assert_eq!(n0.consensus_state.get_current_round(), Round(6));
         assert_eq!(cmds.len(), 4);
         assert!(matches!(
             cmds[0],
@@ -3455,7 +3439,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
 
@@ -3483,6 +3467,7 @@ mod test {
             .expect("epoch exists");
         let next_leader = env.election.get_leader(
             Round(11),
+            epoch,
             env.val_epoch_map.get_val_set(&epoch).unwrap().get_members(),
         );
         let mut leader_index = 0;
@@ -3561,7 +3546,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let mut blocks = vec![];
@@ -3632,7 +3617,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let mut blocks = vec![];
@@ -3678,7 +3663,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
 
@@ -3708,6 +3693,7 @@ mod test {
             .expect("epoch exists");
         let next_leader = env.election.get_leader(
             Round(missing_round + 1),
+            epoch,
             env.val_epoch_map.get_val_set(&epoch).unwrap().get_members(),
         );
         let mut leader_index = 0;
@@ -3781,7 +3767,6 @@ mod test {
     /// 2. state[0] processes an invalid proposal `invalid_p2`. It's rejected
     ///    and not added to the block tree. It emits an event for
     ///    `invalid_proposal_round_leader`
-    #[traced_test]
     #[test]
     fn test_reject_non_leader_proposal() {
         let num_state = 4;
@@ -3800,7 +3785,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let node = &mut ctx[0];
@@ -3817,6 +3802,7 @@ mod test {
         let epoch = env.epoch_manager.get_epoch(Round(4)).expect("epoch exists");
         let invalid_author = env.election.get_leader(
             Round(4),
+            epoch,
             env.val_epoch_map.get_val_set(&epoch).unwrap().get_members(),
         );
         assert!(invalid_author != node.nodeid);
@@ -3840,6 +3826,9 @@ mod test {
             p2.tip.block_header.seq_num,
             p2.tip.block_header.timestamp_ns,
             p2.tip.block_header.round_signature,
+            BASE_FEE,
+            BASE_FEE_TREND,
+            BASE_FEE_MOMENT,
         );
         let invalid_p2 = ProposalMessage {
             proposal_epoch: invalid_bh2.epoch,
@@ -3877,18 +3866,18 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let mut blocks = vec![];
 
         // Sequence number of the block which updates the validator set
-        let update_block = env.epoch_manager.val_set_update_interval - SeqNum(1);
+        let boundary_block = env.epoch_manager.epoch_length - SeqNum(1);
         // Round number of that block is the same as its sequence number (NO TCs in between)
-        let update_block_round = seqnum_to_round_no_tc(update_block);
+        let boundary_block_round = seqnum_to_round_no_tc(boundary_block);
 
-        // handle update_block + 2 proposals to commit the update_block
-        for _ in 0..(update_block_round.0 + 2) {
+        // handle boundary_block + 2 proposals to commit the boundary_block
+        for _ in 0..(boundary_block_round.0 + 2) {
             let cp = env.next_proposal(Vec::new());
             let (author, _, verified_message) = cp.destructure();
             for node in ctx.iter_mut() {
@@ -3909,7 +3898,7 @@ mod test {
             assert!(current_epoch == Epoch(1));
 
             let expected_epoch_start_round =
-                update_block_round + node.epoch_manager.epoch_start_delay;
+                boundary_block_round + node.epoch_manager.epoch_start_delay;
             // verify that the start of next epoch is scheduled correctly
             assert!(
                 node.epoch_manager
@@ -3944,18 +3933,18 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let mut blocks = vec![];
 
         // Sequence number of the block which updates the validator set
-        let update_block = env.epoch_manager.val_set_update_interval - SeqNum(1);
+        let boundary_block = env.epoch_manager.epoch_length - SeqNum(1);
         // Round number of that block is the same as its sequence number (NO TCs in between)
-        let update_block_round = seqnum_to_round_no_tc(update_block);
+        let boundary_block_round = seqnum_to_round_no_tc(boundary_block);
 
-        // commit blocks until update_block
-        for _ in 0..(update_block_round.0 + 2) {
+        // commit blocks until boundary_block
+        for _ in 0..(boundary_block_round.0 + 2) {
             let cp = env.next_proposal(Vec::new());
 
             let (author, _, verified_message) = cp.destructure();
@@ -3968,7 +3957,7 @@ mod test {
             blocks.push(verified_message.tip.block_header);
         }
 
-        let expected_epoch_start_round = update_block_round + env.epoch_manager.epoch_start_delay;
+        let expected_epoch_start_round = boundary_block_round + env.epoch_manager.epoch_start_delay;
 
         for node in ctx.iter_mut() {
             // verify all states are still in epoch 1
@@ -3994,10 +3983,10 @@ mod test {
         }
 
         env.epoch_manager
-            .schedule_epoch_start(update_block, update_block_round);
+            .schedule_epoch_start(boundary_block, boundary_block_round);
 
         // handle proposals until the last round of the epoch
-        for _ in (update_block_round.0 + 2)..(expected_epoch_start_round.0 - 1) {
+        for _ in (boundary_block_round.0 + 2)..(expected_epoch_start_round.0 - 1) {
             let cp = env.next_proposal_empty();
             let (author, _, verified_message) = cp.destructure();
             for node in ctx.iter_mut() {
@@ -4049,18 +4038,18 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let mut blocks = vec![];
 
         // Sequence number of the block which updates the validator set
-        let update_block = env.epoch_manager.val_set_update_interval - SeqNum(1);
+        let boundary_block = env.epoch_manager.epoch_length - SeqNum(1);
         // Round number of that block is the same as its sequence number (NO TCs in between)
-        let update_block_round = seqnum_to_round_no_tc(update_block);
+        let boundary_block_round = seqnum_to_round_no_tc(boundary_block);
 
-        // commit blocks until update_block
-        for _ in 0..(update_block_round.0 + 2) {
+        // commit blocks until boundary_block
+        for _ in 0..(boundary_block_round.0 + 2) {
             let cp = env.next_proposal(Vec::new());
             let (author, _, verified_message) = cp.destructure();
             for node in ctx.iter_mut() {
@@ -4072,7 +4061,7 @@ mod test {
             blocks.push(verified_message.tip.block_header);
         }
 
-        let expected_epoch_start_round = update_block_round + env.epoch_manager.epoch_start_delay;
+        let expected_epoch_start_round = boundary_block_round + env.epoch_manager.epoch_start_delay;
 
         for node in ctx.iter_mut() {
             // verify all states are still in epoch 1
@@ -4098,10 +4087,10 @@ mod test {
         }
 
         env.epoch_manager
-            .schedule_epoch_start(update_block, update_block_round);
+            .schedule_epoch_start(boundary_block, boundary_block_round);
 
         // generate TCs until the last round of the epoch
-        for _ in (update_block_round.0 + 1)..(expected_epoch_start_round.0 - 1) {
+        for _ in (boundary_block_round.0 + 1)..(expected_epoch_start_round.0 - 1) {
             let _ = env.next_tc(Epoch(1));
         }
 
@@ -4145,18 +4134,18 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let mut blocks = vec![];
 
         // Sequence number of the block which updates the validator set
-        let update_block = env.epoch_manager.val_set_update_interval - SeqNum(1);
+        let boundary_block = env.epoch_manager.epoch_length - SeqNum(1);
         // Round number of that block is the same as its sequence number (NO TCs in between)
-        let update_block_round = seqnum_to_round_no_tc(update_block);
+        let boundary_block_round = seqnum_to_round_no_tc(boundary_block);
 
-        // commit blocks until update_block
-        for _ in 0..(update_block_round.0 + 2) {
+        // commit blocks until boundary_block
+        for _ in 0..(boundary_block_round.0 + 2) {
             let cp = env.next_proposal(Vec::new());
             let (author, _, verified_message) = cp.destructure();
             for node in ctx.iter_mut() {
@@ -4168,7 +4157,7 @@ mod test {
             blocks.push(verified_message.tip.block_header);
         }
 
-        let expected_epoch_start_round = update_block_round + env.epoch_manager.epoch_start_delay;
+        let expected_epoch_start_round = boundary_block_round + env.epoch_manager.epoch_start_delay;
 
         for node in ctx.iter_mut() {
             // verify all states are still in epoch 1
@@ -4194,10 +4183,10 @@ mod test {
         }
 
         env.epoch_manager
-            .schedule_epoch_start(update_block, update_block_round);
+            .schedule_epoch_start(boundary_block, boundary_block_round);
 
         // handle proposals until the last round of the epoch
-        for _ in (update_block_round.0 + 2)..(expected_epoch_start_round.0 - 1) {
+        for _ in (boundary_block_round.0 + 2)..(expected_epoch_start_round.0 - 1) {
             let cp = env.next_proposal(Vec::new());
             let (author, _, verified_message) = cp.destructure();
             for node in ctx.iter_mut() {
@@ -4257,18 +4246,18 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
 
         let mut blocks = vec![];
         // Sequence number of the block which updates the validator set
-        let update_block_num = env.epoch_manager.val_set_update_interval - SeqNum(1);
+        let boundary_block_num = env.epoch_manager.epoch_length - SeqNum(1);
         // Round number of that block is the same as its sequence number (NO TCs in between)
-        let update_block_round = seqnum_to_round_no_tc(update_block_num);
+        let boundary_block_round = seqnum_to_round_no_tc(boundary_block_num);
 
-        // handle blocks until update_block - 1
-        for _ in 0..(update_block_round.0 - 1) {
+        // handle blocks until boundary_block - 1
+        for _ in 0..(boundary_block_round.0 - 1) {
             let proposal = env.next_proposal(Vec::new());
             let (author, _, verified_message) = proposal.destructure();
             for node in ctx.iter_mut() {
@@ -4285,7 +4274,7 @@ mod test {
 
         // let mut block_sync_blocks = Vec::new();
         // handle 3 blocks for only state 0
-        for _ in (update_block_round.0)..(update_block_round.0 + 3) {
+        for _ in (boundary_block_round.0)..(boundary_block_round.0 + 3) {
             let proposal = env.next_proposal(Vec::new());
             println!("proposal seq num {:?}", proposal.tip.block_header.seq_num);
             let (author, _, verified_message) = proposal.destructure();
@@ -4300,9 +4289,9 @@ mod test {
                 verified_message.block_body,
             ));
         }
-        let expected_epoch_start_round = update_block_round + env.epoch_manager.epoch_start_delay;
+        let expected_epoch_start_round = boundary_block_round + env.epoch_manager.epoch_start_delay;
 
-        // state 0 should have committed update_block and scheduled next epoch
+        // state 0 should have committed boundary_block and scheduled next epoch
         // verify state 0 is still in epoch 1
         let state_0_epoch = ctx[0]
             .epoch_manager
@@ -4326,7 +4315,7 @@ mod test {
             Epoch(2)
         );
 
-        // state 1 should still not have scheduled next epoch since it didn't commit update_block
+        // state 1 should still not have scheduled next epoch since it didn't commit boundary_block
         let state_1_epoch = ctx[1]
             .epoch_manager
             .get_epoch(ctx[1].consensus_state.get_current_round())
@@ -4347,7 +4336,7 @@ mod test {
             Epoch(1)
         ); // STILL EPOCH 1
 
-        // generate proposal for update_block + 3
+        // generate proposal for boundary_block + 3
         let proposal = env.next_proposal_empty();
 
         let (author, _, verified_message) = proposal.destructure();
@@ -4357,13 +4346,13 @@ mod test {
         let requested_ranges = extract_blocksync_requests(cmds);
         assert_eq!(requested_ranges.len(), 1);
         let requested_range = requested_ranges[0];
-        // last received block was update_block - 1, last committed block was update_block - 3
+        // last received block was boundary_block - 1, last committed block was boundary_block - 3
         assert_eq!(requested_range.num_blocks, SeqNum(1));
 
         let state1 = &mut ctx[1];
         let (_, requested_blocks) = blocks
             .as_slice()
-            .split_at((update_block_round.0 as usize) - 3);
+            .split_at((boundary_block_round.0 as usize) - 3);
         let blocksync_blocks = requested_blocks
             .iter()
             .cloned()
@@ -4412,17 +4401,17 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let mut blocks = vec![];
 
         // Sequence number of the block which updates the validator set
-        let update_block = env.epoch_manager.val_set_update_interval - SeqNum(1);
+        let boundary_block = env.epoch_manager.epoch_length - SeqNum(1);
         // Round number of that block is the same as its sequence number (NO TCs in between)
-        let update_block_round = seqnum_to_round_no_tc(update_block);
+        let boundary_block_round = seqnum_to_round_no_tc(boundary_block);
 
-        let expected_epoch_start_round = update_block_round + env.epoch_manager.epoch_start_delay;
+        let expected_epoch_start_round = boundary_block_round + env.epoch_manager.epoch_start_delay;
 
         // handle proposals until expected_epoch_start_round - 1
         for _ in 0..(expected_epoch_start_round.0 - 1) {
@@ -4462,7 +4451,7 @@ mod test {
         }
 
         env.epoch_manager
-            .schedule_epoch_start(update_block, update_block_round);
+            .schedule_epoch_start(boundary_block, boundary_block_round);
 
         let val_stakes: Vec<(NodeId<_>, Stake)> = env
             .val_epoch_map
@@ -4531,7 +4520,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
         let p1 = env.next_proposal(Vec::new());
@@ -4576,7 +4565,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
 
@@ -4637,7 +4626,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
 
@@ -4685,14 +4674,14 @@ mod test {
         }
 
         // Sequence number of the block which updates the validator set
-        let update_block = env.epoch_manager.val_set_update_interval - SeqNum(1);
+        let boundary_block = env.epoch_manager.epoch_length - SeqNum(1);
         // Round number of that block is the same as its sequence number (NO TCs in between)
-        let update_block_round = seqnum_to_round_no_tc(update_block);
+        let boundary_block_round = seqnum_to_round_no_tc(boundary_block);
 
-        let expected_epoch_start_round = update_block_round + env.epoch_manager.epoch_start_delay;
+        let expected_epoch_start_round = boundary_block_round + env.epoch_manager.epoch_start_delay;
 
         env.epoch_manager
-            .schedule_epoch_start(update_block, update_block_round);
+            .schedule_epoch_start(boundary_block, boundary_block_round);
 
         // commit blocks until the last round of the epoch
         for _ in 0..(expected_epoch_start_round.0 - 2) {
@@ -4744,7 +4733,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
 
@@ -4869,7 +4858,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
 
@@ -5028,7 +5017,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
 
@@ -5144,7 +5133,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
 
@@ -5245,7 +5234,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
+            EthBlockValidator::default,
             execution_delay,
         );
 

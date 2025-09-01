@@ -26,13 +26,12 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, trace, warn};
 
 use crate::{
-    chainstate::{ChainState, ChainStateError},
+    chainstate::ChainState,
     eth_json_types::{
         BlockTagOrHash, BlockTags, EthHash, MonadLog, MonadTransaction, MonadTransactionReceipt,
         Quantity, UnformattedData,
     },
-    fee::BaseFeePerGas,
-    jsonrpc::{JsonRpcError, JsonRpcResult},
+    jsonrpc::{ChainStateResultMap, JsonRpcError, JsonRpcResult},
     txpool::{EthTxPoolBridgeClient, TxStatus},
 };
 
@@ -184,23 +183,6 @@ pub struct MonadEthSendRawTransactionParams {
     hex_tx: UnformattedData,
 }
 
-fn base_fee_validation(max_fee_per_gas: u128, base_fee: impl BaseFeePerGas) -> bool {
-    let current_block = 0; // TODO: this can get latest block from triedb in future
-    let block_threshold = 1000; // TODO: configurable range of how many blocks to consider
-
-    let Some(min_potential_base_fee) =
-        base_fee.min_potential_base_fee_in_range(current_block, block_threshold)
-    else {
-        return false;
-    };
-
-    if max_fee_per_gas < min_potential_base_fee {
-        return false;
-    }
-
-    true
-}
-
 const MAX_CONCURRENT_SEND_RAW_TX: usize = 1_000;
 // TODO: need to support EIP-4844 transactions
 #[rpc(method = "eth_sendRawTransaction", ignore = "tx_pool", ignore = "ipc")]
@@ -208,10 +190,8 @@ const MAX_CONCURRENT_SEND_RAW_TX: usize = 1_000;
 #[tracing::instrument(level = "debug", skip_all)]
 /// Submits a raw transaction. For EIP-4844 transactions, the raw form must be the network form.
 /// This means it includes the blobs, KZG commitments, and KZG proofs.
-pub async fn monad_eth_sendRawTransaction<T: Triedb>(
-    triedb_env: &T,
+pub async fn monad_eth_sendRawTransaction(
     txpool_bridge_client: &EthTxPoolBridgeClient,
-    base_fee_per_gas: impl BaseFeePerGas,
     params: MonadEthSendRawTransactionParams,
     chain_id: u64,
     allow_unprotected_txs: bool,
@@ -242,12 +222,6 @@ pub async fn monad_eth_sendRawTransaction<T: Triedb>(
                 }
             }
 
-            if !base_fee_validation(tx.max_fee_per_gas(), base_fee_per_gas) {
-                return Err(JsonRpcError::custom(
-                    "maxFeePerGas too low to be include in upcoming blocks".to_string(),
-                ));
-            }
-
             let hash = *tx.tx_hash();
             debug!(name = "sendRawTransaction", txn_hash = ?hash);
 
@@ -262,7 +236,7 @@ pub async fn monad_eth_sendRawTransaction<T: Triedb>(
 
             match tokio::time::timeout(Duration::from_secs(1), tx_status_recv).await {
                 Ok(Ok(tx_status)) => match tx_status {
-                    TxStatus::Evicted { reason: _ } | TxStatus::Replaced => {
+                    TxStatus::Evicted { reason: _ } => {
                         return Err(JsonRpcError::custom("rejected".to_string()))
                     }
                     TxStatus::Dropped { reason } => {
@@ -304,11 +278,10 @@ pub async fn monad_eth_getTransactionReceipt<T: Triedb>(
 ) -> JsonRpcResult<Option<MonadTransactionReceipt>> {
     trace!("monad_eth_getTransactionReceipt: {params:?}");
 
-    match chain_state.get_transaction_receipt(params.tx_hash.0).await {
-        Ok(receipt) => Ok(Some(MonadTransactionReceipt(receipt))),
-        Err(ChainStateError::ResourceNotFound) => Ok(None),
-        Err(ChainStateError::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
-    }
+    chain_state
+        .get_transaction_receipt(params.tx_hash.0)
+        .await
+        .map_present_and_no_err(MonadTransactionReceipt)
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -326,11 +299,10 @@ pub async fn monad_eth_getTransactionByHash<T: Triedb>(
 ) -> JsonRpcResult<Option<MonadTransaction>> {
     trace!("monad_eth_getTransactionByHash: {params:?}");
 
-    match chain_state.get_transaction(params.tx_hash.0).await {
-        Ok(tx) => Ok(Some(MonadTransaction(tx))),
-        Err(ChainStateError::ResourceNotFound) => Ok(None),
-        Err(ChainStateError::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
-    }
+    chain_state
+        .get_transaction(params.tx_hash.0)
+        .await
+        .map_present_and_no_err(MonadTransaction)
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -349,17 +321,13 @@ pub async fn monad_eth_getTransactionByBlockHashAndIndex<T: Triedb>(
 ) -> JsonRpcResult<Option<MonadTransaction>> {
     trace!("monad_eth_getTransactionByBlockHashAndIndex: {params:?}");
 
-    match chain_state
+    chain_state
         .get_transaction_with_block_and_index(
             BlockTagOrHash::Hash(params.block_hash),
             params.index.0,
         )
         .await
-    {
-        Ok(tx) => Ok(Some(MonadTransaction(tx))),
-        Err(ChainStateError::ResourceNotFound) => Ok(None),
-        Err(ChainStateError::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
-    }
+        .map_present_and_no_err(MonadTransaction)
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -378,17 +346,13 @@ pub async fn monad_eth_getTransactionByBlockNumberAndIndex<T: Triedb>(
 ) -> JsonRpcResult<Option<MonadTransaction>> {
     trace!("monad_eth_getTransactionByBlockNumberAndIndex: {params:?}");
 
-    match chain_state
+    chain_state
         .get_transaction_with_block_and_index(
             crate::eth_json_types::BlockTagOrHash::BlockTags(params.block_tag),
             params.index.0,
         )
         .await
-    {
-        Ok(tx) => Ok(Some(MonadTransaction(tx))),
-        Err(ChainStateError::ResourceNotFound) => Ok(None),
-        Err(ChainStateError::Triedb(err)) => Err(JsonRpcError::internal_error(err)),
-    }
+        .map_present_and_no_err(MonadTransaction)
 }
 
 #[cfg(test)]
@@ -402,7 +366,7 @@ mod tests {
     use monad_triedb_utils::{mock_triedb::MockTriedb, triedb_env::Account};
 
     use super::{monad_eth_sendRawTransaction, MonadEthSendRawTransactionParams};
-    use crate::{eth_json_types::UnformattedData, fee::FixedFee, txpool::EthTxPoolBridgeClient};
+    use crate::{eth_json_types::UnformattedData, txpool::EthTxPoolBridgeClient};
 
     fn serialize_tx(tx: (impl Encodable + Encodable2718)) -> UnformattedData {
         let mut rlp_encoded_tx = Vec::new();
@@ -451,7 +415,7 @@ mod tests {
             },
         );
 
-        let expected_failures = vec![
+        let expected_failures = [
             MonadEthSendRawTransactionParams {
                 hex_tx: serialize_tx(make_tx(sender, 1000, 1000, 21_000, 11, 1337)), // invaid chain id
             },
@@ -471,16 +435,9 @@ mod tests {
 
         for (idx, case) in expected_failures.into_iter().enumerate() {
             assert!(
-                monad_eth_sendRawTransaction(
-                    &triedb,
-                    &EthTxPoolBridgeClient::for_testing(),
-                    FixedFee::new(2000),
-                    case,
-                    1,
-                    true
-                )
-                .await
-                .is_err(),
+                monad_eth_sendRawTransaction(&EthTxPoolBridgeClient::for_testing(), case, 1, true)
+                    .await
+                    .is_err(),
                 "Expected error for case: {:?}",
                 idx + 1
             );

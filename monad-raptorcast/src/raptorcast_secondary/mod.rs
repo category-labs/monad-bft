@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     marker::PhantomData,
     net::SocketAddr,
     pin::{pin, Pin},
@@ -47,7 +47,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{error, trace, warn};
 
 use super::{
-    config::RaptorCastConfig,
+    config::{RaptorCastConfig, SecondaryRaptorCastMode},
     message::OutboundRouterMessage,
     udp,
     util::{BuildTarget, FullNodes, Group, Redundancy},
@@ -100,32 +100,34 @@ where
 {
     pub fn new(
         config: RaptorCastConfig<ST>,
+        secondary_mode: SecondaryRaptorCastMode<ST>,
         dataplane_writer: DataplaneWriter,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
         channel_from_primary: UnboundedReceiver<FullNodesGroupMessage<ST>>,
         channel_to_primary: UnboundedSender<Group<ST>>,
     ) -> Self {
         let node_id = NodeId::new(config.shared_key.pubkey());
-        let sec_config = config.secondary_instance.mode.clone();
 
         // Instantiate either publisher or client state machine
-        let role = match sec_config {
-            super::config::SecondaryRaptorCastModeConfig::Publisher(publisher_cfg) => {
+        let role = match secondary_mode {
+            SecondaryRaptorCastMode::Publisher(publisher_cfg) => {
                 let rng = ChaCha8Rng::from_entropy();
                 let publisher = Publisher::new(node_id, publisher_cfg, rng);
                 Role::Publisher(publisher)
             }
-            super::config::SecondaryRaptorCastModeConfig::Client(client_cfg) => {
+            SecondaryRaptorCastMode::Client(client_cfg) => {
                 let client = Client::new(node_id, channel_to_primary, client_cfg);
                 Role::Client(client)
             }
-            super::config::SecondaryRaptorCastModeConfig::None => panic!(
+            SecondaryRaptorCastMode::None => panic!(
                 "secondary_instance is not set in config during \
                     instantiation of RaptorCastSecondary"
             ),
         };
 
-        let raptor10_redundancy = config.secondary_instance.raptor10_redundancy;
+        let raptor10_redundancy = config
+            .secondary_instance
+            .raptor10_fullnode_redundancy_factor;
         trace!(
             self_id =? node_id, mtu =? config.mtu, ?raptor10_redundancy,
             "RaptorCastSecondary::new()",
@@ -337,7 +339,7 @@ where
                             .peer_discovery_driver
                             .lock()
                             .unwrap()
-                            .get_fullnode_addrs();
+                            .get_secondary_fullnode_addrs();
                         let full_nodes_vec: Vec<_> = full_nodes.keys().copied().collect();
                         trace!(
                             "RaptorCastSecondary updating {} full nodes from PeerDiscovery",
@@ -350,10 +352,14 @@ where
                         {
                             // if group_msg is a ConfirmGroup message, update peer discovery with the group information
                             if let FullNodesGroupMessage::ConfirmGroup(confirm_msg) = &group_msg {
+                                let mut participated_nodes: BTreeSet<
+                                    NodeId<CertificateSignaturePubKey<ST>>,
+                                > = confirm_msg.peers.clone().into_iter().collect();
+                                participated_nodes.insert(confirm_msg.prepare.validator_id);
                                 self.peer_discovery_driver.lock().unwrap().update(
                                     PeerDiscoveryEvent::UpdateConfirmGroup {
                                         end_round: confirm_msg.prepare.end_round,
-                                        peers: confirm_msg.peers.clone().into_iter().collect(),
+                                        peers: participated_nodes,
                                     },
                                 );
                             }
@@ -496,10 +502,14 @@ where
                             .unwrap()
                             .update(PeerDiscoveryEvent::UpdatePeers { peers });
 
+                        let mut participated_nodes: BTreeSet<
+                            NodeId<CertificateSignaturePubKey<ST>>,
+                        > = confirm_msg.peers.clone().into_iter().collect();
+                        participated_nodes.insert(confirm_msg.prepare.validator_id);
                         this.peer_discovery_driver.lock().unwrap().update(
                             PeerDiscoveryEvent::UpdateConfirmGroup {
                                 end_round: confirm_msg.prepare.end_round,
-                                peers: confirm_msg.peers.clone().into_iter().collect(),
+                                peers: participated_nodes,
                             },
                         );
                     } else if num_mappings > 0 {

@@ -27,7 +27,8 @@ pub(crate) use self::bindings::{
     MONAD_EVENT_CONTENT_TYPE_NONE, MONAD_EVENT_GAP, MONAD_EVENT_NOT_READY, MONAD_EVENT_SUCCESS,
 };
 pub use self::bindings::{
-    monad_event_content_type, MONAD_EVENT_CONTENT_TYPE_EXEC, MONAD_EVENT_CONTENT_TYPE_TEST,
+    monad_event_content_type, monad_event_record_error, MONAD_EVENT_CONTENT_TYPE_EXEC,
+    MONAD_EVENT_CONTENT_TYPE_TEST,
 };
 
 #[allow(dead_code, non_camel_case_types, non_upper_case_globals)]
