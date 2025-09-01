@@ -52,7 +52,7 @@ impl EthCallExecutor {
     pub fn new(
         num_threads: u32,
         num_fibers: u32,
-        node_lru_size: u32,
+        node_lru_max_mem: u64,
         high_pool_timeout_sec: u32,
         triedb_path: &Path,
     ) -> Self {
@@ -64,7 +64,7 @@ impl EthCallExecutor {
             bindings::monad_eth_call_executor_create(
                 num_threads,
                 num_fibers,
-                node_lru_size,
+                node_lru_max_mem,
                 LOW_POOL_TIMEOUT_SEC,
                 high_pool_timeout_sec,
                 dbpath.as_c_str().as_ptr(),

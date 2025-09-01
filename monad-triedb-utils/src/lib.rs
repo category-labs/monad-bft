@@ -43,6 +43,7 @@ pub mod mock_triedb;
 pub mod triedb_env;
 
 const MAX_TRIEDB_ASYNC_POLLS: usize = 640_000;
+const RODB_NODE_LRU_MAX_MEM: u64 = 50 << 20; // 50 MB
 
 #[derive(Clone)]
 pub struct TriedbReader {
@@ -58,7 +59,7 @@ impl TriedbReader {
     }
 
     pub fn try_new(triedb_path: &Path) -> Option<Self> {
-        TriedbHandle::try_new(triedb_path).map(|handle| Self {
+        TriedbHandle::try_new(triedb_path, RODB_NODE_LRU_MAX_MEM).map(|handle| Self {
             handle,
             state_backend_total_lookups: Default::default(),
         })

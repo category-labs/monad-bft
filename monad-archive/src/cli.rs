@@ -307,6 +307,7 @@ impl AwsCliArgs {
 #[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
 pub struct TrieDbCliArgs {
     pub triedb_path: String,
+    pub triedb_node_lru_max_mem: u64,
     pub max_buffered_read_requests: usize,
     pub max_triedb_async_read_concurrency: usize,
     pub max_buffered_traverse_requests: usize,
@@ -322,6 +323,7 @@ impl TrieDbCliArgs {
             max_buffered_read_requests: usize::from_str(&next(
                 "args missing max_buffered_read_requests",
             )?)?,
+            triedb_node_lru_max_mem: 50 << 20, // 50MB
             max_triedb_async_read_concurrency: 10000,
             max_buffered_traverse_requests: 200,
             max_triedb_async_traverse_concurrency: 20,

@@ -32,12 +32,14 @@
 
 struct triedb
 {
-    explicit triedb(std::vector<std::filesystem::path> dbname_paths)
+    explicit triedb(
+        std::vector<std::filesystem::path> dbname_paths,
+        uint64_t const node_lru_max_mem)
         : io_ctx_{monad::mpt::ReadOnlyOnDiskDbConfig{
               .disable_mismatching_storage_pool_check = true,
               .dbname_paths = std::move(dbname_paths)}}
         , db_{io_ctx_}
-        , ctx_{monad::mpt::async_context_create(db_)}
+        , ctx_{monad::mpt::async_context_create(db_, node_lru_max_mem)}
     {
     }
 
@@ -46,7 +48,8 @@ struct triedb
     monad::mpt::AsyncContextUniquePtr ctx_;
 };
 
-int triedb_open(char const *dbdirpath, triedb **db)
+int triedb_open(
+    char const *dbdirpath, triedb **db, uint64_t const node_lru_max_mem)
 {
     if (*db != nullptr) {
         return -1;
@@ -68,7 +71,7 @@ int triedb_open(char const *dbdirpath, triedb **db)
     }
 
     try {
-        *db = new triedb{std::move(paths)};
+        *db = new triedb{std::move(paths), node_lru_max_mem};
     }
     catch (std::exception const &e) {
         std::cerr << e.what();

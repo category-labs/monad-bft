@@ -211,6 +211,7 @@ fn get_latest_voted_block_key(triedb_handle: &TriedbHandle) -> Option<ProposedBl
 fn polling_thread(
     tokio_handle: tokio::runtime::Handle,
     triedb_path: PathBuf,
+    node_lru_max_mem: u64,
     meta: Arc<Mutex<TriedbEnvMeta>>,
     receiver_read: mpsc::Receiver<TriedbRequest>,
     max_async_read_concurrency: usize,
@@ -219,7 +220,7 @@ fn polling_thread(
 ) {
     // create a new triedb handle for the polling thread
     let triedb_handle: TriedbHandle =
-        TriedbHandle::try_new(&triedb_path).expect("triedb should exist in path");
+        TriedbHandle::try_new(&triedb_path, node_lru_max_mem).expect("triedb should exist in path");
 
     let triedb_async_read_concurrency_tracker: Arc<()> = Arc::new(());
     let triedb_async_traverse_concurrency_tracker: Arc<()> = Arc::new(());
@@ -640,6 +641,7 @@ impl std::fmt::Debug for TriedbEnv {
 impl TriedbEnv {
     pub fn new(
         triedb_path: &Path,
+        node_lru_max_mem: u64,
         max_buffered_read_requests: usize,
         max_async_read_concurrency: usize,
         max_buffered_traverse_requests: usize,
@@ -648,8 +650,8 @@ impl TriedbEnv {
         max_voted_block_cache_len: usize,
     ) -> Self {
         let latest_finalized = {
-            let triedb_handle: TriedbHandle =
-                TriedbHandle::try_new(triedb_path).expect("triedb should exist in path");
+            let triedb_handle: TriedbHandle = TriedbHandle::try_new(triedb_path, node_lru_max_mem)
+                .expect("triedb should exist in path");
             SeqNum(triedb_handle.latest_finalized_block().unwrap_or_default())
         };
         let meta = Arc::new(Mutex::new(TriedbEnvMeta {
@@ -679,6 +681,7 @@ impl TriedbEnv {
                 polling_thread(
                     tokio_handle,
                     triedb_path_cloned,
+                    node_lru_max_mem,
                     meta_cloned,
                     receiver_read,
                     max_async_read_concurrency,

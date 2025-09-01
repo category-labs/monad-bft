@@ -32,6 +32,7 @@ impl TriedbReader {
         Self {
             db: TriedbEnv::new(
                 args.triedb_path.as_ref(),
+                args.triedb_node_lru_max_mem,
                 args.max_buffered_read_requests,
                 args.max_triedb_async_read_concurrency,
                 args.max_buffered_traverse_requests,

@@ -23,7 +23,7 @@ extern "C"
 #include <stdint.h>
 
 typedef struct triedb triedb;
-int triedb_open(char const *dbdirpath, triedb **);
+int triedb_open(char const *dbdirpath, triedb **, uint64_t node_lru_max_mem);
 int triedb_close(triedb *);
 
 typedef uint8_t const *bytes;
