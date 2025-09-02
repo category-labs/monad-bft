@@ -86,7 +86,7 @@ monad-validator = { path = "./monad-validator" }
 monad-wal = { path = "./monad-wal" }
 
 actix = "0.13"
-actix-http = "3.6.0"
+actix-http = "3.11.1"
 actix-server = "2.5.1"
 actix-test = "0.1"
 actix-rt = "2.9.0"
