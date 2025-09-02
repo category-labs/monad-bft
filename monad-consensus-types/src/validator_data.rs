@@ -49,7 +49,9 @@ pub struct ValidatorSetData<SCT: SignatureCollection>(
     pub Vec<ValidatorData<SCT>>,
 );
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodable, RlpDecodable)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, RlpEncodable, RlpDecodable,
+)]
 pub struct ValidatorData<SCT: SignatureCollection> {
     pub node_id: NodeId<SCT::NodeIdPubKey>,
     pub stake: Stake,

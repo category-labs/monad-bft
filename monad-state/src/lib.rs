@@ -13,7 +13,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::HashMap, fmt::Debug, marker::PhantomData, ops::Deref};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fmt::Debug,
+    marker::PhantomData,
+    ops::Deref,
+};
 
 use alloy_primitives::U256;
 use alloy_rlp::{encode_list, Decodable, Encodable, Header};
@@ -57,13 +62,15 @@ use monad_executor_glue::{
 };
 use monad_state_backend::StateBackend;
 use monad_types::{
-    Epoch, ExecutionProtocol, MonadVersion, NodeId, Round, RouterTarget, SeqNum, GENESIS_BLOCK_ID,
-    GENESIS_ROUND, GENESIS_SEQ_NUM,
+    Epoch, ExecutionProtocol, MonadVersion, NodeId, Round, RouterTarget, SeqNum, Stake,
+    GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM,
 };
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
-    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    signature_collection::{
+        SignatureCollection, SignatureCollectionKeyPairType, SignatureCollectionPubKeyType,
+    },
     validator_mapping::ValidatorMapping,
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
@@ -306,6 +313,8 @@ where
         // used for deduplicating ConsensusMode::Sync(n) -> ConsensusMode::Sync(n') transitions
         // ideally we can deprecate this and update our target synchronously (w/o loopback executor)
         updating_target: bool,
+
+        locked_epoch_validators: Vec<ValidatorSetDataWithEpoch<SCT>>,
     },
     Live(ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>),
 }
@@ -323,6 +332,7 @@ where
     fn start_sync(
         high_certificate: RoundCertificate<ST, SCT, EPT>,
         block_buffer: BlockBuffer<ST, SCT, EPT>,
+        locked_epoch_validators: Vec<ValidatorSetDataWithEpoch<SCT>>,
     ) -> Self {
         Self::Sync {
             high_certificate,
@@ -331,6 +341,8 @@ where
             db_status: DbSyncStatus::Waiting,
 
             updating_target: false,
+
+            locked_epoch_validators,
         }
     }
 
@@ -843,6 +855,7 @@ where
                     self.forkpoint.root,
                     statesync_to_live_threshold,
                 ),
+                self.locked_epoch_validators.clone(),
             ),
             certificate_cache: CertificateCache::default(),
             block_sync: BlockSync::new(self.block_sync_override_peers),
@@ -996,6 +1009,7 @@ where
                         block_buffer,
                         db_status,
                         updating_target,
+                        locked_epoch_validators: _,
                     } = &mut self.consensus
                     else {
                         unreachable!("Live -> RequestSync is an invalid state transition")
@@ -1159,6 +1173,7 @@ where
             block_buffer,
             db_status,
             updating_target: _,
+            locked_epoch_validators,
         } = &mut self.consensus
         else {
             unreachable!("maybe_start_consensus invoked while ConsensusState is live")
@@ -1188,11 +1203,11 @@ where
             .expect("blocksync done, root block should be known");
         let root_seq_num = root_info.seq_num;
 
+        let delay = self.consensus_config.execution_delay;
+        let delay_seq_num = root_seq_num.max(delay) - delay;
+
         if db_status == &DbSyncStatus::Waiting {
             *db_status = DbSyncStatus::Started;
-
-            let delay = self.consensus_config.execution_delay;
-            let delay_seq_num = root_seq_num.max(delay) - delay;
 
             let delay_block_id = {
                 let delay_child_seq_num = delay_seq_num + SeqNum(1);
@@ -1301,6 +1316,37 @@ where
             commands.push(Command::ValSetCommand(ValSetCommand::NotifyFinalized(
                 block.get_seq_num(),
             )));
+        }
+
+        for epoch_valset in locked_epoch_validators {
+            let locked_epoch = epoch_valset.epoch;
+
+            if locked_epoch >= self.consensus_config.chain_config.get_staking_activation() {
+                let expected_val_data: BTreeMap<
+                    NodeId<SCT::NodeIdPubKey>,
+                    (Stake, SignatureCollectionPubKeyType<SCT>),
+                > = epoch_valset
+                    .validators
+                    .0
+                    .iter()
+                    .map(|val_data| (val_data.node_id, (val_data.stake, val_data.cert_pubkey)))
+                    .collect();
+
+                let db_val_data: BTreeMap<
+                    NodeId<SCT::NodeIdPubKey>,
+                    (Stake, SignatureCollectionPubKeyType<SCT>),
+                > = self
+                    .state_backend
+                    .read_valset_at_block(delay_seq_num, locked_epoch) // TODO use root_seq_num here
+                    .into_iter()
+                    .map(|(pubkey, cert_pubkey, stake)| (NodeId::new(pubkey), (stake, cert_pubkey)))
+                    .collect();
+
+                assert_eq!(
+                    expected_val_data, db_val_data,
+                    "Unexpected locked epoch valset"
+                );
+            }
         }
 
         let cached_proposals = block_buffer.proposals().cloned().collect_vec();
