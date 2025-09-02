@@ -108,6 +108,26 @@ pub struct StateOverrideObject {
     pub storage_override: Option<StorageOverride>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum MonadTracer {
+    NoopTracer = 0,
+    CallTracer,
+    PreStateTracer,
+    StateDiffTracer,
+}
+
+impl From<MonadTracer> for u32 {
+    fn from(tracer: MonadTracer) -> u32 {
+        match tracer {
+            MonadTracer::NoopTracer => 0,
+            MonadTracer::CallTracer => 1,
+            MonadTracer::PreStateTracer => 2,
+            MonadTracer::StateDiffTracer => 3,
+        }
+    }
+}
+
 pub const ETH_CALL_SUCCESS: i32 = 0;
 pub const EVMC_OUT_OF_GAS: i32 = 3;
 
@@ -143,7 +163,7 @@ pub struct FailureCallResult {
 
 #[derive(Clone, Debug, Default)]
 pub struct RevertCallResult {
-    pub call_frame: Vec<u8>,
+    pub trace: Vec<u8>,
 }
 
 pub struct SenderContext {
@@ -175,7 +195,7 @@ pub async fn eth_call(
     block_id: Option<[u8; 32]>,
     eth_call_executor: Arc<Mutex<EthCallExecutor>>,
     state_override_set: &StateOverrideSet,
-    trace: bool,
+    tracer: MonadTracer,
     gas_specified: bool,
 ) -> CallResult {
     // upper bound gas limit of transaction to block gas limit to prevent abuse of eth_call
@@ -312,7 +332,7 @@ pub async fn eth_call(
             override_ctx,
             Some(eth_call_submit_callback),
             sender_ctx_ptr as *mut std::ffi::c_void,
-            trace,
+            tracer.into(),
             gas_specified,
         )
     };
@@ -337,13 +357,14 @@ pub async fn eth_call(
 
     unsafe {
         let status_code = (*result).status_code;
+        let tracer_cval: u32 = tracer.into();
 
         let call_result = match status_code {
             ETH_CALL_SUCCESS => {
                 let gas_used = (*result).gas_used as u64;
                 let gas_refund = (*result).gas_refund as u64;
 
-                if !trace {
+                if tracer_cval == bindings::monad_tracer_config_NOOP_TRACER {
                     let output_data_len = (*result).output_data_len;
                     let output_data = if output_data_len != 0 {
                         std::slice::from_raw_parts((*result).output_data, output_data_len).to_vec()
@@ -357,9 +378,9 @@ pub async fn eth_call(
                         output_data,
                     })
                 } else {
-                    let output_data_len = (*result).rlp_call_frames_len;
+                    let output_data_len = (*result).encoded_trace_len;
                     let output_data = if output_data_len != 0 {
-                        std::slice::from_raw_parts((*result).rlp_call_frames, output_data_len)
+                        std::slice::from_raw_parts((*result).encoded_trace, output_data_len)
                             .to_vec()
                     } else {
                         vec![]
@@ -375,7 +396,7 @@ pub async fn eth_call(
             _ => {
                 if (*result).message.is_null() {
                     // This means execution reverted, not a validation error
-                    if !trace {
+                    if tracer_cval == bindings::monad_tracer_config_NOOP_TRACER {
                         let output_data_len = (*result).output_data_len;
                         let output_data = if output_data_len != 0 {
                             std::slice::from_raw_parts((*result).output_data, output_data_len)
@@ -400,16 +421,14 @@ pub async fn eth_call(
                             data: Some(format!("0x{}", hex::encode(&output_data))),
                         })
                     } else {
-                        let output_data_len = (*result).rlp_call_frames_len;
+                        let output_data_len = (*result).encoded_trace_len;
                         let output_data = if output_data_len != 0 {
-                            std::slice::from_raw_parts((*result).rlp_call_frames, output_data_len)
+                            std::slice::from_raw_parts((*result).encoded_trace, output_data_len)
                                 .to_vec()
                         } else {
                             vec![]
                         };
-                        CallResult::Revert(RevertCallResult {
-                            call_frame: output_data,
-                        })
+                        CallResult::Revert(RevertCallResult { trace: output_data })
                     }
                 } else {
                     // This means we hit a validation error (execution not started)

@@ -235,17 +235,30 @@ impl Decodable for CallFrame {
 #[serde(rename_all = "camelCase")]
 pub struct TracerObject {
     #[serde(default)]
-    tracer: Tracer,
-    only_top_call: Option<bool>,
+    pub tracer: Tracer,
+    #[serde(default, rename = "tracerConfig")]
+    pub config: TracerConfig,
 }
 
-#[derive(Deserialize, Debug, Default, schemars::JsonSchema, Clone)]
+#[derive(Deserialize, Debug, Default, schemars::JsonSchema, Clone, PartialEq, Eq)]
 pub enum Tracer {
     #[default]
     #[serde(rename = "callTracer")]
     CallTracer,
     #[serde(rename = "prestateTracer")]
-    PreStateTracer, // TODO: implement prestate tracer
+    PreStateTracer,
+}
+
+#[derive(Clone, Debug, Deserialize, Default, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TracerConfig {
+    /// onlyTopCall for callTracer, ignored for prestateTracer
+    #[serde(default)]
+    pub only_top_call: bool,
+
+    /// diff mode for prestateTracer, ignored for callTracer
+    #[serde(default)]
+    pub diff_mode: bool,
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -556,7 +569,10 @@ pub async fn decode_call_frame<T: Triedb>(
 
     match tracer.tracer {
         Tracer::CallTracer => {
-            if let Some(true) = tracer.only_top_call {
+            // Diff mode is supported only by the prestate tracer
+            if tracer.config.diff_mode {
+                Err(JsonRpcError::method_not_supported())
+            } else if tracer.config.only_top_call {
                 if call_frames.is_empty() {
                     Ok(None)
                 } else {

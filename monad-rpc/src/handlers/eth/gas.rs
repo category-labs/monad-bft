@@ -21,7 +21,7 @@ use std::{
 use alloy_consensus::{Header, Transaction as _, TxEnvelope};
 use alloy_primitives::{Address, TxKind, U256, U64};
 use alloy_rpc_types::FeeHistory;
-use monad_ethcall::{CallResult, EthCallExecutor, StateOverrideSet};
+use monad_ethcall::{CallResult, EthCallExecutor, MonadTracer, StateOverrideSet};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb};
 use monad_types::{BlockId, Hash, SeqNum};
@@ -102,7 +102,7 @@ impl EthCallProvider for GasEstimator {
             block_id,
             eth_call_executor.unwrap(),
             &state_override,
-            false,
+            MonadTracer::NoopTracer,
             gas_specified,
         )
         .await
