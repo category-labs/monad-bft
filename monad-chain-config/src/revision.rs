@@ -15,6 +15,7 @@
 
 use std::{fmt::Debug, time::Duration};
 
+// TODO update to CHAIN_PARAMS_V_0_11_0
 pub const CHAIN_PARAMS_LATEST: ChainParams = CHAIN_PARAMS_V_0_10_0;
 pub const CHAIN_PARAMS_LATEST_NEXT: ChainParams = CHAIN_PARAMS_V_0_11_0;
 
@@ -68,6 +69,7 @@ pub struct ChainParams {
     pub max_reserve_balance: u128,
     pub vote_pace: Duration,
 
+    pub validate_system_txs: bool,
     pub tfm: bool,
     pub eip_7702: bool,
 }
@@ -79,6 +81,7 @@ const CHAIN_PARAMS_V_0_7_0: ChainParams = ChainParams {
     max_reserve_balance: 100_000_000_000_000_000_000, // 100 MON
     vote_pace: Duration::from_millis(1000),
 
+    validate_system_txs: false,
     tfm: false,
     eip_7702: false,
 };
@@ -90,6 +93,7 @@ const CHAIN_PARAMS_V_0_8_0: ChainParams = ChainParams {
     max_reserve_balance: 100_000_000_000_000_000_000, // 100 MON
     vote_pace: Duration::from_millis(500),
 
+    validate_system_txs: false,
     tfm: false,
     eip_7702: false,
 };
@@ -101,6 +105,7 @@ const CHAIN_PARAMS_V_0_10_0: ChainParams = ChainParams {
     max_reserve_balance: 100_000_000_000_000_000_000, // 100 MON
     vote_pace: Duration::from_millis(400),
 
+    validate_system_txs: false,
     tfm: false,
     eip_7702: false,
 };
@@ -112,6 +117,7 @@ const CHAIN_PARAMS_V_0_11_0: ChainParams = ChainParams {
     max_reserve_balance: 100_000_000_000_000_000_000, // 100 MON
     vote_pace: Duration::from_millis(400),
 
+    validate_system_txs: true,
     tfm: true,
     eip_7702: true,
 };

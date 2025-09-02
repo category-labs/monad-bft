@@ -128,6 +128,14 @@ impl SystemTransactionValidator {
         CCT: ChainConfig<CRT>,
         CRT: ChainRevision,
     {
+        if !chain_config
+            .get_chain_revision(block_header.block_round)
+            .chain_params()
+            .validate_system_txs
+        {
+            return Ok((Vec::new(), txns.into()));
+        }
+
         let mut validated_sys_txns = Vec::new();
 
         let address = block_header.author.pubkey().get_eth_address();
@@ -181,12 +189,14 @@ impl SystemTransactionValidator {
 
 #[cfg(test)]
 mod test {
+    use std::time::Duration;
+
     use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope, transaction::Recovered};
     use alloy_eips::eip2930::AccessList;
     use alloy_primitives::{Address, B256, Bytes, TxKind};
     use alloy_signer::SignerSync;
     use alloy_signer_local::LocalSigner;
-    use monad_chain_config::MockChainConfig;
+    use monad_chain_config::{MockChainConfig, revision::ChainParams};
     use monad_consensus_types::{
         block::ConsensusBlockHeader,
         payload::{ConsensusBlockBodyId, RoundSignature},
@@ -204,6 +214,18 @@ mod test {
         validator::{
             SystemTransactionError, SystemTransactionValidationError, SystemTransactionValidator,
         },
+    };
+
+    const CHAIN_PARAMS: ChainParams = ChainParams {
+        tx_limit: 5_000,
+        proposal_gas_limit: 150_000_000,
+        proposal_byte_limit: 2_000_000,
+        max_reserve_balance: 1_000_000_000_000_000_000,
+        vote_pace: Duration::from_millis(400),
+
+        validate_system_txs: true,
+        eip_7702: false,
+        tfm: false,
     };
 
     const BASE_FEE: u64 = 100_000_000_000;
@@ -324,7 +346,7 @@ mod test {
         let result = SystemTransactionValidator::validate_and_extract_system_transactions(
             &block_header,
             txs,
-            &MockChainConfig::DEFAULT,
+            &MockChainConfig::new(&CHAIN_PARAMS),
         );
         assert!(matches!(
             result,

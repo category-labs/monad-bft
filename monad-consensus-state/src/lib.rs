@@ -1937,6 +1937,7 @@ mod test {
         max_reserve_balance: RESERVE_BALANCE,
         vote_pace: Duration::from_millis(1000),
 
+        validate_system_txs: true,
         tfm: false,
         eip_7702: false,
     };

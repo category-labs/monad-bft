@@ -51,6 +51,7 @@ pub struct MonadChainConfig {
     pub v_0_7_0_activation: Round,
     pub v_0_8_0_activation: Round,
     pub v_0_10_0_activation: Round,
+    pub v_0_11_0_activation: Round,
 
     pub staking_activation: Epoch,
 
@@ -129,7 +130,9 @@ impl ChainConfig<MonadChainRevision> for MonadChainConfig {
 
     #[allow(clippy::if_same_then_else)]
     fn get_chain_revision(&self, round: Round) -> MonadChainRevision {
-        if round >= self.v_0_10_0_activation {
+        if round >= self.v_0_11_0_activation {
+            MonadChainRevision::V_0_11_0
+        } else if round >= self.v_0_10_0_activation {
             MonadChainRevision::V_0_10_0
         } else if round >= self.v_0_8_0_activation {
             MonadChainRevision::V_0_8_0
@@ -159,6 +162,7 @@ const MONAD_DEVNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     v_0_7_0_activation: Round::MIN,
     v_0_8_0_activation: Round::MIN,
     v_0_10_0_activation: Round::MIN,
+    v_0_11_0_activation: Round::MIN,
 
     staking_activation: Epoch::MAX,
 
@@ -168,12 +172,13 @@ const MONAD_DEVNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
 
 const MONAD_TESTNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     chain_id: MONAD_TESTNET_CHAIN_ID,
-    v_0_7_0_activation: Round::MIN,
     epoch_length: SeqNum(50_000),
     epoch_start_delay: Round(5_000),
 
+    v_0_7_0_activation: Round::MIN,
     v_0_8_0_activation: Round(3263000),
     v_0_10_0_activation: Round(32026929), // 2025-08-12T13:30:00.000Z
+    v_0_11_0_activation: Round::MAX,
 
     staking_activation: Epoch::MAX,
 
@@ -189,6 +194,7 @@ const MONAD_TESTNET2_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     v_0_7_0_activation: Round::MIN,
     v_0_8_0_activation: Round::MIN,
     v_0_10_0_activation: Round(6487752), // 2025-07-29T13:30:00.000Z
+    v_0_11_0_activation: Round::MAX,
 
     staking_activation: Epoch::MAX,
 
@@ -205,6 +211,7 @@ const MONAD_MAINNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     v_0_7_0_activation: Round::MIN,
     v_0_8_0_activation: Round::MIN,
     v_0_10_0_activation: Round(15643179), // 2025-08-13T13:30:00.000Z
+    v_0_11_0_activation: Round::MAX,
 
     staking_activation: Epoch::MAX,
 
