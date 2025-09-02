@@ -19,6 +19,7 @@ use std::{
 };
 
 use alloy_primitives::Address;
+use monad_eth_block_policy::nonce_usage::NonceUsage;
 use monad_eth_txpool_types::EthTxPoolDropReason;
 use monad_types::Nonce;
 use tracing::error;
@@ -82,9 +83,12 @@ impl TrackedTxList {
 
     pub fn get_queued(
         &self,
-        pending_account_nonce: Option<u64>,
+        pending_nonce_usage: Option<NonceUsage>,
     ) -> impl Iterator<Item = &ValidEthTransaction> {
-        let mut account_nonce = pending_account_nonce.unwrap_or(self.account_nonce);
+        let mut account_nonce = pending_nonce_usage
+            .map_or(self.account_nonce, |pending_nonce_usage| {
+                pending_nonce_usage.apply_to_account_nonce(self.account_nonce)
+            });
 
         self.txs
             .range(account_nonce..)
@@ -141,11 +145,12 @@ impl TrackedTxList {
         }
     }
 
-    pub fn update_committed_account_nonce(
+    pub fn update_committed_nonce_usage(
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         mut this: indexmap::map::OccupiedEntry<'_, Address, Self>,
-        account_nonce: u64,
+        nonce_usage: NonceUsage,
     ) {
+        let account_nonce = nonce_usage.apply_to_account_nonce(this.get().account_nonce);
         this.get_mut().account_nonce = account_nonce;
 
         let Some((lowest_nonce, _)) = this.get().txs.first_key_value() else {

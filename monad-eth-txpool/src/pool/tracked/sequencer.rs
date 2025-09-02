@@ -27,7 +27,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{
-    AccountNonceRetrievable, EthBlockPolicyBlockValidator, EthValidatedBlock,
+    nonce_usage::NonceUsageRetrievable, EthBlockPolicyBlockValidator, EthValidatedBlock,
 };
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::{debug, error, trace};
@@ -100,14 +100,14 @@ impl<'a> ProposalSequencer<'a> {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
-        let pending_account_nonces = extending_blocks.get_account_nonces();
+        let mut pending_nonce_usages = extending_blocks.get_nonce_usages().into_map();
 
         let mut heap_vec = Vec::with_capacity(tracked_txs.len());
         let mut virtual_time = 0;
 
         for (address, tx_list) in tracked_txs {
             let mut queued = tx_list
-                .get_queued(pending_account_nonces.get(address).cloned())
+                .get_queued(pending_nonce_usages.remove(address))
                 .map_while(|tx| OrderedTx::new(tx, base_fee));
 
             let Some(tx) = queued.next() else {
@@ -152,7 +152,7 @@ impl<'a> ProposalSequencer<'a> {
         proposal_gas_limit: u64,
         proposal_byte_limit: u64,
         mut account_balances: BTreeMap<&Address, AccountBalanceState>,
-        mut validator: EthBlockPolicyBlockValidator<CRT>,
+        validator: EthBlockPolicyBlockValidator<CRT>,
     ) -> Proposal {
         let mut proposal = Proposal::default();
 

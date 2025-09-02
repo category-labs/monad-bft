@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     marker::PhantomData,
     ops::{Deref, Range, RangeFrom},
 };
@@ -46,12 +46,11 @@ use monad_validator::signature_collection::SignatureCollection;
 use sorted_vector_map::SortedVectorMap;
 use tracing::{debug, trace, warn};
 
+use self::nonce_usage::{NonceUsage, NonceUsageMap};
+
+pub mod nonce_usage;
 pub mod validation;
 
-/// Retriever trait for account nonces from block(s)
-pub trait AccountNonceRetrievable {
-    fn get_account_nonces(&self) -> BTreeMap<Address, Nonce>;
-}
 pub enum ReserveBalanceCheck {
     Insert,
     Propose,
@@ -102,7 +101,7 @@ where
     pub block: ConsensusFullBlock<ST, SCT, EthExecutionProtocol>,
     pub system_txns: Vec<SystemTransaction>,
     pub validated_txns: Vec<Recovered<TxEnvelope>>,
-    pub nonces: BTreeMap<Address, Nonce>,
+    pub nonce_usages: NonceUsageMap,
     pub txn_fees: TxnFees,
 }
 
@@ -136,11 +135,6 @@ where
         self.validated_txns.iter().map(|t| *t.tx_hash()).collect()
     }
 
-    /// Returns the highest tx nonce per account in the block
-    pub fn get_nonces(&self) -> &BTreeMap<Address, u64> {
-        &self.nonces
-    }
-
     pub fn get_total_gas(&self) -> u64 {
         self.validated_txns
             .iter()
@@ -164,52 +158,6 @@ where
 {
 }
 
-impl<ST, SCT> AccountNonceRetrievable for EthValidatedBlock<ST, SCT>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-{
-    fn get_account_nonces(&self) -> BTreeMap<Address, Nonce> {
-        let mut account_nonces = BTreeMap::new();
-        let block_nonces = self.get_nonces();
-        for (&address, &txn_nonce) in block_nonces {
-            // account_nonce is the number of txns the account has sent. It's
-            // one higher than the last txn nonce
-            let acc_nonce = txn_nonce + 1;
-            account_nonces.insert(address, acc_nonce);
-        }
-        account_nonces
-    }
-}
-
-impl<ST, SCT> AccountNonceRetrievable for Vec<&EthValidatedBlock<ST, SCT>>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-{
-    fn get_account_nonces(&self) -> BTreeMap<Address, Nonce> {
-        let mut account_nonces = BTreeMap::new();
-        for block in self.iter() {
-            let block_account_nonces = block.get_account_nonces();
-            for (address, account_nonce) in block_account_nonces {
-                account_nonces.insert(address, account_nonce);
-            }
-        }
-        account_nonces
-    }
-}
-
-#[derive(Debug)]
-struct BlockAccountNonce {
-    nonces: BTreeMap<Address, Nonce>,
-}
-
-impl BlockAccountNonce {
-    fn get(&self, eth_address: &Address) -> Option<Nonce> {
-        self.nonces.get(eth_address).cloned()
-    }
-}
-
 #[derive(Debug)]
 struct BlockTxnFeeStates {
     txn_fees: TxnFees,
@@ -227,7 +175,7 @@ struct CommittedBlock {
     round: Round,
     epoch: Epoch,
     seq_num: SeqNum,
-    nonces: BlockAccountNonce,
+    nonce_usages: NonceUsageMap,
     fees: BlockTxnFeeStates,
 
     base_fee: u64,
@@ -264,20 +212,6 @@ where
         self.blocks
             .get(&seq_num)
             .map(|committed_block| committed_block.epoch)
-    }
-
-    fn get_nonce(&self, eth_address: &Address) -> Option<Nonce> {
-        let mut maybe_account_nonce = None;
-
-        for block in self.blocks.values() {
-            if let Some(nonce) = block.nonces.get(eth_address) {
-                if let Some(old_account_nonce) = maybe_account_nonce {
-                    assert!(nonce > old_account_nonce);
-                }
-                maybe_account_nonce = Some(nonce);
-            }
-        }
-        maybe_account_nonce
     }
 
     fn update_account_balance(
@@ -375,9 +309,7 @@ where
                     round: block.get_block_round(),
                     epoch: block.get_epoch(),
                     seq_num: block.get_seq_num(),
-                    nonces: BlockAccountNonce {
-                        nonces: block.get_account_nonces(),
-                    },
+                    nonce_usages: block.nonce_usages.clone(),
                     fees: BlockTxnFeeStates {
                         txn_fees: block.txn_fees.clone()
                     },
@@ -730,21 +662,46 @@ where
         //    committed blocks
         // 3. LRU cache of triedb nonces
         // 4. triedb query
+
+        let addresses = addresses.unique().collect::<HashSet<&'a Address>>();
+
+        let base_seq_num = consensus_block_seq_num.max(self.execution_delay) - self.execution_delay;
+
+        let mut cached_nonce_usages = NonceUsageMap::default();
+
+        for nonce_usages in self
+            .committed_cache
+            .blocks
+            // Committed cache is guaranteed to have blocks starting from N-2K
+            .range(base_seq_num + SeqNum(1)..)
+            .map(|(_, block)| &block.nonce_usages)
+            .chain(extending_blocks.iter().map(|block| &block.nonce_usages))
+            .rev()
+            .map(|nonce_usages| {
+                nonce_usages
+                    .map
+                    .iter()
+                    .filter(|(address, _)| addresses.contains(address))
+            })
+        {
+            cached_nonce_usages.merge_with_previous_block(nonce_usages);
+        }
+
         let mut account_nonces = BTreeMap::default();
-        let pending_block_nonces = extending_blocks.get_account_nonces();
         let mut cache_misses = Vec::new();
-        for address in addresses.unique() {
-            if let Some(&pending_nonce) = pending_block_nonces.get(address) {
-                // hit cache level 1
-                account_nonces.insert(address, pending_nonce);
-                continue;
+
+        for address in addresses {
+            match cached_nonce_usages.get(address) {
+                Some(NonceUsage::Known(nonce)) => {
+                    account_nonces.insert(address, *nonce + 1);
+                }
+                Some(NonceUsage::Possible(possible)) => {
+                    cache_misses.push((address, Some(possible)));
+                }
+                None => {
+                    cache_misses.push((address, None));
+                }
             }
-            if let Some(committed_nonce) = self.committed_cache.get_nonce(address) {
-                // hit cache level 2
-                account_nonces.insert(address, committed_nonce);
-                continue;
-            }
-            cache_misses.push(address)
         }
 
         // the cached account nonce must overlap with latest triedb, i.e.
@@ -752,19 +709,25 @@ where
         // the cache should keep track of block number for the nonce state
         // when purging, we never purge nonces newer than last_commit - delay
 
-        let base_seq_num = consensus_block_seq_num.max(self.execution_delay) - self.execution_delay;
         let cache_miss_statuses = self.get_account_statuses(
             state_backend,
             &Some(extending_blocks),
-            cache_misses.iter().copied(),
+            cache_misses.iter().map(|(address, _)| *address),
             &base_seq_num,
         )?;
-        account_nonces.extend(
-            cache_misses
-                .into_iter()
-                .zip_eq(cache_miss_statuses)
-                .map(|(address, status)| (address, status.map_or(0, |status| status.nonce))),
-        );
+
+        account_nonces.extend(cache_misses.into_iter().zip_eq(cache_miss_statuses).map(
+            |((address, possible_nonces), status)| {
+                let nonce = status.map_or(0, |status| status.nonce);
+
+                (
+                    address,
+                    possible_nonces.map_or(nonce, |possible_nonces| {
+                        NonceUsage::apply_possible_nonces_to_account_nonce(nonce, possible_nonces)
+                    }),
+                )
+            },
+        ));
 
         Ok(account_nonces)
     }
@@ -1288,9 +1251,10 @@ mod test {
     use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
     use monad_crypto::NopSignature;
     use monad_eth_testutil::{
-        generate_consensus_test_block, make_eip1559_tx_with_value, recover_tx,
+        generate_consensus_test_block, make_eip1559_tx_with_value, make_eip7702_tx,
+        make_signed_authorization, recover_tx, secret_to_eth_address,
     };
-    use monad_state_backend::NopStateBackend;
+    use monad_state_backend::{InMemoryStateInner, NopStateBackend};
     use monad_testutil::signing::MockSignatures;
     use monad_types::{Hash, SeqNum};
     use proptest::{prelude::*, strategy::Just};
@@ -1311,9 +1275,16 @@ mod test {
 
     const RESERVE_BALANCE: u128 = 1_000_000_000_000_000_000;
     const EXEC_DELAY: SeqNum = SeqNum(3);
+
+    // pubkey starts with AAA
     const S1: B256 = B256::new(hex!(
         "0ed2e19e3aca1a321349f295837988e9c6f95d4a6fc54cfab6befd5ee82662ad"
     ));
+    // pubkey starts with BBB
+    const S2: B256 = B256::new(hex!(
+        "009ac901cf45a2e92e7e7bdf167dc52e3a6232be3c56cc3b05622b247c2c716a"
+    ));
+
     const ONE_ETHER: u128 = 1_000_000_000_000_000_000;
     const HALF_ETHER: u128 = 500_000_000_000_000_000;
 
@@ -1340,17 +1311,22 @@ mod test {
         ))
     }
 
-    fn make_test_block(
+    pub fn make_test_block(
         round: Round,
         seq_num: SeqNum,
         txs: Vec<Recovered<TxEnvelope>>,
     ) -> EthValidatedBlock<NopSignature, MockSignatures<NopSignature>> {
-        let consensus_test_block = generate_consensus_test_block(round, seq_num, BASE_FEE, txs);
+        let consensus_test_block =
+            generate_consensus_test_block(round, seq_num, BASE_FEE, &MockChainConfig::DEFAULT, txs);
         EthValidatedBlock {
             block: consensus_test_block.block,
             system_txns: Vec::new(),
             validated_txns: consensus_test_block.validated_txns,
-            nonces: consensus_test_block.nonces,
+            nonce_usages: unsafe {
+                // Workaround for type resolution failure due to circular dependency
+                #[allow(clippy::missing_transmute_annotations)]
+                std::mem::transmute(consensus_test_block.nonce_usages)
+            },
             txn_fees: consensus_test_block.txn_fees,
         }
     }
@@ -1665,8 +1641,11 @@ mod test {
             round: Round(0),
             epoch: Epoch(1),
             seq_num: SeqNum(1),
-            nonces: BlockAccountNonce {
-                nonces: BTreeMap::from([(address1, 1), (address2, 1)]),
+            nonce_usages: NonceUsageMap {
+                map: BTreeMap::from([
+                    (address1, NonceUsage::Known(1)),
+                    (address2, NonceUsage::Known(1)),
+                ]),
             },
             fees: BlockTxnFeeStates {
                 txn_fees: BTreeMap::from([
@@ -1701,8 +1680,11 @@ mod test {
             round: Round(0),
             epoch: Epoch(1),
             seq_num: SeqNum(2),
-            nonces: BlockAccountNonce {
-                nonces: BTreeMap::from([(address1, 2), (address3, 1)]),
+            nonce_usages: NonceUsageMap {
+                map: BTreeMap::from([
+                    (address1, NonceUsage::Known(2)),
+                    (address3, NonceUsage::Known(1)),
+                ]),
             },
             fees: BlockTxnFeeStates {
                 txn_fees: BTreeMap::from([
@@ -1737,8 +1719,11 @@ mod test {
             round: Round(0),
             epoch: Epoch(1),
             seq_num: SeqNum(3),
-            nonces: BlockAccountNonce {
-                nonces: BTreeMap::from([(address2, 2), (address3, 2)]),
+            nonce_usages: NonceUsageMap {
+                map: BTreeMap::from([
+                    (address2, NonceUsage::Known(2)),
+                    (address3, NonceUsage::Known(2)),
+                ]),
             },
             fees: BlockTxnFeeStates {
                 txn_fees: BTreeMap::from([
@@ -2455,6 +2440,78 @@ mod test {
                 expected_remaining_reserve,
                 expect,
             );
+        }
+    }
+
+    #[test]
+    fn test_resolve_authorizations_in_extending() {
+        let block_policy = EthBlockPolicy::<
+            SignatureType,
+            SignatureCollectionType,
+            ChainConfigType,
+            ChainRevisionType,
+        >::new(GENESIS_SEQ_NUM, EXEC_DELAY.0);
+
+        let state_backend = InMemoryStateInner::genesis(Balance::MAX, block_policy.execution_delay);
+
+        let addresses = [secret_to_eth_address(S2)];
+
+        // Valid authorization nonce increments nonce
+        {
+            let (s2, s2_nonce) = block_policy
+                .get_account_base_nonces(
+                    SeqNum(1),
+                    &state_backend,
+                    &vec![&make_test_block(
+                        Round(1),
+                        SeqNum(1),
+                        vec![recover_tx(make_eip7702_tx(
+                            S1,
+                            BASE_FEE as u128,
+                            0,
+                            100_000,
+                            0,
+                            vec![make_signed_authorization(S2, secret_to_eth_address(S1), 0)],
+                            0,
+                        ))],
+                    )],
+                    addresses.iter(),
+                )
+                .unwrap()
+                .pop_first()
+                .unwrap();
+
+            assert_eq!(s2, &secret_to_eth_address(S2));
+            assert_eq!(s2_nonce, 1);
+        }
+
+        // Bad nonce invalidates authorization
+        {
+            let (s2, s2_nonce) = block_policy
+                .get_account_base_nonces(
+                    SeqNum(1),
+                    &state_backend,
+                    &vec![&make_test_block(
+                        Round(1),
+                        SeqNum(1),
+                        vec![recover_tx(make_eip7702_tx(
+                            S1,
+                            BASE_FEE as u128,
+                            0,
+                            100_000,
+                            0,
+                            vec![make_signed_authorization(S2, secret_to_eth_address(S1), 1)],
+                            0,
+                        ))],
+                    )],
+                    addresses.iter(),
+                )
+                .unwrap()
+                .pop_first()
+                .unwrap();
+
+            assert_eq!(s2, &secret_to_eth_address(S2));
+            assert_eq!(s2_nonce, 0);
         }
     }
 }

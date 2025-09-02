@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{btree_map::Entry as BTreeMapEntry, VecDeque},
     marker::PhantomData,
 };
 
@@ -24,7 +24,6 @@ use alloy_consensus::{
     transaction::{Recovered, Transaction},
     TxEnvelope, EMPTY_OMMER_ROOT_HASH,
 };
-use alloy_primitives::Address;
 use alloy_rlp::Encodable;
 use monad_chain_config::{
     revision::{ChainParams, ChainRevision},
@@ -39,19 +38,20 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{
-    compute_max_txn_cost, compute_txn_max_gas_cost, validation::static_validate_transaction,
+    compute_max_txn_cost, compute_txn_max_gas_cost,
+    nonce_usage::{NonceUsage, NonceUsageMap},
+    validation::static_validate_transaction,
     EthBlockPolicy, EthValidatedBlock,
 };
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ExtractEthAddress, ProposedEthHeader};
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
 use monad_system_calls::{validator::SystemTransactionValidator, SystemTransaction};
-use monad_types::{Balance, Nonce};
+use monad_types::Balance;
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use tracing::{debug, trace_span, warn};
+use tracing::{debug, trace, trace_span, warn};
 
-type NonceMap = BTreeMap<Address, Nonce>;
 type SystemTransactions = Vec<SystemTransaction>;
 type ValidatedTxns = Vec<Recovered<TxEnvelope>>;
 
@@ -112,7 +112,7 @@ where
 
         Self::validate_block_header(&header, &body, author_pubkey, chain_params)?;
 
-        if let Ok((system_txns, validated_txns, nonces, txn_fees)) =
+        if let Ok((system_txns, validated_txns, nonce_usages, txn_fees)) =
             Self::validate_block_body(&header, &body, chain_config)
         {
             let block = ConsensusFullBlock::new(header, body)?;
@@ -120,7 +120,7 @@ where
                 block,
                 system_txns,
                 validated_txns,
-                nonces,
+                nonce_usages,
                 txn_fees,
             })
         } else {
@@ -224,7 +224,7 @@ where
         header: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
         body: &ConsensusBlockBody<EthExecutionProtocol>,
         chain_config: &CCT,
-    ) -> Result<(SystemTransactions, ValidatedTxns, NonceMap, TxnFees), BlockValidationError>
+    ) -> Result<(SystemTransactions, ValidatedTxns, NonceUsageMap, TxnFees), BlockValidationError>
     where
         CCT: ChainConfig<CRT>,
         CRT: ChainRevision,
@@ -284,26 +284,34 @@ where
                 Ok((system_txns, eth_txns)) => (system_txns, eth_txns),
                 Err(err) => {
                     debug!(?err, "system transaction validator error");
+
                     return Err(BlockValidationError::SystemTxnError);
                 }
             };
 
-        // recover the account nonces for system txns
-        let mut nonces = BTreeMap::new();
+        let mut nonce_usages = NonceUsageMap::default();
 
         // duplicate check. this is also done in SystemTransactionValidator
         for sys_txn in &system_txns {
-            let maybe_old_nonce = nonces.insert(sys_txn.signer(), sys_txn.nonce());
+            let maybe_old_nonce_usage = nonce_usages.add_known(sys_txn.signer(), sys_txn.nonce());
             // A block is invalid if we see a smaller or equal nonce
             // after the first or if there is a nonce gap
-            if let Some(old_nonce) = maybe_old_nonce {
-                if sys_txn.nonce() != old_nonce + 1 {
+            if let Some(old_nonce_usage) = maybe_old_nonce_usage {
+                let Some(expected_nonce) = sys_txn.nonce().checked_sub(1) else {
                     return Err(BlockValidationError::SystemTxnError);
+                };
+
+                match old_nonce_usage {
+                    NonceUsage::Known(old_nonce) => {
+                        if expected_nonce != old_nonce {
+                            return Err(BlockValidationError::SystemTxnError);
+                        }
+                    }
+                    NonceUsage::Possible(_) => {}
                 }
             }
         }
 
-        // recover the account nonces and txn fee for user txns
         let mut txn_fees: TxnFees = TxnFees::default();
 
         for eth_txn in eth_txns.iter() {
@@ -322,17 +330,25 @@ where
                 return Err(BlockValidationError::TxnError);
             }
 
-            let maybe_old_nonce = nonces.insert(eth_txn.signer(), eth_txn.nonce());
+            let maybe_old_nonce_usage = nonce_usages.add_known(eth_txn.signer(), eth_txn.nonce());
             // txn iteration is following the same order as they are in the
             // block. A block is invalid if we see a smaller or equal nonce
             // after the first or if there is a nonce gap
-            if let Some(old_nonce) = maybe_old_nonce {
-                if eth_txn.nonce() != old_nonce + 1 {
+            if let Some(old_nonce_usage) = maybe_old_nonce_usage {
+                let Some(expected_nonce) = eth_txn.nonce().checked_sub(1) else {
                     return Err(BlockValidationError::TxnError);
+                };
+
+                match old_nonce_usage {
+                    NonceUsage::Known(old_nonce) => {
+                        if expected_nonce != old_nonce {
+                            return Err(BlockValidationError::TxnError);
+                        }
+                    }
+                    NonceUsage::Possible(_) => {}
                 }
             }
 
-            //misha: let txn_fee_entry = txn_fees.entry(eth_txn.signer()).or_insert(U256::ZERO);
             let txn_fee_entry = txn_fees
                 .entry(eth_txn.signer())
                 .and_modify(|e| {
@@ -347,7 +363,49 @@ where
                     max_gas_cost: Balance::ZERO,
                     max_txn_cost: compute_max_txn_cost(eth_txn),
                 });
+
             debug!(seq_num = ?header.seq_num, address = ?eth_txn.signer(), nonce = ?eth_txn.nonce(), ?txn_fee_entry, "TxnFeeEntry");
+
+            if eth_txn.is_eip7702() {
+                if let Some(auth_list) = eth_txn.authorization_list() {
+                    for (authority, authorization) in auth_list.iter().flat_map(|authorization| {
+                        authorization
+                            .recover_authority()
+                            .ok()
+                            .map(|authority| (authority, authorization.inner()))
+                    }) {
+                        trace!(address =? authorization.address, nonce =? authorization.nonce, ?authority, "Signed authority");
+
+                        if authorization.chain_id != 0_u64
+                            && authorization.chain_id != chain_config.chain_id()
+                        {
+                            continue;
+                        }
+
+                        match nonce_usages.entry(authority) {
+                            BTreeMapEntry::Occupied(nonce_usage) => match nonce_usage.into_mut() {
+                                NonceUsage::Known(nonce) => {
+                                    if *nonce + 1 == authorization.nonce {
+                                        *nonce += 1;
+                                    }
+                                }
+                                NonceUsage::Possible(possible_nonces) => {
+                                    possible_nonces.push_front(authorization.nonce);
+                                }
+                            },
+                            BTreeMapEntry::Vacant(nonce_usage) => {
+                                nonce_usage.insert(NonceUsage::Possible(VecDeque::from_iter([
+                                    authorization.nonce,
+                                ])));
+                            }
+                        }
+
+                        // TODO(andr-dev): Add after eip7702 reserve balance accounting
+                        // let txn_fee = txn_fees.entry(authority).or_default();
+                        // txn_fee.is_delegated = true;
+                    }
+                }
+            }
         }
 
         let total_gas: u64 = eth_txns.iter().map(|tx| tx.gas_limit()).sum();
@@ -369,25 +427,35 @@ where
             return Err(BlockValidationError::TxnError);
         }
 
-        Ok((system_txns, eth_txns, nonces, txn_fees))
+        Ok((system_txns, eth_txns, nonce_usages, txn_fees))
     }
 }
 
 #[cfg(test)]
 mod test {
-    use std::time::Duration;
+    use std::{collections::BTreeMap, time::Duration};
 
     use alloy_consensus::Signed;
-    use alloy_primitives::{PrimitiveSignature, B256, U256};
-    use monad_chain_config::{revision::ChainParams, MockChainConfig};
+    use alloy_eips::eip7702::SignedAuthorization;
+    use alloy_primitives::{Address, FixedBytes, PrimitiveSignature, B256, U256};
+    use itertools::{FoldWhile, Itertools};
+    use monad_chain_config::{
+        revision::{ChainParams, MockChainRevision},
+        MockChainConfig,
+    };
     use monad_consensus_types::{
         payload::{ConsensusBlockBodyId, ConsensusBlockBodyInner, RoundSignature},
         quorum_certificate::QuorumCertificate,
     };
     use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
-    use monad_eth_testutil::make_legacy_tx;
+    use monad_eth_testutil::{
+        generate_consensus_test_block, make_eip7702_tx, make_legacy_tx, make_signed_authorization,
+        recover_tx, secret_to_eth_address, ConsensusTestBlock,
+    };
+    use monad_state_backend::InMemoryStateInner;
     use monad_testutil::signing::MockSignatures;
     use monad_types::{Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
+    use proptest::prelude::*;
 
     use super::*;
 
@@ -616,4 +684,126 @@ mod test {
     }
 
     // TODO write tests for rest of eth-block-validator stuff
+
+    prop_compose! {
+        fn signed_authorization_strategy()(authority in 1..=4u8, address in 1..=4u8, nonce in 0..8u64)
+        -> SignedAuthorization {
+            // TODO(andr-dev): Make invalid chain id authorization
+            make_signed_authorization(
+                FixedBytes([authority; 32]),
+                secret_to_eth_address(FixedBytes([address; 32])),
+                nonce,
+            )
+        }
+    }
+
+    fn eip7702_tx_strategy(
+        tx_signer: FixedBytes<32>,
+        nonce: u64,
+    ) -> impl Strategy<Value = Recovered<TxEnvelope>> {
+        (1..=8usize)
+            .prop_flat_map(|authorizations| {
+                prop::collection::vec(signed_authorization_strategy(), authorizations)
+            })
+            .prop_map(move |authorization_list| {
+                recover_tx(make_eip7702_tx(
+                    tx_signer,
+                    BASE_FEE,
+                    0,
+                    1_000_000,
+                    nonce,
+                    authorization_list,
+                    0,
+                ))
+            })
+    }
+
+    fn block_with_eip7702_txs_strategy(
+        tx_signer: FixedBytes<32>,
+        starting_nonce: u64,
+    ) -> impl Strategy<Value = ConsensusTestBlock<NopSignature, MockSignatures<NopSignature>>> {
+        (1..=16u64)
+            .prop_map(move |nonce_offset| starting_nonce + nonce_offset)
+            .prop_flat_map(move |len| {
+                (0..len)
+                    .map(|nonce| eip7702_tx_strategy(tx_signer, nonce))
+                    .collect::<Vec<_>>()
+            })
+            .prop_map(|txs| {
+                generate_consensus_test_block(
+                    Round(1),
+                    SeqNum(1),
+                    BASE_FEE.try_into().unwrap(),
+                    &MockChainConfig::DEFAULT,
+                    txs,
+                )
+            })
+    }
+
+    fn random_block_with_eip7702_txs_strategy(
+    ) -> impl Strategy<Value = ConsensusTestBlock<NopSignature, MockSignatures<NopSignature>>> {
+        (4..=5u8, 0..=8u64).prop_flat_map(|(signer, starting_nonce)| {
+            block_with_eip7702_txs_strategy(FixedBytes([signer; 32]), starting_nonce)
+        })
+    }
+
+    proptest! {
+        #[test]
+        fn proptest_validate_authorization_lists(block in random_block_with_eip7702_txs_strategy()) {
+            let validator = EthBlockValidator::<NopSignature, MockSignatures<NopSignature>>::default();
+
+            let (header, body) = block.block.split();
+
+            let expect_success = block.validated_txns.iter().fold_while(Ok(BTreeMap::<Address, u64>::default()), |map, tx| {
+                match map {
+                    Err(()) => unreachable!(),
+                    Ok(mut map) => {
+                        match map.get_mut(tx.signer_ref()) {
+                            None => {
+                                map.insert(tx.signer(), tx.nonce() + 1);
+                            },
+                            Some(nonce) => {
+                                if *nonce != tx.nonce() {
+                                    return FoldWhile::Done(Err(()));
+                                }
+
+                                *nonce += 1;
+                            }
+                        }
+
+                        for authorization in tx.authorization_list().into_iter().flatten() {
+                            let authority = authorization.recover_authority().unwrap();
+
+                            let Some(nonce) = map.get_mut(&authority) else {
+                                continue;
+                            };
+
+                            if *nonce != authorization.nonce {
+                                continue;
+                            }
+
+                            *nonce += 1;
+                        }
+
+                        FoldWhile::Continue(Ok(map))
+                    }
+                }
+            }).into_inner().is_ok();
+
+            let author = header.author.pubkey();
+
+            let result = BlockValidator::<
+                NopSignature,
+                MockSignatures<NopSignature>,
+                EthExecutionProtocol,
+                EthBlockPolicy<_, _, _, _>,
+                InMemoryStateInner<_, _>,
+                MockChainConfig,
+                MockChainRevision
+            >::validate(&validator, header, body, Some(&author), &MockChainConfig::DEFAULT);
+
+            assert_eq!(result.is_ok(), expect_success);
+
+        }
+    }
 }

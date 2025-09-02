@@ -75,7 +75,13 @@ fn with_txpool(
     pool.update_committed_block(
         &mut event_tracker,
         &MockChainConfig::DEFAULT,
-        generate_block_with_txs(Round(0), SeqNum(0), BASE_FEE, Vec::default()),
+        generate_block_with_txs(
+            Round(0),
+            SeqNum(0),
+            BASE_FEE,
+            &MockChainConfig::DEFAULT,
+            Vec::default(),
+        ),
     );
 
     assert_eq!(
@@ -121,6 +127,7 @@ fn test_simple() {
                     Round(idx as u64 + 1),
                     SeqNum(idx as u64 + 1),
                     BASE_FEE,
+                    &MockChainConfig::DEFAULT,
                     Vec::default(),
                 ),
             );
@@ -157,6 +164,7 @@ fn test_forwarded() {
                     Round(idx as u64 + 1),
                     SeqNum(idx as u64 + 1),
                     BASE_FEE,
+                    &MockChainConfig::DEFAULT,
                     Vec::default(),
                 ),
             );
@@ -188,6 +196,7 @@ fn test_multiple_sequential_commits() {
                         Round(round_seqnum),
                         SeqNum(round_seqnum),
                         BASE_FEE,
+                        &MockChainConfig::DEFAULT,
                         Vec::default(),
                     ),
                 );
@@ -229,6 +238,7 @@ fn test_base_fee() {
                         Round(round),
                         SeqNum(round),
                         BASE_FEE + 1,
+                        &MockChainConfig::DEFAULT,
                         Vec::default(),
                     ),
                 );
@@ -245,7 +255,13 @@ fn test_base_fee() {
             pool.update_committed_block(
                 event_tracker,
                 &MockChainConfig::DEFAULT,
-                generate_block_with_txs(Round(round), SeqNum(round), BASE_FEE, Vec::default()),
+                generate_block_with_txs(
+                    Round(round),
+                    SeqNum(round),
+                    BASE_FEE,
+                    &MockChainConfig::DEFAULT,
+                    Vec::default(),
+                ),
             );
             round += 1;
 
@@ -261,7 +277,13 @@ fn test_base_fee() {
             pool.update_committed_block(
                 event_tracker,
                 &MockChainConfig::DEFAULT,
-                generate_block_with_txs(Round(round), SeqNum(round), BASE_FEE, Vec::default()),
+                generate_block_with_txs(
+                    Round(round),
+                    SeqNum(round),
+                    BASE_FEE,
+                    &MockChainConfig::DEFAULT,
+                    Vec::default(),
+                ),
             );
             round += 1;
 

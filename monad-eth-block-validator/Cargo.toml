@@ -30,3 +30,7 @@ tracing = { workspace = true }
 monad-eth-testutil = { workspace = true }
 monad-testutil = { workspace = true }
 monad-types = { workspace = true }
+
+alloy-eips = { workspace = true }
+itertools = { workspace = true }
+proptest = { workspace = true }

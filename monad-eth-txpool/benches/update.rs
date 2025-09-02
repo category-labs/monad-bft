@@ -57,7 +57,13 @@ fn criterion_benchmark(c: &mut Criterion) {
             (
                 pool,
                 metrics,
-                generate_block_with_txs(Round(1), SeqNum(1), BASE_FEE_PER_GAS, txs),
+                generate_block_with_txs(
+                    Round(1),
+                    SeqNum(1),
+                    BASE_FEE_PER_GAS,
+                    &MockChainConfig::DEFAULT,
+                    txs,
+                ),
             )
         },
         |(pool, metrics, block)| {

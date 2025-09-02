@@ -211,7 +211,7 @@ pub enum BlockPolicyBlockValidatorError {
     InsufficientReserveBalance,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct TxnFee {
     pub first_txn_value: Balance,
     pub first_txn_gas: Balance,

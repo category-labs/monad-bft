@@ -110,6 +110,7 @@ impl<'a> BenchController<'a> {
                         Round(idx as u64 + 1),
                         SeqNum(idx as u64 + 1),
                         BASE_FEE_PER_GAS,
+                        &MockChainConfig::DEFAULT,
                         txs,
                     )
                 })
@@ -136,6 +137,7 @@ impl<'a> BenchController<'a> {
                 Round(0),
                 block_policy.get_last_commit(),
                 BASE_FEE_PER_GAS,
+                &MockChainConfig::DEFAULT,
                 txs,
             ),
         );

@@ -26,7 +26,10 @@ use monad_consensus_types::block::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_block_policy::{EthBlockPolicy, EthBlockPolicyBlockValidator, EthValidatedBlock};
+use monad_eth_block_policy::{
+    nonce_usage::{NonceUsage, NonceUsageRetrievable},
+    EthBlockPolicy, EthBlockPolicyBlockValidator, EthValidatedBlock,
+};
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason};
 use monad_eth_types::EthExecutionProtocol;
 use monad_state_backend::StateBackend;
@@ -400,38 +403,39 @@ where
 
         let mut insertable = MAX_ADDRESSES.saturating_sub(self.txs.len());
 
-        for (address, highest_tx_nonce) in committed_block.get_nonces() {
-            let account_nonce = highest_tx_nonce
-                .checked_add(1)
-                .expect("nonce does not overflow");
-
-            match self.txs.entry(*address) {
-                IndexMapEntry::Occupied(tx_list) => TrackedTxList::update_committed_account_nonce(
-                    event_tracker,
-                    tx_list,
-                    account_nonce,
-                ),
-                IndexMapEntry::Vacant(v) => {
-                    if insertable == 0 {
-                        continue;
-                    }
-
-                    let Some(pending_tx_list) = pending.remove(address) else {
-                        continue;
-                    };
-
-                    let Some(tracked_tx_list) = TrackedTxList::new_from_promote_pending(
-                        event_tracker,
-                        account_nonce,
-                        pending_tx_list,
-                    ) else {
-                        continue;
-                    };
-
-                    insertable -= 1;
-
-                    v.insert(tracked_tx_list);
+        for (address, nonce_usage) in committed_block.get_nonce_usages().into_map() {
+            match self.txs.entry(address) {
+                IndexMapEntry::Occupied(tx_list) => {
+                    TrackedTxList::update_committed_nonce_usage(event_tracker, tx_list, nonce_usage)
                 }
+                IndexMapEntry::Vacant(v) => match nonce_usage {
+                    NonceUsage::Possible(_) => continue,
+                    NonceUsage::Known(nonce) => {
+                        if insertable == 0 {
+                            continue;
+                        }
+
+                        let Some(pending_tx_list) = pending.remove(&address) else {
+                            continue;
+                        };
+
+                        let account_nonce = nonce
+                            .checked_add(1)
+                            .expect("account nonce does not overflow");
+
+                        let Some(tracked_tx_list) = TrackedTxList::new_from_promote_pending(
+                            event_tracker,
+                            account_nonce,
+                            pending_tx_list,
+                        ) else {
+                            continue;
+                        };
+
+                        insertable -= 1;
+
+                        v.insert(tracked_tx_list);
+                    }
+                },
             }
         }
     }

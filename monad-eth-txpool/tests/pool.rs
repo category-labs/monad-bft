@@ -177,7 +177,13 @@ fn run_custom_iter<const N: usize>(
     pool.update_committed_block(
         &mut event_tracker,
         &MockChainConfig::DEFAULT,
-        generate_block_with_txs(Round(0), SeqNum(0), BASE_FEE_PER_GAS, Vec::default()),
+        generate_block_with_txs(
+            Round(0),
+            SeqNum(0),
+            BASE_FEE_PER_GAS,
+            &MockChainConfig::DEFAULT,
+            Vec::default(),
+        ),
     );
 
     let mut current_round = 1u64;
@@ -310,6 +316,7 @@ fn run_custom_iter<const N: usize>(
                         Round(current_round),
                         SeqNum(current_seq_num),
                         BASE_FEE_PER_GAS,
+                        &MockChainConfig::DEFAULT,
                         decoded_txns
                             .into_iter()
                             .map(|tx| {
