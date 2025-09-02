@@ -31,7 +31,7 @@ use crate::prelude::*;
 
 #[derive(Clone)]
 pub struct DynamoDBArchive {
-    pub s3: S3Bucket,
+    pub s3: Bucket,
     pub client: Client,
     pub table: String,
     pub semaphore: Arc<Semaphore>,
@@ -128,7 +128,7 @@ impl DynamoDBArchive {
     const WRITE_BATCH_SIZE: usize = 25;
 
     pub fn new(
-        s3: S3Bucket,
+        s3: Bucket,
         table: String,
         config: &SdkConfig,
         concurrency: usize,

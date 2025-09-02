@@ -60,7 +60,7 @@ impl KVStoreType {
 #[enum_dispatch(KVStore, KVReader)]
 #[derive(Clone)]
 pub enum KVStoreErased {
-    S3Bucket,
+    Bucket,
     DynamoDBArchive,
     MemoryStorage,
     MongoDbStorage,
@@ -69,7 +69,7 @@ pub enum KVStoreErased {
 #[enum_dispatch(KVReader)]
 #[derive(Clone)]
 pub enum KVReaderErased {
-    S3Bucket,
+    Bucket,
     MemoryStorage,
     DynamoDBArchive,
     CloudProxyReader,
@@ -79,7 +79,7 @@ pub enum KVReaderErased {
 impl From<KVStoreErased> for KVReaderErased {
     fn from(value: KVStoreErased) -> Self {
         match value {
-            KVStoreErased::S3Bucket(x) => KVReaderErased::S3Bucket(x),
+            KVStoreErased::Bucket(x) => KVReaderErased::Bucket(x),
             KVStoreErased::MemoryStorage(x) => KVReaderErased::MemoryStorage(x),
             KVStoreErased::DynamoDBArchive(x) => KVReaderErased::DynamoDBArchive(x),
             KVStoreErased::MongoDbStorage(x) => KVReaderErased::MongoDbStorage(x),
