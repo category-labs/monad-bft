@@ -37,7 +37,7 @@ use monad_state_backend::{StateBackend, StateBackendError};
 use monad_system_calls::{SystemTransactionGenerator, SYSTEM_SENDER_ETH_ADDRESS};
 use monad_types::{Epoch, NodeId, Round, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use self::{pending::PendingTxMap, tracked::TrackedTxMap, transaction::ValidEthTransaction};
 use crate::EthTxPoolEventTracker;
@@ -264,39 +264,60 @@ where
         // u64::MAX seconds is ~500 Billion years
         assert!(timestamp_seconds < u64::MAX.into());
 
-        let self_eth_address = node_id.pubkey().get_eth_address();
-        let system_transactions = self.get_system_transactions(
+        let system_txs = self.get_system_transactions(
             proposed_seq_num,
             epoch,
-            self_eth_address,
+            node_id.pubkey().get_eth_address(),
             &extending_blocks.iter().collect(),
             block_policy,
             state_backend,
             chain_config,
         )?;
-        let system_txs_size: u64 = system_transactions
-            .iter()
-            .map(|tx| tx.length() as u64)
-            .sum();
 
-        let user_transactions = self.tracked.create_proposal(
-            event_tracker,
-            proposed_seq_num,
-            base_fee,
-            tx_limit - system_transactions.len(),
-            proposal_gas_limit,
-            proposal_byte_limit - system_txs_size,
-            block_policy,
-            extending_blocks.iter().collect(),
-            state_backend,
-            chain_config,
-            &mut self.pending,
-        )?;
+        let user_txs = {
+            let Some(user_tx_limit) = tx_limit.checked_sub(system_txs.len()) else {
+                error!(
+                    ?tx_limit,
+                    system_txs_len = system_txs.len(),
+                    "system txs exceeds proposal tx limit"
+                );
+
+                // TODO(andr-dev): Use better errors
+                return Err(StateBackendError::NeverAvailable);
+            };
+
+            let system_txs_bytes: u64 = system_txs.iter().map(|tx| tx.length() as u64).sum();
+
+            let Some(user_byte_limit) = proposal_byte_limit.checked_sub(system_txs_bytes) else {
+                error!(
+                    ?proposal_byte_limit,
+                    ?system_txs_bytes,
+                    "system txs exceeds proposal byte limit"
+                );
+
+                // TODO(andr-dev): Use better errors
+                return Err(StateBackendError::NeverAvailable);
+            };
+
+            self.tracked.create_proposal(
+                event_tracker,
+                proposed_seq_num,
+                base_fee,
+                user_tx_limit,
+                proposal_gas_limit,
+                user_byte_limit,
+                block_policy,
+                extending_blocks.iter().collect(),
+                state_backend,
+                chain_config,
+                &mut self.pending,
+            )?
+        };
 
         let body = EthBlockBody {
-            transactions: system_transactions
+            transactions: system_txs
                 .into_iter()
-                .chain(user_transactions)
+                .chain(user_txs)
                 .map(|tx| tx.into_tx())
                 .collect(),
             ommers: Vec::new(),
