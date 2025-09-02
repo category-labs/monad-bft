@@ -1257,7 +1257,13 @@ where
         let mut commands = Vec::new();
 
         let delay = self.consensus_config.execution_delay;
-        let last_delay_committed_blocks: Vec<_> = root_parent_chain
+        // TFM reserve balance checking requires N-2*state_root_delay+2 blocks to validate N
+        // let N == root_qc_seq_num
+        // n in DoneSync(n) == N - delay
+        // (N-2*delay, N] have been committed
+        // (N-delay-256, N-delay] block hashes are available to execution
+        // (N-delay, N] roots have been requested
+        let last_two_delay_committed_blocks: Vec<_> = root_parent_chain
             .iter()
             .map(|full_block| {
                 self.block_validator
@@ -1271,21 +1277,21 @@ where
                     )
                     .expect("majority committed invalid block")
             })
-            .take(delay.0 as usize)
+            .take(delay.0.saturating_mul(2) as usize)
             .rev()
             .collect();
 
         // reset block_policy and txpool
         self.block_policy.reset(
-            last_delay_committed_blocks.iter().collect(),
+            last_two_delay_committed_blocks.iter().collect(),
             &self.consensus_config.chain_config,
         );
         commands.push(Command::TxPoolCommand(TxPoolCommand::Reset {
-            last_delay_committed_blocks: last_delay_committed_blocks.clone(),
+            last_delay_committed_blocks: last_two_delay_committed_blocks.clone(),
         }));
 
         // commit blocks
-        for block in last_delay_committed_blocks {
+        for block in last_two_delay_committed_blocks {
             commands.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
                 OptimisticCommit::Proposed(block.deref().to_owned()),
             )));

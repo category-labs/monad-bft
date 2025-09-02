@@ -16,6 +16,7 @@
 use std::{fmt::Debug, time::Duration};
 
 pub const CHAIN_PARAMS_LATEST: ChainParams = CHAIN_PARAMS_V_0_10_0;
+pub const CHAIN_PARAMS_LATEST_NEXT: ChainParams = CHAIN_PARAMS_V_0_11_0;
 
 pub trait ChainRevision: Copy + Clone {
     fn chain_params(&self) -> &'static ChainParams;
@@ -27,6 +28,7 @@ pub enum MonadChainRevision {
     V_0_7_0,
     V_0_8_0,
     V_0_10_0,
+    V_0_11_0,
 }
 
 impl ChainRevision for MonadChainRevision {
@@ -35,6 +37,7 @@ impl ChainRevision for MonadChainRevision {
             MonadChainRevision::V_0_7_0 => &CHAIN_PARAMS_V_0_7_0,
             MonadChainRevision::V_0_8_0 => &CHAIN_PARAMS_V_0_8_0,
             MonadChainRevision::V_0_10_0 => &CHAIN_PARAMS_V_0_10_0,
+            MonadChainRevision::V_0_11_0 => &CHAIN_PARAMS_V_0_11_0,
         }
     }
 }
@@ -46,7 +49,7 @@ pub struct MockChainRevision {
 
 impl MockChainRevision {
     pub const DEFAULT: Self = Self {
-        chain_params: &CHAIN_PARAMS_LATEST,
+        chain_params: &CHAIN_PARAMS_LATEST_NEXT,
     };
 }
 
@@ -62,6 +65,7 @@ pub struct ChainParams {
     pub proposal_gas_limit: u64,
     // Max proposal size in bytes (average transactions ~400 bytes)
     pub proposal_byte_limit: u64,
+    pub max_reserve_balance: u128,
     pub vote_pace: Duration,
 
     pub tfm: bool,
@@ -72,6 +76,7 @@ const CHAIN_PARAMS_V_0_7_0: ChainParams = ChainParams {
     tx_limit: 10_000,
     proposal_gas_limit: 300_000_000,
     proposal_byte_limit: 4_000_000,
+    max_reserve_balance: 100_000_000_000_000_000_000, // 100 MON
     vote_pace: Duration::from_millis(1000),
 
     tfm: false,
@@ -82,6 +87,7 @@ const CHAIN_PARAMS_V_0_8_0: ChainParams = ChainParams {
     tx_limit: 5_000,
     proposal_gas_limit: 150_000_000,
     proposal_byte_limit: 2_000_000,
+    max_reserve_balance: 100_000_000_000_000_000_000, // 100 MON
     vote_pace: Duration::from_millis(500),
 
     tfm: false,
@@ -92,10 +98,22 @@ const CHAIN_PARAMS_V_0_10_0: ChainParams = ChainParams {
     tx_limit: 5_000,
     proposal_gas_limit: 150_000_000,
     proposal_byte_limit: 2_000_000,
+    max_reserve_balance: 100_000_000_000_000_000_000, // 100 MON
     vote_pace: Duration::from_millis(400),
 
     tfm: false,
     eip_7702: false,
+};
+
+const CHAIN_PARAMS_V_0_11_0: ChainParams = ChainParams {
+    tx_limit: 5_000,
+    proposal_gas_limit: 150_000_000,
+    proposal_byte_limit: 2_000_000,
+    max_reserve_balance: 100_000_000_000_000_000_000, // 100 MON
+    vote_pace: Duration::from_millis(400),
+
+    tfm: true,
+    eip_7702: true,
 };
 
 #[cfg(test)]
@@ -106,5 +124,6 @@ mod test {
     fn chain_revision_ord() {
         assert!(MonadChainRevision::V_0_7_0 < MonadChainRevision::V_0_8_0);
         assert!(MonadChainRevision::V_0_8_0 < MonadChainRevision::V_0_10_0);
+        assert!(MonadChainRevision::V_0_10_0 < MonadChainRevision::V_0_11_0);
     }
 }

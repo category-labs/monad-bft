@@ -18,7 +18,7 @@ use std::time::Duration;
 use alloy_consensus::{
     constants::EMPTY_WITHDRAWALS, transaction::Recovered, TxEnvelope, EMPTY_OMMER_ROOT_HASH,
 };
-use alloy_primitives::{Address, U256};
+use alloy_primitives::Address;
 use alloy_rlp::Encodable;
 use itertools::Itertools;
 use monad_chain_config::{
@@ -26,7 +26,10 @@ use monad_chain_config::{
     revision::{ChainRevision, MockChainRevision},
     ChainConfig, MockChainConfig,
 };
-use monad_consensus_types::{block::ProposedExecutionInputs, payload::RoundSignature};
+use monad_consensus_types::{
+    block::{BlockPolicyError, ProposedExecutionInputs},
+    payload::RoundSignature,
+};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -35,7 +38,7 @@ use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason, E
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ExtractEthAddress, ProposedEthHeader};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_system_calls::{SystemTransactionGenerator, SYSTEM_SENDER_ETH_ADDRESS};
-use monad_types::{Epoch, NodeId, Round, SeqNum};
+use monad_types::{Balance, Epoch, NodeId, Round, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::{debug, info, warn};
 
@@ -178,7 +181,7 @@ where
         for tx in txs {
             if account_balances
                 .get(tx.signer_ref())
-                .is_none_or(U256::is_zero)
+                .is_none_or(|x| x.balance == Balance::ZERO)
             {
                 event_tracker.drop(tx.hash(), EthTxPoolDropReason::InsufficientBalance);
                 continue;
@@ -249,7 +252,7 @@ where
         block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
         state_backend: &SBT,
         chain_config: &CCT,
-    ) -> Result<ProposedExecutionInputs<EthExecutionProtocol>, StateBackendError> {
+    ) -> Result<ProposedExecutionInputs<EthExecutionProtocol>, BlockPolicyError> {
         info!(
             ?proposed_seq_num,
             ?tx_limit,
@@ -291,6 +294,7 @@ where
             state_backend,
             chain_config,
             &mut self.pending,
+            &self.chain_revision,
         )?;
 
         let body = EthBlockBody {

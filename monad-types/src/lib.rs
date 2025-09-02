@@ -70,6 +70,9 @@ impl Round {
     }
 }
 
+pub type Balance = U256;
+pub type Nonce = u64;
+
 impl AsRef<[u8]> for Round {
     fn as_ref(&self) -> &[u8] {
         self.0.as_bytes()

@@ -308,7 +308,8 @@ where
                     metrics.consensus_events.rx_base_fee_error += 1;
                 }
                 Err(
-                    BlockPolicyError::BlockNotCoherent
+                    BlockPolicyError::BlockPolicyBlockValidatorError(_)
+                    | BlockPolicyError::BlockNotCoherent
                     | BlockPolicyError::TimestampError
                     | BlockPolicyError::StateBackendError(StateBackendError::NeverAvailable),
                 ) => {
@@ -547,10 +548,10 @@ mod test {
         },
         NopKeyPair, NopSignature,
     };
-    use monad_eth_types::{Balance, EMPTY_RLP_TX_LIST};
+    use monad_eth_types::EMPTY_RLP_TX_LIST;
     use monad_state_backend::{InMemoryState, InMemoryStateInner};
     use monad_testutil::signing::MockSignatures;
-    use monad_types::{Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
+    use monad_types::{Balance, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 
     use super::BlockTree;
     use crate::blocktree::RootInfo;

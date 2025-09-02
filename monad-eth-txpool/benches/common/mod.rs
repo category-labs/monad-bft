@@ -25,6 +25,7 @@ use self::controller::BenchControllerConfig;
 mod controller;
 
 pub const EXECUTION_DELAY: u64 = 4;
+pub const RESERVE_BALANCE: u128 = 10_000_000_000_000_000_000;
 
 pub type SignatureType = NopSignature;
 pub type SignatureCollectionType = MockSignatures<NopSignature>;

@@ -39,10 +39,9 @@ use monad_eth_block_policy::{
 use monad_eth_testutil::{generate_block_with_txs, make_eip1559_tx, make_legacy_tx, recover_tx};
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
 use monad_eth_txpool_types::EthTxPoolSnapshot;
-use monad_eth_types::Balance;
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
-use monad_types::{Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
+use monad_types::{Balance, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing_test::traced_test;
 

@@ -45,7 +45,7 @@ const UPLOAD_CONCURRENCY: usize = 10;
 ///       - Else do a poor-man's exists: scan_prefix(key) and check for exact match.
 ///           - If exists: insert key into known set, skip.
 ///           - Else: read file and put(key, bytes). Do not insert into known set here; the next
-///                   iteration will observe existence via the exists check and add it then.
+///             iteration will observe existence via the exists check and add it then.
 /// - Sleep and repeat.
 pub async fn bft_block_archive_worker(
     store: KVStoreErased,
