@@ -177,7 +177,7 @@ where
 
         // FIXME: this uses hardcoded constants for gas usage and gas limit
         let (base_fee, base_fee_trend, base_fee_moment) = monad_tfm::base_fee::compute_base_fee(
-            150_000_000,
+            300_000_000,
             0,
             parent_base_fee,
             parent_base_fee_trend,

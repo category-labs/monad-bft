@@ -992,16 +992,16 @@ where
         )
     }
 
-    // TODO: introduce chain config to block policy to make parameters
-    // configurable
-    const BLOCK_GAS_LIMIT: u64 = 150_000_000;
-
     /// return value
     ///
     /// (base_fee, base_fee_trend, base_fee_moment)
     ///
     /// base_fee unit: MON-wei
-    pub fn compute_base_fee<B>(&self, extending_blocks: &[B]) -> (u64, u64, u64)
+    pub fn compute_base_fee<B>(
+        &self,
+        extending_blocks: &[B],
+        block_gas_limit: u64,
+    ) -> (u64, u64, u64)
     where
         B: AsRef<EthValidatedBlock<ST, SCT>>,
     {
@@ -1009,7 +1009,7 @@ where
             self.get_parent_base_fee_fields(extending_blocks);
 
         monad_tfm::base_fee::compute_base_fee(
-            Self::BLOCK_GAS_LIMIT,
+            block_gas_limit,
             parent_gas_usage,
             parent_base_fee,
             parent_trend,
@@ -1052,11 +1052,15 @@ where
 
         // check coherency against the block being extended or against the root of the blocktree if
         // there is no extending branch
-        let (extending_seq_num, extending_timestamp) =
+        let (extending_seq_num, extending_round, extending_timestamp) =
             if let Some(extended_block) = extending_blocks.last() {
-                (extended_block.get_seq_num(), extended_block.get_timestamp())
+                (
+                    extended_block.get_seq_num(),
+                    extended_block.get_block_round(),
+                    extended_block.get_timestamp(),
+                )
             } else {
-                (blocktree_root.seq_num, 0) //TODO: add timestamp to RootInfo
+                (blocktree_root.seq_num, blocktree_root.round, 0) //TODO: add timestamp to RootInfo
             };
 
         if block.get_seq_num() != extending_seq_num + SeqNum(1) {
@@ -1095,8 +1099,14 @@ where
             return Err(BlockPolicyError::ExecutionResultMismatch);
         }
 
+        let proposal_gas_limit = chain_config
+            .get_chain_revision(extending_round)
+            .chain_params()
+            .proposal_gas_limit;
+
         // verify base_fee fields
-        let (base_fee, base_fee_trend, base_fee_moment) = self.compute_base_fee(&extending_blocks);
+        let (base_fee, base_fee_trend, base_fee_moment) =
+            self.compute_base_fee(&extending_blocks, proposal_gas_limit);
         if base_fee != block.header().base_fee {
             warn!(
                 seq_num =? block.header().seq_num,

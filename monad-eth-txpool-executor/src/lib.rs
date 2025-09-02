@@ -289,8 +289,9 @@ where
 
                     let create_proposal_start = Instant::now();
 
-                    let (base_fee, base_fee_trend, base_fee_moment) =
-                        self.block_policy.compute_base_fee(&extending_blocks);
+                    let (base_fee, base_fee_trend, base_fee_moment) = self
+                        .block_policy
+                        .compute_base_fee(&extending_blocks, proposal_gas_limit);
 
                     match self.pool.create_proposal(
                         &mut event_tracker,

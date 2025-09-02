@@ -302,7 +302,7 @@ where
                     delayed_execution_results,
                 } => {
                     let (base_fee, base_fee_trend, base_fee_moment) =
-                        block_policy.compute_base_fee(&extending_blocks);
+                        block_policy.compute_base_fee(&extending_blocks, proposal_gas_limit);
 
                     let proposed_execution_inputs = pool
                         .create_proposal(
