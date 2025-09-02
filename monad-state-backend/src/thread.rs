@@ -280,9 +280,8 @@ mod test {
     use std::time::Duration;
 
     use monad_crypto::NopSignature;
-    use monad_eth_types::Balance;
     use monad_multi_sig::MultiSig;
-    use monad_types::{SeqNum, GENESIS_BLOCK_ID, GENESIS_SEQ_NUM};
+    use monad_types::{Balance, SeqNum, GENESIS_BLOCK_ID, GENESIS_SEQ_NUM};
 
     use crate::{InMemoryStateInner, StateBackend, StateBackendThreadClient};
 

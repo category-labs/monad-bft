@@ -65,9 +65,9 @@ where
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
-    pub(crate) fn set_coherent(&mut self, block_id: &BlockId, coherent: bool) -> Option<()> {
-        self.tree.get_mut(block_id)?.is_coherent = coherent;
-        Some(())
+    pub(crate) fn set_coherent(&mut self, block_id: &BlockId, coherent: bool) -> Result<(), ()> {
+        self.tree.get_mut(block_id).ok_or(())?.is_coherent = coherent;
+        Ok(())
     }
 
     pub(crate) fn remove(

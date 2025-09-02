@@ -35,7 +35,7 @@ mod test {
     use monad_eth_block_validator::EthBlockValidator;
     use monad_eth_ledger::MockEthLedger;
     use monad_eth_testutil::{make_legacy_tx, secret_to_eth_address};
-    use monad_eth_types::{Balance, EthExecutionProtocol};
+    use monad_eth_types::EthExecutionProtocol;
     use monad_mock_swarm::{
         mock::TimestamperConfig,
         mock_swarm::{Nodes, SwarmBuilder},
@@ -53,7 +53,7 @@ mod test {
         DropTransformer, GenericTransformer, GenericTransformerPipeline, LatencyTransformer,
         PartitionTransformer, ID,
     };
-    use monad_types::{NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
+    use monad_types::{Balance, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
     use monad_updaters::{
         ledger::MockableLedger, statesync::MockStateSyncExecutor, txpool::MockTxPoolExecutor,
         val_set::MockValSetUpdaterNop,
@@ -133,11 +133,13 @@ mod test {
     const CONSENSUS_DELTA: Duration = Duration::from_millis(100);
     const BASE_FEE: u128 = monad_tfm::base_fee::MIN_BASE_FEE as u128;
     const GAS_LIMIT: u64 = 30000;
+    const ROUND: u64 = 1;
 
     static CHAIN_PARAMS: ChainParams = ChainParams {
         tx_limit: 10_000,
         proposal_gas_limit: 300_000_000,
         proposal_byte_limit: 4_000_000,
+        max_reserve_balance: 1_000_000_000_000_000_000,
         vote_pace: Duration::from_millis(0),
 
         tfm: false,

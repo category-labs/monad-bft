@@ -27,7 +27,7 @@ use monad_crypto::{
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthBlockValidator;
-use monad_eth_types::{Balance, EthExecutionProtocol};
+use monad_eth_types::EthExecutionProtocol;
 use monad_mock_swarm::{
     mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
     swarm_relation::SwarmRelation, terminator::UntilTerminator,
@@ -38,7 +38,7 @@ use monad_state::{MonadMessage, VerifiedMonadMessage};
 use monad_state_backend::{InMemoryState, InMemoryStateInner};
 use monad_testutil::swarm::make_state_configs;
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID};
-use monad_types::{NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
+use monad_types::{Balance, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_updaters::{
     ledger::{MockLedger, MockableLedger},
     statesync::MockStateSyncExecutor,
@@ -120,6 +120,7 @@ static CHAIN_PARAMS: ChainParams = ChainParams {
     tx_limit: 10_000,
     proposal_gas_limit: 300_000_000,
     proposal_byte_limit: 4_000_000,
+    max_reserve_balance: 1_000_000_000_000_000_000,
     vote_pace: Duration::from_millis(0),
 
     tfm: false,

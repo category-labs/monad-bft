@@ -255,9 +255,10 @@ mod test {
             proposal_gas_limit,
             proposal_byte_limit: MockChainRevision::DEFAULT.chain_params.proposal_byte_limit,
             vote_pace: MockChainRevision::DEFAULT.chain_params.vote_pace,
+            max_reserve_balance: MockChainRevision::DEFAULT.chain_params.max_reserve_balance,
 
-            tfm: false,
-            eip_7702: false,
+            tfm: MockChainRevision::DEFAULT.chain_params.tfm,
+            eip_7702: MockChainRevision::DEFAULT.chain_params.eip_7702,
         }
     }
 

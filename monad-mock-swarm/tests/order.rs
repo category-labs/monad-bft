@@ -25,7 +25,6 @@ use monad_consensus_types::{
     block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
-use monad_eth_types::Balance;
 use monad_mock_swarm::{
     fetch_metric, mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
     swarm_relation::NoSerSwarm, terminator::UntilTerminator, verifier::MockSwarmVerifier,
@@ -37,7 +36,7 @@ use monad_transformer::{
     GenericTransformer, LatencyTransformer, PartitionTransformer, ReplayTransformer,
     TransformerReplayOrder, ID,
 };
-use monad_types::{NodeId, SeqNum};
+use monad_types::{Balance, NodeId, SeqNum};
 use monad_updaters::{
     ledger::{MockLedger, MockableLedger},
     statesync::MockStateSyncExecutor,
@@ -52,6 +51,7 @@ static CHAIN_PARAMS: ChainParams = ChainParams {
     tx_limit: 10_000,
     proposal_gas_limit: 300_000_000,
     proposal_byte_limit: 4_000_000,
+    max_reserve_balance: 1_000_000_000_000_000_000,
     vote_pace: Duration::from_millis(0),
 
     tfm: false,

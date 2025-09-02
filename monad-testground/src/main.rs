@@ -34,7 +34,6 @@ use monad_crypto::certificate_signature::{
     CertificateSignatureRecoverable,
 };
 use monad_dataplane::udp::DEFAULT_MTU;
-use monad_eth_types::Balance;
 use monad_executor::Executor;
 use monad_node_config::{
     fullnode_raptorcast::SecondaryRaptorCastModeConfig, FullNodeConfig, FullNodeRaptorCastConfig,
@@ -42,7 +41,7 @@ use monad_node_config::{
 use monad_raptorcast::config::RaptorCastConfig;
 use monad_secp::SecpSignature;
 use monad_state_backend::InMemoryStateInner;
-use monad_types::{NodeId, Round, SeqNum, Stake};
+use monad_types::{Balance, NodeId, Round, SeqNum, Stake};
 use monad_updaters::{ledger::MockableLedger, local_router::LocalRouterConfig};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionKeyPairType};
 use opentelemetry::trace::{Span, TraceContextExt, Tracer};
@@ -122,6 +121,7 @@ static CHAIN_PARAMS: ChainParams = ChainParams {
     tx_limit: 10_000,
     proposal_gas_limit: 300_000_000,
     proposal_byte_limit: 4_000_000,
+    max_reserve_balance: 1_000_000_000_000_000_000,
     vote_pace: Duration::from_millis(0),
 
     tfm: false,

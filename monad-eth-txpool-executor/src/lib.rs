@@ -381,7 +381,6 @@ where
                     upcoming_leader_rounds,
                 } => {
                     self.pool.enter_round(&self.chain_config, round);
-
                     debug!(
                         ?round,
                         "txpool executor entered round, submitting preload requests"

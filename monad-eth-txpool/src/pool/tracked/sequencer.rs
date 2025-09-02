@@ -19,14 +19,18 @@ use std::{
 };
 
 use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
-use alloy_primitives::{Address, U256};
+use alloy_primitives::Address;
 use indexmap::IndexMap;
+use monad_chain_config::revision::ChainRevision;
+use monad_consensus_types::block::{AccountBalanceState, BlockPolicyBlockValidator};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_block_policy::{AccountNonceRetrievable, EthValidatedBlock};
+use monad_eth_block_policy::{
+    AccountNonceRetrievable, EthBlockPolicyBlockValidator, EthValidatedBlock,
+};
 use monad_validator::signature_collection::SignatureCollection;
-use tracing::{error, trace};
+use tracing::{debug, error, trace};
 
 use super::list::TrackedTxList;
 use crate::pool::transaction::ValidEthTransaction;
@@ -142,12 +146,13 @@ impl<'a> ProposalSequencer<'a> {
         )
     }
 
-    pub fn build_proposal(
+    pub fn build_proposal<CRT: ChainRevision>(
         mut self,
         tx_limit: usize,
         proposal_gas_limit: u64,
         proposal_byte_limit: u64,
-        mut account_balances: BTreeMap<&Address, U256>,
+        mut account_balances: BTreeMap<&Address, AccountBalanceState>,
+        mut validator: EthBlockPolicyBlockValidator<CRT>,
     ) -> Proposal {
         let mut proposal = Proposal::default();
 
@@ -170,6 +175,7 @@ impl<'a> ProposalSequencer<'a> {
                 proposal_gas_limit,
                 proposal_byte_limit,
                 &mut account_balances,
+                &validator,
                 &mut proposal,
                 address,
                 tx,
@@ -184,10 +190,11 @@ impl<'a> ProposalSequencer<'a> {
     }
 
     #[inline]
-    fn try_add_tx_to_proposal(
+    fn try_add_tx_to_proposal<CRT: ChainRevision>(
         proposal_gas_limit: u64,
         proposal_byte_limit: u64,
-        account_balances: &mut BTreeMap<&Address, U256>,
+        account_balances: &mut BTreeMap<&Address, AccountBalanceState>,
+        validator: &EthBlockPolicyBlockValidator<CRT>,
         proposal: &mut Proposal,
         address: &Address,
         tx: &ValidEthTransaction,
@@ -217,11 +224,16 @@ impl<'a> ProposalSequencer<'a> {
             return false;
         };
 
-        let Some(new_account_balance) = tx.apply_max_value(*account_balance) else {
+        if let Err(error) = validator.try_add_transaction(account_balances, tx.raw()) {
+            debug!(
+                ?error,
+                signer = ?tx.raw().signer(),
+                gas_limit = ?tx.gas_limit(),
+                value = ?tx.raw().value(),
+                gas_fee = ?tx.raw().max_fee_per_gas(),
+                "insufficient balance");
             return false;
-        };
-
-        *account_balance = new_account_balance;
+        }
 
         proposal.total_gas += tx.gas_limit();
         proposal.total_size += tx_size;

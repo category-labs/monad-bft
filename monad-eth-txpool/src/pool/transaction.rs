@@ -21,12 +21,14 @@ use monad_consensus_types::block::ConsensusBlockHeader;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_block_policy::{compute_txn_max_value, validation::static_validate_transaction};
+use monad_eth_block_policy::{
+    compute_txn_max_gas_cost, compute_txn_max_value, validation::static_validate_transaction,
+};
 use monad_eth_txpool_types::{EthTxPoolDropReason, TransactionError};
-use monad_eth_types::{Balance, EthExecutionProtocol, Nonce};
+use monad_eth_types::EthExecutionProtocol;
 use monad_system_calls::validator::SystemTransactionValidator;
 use monad_tfm::base_fee::MIN_BASE_FEE;
-use monad_types::SeqNum;
+use monad_types::{Balance, Nonce, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::trace;
 
@@ -39,6 +41,7 @@ pub struct ValidEthTransaction {
     forward_last_seqnum: SeqNum,
     forward_retries: usize,
     max_value: Balance,
+    max_gas_cost: Balance,
 }
 
 impl ValidEthTransaction {
@@ -69,7 +72,9 @@ impl ValidEthTransaction {
             return None;
         }
 
-        let max_value = compute_txn_max_value(&tx);
+        // TODO(misha): use a method that can put readl base_fee to txn at some point.
+        let max_value = compute_txn_max_value(&tx, last_commit.base_fee);
+        let max_gas_cost = compute_txn_max_gas_cost(&tx, last_commit.base_fee);
 
         let this = Self {
             tx,
@@ -77,6 +82,7 @@ impl ValidEthTransaction {
             forward_last_seqnum: last_commit.seq_num,
             forward_retries: 0,
             max_value,
+            max_gas_cost,
         };
 
         if let Err(error) = this.static_validate(chain_id, chain_params, execution_params) {
@@ -114,6 +120,10 @@ impl ValidEthTransaction {
         );
 
         None
+    }
+
+    pub fn apply_max_gas_cost(&self, balance: Balance) -> Option<Balance> {
+        balance.checked_sub(self.max_gas_cost)
     }
 
     pub const fn signer(&self) -> Address {

@@ -1893,9 +1893,7 @@ mod test {
     };
     use monad_eth_block_policy::EthBlockPolicy;
     use monad_eth_block_validator::EthBlockValidator;
-    use monad_eth_types::{
-        Balance, EthBlockBody, EthExecutionProtocol, EthHeader, ProposedEthHeader,
-    };
+    use monad_eth_types::{EthBlockBody, EthExecutionProtocol, EthHeader, ProposedEthHeader};
     use monad_multi_sig::MultiSig;
     use monad_state_backend::{InMemoryState, InMemoryStateInner, StateBackend, StateBackendTest};
     use monad_testutil::{
@@ -1904,7 +1902,7 @@ mod test {
         validators::create_keys_w_validators,
     };
     use monad_types::{
-        BlockId, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum, Stake,
+        Balance, BlockId, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum, Stake,
         GENESIS_SEQ_NUM,
     };
     use monad_validator::{
@@ -1929,11 +1927,14 @@ mod test {
     const BASE_FEE_MOMENT: u64 = 0;
     const EPOCH_LENGTH: SeqNum = SeqNum(100);
     const EPOCH_START_DELAY: Round = Round(20);
+    const GAS_LIMIT: u64 = 30000;
+    const RESERVE_BALANCE: u128 = 1_000_000_000_000_000_000;
 
     static CHAIN_PARAMS: ChainParams = ChainParams {
         tx_limit: 10_000,
         proposal_gas_limit: 300_000_000,
         proposal_byte_limit: 4_000_000,
+        max_reserve_balance: RESERVE_BALANCE,
         vote_pace: Duration::from_millis(1000),
 
         tfm: false,

@@ -20,14 +20,16 @@ use alloy_primitives::Address;
 use indexmap::{map::Entry as IndexMapEntry, IndexMap};
 use itertools::Itertools;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
-use monad_consensus_types::block::ConsensusBlockHeader;
+use monad_consensus_types::block::{
+    BlockPolicyBlockValidator, BlockPolicyError, ConsensusBlockHeader,
+};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
+use monad_eth_block_policy::{EthBlockPolicy, EthBlockPolicyBlockValidator, EthValidatedBlock};
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason};
 use monad_eth_types::EthExecutionProtocol;
-use monad_state_backend::{StateBackend, StateBackendError};
+use monad_state_backend::StateBackend;
 use monad_types::{DropTimer, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::{debug, error, info, warn};
@@ -158,7 +160,8 @@ where
         state_backend: &SBT,
         chain_config: &CCT,
         pending: &mut PendingTxMap,
-    ) -> Result<Vec<Recovered<TxEnvelope>>, StateBackendError> {
+        chain_revision: &CRT,
+    ) -> Result<Vec<Recovered<TxEnvelope>>, BlockPolicyError> {
         let Some(last_commit) = &self.last_commit else {
             return Ok(Vec::new());
         };
@@ -232,11 +235,19 @@ where
             "txpool sequencing transactions"
         );
 
+        let validator = EthBlockPolicyBlockValidator::new(
+            proposed_seq_num,
+            block_policy.get_execution_delay(),
+            base_fee,
+            chain_revision,
+        )?;
+
         let proposal = sequencer.build_proposal(
             tx_limit,
             proposal_gas_limit,
             proposal_byte_limit,
             account_balances,
+            validator,
         );
 
         let proposal_num_txs = proposal.txs.len();
