@@ -234,7 +234,6 @@ where
                     sequencer.addresses(),
                 )?,
                 block_policy.get_account_base_nonces(
-                    proposed_seq_num,
                     state_backend,
                     &extending_blocks,
                     authority_addresses.iter(),
@@ -348,12 +347,7 @@ where
 
         let addresses = to_insert.keys().cloned().collect_vec();
 
-        // BlockPolicy only guarantees that data is available for seqnum (N-k, N] for some execution
-        // delay k. Since block_policy looks up seqnum - execution_delay, passing the last commit
-        // seqnum will result in a lookup outside that range. As a fix, we add 1 so the seqnum is on
-        // the edge of the range.
         let account_nonces = match block_policy.get_account_base_nonces(
-            last_commit_seq_num + SeqNum(1),
             state_backend,
             &Vec::default(),
             addresses.iter(),

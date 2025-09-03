@@ -482,7 +482,6 @@ where
         // exposing SYSTEM_SENDER_ETH_ADDRESS outside the crate
         let next_system_txn_nonce = *block_policy
             .get_account_base_nonces(
-                proposed_seq_num,
                 state_backend,
                 extending_blocks,
                 [SYSTEM_SENDER_ETH_ADDRESS].iter(),

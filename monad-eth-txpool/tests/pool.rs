@@ -373,7 +373,6 @@ fn run_custom_iter<const N: usize>(
             } => {
                 let mut nonces = eth_block_policy
                     .get_account_base_nonces(
-                        SeqNum(current_seq_num),
                         &state_backend,
                         &pending_blocks.iter().collect_vec(),
                         [&address].into_iter(),

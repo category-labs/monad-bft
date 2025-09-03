@@ -649,10 +649,9 @@ where
         }
     }
 
-    /// returns account nonces at the start of the provided consensus block
+    /// returns account nonces at the end of the extending blocks
     pub fn get_account_base_nonces<'a>(
         &self,
-        consensus_block_seq_num: SeqNum,
         state_backend: &impl StateBackend<ST, SCT>,
         extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
         addresses: impl Iterator<Item = &'a Address>,
@@ -666,14 +665,14 @@ where
 
         let addresses = addresses.unique().collect::<HashSet<&'a Address>>();
 
-        let base_seq_num = consensus_block_seq_num.max(self.execution_delay) - self.execution_delay;
+        let base_seq_num = self.last_commit.max(self.execution_delay) - self.execution_delay;
 
         let mut cached_nonce_usages = NonceUsageMap::default();
 
         for nonce_usages in self
             .committed_cache
             .blocks
-            // Committed cache is guaranteed to have blocks starting from N-2K
+            // Committed cache is guaranteed to have blocks (N-2k, N]
             .range(base_seq_num + SeqNum(1)..)
             .map(|(_, block)| &block.nonce_usages)
             .chain(extending_blocks.iter().map(|block| &block.nonce_usages))
@@ -1284,12 +1283,8 @@ where
             self.extract_signers(&block.validated_txns, &block.system_txns)?;
 
         // these must be updated as we go through txs in the block
-        let mut account_nonces = self.get_account_base_nonces(
-            block.get_seq_num(),
-            state_backend,
-            &extending_blocks,
-            tx_signers.iter(),
-        )?;
+        let mut account_nonces =
+            self.get_account_base_nonces(state_backend, &extending_blocks, tx_signers.iter())?;
         // these must be updated as we go through txs in the block
         let mut account_balances = self.compute_account_base_balances(
             block.get_seq_num(),
@@ -3031,7 +3026,6 @@ mod test {
         {
             let (s2, s2_nonce) = block_policy
                 .get_account_base_nonces(
-                    SeqNum(1),
                     &state_backend,
                     &vec![&make_test_block(
                         Round(1),
@@ -3060,7 +3054,6 @@ mod test {
         {
             let (s2, s2_nonce) = block_policy
                 .get_account_base_nonces(
-                    SeqNum(1),
                     &state_backend,
                     &vec![&make_test_block(
                         Round(1),
