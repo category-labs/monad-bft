@@ -258,12 +258,8 @@ fn extract_output_info(output: ReturnType) -> Option<(String, Type, TokenStream2
 fn generate_schema_expr(ty: &Type) -> TokenStream2 {
     match ty {
         Type::Path(type_path) => {
-            let type_ident = match &type_path.path.segments.last() {
-                Some(segment) => &segment.ident,
-                None => return quote! { None },
-            };
             quote! {
-                Some(schemars::schema_for!(#type_ident))
+                Some(schemars::schema_for!(#type_path))
             }
         }
         Type::Reference(type_reference) => {
