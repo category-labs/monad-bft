@@ -15,9 +15,7 @@
 
 use std::{fmt::Debug, time::Duration};
 
-// TODO update to CHAIN_PARAMS_V_0_11_0
-pub const CHAIN_PARAMS_LATEST: ChainParams = CHAIN_PARAMS_V_0_10_0;
-pub const CHAIN_PARAMS_LATEST_NEXT: ChainParams = CHAIN_PARAMS_V_0_11_0;
+pub const CHAIN_PARAMS_LATEST: ChainParams = CHAIN_PARAMS_V_0_11_0;
 
 pub trait ChainRevision: Copy + Clone {
     fn chain_params(&self) -> &'static ChainParams;
@@ -50,7 +48,7 @@ pub struct MockChainRevision {
 
 impl MockChainRevision {
     pub const DEFAULT: Self = Self {
-        chain_params: &CHAIN_PARAMS_LATEST_NEXT,
+        chain_params: &CHAIN_PARAMS_LATEST,
     };
 }
 

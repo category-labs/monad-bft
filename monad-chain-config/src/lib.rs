@@ -16,7 +16,7 @@
 use execution_revision::MonadExecutionRevision;
 use monad_types::{Epoch, Round, SeqNum};
 use revision::{
-    ChainParams, ChainRevision, MockChainRevision, MonadChainRevision, CHAIN_PARAMS_LATEST_NEXT,
+    ChainParams, ChainRevision, MockChainRevision, MonadChainRevision, CHAIN_PARAMS_LATEST,
 };
 use serde::Deserialize;
 use thiserror::Error;
@@ -235,7 +235,7 @@ pub struct MockChainConfig {
 
 impl MockChainConfig {
     pub const DEFAULT: Self = Self {
-        chain_params: &CHAIN_PARAMS_LATEST_NEXT,
+        chain_params: &CHAIN_PARAMS_LATEST,
         epoch_length: SeqNum::MAX,
         epoch_start_delay: Round::MAX,
     };
