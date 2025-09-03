@@ -296,6 +296,7 @@ where
             chain_config,
             &mut self.pending,
             &self.chain_revision,
+            &self.execution_revision,
         )?;
 
         let body = EthBlockBody {

@@ -57,6 +57,7 @@ pub struct MonadChainConfig {
 
     pub execution_v_one_activation: u64,
     pub execution_v_two_activation: u64,
+    pub execution_v_four_activation: u64,
 }
 
 #[derive(Debug, Error)]
@@ -144,7 +145,9 @@ impl ChainConfig<MonadChainRevision> for MonadChainConfig {
     }
 
     fn get_execution_chain_revision(&self, execution_timestamp_s: u64) -> MonadExecutionRevision {
-        if execution_timestamp_s >= self.execution_v_two_activation {
+        if execution_timestamp_s >= self.execution_v_four_activation {
+            MonadExecutionRevision::V_FOUR
+        } else if execution_timestamp_s >= self.execution_v_two_activation {
             MonadExecutionRevision::V_TWO
         } else if execution_timestamp_s >= self.execution_v_one_activation {
             MonadExecutionRevision::V_ONE
@@ -168,6 +171,7 @@ const MONAD_DEVNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
 
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
+    execution_v_four_activation: 0,
 };
 
 const MONAD_TESTNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
@@ -184,6 +188,7 @@ const MONAD_TESTNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
 
     execution_v_one_activation: 1739559600, // 2025-02-14T19:00:00.000Z
     execution_v_two_activation: 1741978800, // 2025-03-14T19:00:00.000Z
+    execution_v_four_activation: u64::MAX,
 };
 
 const MONAD_TESTNET2_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
@@ -200,6 +205,7 @@ const MONAD_TESTNET2_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
 
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
+    execution_v_four_activation: u64::MAX,
 };
 
 // Mainnet uses latest version of testnet from genesis
@@ -217,6 +223,7 @@ const MONAD_MAINNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
 
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
+    execution_v_four_activation: u64::MAX,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

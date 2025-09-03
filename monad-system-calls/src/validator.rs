@@ -246,8 +246,7 @@ mod test {
         vote_pace: Duration::from_millis(400),
 
         validate_system_txs: true,
-        eip_7702: false,
-        tfm: false,
+        eip_7702: true,
     };
 
     const BASE_FEE: u64 = 100_000_000_000;

@@ -26,7 +26,9 @@ use alloy_consensus::{
 use alloy_eips::eip7702::SignedAuthorization;
 use alloy_primitives::{Address, TxHash, U256};
 use itertools::Itertools;
-use monad_chain_config::{revision::ChainRevision, ChainConfig};
+use monad_chain_config::{
+    execution_revision::MonadExecutionRevision, revision::ChainRevision, ChainConfig,
+};
 use monad_consensus_types::{
     block::{
         AccountBalanceState, BlockPolicy, BlockPolicyBlockValidator,
@@ -177,6 +179,7 @@ struct CommittedBlock {
     epoch: Epoch,
     seq_num: SeqNum,
     nonce_usages: NonceUsageMap,
+    timestamp_ns: u128,
     fees: BlockTxnFeeStates,
 
     base_fee: u64,
@@ -256,6 +259,9 @@ where
                     execution_delay,
                     block.base_fee,
                     &chain_config.get_chain_revision(block.round),
+                    &chain_config.get_execution_chain_revision(convert_timestamp_to_seconds(
+                        block.timestamp_ns,
+                    )),
                 )?;
                 trace!(
                     "applying fees for block {:?}, curr acc balance: {:?}",
@@ -311,6 +317,7 @@ where
                     epoch: block.get_epoch(),
                     seq_num: block.get_seq_num(),
                     nonce_usages: block.nonce_usages.clone(),
+                    timestamp_ns: block.get_timestamp(),
                     fees: BlockTxnFeeStates {
                         txn_fees: block.txn_fees.clone()
                     },
@@ -333,6 +340,7 @@ where
     execution_delay: SeqNum,
     base_fee: u64,
     chain_revision: CRT,
+    execution_chain_revision: MonadExecutionRevision,
     _phantom: PhantomData<CRT>,
 }
 
@@ -350,6 +358,12 @@ fn is_possibly_emptying_transaction(
     !balance_state.is_delegated && blocks_since_latest_txn > execution_delay - SeqNum(1)
 }
 
+fn convert_timestamp_to_seconds(timestamp_ns: u128) -> u64 {
+    let timestamp_seconds = timestamp_ns / 1_000_000_000;
+    assert!(timestamp_seconds < u64::MAX.into());
+    timestamp_seconds as u64
+}
+
 impl<CRT> BlockPolicyBlockValidator<CRT> for EthBlockPolicyBlockValidator<CRT>
 where
     Self: Sized,
@@ -362,12 +376,14 @@ where
         execution_delay: SeqNum,
         base_fee: u64,
         chain_revision: &CRT,
+        execution_chain_revision: &MonadExecutionRevision,
     ) -> Result<Self, BlockPolicyError> {
         Ok(Self {
             block_seq_num,
             execution_delay,
             base_fee,
             chain_revision: *chain_revision,
+            execution_chain_revision: *execution_chain_revision,
             _phantom: PhantomData,
         })
     }
@@ -378,7 +394,10 @@ where
         block_txn_fees: &TxnFee,
         eth_address: &Address,
     ) -> Result<(), BlockPolicyError> {
-        let tfm_enabled = self.chain_revision.chain_params().tfm;
+        let tfm_enabled = self
+            .execution_chain_revision
+            .execution_chain_params()
+            .tfm_enabled;
         let max_reserve_balance =
             Balance::from(self.chain_revision.chain_params().max_reserve_balance);
 
@@ -509,7 +528,11 @@ where
             ));
         };
 
-        if !self.chain_revision.chain_params().tfm {
+        if !self
+            .execution_chain_revision
+            .execution_chain_params()
+            .tfm_enabled
+        {
             let txn_cost = compute_max_txn_cost(txn);
             if account_balance.balance < txn_cost {
                 debug!(
@@ -921,6 +944,11 @@ where
                                         extending_block.get_base_fee(),
                                         &chain_config
                                             .get_chain_revision(extending_block.get_block_round()),
+                                        &chain_config.get_execution_chain_revision(
+                                            convert_timestamp_to_seconds(
+                                                extending_block.get_timestamp(),
+                                            ),
+                                        ),
                                     )?;
 
                                     validator.try_apply_block_fees(
@@ -1313,6 +1341,8 @@ where
             self.execution_delay,
             block.get_base_fee(),
             &chain_config.get_chain_revision(block.get_block_round()),
+            &chain_config
+                .get_execution_chain_revision(convert_timestamp_to_seconds(block.get_timestamp())),
         )?;
 
         self.system_transaction_nonce_check(&block.system_txns, &mut account_nonces)?;
@@ -1520,6 +1550,7 @@ mod test {
             block_policy.execution_delay,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
+            &MonadExecutionRevision::LATEST,
         )?;
 
         for txn in incoming_block.validated_txns.iter() {
@@ -2190,6 +2221,7 @@ mod test {
             round: Round(0),
             epoch: Epoch(1),
             seq_num: SeqNum(1),
+            timestamp_ns: 1,
             nonce_usages: NonceUsageMap {
                 map: BTreeMap::from([
                     (address1, NonceUsage::Known(1)),
@@ -2230,6 +2262,7 @@ mod test {
             block_id: BlockId(Hash(Default::default())),
             round: Round(0),
             epoch: Epoch(1),
+            timestamp_ns: 1,
             seq_num: SeqNum(2),
             nonce_usages: NonceUsageMap {
                 map: BTreeMap::from([
@@ -2272,6 +2305,7 @@ mod test {
             round: Round(0),
             epoch: Epoch(1),
             seq_num: SeqNum(3),
+            timestamp_ns: 1,
             nonce_usages: NonceUsageMap {
                 map: BTreeMap::from([
                     (address2, NonceUsage::Known(2)),
@@ -2442,6 +2476,7 @@ mod test {
             EXEC_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
+            &MonadExecutionRevision::LATEST,
         )
         .unwrap();
 
@@ -2468,6 +2503,7 @@ mod test {
             EXEC_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
+            &MonadExecutionRevision::LATEST,
         )
         .unwrap();
 
@@ -2510,6 +2546,7 @@ mod test {
             EXEC_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
+            &MonadExecutionRevision::LATEST,
         )
         .unwrap();
 
@@ -2536,6 +2573,7 @@ mod test {
             EXEC_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
+            &MonadExecutionRevision::LATEST,
         )
         .unwrap();
 
@@ -2579,6 +2617,7 @@ mod test {
             EXEC_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
+            &MonadExecutionRevision::LATEST,
         )
         .unwrap();
 
@@ -2622,6 +2661,7 @@ mod test {
             EXEC_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
+            &MonadExecutionRevision::LATEST,
         )
         .unwrap();
 
@@ -2651,6 +2691,7 @@ mod test {
             EXEC_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
+            &MonadExecutionRevision::LATEST,
         )
         .unwrap();
 
@@ -2693,6 +2734,7 @@ mod test {
             EXEC_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
+            &MonadExecutionRevision::LATEST,
         )
         .unwrap();
 
@@ -2722,6 +2764,7 @@ mod test {
             EXEC_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
+            &MonadExecutionRevision::LATEST,
         )
         .unwrap();
 
@@ -2787,6 +2830,7 @@ mod test {
             EXEC_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
+            &MonadExecutionRevision::LATEST,
         )
         .unwrap();
 
@@ -2860,6 +2904,7 @@ mod test {
             EXEC_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
+            &MonadExecutionRevision::LATEST,
         )
         .unwrap();
 
@@ -2905,6 +2950,7 @@ mod test {
             EXEC_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
+            &MonadExecutionRevision::LATEST,
         )
         .unwrap();
 

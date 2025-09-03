@@ -1938,8 +1938,7 @@ mod test {
         vote_pace: Duration::from_millis(1000),
 
         validate_system_txs: true,
-        tfm: false,
-        eip_7702: false,
+        eip_7702: true,
     };
 
     type SignatureType = NopSignature;

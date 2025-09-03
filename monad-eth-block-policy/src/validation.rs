@@ -269,7 +269,6 @@ mod test {
             max_reserve_balance: MockChainRevision::DEFAULT.chain_params.max_reserve_balance,
 
             validate_system_txs: MockChainRevision::DEFAULT.chain_params.validate_system_txs,
-            tfm: MockChainRevision::DEFAULT.chain_params.tfm,
             eip_7702: MockChainRevision::DEFAULT.chain_params.eip_7702,
         }
     }

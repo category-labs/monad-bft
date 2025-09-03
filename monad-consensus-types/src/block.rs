@@ -20,6 +20,7 @@ use alloy_rlp::{RlpDecodable, RlpEncodable};
 use auto_impl::auto_impl;
 use bytes::Bytes;
 use monad_chain_config::{
+    execution_revision::MonadExecutionRevision,
     revision::{ChainRevision, MockChainRevision},
     ChainConfig, MockChainConfig,
 };
@@ -237,6 +238,7 @@ where
         execution_delay: SeqNum,
         base_fee: u64,
         chain_revision: &CRT,
+        execution_chain_revision: &MonadExecutionRevision,
     ) -> Result<Self, BlockPolicyError>;
 
     fn try_apply_block_fees(

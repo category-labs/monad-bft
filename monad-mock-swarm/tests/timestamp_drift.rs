@@ -46,8 +46,7 @@ static CHAIN_PARAMS: ChainParams = ChainParams {
     vote_pace: Duration::from_millis(0),
 
     validate_system_txs: true,
-    tfm: false,
-    eip_7702: false,
+    eip_7702: true,
 };
 
 /// Timestamp adjustment is disabled in consensus state, but timestamp is still

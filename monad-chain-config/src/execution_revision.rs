@@ -19,10 +19,11 @@ pub enum MonadExecutionRevision {
     V_ZERO,
     V_ONE,
     V_TWO,
+    V_FOUR,
 }
 
 impl MonadExecutionRevision {
-    pub const LATEST: Self = Self::V_TWO;
+    pub const LATEST: Self = Self::V_FOUR;
 }
 
 impl MonadExecutionRevision {
@@ -31,6 +32,7 @@ impl MonadExecutionRevision {
             Self::V_ZERO => &EXECUTION_CHAIN_PARAMS_V_ZERO,
             Self::V_ONE => &EXECUTION_CHAIN_PARAMS_V_ONE,
             Self::V_TWO => &EXECUTION_CHAIN_PARAMS_V_TWO,
+            Self::V_FOUR => &EXECUTION_CHAIN_PARAMS_V_FOUR,
         }
     }
 }
@@ -38,16 +40,25 @@ impl MonadExecutionRevision {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExecutionChainParams {
     pub max_code_size: usize,
+    pub tfm_enabled: bool,
 }
 
 const EXECUTION_CHAIN_PARAMS_V_ZERO: ExecutionChainParams = ExecutionChainParams {
     max_code_size: 24 * 1024,
+    tfm_enabled: false,
 };
 
 const EXECUTION_CHAIN_PARAMS_V_ONE: ExecutionChainParams = ExecutionChainParams {
     max_code_size: 24 * 1024,
+    tfm_enabled: false,
 };
 
 const EXECUTION_CHAIN_PARAMS_V_TWO: ExecutionChainParams = ExecutionChainParams {
     max_code_size: 128 * 1024,
+    tfm_enabled: false,
+};
+
+const EXECUTION_CHAIN_PARAMS_V_FOUR: ExecutionChainParams = ExecutionChainParams {
+    max_code_size: 128 * 1024,
+    tfm_enabled: true,
 };

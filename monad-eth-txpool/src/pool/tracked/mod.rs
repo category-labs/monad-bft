@@ -19,7 +19,9 @@ use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use alloy_primitives::Address;
 use indexmap::{map::Entry as IndexMapEntry, IndexMap};
 use itertools::Itertools;
-use monad_chain_config::{revision::ChainRevision, ChainConfig};
+use monad_chain_config::{
+    execution_revision::MonadExecutionRevision, revision::ChainRevision, ChainConfig,
+};
 use monad_consensus_types::block::{
     BlockPolicyBlockValidator, BlockPolicyError, ConsensusBlockHeader,
 };
@@ -165,6 +167,7 @@ where
         chain_config: &CCT,
         pending: &mut PendingTxMap,
         chain_revision: &CRT,
+        execution_revision: &MonadExecutionRevision,
     ) -> Result<Vec<Recovered<TxEnvelope>>, BlockPolicyError> {
         let Some(last_commit) = &self.last_commit else {
             return Ok(Vec::new());
@@ -266,6 +269,7 @@ where
             block_policy.get_execution_delay(),
             base_fee,
             chain_revision,
+            execution_revision,
         )?;
 
         let proposal = sequencer.build_proposal(

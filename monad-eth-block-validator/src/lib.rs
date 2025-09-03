@@ -569,7 +569,6 @@ mod test {
                     vote_pace: Duration::ZERO,
 
                     validate_system_txs: true,
-                    tfm: false,
                     eip_7702: false,
                 }),
             );
