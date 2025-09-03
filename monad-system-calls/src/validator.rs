@@ -40,6 +40,8 @@ use crate::{SYSTEM_SENDER_ETH_ADDRESS, SystemCall, SystemTransaction, generate_s
 pub enum SystemTransactionError {
     UnexpectedSenderAddress,
     InvalidTxType,
+    InvalidChainId,
+    InvalidTxSignature,
     NonZeroGasPrice,
     NonZeroGasLimit,
     InvalidTxKind,
@@ -70,15 +72,30 @@ impl SystemTransactionValidator {
         SystemCall::is_restricted_system_call(txn)
     }
 
-    fn static_validate_system_transaction(
+    fn static_validate_system_transaction<CCT, CRT>(
         txn: &Recovered<TxEnvelope>,
-    ) -> Result<(), SystemTransactionError> {
+        chain_config: &CCT,
+    ) -> Result<(), SystemTransactionError>
+    where
+        CCT: ChainConfig<CRT>,
+        CRT: ChainRevision,
+    {
         if !Self::is_system_sender(txn.signer()) {
             return Err(SystemTransactionError::UnexpectedSenderAddress);
         }
 
         if !txn.tx().is_legacy() {
             return Err(SystemTransactionError::InvalidTxType);
+        }
+
+        // EIP-155
+        if txn.tx().chain_id() != Some(chain_config.chain_id()) {
+            return Err(SystemTransactionError::InvalidChainId);
+        }
+
+        // EIP-2
+        if txn.signature().normalize_s().is_some() {
+            return Err(SystemTransactionError::InvalidTxSignature);
         }
 
         if txn.tx().gas_price() != Some(0) {
@@ -103,11 +120,16 @@ impl SystemTransactionValidator {
         expected_sys_call.validate_system_transaction_input(sys_txn)
     }
 
-    fn validate_system_transaction(
+    fn validate_system_transaction<CCT, CRT>(
         expected_sys_call: SystemCall,
         sys_txn: Recovered<TxEnvelope>,
-    ) -> Result<SystemTransaction, SystemTransactionError> {
-        Self::static_validate_system_transaction(&sys_txn)?;
+        chain_config: &CCT,
+    ) -> Result<SystemTransaction, SystemTransactionError>
+    where
+        CCT: ChainConfig<CRT>,
+        CRT: ChainRevision,
+    {
+        Self::static_validate_system_transaction(&sys_txn, chain_config)?;
 
         Self::validate_system_transaction_input(expected_sys_call, sys_txn)
     }
@@ -152,7 +174,7 @@ impl SystemTransactionValidator {
                 return Err(SystemTransactionValidationError::MissingSystemTransaction);
             };
 
-            match Self::validate_system_transaction(expected_sys_call, sys_txn) {
+            match Self::validate_system_transaction(expected_sys_call, sys_txn, chain_config) {
                 Ok(validated_sys_txn) => {
                     // system sender nonce must be sequential
                     if let Some(old_nonce) = curr_sys_sender_nonce {
@@ -196,7 +218,7 @@ mod test {
     use alloy_primitives::{Address, B256, Bytes, TxKind};
     use alloy_signer::SignerSync;
     use alloy_signer_local::LocalSigner;
-    use monad_chain_config::{MockChainConfig, revision::ChainParams};
+    use monad_chain_config::{ChainConfig, MockChainConfig, revision::ChainParams};
     use monad_consensus_types::{
         block::ConsensusBlockHeader,
         payload::{ConsensusBlockBodyId, RoundSignature},
@@ -244,7 +266,10 @@ mod test {
         );
 
         assert!(matches!(
-            SystemTransactionValidator::static_validate_system_transaction(&invalid_tx),
+            SystemTransactionValidator::static_validate_system_transaction(
+                &invalid_tx,
+                &MockChainConfig::DEFAULT
+            ),
             Err(SystemTransactionError::UnexpectedSenderAddress)
         ));
     }
@@ -273,7 +298,10 @@ mod test {
         );
 
         assert!(matches!(
-            SystemTransactionValidator::static_validate_system_transaction(&recovered),
+            SystemTransactionValidator::static_validate_system_transaction(
+                &recovered,
+                &MockChainConfig::DEFAULT
+            ),
             Err(SystemTransactionError::InvalidTxType)
         ));
     }
@@ -284,7 +312,10 @@ mod test {
         tx.gas_price = 1;
         let invalid_tx = sign_with_system_sender(tx);
         assert!(matches!(
-            SystemTransactionValidator::static_validate_system_transaction(&invalid_tx),
+            SystemTransactionValidator::static_validate_system_transaction(
+                &invalid_tx,
+                &MockChainConfig::DEFAULT
+            ),
             Err(SystemTransactionError::NonZeroGasPrice)
         ));
     }
@@ -295,7 +326,10 @@ mod test {
         tx.gas_limit = 1;
         let invalid_tx = sign_with_system_sender(tx);
         assert!(matches!(
-            SystemTransactionValidator::static_validate_system_transaction(&invalid_tx),
+            SystemTransactionValidator::static_validate_system_transaction(
+                &invalid_tx,
+                &MockChainConfig::DEFAULT
+            ),
             Err(SystemTransactionError::NonZeroGasLimit)
         ));
     }
@@ -306,8 +340,35 @@ mod test {
         tx.to = TxKind::Create;
         let invalid_tx = sign_with_system_sender(tx);
         assert!(matches!(
-            SystemTransactionValidator::static_validate_system_transaction(&invalid_tx),
+            SystemTransactionValidator::static_validate_system_transaction(
+                &invalid_tx,
+                &MockChainConfig::DEFAULT
+            ),
             Err(SystemTransactionError::InvalidTxKind)
+        ));
+    }
+
+    #[test]
+    fn test_invalid_chain_id() {
+        let mut tx = get_valid_system_transaction();
+        tx.chain_id = None;
+        let invalid_tx = sign_with_system_sender(tx.clone());
+        assert!(matches!(
+            SystemTransactionValidator::static_validate_system_transaction(
+                &invalid_tx,
+                &MockChainConfig::DEFAULT
+            ),
+            Err(SystemTransactionError::InvalidChainId)
+        ));
+
+        tx.chain_id = Some(MockChainConfig::DEFAULT.chain_id() + 1);
+        let invalid_tx = sign_with_system_sender(tx);
+        assert!(matches!(
+            SystemTransactionValidator::static_validate_system_transaction(
+                &invalid_tx,
+                &MockChainConfig::DEFAULT
+            ),
+            Err(SystemTransactionError::InvalidChainId)
         ));
     }
 
