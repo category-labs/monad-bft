@@ -291,7 +291,7 @@ where
 
                     let (base_fee, base_fee_trend, base_fee_moment) = self
                         .block_policy
-                        .compute_base_fee(&extending_blocks, proposal_gas_limit);
+                        .compute_base_fee(&extending_blocks, &self.chain_config);
 
                     match self.pool.create_proposal(
                         &mut event_tracker,

@@ -111,6 +111,7 @@ where
 {
     // This field is only populated when the execution protocol is EthExecutionProtocol
     eth: Option<(EthTxPool<ST, SCT, SBT, CCT, CRT>, BPT, SBT)>,
+    chain_config: CCT,
 
     events: VecDeque<MempoolEvent<ST, SCT, EPT>>,
     waker: Option<Waker>,
@@ -125,12 +126,13 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend<ST, SCT>,
-    CCT: ChainConfig<CRT>,
+    CCT: ChainConfig<CRT> + Default,
     CRT: ChainRevision,
 {
     fn default() -> Self {
         Self {
             eth: None,
+            chain_config: CCT::default(),
 
             events: VecDeque::default(),
             waker: None,
@@ -162,6 +164,7 @@ where
     pub fn new(block_policy: EthBlockPolicy<ST, SCT, CCT, CRT>, state_backend: SBT) -> Self {
         Self {
             eth: Some((EthTxPool::default_testing(), block_policy, state_backend)),
+            chain_config: MockChainConfig::DEFAULT,
 
             events: VecDeque::default(),
             waker: None,
@@ -302,7 +305,7 @@ where
                     delayed_execution_results,
                 } => {
                     let (base_fee, base_fee_trend, base_fee_moment) =
-                        block_policy.compute_base_fee(&extending_blocks, proposal_gas_limit);
+                        block_policy.compute_base_fee(&extending_blocks, &self.chain_config);
 
                     let proposed_execution_inputs = pool
                         .create_proposal(
@@ -321,7 +324,7 @@ where
                             extending_blocks,
                             block_policy,
                             state_backend,
-                            &MockChainConfig::DEFAULT,
+                            &self.chain_config,
                         )
                         .expect("proposal succeeds");
 
@@ -357,11 +360,11 @@ where
                         >::update_committed_block(
                             block_policy,
                             &committed_block,
-                            &MockChainConfig::DEFAULT,
+                            &self.chain_config,
                         );
                         pool.update_committed_block(
                             &mut event_tracker,
-                            &MockChainConfig::DEFAULT,
+                            &self.chain_config,
                             committed_block,
                         );
                     }
@@ -379,11 +382,11 @@ where
                     >::reset(
                         block_policy,
                         last_delay_committed_blocks.iter().collect(),
-                        &MockChainConfig::DEFAULT,
+                        &self.chain_config,
                     );
                     pool.reset(
                         &mut event_tracker,
-                        &MockChainConfig::DEFAULT,
+                        &self.chain_config,
                         last_delay_committed_blocks,
                     );
                 }
@@ -392,7 +395,7 @@ where
                         &mut event_tracker,
                         block_policy,
                         state_backend,
-                        &MockChainConfig::DEFAULT,
+                        &self.chain_config,
                         txs.into_iter()
                             .filter_map(|raw_tx| {
                                 let tx = TxEnvelope::decode(&mut raw_tx.as_ref()).ok()?;

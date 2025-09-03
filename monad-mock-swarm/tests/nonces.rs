@@ -53,7 +53,7 @@ mod test {
         DropTransformer, GenericTransformer, GenericTransformerPipeline, LatencyTransformer,
         PartitionTransformer, ID,
     };
-    use monad_types::{Balance, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
+    use monad_types::{Balance, NodeId, SeqNum, GENESIS_SEQ_NUM};
     use monad_updaters::{
         ledger::MockableLedger, statesync::MockStateSyncExecutor, txpool::MockTxPoolExecutor,
         val_set::MockValSetUpdaterNop,
@@ -136,14 +136,8 @@ mod test {
     const ROUND: u64 = 1;
 
     static CHAIN_PARAMS: ChainParams = ChainParams {
-        tx_limit: 10_000,
-        proposal_gas_limit: 300_000_000,
-        proposal_byte_limit: 4_000_000,
-        max_reserve_balance: 1_000_000_000_000_000_000,
         vote_pace: Duration::from_millis(0),
-
-        validate_system_txs: true,
-        eip_7702: true,
+        ..*MockChainConfig::DEFAULT.chain_params
     };
 
     fn generate_eth_swarm(
@@ -151,8 +145,6 @@ mod test {
         existing_accounts: impl IntoIterator<Item = Address>,
     ) -> Nodes<EthSwarm> {
         let epoch_length = SeqNum(2000);
-        let chain_config =
-            MockChainConfig::new_with_epoch_params(&CHAIN_PARAMS, epoch_length, Round(50));
         let execution_delay = SeqNum(4);
 
         let existing_nonces: BTreeMap<_, _> =

@@ -976,13 +976,13 @@ where
         account_balances
     }
 
-    fn get_parent_base_fee_fields<B>(&self, extending_blocks: &[B]) -> (u64, u64, u64, u64)
+    fn get_parent_base_fee_fields<B>(&self, extending_blocks: &[B]) -> (Round, u64, u64, u64, u64)
     where
         B: AsRef<EthValidatedBlock<ST, SCT>>,
     {
         // parent block is last block in extending_blocks or last_committed
         // block if there's no extending branch
-        let (parent_base_fee, parent_trend, parent_moment, parent_gas_usage) =
+        let (parent_block_round, parent_base_fee, parent_trend, parent_moment, parent_gas_usage) =
             if let Some(parent_block) = extending_blocks.last() {
                 let parent_gas_usage = parent_block
                     .as_ref()
@@ -991,6 +991,7 @@ where
                     .map(|txn| txn.gas_limit())
                     .sum::<u64>();
                 (
+                    parent_block.as_ref().header().block_round,
                     parent_block.as_ref().header().base_fee,
                     parent_block.as_ref().header().base_fee_trend,
                     parent_block.as_ref().header().base_fee_moment,
@@ -1002,6 +1003,7 @@ where
                 if self.last_commit == GENESIS_SEQ_NUM {
                     // genesis block
                     (
+                        GENESIS_ROUND,
                         monad_tfm::base_fee::GENESIS_BASE_FEE,
                         monad_tfm::base_fee::GENESIS_BASE_FEE_TREND,
                         monad_tfm::base_fee::GENESIS_BASE_FEE_MOMENT,
@@ -1014,6 +1016,7 @@ where
                         .get(&self.last_commit)
                         .expect("last committed block must exist");
                     (
+                        parent_block.round,
                         parent_block.base_fee,
                         parent_block.base_fee_trend,
                         parent_block.base_fee_moment,
@@ -1023,6 +1026,7 @@ where
             };
 
         (
+            parent_block_round,
             parent_base_fee,
             parent_trend,
             parent_moment,
@@ -1035,19 +1039,19 @@ where
     /// (base_fee, base_fee_trend, base_fee_moment)
     ///
     /// base_fee unit: MON-wei
-    pub fn compute_base_fee<B>(
-        &self,
-        extending_blocks: &[B],
-        block_gas_limit: u64,
-    ) -> (u64, u64, u64)
+    pub fn compute_base_fee<B>(&self, extending_blocks: &[B], chain_config: &CCT) -> (u64, u64, u64)
     where
         B: AsRef<EthValidatedBlock<ST, SCT>>,
     {
-        let (parent_base_fee, parent_trend, parent_moment, parent_gas_usage) =
+        let (parent_block_round, parent_base_fee, parent_trend, parent_moment, parent_gas_usage) =
             self.get_parent_base_fee_fields(extending_blocks);
+        let parent_block_gas_limit = chain_config
+            .get_chain_revision(parent_block_round)
+            .chain_params()
+            .proposal_gas_limit;
 
         monad_tfm::base_fee::compute_base_fee(
-            block_gas_limit,
+            parent_block_gas_limit,
             parent_gas_usage,
             parent_base_fee,
             parent_trend,
@@ -1238,15 +1242,11 @@ where
 
         // check coherency against the block being extended or against the root of the blocktree if
         // there is no extending branch
-        let (extending_seq_num, extending_round, extending_timestamp) =
+        let (extending_seq_num, extending_timestamp) =
             if let Some(extended_block) = extending_blocks.last() {
-                (
-                    extended_block.get_seq_num(),
-                    extended_block.get_block_round(),
-                    extended_block.get_timestamp(),
-                )
+                (extended_block.get_seq_num(), extended_block.get_timestamp())
             } else {
-                (blocktree_root.seq_num, blocktree_root.round, 0) //TODO: add timestamp to RootInfo
+                (blocktree_root.seq_num, 0) //TODO: add timestamp to RootInfo
             };
 
         if block.get_seq_num() != extending_seq_num + SeqNum(1) {
@@ -1285,14 +1285,9 @@ where
             return Err(BlockPolicyError::ExecutionResultMismatch);
         }
 
-        let proposal_gas_limit = chain_config
-            .get_chain_revision(extending_round)
-            .chain_params()
-            .proposal_gas_limit;
-
         // verify base_fee fields
         let (base_fee, base_fee_trend, base_fee_moment) =
-            self.compute_base_fee(&extending_blocks, proposal_gas_limit);
+            self.compute_base_fee(&extending_blocks, chain_config);
         if base_fee != block.header().base_fee {
             warn!(
                 seq_num =? block.header().seq_num,

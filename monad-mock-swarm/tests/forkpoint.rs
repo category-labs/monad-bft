@@ -117,14 +117,8 @@ impl SwarmRelation for ForkpointSwarm {
 }
 
 static CHAIN_PARAMS: ChainParams = ChainParams {
-    tx_limit: 10_000,
-    proposal_gas_limit: 300_000_000,
-    proposal_byte_limit: 4_000_000,
-    max_reserve_balance: 1_000_000_000_000_000_000,
     vote_pace: Duration::from_millis(0),
-
-    validate_system_txs: true,
-    eip_7702: true,
+    ..*MockChainConfig::DEFAULT.chain_params
 };
 
 #[test]
