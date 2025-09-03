@@ -237,6 +237,8 @@ where
     pub fn create_proposal(
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
+        epoch: Epoch,
+        round: Round,
         proposed_seq_num: SeqNum,
         base_fee: u64,
         tx_limit: usize,
@@ -245,7 +247,6 @@ where
         beneficiary: [u8; 20],
         timestamp_ns: u128,
         node_id: NodeId<CertificateSignaturePubKey<ST>>,
-        epoch: Epoch,
         round_signature: RoundSignature<SCT::SignatureType>,
         extending_blocks: Vec<EthValidatedBlock<ST, SCT>>,
 
@@ -267,10 +268,41 @@ where
         // u64::MAX seconds is ~500 Billion years
         assert!(timestamp_seconds < u64::MAX.into());
 
+        {
+            let chain_id = chain_config.chain_id();
+
+            if self.chain_id != chain_id {
+                panic!(
+                    "txpool chain id changed from {} to {} in create_proposal",
+                    self.chain_id, chain_id
+                );
+            }
+
+            let chain_revision = chain_config.get_chain_revision(round);
+
+            let execution_revision =
+                chain_config.get_execution_chain_revision(timestamp_seconds as u64);
+
+            if chain_revision.chain_params() != self.chain_revision.chain_params()
+                || self.execution_revision != execution_revision
+            {
+                self.chain_revision = chain_revision;
+                self.execution_revision = execution_revision;
+
+                info!(
+                    chain_params =? chain_revision.chain_params(),
+                    execution_revision =? execution_revision,
+                    "updating chain params and execution revision in create_proposal"
+                );
+
+                self.static_validate_all_txs(event_tracker);
+            }
+        }
+
         let self_eth_address = node_id.pubkey().get_eth_address();
         let system_transactions = self.get_system_transactions(
-            proposed_seq_num,
             epoch,
+            proposed_seq_num,
             self_eth_address,
             &extending_blocks.iter().collect(),
             block_policy,
@@ -487,8 +519,8 @@ where
 
     fn get_system_transactions(
         &self,
-        proposed_seq_num: SeqNum,
         proposed_epoch: Epoch,
+        proposed_seq_num: SeqNum,
         block_author: Address,
         extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
         block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,

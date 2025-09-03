@@ -287,6 +287,8 @@ fn run_custom_iter<const N: usize>(
                 let encoded_txns = pool
                     .create_proposal(
                         &mut event_tracker,
+                        Epoch(1),
+                        Round(current_round),
                         SeqNum(current_seq_num),
                         base_fee,
                         tx_limit,
@@ -295,7 +297,6 @@ fn run_custom_iter<const N: usize>(
                         [0_u8; 20],
                         GENESIS_TIMESTAMP + current_seq_num as u128,
                         NodeId::new(NopPubKey::from_bytes(&[0_u8; 32]).unwrap()),
-                        Epoch(1),
                         RoundSignature::new(Round(0), &mock_keypair),
                         pending_blocks.iter().cloned().collect_vec(),
                         &eth_block_policy,

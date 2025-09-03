@@ -295,6 +295,8 @@ where
 
                     match self.pool.create_proposal(
                         &mut event_tracker,
+                        epoch,
+                        round,
                         seq_num,
                         base_fee,
                         tx_limit,
@@ -303,7 +305,6 @@ where
                         beneficiary,
                         timestamp_ns,
                         node_id,
-                        epoch,
                         round_signature.clone(),
                         extending_blocks,
                         &self.block_policy,

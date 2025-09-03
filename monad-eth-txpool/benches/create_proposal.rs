@@ -55,6 +55,8 @@ fn criterion_benchmark(c: &mut Criterion) {
          }| {
             pool.create_proposal(
                 &mut EthTxPoolEventTracker::new(metrics, &mut BTreeMap::default()),
+                Epoch(1),
+                Round(1),
                 block_policy.get_last_commit() + SeqNum(pending_blocks.len() as u64),
                 BASE_FEE,
                 *proposal_tx_limit,
@@ -65,7 +67,6 @@ fn criterion_benchmark(c: &mut Criterion) {
                     + block_policy.get_last_commit().0 as u128
                     + pending_blocks.len() as u128,
                 NodeId::new(NopPubKey::from_bytes(&[0_u8; 32]).unwrap()),
-                Epoch(1),
                 RoundSignature::new(Round(0), &mock_keypair),
                 pending_blocks.to_owned(),
                 block_policy,
