@@ -30,6 +30,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_block_policy::{
     nonce_usage::NonceUsageRetrievable, EthBlockPolicyBlockValidator, EthValidatedBlock,
 };
+use monad_system_calls::SYSTEM_SENDER_ETH_ADDRESS;
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::{debug, error, trace, warn};
 
@@ -47,26 +48,24 @@ impl<'a> OrderedTx<'a> {
     fn new(tx: &'a ValidEthTransaction, chain_id: u64, base_fee: u64) -> Option<Self> {
         let effective_tip_per_gas = tx.raw().effective_tip_per_gas(base_fee)?;
 
+        let mut valid_signed_authorizations = Vec::new();
+        for signed_authorization in tx.raw().authorization_list().into_iter().flatten() {
+            if signed_authorization.chain_id != 0 && signed_authorization.chain_id != chain_id {
+                continue;
+            }
+
+            if let Ok(authority) = signed_authorization.recover_authority() {
+                // system account cannot be used to sign authorizations
+                if authority == SYSTEM_SENDER_ETH_ADDRESS {
+                    return None;
+                }
+                valid_signed_authorizations.push((authority, signed_authorization.inner()));
+            }
+        }
+
         Some(Self {
             tx,
-            valid_signed_authorizations: tx
-                .raw()
-                .authorization_list()
-                .into_iter()
-                .flatten()
-                .flat_map(|signed_authorization| {
-                    if signed_authorization.chain_id != 0
-                        && signed_authorization.chain_id != chain_id
-                    {
-                        return None;
-                    }
-
-                    signed_authorization
-                        .recover_authority()
-                        .ok()
-                        .map(|authority| (authority, signed_authorization.inner()))
-                })
-                .collect(),
+            valid_signed_authorizations,
             effective_tip_per_gas,
         })
     }

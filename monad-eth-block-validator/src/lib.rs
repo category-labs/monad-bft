@@ -46,7 +46,9 @@ use monad_eth_block_policy::{
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ExtractEthAddress, ProposedEthHeader};
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
-use monad_system_calls::{validator::SystemTransactionValidator, SystemTransaction};
+use monad_system_calls::{
+    validator::SystemTransactionValidator, SystemTransaction, SYSTEM_SENDER_ETH_ADDRESS,
+};
 use monad_types::Balance;
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -372,6 +374,11 @@ where
                             .map(|authority| (authority, authorization.inner()))
                     }) {
                         trace!(address =? authorization.address, nonce =? authorization.nonce, ?authority, "Signed authority");
+
+                        // do not allow system account from sending authorization
+                        if authority == SYSTEM_SENDER_ETH_ADDRESS {
+                            return Err(BlockValidationError::TxnError);
+                        }
 
                         if authorization.chain_id != 0_u64
                             && authorization.chain_id != chain_config.chain_id()
