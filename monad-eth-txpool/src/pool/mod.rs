@@ -341,7 +341,12 @@ where
         Ok(ProposedExecutionInputs { header, body })
     }
 
-    pub fn enter_round(&mut self, chain_config: &impl ChainConfig<CRT>, round: Round) {
+    pub fn enter_round(
+        &mut self,
+        event_tracker: &mut EthTxPoolEventTracker<'_>,
+        chain_config: &impl ChainConfig<CRT>,
+        round: Round,
+    ) {
         let chain_id = chain_config.chain_id();
 
         if self.chain_id != chain_id {
@@ -357,7 +362,7 @@ where
             self.chain_revision = chain_revision;
             info!(chain_params =? self.chain_revision.chain_params(), "updating chain revision");
 
-            self.static_validate_all_txs();
+            self.static_validate_all_txs(event_tracker);
         }
     }
 
@@ -379,7 +384,7 @@ where
             self.execution_revision = execution_revision;
             info!(execution_revision =? self.execution_revision, "updating execution revision");
 
-            self.static_validate_all_txs();
+            self.static_validate_all_txs(event_tracker);
         }
 
         self.update_aggregate_metrics(event_tracker);
@@ -405,14 +410,25 @@ where
             self.execution_revision = execution_revision;
             info!(execution_revision =? self.execution_revision, "updating execution revision");
 
-            self.static_validate_all_txs();
+            self.static_validate_all_txs(event_tracker);
         }
 
         self.update_aggregate_metrics(event_tracker);
     }
 
-    pub fn static_validate_all_txs(&mut self) {
-        // TODO (andr-dev): Run static validation on all txs again
+    pub fn static_validate_all_txs(&mut self, event_tracker: &mut EthTxPoolEventTracker<'_>) {
+        self.tracked.static_validate_all_txs(
+            event_tracker,
+            self.chain_id,
+            &self.chain_revision,
+            &self.execution_revision,
+        );
+        self.pending.static_validate_all_txs(
+            event_tracker,
+            self.chain_id,
+            &self.chain_revision,
+            &self.execution_revision,
+        );
     }
 
     pub fn get_forwardable_txs<const MIN_SEQNUM_DIFF: u64, const MAX_RETRIES: usize>(

@@ -19,6 +19,7 @@ use std::{
 };
 
 use alloy_primitives::Address;
+use monad_chain_config::{execution_revision::MonadExecutionRevision, revision::ChainRevision};
 use monad_eth_block_policy::nonce_usage::NonceUsage;
 use monad_eth_txpool_types::EthTxPoolDropReason;
 use monad_types::Nonce;
@@ -208,6 +209,33 @@ impl TrackedTxList {
         } else {
             false
         }
+    }
+
+    pub fn static_validate_all_txs<CRT>(
+        &mut self,
+        event_tracker: &mut EthTxPoolEventTracker<'_>,
+        chain_id: u64,
+        chain_revision: &CRT,
+        execution_revision: &MonadExecutionRevision,
+    ) -> bool
+    where
+        CRT: ChainRevision,
+    {
+        self.txs.retain(|_, (tx, _)| {
+            let Err(error) = tx.static_validate(
+                chain_id,
+                chain_revision.chain_params(),
+                execution_revision.execution_chain_params(),
+            ) else {
+                return true;
+            };
+
+            event_tracker.drop(tx.hash(), EthTxPoolDropReason::NotWellFormed(error));
+
+            false
+        });
+
+        !self.txs.is_empty()
     }
 }
 

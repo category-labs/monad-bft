@@ -15,6 +15,7 @@
 
 use alloy_primitives::Address;
 use indexmap::IndexMap;
+use monad_chain_config::{execution_revision::MonadExecutionRevision, revision::ChainRevision};
 use monad_eth_txpool_types::EthTxPoolDropReason;
 use tracing::warn;
 
@@ -136,5 +137,31 @@ impl PendingTxMap {
             .expect("num txs does not underflow");
 
         split
+    }
+
+    pub fn static_validate_all_txs<CRT>(
+        &mut self,
+        event_tracker: &mut EthTxPoolEventTracker<'_>,
+        chain_id: u64,
+        chain_revision: &CRT,
+        execution_revision: &MonadExecutionRevision,
+    ) where
+        CRT: ChainRevision,
+    {
+        self.txs.retain(|_, tx_list| {
+            let removed = tx_list.static_validate_all_txs(
+                event_tracker,
+                chain_id,
+                chain_revision,
+                execution_revision,
+            );
+
+            self.num_txs = self
+                .num_txs
+                .checked_sub(removed)
+                .expect("num txs does not underflow");
+
+            tx_list.num_txs() > 0
+        });
     }
 }

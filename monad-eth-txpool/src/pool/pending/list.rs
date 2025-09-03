@@ -16,6 +16,7 @@
 use std::collections::{btree_map::Entry, BTreeMap};
 
 use alloy_primitives::Address;
+use monad_chain_config::{execution_revision::MonadExecutionRevision, revision::ChainRevision};
 use monad_eth_txpool_types::EthTxPoolDropReason;
 use monad_types::Nonce;
 
@@ -96,5 +97,35 @@ impl PendingTxList {
 
     pub fn into_map(self) -> BTreeMap<Nonce, ValidEthTransaction> {
         self.nonce_map
+    }
+
+    pub fn static_validate_all_txs<CRT>(
+        &mut self,
+        event_tracker: &mut EthTxPoolEventTracker<'_>,
+        chain_id: u64,
+        chain_revision: &CRT,
+        execution_revision: &MonadExecutionRevision,
+    ) -> usize
+    where
+        CRT: ChainRevision,
+    {
+        let mut removed = 0;
+
+        self.nonce_map.retain(|_, tx| {
+            let Err(error) = tx.static_validate(
+                chain_id,
+                chain_revision.chain_params(),
+                execution_revision.execution_chain_params(),
+            ) else {
+                return true;
+            };
+
+            event_tracker.drop(tx.hash(), EthTxPoolDropReason::NotWellFormed(error));
+            removed += 1;
+
+            false
+        });
+
+        removed
     }
 }

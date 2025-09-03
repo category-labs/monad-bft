@@ -505,4 +505,21 @@ where
             .last()
             .map(|block| block.header().clone())
     }
+
+    pub fn static_validate_all_txs(
+        &mut self,
+        event_tracker: &mut EthTxPoolEventTracker<'_>,
+        chain_id: u64,
+        chain_revision: &CRT,
+        execution_revision: &MonadExecutionRevision,
+    ) {
+        self.txs.retain(|_, tx_list| {
+            tx_list.static_validate_all_txs(
+                event_tracker,
+                chain_id,
+                chain_revision,
+                execution_revision,
+            )
+        });
+    }
 }
