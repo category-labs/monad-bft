@@ -153,6 +153,7 @@ where
     pub fn create_proposal(
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
+        chain_id: u64,
         proposed_seq_num: SeqNum,
         base_fee: u64,
         tx_limit: usize,
@@ -204,10 +205,17 @@ where
             return Ok(Vec::new());
         }
 
-        let sequencer = ProposalSequencer::new(&self.txs, &extending_blocks, base_fee);
+        let sequencer = ProposalSequencer::new(
+            &self.txs,
+            &extending_blocks,
+            chain_config.chain_id(),
+            base_fee,
+        );
         let sequencer_len = sequencer.len();
 
-        let (account_balances, account_balance_lookups) = {
+        let authority_addresses = sequencer.authority_addresses().cloned().collect_vec();
+
+        let (mut account_balances, authority_nonces, state_backend_lookups) = {
             let _timer = DropTimer::start(Duration::ZERO, |elapsed| {
                 debug!(
                     ?elapsed,
@@ -225,6 +233,12 @@ where
                     Some(&extending_blocks),
                     sequencer.addresses(),
                 )?,
+                block_policy.get_account_base_nonces(
+                    proposed_seq_num,
+                    state_backend,
+                    &extending_blocks,
+                    authority_addresses.iter(),
+                )?,
                 state_backend.total_db_lookups() - total_db_lookups_before,
             )
         };
@@ -234,9 +248,19 @@ where
             num_txs = self.num_txs(),
             sequencer_len,
             account_balances = account_balances.len(),
-            ?account_balance_lookups,
+            authority_nonces = authority_nonces.len(),
+            ?state_backend_lookups,
             "txpool sequencing transactions"
         );
+
+        for authority in authority_addresses.iter() {
+            let Some(account_balance) = account_balances.get_mut(&authority) else {
+                continue;
+            };
+
+            // TODO(andr-dev): Add after eip7702 reserve balance accounting
+            // account_balance.is_delegated = true;
+        }
 
         let validator = EthBlockPolicyBlockValidator::new(
             proposed_seq_num,
@@ -246,10 +270,13 @@ where
         )?;
 
         let proposal = sequencer.build_proposal(
+            chain_id,
             tx_limit,
             proposal_gas_limit,
             proposal_byte_limit,
+            chain_config,
             account_balances,
+            authority_nonces,
             validator,
         );
 
@@ -258,7 +285,7 @@ where
         event_tracker.record_create_proposal(
             self.num_addresses(),
             sequencer_len,
-            account_balance_lookups,
+            state_backend_lookups,
             proposal_num_txs,
         );
 

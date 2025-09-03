@@ -284,6 +284,7 @@ where
 
         let user_transactions = self.tracked.create_proposal(
             event_tracker,
+            self.chain_id,
             proposed_seq_num,
             base_fee,
             tx_limit - system_transactions.len(),
