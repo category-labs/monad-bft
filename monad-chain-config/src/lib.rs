@@ -37,6 +37,7 @@ pub trait ChainConfig<CR: ChainRevision>: Copy + Clone {
     fn get_epoch_length(&self) -> SeqNum;
     fn get_epoch_start_delay(&self) -> Round;
     fn get_staking_activation(&self) -> Epoch;
+    fn get_staking_rewards_activation(&self) -> Epoch;
     fn get_chain_revision(&self, round: Round) -> CR;
     fn get_execution_chain_revision(&self, execution_timestamp_s: u64) -> MonadExecutionRevision;
 }
@@ -54,6 +55,9 @@ pub struct MonadChainConfig {
     pub v_0_11_0_activation: Round,
 
     pub staking_activation: Epoch,
+    // TODO replace this with staking-specific chain config
+    // this is necessary to support different rewards across different nets
+    pub staking_rewards_activation: Epoch,
 
     pub execution_v_one_activation: u64,
     pub execution_v_two_activation: u64,
@@ -129,6 +133,10 @@ impl ChainConfig<MonadChainRevision> for MonadChainConfig {
         self.staking_activation
     }
 
+    fn get_staking_rewards_activation(&self) -> Epoch {
+        self.staking_rewards_activation
+    }
+
     #[allow(clippy::if_same_then_else)]
     fn get_chain_revision(&self, round: Round) -> MonadChainRevision {
         if round >= self.v_0_11_0_activation {
@@ -168,6 +176,7 @@ const MONAD_DEVNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     v_0_11_0_activation: Round::MIN,
 
     staking_activation: Epoch::MAX,
+    staking_rewards_activation: Epoch::MAX,
 
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
@@ -185,6 +194,7 @@ const MONAD_TESTNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     v_0_11_0_activation: Round::MAX,
 
     staking_activation: Epoch::MAX,
+    staking_rewards_activation: Epoch::MAX,
 
     execution_v_one_activation: 1739559600, // 2025-02-14T19:00:00.000Z
     execution_v_two_activation: 1741978800, // 2025-03-14T19:00:00.000Z
@@ -202,6 +212,7 @@ const MONAD_TESTNET2_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     v_0_11_0_activation: Round::MAX,
 
     staking_activation: Epoch::MAX,
+    staking_rewards_activation: Epoch::MAX,
 
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
@@ -220,6 +231,7 @@ const MONAD_MAINNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     v_0_11_0_activation: Round::MAX,
 
     staking_activation: Epoch::MAX,
+    staking_rewards_activation: Epoch::MAX,
 
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
@@ -275,6 +287,10 @@ impl ChainConfig<MockChainRevision> for MockChainConfig {
     }
 
     fn get_staking_activation(&self) -> Epoch {
+        Epoch::MAX
+    }
+
+    fn get_staking_rewards_activation(&self) -> Epoch {
         Epoch::MAX
     }
 

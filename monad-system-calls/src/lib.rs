@@ -138,6 +138,7 @@ where
 {
     let epoch_length = chain_config.get_epoch_length();
     let staking_activation = chain_config.get_staking_activation();
+    let staking_rewards_activation = chain_config.get_staking_rewards_activation();
 
     let mut system_calls = Vec::new();
 
@@ -172,11 +173,16 @@ where
     // starting at the first block in Epoch N
     let generate_reward_txn = proposed_epoch >= staking_activation;
     if generate_reward_txn {
+        let block_reward = if proposed_epoch >= staking_rewards_activation {
+            U256::from(StakingContractCall::MON) * U256::from(StakingContractCall::BLOCK_REWARD_MON)
+        } else {
+            U256::ZERO
+        };
+
         system_calls.push(SystemCall::StakingContractCall(
             StakingContractCall::Reward {
                 block_author_address,
-                block_reward: U256::from(StakingContractCall::MON)
-                    * U256::from(StakingContractCall::BLOCK_REWARD_MON),
+                block_reward,
             },
         ));
     }
