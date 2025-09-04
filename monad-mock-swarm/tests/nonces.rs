@@ -136,8 +136,14 @@ mod test {
     const ROUND: u64 = 1;
 
     static CHAIN_PARAMS: ChainParams = ChainParams {
+        tx_limit: 10_000,
+        proposal_gas_limit: 300_000_000,
+        proposal_byte_limit: 4_000_000,
+        max_reserve_balance: 1_000_000_000_000_000_000,
         vote_pace: Duration::from_millis(0),
-        ..*MockChainConfig::DEFAULT.chain_params
+
+        validate_system_txs: true,
+        eip_7702: true,
     };
 
     fn generate_eth_swarm(
@@ -188,7 +194,8 @@ mod test {
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockValSetUpdaterNop::new(validators.validators.clone(), epoch_length),
-                        MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
+                        MockTxPoolExecutor::new(create_block_policy(), state_backend.clone())
+                            .with_chain_params(&CHAIN_PARAMS),
                         MockEthLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(
                             state_backend,

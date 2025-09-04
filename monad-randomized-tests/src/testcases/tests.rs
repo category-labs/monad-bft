@@ -81,7 +81,7 @@ fn random_latency_test(latency_seed: u64) {
                     state_builder,
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockValSetUpdaterNop::new(validators.validators.clone(), SeqNum(2000)),
-                    MockTxPoolExecutor::default(),
+                    MockTxPoolExecutor::default().with_chain_params(&CHAIN_PARAMS),
                     MockLedger::new(state_backend.clone()),
                     MockStateSyncExecutor::new(
                         state_backend,
@@ -156,7 +156,7 @@ fn delayed_message_test(latency_seed: u64) {
                     state_builder,
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockValSetUpdaterNop::new(validators.validators.clone(), SeqNum(2000)),
-                    MockTxPoolExecutor::default(),
+                    MockTxPoolExecutor::default().with_chain_params(&CHAIN_PARAMS),
                     MockLedger::new(state_backend.clone()),
                     MockStateSyncExecutor::new(
                         state_backend,

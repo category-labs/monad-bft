@@ -117,8 +117,14 @@ impl SwarmRelation for ForkpointSwarm {
 }
 
 static CHAIN_PARAMS: ChainParams = ChainParams {
+    tx_limit: 10_000,
+    proposal_gas_limit: 300_000_000,
+    proposal_byte_limit: 4_000_000,
+    max_reserve_balance: 1_000_000_000_000_000_000,
     vote_pace: Duration::from_millis(0),
-    ..*MockChainConfig::DEFAULT.chain_params
+
+    validate_system_txs: true,
+    eip_7702: true,
 };
 
 #[test]
@@ -360,7 +366,8 @@ fn forkpoint_restart_f(
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockValSetUpdaterNop::new(validators.clone(), epoch_length),
-                        MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
+                        MockTxPoolExecutor::new(create_block_policy(), state_backend.clone())
+                            .with_chain_params(&CHAIN_PARAMS),
                         MockLedger::new(state_backend.clone())
                             .with_finalization_delay(finalization_delay),
                         MockStateSyncExecutor::new(

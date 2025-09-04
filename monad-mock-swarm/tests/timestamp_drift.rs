@@ -95,7 +95,7 @@ fn drift_one_node() {
                     state_builder,
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockValSetUpdaterNop::new(validators.validators.clone(), SeqNum(2000)),
-                    MockTxPoolExecutor::default(),
+                    MockTxPoolExecutor::default().with_chain_params(&CHAIN_PARAMS),
                     MockLedger::new(state_backend.clone()),
                     MockStateSyncExecutor::new(
                         state_backend,

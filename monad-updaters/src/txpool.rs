@@ -23,7 +23,7 @@ use alloy_rlp::Decodable;
 use bytes::Bytes;
 use futures::Stream;
 use monad_chain_config::{
-    revision::{ChainRevision, MockChainRevision},
+    revision::{ChainParams, ChainRevision, MockChainRevision},
     ChainConfig, MockChainConfig,
 };
 use monad_consensus_types::block::{
@@ -172,6 +172,24 @@ where
             metrics: EthTxPoolMetrics::default(),
             executor_metrics: ExecutorMetrics::default(),
         }
+    }
+
+    pub fn with_chain_params(mut self, chain_params: &'static ChainParams) -> Self {
+        self.chain_config = MockChainConfig::new(chain_params);
+        self
+    }
+}
+
+impl<ST, SCT, BPT, SBT>
+    MockTxPoolExecutor<ST, SCT, MockExecutionProtocol, BPT, SBT, MockChainConfig, MockChainRevision>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    SBT: StateBackend<ST, SCT>,
+{
+    pub fn with_chain_params(mut self, chain_params: &'static ChainParams) -> Self {
+        self.chain_config = MockChainConfig::new(chain_params);
+        self
     }
 }
 

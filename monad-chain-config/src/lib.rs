@@ -240,7 +240,7 @@ const MONAD_MAINNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MockChainConfig {
-    pub chain_params: &'static ChainParams,
+    chain_params: &'static ChainParams,
     epoch_length: SeqNum,
     epoch_start_delay: Round,
 }
@@ -276,10 +276,6 @@ impl MockChainConfig {
             epoch_length,
             epoch_start_delay,
         }
-    }
-
-    pub fn chain_params(&self) -> &'static ChainParams {
-        self.chain_params
     }
 }
 
