@@ -306,7 +306,6 @@ pub fn generate_consensus_test_block(
 
     let nonce_usages = txs
         .iter()
-        .rev()
         .flat_map(|t| {
             let mut pairs = vec![(t.signer(), NonceUsage::Known(t.nonce()))];
 
@@ -338,6 +337,7 @@ pub fn generate_consensus_test_block(
             }
             pairs
         })
+        .rev()
         .fold(
             NonceUsageMap::default(),
             |mut map, (address, nonce_usage)| {

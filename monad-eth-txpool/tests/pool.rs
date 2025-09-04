@@ -26,6 +26,7 @@ use itertools::Itertools;
 use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
 use monad_consensus_types::{
     block::{BlockPolicy, GENESIS_TIMESTAMP},
+    block_validator::BlockValidator,
     payload::RoundSignature,
 };
 use monad_crypto::{
@@ -36,6 +37,7 @@ use monad_eth_block_policy::{
     validation::{TFM_MAX_EIP2718_ENCODED_LENGTH, TFM_MAX_GAS_LIMIT},
     EthBlockPolicy,
 };
+use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_testutil::{
     generate_block_with_txs, make_eip1559_tx, make_eip7702_tx, make_legacy_tx,
     make_signed_authorization, recover_tx, secret_to_eth_address,
@@ -1538,4 +1540,66 @@ fn test_eip7702_authorization_nonce_lower() {
             },
         ],
     );
+}
+
+#[test]
+fn test_eip7702_authorizations_with_conflicting_txs() {
+    // tx0 is 7702 has 50 auths from S2 sent from S1, S2 should have nonce 50 after inclusion
+    // tx1 is 1559 from S2 with nonce 49 (conflicting)
+    // tx2 is 1559 from S2 with nonce 50 (should be included)
+    let auth_list = (0..50)
+        .map(|i| make_signed_authorization(S2, secret_to_eth_address(S1), i))
+        .collect_vec();
+    let tx0 = make_eip7702_tx(S1, BASE_FEE + 1, 1, GAS_LIMIT * 10, 0, auth_list, 0);
+    let tx1 = make_eip1559_tx(S2, BASE_FEE + 1, 1, 21_000, 49, 0);
+    let tx2 = make_eip1559_tx(S2, BASE_FEE + 1, 1, 21_000, 50, 0);
+
+    run_simple([
+        TxPoolTestEvent::InsertTxs {
+            txs: vec![(&tx0, true), (&tx1, true), (&tx2, true)],
+            expected_pool_size_change: 3,
+        },
+        TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
+            tx_limit: 3,
+            gas_limit: GAS_LIMIT * 100,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
+            expected_txs: vec![&tx0],
+            add_to_blocktree: true,
+        },
+        TxPoolTestEvent::AssertNonce {
+            address: secret_to_eth_address(S1),
+            nonce: 1,
+        },
+        TxPoolTestEvent::AssertNonce {
+            address: secret_to_eth_address(S2),
+            nonce: 50,
+        },
+        TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
+            tx_limit: 3,
+            gas_limit: GAS_LIMIT * 100,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
+            expected_txs: vec![&tx2],
+            add_to_blocktree: true,
+        },
+        TxPoolTestEvent::AssertNonce {
+            address: secret_to_eth_address(S1),
+            nonce: 1,
+        },
+        TxPoolTestEvent::AssertNonce {
+            address: secret_to_eth_address(S2),
+            nonce: 51,
+        },
+        TxPoolTestEvent::Block(Arc::new(|pool| {
+            assert!(!pool.is_empty());
+        })),
+        TxPoolTestEvent::CommitPendingBlocks {
+            num_blocks: 2,
+            expected_committed_seq_num: 2,
+        },
+        TxPoolTestEvent::Block(Arc::new(|pool| {
+            assert!(pool.is_empty());
+        })),
+    ]);
 }

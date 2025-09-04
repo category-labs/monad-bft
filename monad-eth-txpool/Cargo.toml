@@ -33,6 +33,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 monad-crypto = { workspace = true }
+monad-eth-block-validator = { workspace = true }
 monad-eth-testutil = { workspace = true }
 monad-perf-util = { workspace = true }
 monad-testutil = { workspace = true }
