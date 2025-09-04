@@ -60,14 +60,11 @@ pub enum ReserveBalanceCheck {
     Validate,
 }
 
-pub fn compute_max_txn_cost(txn: &TxEnvelope) -> U256 {
+pub fn pre_tfm_compute_max_txn_cost(txn: &TxEnvelope) -> U256 {
     let txn_value = txn.value();
     let gas_limit = U256::from(txn.gas_limit());
     let max_fee = U256::from(txn.max_fee_per_gas());
-    let priority_fee = U256::from(txn.max_priority_fee_per_gas().unwrap_or(0));
-    let max_gas_cost = gas_limit
-        .checked_mul(max_fee.checked_add(priority_fee).expect("no overflow"))
-        .expect("no overflow");
+    let max_gas_cost = gas_limit.checked_mul(max_fee).expect("no overflow");
     txn_value.saturating_add(max_gas_cost)
 }
 
@@ -539,7 +536,7 @@ where
             .execution_chain_params()
             .tfm_enabled
         {
-            let txn_cost = compute_max_txn_cost(txn);
+            let txn_cost = pre_tfm_compute_max_txn_cost(txn);
             if account_balance.balance < txn_cost {
                 trace!(
                     seq_num =?self.block_seq_num,

@@ -38,8 +38,9 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{
-    compute_max_txn_cost, compute_txn_max_gas_cost,
+    compute_txn_max_gas_cost,
     nonce_usage::{NonceUsage, NonceUsageMap},
+    pre_tfm_compute_max_txn_cost,
     validation::static_validate_transaction,
     EthBlockPolicy, EthValidatedBlock,
 };
@@ -367,13 +368,15 @@ where
                     e.max_gas_cost = e
                         .max_gas_cost
                         .saturating_add(compute_txn_max_gas_cost(eth_txn, header.base_fee));
-                    e.max_txn_cost = e.max_txn_cost.saturating_add(compute_max_txn_cost(eth_txn));
+                    e.max_txn_cost = e
+                        .max_txn_cost
+                        .saturating_add(pre_tfm_compute_max_txn_cost(eth_txn));
                 })
                 .or_insert(TxnFee {
                     first_txn_value: eth_txn.value(),
                     first_txn_gas: compute_txn_max_gas_cost(eth_txn, header.base_fee),
                     max_gas_cost: Balance::ZERO,
-                    max_txn_cost: compute_max_txn_cost(eth_txn),
+                    max_txn_cost: pre_tfm_compute_max_txn_cost(eth_txn),
                     is_delegated: false,
                 });
 
