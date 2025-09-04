@@ -289,9 +289,23 @@ where
 
                     let create_proposal_start = Instant::now();
 
-                    let (base_fee, base_fee_trend, base_fee_moment) = self
-                        .block_policy
-                        .compute_base_fee(&extending_blocks, &self.chain_config);
+                    // Some() if tfm is enabled, else None
+                    let maybe_tfm_base_fees = self.block_policy.compute_base_fee(
+                        &extending_blocks,
+                        &self.chain_config,
+                        timestamp_ns,
+                    );
+
+                    let (base_fee, base_fee_field, base_fee_trend_field, base_fee_moment_field) =
+                        match maybe_tfm_base_fees {
+                            Some((base_fee, base_fee_trend, base_fee_moment)) => (
+                                base_fee,
+                                Some(base_fee),
+                                Some(base_fee_trend),
+                                Some(base_fee_moment),
+                            ),
+                            None => (monad_tfm::base_fee::PRE_TFM_BASE_FEE, None, None, None),
+                        };
 
                     match self.pool.create_proposal(
                         &mut event_tracker,
@@ -327,9 +341,9 @@ where
                                     high_qc,
                                     timestamp_ns,
                                     round_signature,
-                                    base_fee,
-                                    base_fee_trend,
-                                    base_fee_moment,
+                                    base_fee: base_fee_field,
+                                    base_fee_trend: base_fee_trend_field,
+                                    base_fee_moment: base_fee_moment_field,
                                     delayed_execution_results,
                                     proposed_execution_inputs,
                                     last_round_tc,

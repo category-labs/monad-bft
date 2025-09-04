@@ -398,9 +398,9 @@ mod test {
             GENESIS_SEQ_NUM + SeqNum(1),
             1,
             RoundSignature::new(Round(1), &nop_keypair),
-            BASE_FEE,
-            BASE_FEE_TREND,
-            BASE_FEE_MOMENT,
+            Some(BASE_FEE),
+            Some(BASE_FEE_TREND),
+            Some(BASE_FEE_MOMENT),
         );
 
         let result = SystemTransactionValidator::validate_and_extract_system_transactions(

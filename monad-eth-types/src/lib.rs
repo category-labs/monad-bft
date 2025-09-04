@@ -25,7 +25,6 @@ use monad_types::{Balance, ExecutionProtocol, FinalizedHeader, Nonce, SeqNum};
 pub mod serde;
 
 pub const EMPTY_RLP_TX_LIST: u8 = 0xc0;
-// pub const BASE_FEE_PER_GAS: u64 = 50_000_000_000;
 
 pub trait ExtractEthAddress {
     fn get_eth_address(&self) -> Address;

@@ -17,6 +17,7 @@ monad-eth-types = { workspace = true }
 monad-secp = { workspace = true }
 monad-state-backend = { workspace = true }
 monad-system-calls = { workspace = true }
+monad-tfm = { workspace = true }
 monad-types = { workspace = true }
 monad-validator = { workspace = true }
 

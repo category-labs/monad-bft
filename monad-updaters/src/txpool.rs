@@ -239,9 +239,9 @@ where
                         high_qc,
                         timestamp_ns,
                         round_signature,
-                        base_fee: monad_tfm::base_fee::MIN_BASE_FEE,
-                        base_fee_trend: monad_tfm::base_fee::GENESIS_BASE_FEE_TREND,
-                        base_fee_moment: monad_tfm::base_fee::GENESIS_BASE_FEE_MOMENT,
+                        base_fee: Some(monad_tfm::base_fee::MIN_BASE_FEE),
+                        base_fee_trend: Some(monad_tfm::base_fee::GENESIS_BASE_FEE_TREND),
+                        base_fee_moment: Some(monad_tfm::base_fee::GENESIS_BASE_FEE_MOMENT),
                         delayed_execution_results,
                         proposed_execution_inputs: ProposedExecutionInputs {
                             header: MockExecutionProposedHeader::default(),
@@ -322,8 +322,23 @@ where
                     extending_blocks,
                     delayed_execution_results,
                 } => {
-                    let (base_fee, base_fee_trend, base_fee_moment) =
-                        block_policy.compute_base_fee(&extending_blocks, &self.chain_config);
+                    // Some() if tfm is enabled, else None
+                    let maybe_tfm_base_fees = block_policy.compute_base_fee(
+                        &extending_blocks,
+                        &self.chain_config,
+                        timestamp_ns,
+                    );
+
+                    let (base_fee, base_fee_field, base_fee_trend_field, base_fee_moment_field) =
+                        match maybe_tfm_base_fees {
+                            Some((base_fee, base_fee_trend, base_fee_moment)) => (
+                                base_fee,
+                                Some(base_fee),
+                                Some(base_fee_trend),
+                                Some(base_fee_moment),
+                            ),
+                            None => (monad_tfm::base_fee::PRE_TFM_BASE_FEE, None, None, None),
+                        };
 
                     let proposed_execution_inputs = pool
                         .create_proposal(
@@ -353,9 +368,9 @@ where
                         high_qc,
                         timestamp_ns,
                         round_signature,
-                        base_fee,
-                        base_fee_trend,
-                        base_fee_moment,
+                        base_fee: base_fee_field,
+                        base_fee_trend: base_fee_trend_field,
+                        base_fee_moment: base_fee_moment_field,
                         delayed_execution_results,
                         proposed_execution_inputs,
                         last_round_tc,

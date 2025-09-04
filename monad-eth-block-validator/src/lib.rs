@@ -335,7 +335,10 @@ where
                 return Err(BlockValidationError::TxnError);
             }
 
-            if eth_txn.max_fee_per_gas() < header.base_fee.into() {
+            let block_base_fee = header
+                .base_fee
+                .unwrap_or(monad_tfm::base_fee::PRE_TFM_BASE_FEE);
+            if eth_txn.max_fee_per_gas() < block_base_fee.into() {
                 return Err(BlockValidationError::TxnError);
             }
 
@@ -367,14 +370,14 @@ where
                 .and_modify(|e| {
                     e.max_gas_cost = e
                         .max_gas_cost
-                        .saturating_add(compute_txn_max_gas_cost(eth_txn, header.base_fee));
+                        .saturating_add(compute_txn_max_gas_cost(eth_txn, block_base_fee));
                     e.max_txn_cost = e
                         .max_txn_cost
                         .saturating_add(pre_tfm_compute_max_txn_cost(eth_txn));
                 })
                 .or_insert(TxnFee {
                     first_txn_value: eth_txn.value(),
-                    first_txn_gas: compute_txn_max_gas_cost(eth_txn, header.base_fee),
+                    first_txn_gas: compute_txn_max_gas_cost(eth_txn, block_base_fee),
                     max_gas_cost: Balance::ZERO,
                     max_txn_cost: pre_tfm_compute_max_txn_cost(eth_txn),
                     is_delegated: false,
@@ -504,9 +507,9 @@ mod test {
             GENESIS_SEQ_NUM + SeqNum(1),
             1,
             RoundSignature::new(Round(1), &nop_keypair),
-            BASE_FEE as u64,
-            BASE_FEE_TREND,
-            BASE_FEE_MOMENT,
+            Some(BASE_FEE as u64),
+            Some(BASE_FEE_TREND),
+            Some(BASE_FEE_MOMENT),
         )
     }
 

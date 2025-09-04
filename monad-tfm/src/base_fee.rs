@@ -19,6 +19,7 @@ pub const GENESIS_BASE_FEE: u64 = 0;
 // trend is a signed value in 2's complement representation
 pub const GENESIS_BASE_FEE_TREND: u64 = (0i64).cast_unsigned();
 pub const GENESIS_BASE_FEE_MOMENT: u64 = 0;
+pub const PRE_TFM_BASE_FEE: u64 = 50_000_000_000; // 50 gwei
 pub const MIN_BASE_FEE: u64 = 100_000_000_000; // 100 gwei
 pub const MAX_BASE_FEE: u64 = 100_000_000_000_000_000; // 1e6 MIN_BASE_FEE
 

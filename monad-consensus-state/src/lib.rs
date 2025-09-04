@@ -3920,9 +3920,9 @@ mod test {
             p2.tip.block_header.seq_num,
             p2.tip.block_header.timestamp_ns,
             p2.tip.block_header.round_signature,
-            BASE_FEE,
-            BASE_FEE_TREND,
-            BASE_FEE_MOMENT,
+            Some(BASE_FEE),
+            Some(BASE_FEE_TREND),
+            Some(BASE_FEE_MOMENT),
         );
         let invalid_p2 = ProposalMessage {
             proposal_epoch: invalid_bh2.epoch,

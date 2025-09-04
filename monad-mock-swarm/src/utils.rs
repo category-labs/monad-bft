@@ -103,9 +103,9 @@ pub mod test_tool {
                 SeqNum(0),
                 0,
                 RoundSignature::new(round, &NopKeyPair::from_bytes(&mut [127; 32]).unwrap()),
-                monad_tfm::base_fee::MIN_BASE_FEE,
-                monad_tfm::base_fee::GENESIS_BASE_FEE_TREND,
-                monad_tfm::base_fee::GENESIS_BASE_FEE_MOMENT,
+                Some(monad_tfm::base_fee::MIN_BASE_FEE),
+                Some(monad_tfm::base_fee::GENESIS_BASE_FEE_TREND),
+                Some(monad_tfm::base_fee::GENESIS_BASE_FEE_MOMENT),
             ),
             body,
         )
