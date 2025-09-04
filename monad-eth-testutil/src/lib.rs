@@ -239,54 +239,11 @@ pub fn secret_to_eth_address(mut secret: FixedBytes<32>) -> Address {
     Address::from_slice(&hash[12..])
 }
 
-pub fn generate_consensus_test_block(
-    round: Round,
-    seq_num: SeqNum,
-    base_fee: u64,
-    chain_config: &MockChainConfig,
-    txs: Vec<Recovered<TxEnvelope>>,
-) -> ConsensusTestBlock<NopSignature, MockSignatures<NopSignature>> {
-    let chain_params = chain_config.get_chain_revision(round).chain_params();
-
-    let body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
-        execution_body: EthBlockBody {
-            transactions: txs.iter().map(|tx| tx.tx().to_owned()).collect(),
-            ommers: Vec::default(),
-            withdrawals: Vec::default(),
-        },
-    });
-
-    let keypair = NopKeyPair::from_bytes(rand::random::<[u8; 32]>().as_mut_slice()).unwrap();
-
-    let signature = RoundSignature::new(round, &keypair);
-
-    let header = ConsensusBlockHeader::new(
-        NodeId::new(keypair.pubkey()),
-        Epoch(1),
-        round,
-        Default::default(), // delayed_execution_results
-        // execution_inputs
-        ProposedEthHeader {
-            ommers_hash: EMPTY_OMMER_ROOT_HASH.0,
-            transactions_root: calculate_transaction_root(&txs).0,
-            number: seq_num.0,
-            gas_limit: chain_params.proposal_gas_limit,
-            mix_hash: signature.get_hash().0,
-            base_fee_per_gas: base_fee,
-            withdrawals_root: EMPTY_WITHDRAWALS.0,
-            ..Default::default()
-        },
-        body.get_id(),
-        QuorumCertificate::genesis_qc(),
-        seq_num,
-        0,
-        signature,
-        monad_tfm::base_fee::MIN_BASE_FEE,
-        monad_tfm::base_fee::GENESIS_BASE_FEE_TREND,
-        monad_tfm::base_fee::GENESIS_BASE_FEE_MOMENT,
-    );
-
+fn compute_expected_txn_fees_and_nonce_usages(
+    txs: &[Recovered<TxEnvelope>],
+) -> (BTreeMap<Address, TxnFee>, NonceUsageMap) {
     let mut txn_fees: BTreeMap<_, TxnFee> = BTreeMap::new();
+
     for eth_txn in txs.iter() {
         txn_fees
             .entry(eth_txn.signer())
@@ -352,6 +309,62 @@ pub fn generate_consensus_test_block(
                 map
             },
         );
+
+    (txn_fees, nonce_usages)
+}
+
+pub fn compute_expected_nonce_usages(txs: &[Recovered<TxEnvelope>]) -> NonceUsageMap {
+    compute_expected_txn_fees_and_nonce_usages(txs).1
+}
+
+pub fn generate_consensus_test_block(
+    round: Round,
+    seq_num: SeqNum,
+    base_fee: u64,
+    chain_config: &MockChainConfig,
+    txs: Vec<Recovered<TxEnvelope>>,
+) -> ConsensusTestBlock<NopSignature, MockSignatures<NopSignature>> {
+    let chain_params = chain_config.get_chain_revision(round).chain_params();
+
+    let body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
+        execution_body: EthBlockBody {
+            transactions: txs.iter().map(|tx| tx.tx().to_owned()).collect(),
+            ommers: Vec::default(),
+            withdrawals: Vec::default(),
+        },
+    });
+
+    let keypair = NopKeyPair::from_bytes(rand::random::<[u8; 32]>().as_mut_slice()).unwrap();
+
+    let signature = RoundSignature::new(round, &keypair);
+
+    let header = ConsensusBlockHeader::new(
+        NodeId::new(keypair.pubkey()),
+        Epoch(1),
+        round,
+        Default::default(), // delayed_execution_results
+        // execution_inputs
+        ProposedEthHeader {
+            ommers_hash: EMPTY_OMMER_ROOT_HASH.0,
+            transactions_root: calculate_transaction_root(&txs).0,
+            number: seq_num.0,
+            gas_limit: chain_params.proposal_gas_limit,
+            mix_hash: signature.get_hash().0,
+            base_fee_per_gas: base_fee,
+            withdrawals_root: EMPTY_WITHDRAWALS.0,
+            ..Default::default()
+        },
+        body.get_id(),
+        QuorumCertificate::genesis_qc(),
+        seq_num,
+        0,
+        signature,
+        monad_tfm::base_fee::MIN_BASE_FEE,
+        monad_tfm::base_fee::GENESIS_BASE_FEE_TREND,
+        monad_tfm::base_fee::GENESIS_BASE_FEE_MOMENT,
+    );
+
+    let (txn_fees, nonce_usages) = compute_expected_txn_fees_and_nonce_usages(&txs);
 
     ConsensusTestBlock {
         block: ConsensusFullBlock::new(header, body).expect("header doesn't match body"),

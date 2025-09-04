@@ -452,8 +452,9 @@ mod test {
     };
     use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
     use monad_eth_testutil::{
-        generate_consensus_test_block, make_eip7702_tx, make_legacy_tx, make_signed_authorization,
-        recover_tx, secret_to_eth_address, ConsensusTestBlock,
+        compute_expected_nonce_usages, generate_consensus_test_block, make_eip7702_tx,
+        make_legacy_tx, make_signed_authorization, recover_tx, secret_to_eth_address,
+        ConsensusTestBlock,
     };
     use monad_state_backend::InMemoryStateInner;
     use monad_testutil::signing::MockSignatures;
@@ -804,8 +805,18 @@ mod test {
                 MockChainRevision
             >::validate(&validator, header, body, Some(&author), &MockChainConfig::DEFAULT);
 
-            assert_eq!(result.is_ok(), expect_success);
+            match result {
+                Err(error) => {
+                    assert!(!expect_success, "EthBlockValidator failed when expected success, error: {error:?}");
+                }
+                Ok(block) => {
+                    assert!(expect_success);
 
+                    let expected_nonce_usages = compute_expected_nonce_usages(&block.validated_txns);
+
+                    assert_eq!(block.nonce_usages, expected_nonce_usages);
+                }
+            }
         }
     }
 }

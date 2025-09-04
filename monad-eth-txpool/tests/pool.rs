@@ -26,7 +26,6 @@ use itertools::Itertools;
 use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
 use monad_consensus_types::{
     block::{BlockPolicy, GENESIS_TIMESTAMP},
-    block_validator::BlockValidator,
     payload::RoundSignature,
 };
 use monad_crypto::{
@@ -37,7 +36,6 @@ use monad_eth_block_policy::{
     validation::{TFM_MAX_EIP2718_ENCODED_LENGTH, TFM_MAX_GAS_LIMIT},
     EthBlockPolicy,
 };
-use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_testutil::{
     generate_block_with_txs, make_eip1559_tx, make_eip7702_tx, make_legacy_tx,
     make_signed_authorization, recover_tx, secret_to_eth_address,
