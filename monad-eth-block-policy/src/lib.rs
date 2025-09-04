@@ -2000,6 +2000,59 @@ mod test {
             CoherencyCheckMode::ReserveBalanceCoherency,
         );
         assert!(result.is_ok(), "Block coherency check failed: {:?}", result);
+
+        /////////////////////////////////////////////////////////////////////////////
+        // Case7: Multiple 7702 delegations and attempted emptying transaction    ///
+        /////////////////////////////////////////////////////////////////////////////
+
+        // first tx has multiple delegation and undelegation authorization from the signer
+        let tx1 = make_test_delegation_tx(
+            50000,
+            0,
+            0,
+            S2,
+            HashMap::from([
+                (
+                    S1,
+                    Authorization {
+                        chain_id: CHAIN_ID,
+                        nonce: 0,
+                        address: Address(FixedBytes([0x11; 20])),
+                    },
+                ),
+                (
+                    S1,
+                    Authorization {
+                        chain_id: CHAIN_ID,
+                        nonce: 1,
+                        address: Address::ZERO,
+                    },
+                ),
+            ]),
+        );
+        let tx2 = make_test_tx(50000, HALF_ETHER, 2, S1);
+        let signer1 = tx1.signer();
+        let signer2 = tx2.signer();
+        let txs = BTreeMap::from([(4, vec![tx1, tx2])]);
+
+        // balance of signer at block n-3
+        let gas_cost = 50000 * BASE_FEE as u128;
+        let state_backend = NopStateBackend {
+            balances: BTreeMap::from([
+                (signer1, U256::from(gas_cost)),
+                (signer2, U256::from(gas_cost)),
+            ]),
+            ..Default::default()
+        };
+
+        let result = setup_block_policy_with_txs(
+            txs,
+            vec![signer1, signer2],
+            &state_backend,
+            num_committed_blocks,
+            CoherencyCheckMode::ReserveBalanceCoherency,
+        );
+        assert!(result.is_ok(), "Block coherency check failed: {:?}", result);
     }
 
     #[test_case(3; "three committed blocks, one extending block")]
