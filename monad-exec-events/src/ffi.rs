@@ -28,14 +28,15 @@ pub(crate) use self::bindings::{
     MONAD_FLOW_BLOCK_SEQNO, MONAD_FLOW_TXN_ID,
 };
 pub use self::bindings::{
-    monad_c_access_list_entry, monad_c_address, monad_c_bytes32, monad_c_eth_txn_header,
-    monad_c_eth_txn_receipt, monad_exec_account_access, monad_exec_account_access_context,
-    monad_exec_account_access_list_header, monad_exec_block_end, monad_exec_block_finalized,
-    monad_exec_block_qc, monad_exec_block_reject, monad_exec_block_start, monad_exec_block_tag,
-    monad_exec_block_verified, monad_exec_evm_error, monad_exec_storage_access,
-    monad_exec_txn_access_list_entry, monad_exec_txn_auth_list_entry, monad_exec_txn_call_frame,
-    monad_exec_txn_evm_output, monad_exec_txn_header_start, monad_exec_txn_log,
-    monad_exec_txn_reject, MONAD_TXN_EIP1559, MONAD_TXN_EIP2930, MONAD_TXN_LEGACY,
+    monad_c_access_list_entry, monad_c_address, monad_c_auth_list_entry, monad_c_bytes32,
+    monad_c_eth_txn_header, monad_c_eth_txn_receipt, monad_c_uint256_ne, monad_exec_account_access,
+    monad_exec_account_access_context, monad_exec_account_access_list_header, monad_exec_block_end,
+    monad_exec_block_finalized, monad_exec_block_qc, monad_exec_block_reject,
+    monad_exec_block_start, monad_exec_block_tag, monad_exec_block_verified, monad_exec_evm_error,
+    monad_exec_storage_access, monad_exec_txn_access_list_entry, monad_exec_txn_auth_list_entry,
+    monad_exec_txn_call_frame, monad_exec_txn_evm_output, monad_exec_txn_header_start,
+    monad_exec_txn_log, monad_exec_txn_reject, MONAD_TXN_EIP1559, MONAD_TXN_EIP2930,
+    MONAD_TXN_EIP4844, MONAD_TXN_EIP7702, MONAD_TXN_LEGACY,
 };
 
 #[allow(

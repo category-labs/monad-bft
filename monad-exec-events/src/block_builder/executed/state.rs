@@ -19,6 +19,7 @@ use crate::{
         monad_exec_txn_evm_output,
     },
     ExecutedTxnAccessListEntry, ExecutedTxnCallFrame, ExecutedTxnLog,
+    ExecutedTxnSignedAuthorization,
 };
 
 #[derive(Debug)]
@@ -34,6 +35,7 @@ pub(super) struct TxnReassemblyState {
     pub header: monad_c_eth_txn_header,
     pub input: Box<[u8]>,
     pub access_list: Vec<ExecutedTxnAccessListEntry>,
+    pub authorization_list: Vec<ExecutedTxnSignedAuthorization>,
     pub logs: Vec<ExecutedTxnLog>,
     pub output: Option<monad_exec_txn_evm_output>,
     pub call_frames: Option<Vec<ExecutedTxnCallFrame>>,

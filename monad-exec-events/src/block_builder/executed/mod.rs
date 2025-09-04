@@ -20,11 +20,13 @@ use self::state::{BlockReassemblyState, TxnReassemblyState};
 use super::{BlockBuilderError, BlockBuilderResult, ReassemblyError};
 use crate::{
     ffi::{
-        monad_c_access_list_entry, monad_c_bytes32, monad_exec_txn_access_list_entry,
+        monad_c_access_list_entry, monad_c_auth_list_entry, monad_c_bytes32,
+        monad_exec_txn_access_list_entry, monad_exec_txn_auth_list_entry,
         monad_exec_txn_header_start,
     },
     ExecEvent, ExecEventDecoder, ExecEventRef, ExecutedBlock, ExecutedTxn,
     ExecutedTxnAccessListEntry, ExecutedTxnCallFrame, ExecutedTxnLog,
+    ExecutedTxnSignedAuthorization,
 };
 
 mod state;
@@ -91,7 +93,6 @@ impl ExecutedBlockBuilder {
             | ExecEventRef::BlockQC(_)
             | ExecEventRef::BlockFinalized(_)
             | ExecEventRef::BlockVerified(_)
-            | ExecEventRef::TxnAuthListEntry(_)
             | ExecEventRef::TxnHeaderEnd
             | ExecEventRef::AccountAccessListHeader(_)
             | ExecEventRef::AccountAccess(_)
@@ -117,7 +118,6 @@ impl ExecutedBlockBuilder {
             | ExecEvent::BlockQC(_)
             | ExecEvent::BlockFinalized(_)
             | ExecEvent::BlockVerified(_)
-            | ExecEvent::TxnAuthListEntry(_)
             | ExecEvent::TxnHeaderEnd
             | ExecEvent::AccountAccessListHeader(_)
             | ExecEvent::AccountAccess(_)
@@ -178,6 +178,7 @@ impl ExecutedBlockBuilder {
                                  header,
                                  input,
                                  access_list,
+                                 authorization_list,
                                  logs,
                                  output,
                                  call_frames,
@@ -193,6 +194,7 @@ impl ExecutedBlockBuilder {
                                     header,
                                     input,
                                     access_list: access_list.into_boxed_slice(),
+                                    authorization_list: authorization_list.into_boxed_slice(),
                                     logs: logs.into_boxed_slice(),
                                     output,
                                     call_frames: call_frames.map(|call_frames| {
@@ -236,6 +238,7 @@ impl ExecutedBlockBuilder {
                     header: txn_header,
                     input: data_bytes,
                     access_list: Vec::default(),
+                    authorization_list: Vec::default(),
                     logs: Vec::default(),
                     output: None,
                     call_frames: self.include_call_frames.then(Vec::default),
@@ -284,6 +287,48 @@ impl ExecutedBlockBuilder {
                     address,
                     storage_keys,
                 });
+
+                None
+            }
+            ExecEvent::TxnAuthListEntry {
+                txn_index,
+                txn_auth_list_entry:
+                    monad_exec_txn_auth_list_entry {
+                        index,
+                        entry:
+                            monad_c_auth_list_entry {
+                                chain_id,
+                                address,
+                                nonce,
+                                y_parity,
+                                r,
+                                s,
+                            },
+                        authority: _,
+                        is_valid_authority: _,
+                    },
+            } => {
+                let state = self.state.as_mut()?;
+
+                let txn_ref = state
+                    .txns
+                    .get_mut(TryInto::<usize>::try_into(txn_index).unwrap())
+                    .expect("ExecutedBlockBuilder TxnAuthListEntry txn_index within bounds")
+                    .as_mut()
+                    .expect("ExecutedBlockBuilder TxnAuthListEntry txn_index populated from preceding TxnStart");
+
+                assert_eq!(txn_ref.authorization_list.len() as u32, index);
+
+                txn_ref
+                    .authorization_list
+                    .push(ExecutedTxnSignedAuthorization {
+                        chain_id,
+                        address,
+                        nonce,
+                        y_parity,
+                        r,
+                        s,
+                    });
 
                 None
             }

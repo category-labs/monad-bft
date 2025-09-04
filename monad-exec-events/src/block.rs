@@ -19,8 +19,9 @@ use itertools::Itertools;
 #[cfg(feature = "alloy")]
 use crate::ffi;
 use crate::ffi::{
-    monad_c_address, monad_c_bytes32, monad_c_eth_txn_header, monad_exec_block_end,
-    monad_exec_block_start, monad_exec_txn_call_frame, monad_exec_txn_evm_output,
+    monad_c_address, monad_c_bytes32, monad_c_eth_txn_header, monad_c_uint256_ne,
+    monad_exec_block_end, monad_exec_block_start, monad_exec_txn_call_frame,
+    monad_exec_txn_evm_output,
 };
 
 /// Block reconstructed from execution events.
@@ -161,6 +162,7 @@ pub struct ExecutedTxn {
     pub header: monad_c_eth_txn_header,
     pub input: Box<[u8]>,
     pub access_list: Box<[ExecutedTxnAccessListEntry]>,
+    pub authorization_list: Box<[ExecutedTxnSignedAuthorization]>,
     pub logs: Box<[ExecutedTxnLog]>,
     pub output: monad_exec_txn_evm_output,
     pub call_frames: Option<Box<[ExecutedTxnCallFrame]>>,
@@ -213,6 +215,37 @@ impl ExecutedTxn {
                 .collect_vec(),
         );
 
+        let authorization_list = self
+            .authorization_list
+            .iter()
+            .map(
+                |ExecutedTxnSignedAuthorization {
+                     chain_id,
+                     address,
+                     nonce,
+
+                     y_parity,
+                     r,
+                     s,
+                 }| {
+                    alloy_eips::eip7702::SignedAuthorization::new_unchecked(
+                        alloy_eips::eip7702::Authorization {
+                            chain_id: alloy_primitives::U256::from_limbs(chain_id.limbs)
+                                .try_into()
+                                .unwrap(),
+                            address: alloy_primitives::Address(alloy_primitives::FixedBytes(
+                                address.bytes,
+                            )),
+                            nonce: *nonce,
+                        },
+                        if *y_parity { 1 } else { 0 },
+                        alloy_primitives::U256::from_limbs(r.limbs),
+                        alloy_primitives::U256::from_limbs(s.limbs),
+                    )
+                },
+            )
+            .collect_vec();
+
         match self.header.txn_type {
             ffi::MONAD_TXN_LEGACY => {
                 alloy_consensus::TxEnvelope::Legacy(alloy_consensus::Signed::new_unchecked(
@@ -260,6 +293,35 @@ impl ExecutedTxn {
                         to,
                         value,
                         access_list,
+                        input,
+                    },
+                    txn_signature,
+                    txn_hash,
+                ))
+            }
+            ffi::MONAD_TXN_EIP4844 => {
+                unreachable!("ExecutedTxn encountered unsupported EIP4844 tx type");
+            }
+            ffi::MONAD_TXN_EIP7702 => {
+                alloy_consensus::TxEnvelope::Eip7702(alloy_consensus::Signed::new_unchecked(
+                    alloy_consensus::TxEip7702 {
+                        chain_id,
+                        nonce: self.header.nonce,
+                        gas_limit: self.header.gas_limit,
+                        max_fee_per_gas: alloy_primitives::U256::from_limbs(
+                            self.header.max_fee_per_gas.limbs,
+                        )
+                        .try_into()
+                        .unwrap(),
+                        max_priority_fee_per_gas: alloy_primitives::U256::from_limbs(
+                            self.header.max_priority_fee_per_gas.limbs,
+                        )
+                        .try_into()
+                        .unwrap(),
+                        to: alloy_primitives::Address::from(self.header.to.bytes),
+                        value,
+                        access_list,
+                        authorization_list,
                         input,
                     },
                     txn_signature,
@@ -330,4 +392,17 @@ pub struct ExecutedTxnCallFrame {
 pub struct ExecutedTxnAccessListEntry {
     pub address: monad_c_address,
     pub storage_keys: Box<[monad_c_bytes32]>,
+}
+
+/// Authorization reconstructed from execution events.
+#[allow(missing_docs)]
+#[derive(Clone, Debug)]
+pub struct ExecutedTxnSignedAuthorization {
+    pub chain_id: monad_c_uint256_ne,
+    pub address: monad_c_address,
+    pub nonce: u64,
+
+    pub y_parity: bool,
+    pub r: monad_c_uint256_ne,
+    pub s: monad_c_uint256_ne,
 }

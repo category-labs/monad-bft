@@ -64,7 +64,10 @@ pub enum ExecEvent {
         txn_access_list_entry: monad_exec_txn_access_list_entry,
         storage_key_bytes: Box<[u8]>,
     },
-    TxnAuthListEntry(monad_exec_txn_auth_list_entry),
+    TxnAuthListEntry {
+        txn_index: usize,
+        txn_auth_list_entry: monad_exec_txn_auth_list_entry,
+    },
     TxnHeaderEnd,
     TxnReject {
         txn_index: usize,
@@ -124,7 +127,10 @@ pub enum ExecEventRef<'ring> {
         txn_access_list_entry: &'ring monad_exec_txn_access_list_entry,
         storage_key_bytes: &'ring [u8],
     },
-    TxnAuthListEntry(&'ring monad_exec_txn_auth_list_entry),
+    TxnAuthListEntry {
+        txn_index: usize,
+        txn_auth_list_entry: &'ring monad_exec_txn_auth_list_entry,
+    },
     TxnHeaderEnd,
     TxnReject {
         txn_index: usize,
@@ -188,9 +194,13 @@ impl<'ring> ExecEventRef<'ring> {
                 txn_access_list_entry: *txn_access_list_entry,
                 storage_key_bytes: storage_keys.to_vec().into_boxed_slice(),
             },
-            Self::TxnAuthListEntry(txn_auth_list_entry) => {
-                ExecEvent::TxnAuthListEntry(*txn_auth_list_entry)
-            }
+            Self::TxnAuthListEntry {
+                txn_index,
+                txn_auth_list_entry,
+            } => ExecEvent::TxnAuthListEntry {
+                txn_index,
+                txn_auth_list_entry: *txn_auth_list_entry,
+            },
             Self::TxnHeaderEnd => ExecEvent::TxnHeaderEnd,
             Self::TxnReject { txn_index, reject } => ExecEvent::TxnReject {
                 txn_index,
@@ -355,9 +365,13 @@ impl EventDecoder for ExecEventDecoder {
                     storage_key_bytes,
                 }
             }
-            ffi::MONAD_EXEC_TXN_AUTH_LIST_ENTRY => ExecEventRef::TxnAuthListEntry(
-                ref_from_bytes(bytes).expect("TxnAuthListEntry event valid"),
-            ),
+            ffi::MONAD_EXEC_TXN_AUTH_LIST_ENTRY => ExecEventRef::TxnAuthListEntry {
+                txn_index: info
+                    .flow_info
+                    .txn_idx
+                    .expect("TxnAuthListEntry event has txn_idx in flow_info"),
+                txn_auth_list_entry: ref_from_bytes(bytes).expect("TxnAuthListEntry event valid"),
+            },
             ffi::MONAD_EXEC_TXN_HEADER_END => {
                 assert_eq!(bytes.len(), 0, "TxnHeaderEnd payload is empty");
                 ExecEventRef::TxnHeaderEnd
