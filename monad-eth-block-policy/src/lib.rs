@@ -2816,6 +2816,16 @@ mod test {
         2_u64,
         RESERVE_FAIL
     )]
+    // emptying txn case
+    #[case(
+        Balance::from(100),
+        Balance::from(10),
+        Balance::from(10),
+        SeqNum(3),
+        100_u128,
+        100_u64,
+        Ok(())
+    )]
     fn test_txn_tfm(
         #[case] account_balance: Balance,
         #[case] reserve_balance: Balance,
@@ -2871,6 +2881,117 @@ mod test {
         vec![SeqNum(1), SeqNum(2), SeqNum(3)],
         vec![Ok(()), Ok(()), Ok(())],
     )]
+    // attempt to empty, but other txns within k
+    #[case(
+        Balance::from(100),
+        Balance::from(10),
+        Balance::from(10),
+        vec![(4_u128, 4_u64), (96_u128, 96_u64)],
+        vec![SeqNum(1), SeqNum(3)],
+        vec![Ok(()), RESERVE_FAIL],
+    )]
+    // successful attempt to empty because emptying is more than k
+    #[case(
+        Balance::from(100),
+        Balance::from(10),
+        Balance::from(10),
+        vec![(4_u128, 4_u64), (96_u128, 0_u64)],
+        vec![SeqNum(1), SeqNum(4)],
+        vec![Ok(()), Ok(())],
+    )]
+    // single emptying txn
+    #[case(
+        Balance::from(100),
+        Balance::from(10),
+        Balance::from(10),
+        vec![(100_u128, 4_u64)],
+        vec![SeqNum(4)],
+        vec![Ok(())],
+    )]
+    // Test transactions across multiple blocks with
+    // enough cooling period (k gap between txns)
+    // but reserve lower than fees
+    #[case(
+        Balance::from(100),
+        Balance::from(1),
+        Balance::from(1),
+        vec![(3_u128, 2_u64), (3_u128, 2_u64)],
+        vec![SeqNum(4), SeqNum(7)],
+        vec![Ok(()), Ok(())],
+    )]
+    // Test with low reserve balance
+    #[case(
+        Balance::from(100),
+        Balance::from(1),
+        Balance::from(1),
+        vec![(3_u128, 2_u64), (3_u128, 2_u64)],
+        vec![SeqNum(4), SeqNum(4)],
+        vec![Ok(()), RESERVE_FAIL],
+    )]
+    // Test inclusion but will revert in execution
+    // first txn bring balance down to reserve (Ok)
+    // second tries to spend all (fails)
+    // third is allowed by consensus but expected to revert in execution
+    // because it tries to dip into reserve
+    #[case(
+        Balance::from(1000),
+        Balance::from(10),
+        Balance::from(10),
+        vec![(990_u128, 1_u64), (5_u128, 10_u64), (8_u128, 1_u64)],
+        vec![SeqNum(4), SeqNum(5), SeqNum(6)],
+        vec![Ok(()), RESERVE_FAIL, Ok(())],
+    )]
+    // Zero value transfer test
+    // first txn is not potentially emptying
+    #[case(
+        Balance::from(20),
+        Balance::from(10),
+        Balance::from(10),
+        vec![(0_u128, 5_u64), (0_u128, 5_u64), (0_u128, 5_u64)],
+        vec![SeqNum(2), SeqNum(2), SeqNum(2)],
+        vec![Ok(()), Ok(()), RESERVE_FAIL],
+    )]
+    // Reserve boundary test
+    // first txn is not potentially emptying
+    #[case(
+        Balance::from(100),
+        Balance::from(20),
+        Balance::from(20),
+        vec![(10_u128, 20_u64), (0_u128, 1_u64)],
+        vec![SeqNum(2), SeqNum(2)],
+        vec![Ok(()), RESERVE_FAIL],
+    )]
+    // Zero value transfer test
+    // first txn is potentially emptying
+    #[case(
+        Balance::from(20),
+        Balance::from(10),
+        Balance::from(10),
+        vec![(0_u128, 5_u64), (0_u128, 5_u64), (0_u128, 5_u64)],
+        vec![SeqNum(3), SeqNum(3), SeqNum(3)],
+        vec![Ok(()), Ok(()), Ok(())],
+    )]
+    // Reserve boundary test
+    // first txn is potentially emptying
+    #[case(
+        Balance::from(100),
+        Balance::from(20),
+        Balance::from(20),
+        vec![(10_u128, 20_u64), (0_u128, 1_u64)],
+        vec![SeqNum(3), SeqNum(3)],
+        vec![Ok(()), Ok(())],
+    )]
+    // Reserve boundary test with many txns
+    // first txn is potentially emptying
+    // the last txn in the list exceeds the reserve balance
+    #[case(
+        Balance::from(100),
+        Balance::from(20),
+        Balance::from(20),
+        vec![(10_u128, 20_u64), (0_u128, 1_u64), (0_u128, 18_u64), (0_u128, 1_u64), (0_u128, 1_u64)],
+        vec![SeqNum(3), SeqNum(3), SeqNum(3), SeqNum(3), SeqNum(3)],
+        vec![Ok(()), Ok(()), Ok(()), Ok(()), RESERVE_FAIL],
+    )]
     fn test_multi_txn_tfm(
         #[case] account_balance: Balance,
         #[case] reserve_balance: Balance,
@@ -2878,6 +2999,65 @@ mod test {
         #[case] txns: Vec<(u128, u64)>, // txn (value, gas_limit)
         #[case] txn_block_num: Vec<SeqNum>,
         #[case] expected: Vec<Result<(), BlockPolicyError>>,
+    ) {
+        multi_txn_tfm_helper(
+            false,
+            account_balance,
+            reserve_balance,
+            max_reserve_balance,
+            txns,
+            txn_block_num,
+            expected,
+        )
+    }
+
+    #[rstest]
+    // attempt to exceed reserve after k blocks but will fail
+    // because delegated
+    #[case(
+        Balance::from(100),
+        Balance::from(10),
+        Balance::from(10),
+        vec![(20_u128, 15_u64)],
+        vec![SeqNum(3)],
+        vec![RESERVE_FAIL],
+    )]
+    // Reserve boundary test
+    #[case(
+        Balance::from(100),
+        Balance::from(20),
+        Balance::from(20),
+        vec![(10_u128, 20_u64), (0_u128, 1_u64)],
+        vec![SeqNum(3), SeqNum(3)],
+        vec![Ok(()), RESERVE_FAIL],
+    )]
+    fn test_try_add_delegated_txns(
+        #[case] account_balance: Balance,
+        #[case] reserve_balance: Balance,
+        #[case] max_reserve_balance: Balance,
+        #[case] txns: Vec<(u128, u64)>, // txn (value, gas_limit)
+        #[case] txn_block_num: Vec<SeqNum>,
+        #[case] expected: Vec<Result<(), BlockPolicyError>>,
+    ) {
+        multi_txn_tfm_helper(
+            true,
+            account_balance,
+            reserve_balance,
+            max_reserve_balance,
+            txns,
+            txn_block_num,
+            expected,
+        )
+    }
+
+    fn multi_txn_tfm_helper(
+        is_delegated: bool,
+        account_balance: Balance,
+        reserve_balance: Balance,
+        max_reserve_balance: Balance,
+        txns: Vec<(u128, u64)>, // txn (value, gas_limit)
+        txn_block_num: Vec<SeqNum>,
+        expected: Vec<Result<(), BlockPolicyError>>,
     ) {
         assert_eq!(txns.len(), expected.len());
         assert_eq!(txns.len(), txn_block_num.len());
@@ -2887,7 +3067,7 @@ mod test {
             remaining_reserve_balance: reserve_balance,
             block_seqnum_of_latest_txn: SeqNum(0),
             max_reserve_balance,
-            is_delegated: false,
+            is_delegated,
         };
 
         let txns = txns
