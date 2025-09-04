@@ -19,9 +19,12 @@ use monad_event_ring::{EventDescriptor, EventPayloadResult};
 use self::state::{BlockReassemblyState, TxnReassemblyState};
 use super::{BlockBuilderError, BlockBuilderResult, ReassemblyError};
 use crate::{
-    ffi::{monad_c_bytes32, monad_exec_txn_header_start},
-    ExecEvent, ExecEventDecoder, ExecEventRef, ExecutedBlock, ExecutedTxn, ExecutedTxnCallFrame,
-    ExecutedTxnLog,
+    ffi::{
+        monad_c_access_list_entry, monad_c_bytes32, monad_exec_txn_access_list_entry,
+        monad_exec_txn_header_start,
+    },
+    ExecEvent, ExecEventDecoder, ExecEventRef, ExecutedBlock, ExecutedTxn,
+    ExecutedTxnAccessListEntry, ExecutedTxnCallFrame, ExecutedTxnLog,
 };
 
 mod state;
@@ -88,7 +91,6 @@ impl ExecutedBlockBuilder {
             | ExecEventRef::BlockQC(_)
             | ExecEventRef::BlockFinalized(_)
             | ExecEventRef::BlockVerified(_)
-            | ExecEventRef::TxnAccessListEntry { .. }
             | ExecEventRef::TxnAuthListEntry(_)
             | ExecEventRef::TxnHeaderEnd
             | ExecEventRef::AccountAccessListHeader(_)
@@ -115,7 +117,6 @@ impl ExecutedBlockBuilder {
             | ExecEvent::BlockQC(_)
             | ExecEvent::BlockFinalized(_)
             | ExecEvent::BlockVerified(_)
-            | ExecEvent::TxnAccessListEntry { .. }
             | ExecEvent::TxnAuthListEntry(_)
             | ExecEvent::TxnHeaderEnd
             | ExecEvent::AccountAccessListHeader(_)
@@ -176,6 +177,7 @@ impl ExecutedBlockBuilder {
                                  sender,
                                  header,
                                  input,
+                                 access_list,
                                  logs,
                                  output,
                                  call_frames,
@@ -190,6 +192,7 @@ impl ExecutedBlockBuilder {
                                     sender,
                                     header,
                                     input,
+                                    access_list: access_list.into_boxed_slice(),
                                     logs: logs.into_boxed_slice(),
                                     output,
                                     call_frames: call_frames.map(|call_frames| {
@@ -232,9 +235,54 @@ impl ExecutedBlockBuilder {
                     sender,
                     header: txn_header,
                     input: data_bytes,
+                    access_list: Vec::default(),
                     logs: Vec::default(),
                     output: None,
                     call_frames: self.include_call_frames.then(Vec::default),
+                });
+
+                None
+            }
+            ExecEvent::TxnAccessListEntry {
+                txn_index,
+                txn_access_list_entry:
+                    monad_exec_txn_access_list_entry {
+                        index,
+                        entry:
+                            monad_c_access_list_entry {
+                                address,
+                                storage_key_count,
+                            },
+                    },
+                storage_key_bytes,
+            } => {
+                let state = self.state.as_mut()?;
+
+                let txn_ref = state
+                    .txns
+                    .get_mut(TryInto::<usize>::try_into(txn_index).unwrap())
+                    .expect("ExecutedBlockBuilder TxnAccessListEntry txn_index within bounds")
+                    .as_mut()
+                    .expect("ExecutedBlockBuilder TxnAccessListEntry txn_index populated from preceding TxnStart");
+
+                assert_eq!(txn_ref.access_list.len() as u32, index);
+
+                let storage_keys = storage_key_bytes
+                    .into_vec()
+                    .into_iter()
+                    .chunks(std::mem::size_of::<monad_c_bytes32>())
+                    .into_iter()
+                    .map(|chunk| monad_c_bytes32 {
+                        bytes: chunk.collect_vec().try_into().unwrap(),
+                    })
+                    .collect_vec()
+                    .into_boxed_slice();
+
+                assert_eq!(storage_keys.len(), storage_key_count as usize);
+
+                txn_ref.access_list.push(ExecutedTxnAccessListEntry {
+                    address,
+                    storage_keys,
                 });
 
                 None
