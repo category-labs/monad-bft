@@ -53,14 +53,24 @@ where
         zstd::stream::copy_decode(zstd_bytes, &mut decompressed)
             .expect(format!("could not decompress `{}`", name.as_ref()).as_str());
 
-        let n_write = unsafe {
-            libc::write(
-                snapshot_fd,
-                decompressed.as_ptr() as *const libc::c_void,
-                decompressed.len() as libc::size_t,
-            )
-        };
-        assert_eq!(n_write as usize, decompressed.len());
+        // The libc write(2) to the snapshot descriptor tends to do a
+        // partial write of 2 GiB when `decompressed` is very large; loop
+        // until we've written the whole thing, or an error occurs
+        let mut residual = decompressed.as_slice();
+        while !residual.is_empty() {
+            let n_written = unsafe {
+                libc::write(
+                    snapshot_fd,
+                    residual.as_ptr() as *const libc::c_void,
+                    residual.len() as libc::size_t,
+                )
+            };
+            if n_written == -1 {
+                let write_error = std::io::Error::last_os_error().to_string();
+                return Err(format!("write error: {write_error}"));
+            }
+            residual = &residual[n_written as usize..];
+        }
 
         let raw = RawEventRing::mmap_from_fd(
             libc::PROT_READ,
