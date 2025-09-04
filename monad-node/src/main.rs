@@ -432,6 +432,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
                     network_name = node_state.node_config.network_name,
                     node_name = node_state.node_config.node_name
                 ),
+                node_state.node_config.network_name.clone(),
                 record_metrics_interval,
             )
             .expect("failed to build otel monad-node");
@@ -772,6 +773,7 @@ fn resolve_domain_v4<P: PubKey>(node_id: &NodeId<P>, domain: &String) -> Option<
 
 const GAUGE_TOTAL_UPTIME_US: &str = "monad.total_uptime_us";
 const GAUGE_STATE_TOTAL_UPDATE_US: &str = "monad.state.total_update_us";
+const GAUGE_NODE_INFO: &str = "monad_node_info";
 
 fn send_metrics(
     meter: &opentelemetry::metrics::Meter,
@@ -781,6 +783,11 @@ fn send_metrics(
     process_start: &Instant,
     total_state_update_elapsed: &Duration,
 ) {
+    let node_info_gauge = gauge_cache
+        .entry(GAUGE_NODE_INFO)
+        .or_insert_with(|| meter.u64_gauge(GAUGE_NODE_INFO).build());
+    node_info_gauge.record(1, &[]);
+
     for (k, v) in state_metrics
         .metrics()
         .into_iter()
@@ -804,6 +811,7 @@ fn send_metrics(
 fn build_otel_meter_provider(
     otel_endpoint: &str,
     service_name: String,
+    network_name: String,
     interval: Duration,
 ) -> Result<opentelemetry_sdk::metrics::SdkMeterProvider, NodeSetupError> {
     let exporter = MetricExporter::builder()
@@ -829,6 +837,7 @@ fn build_otel_meter_provider(
                         opentelemetry_semantic_conventions::resource::SERVICE_VERSION,
                         CLIENT_VERSION,
                     ),
+                    opentelemetry::KeyValue::new("network", network_name),
                 ])
                 .build(),
         );
