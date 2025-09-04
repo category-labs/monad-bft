@@ -114,19 +114,26 @@ where
 
         Self::validate_block_header(&header, &body, author_pubkey, chain_params)?;
 
-        if let Ok((system_txns, validated_txns, nonce_usages, txn_fees)) =
-            Self::validate_block_body(&header, &body, chain_config)
-        {
-            let block = ConsensusFullBlock::new(header, body)?;
-            Ok(EthValidatedBlock {
-                block,
-                system_txns,
-                validated_txns,
-                nonce_usages,
-                txn_fees,
-            })
-        } else {
-            Err(BlockValidationError::PayloadError)
+        match Self::validate_block_body(&header, &body, chain_config) {
+            Ok((system_txns, validated_txns, nonce_usages, txn_fees)) => {
+                let block = ConsensusFullBlock::new(header, body)?;
+
+                Ok(EthValidatedBlock {
+                    block,
+                    system_txns,
+                    validated_txns,
+                    nonce_usages,
+                    txn_fees,
+                })
+            }
+            Err(error) => {
+                debug!(
+                    block_id =? header.get_id(),
+                    ?error,
+                    "EthBlockValidator validate failed"
+                );
+                Err(BlockValidationError::PayloadError)
+            }
         }
     }
 }
@@ -300,17 +307,20 @@ where
             // A block is invalid if we see a smaller or equal nonce
             // after the first or if there is a nonce gap
             if let Some(old_nonce_usage) = maybe_old_nonce_usage {
-                let Some(expected_nonce) = sys_txn.nonce().checked_sub(1) else {
-                    return Err(BlockValidationError::SystemTxnError);
-                };
-
                 match old_nonce_usage {
+                    NonceUsage::Possible(_) => {
+                        // System account cannot be the authority of an authorization
+                        return Err(BlockValidationError::SystemTxnError);
+                    }
                     NonceUsage::Known(old_nonce) => {
+                        let Some(expected_nonce) = sys_txn.nonce().checked_sub(1) else {
+                            return Err(BlockValidationError::SystemTxnError);
+                        };
+
                         if expected_nonce != old_nonce {
                             return Err(BlockValidationError::SystemTxnError);
                         }
                     }
-                    NonceUsage::Possible(_) => {}
                 }
             }
         }
@@ -333,17 +343,21 @@ where
             // block. A block is invalid if we see a smaller or equal nonce
             // after the first or if there is a nonce gap
             if let Some(old_nonce_usage) = maybe_old_nonce_usage {
-                let Some(expected_nonce) = eth_txn.nonce().checked_sub(1) else {
-                    return Err(BlockValidationError::TxnError);
-                };
-
                 match old_nonce_usage {
+                    NonceUsage::Possible(_) => {
+                        // Could be valid or invalid authorization, can't verify within block
+                    }
                     NonceUsage::Known(old_nonce) => {
+                        let Some(expected_nonce) = eth_txn.nonce().checked_sub(1) else {
+                            // eth_txn replaced tx with nonce `old_nonce` but
+                            // `eth_txn.nonce() == 0` so old tx muts be invalid
+                            return Err(BlockValidationError::TxnError);
+                        };
+
                         if expected_nonce != old_nonce {
                             return Err(BlockValidationError::TxnError);
                         }
                     }
-                    NonceUsage::Possible(_) => {}
                 }
             }
 
@@ -394,7 +408,7 @@ where
                                     }
                                 }
                                 NonceUsage::Possible(possible_nonces) => {
-                                    possible_nonces.push_front(authorization.nonce);
+                                    possible_nonces.push_back(authorization.nonce);
                                 }
                             },
                             BTreeMapEntry::Vacant(nonce_usage) => {
