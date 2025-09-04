@@ -86,10 +86,12 @@ pub fn parse_tx_receipt(
         },
         logs_bloom: *receipt.logs_bloom(),
     };
+
     let inner_receipt: ReceiptEnvelope<Log> = match receipt {
         ReceiptEnvelope::Legacy(_) => ReceiptEnvelope::Legacy(receipt_with_bloom),
         ReceiptEnvelope::Eip2930(_) => ReceiptEnvelope::Eip2930(receipt_with_bloom),
         ReceiptEnvelope::Eip1559(_) => ReceiptEnvelope::Eip1559(receipt_with_bloom),
+        ReceiptEnvelope::Eip7702(_) => ReceiptEnvelope::Eip7702(receipt_with_bloom),
         _ => ReceiptEnvelope::Eip1559(receipt_with_bloom),
     };
 
@@ -104,10 +106,10 @@ pub fn parse_tx_receipt(
         contract_address,
         gas_used,
         effective_gas_price,
-        // TODO: EIP4844 and EIP7702 fields
+        // TODO: EIP4844 fields
         blob_gas_used: None,
         blob_gas_price: None,
-        authorization_list: None,
+        authorization_list: tx.authorization_list().map(|s| s.to_vec()),
     };
     tx_receipt
 }
