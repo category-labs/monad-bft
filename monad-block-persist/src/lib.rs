@@ -140,11 +140,14 @@ where
         let mut buf = vec![0; size as usize];
         file.read_exact(&mut buf)?;
 
-        // TODO maybe expect is too strict
-        let block =
-            alloy_rlp::decode_exact(&buf).expect("local ledger consensus header decode failed");
+        let header = alloy_rlp::decode_exact(&buf).map_err(|err| {
+            std::io::Error::other(format!(
+                "failed to rlp decode ledger proposed_head bft header, err={:?}",
+                err
+            ))
+        })?;
 
-        Ok(block)
+        Ok(header)
     }
 }
 
@@ -214,11 +217,14 @@ where
         let mut buf = vec![0; size as usize];
         file.read_exact(&mut buf)?;
 
-        // TODO maybe expect is too strict
-        let block =
-            alloy_rlp::decode_exact(&buf).expect("local ledger consensus header decode failed");
+        let header = alloy_rlp::decode_exact(&buf).map_err(|err| {
+            std::io::Error::other(format!(
+                "failed to rlp decode ledger bft header, block_id={:?}, err={:?}",
+                block_id, err
+            ))
+        })?;
 
-        Ok(block)
+        Ok(header)
     }
 
     fn read_bft_body(
@@ -231,9 +237,12 @@ where
         let mut buf = vec![0; size as usize];
         file.read_exact(&mut buf)?;
 
-        // TODO maybe expect is too strict
-        let body =
-            alloy_rlp::decode_exact(&buf).expect("local ledger consensus body decode failed");
+        let body = alloy_rlp::decode_exact(&buf).map_err(|err| {
+            std::io::Error::other(format!(
+                "failed to rlp decode ledger bft body, body_id={:?}, err={:?}",
+                body_id, err
+            ))
+        })?;
 
         Ok(body)
     }
