@@ -403,7 +403,7 @@ where
 
         if !tfm_enabled {
             if account_balance.balance < block_txn_fees.max_txn_cost {
-                debug!(
+                trace!(
                     seq_num =?self.block_seq_num,
                     ?account_balance,
                     block_txn_cost =?block_txn_fees.max_txn_cost,
@@ -421,12 +421,15 @@ where
             account_balance.balance = estimated_balance;
             account_balance.block_seqnum_of_latest_txn = self.block_seq_num;
 
-            debug!(
+            trace!(
                 "TFM disabled updated balance: {:?} \
                         txn max cost {:?} \
                         block seq_num {:?} \
                         address: {:?}",
-                account_balance, block_txn_fees.max_txn_cost, self.block_seq_num, eth_address,
+                account_balance,
+                block_txn_fees.max_txn_cost,
+                self.block_seq_num,
+                eth_address,
             );
             return Ok(());
         }
@@ -440,7 +443,7 @@ where
         let mut block_gas_cost = block_txn_fees.max_gas_cost;
         if has_emptying_transaction {
             if account_balance.balance < block_txn_fees.first_txn_gas {
-                debug!(
+                trace!(
                     "Block with insufficient balance: {:?} \
                             first txn value {:?} \
                             first txn gas {:?} \
@@ -464,7 +467,7 @@ where
             account_balance.remaining_reserve_balance = estimated_balance.min(max_reserve_balance);
             account_balance.balance = estimated_balance;
 
-            debug!(
+            trace!(
                 "Block has emptying txn. updated balance: {:?} \
                         first txn value {:?} \
                         first txn gas {:?} \
@@ -483,12 +486,15 @@ where
         }
 
         if account_balance.remaining_reserve_balance < block_gas_cost {
-            debug!(
+            trace!(
                 "Block with insufficient reserve balance: {:?} \
                             max gas cost {:?} \
                             block seq_num {:?} \
                             address: {:?}",
-                account_balance, block_gas_cost, self.block_seq_num, eth_address,
+                account_balance,
+                block_gas_cost,
+                self.block_seq_num,
+                eth_address,
             );
             return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
                 BlockPolicyBlockValidatorError::InsufficientReserveBalance,
@@ -499,7 +505,7 @@ where
             .saturating_sub(block_gas_cost);
         account_balance.block_seqnum_of_latest_txn = self.block_seq_num;
 
-        debug!(
+        trace!(
             ?account_balance,
             ?self.block_seq_num,
             ?eth_address,
@@ -535,7 +541,7 @@ where
         {
             let txn_cost = compute_max_txn_cost(txn);
             if account_balance.balance < txn_cost {
-                debug!(
+                trace!(
                     seq_num =?self.block_seq_num,
                     ?account_balance,
                     ?txn_cost,
@@ -553,12 +559,15 @@ where
             account_balance.balance = estimated_balance;
             account_balance.block_seqnum_of_latest_txn = self.block_seq_num;
 
-            debug!(
+            trace!(
                 "TFM disabled. updated balance: {:?} \
                         txn cost {:?} \
                         block seq_num {:?} \
                         address: {:?}",
-                account_balance, txn_cost, self.block_seq_num, eth_address,
+                account_balance,
+                txn_cost,
+                self.block_seq_num,
+                eth_address,
             );
             return Ok(());
         }
@@ -573,13 +582,13 @@ where
         if is_emptying_transaction {
             let txn_max_gas = compute_txn_max_gas_cost(txn, self.base_fee);
             if account_balance.balance < txn_max_gas {
-                debug!(
+                trace!(
                     seq_num =?self.block_seq_num,
                     ?account_balance,
                     ?txn_max_gas,
                     ?txn,
                     ?is_emptying_transaction,
-                    "Emptyign txn can not be accepted insufficient reserve balance"
+                    "Emptying txn can not be accepted insufficient reserve balance"
                 );
                 return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
                     BlockPolicyBlockValidatorError::InsufficientBalance,
@@ -590,7 +599,7 @@ where
             let estimated_balance = account_balance.balance.saturating_sub(txn_max_cost);
             let reserve_balance = account_balance.max_reserve_balance.min(estimated_balance);
 
-            debug!(
+            trace!(
                 "New emptying txn. balance: {:?} \
                     txn_max_cost {:?} \
                     txn_max_gas {:?} \
@@ -612,7 +621,7 @@ where
         } else {
             let txn_max_gas = compute_txn_max_gas_cost(txn, self.base_fee);
             if account_balance.remaining_reserve_balance < txn_max_gas {
-                debug!(
+                trace!(
                     seq_num =?self.block_seq_num,
                     ?account_balance,
                     ?txn_max_gas,
@@ -856,11 +865,6 @@ where
                 .max_reserve_balance,
         );
 
-        debug!(
-            ?base_seq_num,
-            ?consensus_block_seq_num,
-            "compute_account_base_balances"
-        );
         let addresses = addresses.unique().collect_vec();
         let account_balances = self
             .get_account_statuses(
@@ -1134,7 +1138,7 @@ where
                         .expect("account_nonces should have been populated");
 
                     if *expected_nonce != nonce {
-                        warn!(
+                        trace!(
                             ?expected_nonce,
                             auth_tuple_nonce = nonce,
                             ?authority,
@@ -1171,7 +1175,7 @@ where
                                     authority_addresses.insert(authority);
                                 }
                                 Err(error) => {
-                                    warn!(?error, "invalid authority signature");
+                                    debug!(?error, "invalid authority signature");
                                 }
                             }
                         }
@@ -1223,8 +1227,6 @@ where
         state_backend: &SBT,
         chain_config: &CCT,
     ) -> Result<(), BlockPolicyError> {
-        debug!(?block, "check_coherency");
-
         let chain_id = chain_config.chain_id();
 
         let first_block = extending_blocks

@@ -363,7 +363,7 @@ where
                     is_delegated: false,
                 });
 
-            debug!(seq_num = ?header.seq_num, address = ?eth_txn.signer(), nonce = ?eth_txn.nonce(), ?txn_fee_entry, "TxnFeeEntry");
+            trace!(seq_num = ?header.seq_num, address = ?eth_txn.signer(), nonce = ?eth_txn.nonce(), ?txn_fee_entry, "TxnFeeEntry");
 
             if eth_txn.is_eip7702() {
                 if let Some(auth_list) = eth_txn.authorization_list() {
