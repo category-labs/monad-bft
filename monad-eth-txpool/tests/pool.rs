@@ -26,6 +26,7 @@ use itertools::Itertools;
 use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
 use monad_consensus_types::{
     block::{BlockPolicy, GENESIS_TIMESTAMP},
+    block_validator::BlockValidator,
     payload::RoundSignature,
 };
 use monad_crypto::{
@@ -36,6 +37,7 @@ use monad_eth_block_policy::{
     validation::{TFM_MAX_EIP2718_ENCODED_LENGTH, TFM_MAX_GAS_LIMIT},
     EthBlockPolicy,
 };
+use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_testutil::{
     generate_block_with_txs, make_eip1559_tx, make_eip7702_tx, make_legacy_tx,
     make_signed_authorization, recover_tx, secret_to_eth_address,
@@ -319,21 +321,45 @@ fn run_custom_iter<const N: usize>(
                         .collect_vec()
                 );
 
-                if add_to_blocktree {
-                    let block = generate_block_with_txs(
-                        Round(current_round),
-                        SeqNum(current_seq_num),
-                        BASE_FEE_PER_GAS,
-                        &MockChainConfig::DEFAULT,
-                        decoded_txns
-                            .into_iter()
-                            .map(|tx| {
-                                let signer = tx.recover_signer().unwrap();
-                                Recovered::new_unchecked(tx, signer)
-                            })
-                            .collect(),
-                    );
+                let block = generate_block_with_txs(
+                    Round(current_round),
+                    SeqNum(current_seq_num),
+                    BASE_FEE_PER_GAS,
+                    &MockChainConfig::DEFAULT,
+                    decoded_txns
+                        .into_iter()
+                        .map(|tx| {
+                            let signer = tx.recover_signer().unwrap();
+                            Recovered::new_unchecked(tx, signer)
+                        })
+                        .collect(),
+                );
 
+                let block_validator_block = BlockValidator::<
+                    _,
+                    _,
+                    _,
+                    EthBlockPolicy<
+                        SignatureType,
+                        SignatureCollectionType,
+                        MockChainConfig,
+                        MockChainRevision,
+                    >,
+                    StateBackendType,
+                    MockChainConfig,
+                    MockChainRevision,
+                >::validate(
+                    &EthBlockValidator::default(),
+                    block.header().clone(),
+                    block.body().clone(),
+                    Some(&block.get_author().pubkey()),
+                    &MockChainConfig::DEFAULT,
+                )
+                .unwrap();
+
+                assert_eq!(block.nonce_usages, block_validator_block.nonce_usages);
+
+                if add_to_blocktree {
                     current_seq_num += 1;
 
                     pending_blocks.push_back(block);
