@@ -51,7 +51,8 @@ where
     config: RaptorCastConfigSecondaryClient,
 
     // [start_round, end_round) -> GroupAsClient
-    // Represents all raptorcast groups that we have accepted. They may overlap.
+    // Represents all raptorcast groups that we have accepted and haven't expired
+    // yet. The groups may overlap.
     confirmed_groups: IntervalMap<Round, GroupAsClient<ST>>,
 
     // start_round -> validator_id -> group invite
@@ -127,30 +128,15 @@ where
         // Clean up old invitations.
         self.pending_confirms.retain(|&key, _| key > curr_round);
 
-        // Send out group information to the Primary instance, so that it can
-        // re-broadcast raptorcast chunks. This is the normal path when we are
-        // receiving proposals and thus the round increases.
-        let consume_end = curr_round + Round(1);
-        let mut current_group_count = 0;
-        for group in self.confirmed_groups.values(curr_round..consume_end) {
-            current_group_count += 1;
-            if let Err(error) = self.group_sink_channel.send(group.clone()) {
-                error!(
-                    "Failed to send group to secondary Raptorcast instance: {}",
-                    error
-                );
-            }
-        }
-        self.metrics[CLIENT_NUM_CURRENT_GROUPS] = current_group_count;
-
         // Remove all groups that should already have been consumed
         let mut keys_to_remove = Vec::new();
-        for iv in self.confirmed_groups.intervals(..consume_end) {
+        for iv in self.confirmed_groups.intervals(..self.curr_round) {
             keys_to_remove.push(iv);
         }
         for iv in keys_to_remove {
             self.confirmed_groups.remove(iv);
         }
+        self.metrics[CLIENT_NUM_CURRENT_GROUPS] = self.get_current_group_count();
     }
 
     // If we are not receiving proposals, then we don't know what the current
@@ -321,7 +307,6 @@ where
             return;
         }
 
-        let is_receiving_proposals = self.is_receiving_proposals();
         let Some(invites) = self.pending_confirms.get_mut(start_round) else {
             warn!(
                 "RaptorCastSecondary Ignoring confirmation message \
@@ -379,27 +364,15 @@ where
         );
 
         // Send the group to primary instance right away.
-        // Doing so helps resolve activation of groups for
-        // bootstrapping full-nodes, as they aren't receiving
-        // proposals and hence can't advance (enter) rounds.
-        // The primary instance use the group for determining
-        // which other full-nodes to re-broadcast raptorcast
-        // chunks to.
-        if !is_receiving_proposals {
-            if let Err(error) = self.group_sink_channel.send(group.clone()) {
-                tracing::error!(
-                    "RaptorCastSecondary failed to send group to primary \
-                                        Raptorcast instance: {}",
-                    error
-                );
-            }
-            // Pulse a heartbeat, giving the new group above some time to be
-            // picked up by UDP state and be used. Without this pulse, there's
-            // a risk that the same validator will send us an invite for a
-            // future group before we receive the first proposal via raptorcast,
-            // causing the `is_receiving_proposals` check above to eagerly send
-            // the future group to primary and eject the current one.
-            self.last_round_heartbeat = Instant::now();
+        // Doing so helps resolve activation of groups for full-nodes experiencing
+        // round gaps, as they aren't receiving proposals and hence can't advance
+        // (enter) rounds.
+        if let Err(error) = self.group_sink_channel.send(group.clone()) {
+            tracing::error!(
+                "RaptorCastSecondary failed to send group to primary \
+                                    Raptorcast instance: {}",
+                error
+            );
         }
 
         self.metrics[CLIENT_RECEIVED_CONFIRMS] += 1;
@@ -413,7 +386,16 @@ where
 
         self.confirmed_groups
             .force_insert(round_span.start..round_span.end, group);
+
         invites.remove(&confirm_msg.prepare.validator_id);
+
+        self.metrics[CLIENT_NUM_CURRENT_GROUPS] = self.get_current_group_count();
+    }
+
+    fn get_current_group_count(&self) -> u64 {
+        self.confirmed_groups
+            .intervals(self.curr_round..self.curr_round + Round(1))
+            .count() as u64
     }
 
     // Called when group invite or group confirmation is received from validator

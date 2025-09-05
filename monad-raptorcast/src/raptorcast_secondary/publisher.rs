@@ -1379,6 +1379,114 @@ mod tests {
     }
 
     #[test]
+    fn client_avoid_one_round_gap() {
+        enable_tracer();
+        let (clt_tx, clt_rx): RcToRcChannelGrp<ST> = unbounded_channel();
+        let mut clt =
+            Client::<ST>::new(nid(10), clt_tx, RaptorCastConfigSecondaryClient::default());
+        let mut group_map = MockGroupMap::new(nid(10), clt_rx);
+
+        // Represents an invite message received from some validator
+        let make_prep_data = |start_round: u64| PrepareGroup {
+            validator_id: nid(0),
+            max_group_size: 2,
+            start_round: Round(start_round),
+            end_round: Round(start_round + 2),
+        };
+
+        let make_invite_msg =
+            |start_round: u64| FullNodesGroupMessage::PrepareGroup(make_prep_data(start_round));
+
+        let make_confirm_msg = |start_round: u64| {
+            FullNodesGroupMessage::ConfirmGroup(ConfirmGroup {
+                prepare: make_prep_data(start_round),
+                peers: node_ids_vec![10, 11],
+                name_records: Default::default(),
+            })
+        };
+
+        // Receive invite for rounds [50, 52)
+        let (group_msg, validator_id) = clt
+            .on_receive_group_message(make_invite_msg(50))
+            .expect("Client should have returned accept responses to be sent");
+
+        assert_eq!(validator_id, nid(0));
+        let FullNodesGroupMessage::PrepareGroupResponse(reply_msg) = group_msg else {
+            panic!("Expected PrepareGroupResponse, got: {:?}", group_msg);
+        };
+        assert!(reply_msg.accept);
+        assert_eq!(reply_msg.node_id, nid(10));
+        assert_eq!(reply_msg.req, make_prep_data(50));
+
+        let res = clt.on_receive_group_message(make_confirm_msg(50));
+        if res.is_some() {
+            panic!("Expected None from Client, got: {:?}", res);
+        }
+
+        // Receive invite for rounds [52, 54), from V0
+        clt.on_receive_group_message(make_invite_msg(52));
+        clt.on_receive_group_message(make_confirm_msg(52));
+
+        // Receive invite for rounds [60, 62), from V0
+        clt.on_receive_group_message(make_invite_msg(60));
+        clt.on_receive_group_message(make_confirm_msg(60));
+
+        // Receive invite for rounds [62, 64), from V0
+        clt.on_receive_group_message(make_invite_msg(62));
+        clt.on_receive_group_message(make_confirm_msg(62));
+
+        // Receive raptorcast with proposal 50
+        let rc_grp = &group_map.get_rc_group_peers(&clt, &nid(0));
+        assert!(equal_node_set(rc_grp, &node_ids![11, 10]));
+        clt.enter_round(Round(50));
+        group_map.update(&clt);
+
+        // Receive raptorcast with proposal 51
+        let rc_grp = &group_map.get_rc_group_peers(&clt, &nid(0));
+        assert!(equal_node_set(rc_grp, &node_ids![11, 10]));
+        clt.enter_round(Round(51));
+        group_map.update(&clt);
+
+        // Receive raptorcast with proposal 52
+        let rc_grp = &group_map.get_rc_group_peers(&clt, &nid(0));
+        assert!(equal_node_set(rc_grp, &node_ids![11, 10]));
+        clt.enter_round(Round(52));
+        group_map.update(&clt);
+
+        // Receive raptorcast with proposal 53
+        let rc_grp = &group_map.get_rc_group_peers(&clt, &nid(0));
+        assert!(equal_node_set(rc_grp, &node_ids![11, 10]));
+        clt.enter_round(Round(53));
+        group_map.update(&clt);
+
+        // ~~ gap between rounds 54-60
+
+        // Receive raptorcast with proposal 60
+        let rc_grp = &group_map.get_rc_group_peers(&clt, &nid(0));
+        assert!(equal_node_set(rc_grp, &node_ids![11, 10]));
+        clt.enter_round(Round(60));
+        group_map.update(&clt);
+
+        // Receive raptorcast with proposal 61
+        let rc_grp = &group_map.get_rc_group_peers(&clt, &nid(0));
+        assert!(equal_node_set(rc_grp, &node_ids![11, 10]));
+        clt.enter_round(Round(61));
+        group_map.update(&clt);
+
+        // Receive raptorcast with proposal 62
+        let rc_grp = &group_map.get_rc_group_peers(&clt, &nid(0));
+        assert!(equal_node_set(rc_grp, &node_ids![11, 10]));
+        clt.enter_round(Round(62));
+        group_map.update(&clt);
+
+        // Receive raptorcast with proposal 63
+        let rc_grp = &group_map.get_rc_group_peers(&clt, &nid(0));
+        assert!(equal_node_set(rc_grp, &node_ids![11, 10]));
+        clt.enter_round(Round(63));
+        group_map.update(&clt);
+    }
+
+    #[test]
     fn standalone_client_single_group() {
         enable_tracer();
         let (clt_tx, clt_rx): RcToRcChannelGrp<ST> = unbounded_channel();
@@ -1486,13 +1594,15 @@ mod tests {
         let rc_grp = &group_map.get_rc_group_peers(&clt, &nid(0));
         assert!(equal_node_set(rc_grp, &node_ids![15, 10]));
 
-        //-------------------------------------------------------------------[6]
+        //-------------------------------------------------------------------[7]
         clt.enter_round(Round(7));
 
-        // RaptorCast group from v0 should be down now, as it only covered rounds [5, 7)
-        // Here we should see a group gap
-        group_map.update(&clt);
-        assert!(group_map.is_empty(&clt));
+        // Although raptorCast group from v0 only covered rounds [5, 7), we will
+        // still see the next group when querying for a group. This is because
+        // in the new behaviour, all groups are pushed to primary and will
+        // prefer to yield a future group if such one exists.
+        let rc_grp = &group_map.get_rc_group_peers(&clt, &nid(0));
+        assert!(equal_node_set(rc_grp, &node_ids![18, 10]));
 
         //-------------------------------------------------------------------[8]
         clt.enter_round(Round(8));
@@ -1617,9 +1727,10 @@ mod tests {
         //------------------------------------------------------------------[37]
         clt.enter_round(Round(37));
 
-        // RaptorCast group from v0 should be down now, as it only covered rounds [35, 37)
-        // Here we should see a group gap
-        assert!(group_map.is_empty(&clt));
+        // In the new behaviour, all groups are pushed to primary and will hence
+        // avoid a gap if a future group for the author id exists.
+        let rc_grp = &group_map.get_rc_group_peers(&clt, &nid(0));
+        assert!(equal_node_set(rc_grp, &node_ids![48, 10]));
 
         //------------------------------------------------------------------[38]
         clt.enter_round(Round(38));
@@ -1797,27 +1908,11 @@ mod tests {
         assert_eq!(reply_msg.req, invite_data(14, 2));
         assert!(clt.on_receive_group_message(confirm_msg(14, 2)).is_none());
 
-        //-------------------------------------------------------------------[4]
-        clt.enter_round(Round(4));
-        // We shouldn't have a raptorcast group yet, first one starts at round 8
-        assert!(group_map.is_empty(&clt));
-
-        //-----------------------------------------------------------------[5-7]
-        clt.enter_round(Round(5));
-        clt.enter_round(Round(6));
-        clt.enter_round(Round(7));
-        // Should still not have any raptorcast group
-        assert!(group_map.is_empty(&clt));
+        //-----------------------------------------------------------------[4-7]
+        // Simulated gap - no receiving proposals
 
         //-------------------------------------------------------------------[8]
         clt.enter_round(Round(8));
-
-        // Raptorcast groups keyed on v1 and v2 should still be empty
-        let rc = &group_map.get_rc_group_peers(&clt, &nid(1));
-        assert_eq!(rc.len(), 0);
-
-        let rc = &group_map.get_rc_group_peers(&clt, &nid(2));
-        assert_eq!(rc.len(), 0);
 
         // Now we should have raptorcast group v0.0 only: nid_10, nid_15
         let rc = &group_map.get_rc_group_peers(&clt, &nid(0));
@@ -1825,10 +1920,6 @@ mod tests {
 
         //-------------------------------------------------------------------[9]
         clt.enter_round(Round(9));
-
-        // v2 groups should still be invisible
-        let rc = &group_map.get_rc_group_peers(&clt, &nid(2));
-        assert_eq!(rc.len(), 0);
 
         // We should still have raptorcast group v0.0
         let rc = &group_map.get_rc_group_peers(&clt, &nid(0));
@@ -1841,13 +1932,6 @@ mod tests {
         //------------------------------------------------------------------[10]
         clt.enter_round(Round(10));
 
-        //----------------------------+
-        // Round    | Validator.Group |
-        //----------------------------+
-        // 10       |       v1.0  v2.0
-        let rc = &group_map.get_rc_group_peers(&clt, &nid(0));
-        assert_eq!(rc.len(), 0);
-
         let rc = &group_map.get_rc_group_peers(&clt, &nid(1));
         assert!(equal_node_set(rc, &node_ids![19, me]));
 
@@ -1857,16 +1941,8 @@ mod tests {
         //------------------------------------------------------------------[11]
         clt.enter_round(Round(11));
 
-        //----------------------------+
-        // Round    | Validator.Group |
-        //----------------------------+
-        // 11       | v0.1        v2.0
-
         let rc = &group_map.get_rc_group_peers(&clt, &nid(0));
         assert!(equal_node_set(rc, &node_ids![21, me]));
-
-        let rc = &group_map.get_rc_group_peers(&clt, &nid(1));
-        assert_eq!(rc.len(), 0);
 
         let rc = &group_map.get_rc_group_peers(&clt, &nid(2));
         assert!(equal_node_set(rc, &node_ids![20, me]));
@@ -1874,39 +1950,10 @@ mod tests {
         //------------------------------------------------------------------[12]
         clt.enter_round(Round(12));
 
-        //----------------------------+
-        // Round    | Validator.Group |
-        //----------------------------+
-        // 12       | v0.1
-
         let rc = &group_map.get_rc_group_peers(&clt, &nid(0));
         assert!(equal_node_set(rc, &node_ids![21, me]));
 
-        let rc = &group_map.get_rc_group_peers(&clt, &nid(1));
-        assert_eq!(rc.len(), 0);
-
-        let rc = &group_map.get_rc_group_peers(&clt, &nid(2));
-        assert_eq!(rc.len(), 0);
-
-        //------------------------------------------------------------------[13]
-        clt.enter_round(Round(13));
-
-        //----------------------------+
-        // Round    | Validator.Group |
-        //----------------------------+
-        // 13       |
-
-        let rc = &group_map.get_rc_group_peers(&clt, &nid(0));
-        assert_eq!(rc.len(), 0);
-
-        let rc = &group_map.get_rc_group_peers(&clt, &nid(1));
-        assert_eq!(rc.len(), 0);
-
-        let rc = &group_map.get_rc_group_peers(&clt, &nid(2));
-        assert_eq!(rc.len(), 0);
-
-        //---------------------------------------------------------------[14-15]
-
+        //---------------------------------------------------------------[13-15]
         for round in 14..=15 {
             //----------------------------+
             // Round    | Validator.Group |

@@ -14,7 +14,8 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    cmp::Ordering,
+    collections::{BTreeMap, BinaryHeap, HashSet},
     fmt,
 };
 
@@ -278,6 +279,34 @@ where
     sorted_other_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>, // Excludes self
 }
 
+type GroupQueue<ST> = BinaryHeap<Group<ST>>;
+
+// Groups in a GroupQueue should be sorted by start round, earliest round first
+impl<ST> Ord for Group<ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Compare fields other than round_span.start as well, to make the
+        // ordering more consistent and predictable
+        other
+            .round_span
+            .start
+            .cmp(&self.round_span.start)
+            .then_with(|| other.round_span.end.cmp(&self.round_span.end))
+            .then_with(|| other.validator_id.cmp(&self.validator_id))
+    }
+}
+
+impl<ST> PartialOrd for Group<ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl<ST> fmt::Debug for Group<ST>
 where
     ST: CertificateSignatureRecoverable,
@@ -511,7 +540,7 @@ where
     validator_map: BTreeMap<Epoch, Group<ST>>,
 
     // For Validator->fullnode re-raptorcasting
-    fullnode_map: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Group<ST>>,
+    fullnode_map: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, GroupQueue<ST>>,
 }
 
 impl<ST> ReBroadcastGroupMap<ST>
@@ -575,7 +604,14 @@ where
     ) -> Option<GroupIterator<ST>> {
         let maybe_group = match broadcast_mode {
             BroadcastMode::Primary => self.validator_map.get(&msg_epoch),
-            BroadcastMode::Secondary => self.fullnode_map.get(msg_author),
+            BroadcastMode::Secondary => {
+                let maybe_group_queue = self.fullnode_map.get(msg_author);
+                if let Some(group_queue) = maybe_group_queue {
+                    group_queue.peek() // Take earliest among all future groups for msg_author
+                } else {
+                    None
+                }
+            }
         };
 
         if let Some(group) = maybe_group {
@@ -607,14 +643,13 @@ where
 
     // As Full-node: When secondary RaptorCast instance (Client) sends us a Group<>
     pub fn push_group_fullnodes(&mut self, group: Group<ST>) {
-        if let Some(old_grp) = self
-            .fullnode_map
-            .insert(*group.get_validator_id(), group.clone())
-        {
-            debug!(new_group=?group, old_group=?old_grp, "Group replace");
-        } else {
-            debug!(new_group=?group, "Group insert");
-        }
+        let vid = group.get_validator_id();
+        let prev_group_queue_from_vid = format!("{:?}", self.fullnode_map.get(vid));
+        self.fullnode_map
+            .entry(*vid)
+            .or_default()
+            .push(group.clone());
+        debug!(?vid, ?prev_group_queue_from_vid, "RaptorCast Group insert",);
     }
 
     pub fn delete_expired_groups(&mut self, curr_epoch: Epoch, curr_round: Round) {
@@ -624,8 +659,11 @@ where
         // group scheduled for the future when we (the non-dedicated full-node)
         // aren't received proposals yet and hence do not know what the current
         // round is.
+        for (_vid, group_queue) in self.fullnode_map.iter_mut() {
+            group_queue.retain(|group| curr_round < group.round_span.end);
+        }
         self.fullnode_map
-            .retain(|_, group| curr_round < group.round_span.end);
+            .retain(|_vid, group_queue| !group_queue.is_empty());
 
         // clear old validator map
         self.validator_map
@@ -641,8 +679,14 @@ where
     }
 
     #[cfg(test)]
-    pub fn get_fullnode_map(&self) -> &BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Group<ST>> {
-        &self.fullnode_map
+    pub fn get_fullnode_map(&self) -> BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Group<ST>> {
+        let mut res: BTreeMap<_, _> = BTreeMap::new();
+        for (vid, group_queue) in &self.fullnode_map {
+            if let Some(group) = group_queue.peek() {
+                res.insert(*vid, group.clone());
+            }
+        }
+        res
     }
 }
 
