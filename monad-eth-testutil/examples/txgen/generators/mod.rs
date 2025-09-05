@@ -21,12 +21,15 @@ use few_to_many::CreateAccountsGenerator;
 use high_call_data::HighCallDataTxGenerator;
 use many_to_many::ManyToManyGenerator;
 use non_deterministic_storage::NonDeterministicStorageTxGenerator;
+use reserve_balance::ReserveBalanceGenerator;
 use self_destruct::SelfDestructTxGenerator;
 use storage_deletes::StorageDeletesTxGenerator;
+use system_key_normal::SystemKeyNormalTxGenerator;
+use system_spam::SystemTransactionSpamGenerator;
 use uniswap::UniswapGenerator;
 
 use crate::{
-    cli::{Config, DeployedContract, GenMode},
+    config::{DeployedContract, GenMode},
     prelude::*,
     shared::erc20::ERC20,
 };
@@ -37,27 +40,30 @@ mod few_to_many;
 mod high_call_data;
 mod many_to_many;
 mod non_deterministic_storage;
+mod reserve_balance;
 mod self_destruct;
 mod storage_deletes;
+mod system_key_normal;
+mod system_spam;
 mod uniswap;
 
 pub fn make_generator(
-    config: &Config,
+    traffic_gen: &TrafficGen,
     deployed_contract: DeployedContract,
 ) -> Result<Box<dyn Generator + Send + Sync>> {
-    let recipient_keys = KeyPool::new(config.recipients, config.recipient_seed);
-    let tx_per_sender = config.tx_per_sender();
-    Ok(match config.gen_mode {
+    let recipient_keys = KeyPool::new(traffic_gen.recipients, traffic_gen.recipient_seed);
+    let tx_per_sender = traffic_gen.tx_per_sender();
+    Ok(match &traffic_gen.gen_mode {
         GenMode::NullGen => Box::new(NullGen),
-        GenMode::FewToMany { tx_type } => Box::new(CreateAccountsGenerator {
+        GenMode::FewToMany(config) => Box::new(CreateAccountsGenerator {
             recipient_keys,
-            tx_type,
+            tx_type: config.tx_type,
             erc20: deployed_contract.erc20().ok(),
             tx_per_sender,
         }),
-        GenMode::ManyToMany { tx_type } => Box::new(ManyToManyGenerator {
+        GenMode::ManyToMany(config) => Box::new(ManyToManyGenerator {
             recipient_keys,
-            tx_type,
+            tx_type: config.tx_type,
             tx_per_sender,
             erc20: deployed_contract.erc20().ok(),
         }),
@@ -102,6 +108,28 @@ pub fn make_generator(
         GenMode::Uniswap => Box::new(UniswapGenerator {
             uniswap: deployed_contract.uniswap()?,
             tx_per_sender,
+        }),
+        GenMode::ReserveBalance => Box::new(ReserveBalanceGenerator {
+            recipient_keys,
+            num_drain_txs: 2,
+        }),
+        GenMode::SystemSpam(config) => Box::new(SystemTransactionSpamGenerator {
+            recipient_keys,
+            tx_per_sender,
+            system_nonce: 0,
+            call_type: config.call_type.clone(),
+        }),
+        GenMode::SystemKeyNormal => Box::new(SystemKeyNormalTxGenerator {
+            recipient_keys,
+            tx_per_sender,
+            system_nonce: 0,
+            random_priority_fee: false,
+        }),
+        GenMode::SystemKeyNormalRandomPriorityFee => Box::new(SystemKeyNormalTxGenerator {
+            recipient_keys,
+            tx_per_sender,
+            system_nonce: 0,
+            random_priority_fee: true,
         }),
     })
 }

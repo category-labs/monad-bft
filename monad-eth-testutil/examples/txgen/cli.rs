@@ -13,70 +13,58 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use clap::{Parser, Subcommand, ValueEnum};
-use eyre::bail;
-use serde::Deserialize;
+use clap::{Parser, Subcommand};
 use url::Url;
 
-use crate::{
-    prelude::*,
-    shared::{ecmul::ECMul, erc20::ERC20, uniswap::Uniswap},
-};
+use crate::prelude::*;
 
-#[derive(Debug, Parser)]
+#[derive(Debug, Parser, Clone)]
 #[command(name = "monad-node", about, long_about = None)]
-pub struct Config {
-    #[arg(long, global = true, default_value = "http://localhost:8545")]
-    pub rpc_url: Url,
+pub struct CliConfig {
+    /// Path to the config file to use instead of the cli args
+    #[arg(long, global = true)]
+    pub config_file: Option<String>,
+
+    #[arg(long, global = true)]
+    pub rpc_url: Option<Url>,
 
     /// Target tps of the generator
-    #[arg(long, global = true, default_value = "1000")]
-    pub tps: u64,
+    #[arg(long, global = true)]
+    pub tps: Option<u64>,
 
     /// Funded private keys used to seed native tokens to sender accounts
-    #[arg(
-        long,
-        global = true,
-        default_values_t = [
-            "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80".to_string(),
-            "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d".to_string(),
-            "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a".to_string(),
-            "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6".to_string(),
-            "0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a".to_string(),
-            "0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba".to_string(),
-        ]
-    )]
-    pub root_private_keys: Vec<String>,
+    #[arg(long, global = true)]
+    pub root_private_keys: Option<Vec<String>>,
 
     /// Seed used to generate private keys for recipients
-    #[arg(long, global = true, default_value = "10101")]
-    pub recipient_seed: u64,
+    #[arg(long, global = true)]
+    pub recipient_seed: Option<u64>,
 
     /// Seed used to generate private keys for senders.
     /// If set the same as recipient seed, the accounts will be the same
-    #[arg(long, global = true, default_value = "10101")]
-    pub sender_seed: u64,
+    #[arg(long, global = true)]
+    pub sender_seed: Option<u64>,
 
     /// Number of recipient accounts to generate and cycle between
-    #[arg(long, global = true, default_value = "100000")]
-    pub recipients: usize,
+    #[arg(long, global = true)]
+    pub recipients: Option<usize>,
 
     /// Number of sender accounts to generate and cycle sending from
     #[arg(long, global = true)]
     pub senders: Option<usize>,
 
     /// How long to wait before refreshing balances. A function of the execution delay and block speed
-    #[arg(long, global = true, default_value = "5.")]
-    pub refresh_delay_secs: f64,
+    #[arg(long, global = true)]
+    pub refresh_delay_secs: Option<f64>,
 
     /// Should the txgen query for erc20 balances
     /// This introduces many eth_calls which can affect performance and are not strictly needed for the gen to function
-    #[arg(long, global = true, default_value = "false")]
-    pub erc20_balance_of: bool,
+    #[arg(long, global = true)]
+    pub erc20_balance_of: Option<bool>,
 
     /// Which generation mode to use. Corresponds to Generator impls
     #[command(subcommand)]
-    pub gen_mode: GenMode,
+    pub gen_mode: CliGenMode,
 
     /// How many senders should be batched together when cycling between gen -> rpc sender -> refresher -> gen...
     #[arg(long, global = true)]
@@ -100,143 +88,54 @@ pub struct Config {
     pub uniswap_contract: Option<String>,
 
     /// Queries rpc for receipts of each sent tx when set. Queries per txhash, prefer `use_receipts_by_block` for efficiency
-    #[clap(long, global = true, default_value = "false")]
-    pub use_receipts: bool,
+    #[clap(long, global = true)]
+    pub use_receipts: Option<bool>,
 
     /// Queries rpc for receipts for each committed block and filters against txs sent by this txgen.
     /// More efficient
-    #[clap(long, global = true, default_value = "false")]
-    pub use_receipts_by_block: bool,
+    #[clap(long, global = true)]
+    pub use_receipts_by_block: Option<bool>,
 
     /// Fetches logs for each tx sent
-    #[clap(long, global = true, default_value = "false")]
-    pub use_get_logs: bool,
+    #[clap(long, global = true)]
+    pub use_get_logs: Option<bool>,
 
     /// Base fee used when calculating gas costs and value
-    #[clap(long, global = true, default_value_t = 50)]
-    pub base_fee_gwei: u128,
+    #[clap(long, global = true)]
+    pub base_fee_gwei: Option<u128>,
 
     /// Chain id
-    #[arg(long, global = true, default_value_t = 20143)]
-    pub chain_id: u64,
+    #[arg(long, global = true)]
+    pub chain_id: Option<u64>,
 
     /// Minimum native amount in wei for each sender.
     /// When a sender has less than this amount, it's native balance is topped off from a root private key
-    #[arg(long, global = true, default_value_t = 100_000_000_000_000_000_000)]
-    pub min_native_amount: u128,
+    #[arg(long, global = true)]
+    pub min_native_amount: Option<u128>,
 
     /// Native amount in wei transfered to each sender from an available root private key when the sender's
     /// native balance passes below `min_native_amount`
-    #[arg(long, global = true, default_value_t = 1000_000_000_000_000_000_000)]
-    pub seed_native_amount: u128,
+    #[arg(long, global = true)]
+    pub seed_native_amount: Option<u128>,
 
     /// Writes `DEBUG` logs to ./debug.log
-    #[arg(long, global = true, default_value_t = false)]
-    pub debug_log_file: bool,
+    #[arg(long, global = true)]
+    pub debug_log_file: Option<bool>,
 
     /// Writes `TRACE` logs to ./trace.log
-    #[arg(long, global = true, default_value_t = false)]
-    pub trace_log_file: bool,
+    #[arg(long, global = true)]
+    pub trace_log_file: Option<bool>,
 
     #[arg(long, global = true)]
-    pub use_static_tps_interval: bool,
+    pub use_static_tps_interval: Option<bool>,
 
     /// Otel endpoint
     #[arg(long, global = true)]
     pub otel_endpoint: Option<String>,
 
     /// Otel replica name
-    #[arg(long, global = true, default_value = "default")]
-    pub otel_replica_name: String,
-}
-
-impl Config {
-    pub fn tx_per_sender(&self) -> usize {
-        use GenMode::*;
-        if let Some(x) = self.tx_per_sender {
-            return x;
-        }
-        match self.gen_mode {
-            FewToMany { .. } => 500,
-            ManyToMany { .. }
-            | Duplicates
-            | RandomPriorityFee
-            | HighCallData
-            | SelfDestructs
-            | NonDeterministicStorage
-            | StorageDeletes
-            | ECMul => 10,
-            NullGen => 0,
-            Uniswap => 10,
-            HighCallDataLowGasLimit => 30,
-        }
-    }
-
-    pub fn sender_group_size(&self) -> usize {
-        use GenMode::*;
-        if let Some(x) = self.sender_group_size {
-            return x;
-        }
-        match self.gen_mode {
-            FewToMany { .. } => 100,
-            ManyToMany { .. }
-            | Duplicates
-            | RandomPriorityFee
-            | NonDeterministicStorage
-            | StorageDeletes => 100,
-            NullGen | SelfDestructs | HighCallData | ECMul => 10,
-            HighCallDataLowGasLimit => 3,
-            Uniswap => 20,
-        }
-    }
-
-    pub fn senders(&self) -> usize {
-        use GenMode::*;
-        if let Some(x) = self.senders {
-            return x;
-        }
-        match self.gen_mode {
-            FewToMany { .. } => 1000,
-            ManyToMany { .. }
-            | Duplicates
-            | RandomPriorityFee
-            | NonDeterministicStorage
-            | StorageDeletes => 2500,
-            NullGen => 100,
-            SelfDestructs | HighCallData | HighCallDataLowGasLimit | ECMul => 100,
-            Uniswap => 200,
-        }
-    }
-
-    pub fn required_contract(&self) -> RequiredContract {
-        use RequiredContract::*;
-        match self.gen_mode {
-            GenMode::FewToMany { tx_type } => match tx_type {
-                TxType::ERC20 => ERC20,
-                TxType::Native => None,
-            },
-            GenMode::ManyToMany { tx_type } => match tx_type {
-                TxType::ERC20 => ERC20,
-                TxType::Native => None,
-            },
-            GenMode::Duplicates => ERC20,
-            GenMode::RandomPriorityFee => ERC20,
-            GenMode::HighCallData => None,
-            GenMode::HighCallDataLowGasLimit => None,
-            GenMode::SelfDestructs => None,
-            GenMode::NonDeterministicStorage => ERC20,
-            GenMode::StorageDeletes => ERC20,
-            GenMode::NullGen => None,
-            GenMode::ECMul => ECMUL,
-            GenMode::Uniswap => Uniswap,
-        }
-    }
-
-    pub fn base_fee(&self) -> u128 {
-        self.base_fee_gwei
-            .checked_mul(10u128.pow(9))
-            .expect("Gwei must be convertable to wei using u128")
-    }
+    #[arg(long, global = true)]
+    pub otel_replica_name: Option<String>,
 }
 
 pub enum RequiredContract {
@@ -246,39 +145,8 @@ pub enum RequiredContract {
     Uniswap,
 }
 
-#[derive(Debug, Clone)]
-pub enum DeployedContract {
-    None,
-    ERC20(ERC20),
-    ECMUL(ECMul),
-    Uniswap(Uniswap),
-}
-
-impl DeployedContract {
-    pub fn erc20(self) -> Result<ERC20> {
-        match self {
-            Self::ERC20(erc20) => Ok(erc20),
-            _ => bail!("Expected erc20, found {:?}", &self),
-        }
-    }
-
-    pub fn ecmul(self) -> Result<ECMul> {
-        match self {
-            Self::ECMUL(x) => Ok(x),
-            _ => bail!("Expected ecmul, found {:?}", &self),
-        }
-    }
-
-    pub fn uniswap(self) -> Result<Uniswap> {
-        match self {
-            Self::Uniswap(uniswap) => Ok(uniswap),
-            _ => bail!("Expected uniswap, found {:?}", &self),
-        }
-    }
-}
-
-#[derive(Debug, Subcommand)]
-pub enum GenMode {
+#[derive(Debug, Subcommand, Clone)]
+pub enum CliGenMode {
     FewToMany {
         #[clap(long, default_value = "erc20")]
         tx_type: TxType,
@@ -299,9 +167,125 @@ pub enum GenMode {
     Uniswap,
 }
 
-#[derive(Deserialize, Clone, Copy, Debug, ValueEnum)]
-#[serde(rename_all = "snake_case")]
-pub enum TxType {
-    ERC20,
-    Native,
+impl From<CliGenMode> for GenMode {
+    fn from(value: CliGenMode) -> Self {
+        match value {
+            CliGenMode::FewToMany { tx_type } => GenMode::FewToMany(FewToManyConfig { tx_type }),
+            CliGenMode::ManyToMany { tx_type } => GenMode::ManyToMany(ManyToManyConfig { tx_type }),
+            CliGenMode::Duplicates => GenMode::Duplicates,
+            CliGenMode::RandomPriorityFee => GenMode::RandomPriorityFee,
+            CliGenMode::HighCallData => GenMode::HighCallData,
+            CliGenMode::HighCallDataLowGasLimit => GenMode::HighCallDataLowGasLimit,
+            CliGenMode::SelfDestructs => GenMode::SelfDestructs,
+            CliGenMode::NonDeterministicStorage => GenMode::NonDeterministicStorage,
+            CliGenMode::StorageDeletes => GenMode::StorageDeletes,
+            CliGenMode::NullGen => GenMode::NullGen,
+            CliGenMode::ECMul => GenMode::ECMul,
+            CliGenMode::Uniswap => GenMode::Uniswap,
+        }
+    }
+}
+
+impl From<CliConfig> for Config {
+    fn from(value: CliConfig) -> Self {
+        let mut config = Config {
+            workload_groups: vec![value.clone().into()],
+            ..Default::default()
+        };
+
+        if let Some(rpc_url) = value.rpc_url {
+            config.rpc_urls = vec![rpc_url.to_string()];
+        }
+
+        if let Some(root_private_keys) = value.root_private_keys {
+            config.root_private_keys = root_private_keys;
+        }
+        if let Some(refresh_delay_secs) = value.refresh_delay_secs {
+            config.refresh_delay_secs = refresh_delay_secs;
+        }
+
+        if let Some(use_receipts) = value.use_receipts {
+            config.use_receipts = use_receipts;
+        }
+        if let Some(use_receipts_by_block) = value.use_receipts_by_block {
+            config.use_receipts_by_block = use_receipts_by_block;
+        }
+        if let Some(use_get_logs) = value.use_get_logs {
+            config.use_get_logs = use_get_logs;
+        }
+        if let Some(base_fee_gwei) = value.base_fee_gwei {
+            config.base_fee_gwei = base_fee_gwei as u64;
+        }
+        if let Some(chain_id) = value.chain_id {
+            config.chain_id = chain_id;
+        }
+        if let Some(min_native_amount) = value.min_native_amount {
+            config.min_native_amount = min_native_amount.to_string();
+        }
+        if let Some(seed_native_amount) = value.seed_native_amount {
+            config.seed_native_amount = seed_native_amount.to_string();
+        }
+        if let Some(debug_log_file) = value.debug_log_file {
+            config.debug_log_file = debug_log_file;
+        }
+        if let Some(trace_log_file) = value.trace_log_file {
+            config.trace_log_file = trace_log_file;
+        }
+        if let Some(use_static_tps_interval) = value.use_static_tps_interval {
+            config.use_static_tps_interval = use_static_tps_interval;
+        }
+        if let Some(otel_endpoint) = value.otel_endpoint {
+            config.otel_endpoint = Some(otel_endpoint);
+        }
+        if let Some(otel_replica_name) = value.otel_replica_name {
+            config.otel_replica_name = otel_replica_name;
+        }
+        config
+    }
+}
+
+impl From<CliConfig> for WorkloadGroup {
+    fn from(value: CliConfig) -> Self {
+        WorkloadGroup {
+            // Effectively infinite runtime
+            runtime_minutes: 100_000_000_000.0,
+            traffic_gens: vec![value.into()],
+            ..Default::default()
+        }
+    }
+}
+
+impl From<CliConfig> for TrafficGen {
+    fn from(value: CliConfig) -> Self {
+        let mut traffic_gen = TrafficGen {
+            gen_mode: value.gen_mode.into(),
+            ..Default::default()
+        };
+
+        if let Some(tps) = value.tps {
+            traffic_gen.tps = tps;
+        }
+        if let Some(recipient_seed) = value.recipient_seed {
+            traffic_gen.recipient_seed = recipient_seed;
+        }
+        if let Some(sender_seed) = value.sender_seed {
+            traffic_gen.sender_seed = sender_seed;
+        }
+        if let Some(recipients) = value.recipients {
+            traffic_gen.recipients = recipients;
+        }
+        if let Some(senders) = value.senders {
+            traffic_gen.senders = Some(senders);
+        }
+        if let Some(erc20_balance_of) = value.erc20_balance_of {
+            traffic_gen.erc20_balance_of = erc20_balance_of;
+        }
+        if let Some(sender_group_size) = value.sender_group_size {
+            traffic_gen.sender_group_size = Some(sender_group_size);
+        }
+        if let Some(tx_per_sender) = value.tx_per_sender {
+            traffic_gen.tx_per_sender = Some(tx_per_sender);
+        }
+        traffic_gen
+    }
 }

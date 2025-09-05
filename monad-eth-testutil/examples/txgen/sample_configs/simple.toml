@@ -1,0 +1,9 @@
+chain_id = 31337
+
+[[workload_groups]]
+name = "few_to_many"
+runtime_minutes = 1
+
+[[workload_groups.traffic_gens]]
+tps = 200
+gen_mode.few_to_many = { tx_type = "erc20" }

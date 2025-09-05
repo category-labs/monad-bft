@@ -26,14 +26,12 @@ use crate::{prelude::*, shared::eth_json_rpc::EthJsonRpc};
 pub mod committed_tx_watcher;
 pub mod gen_harness;
 pub mod metrics;
-pub mod recipient_tracker;
 pub mod refresher;
 pub mod rpc_sender;
 
 pub use committed_tx_watcher::*;
 pub use gen_harness::*;
 pub use metrics::*;
-pub use recipient_tracker::*;
 pub use refresher::*;
 pub use rpc_sender::*;
 

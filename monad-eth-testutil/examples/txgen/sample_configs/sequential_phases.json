@@ -1,0 +1,84 @@
+{
+  "rpc_urls": [
+    "http://localhost:33332",
+    "http://localhost:8080"
+  ],
+  "root_private_keys": [
+    "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+    "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
+  ],
+  "workload_groups": [
+    {
+      "name": "few_to_many",
+      "runtime_minutes": 15,
+      "traffic_gens": [
+        {
+          "tps": 2000,
+          "recipient_seed": 10101,
+          "sender_seed": 10101,
+          "recipients": 100000,
+          "senders": 1000,
+          "erc20_balance_of": false,
+          "gen_mode": {
+            "few_to_many": {
+              "tx_type": "erc20"
+            }
+          },
+          "sender_group_size": 100,
+          "tx_per_sender": 500
+        }
+      ]
+    },
+    {
+      "name": "non_deterministic_storage",
+      "runtime_minutes": 15,
+      "traffic_gens": [
+        {
+          "tps": 1500,
+          "recipient_seed": 20202,
+          "sender_seed": 20202,
+          "recipients": 50000,
+          "senders": 500,
+          "erc20_balance_of": false,
+          "gen_mode": {
+            "non_deterministic_storage": null
+          },
+          "sender_group_size": 50,
+          "tx_per_sender": 20
+        }
+      ]
+    },
+    {
+      "name": "duplicates",
+      "runtime_minutes": 15,
+      "traffic_gens": [
+        {
+          "tps": 2500,
+          "recipient_seed": 30303,
+          "sender_seed": 30303,
+          "recipients": 75000,
+          "senders": 1500,
+          "erc20_balance_of": false,
+          "gen_mode": {
+            "duplicates": null
+          },
+          "sender_group_size": 75,
+          "tx_per_sender": 15
+        }
+      ]
+    }
+  ],
+  "refresh_delay_secs": 5.0,
+  "use_receipts": false,
+  "use_receipts_by_block": false,
+  "use_get_logs": false,
+  "base_fee_gwei": 50,
+  "chain_id": 20143,
+  "min_native_amount": "100000000000000000000",
+  "seed_native_amount": "1000000000000000000000",
+  "debug_log_file": false,
+  "trace_log_file": false,
+  "use_static_tps_interval": false,
+  "otel_endpoint": null,
+  "otel_replica_name": "default"
+}

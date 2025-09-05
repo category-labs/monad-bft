@@ -13,24 +13,28 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::VecDeque;
+use std::{
+    collections::VecDeque,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::hex;
 use tokio::time::MissedTickBehavior;
 
 use super::*;
-use crate::cli::Config;
+use crate::config::{Config, GenMode};
 
 pub struct RpcSender {
     pub gen_rx: mpsc::Receiver<AccountsWithTxs>,
     pub refresh_sender: mpsc::UnboundedSender<AccountsWithTime>,
-    pub recipient_sender: mpsc::UnboundedSender<AddrsWithTime>,
 
-    pub client: ReqwestClient,
+    pub clients: Vec<ReqwestClient>,
+    pub round_robin_idx: usize,
     pub target_tps: u64,
     pub metrics: Arc<Metrics>,
     pub sent_txs: Arc<DashMap<TxHash, Instant>>,
+    pub gen_mode: GenMode,
 
     // Fields for dynamic adjustment
     pub tx_history: VecDeque<(Instant, u64)>,
@@ -38,25 +42,29 @@ pub struct RpcSender {
     pub adjustment_interval: Duration,
     pub use_dynamic_adjustment: bool,
     pub window_duration: Duration,
+
+    pub shutdown: Arc<AtomicBool>,
 }
 
 impl RpcSender {
     pub fn new(
         gen_rx: mpsc::Receiver<AccountsWithTxs>,
         refresh_sender: mpsc::UnboundedSender<AccountsWithTime>,
-        recipient_sender: mpsc::UnboundedSender<AddrsWithTime>,
-        client: ReqwestClient,
+        clients: Vec<ReqwestClient>,
         metrics: Arc<Metrics>,
         sent_txs: Arc<DashMap<TxHash, Instant>>,
         config: &Config,
+        traffic_gen: &TrafficGen,
+        shutdown: Arc<AtomicBool>,
     ) -> Self {
         Self {
             gen_rx,
             refresh_sender,
-            recipient_sender,
-            client,
+            clients,
+            round_robin_idx: 0,
             metrics,
             sent_txs,
+            gen_mode: traffic_gen.gen_mode.clone(),
             // Initialize fields
             tx_history: VecDeque::new(),
             last_adjustment_time: Instant::now(),
@@ -64,7 +72,8 @@ impl RpcSender {
             window_duration: Duration::from_secs(300),
 
             use_dynamic_adjustment: !config.use_static_tps_interval,
-            target_tps: config.tps,
+            target_tps: traffic_gen.tps,
+            shutdown,
         }
     }
 
@@ -76,6 +85,7 @@ impl RpcSender {
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         info!(
+            gen_mode = ?self.gen_mode,
             use_dynamic_adjustment = self.use_dynamic_adjustment,
             batch_size = BATCH_SIZE as u64,
             interval_ms = interval.period().as_millis(),
@@ -83,7 +93,11 @@ impl RpcSender {
         );
 
         while let Some(AccountsWithTxs { accts, txs }) = self.gen_rx.recv().await {
+            if self.shutdown.load(Ordering::Relaxed) {
+                break;
+            }
             info!(
+                gen_mode = ?self.gen_mode,
                 num_accts = accts.len(),
                 num_txs = txs.len(),
                 channel_len = self.gen_rx.len(),
@@ -107,14 +121,23 @@ impl RpcSender {
             }
 
             debug!("Sending accts to refresher...");
-            self.refresh_sender
-                .send(AccountsWithTime {
-                    accts,
-                    sent: Instant::now(),
-                })
-                .expect("Sender not closed");
+            if let Err(e) = self.refresh_sender.send(AccountsWithTime {
+                accts,
+                sent: Instant::now(),
+            }) {
+                if self.shutdown.load(Ordering::Relaxed) {
+                    debug!(
+                        "Failed to send accounts to refresher during shutdown: {}",
+                        e
+                    );
+                } else {
+                    error!("Failed to send accounts to refresher unexpectedly: {}", e);
+                }
+                break;
+            }
             debug!("Accts sent to refresher...");
         }
+        warn!("RpcSender shutting down");
     }
 
     // Track a batch of transactions and clean up history
@@ -199,14 +222,21 @@ impl RpcSender {
         (total_txs as f64 / count as f64).round() as u64
     }
 
-    fn spawn_send_batch(&self, batch: &[(TxEnvelope, Address)]) {
+    fn spawn_send_batch(&mut self, batch: &[(TxEnvelope, Address)]) {
         if batch.is_empty() {
-            return; // unnecessary?
+            return;
         }
-        trace!(batch_size = batch.len(), "Sending batch of txs...");
 
-        let recipient_sender = self.recipient_sender.clone();
-        let client = self.client.clone();
+        // round robin through clients
+        self.round_robin_idx = (self.round_robin_idx + 1) % self.clients.len();
+        let client = self.clients[self.round_robin_idx].clone();
+
+        trace!(
+            batch_size = batch.len(),
+            rpc_url = client.inner().transport().url(),
+            "Sending batch of txs..."
+        );
+
         let metrics = self.metrics.clone();
         let sent_txs = self.sent_txs.clone();
         let batch = Vec::from_iter(batch.iter().cloned()); // todo: make more performant
@@ -219,15 +249,7 @@ impl RpcSender {
 
             send_batch(&client, batch.iter().map(|(tx, _)| tx), &metrics).await;
 
-            trace!("Tx batch sent, sending accts to recipient tracker...");
-            recipient_sender
-                .send(AddrsWithTime {
-                    addrs: batch.iter().map(|(_, a)| *a).collect(),
-                    sent: Instant::now(),
-                })
-                .expect("recipient tracker rx closed");
-
-            trace!("Sent accts to recipient tracker");
+            trace!("Tx batch sent");
         });
     }
 }

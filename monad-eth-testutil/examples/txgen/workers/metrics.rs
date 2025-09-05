@@ -13,7 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::sync::RwLock;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    RwLock,
+};
 
 use futures::join;
 use opentelemetry::metrics::{Gauge, MeterProvider};
@@ -24,7 +27,6 @@ use super::*;
 
 #[derive(Default)]
 pub struct Metrics {
-    pub accts_with_nonzero_bal: AtomicUsize,
     pub total_txs_sent: AtomicUsize,
     pub total_rpc_calls: AtomicUsize,
     pub total_committed_txs: AtomicUsize,
@@ -47,21 +49,20 @@ pub struct Metrics {
 }
 
 impl Metrics {
-    pub async fn run(self: Arc<Metrics>) {
-        let secs_5 = self.metrics_at_timestep(Duration::from_secs(5));
-        let min_1 = self.metrics_at_timestep(Duration::from_secs(60));
-        let min_60 = self.metrics_at_timestep(Duration::from_secs(60 * 60));
+    pub async fn run(self: Arc<Metrics>, shutdown: Arc<AtomicBool>) {
+        let secs_5 = self.metrics_at_timestep(Duration::from_secs(5), Arc::clone(&shutdown));
+        let min_1 = self.metrics_at_timestep(Duration::from_secs(60), Arc::clone(&shutdown));
+        let min_60 = self.metrics_at_timestep(Duration::from_secs(60 * 60), Arc::clone(&shutdown));
 
         join!(secs_5, min_1, min_60);
     }
 
-    async fn metrics_at_timestep(&self, report_interval: Duration) {
+    async fn metrics_at_timestep(&self, report_interval: Duration, shutdown: Arc<AtomicBool>) {
         let mut report_interval = tokio::time::interval(report_interval);
         report_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut last = Instant::now();
 
         // Basic metrics
-        let mut nonzero_accts = Rate::new(&self.accts_with_nonzero_bal);
         let mut txs_sent = Rate::new(&self.total_txs_sent);
         let mut rpc_calls = Rate::new(&self.total_rpc_calls);
         let mut committed_txs = Rate::new(&self.total_committed_txs);
@@ -80,6 +81,11 @@ impl Metrics {
         let mut logs_total = Rate::new(&self.logs_total);
 
         loop {
+            if shutdown.load(Ordering::Relaxed) {
+                warn!("Metrics shutting down");
+                break;
+            }
+
             let now = report_interval.tick().await;
             let elapsed = last.elapsed().as_secs_f64();
 
@@ -87,11 +93,9 @@ impl Metrics {
             let tx_success_ps = receipts_tx_success.rate(elapsed);
 
             info!(
-                nonzero_accts = nonzero_accts.val(),
                 sent_txs = txs_sent.val(),
                 committed_txs = committed_txs.val(),
                 rps = rpc_calls.rate(elapsed),
-                accts_created_ps = nonzero_accts.rate(elapsed),
                 tx_success_ps,
                 committed_tps = committed_txs.rate(elapsed),
                 tps = txs_sent.rate(elapsed),
@@ -165,7 +169,6 @@ pub struct MetricsReporter {
     // Gauges
     committed_tps: Gauge<u64>,
     sent_tps: Gauge<u64>,
-    accts_created_ps: Gauge<u64>,
     rpc_calls_ps: Gauge<u64>,
     rpc_calls_error_ps: Gauge<u64>,
     contracts_deployed_ps: Gauge<u64>,
@@ -178,7 +181,6 @@ pub struct MetricsReporter {
 }
 
 struct Rates<'a> {
-    nonzero_accts: Rate<'a>,
     txs_sent: Rate<'a>,
     rpc_calls: Rate<'a>,
     committed_txs: Rate<'a>,
@@ -207,7 +209,6 @@ impl MetricsReporter {
 
             committed_tps: meter.u64_gauge("committed_tps").build(),
             sent_tps: meter.u64_gauge("sent_tps").build(),
-            accts_created_ps: meter.u64_gauge("accts_created_ps").build(),
             rpc_calls_ps: meter.u64_gauge("rpc_calls_ps").build(),
             rpc_calls_error_ps: meter.u64_gauge("rpc_calls_error_ps").build(),
             contracts_deployed_ps: meter.u64_gauge("contracts_deployed_ps").build(),
@@ -223,7 +224,6 @@ impl MetricsReporter {
             0.1,
             // TODO: Make this cleaner
             &mut Rates {
-                nonzero_accts: Rate::new(&metrics.accts_with_nonzero_bal),
                 txs_sent: Rate::new(&metrics.total_txs_sent),
                 rpc_calls: Rate::new(&metrics.total_rpc_calls),
                 committed_txs: Rate::new(&metrics.total_committed_txs),
@@ -235,13 +235,12 @@ impl MetricsReporter {
         Ok(reporter)
     }
 
-    pub async fn run(self) {
+    pub async fn run(self, shutdown: Arc<AtomicBool>) {
         let mut report_interval = tokio::time::interval(Duration::from_secs(5));
         report_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut last = Instant::now();
 
         let mut rates = Rates {
-            nonzero_accts: Rate::new(&self.metrics.accts_with_nonzero_bal),
             txs_sent: Rate::new(&self.metrics.total_txs_sent),
             rpc_calls: Rate::new(&self.metrics.total_rpc_calls),
             committed_txs: Rate::new(&self.metrics.total_committed_txs),
@@ -250,6 +249,11 @@ impl MetricsReporter {
         };
 
         loop {
+            if shutdown.load(Ordering::Relaxed) {
+                warn!("MetricsReporter shutting down");
+                break;
+            }
+
             let now = report_interval.tick().await;
             let elapsed = last.elapsed().as_secs_f64();
 
@@ -275,8 +279,6 @@ impl MetricsReporter {
                 self.gen_mode.clone(),
             )],
         );
-        self.accts_created_ps
-            .record(rates.nonzero_accts.rate(elapsed) as u64, &[]);
         self.rpc_calls_ps
             .record(rates.rpc_calls.rate(elapsed) as u64, &[]);
         self.rpc_calls_error_ps

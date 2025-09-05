@@ -13,8 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex,
+};
+
 use super::*;
-use crate::{generators::native_transfer_priority_fee, prelude::*};
+use crate::{config::GenMode, generators::native_transfer_priority_fee, prelude::*};
 
 pub trait Generator {
     // todo: come up with a way to mint too
@@ -30,10 +35,19 @@ pub struct GenCtx {
     pub chain_id: u64,
 }
 
+impl GenCtx {
+    pub fn base_fee(&self) -> u128 {
+        let mut rng = rand::thread_rng();
+        let base = self.base_fee as i128;
+        let eps = rng.gen_range(-base / 100..=base / 100);
+        (base + eps).max(0) as u128
+    }
+}
+
 pub struct GeneratorHarness {
     pub generator: Box<dyn Generator + Send + Sync>,
 
-    pub refresh_rx: mpsc::Receiver<Accounts>,
+    pub refresh_rx: async_channel::Receiver<Accounts>,
     pub rpc_sender: mpsc::Sender<AccountsWithTxs>,
 
     pub client: ReqwestClient,
@@ -41,21 +55,26 @@ pub struct GeneratorHarness {
     pub min_native: U256,
     pub seed_native_amt: U256,
     pub metrics: Arc<Metrics>,
-    pub base_fee: u128,
+    pub base_fee: Arc<Mutex<u128>>,
     pub chain_id: u64,
+    pub gen_mode: GenMode,
+
+    pub shutdown: Arc<AtomicBool>,
 }
 
 impl GeneratorHarness {
     pub fn new(
         generator: Box<dyn Generator + Send + Sync>,
-        refresh_rx: mpsc::Receiver<Accounts>,
+        refresh_rx: async_channel::Receiver<Accounts>,
         rpc_sender: mpsc::Sender<AccountsWithTxs>,
         client: &ReqwestClient,
         min_native: U256,
         seed_native_amt: U256,
         metrics: &Arc<Metrics>,
-        base_fee: u128,
+        base_fee: &Arc<Mutex<u128>>,
         chain_id: u64,
+        gen_mode: GenMode,
+        shutdown: Arc<AtomicBool>,
     ) -> Self {
         Self {
             generator,
@@ -66,15 +85,21 @@ impl GeneratorHarness {
             min_native,
             metrics: Arc::clone(metrics),
             seed_native_amt,
-            base_fee,
+            base_fee: Arc::clone(base_fee),
             chain_id,
+            gen_mode,
+            shutdown,
         }
     }
 
     pub async fn run(mut self) {
-        info!("Starting main gen loop");
-        while let Some(accts) = self.refresh_rx.recv().await {
+        info!("Starting main gen loop with gen_mode: {:?}", self.gen_mode);
+        while let Ok(accts) = self.refresh_rx.recv().await {
+            if self.shutdown.load(Ordering::Relaxed) {
+                break;
+            }
             info!(
+                gen_mode = ?self.gen_mode,
                 num_accts = accts.len(),
                 channel_len = self.refresh_rx.len(),
                 "Gen received accounts"
@@ -87,10 +112,11 @@ impl GeneratorHarness {
                 a.native_bal < self.min_native
             });
 
+            let base_fee = *self.base_fee.lock().unwrap();
             let mut txs = self.generator.handle_acct_group(
                 &mut accts[seeded_idx..],
                 &GenCtx {
-                    base_fee: self.base_fee,
+                    base_fee,
                     chain_id: self.chain_id,
                 },
             );
@@ -107,7 +133,7 @@ impl GeneratorHarness {
                             self.seed_native_amt,
                             1000,
                             &GenCtx {
-                                base_fee: self.base_fee,
+                                base_fee,
                                 chain_id: self.chain_id,
                             },
                         );
@@ -133,12 +159,23 @@ impl GeneratorHarness {
 
             let num_txs: usize = accts_with_txs.txs.len();
 
-            self.rpc_sender
-                .send(accts_with_txs)
-                .await
-                .expect("rpc sender channel closed");
+            if let Err(e) = self.rpc_sender.send(accts_with_txs).await {
+                if self.shutdown.load(Ordering::Relaxed) {
+                    debug!(
+                        "Failed to send accounts with txs to rpc sender during shutdown: {}",
+                        e
+                    );
+                } else {
+                    error!(
+                        "Failed to send accounts with txs to rpc sender unexpectedly: {}",
+                        e
+                    );
+                }
+                break;
+            }
 
             debug!(num_txs, "Gen pushed txs to rpc sender");
         }
+        warn!("GeneratorHarness shutting down");
     }
 }
