@@ -65,6 +65,7 @@ pub fn static_validate_transaction(
 
 pub const TFM_MAX_EIP2718_ENCODED_LENGTH: usize = 384 * 1024;
 pub const TFM_MAX_GAS_LIMIT: u64 = 30_000_000;
+pub const EIP_7702_PER_EMPTY_ACCOUNT_COST: u64 = 25_000;
 
 struct TfmValidator;
 impl TfmValidator {
@@ -235,6 +236,13 @@ fn compute_intrinsic_gas(tx: &TxEnvelope) -> u64 {
     // each storage key in access list costs 1900 gas
     intrinsic_gas += accessed_slots as u64 * 1900;
 
+    if tx.is_eip7702() {
+        if let Some(auth_list) = tx.authorization_list() {
+            intrinsic_gas = intrinsic_gas.saturating_add(
+                EIP_7702_PER_EMPTY_ACCOUNT_COST.saturating_mul(auth_list.len() as u64),
+            );
+        }
+    }
     intrinsic_gas
 }
 
@@ -250,15 +258,27 @@ mod test {
     use std::str::FromStr;
 
     use alloy_consensus::{SignableTransaction, TxEip1559, TxLegacy};
-    use alloy_primitives::{Address, Bytes, FixedBytes, PrimitiveSignature, TxKind, B256};
+    use alloy_primitives::{hex, Address, Bytes, FixedBytes, PrimitiveSignature, TxKind, B256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use monad_chain_config::{
         execution_revision::MonadExecutionRevision, revision::MockChainRevision, ChainConfig,
         MockChainConfig,
     };
+    use monad_eth_testutil::{make_eip7702_tx, make_signed_authorization, secret_to_eth_address};
 
     use super::*;
+
+    // pubkey starts with AAA
+    const S1: B256 = B256::new(hex!(
+        "0ed2e19e3aca1a321349f295837988e9c6f95d4a6fc54cfab6befd5ee82662ad"
+    ));
+    // pubkey starts with BBB
+    const S2: B256 = B256::new(hex!(
+        "009ac901cf45a2e92e7e7bdf167dc52e3a6232be3c56cc3b05622b247c2c716a"
+    ));
+
+    const BASE_FEE: u64 = 100_000_000_000;
 
     fn chain_params_with_gas_limit(proposal_gas_limit: u64) -> ChainParams {
         ChainParams {
@@ -540,5 +560,37 @@ mod test {
 
         let result = compute_intrinsic_gas(&tx.into());
         assert_eq!(result, 53166);
+    }
+
+    #[test]
+    fn test_compute_intrinsic_gas_eip7702() {
+        let tx_1_auth = make_eip7702_tx(
+            S1,
+            BASE_FEE as u128,
+            0,
+            100_000,
+            0,
+            vec![make_signed_authorization(S2, secret_to_eth_address(S1), 0)],
+            0,
+        );
+
+        let result_1_auth = compute_intrinsic_gas(&tx_1_auth);
+        assert_eq!(result_1_auth, 46000);
+
+        let tx_2_auth = make_eip7702_tx(
+            S1,
+            BASE_FEE as u128,
+            0,
+            100_000,
+            0,
+            vec![
+                make_signed_authorization(S2, secret_to_eth_address(S1), 0),
+                make_signed_authorization(S2, secret_to_eth_address(S1), 0),
+            ],
+            0,
+        );
+
+        let result_2_auth = compute_intrinsic_gas(&tx_2_auth);
+        assert_eq!(result_2_auth, 71000);
     }
 }
