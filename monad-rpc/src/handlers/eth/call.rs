@@ -23,7 +23,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use alloy_consensus::{Header, SignableTransaction, TxEip1559, TxEnvelope, TxLegacy};
+use alloy_consensus::{Header, SignableTransaction, TxEip1559, TxEip7702, TxEnvelope, TxLegacy};
+use alloy_eips::eip7702::SignedAuthorization;
 use alloy_primitives::{Address, PrimitiveSignature, TxKind, Uint, U256, U64, U8};
 use alloy_rpc_types::AccessList;
 use monad_chain_config::execution_revision::MonadExecutionRevision;
@@ -150,7 +151,8 @@ pub struct CallRequest {
     pub input: CallInput,
     pub nonce: Option<U64>,
     pub chain_id: Option<U64>,
-    pub access_list: Option<Vec<u8>>,
+    pub access_list: Option<AccessList>,
+    pub authorization_list: Option<Vec<SignedAuthorization>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_fee_per_blob_gas: Option<U256>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -182,6 +184,7 @@ impl schemars::JsonSchema for CallRequest {
             nonce: None,
             chain_id: None,
             access_list: None,
+            authorization_list: None,
             max_fee_per_blob_gas: None,
             blob_versioned_hashes: None,
             transaction_type: None,
@@ -338,6 +341,52 @@ impl TryFrom<CallRequest> for TxEnvelope {
                 Ok(transaction.into_signed(signature).into())
             }
             CallRequest {
+                authorization_list: Some(auth_list),
+                gas_price_details:
+                    GasPriceDetails::Eip1559 {
+                        max_fee_per_gas,
+                        max_priority_fee_per_gas,
+                    },
+                ..
+            } => {
+                // EIP-7702
+
+                // default signature as eth_call doesn't require it
+                let signature = PrimitiveSignature::new(U256::from(0), U256::from(0), false);
+                let transaction = TxEip7702 {
+                    chain_id: call_request
+                        .chain_id
+                        .unwrap_or_default()
+                        .try_into()
+                        .map_err(|_| JsonRpcError::invalid_params())?,
+                    nonce: call_request
+                        .nonce
+                        .unwrap_or_default()
+                        .try_into()
+                        .map_err(|_| JsonRpcError::invalid_params())?,
+                    max_fee_per_gas: max_fee_per_gas
+                        .unwrap_or_default()
+                        .try_into()
+                        .map_err(|_| JsonRpcError::invalid_params())?,
+                    max_priority_fee_per_gas: max_priority_fee_per_gas
+                        .unwrap_or_default()
+                        .try_into()
+                        .map_err(|_| JsonRpcError::invalid_params())?,
+                    gas_limit: call_request
+                        .gas
+                        .unwrap_or(Uint::from(u64::MAX))
+                        .try_into()
+                        .map_err(|_| JsonRpcError::invalid_params())?,
+                    access_list: call_request.access_list.unwrap_or_default(),
+                    authorization_list: auth_list,
+                    to: call_request.to.ok_or(JsonRpcError::invalid_params())?,
+                    value: call_request.value.unwrap_or_default(),
+                    input: call_request.input.input.unwrap_or_default(),
+                };
+
+                Ok(transaction.into_signed(signature).into())
+            }
+            CallRequest {
                 gas_price_details:
                     GasPriceDetails::Eip1559 {
                         max_fee_per_gas,
@@ -373,7 +422,6 @@ impl TryFrom<CallRequest> for TxEnvelope {
                         .unwrap_or(Uint::from(u64::MAX))
                         .try_into()
                         .map_err(|_| JsonRpcError::invalid_params())?,
-                    access_list: AccessList::default(),
                     to: if let Some(to) = call_request.to {
                         TxKind::Call(to)
                     } else {
@@ -383,6 +431,7 @@ impl TryFrom<CallRequest> for TxEnvelope {
                     },
                     value: call_request.value.unwrap_or_default(),
                     input: call_request.input.input.unwrap_or_default(),
+                    access_list: call_request.access_list.unwrap_or_default(),
                 };
 
                 Ok(transaction.into_signed(signature).into())
