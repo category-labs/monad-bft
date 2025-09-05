@@ -160,7 +160,6 @@ pub struct ExecutedTxn {
     pub sender: monad_c_address,
     pub header: monad_c_eth_txn_header,
     pub input: Box<[u8]>,
-    pub access_list: Box<[ExecutedTxnAccessListEntry]>,
     pub logs: Box<[ExecutedTxnLog]>,
     pub output: monad_exec_txn_evm_output,
     pub call_frames: Option<Box<[ExecutedTxnCallFrame]>>,
@@ -195,24 +194,6 @@ impl ExecutedTxn {
         let value = alloy_primitives::U256::from_limbs(self.header.value.limbs);
         let input = alloy_primitives::Bytes::copy_from_slice(&self.input);
 
-        let access_list = alloy_rpc_types::AccessList(
-            self.access_list
-                .iter()
-                .map(
-                    |ExecutedTxnAccessListEntry {
-                         address,
-                         storage_keys,
-                     }| alloy_rpc_types::AccessListItem {
-                        address: alloy_primitives::Address::from(address.bytes),
-                        storage_keys: storage_keys
-                            .iter()
-                            .map(|storage_key| alloy_primitives::FixedBytes(storage_key.bytes))
-                            .collect(),
-                    },
-                )
-                .collect_vec(),
-        );
-
         match self.header.txn_type {
             ffi::MONAD_TXN_LEGACY => {
                 alloy_consensus::TxEnvelope::Legacy(alloy_consensus::Signed::new_unchecked(
@@ -238,7 +219,10 @@ impl ExecutedTxn {
                         gas_limit: self.header.gas_limit,
                         to,
                         value,
-                        access_list,
+                        access_list: {
+                            // TODO(andr-dev): Add access list
+                            alloy_rpc_types::AccessList(Vec::default())
+                        },
                         input,
                     },
                     txn_signature,
@@ -259,7 +243,10 @@ impl ExecutedTxn {
                         .unwrap(),
                         to,
                         value,
-                        access_list,
+                        access_list: {
+                            // TODO(andr-dev): Add access list
+                            alloy_rpc_types::AccessList(Vec::default())
+                        },
                         input,
                     },
                     txn_signature,
@@ -322,12 +309,4 @@ pub struct ExecutedTxnCallFrame {
     pub call_frame: monad_exec_txn_call_frame,
     pub input: Box<[u8]>,
     pub r#return: Box<[u8]>,
-}
-
-/// Access List entry reconstructed from execution events.
-#[allow(missing_docs)]
-#[derive(Clone, Debug)]
-pub struct ExecutedTxnAccessListEntry {
-    pub address: monad_c_address,
-    pub storage_keys: Box<[monad_c_bytes32]>,
 }

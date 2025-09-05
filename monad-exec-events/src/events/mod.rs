@@ -60,7 +60,6 @@ pub enum ExecEvent {
         blob_bytes: Box<[u8]>,
     },
     TxnAccessListEntry {
-        txn_index: usize,
         txn_access_list_entry: monad_exec_txn_access_list_entry,
         storage_key_bytes: Box<[u8]>,
     },
@@ -120,7 +119,6 @@ pub enum ExecEventRef<'ring> {
         blob_bytes: &'ring [u8],
     },
     TxnAccessListEntry {
-        txn_index: usize,
         txn_access_list_entry: &'ring monad_exec_txn_access_list_entry,
         storage_key_bytes: &'ring [u8],
     },
@@ -180,11 +178,9 @@ impl<'ring> ExecEventRef<'ring> {
                 blob_bytes: blobs.to_vec().into_boxed_slice(),
             },
             Self::TxnAccessListEntry {
-                txn_index,
                 txn_access_list_entry,
                 storage_key_bytes: storage_keys,
             } => ExecEvent::TxnAccessListEntry {
-                txn_index,
                 txn_access_list_entry: *txn_access_list_entry,
                 storage_key_bytes: storage_keys.to_vec().into_boxed_slice(),
             },
@@ -347,10 +343,6 @@ impl EventDecoder for ExecEventDecoder {
                     .expect("TxnAccessListEntry event valid");
 
                 ExecEventRef::TxnAccessListEntry {
-                    txn_index: info
-                        .flow_info
-                        .txn_idx
-                        .expect("TxnAccessListEntry event has txn_idx in flow_info"),
                     txn_access_list_entry,
                     storage_key_bytes,
                 }
