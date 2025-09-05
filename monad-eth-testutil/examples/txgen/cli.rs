@@ -84,36 +84,36 @@ pub struct Config {
 
     /// How many txs should be generated per sender per cycle.
     /// Or put another way, how many txs should be generated before refreshing the nonce from chain state
-    #[clap(long, global = true)]
+    #[arg(long, global = true)]
     pub tx_per_sender: Option<usize>,
 
     /// Override for erc20 contract address
-    #[clap(long, global = true)]
+    #[arg(long, global = true)]
     pub erc20_contract: Option<String>,
 
     /// Override for ecmul contract address.
-    #[clap(long, global = true)]
+    #[arg(long, global = true)]
     pub ecmul_contract: Option<String>,
 
     /// Override for uniswap contract address
-    #[clap(long, global = true)]
+    #[arg(long, global = true)]
     pub uniswap_contract: Option<String>,
 
     /// Queries rpc for receipts of each sent tx when set. Queries per txhash, prefer `use_receipts_by_block` for efficiency
-    #[clap(long, global = true, default_value = "false")]
+    #[arg(long, global = true, default_value = "false")]
     pub use_receipts: bool,
 
     /// Queries rpc for receipts for each committed block and filters against txs sent by this txgen.
     /// More efficient
-    #[clap(long, global = true, default_value = "false")]
+    #[arg(long, global = true, default_value = "false")]
     pub use_receipts_by_block: bool,
 
     /// Fetches logs for each tx sent
-    #[clap(long, global = true, default_value = "false")]
+    #[arg(long, global = true, default_value = "false")]
     pub use_get_logs: bool,
 
     /// Base fee used when calculating gas costs and value
-    #[clap(long, global = true, default_value_t = 50)]
+    #[arg(long, global = true, default_value_t = 50)]
     pub base_fee_gwei: u128,
 
     /// Chain id
@@ -280,11 +280,11 @@ impl DeployedContract {
 #[derive(Debug, Subcommand)]
 pub enum GenMode {
     FewToMany {
-        #[clap(long, default_value = "erc20")]
+        #[arg(long, default_value = "erc20")]
         tx_type: TxType,
     },
     ManyToMany {
-        #[clap(long, default_value = "erc20")]
+        #[arg(long, default_value = "erc20")]
         tx_type: TxType,
     },
     Duplicates,
