@@ -13,9 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::fmt::Debug;
+use std::{fmt::Debug, ops::Deref};
 
-use alloy_consensus::{Header, TxEnvelope};
+use alloy_consensus::{transaction::Recovered, Header, TxEnvelope};
+use alloy_eips::eip7702::RecoveredAuthorization;
 use alloy_primitives::{Address, B256};
 use alloy_rlp::{RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
 use monad_crypto::NopPubKey;
@@ -108,4 +109,18 @@ impl ExecutionProtocol for EthExecutionProtocol {
     type ProposedHeader = ProposedEthHeader;
     type FinalizedHeader = EthHeader;
     type Body = EthBlockBody;
+}
+
+#[derive(Clone, Debug)]
+pub struct ValidatedTx {
+    pub tx: Recovered<TxEnvelope>,
+    pub authorizations_7702: Vec<RecoveredAuthorization>,
+}
+
+impl Deref for ValidatedTx {
+    type Target = Recovered<TxEnvelope>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.tx
+    }
 }

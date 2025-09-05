@@ -5260,6 +5260,7 @@ name = "monad-eth-types"
 version = "0.1.0"
 dependencies = [
  "alloy-consensus",
+ "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
  "monad-crypto",

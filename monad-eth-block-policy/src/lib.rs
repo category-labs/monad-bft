@@ -23,7 +23,7 @@ use alloy_consensus::{
     transaction::{Recovered, Transaction},
     TxEnvelope,
 };
-use alloy_eips::eip7702::SignedAuthorization;
+use alloy_eips::eip7702::RecoveredAuthorization;
 use alloy_primitives::{Address, TxHash, U256};
 use itertools::Itertools;
 use monad_chain_config::{
@@ -39,7 +39,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_types::{EthAccount, EthExecutionProtocol, EthHeader};
+use monad_eth_types::{EthAccount, EthExecutionProtocol, EthHeader, ValidatedTx};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_system_calls::SystemTransaction;
 use monad_types::{
@@ -100,7 +100,7 @@ where
 {
     pub block: ConsensusFullBlock<ST, SCT, EthExecutionProtocol>,
     pub system_txns: Vec<SystemTransaction>,
-    pub validated_txns: Vec<Recovered<TxEnvelope>>,
+    pub validated_txns: Vec<ValidatedTx>,
     pub nonce_usages: NonceUsageMap,
     pub txn_fees: TxnFees,
 }
@@ -1161,16 +1161,16 @@ where
     // this function performs those checks
     fn eip_7702_valid_nonce_update(
         &self,
-        auth_list: &[SignedAuthorization],
+        auth_list: &[RecoveredAuthorization],
         account_nonces: &mut BTreeMap<&Address, u64>,
         chain_id: u64,
     ) {
         for (result, nonce, code_address, auth_chain_id) in auth_list
             .iter()
-            .map(|a| (a.recover_authority(), a.nonce(), a.address(), a.chain_id()))
+            .map(|a| (a.authority(), a.nonce(), a.address(), a.chain_id()))
         {
             match result {
-                Ok(authority) => {
+                Some(authority) => {
                     trace!(?code_address, ?nonce, ?authority, "Authority");
                     if auth_chain_id != 0_u64 && auth_chain_id != chain_id {
                         continue;
@@ -1191,7 +1191,7 @@ where
                     }
                     *expected_nonce += 1;
                 }
-                Err(_) => {
+                None => {
                     // skip authorization if there is error recovering signer
                     continue;
                 }
@@ -1201,46 +1201,21 @@ where
 
     fn extract_signers(
         &self,
-        validated_txns: &[Recovered<TxEnvelope>],
+        validated_txns: &[ValidatedTx],
         system_txns: &[SystemTransaction],
     ) -> Result<(HashSet<Address>, HashSet<Address>), BlockPolicyError> {
         // TODO fix this unnecessary copy into a new vec to generate an owned Address
-        let mut authority_addresses: HashSet<Address> = HashSet::new();
-        let mut tx_signers: HashSet<Address> = HashSet::new();
+        let mut tx_signers: HashSet<Address> =
+            validated_txns.iter().map(|txn| txn.signer()).collect();
 
-        for tx_signer in validated_txns.iter().map(|txn| {
-            if txn.is_eip7702() {
-                match txn.authorization_list() {
-                    Some(auth_list) => {
-                        for result in auth_list.iter().map(|a| a.recover_authority()) {
-                            match result {
-                                Ok(authority) => {
-                                    authority_addresses.insert(authority);
-                                }
-                                Err(error) => {
-                                    debug!(?error, "invalid authority signature");
-                                }
-                            }
-                        }
-                    }
-                    None => {
-                        warn!("empty authorization list is invalid");
-                        return Err(BlockPolicyError::Eip7702Error);
-                    }
-                }
-            };
-
-            Ok(txn.signer())
-        }) {
-            match tx_signer {
-                Ok(address) => {
-                    tx_signers.insert(address);
-                }
-                Err(err) => {
-                    return Err(err);
-                }
-            }
-        }
+        let authority_addresses: HashSet<Address> = validated_txns
+            .iter()
+            .flat_map(|txn| {
+                txn.authorizations_7702
+                    .iter()
+                    .filter_map(|recovered_auth| recovered_auth.authority())
+            })
+            .collect();
 
         tx_signers.extend(authority_addresses.iter().cloned());
 
@@ -1397,9 +1372,11 @@ where
             // "The authorization list is processed before the execution portion
             // of the transaction begins, but after the sender’s nonce is incremented."
             if txn.is_eip7702() {
-                if let Some(auth_list) = txn.authorization_list() {
-                    self.eip_7702_valid_nonce_update(auth_list, &mut account_nonces, chain_id);
-                }
+                self.eip_7702_valid_nonce_update(
+                    &txn.authorizations_7702,
+                    &mut account_nonces,
+                    chain_id,
+                );
             }
         }
 
@@ -1624,13 +1601,11 @@ mod test {
         for txn in incoming_block.validated_txns.iter() {
             block_policy.nonce_check_and_update(txn, &mut account_nonces)?;
             if txn.is_eip7702() {
-                if let Some(auth_list) = txn.authorization_list() {
-                    block_policy.eip_7702_valid_nonce_update(
-                        auth_list,
-                        &mut account_nonces,
-                        CHAIN_ID,
-                    );
-                }
+                block_policy.eip_7702_valid_nonce_update(
+                    &txn.authorizations_7702,
+                    &mut account_nonces,
+                    CHAIN_ID,
+                );
             }
         }
 
