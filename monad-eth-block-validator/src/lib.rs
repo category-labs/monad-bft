@@ -22,8 +22,9 @@ use alloy_consensus::{
     constants::EMPTY_WITHDRAWALS,
     proofs::calculate_transaction_root,
     transaction::{Recovered, Transaction},
-    TxEnvelope, EMPTY_OMMER_ROOT_HASH,
+    EMPTY_OMMER_ROOT_HASH,
 };
+use alloy_eips::eip7702::{RecoveredAuthority, RecoveredAuthorization};
 use alloy_rlp::Encodable;
 use monad_chain_config::{
     revision::{ChainParams, ChainRevision},
@@ -44,7 +45,9 @@ use monad_eth_block_policy::{
     validation::static_validate_transaction,
     EthBlockPolicy, EthValidatedBlock,
 };
-use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ExtractEthAddress, ProposedEthHeader};
+use monad_eth_types::{
+    EthBlockBody, EthExecutionProtocol, ExtractEthAddress, ProposedEthHeader, ValidatedTx,
+};
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
 use monad_system_calls::{
@@ -56,7 +59,7 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing::{debug, trace, trace_span, warn};
 
 type SystemTransactions = Vec<SystemTransaction>;
-type ValidatedTxns = Vec<Recovered<TxEnvelope>>;
+type ValidatedTxns = Vec<ValidatedTx>;
 
 /// Validates transactions as valid Ethereum transactions and also validates that
 /// the list of transactions will create a valid Ethereum block
@@ -276,12 +279,37 @@ where
         }
 
         // recovering the signers verifies that these are valid signatures
-        let recovered_txns: VecDeque<Recovered<TxEnvelope>> = transactions
+        let recovered_txns: VecDeque<ValidatedTx> = transactions
             .into_par_iter()
             .map(|tx| {
                 let _span = trace_span!("validator: recover signer").entered();
                 let signer = tx.secp256k1_recover()?;
-                Ok(Recovered::new_unchecked(tx.clone(), signer))
+                let txn = Recovered::new_unchecked(tx.clone(), signer);
+                if let Some(txn_7702) = txn.as_eip7702() {
+                    let authorizations: Vec<RecoveredAuthorization> = txn_7702
+                        .tx()
+                        .authorization_list
+                        .iter()
+                        .filter_map(|signed_auth| {
+                            signed_auth.recover_authority().ok().map(|authority| {
+                                RecoveredAuthorization::new_unchecked(
+                                    signed_auth.inner().clone(),
+                                    RecoveredAuthority::Valid(authority),
+                                )
+                            })
+                        })
+                        .collect();
+
+                    Ok(ValidatedTx {
+                        tx: txn,
+                        authorizations,
+                    })
+                } else {
+                    Ok(ValidatedTx {
+                        tx: txn,
+                        authorizations: Vec::new(),
+                    })
+                }
             })
             .collect::<Result<_, monad_secp::Error>>()
             .map_err(|_err| BlockValidationError::TxnError)?;
@@ -386,47 +414,45 @@ where
             trace!(seq_num = ?header.seq_num, address = ?eth_txn.signer(), nonce = ?eth_txn.nonce(), ?txn_fee_entry, "TxnFeeEntry");
 
             if eth_txn.is_eip7702() {
-                if let Some(auth_list) = eth_txn.authorization_list() {
-                    for (authority, authorization) in auth_list.iter().flat_map(|authorization| {
-                        authorization
-                            .recover_authority()
-                            .ok()
-                            .map(|authority| (authority, authorization.inner()))
-                    }) {
-                        trace!(address =? authorization.address, nonce =? authorization.nonce, ?authority, "Signed authority");
+                for recovered_auth in eth_txn.authorizations.iter() {
+                    // skip invalid authority
+                    let Some(authority) = recovered_auth.authority() else {
+                        continue;
+                    };
 
-                        // do not allow system account from sending authorization
-                        if authority == SYSTEM_SENDER_ETH_ADDRESS {
-                            return Err(BlockValidationError::TxnError);
-                        }
+                    trace!(address =? recovered_auth.address(), nonce =? recovered_auth.nonce(), ?authority, "Signed authority");
 
-                        if authorization.chain_id != 0_u64
-                            && authorization.chain_id != chain_config.chain_id()
-                        {
-                            continue;
-                        }
-
-                        match nonce_usages.entry(authority) {
-                            BTreeMapEntry::Occupied(nonce_usage) => match nonce_usage.into_mut() {
-                                NonceUsage::Known(nonce) => {
-                                    if *nonce + 1 == authorization.nonce {
-                                        *nonce += 1;
-                                    }
-                                }
-                                NonceUsage::Possible(possible_nonces) => {
-                                    possible_nonces.push_back(authorization.nonce);
-                                }
-                            },
-                            BTreeMapEntry::Vacant(nonce_usage) => {
-                                nonce_usage.insert(NonceUsage::Possible(VecDeque::from_iter([
-                                    authorization.nonce,
-                                ])));
-                            }
-                        }
-
-                        let txn_fee = txn_fees.entry(authority).or_default();
-                        txn_fee.is_delegated = true;
+                    // do not allow system account from sending authorization
+                    if authority == SYSTEM_SENDER_ETH_ADDRESS {
+                        return Err(BlockValidationError::TxnError);
                     }
+
+                    if recovered_auth.chain_id() != 0_u64
+                        && recovered_auth.chain_id() != chain_config.chain_id()
+                    {
+                        continue;
+                    }
+
+                    match nonce_usages.entry(authority) {
+                        BTreeMapEntry::Occupied(nonce_usage) => match nonce_usage.into_mut() {
+                            NonceUsage::Known(nonce) => {
+                                if *nonce + 1 == recovered_auth.nonce() {
+                                    *nonce += 1;
+                                }
+                            }
+                            NonceUsage::Possible(possible_nonces) => {
+                                possible_nonces.push_back(recovered_auth.nonce());
+                            }
+                        },
+                        BTreeMapEntry::Vacant(nonce_usage) => {
+                            nonce_usage.insert(NonceUsage::Possible(VecDeque::from_iter([
+                                recovered_auth.nonce(),
+                            ])));
+                        }
+                    }
+
+                    let txn_fee = txn_fees.entry(authority).or_default();
+                    txn_fee.is_delegated = true;
                 }
             }
         }
@@ -458,7 +484,7 @@ where
 mod test {
     use std::{collections::BTreeMap, time::Duration};
 
-    use alloy_consensus::Signed;
+    use alloy_consensus::{Signed, TxEnvelope};
     use alloy_eips::eip7702::SignedAuthorization;
     use alloy_primitives::{Address, FixedBytes, PrimitiveSignature, B256, U256};
     use itertools::{FoldWhile, Itertools};
@@ -511,6 +537,57 @@ mod test {
             Some(BASE_FEE_TREND),
             Some(BASE_FEE_MOMENT),
         )
+    }
+
+    #[test]
+    fn test_validated_tx_extraction() {
+        let txn1 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 1, 10);
+
+        let authorization_list = vec![
+            make_signed_authorization(
+                B256::repeat_byte(0xCu8),
+                secret_to_eth_address(B256::repeat_byte(0x1u8)),
+                50,
+            ),
+            make_signed_authorization(
+                B256::repeat_byte(0xDu8),
+                secret_to_eth_address(B256::repeat_byte(0x2u8)),
+                2,
+            ),
+        ];
+        let txn2 = make_eip7702_tx(
+            B256::repeat_byte(0xBu8),
+            BASE_FEE,
+            0,
+            1_000_000,
+            2,
+            authorization_list,
+            0,
+        );
+
+        // create a block with the above transactions
+        let txs = vec![txn1, txn2];
+        let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
+            execution_body: EthBlockBody {
+                transactions: txs,
+                ommers: Vec::new(),
+                withdrawals: Vec::new(),
+            },
+        });
+        let header = get_header(payload.get_id());
+
+        let result =
+            EthBlockValidator::<NopSignature, MockSignatures<NopSignature>>::validate_block_body(
+                &header,
+                &payload,
+                &MockChainConfig::DEFAULT,
+            );
+        assert!(result.is_ok());
+
+        let (_, validated_txns, _, _) = result.unwrap();
+        assert_eq!(validated_txns.len(), 2);
+        assert_eq!(validated_txns[0].authorizations.len(), 0);
+        assert_eq!(validated_txns[1].authorizations.len(), 2);
     }
 
     #[test]
@@ -832,7 +909,12 @@ mod test {
                 Ok(block) => {
                     assert!(expect_success);
 
-                    let expected_nonce_usages = compute_expected_nonce_usages(&block.validated_txns);
+                    let txns: Vec<Recovered<TxEnvelope>> = block
+                        .validated_txns
+                        .iter()
+                        .map(|vtx| vtx.tx.clone())
+                        .collect();
+                    let expected_nonce_usages = compute_expected_nonce_usages(&txns);
 
                     assert_eq!(block.nonce_usages, expected_nonce_usages);
                 }

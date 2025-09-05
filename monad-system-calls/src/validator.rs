@@ -30,7 +30,7 @@ use monad_consensus_types::block::ConsensusBlockHeader;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
+use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress, ValidatedTx};
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::debug;
 
@@ -137,12 +137,9 @@ impl SystemTransactionValidator {
     // Used to extract expected systems transactions in block validator
     pub fn validate_and_extract_system_transactions<ST, SCT, CCT, CRT>(
         block_header: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
-        mut txns: VecDeque<Recovered<TxEnvelope>>,
+        mut txns: VecDeque<ValidatedTx>,
         chain_config: &CCT,
-    ) -> Result<
-        (Vec<SystemTransaction>, Vec<Recovered<TxEnvelope>>),
-        SystemTransactionValidationError,
-    >
+    ) -> Result<(Vec<SystemTransaction>, Vec<ValidatedTx>), SystemTransactionValidationError>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -174,7 +171,7 @@ impl SystemTransactionValidator {
                 return Err(SystemTransactionValidationError::MissingSystemTransaction);
             };
 
-            match Self::validate_system_transaction(expected_sys_call, sys_txn, chain_config) {
+            match Self::validate_system_transaction(expected_sys_call, sys_txn.tx, chain_config) {
                 Ok(validated_sys_txn) => {
                     // system sender nonce must be sequential
                     if let Some(old_nonce) = curr_sys_sender_nonce {
@@ -226,7 +223,7 @@ mod test {
     };
     use monad_crypto::{NopKeyPair, NopSignature, certificate_signature::CertificateKeyPair};
     use monad_eth_testutil::make_legacy_tx;
-    use monad_eth_types::{EthExecutionProtocol, ProposedEthHeader};
+    use monad_eth_types::{EthExecutionProtocol, ProposedEthHeader, ValidatedTx};
     use monad_testutil::signing::MockSignatures;
     use monad_types::{Epoch, GENESIS_SEQ_NUM, Hash, NodeId, Round, SeqNum};
 
@@ -375,9 +372,15 @@ mod test {
     fn test_unexpected_system_txn() {
         let unsigned_tx1 = make_legacy_tx(B256::repeat_byte(0xAu8), 0, 0, 0, 10);
         let signer = unsigned_tx1.recover_signer().unwrap();
-        let tx1 = Recovered::new_unchecked(unsigned_tx1, signer);
+        let tx1 = ValidatedTx {
+            tx: Recovered::new_unchecked(unsigned_tx1, signer),
+            authorizations: Vec::new(),
+        };
 
-        let tx2 = sign_with_system_sender(get_valid_system_transaction());
+        let tx2 = ValidatedTx {
+            tx: sign_with_system_sender(get_valid_system_transaction()),
+            authorizations: Vec::new(),
+        };
 
         let txs = vec![tx1, tx2].into();
 
