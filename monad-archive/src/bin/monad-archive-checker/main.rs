@@ -85,7 +85,7 @@ async fn main() -> Result<()> {
                 checker_args.min_lag_from_tip
             );
 
-            // Create the checker model and synchonize replicas to check
+            // Create the checker model and synchronize replicas to check
             let init_replicas = checker_args.init_replicas.map(|list| {
                 info!("Using initial replicas: {:?}", list);
                 list.into_iter().collect()

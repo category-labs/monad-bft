@@ -104,13 +104,6 @@ impl IndexReader for IndexReaderImpl {
         self.block_data_reader.get_latest(LatestKind::Indexed).await
     }
 
-    /// Prefer get_tx, get_receipt, get_trace where possible to avoid unecessary network calls
-    async fn get_tx_indexed_data(&self, tx_hash: &TxHash) -> Result<Option<TxIndexedData>> {
-        let Some(repr) = self.get_repr(tx_hash).await? else {
-            return Ok(None);
-        };
-        let data = repr.convert(&self.block_data_reader).await?;
-        Ok(Some(data))
     }
 
     async fn get_tx_indexed_data_bulk(
