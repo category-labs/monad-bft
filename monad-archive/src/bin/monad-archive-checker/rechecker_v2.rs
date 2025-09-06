@@ -311,15 +311,18 @@ pub async fn recheck_chunk_from_scratch(
             info!(chunk_start, "DRY RUN: No changes found for chunk");
         }
     } else {
-        // Only backup if we're about to overwrite and there are differences
+        // Always backup old results before overwriting
         if has_changes {
             backup_old_results(model, chunk_start, &old_faults_by_replica, &old_good_blocks)
                 .await?;
+        }
 
-            // Store the new results (this will overwrite the old ones)
-            store_checking_results(model, chunk_start, &new_faults_by_replica, new_good_blocks)
-                .await?;
+        // Always store the new results to ensure fault clearing logic runs
+        // This is critical for clearing fixed faults from S3 storage
+        store_checking_results(model, chunk_start, &new_faults_by_replica, new_good_blocks)
+            .await?;
 
+        if has_changes {
             info!(chunk_start, "Chunk recheck completed with updates");
         } else {
             info!(chunk_start, "Chunk recheck completed with no changes");
