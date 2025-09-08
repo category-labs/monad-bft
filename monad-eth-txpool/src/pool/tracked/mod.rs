@@ -193,13 +193,7 @@ where
             return Ok(Vec::new());
         }
 
-        let sequencer = ProposalSequencer::new(
-            &self.txs,
-            &extending_blocks,
-            chain_config.chain_id(),
-            base_fee,
-            tx_limit,
-        );
+        let sequencer = ProposalSequencer::new(&self.txs, &extending_blocks, base_fee, tx_limit);
         let sequencer_len = sequencer.len();
 
         let authority_addresses = sequencer.authority_addresses().cloned().collect_vec();
