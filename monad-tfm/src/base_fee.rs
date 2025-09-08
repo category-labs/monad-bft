@@ -15,6 +15,8 @@
 
 use alloy_primitives::{I256, U256};
 
+use crate::arithmetic::{CheckedI64, CheckedU64};
+
 pub const GENESIS_BASE_FEE: u64 = 0;
 // trend is a signed value in 2's complement representation
 pub const GENESIS_BASE_FEE_TREND: u64 = (0i64).cast_unsigned();
@@ -27,7 +29,7 @@ pub const MAX_BASE_FEE: u64 = 100_000_000_000_000_000; // 1e6 MIN_BASE_FEE
 ///
 /// # Parameters
 /// - `block_gas_limit`: The maximum gas limit for the current block. Unit: MON.
-///   Range [0, 1000M]
+///   Range [100M, 1000M]
 /// - `parent_gas_usage`: Sum of all transaction gas limit in the parent block.
 ///   Range [0, block_gas_limit]
 /// - `parent_base_fee`: The base fee of the parent block. Range `[MIN_BASE_FEE,
@@ -139,42 +141,72 @@ fn compute_base_fee_math(
     parent_trend: i64,
     parent_moment: u64,
 ) -> (u64, i64, u64) {
-    const MAX_STEP_SIZE_DENOM: u64 = 28;
-    const BETA: u64 = 96; // 100*BETA - smoothing factor for accumulator
-    const C: u64 = 1;
+    const MAX_STEP_SIZE_DENOM: CheckedU64 = CheckedU64::from_u64(28);
+    const BETA: CheckedU64 = CheckedU64::from_u64(96); // 100 * 0.96 - smoothing factor for accumulator
+
+    let block_gas_limit = CheckedU64::from_u64(block_gas_limit);
+    let parent_gas_usage = CheckedU64::from_u64(parent_gas_usage);
+    let parent_base_fee = CheckedU64::from_u64(parent_base_fee);
+    let parent_trend = CheckedI64::from_i64(parent_trend);
+    let parent_moment = CheckedU64::from_u64(parent_moment);
 
     // block_gas_target = 80% of block_gas_limit
     let block_gas_target = block_gas_limit * 8 / 10;
 
     // parent_delta = parent_gas_usage - block_gas_target
-    let parent_delta = parent_gas_usage as i64 - block_gas_target as i64;
+    let parent_delta = parent_gas_usage.to_checked_i64() - block_gas_target.to_checked_i64();
 
     // epsilon = 1 * block_gas_target
     // eta_k = (max_step_size * epsilon) / (epsilon + sqrt(moment_k - C * trend^2))
     // base_fee{k+1} = max(MIN_BASE_FEE, parent_base_fee * exp(eta_k * (parent_gas_usage - block_gas_target) / (block_gas_limit - block_gas_target)))
-    let numerator = block_gas_target as i64 * parent_delta;
-    let sqrt_inner = (parent_moment as i64 - C as i64 * parent_trend * parent_trend).max(0) as u64;
-    let sqrt_term: u64 = U256::from(sqrt_inner).root(2).to();
+    let numerator = block_gas_target.to_checked_i64() * parent_delta;
+    let sqrt_inner =
+        (parent_moment.to_checked_i64() - parent_trend * parent_trend).saturating_to_checked_u64();
+    let sqrt_term = sqrt_inner.isqrt();
 
     let denominator =
         MAX_STEP_SIZE_DENOM * (block_gas_target + sqrt_term) * (block_gas_limit - block_gas_target);
 
     // cap base_fee to [MIN_BASE_FEE, MAX_BASE_FEE]
-    let base_fee = fake_exponential(parent_base_fee, numerator, denominator)
-        .max(MIN_BASE_FEE)
-        .min(MAX_BASE_FEE);
+    let base_fee = fake_exponential(
+        parent_base_fee.to_u64(),
+        numerator.to_i64(),
+        denominator.to_u64(),
+    )
+    .clamp(MIN_BASE_FEE, MAX_BASE_FEE);
 
     // trend is defined as -trend
     // trend_{k+1} = beta * trend_k + (1 - beta) * (block_gas_target - parent_gas_usage)
-    let trend = (BETA as i64 * parent_trend
-        + (100 - BETA) as i64 * (block_gas_target as i64 - parent_gas_usage as i64))
-        / 100;
+    let trend = (BETA.to_checked_i64() * parent_trend
+        + (CheckedI64::from_i64(100) - BETA.to_checked_i64()) * (-parent_delta))
+        / CheckedI64::from_i64(100);
     // moment_{k+1} = beta * moment_k + (1 - beta) * (block_gas_target - parent_gas_usage)^2
-    let moment = (BETA as u128 * parent_moment as u128
-        + (100u128 - BETA as u128) * (parent_delta as i128 * parent_delta as i128) as u128)
-        / 100u128;
+    let moment_decay = (BETA.to_u64() as u128)
+        .checked_mul(parent_moment.to_u64() as u128)
+        .expect("no overflow");
 
-    (base_fee, trend, moment as u64)
+    let beta_complement: u128 = (100 - BETA.to_u64()).into();
+    let parent_delta_i128: i128 = parent_delta.to_i64().into();
+    let parent_delta_sqr: u128 = parent_delta_i128
+        .checked_mul(parent_delta_i128)
+        .expect("no overflow")
+        .try_into()
+        .expect("non negative");
+    let current_contrib = beta_complement
+        .checked_mul(parent_delta_sqr)
+        .expect("no overflow");
+
+    let moment = moment_decay
+        .checked_add(current_contrib)
+        .expect("no overflow")
+        .checked_div(100)
+        .expect("no overflow");
+
+    (
+        base_fee,
+        trend.to_i64(),
+        moment.try_into().expect("no overflow"),
+    )
 }
 
 #[cfg(test)]
