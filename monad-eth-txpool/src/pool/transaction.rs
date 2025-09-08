@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
+use alloy_eips::eip7702::Authorization;
 use alloy_primitives::{Address, TxHash};
 use alloy_rlp::Encodable;
 use monad_chain_config::{execution_revision::ExecutionChainParams, revision::ChainParams};
@@ -26,13 +27,13 @@ use monad_eth_block_policy::{
 };
 use monad_eth_txpool_types::{EthTxPoolDropReason, TransactionError};
 use monad_eth_types::EthExecutionProtocol;
-use monad_system_calls::validator::SystemTransactionValidator;
+use monad_system_calls::{validator::SystemTransactionValidator, SYSTEM_SENDER_ETH_ADDRESS};
 use monad_tfm::base_fee::{MIN_BASE_FEE, PRE_TFM_BASE_FEE};
 use monad_types::{Balance, Nonce, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::trace;
 
-use crate::EthTxPoolEventTracker;
+const MAX_EIP7702_AUTHORIZATION_LIST_LENGTH: usize = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValidEthTransaction {
@@ -42,28 +43,34 @@ pub struct ValidEthTransaction {
     forward_retries: usize,
     max_value: Balance,
     max_gas_cost: Balance,
+    valid_recovered_authorizations: Box<[ValidEthRecoveredAuthorization]>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValidEthRecoveredAuthorization {
+    pub authority: Address,
+    pub authorization: Authorization,
 }
 
 impl ValidEthTransaction {
     pub fn validate<ST, SCT>(
-        event_tracker: &mut EthTxPoolEventTracker<'_>,
         last_commit: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
         chain_id: u64,
         chain_params: &ChainParams,
         execution_params: &ExecutionChainParams,
         tx: Recovered<TxEnvelope>,
         owned: bool,
-    ) -> Option<Self>
+    ) -> Result<Self, (Recovered<TxEnvelope>, EthTxPoolDropReason)>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
         if SystemTransactionValidator::is_system_sender(tx.signer()) {
-            return None;
+            return Err((tx, EthTxPoolDropReason::InvalidSignature));
         }
 
         if SystemTransactionValidator::is_restricted_system_call(&tx) {
-            return None;
+            return Err((tx, EthTxPoolDropReason::InvalidSignature));
         }
 
         // TODO(andr-dev): Adjust minimum dynamically using current base fee.
@@ -73,8 +80,7 @@ impl ValidEthTransaction {
             PRE_TFM_BASE_FEE
         };
         if tx.max_fee_per_gas() < min_base_fee.into() {
-            event_tracker.drop(tx.tx_hash().to_owned(), EthTxPoolDropReason::FeeTooLow);
-            return None;
+            return Err((tx, EthTxPoolDropReason::FeeTooLow));
         }
 
         let last_commit_base_fee = last_commit
@@ -83,24 +89,66 @@ impl ValidEthTransaction {
         let max_value = compute_txn_max_value(&tx, last_commit_base_fee);
         let max_gas_cost = compute_txn_max_gas_cost(&tx, last_commit_base_fee);
 
-        let this = Self {
+        if let Err(error) =
+            static_validate_transaction(&tx, chain_id, chain_params, execution_params)
+        {
+            return Err((tx, EthTxPoolDropReason::NotWellFormed(error)));
+        }
+
+        let valid_recovered_authorizations =
+            if let Some(signed_authorizations) = tx.authorization_list() {
+                if signed_authorizations.len() > MAX_EIP7702_AUTHORIZATION_LIST_LENGTH {
+                    return Err((
+                        tx,
+                        EthTxPoolDropReason::NotWellFormed(
+                            TransactionError::AuthorizationListLengthLimitExceeded,
+                        ),
+                    ));
+                }
+
+                match signed_authorizations
+                    .iter()
+                    .filter_map(|signed_authorization| {
+                        if signed_authorization.chain_id != 0
+                            && signed_authorization.chain_id != chain_id
+                        {
+                            return None;
+                        }
+
+                        let Ok(authority) = signed_authorization.recover_authority() else {
+                            return None;
+                        };
+
+                        // system account cannot be used to sign authorizations
+                        if authority == SYSTEM_SENDER_ETH_ADDRESS {
+                            return Some(Err(EthTxPoolDropReason::InvalidSignature));
+                        }
+
+                        Some(Ok(ValidEthRecoveredAuthorization {
+                            authority,
+                            authorization: signed_authorization.inner().clone(),
+                        }))
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                {
+                    Err(drop_reason) => return Err((tx, drop_reason)),
+                    Ok(valid_recovered_authorizations) => {
+                        valid_recovered_authorizations.into_boxed_slice()
+                    }
+                }
+            } else {
+                Box::default()
+            };
+
+        Ok(Self {
             tx,
             owned,
             forward_last_seqnum: last_commit.seq_num,
             forward_retries: 0,
             max_value,
             max_gas_cost,
-        };
-
-        if let Err(error) = this.static_validate(chain_id, chain_params, execution_params) {
-            event_tracker.drop(
-                this.tx.tx_hash().to_owned(),
-                EthTxPoolDropReason::NotWellFormed(error),
-            );
-            return None;
-        }
-
-        Some(this)
+            valid_recovered_authorizations,
+        })
     }
 
     pub fn static_validate(
@@ -180,6 +228,12 @@ impl ValidEthTransaction {
     pub fn has_higher_priority(&self, other: &Self, _base_fee: u64) -> bool {
         self.tx.max_fee_per_gas() > other.tx.max_fee_per_gas()
             && self.tx.max_priority_fee_per_gas() >= other.tx.max_priority_fee_per_gas()
+    }
+
+    pub fn iter_valid_recovered_authorizations(
+        &self,
+    ) -> impl Iterator<Item = &ValidEthRecoveredAuthorization> {
+        self.valid_recovered_authorizations.iter()
     }
 
     pub fn get_if_forwardable<const MIN_SEQNUM_DIFF: u64, const MAX_RETRIES: usize>(

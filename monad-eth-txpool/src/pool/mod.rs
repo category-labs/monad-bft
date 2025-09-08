@@ -20,7 +20,7 @@ use alloy_consensus::{
 };
 use alloy_primitives::Address;
 use alloy_rlp::Encodable;
-use itertools::Itertools;
+use itertools::{Either, Itertools};
 use monad_chain_config::{
     execution_revision::MonadExecutionRevision,
     revision::{ChainRevision, MockChainRevision},
@@ -40,6 +40,7 @@ use monad_state_backend::{StateBackend, StateBackendError};
 use monad_system_calls::{SystemTransactionGenerator, SYSTEM_SENDER_ETH_ADDRESS};
 use monad_types::{Epoch, NodeId, Round, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing::{debug, info, warn};
 
 use self::{pending::PendingTxMap, tracked::TrackedTxMap, transaction::ValidEthTransaction};
@@ -135,20 +136,24 @@ where
             return;
         };
 
-        let txs = txs
-            .into_iter()
-            .filter_map(|tx| {
-                ValidEthTransaction::validate(
-                    event_tracker,
-                    last_commit,
-                    self.chain_id,
-                    self.chain_revision.chain_params(),
-                    self.execution_revision.execution_chain_params(),
-                    tx,
-                    owned,
-                )
-            })
-            .collect_vec();
+        let chain_params = self.chain_revision.chain_params();
+        let execution_params = self.execution_revision.execution_chain_params();
+
+        let (txs, invalid_txs): (Vec<_>, Vec<_>) = txs.into_par_iter().partition_map(|tx| {
+            Either::from(ValidEthTransaction::validate(
+                last_commit,
+                self.chain_id,
+                chain_params,
+                execution_params,
+                tx,
+                owned,
+            ))
+            .flip()
+        });
+
+        for (tx, drop_reason) in invalid_txs {
+            event_tracker.drop(*tx.tx_hash(), drop_reason);
+        }
 
         // BlockPolicy only guarantees that data is available for seqnum (N-k, N] for some execution
         // delay k. Since block_policy looks up seqnum - execution_delay, passing the last commit

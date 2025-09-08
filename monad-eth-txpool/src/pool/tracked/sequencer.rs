@@ -19,7 +19,6 @@ use std::{
 };
 
 use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
-use alloy_eips::eip7702::Authorization;
 use alloy_primitives::Address;
 use indexmap::IndexMap;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
@@ -30,43 +29,25 @@ use monad_crypto::certificate_signature::{
 use monad_eth_block_policy::{
     nonce_usage::NonceUsageRetrievable, EthBlockPolicyBlockValidator, EthValidatedBlock,
 };
-use monad_system_calls::SYSTEM_SENDER_ETH_ADDRESS;
 use monad_validator::signature_collection::SignatureCollection;
 use rand::seq::SliceRandom;
 use tracing::{debug, error, trace, warn};
 
 use super::list::TrackedTxList;
-use crate::pool::transaction::ValidEthTransaction;
+use crate::pool::transaction::{ValidEthRecoveredAuthorization, ValidEthTransaction};
 
 #[derive(Debug, PartialEq, Eq)]
 struct OrderedTx<'a> {
     tx: &'a ValidEthTransaction,
-    valid_signed_authorizations: Vec<(Address, &'a Authorization)>,
     effective_tip_per_gas: u128,
 }
 
 impl<'a> OrderedTx<'a> {
-    fn new(tx: &'a ValidEthTransaction, chain_id: u64, base_fee: u64) -> Option<Self> {
+    fn new(tx: &'a ValidEthTransaction, base_fee: u64) -> Option<Self> {
         let effective_tip_per_gas = tx.raw().effective_tip_per_gas(base_fee)?;
-
-        let mut valid_signed_authorizations = Vec::new();
-        for signed_authorization in tx.raw().authorization_list().into_iter().flatten() {
-            if signed_authorization.chain_id != 0 && signed_authorization.chain_id != chain_id {
-                continue;
-            }
-
-            if let Ok(authority) = signed_authorization.recover_authority() {
-                // system account cannot be used to sign authorizations
-                if authority == SYSTEM_SENDER_ETH_ADDRESS {
-                    return None;
-                }
-                valid_signed_authorizations.push((authority, signed_authorization.inner()));
-            }
-        }
 
         Some(Self {
             tx,
-            valid_signed_authorizations,
             effective_tip_per_gas,
         })
     }
@@ -116,7 +97,6 @@ impl<'a> ProposalSequencer<'a> {
     pub fn new<ST, SCT>(
         tracked_txs: &'a IndexMap<Address, TrackedTxList>,
         extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
-        chain_id: u64,
         base_fee: u64,
         tx_limit: usize,
     ) -> Self
@@ -132,7 +112,7 @@ impl<'a> ProposalSequencer<'a> {
         for (address, tx_list) in tracked_txs {
             let mut queued = tx_list
                 .get_queued(pending_nonce_usages.remove(address))
-                .map_while(|tx| OrderedTx::new(tx, chain_id, base_fee));
+                .map_while(|tx| OrderedTx::new(tx, base_fee));
 
             let Some(tx) = queued.next() else {
                 continue;
@@ -183,8 +163,8 @@ impl<'a> ProposalSequencer<'a> {
              }| {
                 std::iter::once(tx)
                     .chain(queued.iter())
-                    .flat_map(|tx| tx.valid_signed_authorizations.iter())
-                    .map(|(authority, _)| authority)
+                    .flat_map(|tx| tx.tx.iter_valid_recovered_authorizations())
+                    .map(|recovered_authorization| &recovered_authorization.authority)
             },
         )
     }
@@ -245,7 +225,11 @@ impl<'a> ProposalSequencer<'a> {
                     self.push(address, next_tx, queued);
                 }
 
-                for (authority, authorization) in tx.valid_signed_authorizations {
+                for ValidEthRecoveredAuthorization {
+                    authority,
+                    authorization,
+                } in tx.tx.iter_valid_recovered_authorizations()
+                {
                     if authorization.chain_id != 0
                         && authorization.chain_id != chain_config.chain_id()
                     {
@@ -275,7 +259,7 @@ impl<'a> ProposalSequencer<'a> {
                     }
 
                     *authority_nonce += 1;
-                    *authority_nonce_deltas.entry(authority).or_default() += 1;
+                    *authority_nonce_deltas.entry(*authority).or_default() += 1;
                 }
             }
         }

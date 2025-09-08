@@ -54,6 +54,7 @@ pub enum TransactionError {
     GasLimitTooHigh,
     UnsupportedTransactionType,
     AuthorizationListEmpty,
+    AuthorizationListLengthLimitExceeded,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,6 +89,9 @@ impl EthTxPoolDropReason {
                 TransactionError::GasLimitTooHigh => "Exceeds block gas limit",
                 TransactionError::UnsupportedTransactionType => "Unsupported transaction type",
                 TransactionError::AuthorizationListEmpty => "EIP7702 authorization list empty",
+                TransactionError::AuthorizationListLengthLimitExceeded => {
+                    "EIP7702 authorization list length limit exceeded"
+                }
             },
             EthTxPoolDropReason::InvalidSignature => "Transaction signature is invalid",
             EthTxPoolDropReason::NonceTooLow => "Transaction nonce too low",
