@@ -29,9 +29,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 #[derive(Debug, Parser)]
-#[clap(about = "Tool for benchmarking eth_getLogs")]
+#[command(about = "Tool for benchmarking eth_getLogs")]
 struct Args {
-    #[clap(subcommand)]
+    #[command(subcommand)]
     command: Commands,
 }
 
@@ -49,67 +49,67 @@ enum Commands {
 
 #[derive(Debug, Parser)]
 struct GenerateArgs {
-    #[clap(short, long, default_value = "requests.json")]
+    #[arg(short, long, default_value = "requests.json")]
     output_file: PathBuf,
 
-    #[clap(short, long, default_value = "5000000")]
+    #[arg(short, long, default_value = "5000000")]
     min_block: u64,
 
-    #[clap(short, long, default_value = "8000000")]
+    #[arg(short, long, default_value = "8000000")]
     max_block: u64,
 
-    #[clap(short, long, default_value = "100")]
+    #[arg(short, long, default_value = "100")]
     min_range: u64,
 
-    #[clap(short, long, default_value = "101")]
+    #[arg(short, long, default_value = "101")]
     max_range: u64,
 
-    #[clap(short, long, default_value = "10")]
+    #[arg(short, long, default_value = "10")]
     num_requests: usize,
 
-    #[clap(short, long)]
+    #[arg(short, long)]
     frequency_file: Option<PathBuf>,
 
-    #[clap(short = 'T', long, default_value = "3")]
+    #[arg(short = 'T', long, default_value = "3")]
     top_topics: usize,
 
-    #[clap(short = 'A', long, default_value = "3")]
+    #[arg(short = 'A', long, default_value = "3")]
     top_addresses: usize,
 
-    #[clap(long, default_value = "25")]
+    #[arg(long, default_value = "25")]
     address_filter_percent: u8,
 
-    #[clap(long, default_value = "30")]
+    #[arg(long, default_value = "30")]
     topic_filter_percent: u8,
 }
 
 #[derive(Debug, Parser)]
 struct BenchmarkArgs {
-    #[clap(short, long)]
+    #[arg(short, long)]
     request_file: PathBuf,
 
-    #[clap(short, long, default_value = "results.json")]
+    #[arg(short, long, default_value = "results.json")]
     output_file: PathBuf,
 
-    #[clap(short = 'f', long, default_value = "frequency.json")]
+    #[arg(short = 'f', long, default_value = "frequency.json")]
     frequency_file: PathBuf,
 
-    #[clap(short, long, default_value = "http://localhost:8080")]
+    #[arg(short, long, default_value = "http://localhost:8080")]
     url: String,
 
-    #[clap(short, long, default_value = "4")]
+    #[arg(short, long, default_value = "4")]
     timeout_seconds: u64,
 }
 
 #[derive(Debug, Parser)]
 struct CompareArgs {
-    #[clap(short = '1', long, help = "First benchmark result file")]
+    #[arg(short = '1', long, help = "First benchmark result file")]
     first_file: PathBuf,
 
-    #[clap(short = '2', long, help = "Second benchmark result file")]
+    #[arg(short = '2', long, help = "Second benchmark result file")]
     second_file: PathBuf,
 
-    #[clap(
+    #[arg(
         short,
         long,
         default_value = "comparison.json",

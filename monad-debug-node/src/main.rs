@@ -48,7 +48,7 @@ struct Cli {
 }
 
 #[derive(Debug, Args)]
-#[clap(group(ArgGroup::new("method").required(true).args(&["filter", "file"])))]
+#[command(group(ArgGroup::new("method").required(true).args(&["filter", "file"])))]
 struct UpdateLogFilter {
     #[arg(long, value_name = "FILTER")]
     filter: Option<String>,
