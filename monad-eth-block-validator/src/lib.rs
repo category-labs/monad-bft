@@ -27,6 +27,7 @@ use alloy_consensus::{
 use alloy_eips::eip7702::{RecoveredAuthority, RecoveredAuthorization};
 use alloy_rlp::Encodable;
 use monad_chain_config::{
+    execution_revision::ExecutionChainParams,
     revision::{ChainParams, ChainRevision},
     ChainConfig,
 };
@@ -41,7 +42,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_block_policy::{
     compute_txn_max_gas_cost,
     nonce_usage::{NonceUsage, NonceUsageMap},
-    pre_tfm_compute_max_txn_cost,
+    pre_tfm_compute_max_txn_cost, timestamp_ns_to_secs,
     validation::static_validate_transaction,
     EthBlockPolicy, EthValidatedBlock,
 };
@@ -115,8 +116,17 @@ where
         let chain_params = chain_config
             .get_chain_revision(header.block_round)
             .chain_params();
+        let execution_chain_params = chain_config
+            .get_execution_chain_revision(timestamp_ns_to_secs(header.timestamp_ns))
+            .execution_chain_params();
 
-        Self::validate_block_header(&header, &body, author_pubkey, chain_params)?;
+        Self::validate_block_header(
+            &header,
+            &body,
+            author_pubkey,
+            chain_params,
+            execution_chain_params,
+        )?;
 
         match Self::validate_block_body(&header, &body, chain_config) {
             Ok((system_txns, validated_txns, nonce_usages, txn_fees)) => {
@@ -153,6 +163,7 @@ where
         body: &ConsensusBlockBody<EthExecutionProtocol>,
         author_pubkey: Option<&SignatureCollectionPubKeyType<SCT>>,
         chain_params: &ChainParams,
+        execution_chain_params: &ExecutionChainParams,
     ) -> Result<(), BlockValidationError> {
         if header.block_body_id != body.get_id() {
             return Err(BlockValidationError::HeaderPayloadMismatchError);
@@ -226,7 +237,9 @@ where
         if parent_beacon_block_root != &[0_u8; 32] {
             return Err(BlockValidationError::HeaderError);
         }
-        if requests_hash != &[0_u8; 32] {
+
+        let expected_requests_hash = execution_chain_params.prague_enabled.then_some([0_u8; 32]);
+        if requests_hash != &expected_requests_hash {
             return Err(BlockValidationError::HeaderError);
         }
 

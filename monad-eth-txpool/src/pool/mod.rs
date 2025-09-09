@@ -33,7 +33,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
+use monad_eth_block_policy::{timestamp_ns_to_secs, EthBlockPolicy, EthValidatedBlock};
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason, EthTxPoolSnapshot};
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ExtractEthAddress, ProposedEthHeader};
 use monad_state_backend::{StateBackend, StateBackendError};
@@ -264,9 +264,8 @@ where
 
         self.tracked.evict_expired_txs(event_tracker);
 
-        let timestamp_seconds = timestamp_ns / 1_000_000_000;
-        // u64::MAX seconds is ~500 Billion years
-        assert!(timestamp_seconds < u64::MAX.into());
+        let timestamp_seconds = timestamp_ns_to_secs(timestamp_ns);
+        let execution_revision = chain_config.get_execution_chain_revision(timestamp_seconds);
 
         {
             let chain_id = chain_config.chain_id();
@@ -279,9 +278,6 @@ where
             }
 
             let chain_revision = chain_config.get_chain_revision(round);
-
-            let execution_revision =
-                chain_config.get_execution_chain_revision(timestamp_seconds as u64);
 
             if chain_revision.chain_params() != self.chain_revision.chain_params()
                 || self.execution_revision != execution_revision
@@ -340,6 +336,13 @@ where
             ommers: Vec::new(),
             withdrawals: Vec::new(),
         };
+
+        let maybe_request_hash = if execution_revision.execution_chain_params().prague_enabled {
+            Some([0_u8; 32])
+        } else {
+            None
+        };
+
         let header = ProposedEthHeader {
             transactions_root: *alloy_consensus::proofs::calculate_transaction_root(
                 &body.transactions,
@@ -357,7 +360,7 @@ where
             difficulty: 0,
             number: proposed_seq_num.0,
             gas_limit: proposal_gas_limit,
-            timestamp: timestamp_seconds as u64,
+            timestamp: timestamp_seconds,
             mix_hash: round_signature.get_hash().0,
             nonce: [0_u8; 8],
             extra_data: [0_u8; 32],
@@ -365,7 +368,7 @@ where
             blob_gas_used: 0,
             excess_blob_gas: 0,
             parent_beacon_block_root: [0_u8; 32],
-            requests_hash: [0_u8; 32],
+            requests_hash: maybe_request_hash,
         };
 
         self.update_aggregate_metrics(event_tracker);
