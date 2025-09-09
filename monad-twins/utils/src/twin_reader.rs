@@ -274,7 +274,6 @@ static CHAIN_PARAMS: ChainParams = ChainParams {
     vote_pace: Duration::from_millis(5),
 
     validate_system_txs: true,
-    eip_7702: true,
 };
 
 pub fn read_twins_test<S>(path: &str) -> TwinsTestCase<S>

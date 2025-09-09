@@ -49,7 +49,6 @@ static CHAIN_PARAMS: ChainParams = ChainParams {
     vote_pace: Duration::from_millis(100),
 
     validate_system_txs: true,
-    eip_7702: true,
 };
 
 fn random_latency_test(latency_seed: u64) {
@@ -119,7 +118,6 @@ static CHAIN_PARAMS_NO_VOTE_PACE: ChainParams = ChainParams {
     vote_pace: Duration::from_millis(0),
 
     validate_system_txs: true,
-    eip_7702: true,
 };
 
 fn delayed_message_test(latency_seed: u64) {

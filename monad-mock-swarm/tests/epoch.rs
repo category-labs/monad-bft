@@ -135,7 +135,6 @@ mod test {
         vote_pace: Duration::from_millis(0),
 
         validate_system_txs: true,
-        eip_7702: true,
     };
 
     fn verify_nodes_in_epoch(nodes: Vec<&Node<impl SwarmRelation>>, epoch: Epoch) {

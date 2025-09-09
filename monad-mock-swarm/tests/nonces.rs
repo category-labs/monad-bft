@@ -143,7 +143,6 @@ mod test {
         vote_pace: Duration::from_millis(0),
 
         validate_system_txs: true,
-        eip_7702: true,
     };
 
     fn generate_eth_swarm(

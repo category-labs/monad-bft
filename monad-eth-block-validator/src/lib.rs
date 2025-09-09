@@ -683,7 +683,6 @@ mod test {
                     vote_pace: Duration::ZERO,
 
                     validate_system_txs: true,
-                    eip_7702: false,
                 }),
             );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));

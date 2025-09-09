@@ -124,7 +124,6 @@ static CHAIN_PARAMS: ChainParams = ChainParams {
     vote_pace: Duration::from_millis(0),
 
     validate_system_txs: true,
-    eip_7702: true,
 };
 
 #[test]

@@ -68,7 +68,6 @@ pub struct ChainParams {
     pub vote_pace: Duration,
 
     pub validate_system_txs: bool,
-    pub eip_7702: bool,
 }
 
 const CHAIN_PARAMS_V_0_7_0: ChainParams = ChainParams {
@@ -79,7 +78,6 @@ const CHAIN_PARAMS_V_0_7_0: ChainParams = ChainParams {
     vote_pace: Duration::from_millis(1000),
 
     validate_system_txs: false,
-    eip_7702: false,
 };
 
 const CHAIN_PARAMS_V_0_8_0: ChainParams = ChainParams {
@@ -90,7 +88,6 @@ const CHAIN_PARAMS_V_0_8_0: ChainParams = ChainParams {
     vote_pace: Duration::from_millis(500),
 
     validate_system_txs: false,
-    eip_7702: false,
 };
 
 const CHAIN_PARAMS_V_0_10_0: ChainParams = ChainParams {
@@ -101,7 +98,6 @@ const CHAIN_PARAMS_V_0_10_0: ChainParams = ChainParams {
     vote_pace: Duration::from_millis(400),
 
     validate_system_txs: false,
-    eip_7702: false,
 };
 
 const CHAIN_PARAMS_V_0_11_0: ChainParams = ChainParams {
@@ -112,7 +108,6 @@ const CHAIN_PARAMS_V_0_11_0: ChainParams = ChainParams {
     vote_pace: Duration::from_millis(400),
 
     validate_system_txs: true,
-    eip_7702: true,
 };
 
 #[cfg(test)]
