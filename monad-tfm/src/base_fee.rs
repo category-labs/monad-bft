@@ -195,10 +195,10 @@ mod test {
             let trend_ceil = (block_limit as i64 * 8) / 10;
             let trend_floor = -((block_limit as i64 * 2) / 10);
             (
-                Just(block_limit),                                                // block_gas_limit
+                Just(block_limit),                                    // block_gas_limit
                 0u64..=block_limit, // parent_gas_usage: 0 to block_gas_limit
-                prop_oneof![Just(0u64), MIN_BASE_FEE..=(MIN_BASE_FEE * 1000u64)], // parent_base_fee: 0 in the genesis case; then from MIN_BASE_FEE up to 1000x MIN_BASE_FEE
-                trend_floor..trend_ceil,                                          // parent_trend
+                prop_oneof![Just(0u64), MIN_BASE_FEE..=MAX_BASE_FEE], // parent_base_fee: 0 in the genesis case; then from MIN_BASE_FEE up to 1000x MIN_BASE_FEE
+                trend_floor..trend_ceil,                              // parent_trend
                 0u64..=(trend_ceil * trend_ceil) as u64, // parent_moment: max is trend_ceil^2
             )
         })
@@ -261,6 +261,23 @@ mod test {
     fn genesis_strategy() -> impl Strategy<Value = (u64, u64)> {
         (BLOCK_GAS_LIMIT_FLOOR..=BLOCK_GAS_LIMIT_CEIL)
             .prop_flat_map(|block_limit| (Just(block_limit), gas_usage_strategy(block_limit)))
+    }
+
+    // (block_gas_limit, parent_base_fee, parent_trend, parent_moment)
+    fn usage_strategy() -> impl Strategy<Value = (u64, u64, i64, u64)> {
+        (BLOCK_GAS_LIMIT_FLOOR..=BLOCK_GAS_LIMIT_CEIL).prop_flat_map(|block_limit| {
+            // trend is bound by (target (==80% of limit) - usage)
+            // upper bound when usage is 0
+            // lower bound when usage is at the limit
+            let trend_ceil = (block_limit as i64 * 8) / 10;
+            let trend_floor = -((block_limit as i64 * 2) / 10);
+            (
+                Just(block_limit),                       // block_gas_limit
+                MIN_BASE_FEE..=(MAX_BASE_FEE), // parent_base_fee: from MIN_BASE_FEE up to MAX_BASE_FEE
+                trend_floor..trend_ceil,       // parent_trend
+                0u64..=(trend_ceil * trend_ceil) as u64, // parent_moment: max is trend_ceil^2
+            )
+        })
     }
 
     proptest! {
@@ -371,6 +388,57 @@ mod test {
                 current_trend = next_trend;
                 current_moment = next_moment;
             }
+        }
+
+        #[test]
+        fn test_constant_usage(values in usage_strategy()) {
+            let (block_gas_limit,
+                parent_base_fee,
+                parent_trend,
+                parent_moment) = values;
+            let parent_gas_usage = block_gas_limit * 8 / 10; // usage == target
+            let (base_fee, _, _) = compute_base_fee_math(
+                block_gas_limit,
+                parent_gas_usage,
+                parent_base_fee,
+                parent_trend,
+                parent_moment
+            );
+            assert_eq!(base_fee, parent_base_fee);
+        }
+
+        #[test]
+        fn test_higher_usage(values in usage_strategy()) {
+            let (block_gas_limit,
+                parent_base_fee,
+                parent_trend,
+                parent_moment) = values;
+            let parent_gas_usage = block_gas_limit * 9 / 10; // usage > target
+            let (base_fee, _, _) = compute_base_fee_math(
+                block_gas_limit,
+                parent_gas_usage,
+                parent_base_fee,
+                parent_trend,
+                parent_moment
+            );
+            assert!(base_fee > parent_base_fee);
+        }
+
+        #[test]
+        fn test_lower_usage(values in usage_strategy()) {
+            let (block_gas_limit,
+                parent_base_fee,
+                parent_trend,
+                parent_moment) = values;
+            let parent_gas_usage = block_gas_limit * 7 / 10; // usage < target
+            let (base_fee, _, _) = compute_base_fee_math(
+                block_gas_limit,
+                parent_gas_usage,
+                parent_base_fee,
+                parent_trend,
+                parent_moment
+            );
+            assert!(base_fee < parent_base_fee);
         }
 
         #[test]
