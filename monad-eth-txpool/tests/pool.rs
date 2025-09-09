@@ -18,7 +18,9 @@ use std::{
     sync::Arc,
 };
 
-use alloy_consensus::{transaction::Recovered, SignableTransaction, TxEnvelope, TxLegacy};
+use alloy_consensus::{
+    transaction::Recovered, SignableTransaction, Transaction, TxEnvelope, TxLegacy,
+};
 use alloy_primitives::{hex, Address, TxKind, B256, U256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
@@ -935,7 +937,30 @@ fn test_insert_low_balance() {
 
     run_custom(
         make_test_block_policy,
-        Balance::ONE,
+        (BASE_FEE_PER_GAS * tx1.gas_limit() - 1).try_into().unwrap(),
+        None,
+        [
+            TxPoolTestEvent::InsertTxs {
+                txs: vec![(&tx1, false)],
+                expected_pool_size_change: 0,
+            },
+            TxPoolTestEvent::Block(Arc::new(|pool| {
+                assert!(pool.is_empty());
+            })),
+            TxPoolTestEvent::CreateProposal {
+                base_fee: BASE_FEE_PER_GAS,
+                tx_limit: 1,
+                gas_limit: GAS_LIMIT,
+                byte_limit: PROPOSAL_SIZE_LIMIT,
+                expected_txs: vec![],
+                add_to_blocktree: true,
+            },
+        ],
+    );
+
+    run_custom(
+        make_test_block_policy,
+        (BASE_FEE_PER_GAS * tx1.gas_limit()).try_into().unwrap(),
         None,
         [
             TxPoolTestEvent::InsertTxs {
@@ -947,7 +972,7 @@ fn test_insert_low_balance() {
                 tx_limit: 1,
                 gas_limit: GAS_LIMIT,
                 byte_limit: PROPOSAL_SIZE_LIMIT,
-                expected_txs: vec![],
+                expected_txs: vec![&tx1],
                 add_to_blocktree: true,
             },
         ],

@@ -38,7 +38,7 @@ use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason, E
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ExtractEthAddress, ProposedEthHeader};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_system_calls::{SystemTransactionGenerator, SYSTEM_SENDER_ETH_ADDRESS};
-use monad_types::{Balance, Epoch, NodeId, Round, SeqNum};
+use monad_types::{Epoch, NodeId, Round, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::{debug, info, warn};
 
@@ -53,7 +53,7 @@ mod transaction;
 // process. It was set based on intuition and should be changed once we have more data on txpool
 // performance.
 // Each account lookup takes about 30us so this should block the thread for at most roughly 8ms.
-const INSERT_TXS_MAX_PROMOTE: usize = 256;
+const INSERT_TXS_MAX_PROMOTE: usize = 128;
 const PENDING_MAX_PROMOTE: usize = 128;
 
 #[derive(Clone, Debug)]
@@ -181,7 +181,10 @@ where
         for tx in txs {
             if account_balances
                 .get(tx.signer_ref())
-                .is_none_or(|x| x.balance == Balance::ZERO)
+                .is_none_or(|account_balance_state| {
+                    account_balance_state.balance
+                        < last_commit_base_fee.saturating_mul(tx.gas_limit())
+                })
             {
                 event_tracker.drop(tx.hash(), EthTxPoolDropReason::InsufficientBalance);
                 continue;
@@ -326,7 +329,6 @@ where
             extending_blocks.iter().collect(),
             state_backend,
             chain_config,
-            &mut self.pending,
             &self.chain_revision,
             &self.execution_revision,
         )?;

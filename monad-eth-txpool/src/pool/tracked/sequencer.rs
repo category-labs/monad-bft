@@ -32,6 +32,7 @@ use monad_eth_block_policy::{
 };
 use monad_system_calls::SYSTEM_SENDER_ETH_ADDRESS;
 use monad_validator::signature_collection::SignatureCollection;
+use rand::seq::SliceRandom;
 use tracing::{debug, error, trace, warn};
 
 use super::list::TrackedTxList;
@@ -117,6 +118,7 @@ impl<'a> ProposalSequencer<'a> {
         extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
         chain_id: u64,
         base_fee: u64,
+        tx_limit: usize,
     ) -> Self
     where
         ST: CertificateSignatureRecoverable,
@@ -146,6 +148,9 @@ impl<'a> ProposalSequencer<'a> {
             });
             virtual_time += 1;
         }
+
+        heap_vec.partial_shuffle(&mut rand::thread_rng(), tx_limit);
+        heap_vec.truncate(tx_limit);
 
         Self {
             heap: BinaryHeap::from(heap_vec),

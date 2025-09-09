@@ -49,19 +49,16 @@ use crate::EthTxPoolEventTracker;
 mod list;
 mod sequencer;
 
-// To produce 10k tx blocks, we need the tracked tx map to hold at least 20k addresses so that if
-// the block in the pending blocktree has 10k txs with 10k unique addresses that are also in the
-// tracked tx map then we still have 10k other addresses to use when creating the next block.
-const MAX_ADDRESSES: usize = 20 * 1024;
+// To produce 5k tx blocks, we need the tracked tx map to hold at least 15k addresses so that, after
+// pruning the txpool of up to 5k unique addresses in the last committed block update and up to 5k
+// unique addresses in the pending blocktree, the tracked tx map will still have at least 5k other
+// addresses with at least one tx each to use when creating the next block.
+const MAX_ADDRESSES: usize = 16 * 1024;
 
 // Tx batches from rpc can contain up to roughly 500 transactions. Since we don't evict based on how
 // many txs are in the pool, we need to ensure that after eviction there is always space for all 500
 // txs.
 const SOFT_EVICT_ADDRESSES_WATERMARK: usize = MAX_ADDRESSES - 512;
-
-// TODO(andr-dev): This currently limits the number of unique addresses in a
-// proposal. This will be removed once we move the txpool into its own thread.
-const MAX_PROMOTABLE_ON_CREATE_PROPOSAL: usize = 1024 * 10;
 
 /// Stores transactions using a "snapshot" system by which each address has an associated
 /// account_nonce stored in the TrackedTxList which is guaranteed to be the correct
@@ -165,7 +162,6 @@ where
         extending_blocks: Vec<&EthValidatedBlock<ST, SCT>>,
         state_backend: &SBT,
         chain_config: &CCT,
-        pending: &mut PendingTxMap,
         chain_revision: &CRT,
         execution_revision: &MonadExecutionRevision,
     ) -> Result<Vec<Recovered<TxEnvelope>>, BlockPolicyError> {
@@ -193,17 +189,6 @@ where
             debug!(?elapsed, "txpool create_proposal");
         });
 
-        if !self.try_promote_pending(
-            event_tracker,
-            block_policy,
-            state_backend,
-            pending,
-            0,
-            MAX_PROMOTABLE_ON_CREATE_PROPOSAL,
-        ) {
-            error!("txpool failed to promote pending txs during create_proposal");
-        }
-
         if self.txs.is_empty() || tx_limit == 0 {
             return Ok(Vec::new());
         }
@@ -213,6 +198,7 @@ where
             &extending_blocks,
             chain_config.chain_id(),
             base_fee,
+            tx_limit,
         );
         let sequencer_len = sequencer.len();
 
