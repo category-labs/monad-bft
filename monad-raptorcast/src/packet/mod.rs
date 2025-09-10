@@ -212,7 +212,7 @@ mod tests {
         build_messages as build_new, *,
     };
     use crate::{
-        udp::build_messages_with_rng as build_old,
+        udp::{build_messages_with_length as build_old, legacy_order},
         util::{EpochValidators, Group},
         SIGNATURE_SIZE,
     };
@@ -349,12 +349,14 @@ mod tests {
             key,
             DEFAULT_SEGMENT_LEN as u16,
             app_msg.clone(),
+            app_msg.len() as u32,
             redundancy,
             EPOCH,
             UNIX_TS_MS,
             build_target.clone(),
             known_addresses,
             &mut make_rng(),
+            legacy_order,
         );
 
         assert_compatible_eq(&old, &new);

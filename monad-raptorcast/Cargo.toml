@@ -47,6 +47,7 @@ rstest = { workspace = true }
 criterion = { workspace = true }
 futures-util = { workspace = true }
 insta = { workspace = true }
+proptest = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
