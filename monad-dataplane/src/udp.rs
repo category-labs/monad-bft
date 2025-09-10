@@ -27,12 +27,12 @@ use monoio::{net::udp::UdpSocket, spawn, time};
 use tokio::sync::mpsc;
 use tracing::{debug, error, trace, warn};
 
-use super::{RecvUdpMsg, UdpMsg};
+use super::{RecvUdpMsg, UdpEgressMessage};
 use crate::buffer_ext::SocketBufferExt;
 
 #[derive(Debug, Clone)]
 pub(crate) enum UdpMessageType {
-    Broadcast,
+    Common,
     Direct,
 }
 
@@ -109,7 +109,7 @@ pub(crate) fn spawn_tasks(
     direct_socket_port: Option<u16>,
     udp_ingress_tx: mpsc::Sender<RecvUdpMsg>,
     udp_direct_ingress_tx: mpsc::Sender<RecvUdpMsg>,
-    udp_egress_rx: mpsc::Receiver<(SocketAddr, UdpMsg)>,
+    udp_egress_rx: mpsc::Receiver<UdpEgressMessage>,
     up_bandwidth_mbps: u64,
     buffer_size: Option<usize>,
 ) {
@@ -193,7 +193,7 @@ const PACING_SLEEP_OVERSHOOT_DETECTION_WINDOW: Duration = Duration::from_millis(
 async fn tx(
     socket_tx: UdpSocket,
     direct_socket_tx: Option<UdpSocket>,
-    mut udp_egress_rx: mpsc::Receiver<(SocketAddr, UdpMsg)>,
+    mut udp_egress_rx: mpsc::Receiver<UdpEgressMessage>,
     up_bandwidth_mbps: u64,
 ) {
     let mut next_transmit = Instant::now();
@@ -215,11 +215,39 @@ async fn tx(
         }
 
         while messages_to_send.is_empty() || !udp_egress_rx.is_empty() {
-            let Some((addr, udp_msg)) = udp_egress_rx.recv().await else {
+            let Some(msg) = udp_egress_rx.recv().await else {
                 return;
             };
 
-            messages_to_send.push_back((addr, udp_msg.payload, udp_msg.stride, udp_msg.msg_type));
+            match msg {
+                UdpEgressMessage::Unicast(unicast_msg) => {
+                    for (addr, udp_msg) in unicast_msg.into_iter() {
+                        messages_to_send.push_back((
+                            addr,
+                            udp_msg.payload,
+                            udp_msg.stride,
+                            UdpMessageType::Common,
+                        ));
+                    }
+                }
+                UdpEgressMessage::Broadcast(broadcast_msg) => {
+                    for (addr, udp_msg) in broadcast_msg.into_iter() {
+                        messages_to_send.push_back((
+                            addr,
+                            udp_msg.payload,
+                            udp_msg.stride,
+                            UdpMessageType::Common,
+                        ));
+                    }
+                }
+                UdpEgressMessage::Direct {
+                    dst,
+                    payload,
+                    stride,
+                } => {
+                    messages_to_send.push_back((dst, payload, stride, UdpMessageType::Direct));
+                }
+            }
         }
 
         let queue_len = messages_to_send.len();
