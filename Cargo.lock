@@ -5417,6 +5417,7 @@ dependencies = [
  "criterion",
  "hex",
  "itertools 0.10.5",
+ "lazy_static",
  "monad-event-ring",
  "ratatui",
  "serde",
