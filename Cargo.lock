@@ -5295,6 +5295,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rpc-types",
  "bindgen 0.71.1",
+ "cc",
  "chrono",
  "clap 4.5.47",
  "criterion",
