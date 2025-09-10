@@ -16,7 +16,7 @@
 /// A placeholder CLI tool to generate the keystore json file
 /// The key generation tool is unaudited
 /// DO NOT USE IN PRODUCTION YET
-/// `cargo run -- --mode create --key-type [bls|secp] --keystore-path <path_for_file_to_be_created>`
+/// `cargo run --bin monad-keystore -- create --keystore-path <path> --password <password> --key-type [bls|secp]`
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
