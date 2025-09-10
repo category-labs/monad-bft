@@ -273,7 +273,6 @@ where
         self.tracked.evict_expired_txs(event_tracker);
 
         let timestamp_seconds = timestamp_ns_to_secs(timestamp_ns);
-        let execution_revision = chain_config.get_execution_chain_revision(timestamp_seconds);
 
         {
             let chain_id = chain_config.chain_id();
@@ -286,6 +285,7 @@ where
             }
 
             let chain_revision = chain_config.get_chain_revision(round);
+            let execution_revision = chain_config.get_execution_chain_revision(timestamp_seconds);
 
             if chain_revision.chain_params() != self.chain_revision.chain_params()
                 || self.execution_revision != execution_revision
@@ -344,7 +344,11 @@ where
             withdrawals: Vec::new(),
         };
 
-        let maybe_request_hash = if execution_revision.execution_chain_params().prague_enabled {
+        let maybe_request_hash = if self
+            .execution_revision
+            .execution_chain_params()
+            .prague_enabled
+        {
             Some([0_u8; 32])
         } else {
             None

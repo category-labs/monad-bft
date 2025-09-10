@@ -196,9 +196,7 @@ where
         let sequencer = ProposalSequencer::new(&self.txs, &extending_blocks, base_fee, tx_limit);
         let sequencer_len = sequencer.len();
 
-        let authority_addresses = sequencer.authority_addresses().cloned().collect_vec();
-
-        let (mut account_balances, authority_nonces, state_backend_lookups) = {
+        let (mut account_balances, state_backend_lookups) = {
             let _timer = DropTimer::start(Duration::ZERO, |elapsed| {
                 debug!(
                     ?elapsed,
@@ -216,12 +214,6 @@ where
                     Some(&extending_blocks),
                     sequencer.addresses(),
                 )?,
-                block_policy.get_account_base_nonces(
-                    proposed_seq_num,
-                    state_backend,
-                    &extending_blocks,
-                    authority_addresses.iter(),
-                )?,
                 state_backend.total_db_lookups() - total_db_lookups_before,
             )
         };
@@ -231,18 +223,9 @@ where
             num_txs = self.num_txs(),
             sequencer_len,
             account_balances = account_balances.len(),
-            authority_nonces = authority_nonces.len(),
             ?state_backend_lookups,
             "txpool sequencing transactions"
         );
-
-        for authority in authority_addresses.iter() {
-            let Some(account_balance) = account_balances.get_mut(&authority) else {
-                continue;
-            };
-
-            account_balance.is_delegated = true;
-        }
 
         let validator = EthBlockPolicyBlockValidator::new(
             proposed_seq_num,
@@ -259,7 +242,6 @@ where
             proposal_byte_limit,
             chain_config,
             account_balances,
-            authority_nonces,
             validator,
         );
 
