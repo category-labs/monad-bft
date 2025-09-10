@@ -773,3 +773,47 @@ async fn test_tcp_banned() {
     .await;
     assert!(result.is_none());
 }
+
+#[test]
+#[timeout(1000)]
+fn udp_large_stride() {
+    once_setup();
+
+    let rx_addr = "127.0.0.1:9034".parse().unwrap();
+    let tx_addr = "127.0.0.1:9035".parse().unwrap();
+
+    let rx_socket = std::net::UdpSocket::bind(rx_addr).unwrap();
+    rx_socket
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+
+    let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
+    assert!(tx.block_until_ready(Duration::from_secs(1)));
+
+    let payload: Vec<u8> = (0..65536)
+        .map(|_| rand::thread_rng().gen_range(0..255))
+        .collect();
+
+    tx.udp_write_broadcast(BroadcastMsg {
+        targets: vec![rx_addr],
+        payload: payload.clone().into(),
+        stride: u16::MAX,
+    });
+
+    let mut received = Vec::new();
+    let mut buf = [0u8; 65536];
+    let mut datagram_count = 0;
+
+    while received.len() < payload.len() {
+        match rx_socket.recv_from(&mut buf) {
+            Ok((len, _)) => {
+                received.extend_from_slice(&buf[..len]);
+                datagram_count += 1;
+            }
+            Err(_) => break,
+        }
+    }
+
+    assert_eq!(received, payload);
+    assert_eq!(datagram_count, 2);
+}

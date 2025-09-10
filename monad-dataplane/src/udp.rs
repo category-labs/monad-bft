@@ -22,9 +22,10 @@ use std::{
 };
 
 use bytes::{Bytes, BytesMut};
+use futures::future::join_all;
 use monoio::{net::udp::UdpSocket, spawn, time};
 use tokio::sync::mpsc;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, trace, warn};
 
 use super::{RecvUdpMsg, UdpMsg};
 use crate::buffer_ext::SocketBufferExt;
@@ -195,18 +196,24 @@ async fn tx(
     mut udp_egress_rx: mpsc::Receiver<(SocketAddr, UdpMsg)>,
     up_bandwidth_mbps: u64,
 ) {
-    let mut udp_segment_size: u16 = DEFAULT_SEGMENT_SIZE;
-    set_udp_segment_size(&socket_tx, udp_segment_size);
-    if let Some(ref direct_socket) = direct_socket_tx {
-        set_udp_segment_size(direct_socket, udp_segment_size);
-    }
-    let mut max_chunk: u16 = max_write_size_for_segment_size(udp_segment_size);
-
     let mut next_transmit = Instant::now();
 
     let mut messages_to_send: VecDeque<(SocketAddr, Bytes, u16, UdpMessageType)> = VecDeque::new();
 
+    let max_batch_bytes = max_write_size_for_segment_size(DEFAULT_SEGMENT_SIZE) as usize;
+    let mut send_futures = Vec::with_capacity(MAX_AGGREGATED_SEGMENTS as usize);
+
     loop {
+        let now = Instant::now();
+        if next_transmit > now {
+            time::sleep(next_transmit - now).await;
+        } else {
+            let late = now - next_transmit;
+            if late > PACING_SLEEP_OVERSHOOT_DETECTION_WINDOW {
+                next_transmit = now;
+            }
+        }
+
         while messages_to_send.is_empty() || !udp_egress_rx.is_empty() {
             let Some((addr, udp_msg)) = udp_egress_rx.recv().await else {
                 return;
@@ -215,113 +222,84 @@ async fn tx(
             messages_to_send.push_back((addr, udp_msg.payload, udp_msg.stride, udp_msg.msg_type));
         }
 
-        let (addr, mut payload, stride, msg_type) = messages_to_send.pop_front().unwrap();
+        let queue_len = messages_to_send.len();
+        let mut total_bytes = 0usize;
+        let mut batch_count = 0usize;
+        send_futures.clear();
 
-        if udp_segment_size != stride {
-            udp_segment_size = stride;
-            set_udp_segment_size(&socket_tx, udp_segment_size);
-            max_chunk = max_write_size_for_segment_size(udp_segment_size);
-        }
+        while !messages_to_send.is_empty()
+            && total_bytes < max_batch_bytes
+            && batch_count < MAX_AGGREGATED_SEGMENTS as usize
+        {
+            let (addr, mut payload, stride, msg_type) = messages_to_send.pop_front().unwrap();
+            let chunk_size = payload.len().min(stride as usize).min(max_batch_bytes);
 
-        // Transmit the first max_chunk bytes of this (addr, payload) pair.
-        let chunk = payload.split_to(payload.len().min(max_chunk.into()));
-        let chunk_len = chunk.len();
-
-        let now = Instant::now();
-
-        if next_transmit > now {
-            time::sleep(next_transmit - now).await;
-        } else {
-            let late = now - next_transmit;
-
-            if late > PACING_SLEEP_OVERSHOOT_DETECTION_WINDOW {
-                next_transmit = now;
+            if chunk_size + total_bytes > max_batch_bytes {
+                messages_to_send.push_front((addr, payload, stride, msg_type));
+                break;
             }
+
+            let chunk = payload.split_to(chunk_size);
+            total_bytes += chunk.len();
+
+            let socket = match (&msg_type, &direct_socket_tx) {
+                (UdpMessageType::Direct, Some(direct_socket)) => direct_socket,
+                _ => &socket_tx,
+            };
+
+            if !payload.is_empty() {
+                // send current message fully, requestor can split message at API level
+                messages_to_send.push_front((addr, payload, stride, msg_type.clone()));
+            }
+
+            trace!(
+                dst_addr = ?addr,
+                chunk_len = chunk.len(),
+                msg_type = ?msg_type,
+                "preparing udp send"
+            );
+
+            send_futures.push(socket.send_to(chunk, addr));
+            batch_count += 1;
         }
 
-        let socket = match (&msg_type, &direct_socket_tx) {
-            (UdpMessageType::Direct, Some(direct_socket)) => direct_socket,
-            _ => &socket_tx,
-        };
+        if batch_count > 1 {
+            trace!(
+                batch_size = batch_count,
+                total_bytes = total_bytes,
+                queue_size = queue_len,
+                "sending udp batch"
+            );
+        }
 
-        let (ret, chunk) = socket.send_to(chunk, addr).await;
-
-        if let Err(err) = &ret {
-            match err.kind() {
-                // ENETUNREACH is returned when trying to send to an IPv4 address from a
-                // socket bound to a local IPv6 address.
-                ErrorKind::NetworkUnreachable => debug!(
-                    local_addr =? socket.local_addr().unwrap(),
-                    ?addr,
-                    "send address family mismatch. message is dropped"
-                ),
-
-                // TODO: An EINVAL return is likely due to MTU/GSO issues -- we should fall
-                // back to disabling GSO for this chunk and transmitting the constituent
-                // segments individually.
-                ErrorKind::InvalidInput => warn!(
-                    local_addr =? socket.local_addr().unwrap(),
-                    udp_segment_size,
-                    max_chunk,
-                    ?addr,
-                    len = chunk.len(),
-                    "got EINVAL on send. message is dropped"
-                ),
-
-                // EAFNOSUPPORT is returned when trying to send to an IPv6 address from a
-                // socket bound to an IPv4 address.
-                //
-                // EAFNOSUPPORT is returned as ErrorKind::Uncategorized, which can't be
-                // matched against, so it has to be tested for under the wildcard match.
-                _ => {
-                    if is_eafnosupport(err) {
-                        debug!(
-                            local_addr =? socket.local_addr().unwrap(),
-                            ?addr,
-                            "send address family mismatch. message is dropped"
-                        );
-                    } else {
-                        error!(
-                            local_addr =? socket.local_addr().unwrap(),
-                            udp_segment_size,
-                            max_chunk,
-                            ?addr,
-                            len = chunk.len(),
-                            ?err,
-                            "unexpected send error. message is dropped"
-                        );
+        for (ret, chunk) in join_all(send_futures.drain(..)).await {
+            if let Err(err) = &ret {
+                match err.kind() {
+                    ErrorKind::NetworkUnreachable => {
+                        debug!("send address family mismatch. message is dropped")
+                    }
+                    ErrorKind::InvalidInput => {
+                        warn!(len = chunk.len(), "got EINVAL on send. message is dropped")
+                    }
+                    _ => {
+                        if is_eafnosupport(err) {
+                            debug!("send address family mismatch. message is dropped");
+                        } else {
+                            error!(
+                                len = chunk.len(),
+                                ?err,
+                                "unexpected send error. message is dropped"
+                            );
+                        }
                     }
                 }
             }
         }
 
-        // the remainder of the message is re-queued only if the send is succesful
-        if ret.is_ok() {
+        if total_bytes > 0 {
             next_transmit +=
-                Duration::from_nanos((chunk_len as u64) * 8 * 1000 / up_bandwidth_mbps);
-
-            // Re-queue (addr, payload) at the end of the list if there are bytes left to transmit.
-            if !payload.is_empty() {
-                messages_to_send.push_back((addr, payload, stride, msg_type));
-            }
+                Duration::from_nanos((total_bytes as u64) * 8 * 1000 / up_bandwidth_mbps);
         }
-    }
-}
-
-fn set_udp_segment_size(socket: &UdpSocket, udp_segment_size: u16) {
-    let udp_segment_size: libc::c_int = udp_segment_size as i32;
-
-    if unsafe {
-        libc::setsockopt(
-            socket.as_raw_fd(),
-            libc::SOL_UDP,
-            libc::UDP_SEGMENT,
-            &udp_segment_size as *const _ as _,
-            std::mem::size_of_val(&udp_segment_size) as _,
-        )
-    } != 0
-    {
-        panic!("set UDP_SEGMENT failed with: {}", Error::last_os_error());
     }
 }
 
