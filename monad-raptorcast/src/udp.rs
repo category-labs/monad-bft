@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, VecDeque},
     net::SocketAddr,
     num::NonZero,
     ops::Range,
@@ -365,32 +365,36 @@ const CHUNK_HEADER_LEN: u16 = 20 // Chunk recipient hash
             + 1  // reserved
             + 2; // Chunk idx
 
-pub fn build_messages<ST>(
-    key: &ST::KeyPairType,
-    segment_size: u16, // Each chunk in the returned Vec (Bytes element of the tuple) will be limited to this size
-    app_message: Bytes, // This is the actual message that gets raptor-10 encoded and split into UDP chunks
-    redundancy: Redundancy,
-    epoch_no: u64,
-    unix_ts_ms: u64,
-    build_target: BuildTarget<ST>,
-    known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
-) -> Vec<(SocketAddr, Bytes)>
-where
-    ST: CertificateSignatureRecoverable,
-{
-    let app_message_len: u32 = app_message.len().try_into().expect("message too big");
+pub fn round_robin_order(
+    message: &Bytes,
+    num_packets: usize,
+    segment_size: u16,
+    mut outbound_gso_idx: VecDeque<(SocketAddr, Range<usize>)>,
+) -> Vec<(SocketAddr, Bytes)> {
+    let mut result = Vec::with_capacity(num_packets);
+    let segment_size = segment_size as usize;
 
-    build_messages_with_length(
-        key,
-        segment_size,
-        app_message,
-        app_message_len,
-        redundancy,
-        epoch_no,
-        unix_ts_ms,
-        build_target,
-        known_addresses,
-    )
+    while let Some((sock, range)) = outbound_gso_idx.pop_front() {
+        let start = range.start;
+        let end = (range.start + segment_size).min(range.end);
+        result.push((sock, message.slice(start..end)));
+        if end < range.end {
+            outbound_gso_idx.push_back((sock, end..range.end));
+        }
+    }
+    result
+}
+
+pub fn legacy_order(
+    message: &Bytes,
+    _num_packets: usize,
+    _segment_size: u16,
+    outbound_gso_idx: VecDeque<(SocketAddr, Range<usize>)>,
+) -> Vec<(SocketAddr, Bytes)> {
+    outbound_gso_idx
+        .into_iter()
+        .map(|(addr, range)| (addr, message.slice(range)))
+        .collect()
 }
 
 // This should be called with app_message.len() == app_message_len, but we allow the caller
@@ -399,7 +403,7 @@ where
 // to verify that the RaptorCast receive path doesn't crash when it receives such a message,
 // as previous versions of the RaptorCast receive path would indeed crash when receiving
 // such a message.
-pub fn build_messages_with_length<ST>(
+pub fn build_messages_with_length<ST, R, F>(
     key: &ST::KeyPairType,
     segment_size: u16,
     app_message: Bytes,
@@ -409,9 +413,13 @@ pub fn build_messages_with_length<ST>(
     unix_ts_ms: u64,
     build_target: BuildTarget<ST>,
     known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
+    rng: &mut R,
+    mut orderer: F,
 ) -> Vec<(SocketAddr, Bytes)>
 where
     ST: CertificateSignatureRecoverable,
+    R: rand::Rng,
+    F: FnMut(&Bytes, usize, u16, VecDeque<(SocketAddr, Range<usize>)>) -> Vec<(SocketAddr, Bytes)>,
 {
     if app_message_len == 0 {
         tracing::warn!("build_messages_with_length() called with app_message_len = 0");
@@ -512,7 +520,7 @@ where
     assert_eq!(chunk_datas.len(), num_packets);
 
     // the GSO-aware indices into `message`
-    let mut outbound_gso_idx: Vec<(SocketAddr, Range<usize>)> = Vec::new();
+    let mut outbound_gso_idx: VecDeque<(SocketAddr, Range<usize>)> = VecDeque::new();
 
     // populate chunk_recipient and outbound_gso_idx
     match build_target {
@@ -525,7 +533,7 @@ where
                 return Vec::new();
             };
 
-            outbound_gso_idx.push((*addr, 0..segment_size as usize * num_packets));
+            outbound_gso_idx.push_back((*addr, 0..segment_size as usize * num_packets));
             let node_hash = compute_hash(to);
             for (chunk_idx, (chunk_symbol_id, chunk_data)) in chunk_datas.iter_mut().enumerate() {
                 // populate chunk_recipient
@@ -556,7 +564,7 @@ where
                     continue;
                 }
                 if let Some(addr) = known_addresses.get(node_id) {
-                    outbound_gso_idx.push((
+                    outbound_gso_idx.push_back((
                         *addr,
                         start_idx * segment_size as usize..end_idx * segment_size as usize,
                     ));
@@ -609,7 +617,7 @@ where
             let mut validator_set: Vec<_> = epoch_validators.iter().collect();
             // Group shuffling so chunks for small proposals aren't always assigned
             // to the same nodes, until researchers come up with something better.
-            validator_set.shuffle(&mut rand::thread_rng());
+            validator_set.shuffle(rng);
             for (node_id, stake) in validator_set {
                 let start_idx: usize =
                     (num_packets as f64 * (running_stake / total_stake)) as usize;
@@ -620,7 +628,7 @@ where
                     continue;
                 }
                 if let Some(addr) = known_addresses.get(node_id) {
-                    outbound_gso_idx.push((
+                    outbound_gso_idx.push_back((
                         *addr,
                         start_idx * segment_size as usize..end_idx * segment_size as usize,
                     ));
@@ -668,7 +676,7 @@ where
                     continue;
                 }
                 if let Some(addr) = known_addresses.get(node_id) {
-                    outbound_gso_idx.push((
+                    outbound_gso_idx.push_back((
                         *addr,
                         start_idx * segment_size as usize..end_idx * segment_size as usize,
                     ));
@@ -807,10 +815,38 @@ where
 
     let message = message.freeze();
 
-    outbound_gso_idx
-        .into_iter()
-        .map(|(addr, range)| (addr, message.slice(range)))
-        .collect()
+    orderer(&message, num_packets, segment_size, outbound_gso_idx)
+}
+
+pub fn build_messages<ST>(
+    key: &ST::KeyPairType,
+    segment_size: u16,
+    app_message: Bytes,
+    redundancy: Redundancy,
+    epoch_no: u64,
+    unix_ts_ms: u64,
+    build_target: BuildTarget<ST>,
+    known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
+) -> Vec<(SocketAddr, Bytes)>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    let app_message_len: u32 = app_message.len().try_into().expect("message too big");
+    let mut rng = rand::thread_rng();
+
+    build_messages_with_length(
+        key,
+        segment_size,
+        app_message,
+        app_message_len,
+        redundancy,
+        epoch_no,
+        unix_ts_ms,
+        build_target,
+        known_addresses,
+        &mut rng,
+        round_robin_order,
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -1168,7 +1204,7 @@ where
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::{HashMap, HashSet},
+        collections::{HashMap, HashSet, VecDeque},
         net::{IpAddr, Ipv4Addr, SocketAddr},
     };
 
@@ -1182,11 +1218,12 @@ mod tests {
     use monad_dataplane::{udp::DEFAULT_SEGMENT_SIZE, RecvUdpMsg};
     use monad_secp::{KeyPair, SecpSignature};
     use monad_types::{Epoch, NodeId, Round, RoundSpan, Stake};
+    use rand::{rngs::StdRng, SeedableRng};
     use rstest::*;
 
-    use super::{MessageValidationError, UdpState};
+    use super::{legacy_order, round_robin_order, MessageValidationError, UdpState};
     use crate::{
-        udp::{build_messages, parse_message, SIGNATURE_CACHE_SIZE},
+        udp::{build_messages, build_messages_with_length, parse_message, SIGNATURE_CACHE_SIZE},
         util::{BuildTarget, EpochValidators, Group, ReBroadcastGroupMap, Redundancy},
     };
 
@@ -1438,7 +1475,6 @@ mod tests {
 
         let mut used_ids: HashMap<SocketAddr, HashSet<_>> = HashMap::new();
 
-        let messages_len = messages.len();
         for (to, mut aggregate_message) in messages {
             while !aggregate_message.is_empty() {
                 let message = aggregate_message.split_to(DEFAULT_SEGMENT_SIZE.into());
@@ -1453,7 +1489,6 @@ mod tests {
             }
         }
 
-        assert_eq!(used_ids.len(), messages_len);
         let ids = used_ids.values().next().unwrap().clone();
         assert!(used_ids.values().all(|x| x == &ids)); // check that all recipients are sent same ids
         assert!(ids.contains(&0)); // check that starts from idx 0
@@ -1537,5 +1572,60 @@ mod tests {
                 other => panic!("unexpected error {:?}", other),
             }
         }
+    }
+
+    #[test]
+    fn test_round_robin() {
+        const SEED: u64 = 64;
+
+        let (key, validators, known_addresses) = validator_set();
+        let epoch_validators = validators.view_without(vec![&NodeId::new(key.pubkey())]);
+
+        let app_message: Bytes = vec![1_u8; 1024 * 8].into();
+        let app_message_len: u32 = app_message.len().try_into().expect("message too big");
+
+        let mut rng1 = StdRng::seed_from_u64(SEED);
+        let messages_stake = build_messages_with_length(
+            &key,
+            DEFAULT_SEGMENT_SIZE,
+            app_message.clone(),
+            app_message_len,
+            Redundancy::from_u8(2),
+            EPOCH,
+            UNIX_TS_MS,
+            BuildTarget::Raptorcast(epoch_validators.clone()),
+            &known_addresses,
+            &mut rng1,
+            legacy_order,
+        );
+        let mut messages_original: VecDeque<_> = messages_stake.into();
+
+        let mut rng2 = StdRng::seed_from_u64(SEED);
+        let messages_round_robin = build_messages_with_length(
+            &key,
+            DEFAULT_SEGMENT_SIZE,
+            app_message.clone(),
+            app_message_len,
+            Redundancy::from_u8(2),
+            EPOCH,
+            UNIX_TS_MS,
+            BuildTarget::Raptorcast(epoch_validators.clone()),
+            &known_addresses,
+            &mut rng2,
+            round_robin_order,
+        );
+
+        let mut messages_expected = vec![];
+        while !messages_original.is_empty() {
+            let next = messages_original.pop_front();
+            if let Some((sock, mut msg)) = next {
+                let size = msg.len().min(DEFAULT_SEGMENT_SIZE as usize);
+                messages_expected.push((sock, msg.split_to(size)));
+                if !msg.is_empty() {
+                    messages_original.push_back((sock, msg));
+                }
+            }
+        }
+        assert_eq!(messages_expected, messages_round_robin);
     }
 }

@@ -199,7 +199,8 @@ pub fn oversized_message() {
 
     let epoch_validators = validators.view_without(vec![&tx_nodeid]);
 
-    let messages = build_messages_with_length::<SignatureType>(
+    let mut rng = rand::thread_rng();
+    let messages = build_messages_with_length::<SignatureType, _, _>(
         &tx_keypair,
         DEFAULT_SEGMENT_SIZE,
         message,
@@ -211,6 +212,8 @@ pub fn oversized_message() {
         0, // unix_ts_ms
         BuildTarget::Raptorcast(epoch_validators),
         &known_addresses,
+        &mut rng,
+        monad_raptorcast::udp::round_robin_order,
     );
 
     // Sending a single packet of an oversized message is sufficient to crash the
