@@ -140,3 +140,12 @@ pub(crate) fn monad_exec_iter_block_id_prev(
 
     success.then_some(c_event_descriptor)
 }
+#[allow(missing_docs)]
+pub const DEFAULT_FILE_NAME: &str = unsafe {
+    std::str::from_utf8_unchecked(
+        std::ffi::CStr::from_bytes_with_nul_unchecked(
+            self::bindings::MONAD_EVENT_DEFAULT_EXEC_FILE_NAME,
+        )
+        .to_bytes(),
+    )
+};
