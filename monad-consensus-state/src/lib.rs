@@ -1936,8 +1936,6 @@ mod test {
         proposal_byte_limit: 4_000_000,
         max_reserve_balance: RESERVE_BALANCE,
         vote_pace: Duration::from_millis(1000),
-
-        validate_system_txs: true,
     };
 
     type SignatureType = NopSignature;

@@ -295,8 +295,6 @@ mod test {
             proposal_byte_limit: MockChainRevision::DEFAULT.chain_params.proposal_byte_limit,
             vote_pace: MockChainRevision::DEFAULT.chain_params.vote_pace,
             max_reserve_balance: MockChainRevision::DEFAULT.chain_params.max_reserve_balance,
-
-            validate_system_txs: MockChainRevision::DEFAULT.chain_params.validate_system_txs,
         }
     }
 
