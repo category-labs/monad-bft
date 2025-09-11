@@ -694,8 +694,6 @@ mod test {
                     proposal_byte_limit: PROPOSAL_SIZE_LIMIT,
                     max_reserve_balance: MAX_RESERVE_BALANCE,
                     vote_pace: Duration::ZERO,
-
-                    validate_system_txs: true,
                 }),
             );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
