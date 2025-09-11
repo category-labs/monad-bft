@@ -1,3 +1,18 @@
+// Copyright (C) 2025 Category Labs, Inc.
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
 #![allow(clippy::manual_range_contains)]
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -27,17 +42,38 @@ pub const P2P_TIER_CACHE_SIZE: usize = 1000;
 
 pub const RECENTLY_DECODED_CACHE_SIZE: usize = 10000;
 
+pub const VALIDATOR_MIN_SLOTS: usize = 3;
+pub const NON_VALIDATOR_SLOTS: usize = 2;
+
+pub const VALIDATOR_MAX_TOTAL_SIZE: MessageSize = 10 * 1024 * 1024; // 10 MB
+pub const NON_VALIDATOR_MAX_TOTAL_SIZE: MessageSize = 3 * 1024 * 1024; // 3 MB
+
+// An abstract size of a message loosely corresponding to the memory
+// usage of its corresponding cache entry. We currently use
+// app_message_length as the value of this size.
+//
+// Required properties: (Copy, Add, Sub, Eq, Ord)
+type MessageSize = usize;
+
 #[derive(Debug, Clone)]
 pub(crate) struct DecoderCacheConfig {
+    // Number of entries to keep in recently decoded cache.
     pub recently_decoded_cache_size: usize,
 
+    // Number of entries to keep for each cache tier.
     pub broadcast_tier_cache_size: usize,
     pub validator_tier_cache_size: usize,
     pub p2p_tier_cache_size: usize,
 
-    pub slot_by_stake_min_slots: usize,
-    pub slot_by_stake_min_non_validator_slots: usize,
-    pub fixed_slot_min_slots: usize,
+    // The minimum reserved cache slots for each validator
+    pub validator_min_slots: usize,
+    // The reserved cache slots for each non-validator
+    pub non_validator_slots: usize,
+
+    // The cap of the total size of all pending messages per validator.
+    pub validator_max_total_size: MessageSize,
+    // The cap of the total size of all pending messages per non-validator.
+    pub non_validator_max_total_size: MessageSize,
 }
 
 impl Default for DecoderCacheConfig {
@@ -49,9 +85,11 @@ impl Default for DecoderCacheConfig {
             validator_tier_cache_size: VALIDATOR_TIER_CACHE_SIZE,
             p2p_tier_cache_size: P2P_TIER_CACHE_SIZE,
 
-            slot_by_stake_min_slots: 1,
-            slot_by_stake_min_non_validator_slots: 3,
-            fixed_slot_min_slots: 2,
+            validator_min_slots: VALIDATOR_MIN_SLOTS,
+            non_validator_slots: NON_VALIDATOR_SLOTS,
+
+            validator_max_total_size: VALIDATOR_MAX_TOTAL_SIZE,
+            non_validator_max_total_size: NON_VALIDATOR_MAX_TOTAL_SIZE,
         }
     }
 }
@@ -133,7 +171,7 @@ where
             return Err(TryDecodeError::UnableToReconstructSourceData);
         };
 
-        // decoding succeeds for this point.
+        // decoding succeeds at this point.
         let app_message_len = message
             .app_message_len
             .try_into()
@@ -264,11 +302,16 @@ where
     PT: PubKey,
 {
     fn new(config: DecoderCacheConfig) -> Self {
-        let stake_based_quota = SlotByStake::new(
-            config.slot_by_stake_min_slots,
-            config.slot_by_stake_min_non_validator_slots,
+        let stake_based_quota = QuotaByStake::new(
+            config.validator_min_slots,
+            config.non_validator_slots,
+            config.validator_max_total_size,
+            config.non_validator_max_total_size,
         );
-        let fixed_quota = FixedSlot::new(config.fixed_slot_min_slots);
+        let fixed_quota = FixedQuota::new(
+            config.non_validator_slots,
+            config.non_validator_max_total_size,
+        );
         let prune_config = PruneConfig {
             // TODO: sync with config.udp_message_max_age_ms
             max_unix_ts_ms_delta: Some(10 * 1000), // 10 seconds
@@ -336,17 +379,25 @@ struct CacheKeyInner {
     unix_ts_ms: UnixTimestamp,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct Quota {
+    // The cap on the maximum total message size
+    pub max_size: MessageSize,
+    // The cap on the maximum number of messages
+    pub max_slots: usize,
+}
+
 trait QuotaPolicy<PT: PubKey>: Send + Sync {
     fn calc_quota(
         &self,
         message: &ValidatedMessage<PT>,
         context: &DecodingContext<PT>,
         cache_size: usize,
-    ) -> usize;
+    ) -> Quota;
 }
 
 #[derive(Clone, Copy)]
-struct PruneConfig {
+pub struct PruneConfig {
     max_unix_ts_ms_delta: Option<u64>,
     max_epoch_delta: Option<usize>,
 
@@ -355,12 +406,6 @@ struct PruneConfig {
     // cooldown period.
     pruning_min_ratio: f32,
     pruning_cooldown: Duration,
-}
-
-struct SoftQuotaCache<PT: PubKey> {
-    cache_store: CacheStore<PT>,
-    author_index: AuthorIndex<PT>,
-    quota_policy: Box<dyn QuotaPolicy<PT> + Send + Sync>,
 }
 
 // Context about the current epoch number and the active validator
@@ -384,6 +429,12 @@ impl<'a, PT: PubKey> DecodingContext<'a, PT> {
             current_epoch,
         }
     }
+}
+
+struct SoftQuotaCache<PT: PubKey> {
+    cache_store: CacheStore<PT>,
+    author_index: AuthorIndex<PT>,
+    quota_policy: Box<dyn QuotaPolicy<PT> + Send + Sync>,
 }
 
 impl<PT: PubKey> SoftQuotaCache<PT> {
@@ -417,17 +468,18 @@ impl<PT: PubKey> SoftQuotaCache<PT> {
             return;
         }
 
-        if self.author_index.overquota(&message.author) {
-            // author is over quota. by enforcing the quota on the author we can
-            // ensure that the cache will no longer be full.
-            let evicted_keys = self.author_index.evict(&message.author, context);
+        if self.author_index.is_author_overquota(&message.author) {
+            // current author is over quota, evict overquota cache entries
+            // from this author.
+            let evicted_keys = self.author_index.enforce_quota(&message.author, context);
             self.cache_store.remove_many(&evicted_keys);
             debug_assert!(!self.is_full());
             return;
         }
 
-        // evict other overquota authors.
-        let evicted_keys = self.author_index.evict_all(context);
+        // current author is below its quota, evict overquota entries
+        // from all authors.
+        let evicted_keys = self.author_index.enforce_quota_all(context);
         self.cache_store.remove_many(&evicted_keys);
         if !evicted_keys.is_empty() {
             // some keys are evicted, so the cache should no longer be full.
@@ -437,7 +489,7 @@ impl<PT: PubKey> SoftQuotaCache<PT> {
 
         // no other authors are over quota. we will prune any expired
         // keys.
-        let expired_keys = self.author_index.prune_all(context);
+        let expired_keys = self.author_index.prune_expired_all(context);
 
         self.cache_store.remove_many(&expired_keys);
         if !expired_keys.is_empty() {
@@ -472,7 +524,7 @@ impl<PT: PubKey> SoftQuotaCache<PT> {
         cache_key: &CacheKey,
         message: &ValidatedMessage<PT>,
         decoder_state: DecoderState,
-        quota: usize,
+        quota: Quota,
     ) {
         let author = message.author;
         self.cache_store
@@ -485,11 +537,11 @@ impl<PT: PubKey> SoftQuotaCache<PT> {
         debug_assert!(self.cache_store.len() <= self.cache_store.max_size + 1);
     }
 
-    fn is_full(&self) -> bool {
+    pub fn is_full(&self) -> bool {
         self.cache_store.len() > self.cache_store.max_size
     }
 
-    fn cache_size(&self) -> usize {
+    pub fn cache_size(&self) -> usize {
         self.cache_store.max_size
     }
 
@@ -506,7 +558,7 @@ struct CacheStore<PT: PubKey> {
 }
 
 impl<PT: PubKey> CacheStore<PT> {
-    fn new(max_size: usize) -> Self {
+    pub fn new(max_size: usize) -> Self {
         assert!(max_size > 0, "max_size must be greater than 0");
 
         Self {
@@ -515,19 +567,19 @@ impl<PT: PubKey> CacheStore<PT> {
         }
     }
 
-    fn insert(&mut self, key: CacheKey, value: (NodeId<PT>, DecoderState)) {
+    pub fn insert(&mut self, key: CacheKey, value: (NodeId<PT>, DecoderState)) {
         self.store.insert(key, value);
     }
 
-    fn remove(&mut self, key: &CacheKey) -> Option<(NodeId<PT>, DecoderState)> {
+    pub fn remove(&mut self, key: &CacheKey) -> Option<(NodeId<PT>, DecoderState)> {
         self.store.swap_remove(key)
     }
 
-    fn get_decoder_state_mut(&mut self, key: &CacheKey) -> Option<&mut DecoderState> {
+    pub fn get_decoder_state_mut(&mut self, key: &CacheKey) -> Option<&mut DecoderState> {
         self.store.get_mut(key).map(|entry| &mut entry.1)
     }
 
-    fn get_random(&mut self) -> Option<(CacheKey, &NodeId<PT>, &DecoderState)> {
+    pub fn get_random(&mut self) -> Option<(CacheKey, &NodeId<PT>, &DecoderState)> {
         if self.store.is_empty() {
             return None;
         }
@@ -539,11 +591,11 @@ impl<PT: PubKey> CacheStore<PT> {
         Some((key.clone(), author, decoder_state))
     }
 
-    fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.store.len()
     }
 
-    fn remove_many(&mut self, keys: &[CacheKey]) {
+    pub fn remove_many(&mut self, keys: &[CacheKey]) {
         for key in keys {
             self.remove(key);
         }
@@ -554,7 +606,7 @@ struct AuthorIndex<PT: PubKey> {
     prune_config: PruneConfig,
 
     // The chronological index of cache keys per author.
-    per_author_index: HashMap<NodeId<PT>, ChronologicalIndex>,
+    per_author_index: HashMap<NodeId<PT>, PerAuthorIndex>,
 
     // Authors exceeding their quota are registered here for quick
     // eviction check.
@@ -564,7 +616,7 @@ struct AuthorIndex<PT: PubKey> {
 }
 
 impl<PT: PubKey> AuthorIndex<PT> {
-    fn new(prune_config: PruneConfig) -> Self {
+    pub fn new(prune_config: PruneConfig) -> Self {
         Self {
             prune_config,
             per_author_index: HashMap::new(),
@@ -573,23 +625,28 @@ impl<PT: PubKey> AuthorIndex<PT> {
         }
     }
 
-    fn overquota(&self, author: &NodeId<PT>) -> bool {
+    pub fn is_author_overquota(&self, author: &NodeId<PT>) -> bool {
         self.overquota_authors.contains(author)
     }
 
-    fn insert_unchecked(
+    pub fn insert_unchecked(
         &mut self,
         author: NodeId<PT>,
         cache_key: &CacheKey,
         message: &ValidatedMessage<PT>,
-        quota: usize,
+        quota: Quota,
     ) {
         let index = self
             .per_author_index
             .entry(author)
-            .or_insert_with(|| ChronologicalIndex::new(quota));
+            .or_insert_with(|| PerAuthorIndex::new(quota));
         index.update_quota(quota);
-        index.insert(cache_key.clone(), message.unix_ts_ms, Epoch(message.epoch));
+        index.insert(
+            cache_key.clone(),
+            message.unix_ts_ms,
+            Epoch(message.epoch),
+            message.app_message_len as usize,
+        );
 
         if index.is_overquota() {
             self.overquota_authors.insert(author);
@@ -600,12 +657,12 @@ impl<PT: PubKey> AuthorIndex<PT> {
         }
     }
 
-    fn evict_all(&mut self, context: &DecodingContext<PT>) -> Vec<CacheKey> {
+    pub fn enforce_quota_all(&mut self, context: &DecodingContext<PT>) -> Vec<CacheKey> {
         let mut evicted_keys = vec![];
         let authors_to_evict: Vec<NodeId<PT>> = self.overquota_authors.iter().cloned().collect();
 
         for author in authors_to_evict {
-            let evicted = self.evict(&author, context);
+            let evicted = self.enforce_quota(&author, context);
             evicted_keys.extend(evicted);
         }
 
@@ -613,7 +670,11 @@ impl<PT: PubKey> AuthorIndex<PT> {
     }
 
     // remove items from the index until the author is under quota.
-    fn evict(&mut self, author: &NodeId<PT>, context: &DecodingContext<PT>) -> Vec<CacheKey> {
+    pub fn enforce_quota(
+        &mut self,
+        author: &NodeId<PT>,
+        context: &DecodingContext<PT>,
+    ) -> Vec<CacheKey> {
         let author_index = match self.per_author_index.get_mut(author) {
             Some(index) => index,
             None => return vec![],
@@ -633,19 +694,13 @@ impl<PT: PubKey> AuthorIndex<PT> {
 
         let mut evicted_keys = vec![];
 
-        // first, we prune all expired keys
-        if author_index.is_overquota() {
-            let expired_keys = author_index.prune(unix_ts_threshold, epoch_threshold);
-            author_index.remove_many(&expired_keys);
-            evicted_keys.extend(expired_keys);
-        }
+        // we first try only pruning expired keys
+        let expired_keys = author_index.prune_expired(unix_ts_threshold, epoch_threshold);
+        evicted_keys.extend(expired_keys);
 
-        // if still over quota, remove the oldest keys until under
-        // quota.
+        // if still over quota, compact the cache to fit under quota
         if author_index.is_overquota() {
-            let oldest_keys = author_index.filter_oldest(author_index.len() - author_index.quota);
-            author_index.remove_many(&oldest_keys);
-            evicted_keys.extend(oldest_keys);
+            evicted_keys.extend(author_index.compact());
         }
 
         // remove from overquota_authors list as it is now under
@@ -661,8 +716,8 @@ impl<PT: PubKey> AuthorIndex<PT> {
         evicted_keys
     }
 
-    // Prune caches which is considered no longer relevant.
-    fn prune_all(&mut self, context: &DecodingContext<PT>) -> Vec<CacheKey> {
+    // Prune expired keys from all authors
+    pub fn prune_expired_all(&mut self, context: &DecodingContext<PT>) -> Vec<CacheKey> {
         if let Some(until) = self.pruning_cooldown_until {
             if Instant::now() < until {
                 return vec![];
@@ -684,7 +739,7 @@ impl<PT: PubKey> AuthorIndex<PT> {
 
         for (author, author_index) in &mut self.per_author_index {
             total_cache_size += author_index.len();
-            expired_keys.extend(author_index.prune(unix_ts_threshold, epoch_threshold));
+            expired_keys.extend(author_index.prune_expired(unix_ts_threshold, epoch_threshold));
 
             if author_index.is_empty() {
                 authors_to_drop.push(*author);
@@ -704,7 +759,7 @@ impl<PT: PubKey> AuthorIndex<PT> {
         expired_keys
     }
 
-    fn remove(&mut self, author: &NodeId<PT>, key: &CacheKey) {
+    pub fn remove(&mut self, author: &NodeId<PT>, key: &CacheKey) {
         if let Some(author_index) = self.per_author_index.get_mut(author) {
             author_index.remove(key);
             if author_index.is_empty() {
@@ -714,51 +769,55 @@ impl<PT: PubKey> AuthorIndex<PT> {
     }
 }
 
-// An index that supports efficient pruning of cache keys based on
-// unix timestamp or epoch.
-struct ChronologicalIndex {
-    quota: usize,
+// A per-author state tracking the pending messages. Supports
+// efficient pruning of cache keys based on unix timestamp or
+// epoch. Can be efficiently trimmed down to a designated quota.
+struct PerAuthorIndex {
+    quota: Quota,
+    used_size: MessageSize,
     time_index: BTreeSet<(UnixTimestamp, CacheKey)>,
     epoch_index: BTreeSet<(Epoch, CacheKey)>,
-    reverse_index: BTreeMap<CacheKey, (UnixTimestamp, Epoch)>,
+    reverse_index: BTreeMap<CacheKey, (UnixTimestamp, Epoch, MessageSize)>,
 }
 
-impl ChronologicalIndex {
-    fn new(quota: usize) -> Self {
+impl PerAuthorIndex {
+    pub fn new(quota: Quota) -> Self {
         Self {
             quota,
+            used_size: 0,
             time_index: BTreeSet::new(),
             epoch_index: BTreeSet::new(),
             reverse_index: BTreeMap::new(),
         }
     }
 
-    fn is_overquota(&self) -> bool {
-        self.len() > self.quota
+    pub fn is_overquota(&self) -> bool {
+        self.len() > self.quota.max_slots || self.used_size > self.quota.max_size
     }
 
-    fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.reverse_index.is_empty()
     }
 
-    fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.reverse_index.len()
     }
 
-    fn remove(&mut self, key: &CacheKey) {
-        if let Some((unix_ts_ms, epoch)) = self.reverse_index.remove(key) {
+    pub fn remove(&mut self, key: &CacheKey) {
+        if let Some((unix_ts_ms, epoch, size)) = self.reverse_index.remove(key) {
             self.time_index.remove(&(unix_ts_ms, key.clone()));
             self.epoch_index.remove(&(epoch, key.clone()));
+            self.used_size -= size;
         }
     }
 
-    fn remove_many(&mut self, keys: &[CacheKey]) {
+    pub fn remove_many(&mut self, keys: &[CacheKey]) {
         for key in keys {
             self.remove(key);
         }
     }
 
-    fn filter_oldest(&mut self, count: usize) -> Vec<CacheKey> {
+    pub fn filter_oldest(&mut self, count: usize) -> Vec<CacheKey> {
         self.time_index
             .iter()
             .take(count)
@@ -766,113 +825,177 @@ impl ChronologicalIndex {
             .collect()
     }
 
-    fn filter_by_unix_ts_threshold(&mut self, threshold: UnixTimestamp) -> Vec<CacheKey> {
-        if self.is_empty() {
-            return Vec::new();
+    pub fn update_quota(&mut self, new_quota: Quota) {
+        self.quota = new_quota;
+    }
+
+    pub fn insert(
+        &mut self,
+        cache_key: CacheKey,
+        unix_ts_ms: UnixTimestamp,
+        epoch: Epoch,
+        size: MessageSize,
+    ) {
+        self.time_index.insert((unix_ts_ms, cache_key.clone()));
+        self.epoch_index.insert((epoch, cache_key.clone()));
+        self.reverse_index
+            .insert(cache_key, (unix_ts_ms, epoch, size));
+        self.used_size += size;
+    }
+
+    // Remove expired entries.
+    pub fn prune_expired(
+        &mut self,
+        unix_ts_threshold: Option<UnixTimestamp>,
+        epoch_threshold: Option<Epoch>,
+    ) -> Vec<CacheKey> {
+        let mut evicted_keys = vec![];
+        // first, we prune all expired keys
+        if let Some(threshold) = unix_ts_threshold {
+            evicted_keys.extend(self.prune_by_time(threshold));
+        }
+        if let Some(threshold) = epoch_threshold {
+            evicted_keys.extend(self.prune_by_epoch(threshold));
+        }
+        evicted_keys
+    }
+
+    // Remove entries until under quota
+    pub fn compact(&mut self) -> Vec<CacheKey> {
+        let mut evicted_keys = vec![];
+
+        if !self.is_overquota() {
+            return evicted_keys;
         }
 
-        let mut filtered = vec![];
+        // remove oldest entries until the number of used slots is
+        // under quota.
+        evicted_keys.extend(self.prune_by_slots(self.quota.max_slots));
+        // remove oldest entries until the total size fits.
+        evicted_keys.extend(self.prune_by_size(self.quota.max_size));
+
+        debug_assert!(!self.is_overquota());
+        evicted_keys
+    }
+
+    fn prune_by_time(&mut self, threshold: UnixTimestamp) -> Vec<CacheKey> {
+        let mut pruned_keys = vec![];
         for (unix_ts, key) in &self.time_index {
             if *unix_ts >= threshold {
                 break;
             }
-            filtered.push(key.clone());
+            pruned_keys.push(key.clone());
         }
-        filtered
+        self.remove_many(&pruned_keys);
+        pruned_keys
     }
 
-    fn filter_by_epoch_threshold(&mut self, threshold: Epoch) -> Vec<CacheKey> {
-        if self.is_empty() {
-            return Vec::new();
-        }
-
-        let mut filtered = vec![];
+    fn prune_by_epoch(&mut self, epoch_threshold: Epoch) -> Vec<CacheKey> {
+        let mut pruned_keys = vec![];
         for (epoch, key) in &self.epoch_index {
-            if *epoch >= threshold {
+            if *epoch >= epoch_threshold {
                 break;
             }
-            filtered.push(key.clone());
+            pruned_keys.push(key.clone());
         }
-        filtered
+        self.remove_many(&pruned_keys);
+        pruned_keys
     }
 
-    fn update_quota(&mut self, new_quota: usize) {
-        self.quota = new_quota;
-    }
-
-    fn insert(&mut self, cache_key: CacheKey, unix_ts_ms: UnixTimestamp, epoch: Epoch) {
-        self.time_index.insert((unix_ts_ms, cache_key.clone()));
-        self.epoch_index.insert((epoch, cache_key.clone()));
-        self.reverse_index.insert(cache_key, (unix_ts_ms, epoch));
-    }
-
-    fn prune(
-        &mut self,
-        unix_ts_threshold: Option<u64>,
-        epoch_threshold: Option<Epoch>,
-    ) -> Vec<CacheKey> {
-        let mut expired_keys = vec![];
-
-        if let Some(threshold) = unix_ts_threshold {
-            expired_keys.extend(self.filter_by_unix_ts_threshold(threshold));
-        }
-        if let Some(threshold) = epoch_threshold {
-            expired_keys.extend(self.filter_by_epoch_threshold(threshold));
+    fn prune_by_slots(&mut self, target_len: usize) -> Vec<CacheKey> {
+        let slots_to_free_up = self.len().saturating_sub(target_len);
+        if slots_to_free_up == 0 {
+            // do nothing if target_len <= self.len()
+            return vec![];
         }
 
-        self.remove_many(&expired_keys);
-        expired_keys
+        let pruned_keys = self.filter_oldest(slots_to_free_up);
+        self.remove_many(&pruned_keys);
+        pruned_keys
+    }
+
+    fn prune_by_size(&mut self, target_size: MessageSize) -> Vec<CacheKey> {
+        let mut pruned_keys = vec![];
+        while self.used_size > target_size {
+            let (_, key) = self.time_index.first().expect("author index empty");
+            let key = key.clone();
+            pruned_keys.push(key.clone());
+            self.remove(&key);
+        }
+        pruned_keys
     }
 }
 
 #[derive(Clone, Copy)]
-struct FixedSlot(usize);
-impl FixedSlot {
-    fn new(min_slots: usize) -> Self {
-        Self(min_slots)
+struct FixedQuota(Quota);
+impl FixedQuota {
+    fn new(max_slots: usize, max_size: MessageSize) -> Self {
+        Self(Quota {
+            max_slots,
+            max_size,
+        })
     }
 }
 
-impl<PT: PubKey> QuotaPolicy<PT> for FixedSlot {
+impl<PT: PubKey> QuotaPolicy<PT> for FixedQuota {
     fn calc_quota(
         &self,
         _message: &ValidatedMessage<PT>,
         _context: &DecodingContext<PT>,
         cache_size: usize,
-    ) -> usize {
-        self.0.min(cache_size)
-    }
-}
-
-#[derive(Clone, Copy)]
-struct SlotByStake {
-    min_slots: usize,
-    non_validator_slots: usize,
-}
-impl SlotByStake {
-    fn new(min_slots: usize, non_validator_slots: usize) -> Self {
-        Self {
-            min_slots,
-            non_validator_slots,
+    ) -> Quota {
+        Quota {
+            max_slots: self.0.max_slots.min(cache_size),
+            max_size: self.0.max_size,
         }
     }
 }
 
-impl<PT: PubKey> QuotaPolicy<PT> for SlotByStake {
+#[derive(Clone, Copy)]
+struct QuotaByStake {
+    validator_min_slots: usize,
+    non_validator_slots: usize,
+    validator_max_size: MessageSize,
+    non_validator_max_size: MessageSize,
+}
+impl QuotaByStake {
+    pub fn new(
+        validator_min_slots: usize,
+        non_validator_slots: usize,
+        validator_max_size: MessageSize,
+        non_validator_max_size: MessageSize,
+    ) -> Self {
+        Self {
+            validator_min_slots,
+            non_validator_slots,
+            // TODO: fill in some values
+            validator_max_size,
+            non_validator_max_size,
+        }
+    }
+}
+
+impl<PT: PubKey> QuotaPolicy<PT> for QuotaByStake {
     fn calc_quota(
         &self,
         message: &ValidatedMessage<PT>,
         context: &DecodingContext<PT>,
         cache_size: usize,
-    ) -> usize {
+    ) -> Quota {
         // validator set not provided, defaults to non-validator slot.
         let Some(validator_set) = &context.validator_set else {
-            return self.non_validator_slots.min(cache_size);
+            return Quota {
+                max_slots: self.non_validator_slots.min(cache_size),
+                max_size: self.non_validator_max_size,
+            };
         };
 
         // author is not validator, defaults to non-validator slot.
         let Some(stake) = validator_set.get(&message.author) else {
-            return self.non_validator_slots.min(cache_size);
+            return Quota {
+                max_slots: self.non_validator_slots.min(cache_size),
+                max_size: self.non_validator_max_size,
+            };
         };
 
         // quota = proportional to stake
@@ -880,7 +1003,13 @@ impl<PT: PubKey> QuotaPolicy<PT> for SlotByStake {
         let stake_fraction = stake.checked_div(total_stake).unwrap_or(0.0);
         let calculated_slots = (stake_fraction * (cache_size as f64)).ceil() as usize;
 
-        calculated_slots.max(self.min_slots).min(cache_size)
+        let max_slots = calculated_slots
+            .max(self.validator_min_slots)
+            .min(cache_size);
+        Quota {
+            max_slots,
+            max_size: self.validator_max_size,
+        }
     }
 }
 
@@ -1021,7 +1150,7 @@ struct DecoderState {
 }
 
 impl DecoderState {
-    fn from_initial_message<PT>(message: &ValidatedMessage<PT>) -> Result<Self, InvalidSymbol>
+    pub fn from_initial_message<PT>(message: &ValidatedMessage<PT>) -> Result<Self, InvalidSymbol>
     where
         PT: PubKey,
     {
@@ -1062,7 +1191,10 @@ impl DecoderState {
         Ok(decoder_state)
     }
 
-    fn handle_message<PT>(&mut self, message: &ValidatedMessage<PT>) -> Result<(), InvalidSymbol>
+    pub fn handle_message<PT>(
+        &mut self,
+        message: &ValidatedMessage<PT>,
+    ) -> Result<(), InvalidSymbol>
     where
         PT: PubKey,
     {
@@ -1080,7 +1212,7 @@ impl DecoderState {
         Ok(())
     }
 
-    fn validate_symbol<PT>(&self, message: &ValidatedMessage<PT>) -> Result<(), InvalidSymbol>
+    pub fn validate_symbol<PT>(&self, message: &ValidatedMessage<PT>) -> Result<(), InvalidSymbol>
     where
         PT: PubKey,
     {
@@ -1103,7 +1235,10 @@ struct RecentlyDecodedState {
 }
 
 impl RecentlyDecodedState {
-    fn handle_message<PT>(&mut self, message: &ValidatedMessage<PT>) -> Result<(), InvalidSymbol>
+    pub fn handle_message<PT>(
+        &mut self,
+        message: &ValidatedMessage<PT>,
+    ) -> Result<(), InvalidSymbol>
     where
         PT: PubKey,
     {
@@ -1187,9 +1322,9 @@ mod test {
 
     // default preset for messages
     const DATA_SIZE: usize = 20; // data per chunk
-    const APP_MESSAGE_SIZE: usize = 1000; // size of an app message
+    const APP_MESSAGE_LEN: usize = 1000; // size of an app message
     const REDUNDANCY: usize = 2; // redundancy factor
-    const MIN_DECODABLE_SYMBOLS: usize = APP_MESSAGE_SIZE.div_ceil(DATA_SIZE);
+    const MIN_DECODABLE_SYMBOLS: usize = APP_MESSAGE_LEN.div_ceil(DATA_SIZE);
 
     fn node_id(seed: u64) -> NodeId<PT> {
         NodeId::new(PT::from_bytes(&[seed as u8; 32]).unwrap())
@@ -1261,7 +1396,7 @@ mod test {
 
     #[test]
     fn test_successful_decoding() {
-        let app_message = Bytes::from(vec![1u8; APP_MESSAGE_SIZE]);
+        let app_message = Bytes::from(vec![1u8; APP_MESSAGE_LEN]);
         let author = node_id(0);
         let symbols = make_symbols(&app_message, author, UNIX_TS_MS);
         let context = DecodingContext::new(None, UNIX_TS_MS, EPOCH);
@@ -1306,12 +1441,12 @@ mod test {
     #[test]
     fn test_tiered_caches_work_independently() {
         let symbols_p2p = make_symbols(
-            &Bytes::from(vec![2u8; APP_MESSAGE_SIZE]),
+            &Bytes::from(vec![2u8; APP_MESSAGE_LEN]),
             node_id(0),
             UNIX_TS_MS,
         );
         let mut symbols_broadcast = make_symbols(
-            &Bytes::from(vec![3u8; APP_MESSAGE_SIZE]),
+            &Bytes::from(vec![3u8; APP_MESSAGE_LEN]),
             node_id(1),
             UNIX_TS_MS,
         );
@@ -1321,7 +1456,7 @@ mod test {
         }
 
         let symbols_validator = make_symbols(
-            &Bytes::from(vec![4u8; APP_MESSAGE_SIZE]),
+            &Bytes::from(vec![4u8; APP_MESSAGE_LEN]),
             node_id(1),
             UNIX_TS_MS,
         );
@@ -1346,7 +1481,7 @@ mod test {
 
     #[test]
     fn test_recently_decoded_message_handling() {
-        let app_message = Bytes::from(vec![1u8; APP_MESSAGE_SIZE]);
+        let app_message = Bytes::from(vec![1u8; APP_MESSAGE_LEN]);
         let author = node_id(0);
         let symbols = make_symbols(&app_message, author, UNIX_TS_MS);
         let context = DecodingContext::new(None, UNIX_TS_MS, EPOCH);
@@ -1367,7 +1502,7 @@ mod test {
     fn test_time_based_eviction() {
         let mut cache = make_cache(10, 10, 10);
         let old_ts = UNIX_TS_MS - 200000;
-        let app_message = Bytes::from(vec![1u8; APP_MESSAGE_SIZE]);
+        let app_message = Bytes::from(vec![1u8; APP_MESSAGE_LEN]);
         let author = node_id(0);
         let symbols = make_symbols(&app_message, author, old_ts);
         let context = DecodingContext::new(None, old_ts, EPOCH);
@@ -1378,7 +1513,7 @@ mod test {
 
         // Fill the cache to trigger pruning.
         for i in 0..10 {
-            let new_app_message = Bytes::from(vec![2u8; APP_MESSAGE_SIZE]);
+            let new_app_message = Bytes::from(vec![2u8; APP_MESSAGE_LEN]);
             let new_author = node_id(i);
             let new_symbols = make_symbols(&new_app_message, new_author, UNIX_TS_MS);
             let new_context = DecodingContext::new(None, UNIX_TS_MS, EPOCH);
@@ -1402,36 +1537,41 @@ mod test {
         add_validators(&mut validator_set, &[0], 80);
         add_validators(&mut validator_set, &[1], 20);
 
-        // part 1 is designed to be contain insufficient symbols
+        // Part 1 is designed to be contain insufficient symbols
         let mut all_symbols_part_1 = vec![];
         let mut all_symbols_part_2 = vec![];
 
         // Insert 10 messages for each author
         for i in 0..10 {
-            let app_msg = Bytes::from(vec![0 + i; APP_MESSAGE_SIZE]);
+            let app_msg = Bytes::from(vec![0 + i; APP_MESSAGE_LEN]);
             let mut symbols = make_symbols(&app_msg, node_id(0), UNIX_TS_MS);
             all_symbols_part_2.extend(symbols.split_off(MIN_DECODABLE_SYMBOLS));
             all_symbols_part_1.extend(symbols);
 
-            let app_msg = Bytes::from(vec![10 + i; APP_MESSAGE_SIZE]);
+            let app_msg = Bytes::from(vec![10 + i; APP_MESSAGE_LEN]);
             let mut symbols = make_symbols(&app_msg, node_id(1), UNIX_TS_MS);
             all_symbols_part_2.extend(symbols.split_off(MIN_DECODABLE_SYMBOLS));
             all_symbols_part_1.extend(symbols);
         }
 
-        let mut cache = make_cache(10, 10, 10); // cache size: 10
+        let mut config = DecoderCacheConfig {
+            validator_tier_cache_size: 10, // cache size: 10
+            validator_min_slots: 2,
+            ..Default::default()
+        };
+        let mut cache = DecoderCache::new(config);
         let context = DecodingContext::new(Some(&validator_set), UNIX_TS_MS, EPOCH);
         let res = try_decode_all(&mut cache, &context, all_symbols_part_1.iter())
             .expect("Decoding should succeed");
         assert_eq!(res.len(), 0);
         assert_eq!(cache.recently_decoded_len(), 0);
 
-        // cache is full but not exceeding max size
+        // Cache is full but not exceeding max size
         assert_eq!(cache.pending_len(MessageTier::Validator), 10);
 
         let res = try_decode_all(&mut cache, &context, all_symbols_part_2.iter())
             .expect("Decoding should succeed");
-        // cache size is capped to 10, so only 10 messages can be decoded
+        // Cache size is capped to 10, so only 10 messages can be decoded
         assert_eq!(res.len(), 10);
 
         let author_msg_count = res.into_iter().counts_by(|sym| sym.0);
@@ -1457,9 +1597,9 @@ mod test {
         // up to their quota.
 
         let config = DecoderCacheConfig {
-            broadcast_tier_cache_size: 10,            // cache size: 10
-            slot_by_stake_min_slots: 2,               // All validators have at least 2 slots
-            slot_by_stake_min_non_validator_slots: 1, // non-validators have at least 1 slot
+            broadcast_tier_cache_size: 10, // cache size: 10
+            validator_min_slots: 2,        // All validators have at least 2 slots
+            non_validator_slots: 1,        // non-validators have at least 1 slot
             ..Default::default()
         };
 
@@ -1469,23 +1609,23 @@ mod test {
         add_validators(&mut validator_set, &[2], 1);
         // Author 3 is not a validator.
 
-        // part 1 is designed to be contain insufficient symbols
+        // Part 1 is designed to be contain insufficient symbols
         let mut all_symbols_part_1 = vec![];
         let mut all_symbols_part_2 = vec![];
 
         // Insert 10 messages for authors 1,2,3
         for i in 0..10 {
-            let app_msg = Bytes::from(vec![0 + i; APP_MESSAGE_SIZE]);
+            let app_msg = Bytes::from(vec![0 + i; APP_MESSAGE_LEN]);
             let mut symbols = make_symbols(&app_msg, node_id(1), UNIX_TS_MS);
             all_symbols_part_2.extend(symbols.split_off(MIN_DECODABLE_SYMBOLS));
             all_symbols_part_1.extend(symbols);
 
-            let app_msg = Bytes::from(vec![10 + i; APP_MESSAGE_SIZE]);
+            let app_msg = Bytes::from(vec![10 + i; APP_MESSAGE_LEN]);
             let mut symbols = make_symbols(&app_msg, node_id(2), UNIX_TS_MS);
             all_symbols_part_2.extend(symbols.split_off(MIN_DECODABLE_SYMBOLS));
             all_symbols_part_1.extend(symbols);
 
-            let app_msg = Bytes::from(vec![20 + i; APP_MESSAGE_SIZE]);
+            let app_msg = Bytes::from(vec![20 + i; APP_MESSAGE_LEN]);
             let mut symbols = make_symbols(&app_msg, node_id(3), UNIX_TS_MS);
             all_symbols_part_2.extend(symbols.split_off(MIN_DECODABLE_SYMBOLS));
             all_symbols_part_1.extend(symbols);
@@ -1507,7 +1647,7 @@ mod test {
         assert_eq!(res.len(), 0);
         assert_eq!(cache.recently_decoded_len(), 0);
 
-        // cache is full but not exceeding max size
+        // Cache is full but not exceeding max size
         assert_eq!(cache.pending_len(MessageTier::Broadcast), 10);
 
         let res = try_decode_all(&mut cache, &context, all_symbols_part_2.iter())
@@ -1530,12 +1670,12 @@ mod test {
 
         // Insert 10 messages for each author
         for i in 0..10 {
-            let app_msg = Bytes::from(vec![0 + i; APP_MESSAGE_SIZE]);
+            let app_msg = Bytes::from(vec![0 + i; APP_MESSAGE_LEN]);
             let mut symbols = make_symbols(&app_msg, node_id(0), UNIX_TS_MS);
             all_symbols_part_2.extend(symbols.split_off(MIN_DECODABLE_SYMBOLS));
             all_symbols_part_1.extend(symbols);
 
-            let app_msg = Bytes::from(vec![10 + i; APP_MESSAGE_SIZE]);
+            let app_msg = Bytes::from(vec![10 + i; APP_MESSAGE_LEN]);
             let mut symbols = make_symbols(&app_msg, node_id(1), UNIX_TS_MS);
             all_symbols_part_2.extend(symbols.split_off(MIN_DECODABLE_SYMBOLS));
             all_symbols_part_1.extend(symbols);
@@ -1543,7 +1683,7 @@ mod test {
 
         let config = DecoderCacheConfig {
             p2p_tier_cache_size: 10, // cache size: 10
-            fixed_slot_min_slots: 2, // each author gets at least 2 slots
+            non_validator_slots: 2,  // each author gets at least 2 slots
             ..Default::default()
         };
         let mut cache = DecoderCache::new(config);
@@ -1553,7 +1693,7 @@ mod test {
         assert_eq!(res.len(), 0);
         assert_eq!(cache.recently_decoded_len(), 0);
 
-        // cache is full but not exceeding max size
+        // Cache is full but not exceeding max size
         assert_eq!(cache.pending_len(MessageTier::P2P), 10);
 
         let res = try_decode_all(&mut cache, &context, all_symbols_part_2.iter())
@@ -1585,28 +1725,28 @@ mod test {
         // randomly evict entries.
 
         let config = DecoderCacheConfig {
-            p2p_tier_cache_size: 10, // cache size: 10
-            fixed_slot_min_slots: 5, // All authors get at least 5 slots
+            p2p_tier_cache_size: 10, // Cache size: 10
+            non_validator_slots: 5,  // All authors get at least 5 slots
             ..Default::default()
         };
 
-        // part 1 is designed to be contain insufficient symbols
+        // Part 1 is designed to be contain insufficient symbols
         let mut all_symbols_part_1 = vec![];
         let mut all_symbols_part_2 = vec![];
 
         // Insert 10 messages for authors 0,1,2
         for i in 0..10 {
-            let app_msg = Bytes::from(vec![0 + i; APP_MESSAGE_SIZE]);
+            let app_msg = Bytes::from(vec![0 + i; APP_MESSAGE_LEN]);
             let mut symbols = make_symbols(&app_msg, node_id(0), UNIX_TS_MS);
             all_symbols_part_2.extend(symbols.split_off(MIN_DECODABLE_SYMBOLS));
             all_symbols_part_1.extend(symbols);
 
-            let app_msg = Bytes::from(vec![10 + i; APP_MESSAGE_SIZE]);
+            let app_msg = Bytes::from(vec![10 + i; APP_MESSAGE_LEN]);
             let mut symbols = make_symbols(&app_msg, node_id(1), UNIX_TS_MS);
             all_symbols_part_2.extend(symbols.split_off(MIN_DECODABLE_SYMBOLS));
             all_symbols_part_1.extend(symbols);
 
-            let app_msg = Bytes::from(vec![20 + i; APP_MESSAGE_SIZE]);
+            let app_msg = Bytes::from(vec![20 + i; APP_MESSAGE_LEN]);
             let mut symbols = make_symbols(&app_msg, node_id(2), UNIX_TS_MS);
             all_symbols_part_2.extend(symbols.split_off(MIN_DECODABLE_SYMBOLS));
             all_symbols_part_1.extend(symbols);
@@ -1634,7 +1774,7 @@ mod test {
     #[test]
     fn test_invalid_symbol_rejection() {
         let mut cache = make_cache(10, 10, 10);
-        let app_message = Bytes::from(vec![1u8; APP_MESSAGE_SIZE]);
+        let app_message = Bytes::from(vec![1u8; APP_MESSAGE_LEN]);
         let author = node_id(0);
         let symbols = make_symbols(&app_message, author, UNIX_TS_MS);
         let context = DecodingContext::new(None, UNIX_TS_MS, EPOCH);
@@ -1666,18 +1806,18 @@ mod test {
         let context = DecodingContext::new(None, UNIX_TS_MS, EPOCH);
 
         // Fill the cache.
-        let app_message0 = Bytes::from(vec![0u8; APP_MESSAGE_SIZE]);
+        let app_message0 = Bytes::from(vec![0u8; APP_MESSAGE_LEN]);
         let symbols0 = make_symbols(&app_message0, author, UNIX_TS_MS + 2);
         let _ = cache.try_decode(&symbols0[0], &context);
 
-        let app_message1 = Bytes::from(vec![1u8; APP_MESSAGE_SIZE]);
+        let app_message1 = Bytes::from(vec![1u8; APP_MESSAGE_LEN]);
         let symbols1 = make_symbols(&app_message1, author, UNIX_TS_MS + 1);
         let _ = cache.try_decode(&symbols1[0], &context);
 
         assert_eq!(cache.pending_len(MessageTier::P2P), 2);
 
         // Try to insert an older message.
-        let app_message2 = Bytes::from(vec![2u8; APP_MESSAGE_SIZE]);
+        let app_message2 = Bytes::from(vec![2u8; APP_MESSAGE_LEN]);
         let symbols2 = make_symbols(&app_message2, author, UNIX_TS_MS);
         let res = cache.try_decode(&symbols2[0], &context);
         assert_eq!(cache.pending_len(MessageTier::P2P), 2);
