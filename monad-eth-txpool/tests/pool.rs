@@ -1677,3 +1677,68 @@ fn test_eip7702_authorizations_list_too_long() {
         }]);
     }
 }
+
+#[test]
+fn test_eip_7702_sponsor_with_1559() {
+    // 1. S2 will "sponsor" S1's eth transfer and include an authorization tuple delegating S1 to S4.
+    // 2. S1 will send a 1559 tx.
+    // Do 1 and 2 in order 10 times.
+    // Expect tx[0,2,4,6,8] in first proposal and tx[1] in second proposal.
+    let mut s1_nonce = 0;
+    let txs = (0..10)
+        .map(|s2_nonce| {
+            // Step 1
+            let auth = make_signed_authorization(S1, secret_to_eth_address(S4), s1_nonce);
+            s1_nonce += 1;
+
+            let tx1 = make_eip7702_tx(
+                S2,
+                BASE_FEE + 1,
+                1,
+                GAS_LIMIT_EIP_7702 * 2,
+                s2_nonce,
+                vec![auth],
+                10,
+            );
+
+            // Step 2
+            let tx2 = make_eip1559_tx(S1, BASE_FEE + 1, 1, 21_000, s1_nonce, 0);
+            s1_nonce += 1;
+
+            [tx1, tx2]
+        })
+        .flatten()
+        .collect_vec();
+
+    let insert_txs = txs.iter().map(|tx| (tx, true)).collect_vec();
+
+    run_simple([
+        TxPoolTestEvent::InsertTxs {
+            txs: insert_txs,
+            expected_pool_size_change: 20,
+        },
+        TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
+            tx_limit: 20,
+            gas_limit: PROPOSAL_GAS_LIMIT,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
+            expected_txs: txs.iter().step_by(2).collect(),
+            add_to_blocktree: true,
+        },
+        TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
+            tx_limit: 20,
+            gas_limit: PROPOSAL_GAS_LIMIT,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
+            expected_txs: vec![&txs[1]],
+            add_to_blocktree: true,
+        },
+        TxPoolTestEvent::CommitPendingBlocks {
+            num_blocks: 2,
+            expected_committed_seq_num: 2,
+        },
+        TxPoolTestEvent::Block(Arc::new(|pool| {
+            assert_eq!(pool.num_txs(), 9);
+        })),
+    ]);
+}
