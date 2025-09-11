@@ -27,7 +27,8 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{
-    nonce_usage::NonceUsageRetrievable, EthBlockPolicyBlockValidator, EthValidatedBlock,
+    nonce_usage::{NonceUsage, NonceUsageRetrievable},
+    EthBlockPolicyBlockValidator, EthValidatedBlock,
 };
 use monad_validator::signature_collection::SignatureCollection;
 use rand::seq::SliceRandom;
@@ -153,22 +154,6 @@ impl<'a> ProposalSequencer<'a> {
         )
     }
 
-    pub fn authority_addresses(&self) -> impl Iterator<Item = &Address> {
-        self.heap.iter().flat_map(
-            |OrderedTxGroup {
-                 tx,
-                 virtual_time: _,
-                 address: _,
-                 queued,
-             }| {
-                std::iter::once(tx)
-                    .chain(queued.iter())
-                    .flat_map(|tx| tx.tx.iter_valid_recovered_authorizations())
-                    .map(|recovered_authorization| &recovered_authorization.authority)
-            },
-        )
-    }
-
     pub fn build_proposal<CCT, CRT>(
         mut self,
         chain_id: u64,
@@ -177,7 +162,6 @@ impl<'a> ProposalSequencer<'a> {
         proposal_byte_limit: u64,
         chain_config: &CCT,
         mut account_balances: BTreeMap<&Address, AccountBalanceState>,
-        mut authority_nonces: BTreeMap<&'a Address, u64>,
         validator: EthBlockPolicyBlockValidator<CRT>,
     ) -> Proposal
     where
@@ -186,7 +170,7 @@ impl<'a> ProposalSequencer<'a> {
     {
         let mut proposal = Proposal::default();
 
-        let mut authority_nonce_deltas = BTreeMap::<Address, usize>::default();
+        let mut authority_possible_nonce_deltas = BTreeMap::<Address, Vec<u64>>::default();
 
         'proposal: while proposal.txs.len() < tx_limit {
             let Some(OrderedTxGroup {
@@ -199,13 +183,27 @@ impl<'a> ProposalSequencer<'a> {
                 break;
             };
 
-            if let Some(authority_nonce_delta) = authority_nonce_deltas.remove(address) {
-                for _ in 0..authority_nonce_delta {
+            if let Some(possible_nonce_deltas) = authority_possible_nonce_deltas.remove(address) {
+                let new_account_nonce = NonceUsage::Possible(possible_nonce_deltas.into())
+                    .apply_to_account_nonce(tx.tx.nonce());
+
+                assert!(tx.tx.nonce() <= new_account_nonce);
+
+                while tx.tx.nonce() < new_account_nonce {
                     let Some(next_tx) = queued.pop_front() else {
                         continue 'proposal;
                     };
 
                     tx = next_tx;
+                }
+
+                if tx.tx.nonce() != new_account_nonce {
+                    error!(
+                        tx_nonce = tx.tx.nonce(),
+                        new_account_nonce,
+                        "txpool sequencer authority nonce delta invariant broken"
+                    );
+                    break 'proposal;
                 }
 
                 self.push(address, tx, queued);
@@ -243,23 +241,15 @@ impl<'a> ProposalSequencer<'a> {
                         continue;
                     }
 
-                    let Some(authority_nonce) = authority_nonces.get_mut(&authority) else {
-                        error!(
-                            tx = ?tx.tx,
-                            ?address,
-                            ?authority,
-                            ?authorization,
-                            "txpool missing expected authority nonce"
-                        );
-                        break 'proposal;
+                    let Some(account_balance) = account_balances.get_mut(authority) else {
+                        continue;
                     };
 
-                    if authority_nonce != &authorization.nonce {
-                        continue;
-                    }
-
-                    *authority_nonce += 1;
-                    *authority_nonce_deltas.entry(*authority).or_default() += 1;
+                    account_balance.is_delegated = true;
+                    authority_possible_nonce_deltas
+                        .entry(*authority)
+                        .or_default()
+                        .push(authorization.nonce);
                 }
             }
         }
@@ -293,14 +283,6 @@ impl<'a> ProposalSequencer<'a> {
         {
             return false;
         }
-
-        let Some(account_balance) = account_balances.get_mut(address) else {
-            error!(
-                ?address,
-                "txpool create_proposal account_balances lookup failed"
-            );
-            return false;
-        };
 
         if let Err(error) = validator.try_add_transaction(account_balances, tx.raw()) {
             debug!(
