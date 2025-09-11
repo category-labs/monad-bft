@@ -22,7 +22,11 @@ use std::{
 };
 
 use bytes::{Bytes, BytesMut};
-use monoio::{net::udp::UdpSocket, spawn, time};
+use monoio::{
+    net::udp::UdpSocket,
+    spawn,
+    time::{self, timeout},
+};
 use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
 
@@ -188,6 +192,7 @@ async fn rx_single_socket(socket: UdpSocket, udp_ingress_tx: mpsc::Sender<RecvUd
 }
 
 const PACING_SLEEP_OVERSHOOT_DETECTION_WINDOW: Duration = Duration::from_millis(100);
+const QUEUED_MESSAGE_LIMIT: usize = 10_000;
 
 async fn tx(
     socket_tx: UdpSocket,
@@ -204,18 +209,19 @@ async fn tx(
 
     let mut next_transmit = Instant::now();
 
-    let mut messages_to_send: VecDeque<(SocketAddr, Bytes, u16, UdpMessageType)> = VecDeque::new();
+    let mut message_queues: [VecDeque<(SocketAddr, Bytes, u16, UdpMessageType)>; 2] =
+        [VecDeque::new(), VecDeque::new()];
 
     loop {
-        while messages_to_send.is_empty() || !udp_egress_rx.is_empty() {
-            let Some((addr, udp_msg)) = udp_egress_rx.recv().await else {
-                return;
-            };
-
-            messages_to_send.push_back((addr, udp_msg.payload, udp_msg.stride, udp_msg.msg_type));
+        if fill_message_queues(&mut udp_egress_rx, &mut message_queues)
+            .await
+            .is_err()
+        {
+            return;
         }
 
-        let (addr, mut payload, stride, msg_type) = messages_to_send.pop_front().unwrap();
+        let (queue_index, (addr, mut payload, stride, msg_type)) =
+            dequeue_highest_priority(&mut message_queues);
 
         if udp_segment_size != stride {
             udp_segment_size = stride;
@@ -302,9 +308,76 @@ async fn tx(
 
             // Re-queue (addr, payload) at the end of the list if there are bytes left to transmit.
             if !payload.is_empty() {
-                messages_to_send.push_back((addr, payload, stride, msg_type));
+                message_queues[queue_index].push_back((addr, payload, stride, msg_type));
             }
         }
+    }
+}
+
+async fn fill_message_queues(
+    udp_egress_rx: &mut mpsc::Receiver<(SocketAddr, UdpMsg)>,
+    message_queues: &mut [VecDeque<(SocketAddr, Bytes, u16, UdpMessageType)>; 2],
+) -> Result<(), ()> {
+    while message_queues.iter().all(|q| q.is_empty()) || !udp_egress_rx.is_empty() {
+        match udp_egress_rx.recv().await {
+            Some((addr, udp_msg)) => {
+                message_queues[udp_msg.priority as usize].push_back((
+                    addr,
+                    udp_msg.payload,
+                    udp_msg.stride,
+                    udp_msg.msg_type,
+                ));
+            }
+            None => return Err(()),
+        }
+    }
+    Ok(())
+}
+
+fn dequeue_highest_priority(
+    message_queues: &mut [VecDeque<(SocketAddr, Bytes, u16, UdpMessageType)>; 2],
+) -> (usize, (SocketAddr, Bytes, u16, UdpMessageType)) {
+    for (priority, queue) in message_queues.iter_mut().enumerate() {
+        if let Some(msg) = queue.pop_front() {
+            return (priority, msg);
+        }
+    }
+    unreachable!("fill_message_queues ensures at least one queue is non-empty")
+}
+
+async fn pace_with_message_collection(
+    sleep_duration: Duration,
+    udp_egress_rx: &mut mpsc::Receiver<(SocketAddr, UdpMsg)>,
+    message_queues: &mut [VecDeque<(SocketAddr, Bytes, u16, UdpMessageType)>; 2],
+) {
+    let total_queued: usize = message_queues.iter().map(|q| q.len()).sum();
+
+    if total_queued < QUEUED_MESSAGE_LIMIT {
+        let deadline = Instant::now() + sleep_duration;
+
+        while Instant::now() < deadline {
+            let remaining = deadline - Instant::now();
+
+            match timeout(remaining, udp_egress_rx.recv()).await {
+                Ok(Some((addr, udp_msg))) => {
+                    message_queues[udp_msg.priority as usize].push_back((
+                        addr,
+                        udp_msg.payload,
+                        udp_msg.stride,
+                        udp_msg.msg_type,
+                    ));
+
+                    let total: usize = message_queues.iter().map(|q| q.len()).sum();
+                    if total >= QUEUED_MESSAGE_LIMIT {
+                        break;
+                    }
+                }
+                Ok(None) => break,
+                Err(_) => break, // Timeout
+            }
+        }
+    } else {
+        time::sleep(sleep_duration).await;
     }
 }
 
