@@ -15,7 +15,7 @@
 
 use std::collections::BTreeMap;
 
-use alloy_primitives::{hex, B256};
+use alloy_primitives::{hex, FixedBytes, B256};
 use monad_chain_config::MockChainConfig;
 use monad_consensus_types::{block::GENESIS_TIMESTAMP, payload::RoundSignature};
 use monad_crypto::{
@@ -24,7 +24,8 @@ use monad_crypto::{
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{
-    generate_block_with_txs, make_legacy_tx, recover_tx, secret_to_eth_address,
+    generate_block_with_txs, make_eip7702_tx, make_legacy_tx, make_signed_authorization,
+    recover_tx, secret_to_eth_address,
 };
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner, StateBackend};
@@ -117,5 +118,88 @@ fn txpool_create_proposal_lookups_bound_by_tx_limit() {
             .unwrap();
 
         assert_eq!(state_backend.total_db_lookups(), expected_lookups);
+    }
+}
+
+#[test]
+fn txpool_create_proposal_no_lookup_for_unknown_authorizations() {
+    for authorization_address in [
+        secret_to_eth_address(S1),
+        secret_to_eth_address(S2),
+        secret_to_eth_address(FixedBytes::random()),
+    ] {
+        let mut pool = EthTxPool::default_testing();
+
+        let metrics = EthTxPoolMetrics::default();
+        let mut ipc_events = BTreeMap::default();
+        let mut event_tracker = EthTxPoolEventTracker::new(&metrics, &mut ipc_events);
+
+        pool.update_committed_block(
+            &mut event_tracker,
+            &MockChainConfig::DEFAULT,
+            generate_block_with_txs(
+                Round(0),
+                SeqNum(0),
+                MIN_BASE_FEE,
+                &MockChainConfig::DEFAULT,
+                Vec::default(),
+            ),
+        );
+
+        let eth_block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, u64::MAX);
+
+        let state_backend: StateBackendType = InMemoryStateInner::new(
+            Balance::MAX,
+            SeqNum::MAX,
+            InMemoryBlockState::genesis(BTreeMap::from_iter([
+                (secret_to_eth_address(S1), 0),
+                (secret_to_eth_address(S2), 0),
+            ])),
+        );
+
+        pool.insert_txs(
+            &mut event_tracker,
+            &eth_block_policy,
+            &state_backend,
+            &MockChainConfig::DEFAULT,
+            vec![recover_tx(make_eip7702_tx(
+                S1,
+                MIN_BASE_FEE.into(),
+                0,
+                1_000_000,
+                0,
+                vec![make_signed_authorization(S2, authorization_address, 0)],
+                0,
+            ))],
+            true,
+            |_| {},
+        );
+
+        assert_eq!(pool.num_txs(), 1);
+
+        let mock_keypair = NopKeyPair::from_bytes(&mut [5_u8; 32]).unwrap();
+
+        let _ = pool
+            .create_proposal(
+                &mut event_tracker,
+                Epoch(1),
+                Round(1),
+                SeqNum(1),
+                MIN_BASE_FEE,
+                usize::MAX,
+                1_000_000,
+                1024 * 1024,
+                [0_u8; 20],
+                GENESIS_TIMESTAMP,
+                NodeId::new(NopPubKey::from_bytes(&[0_u8; 32]).unwrap()),
+                RoundSignature::new(Round(0), &mock_keypair),
+                vec![],
+                &eth_block_policy,
+                &state_backend,
+                &MockChainConfig::DEFAULT,
+            )
+            .unwrap();
+
+        assert_eq!(state_backend.total_db_lookups(), 4);
     }
 }

@@ -1548,6 +1548,39 @@ fn test_eip7702_authorization_nonce_higher() {
 }
 
 #[test]
+fn test_eip7702_authorization_nonce_equal() {
+    let tx1 = make_eip7702_tx(
+        S1,
+        BASE_FEE + 1,
+        1,
+        GAS_LIMIT_EIP_7702,
+        0,
+        vec![make_signed_authorization(S1, secret_to_eth_address(S1), 0)],
+        10,
+    );
+    let tx2 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 1, 0);
+
+    run_simple([
+        TxPoolTestEvent::InsertTxs {
+            txs: vec![(&tx1, true), (&tx2, true)],
+            expected_pool_size_change: 2,
+        },
+        TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
+            tx_limit: 2,
+            gas_limit: GAS_LIMIT + GAS_LIMIT_EIP_7702,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
+            expected_txs: vec![&tx1, &tx2],
+            add_to_blocktree: true,
+        },
+        TxPoolTestEvent::AssertNonce {
+            address: secret_to_eth_address(S1),
+            nonce: 2,
+        },
+    ]);
+}
+
+#[test]
 fn test_eip7702_authorization_nonce_lower() {
     let tx1 = make_eip7702_tx(
         S1,
