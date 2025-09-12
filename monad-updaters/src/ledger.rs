@@ -34,7 +34,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
-use monad_state_backend::{InMemoryState, StateBackendTest};
+use monad_state_backend::{InMemoryState, MockExecution};
 use monad_types::{BlockId, ExecutionProtocol, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 
@@ -184,7 +184,7 @@ where
                         block.get_seq_num(),
                         block.get_block_round(),
                         block.get_parent_id(),
-                        BTreeMap::default(), // TODO parse out txs
+                        vec![], // TODO parse out txs
                     );
                     self.blocks.insert(block.get_id(), block);
                 }
