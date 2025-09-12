@@ -162,7 +162,25 @@ impl EthTxPoolForwardingManagerProjected<'_> {
         }
     }
 
-    pub fn add_egress_txs<ST, SCT, SBT, CCT, CRT>(
+    pub fn add_egress_txs<'a>(&mut self, txs: impl Iterator<Item = &'a TxEnvelope>) {
+        let Self {
+            egress,
+            egress_waker,
+            ..
+        } = self;
+
+        egress.extend(txs.map(alloy_rlp::encode).map(Into::into));
+
+        if egress.is_empty() {
+            return;
+        }
+
+        if let Some(waker) = egress_waker.take() {
+            waker.wake();
+        }
+    }
+
+    pub fn schedule_egress_txs<ST, SCT, SBT, CCT, CRT>(
         &mut self,
         pool: &mut EthTxPool<ST, SCT, SBT, CCT, CRT>,
     ) where
@@ -179,26 +197,7 @@ impl EthTxPoolForwardingManagerProjected<'_> {
             return;
         };
 
-        let Self {
-            egress,
-            egress_waker,
-            ..
-        } = self;
-
-        egress.extend(
-            forwardable_txs
-                .cloned()
-                .map(alloy_rlp::encode)
-                .map(Into::into),
-        );
-
-        if egress.is_empty() {
-            return;
-        }
-
-        if let Some(waker) = egress_waker.take() {
-            waker.wake();
-        }
+        self.add_egress_txs(forwardable_txs);
     }
 }
 
