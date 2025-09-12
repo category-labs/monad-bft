@@ -22,7 +22,7 @@ use std::{
     },
 };
 
-use alloy_consensus::Header;
+use alloy_consensus::{Header, Transaction, TxEnvelope};
 use alloy_primitives::Address;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -36,9 +36,55 @@ use monad_validator::signature_collection::{SignatureCollection, SignatureCollec
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 
-use crate::{StateBackend, StateBackendError, StateBackendTest};
+use crate::{MockExecution, StateBackend, StateBackendError};
 
 pub type InMemoryState<ST, SCT> = Arc<Mutex<InMemoryStateInner<ST, SCT>>>;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountState {
+    pub balance: Balance,
+    pub reserve_balance: Balance,
+    pub nonce: Nonce,
+    pub is_delegated: bool,
+}
+
+impl AccountState {
+    pub fn max_balance() -> Self {
+        Self {
+            balance: Balance::MAX,
+            reserve_balance: Balance::from(1000),
+            nonce: 0,
+            is_delegated: false,
+        }
+    }
+
+    pub fn max_balance_with_nonce(nonce: u64) -> Self {
+        Self {
+            balance: Balance::MAX,
+            reserve_balance: Balance::from(1000),
+            nonce,
+            is_delegated: false,
+        }
+    }
+
+    pub fn new_with_balance(balance: Balance) -> Self {
+        Self {
+            balance,
+            reserve_balance: Balance::from(1000),
+            nonce: 0,
+            is_delegated: false,
+        }
+    }
+
+    pub fn empty_account() -> Self {
+        Self {
+            balance: Balance::ZERO,
+            reserve_balance: Balance::from(1000),
+            nonce: 0,
+            is_delegated: false,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct InMemoryStateInner<ST, SCT>
@@ -48,11 +94,8 @@ where
 {
     commits: BTreeMap<SeqNum, InMemoryBlockState>,
     proposals: HashMap<BlockId, InMemoryBlockState>,
-    /// InMemoryState doesn't have access to an execution engine. It returns
-    /// `max_account_balance` as the balance every time so txn fee balance check
-    /// will pass if the sum doesn't exceed the max account balance
-    max_account_balance: Balance,
     execution_delay: SeqNum,
+    default_reserve_balance: Balance,
 
     /// can be used to mess with eth-header execution results
     pub extra_data: u64,
@@ -68,17 +111,21 @@ pub struct InMemoryBlockState {
     seq_num: SeqNum,
     round: Round,
     parent_id: BlockId,
-    nonces: BTreeMap<Address, Nonce>,
+    /// the txns to execute for this seq_num
+    txns: Vec<TxEnvelope>,
+    /// account states after executing this block seq_num
+    accounts: BTreeMap<Address, AccountState>,
 }
 
 impl InMemoryBlockState {
-    pub fn genesis(nonces: BTreeMap<Address, Nonce>) -> Self {
+    pub fn genesis(accounts: BTreeMap<Address, AccountState>) -> Self {
         Self {
             block_id: GENESIS_BLOCK_ID,
             seq_num: GENESIS_SEQ_NUM,
             round: GENESIS_ROUND,
             parent_id: GENESIS_BLOCK_ID,
-            nonces,
+            txns: Vec::new(),
+            accounts,
         }
     }
 }
@@ -88,19 +135,16 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    pub fn genesis(
-        max_account_balance: Balance,
-        execution_delay: SeqNum,
-    ) -> InMemoryState<ST, SCT> {
+    pub fn genesis(execution_delay: SeqNum) -> InMemoryState<ST, SCT> {
         Arc::new(Mutex::new(Self {
             commits: std::iter::once((
                 GENESIS_SEQ_NUM,
-                InMemoryBlockState::genesis(Default::default()),
+                InMemoryBlockState::genesis(BTreeMap::new()),
             ))
             .collect(),
             proposals: Default::default(),
-            max_account_balance,
             execution_delay,
+            default_reserve_balance: Balance::from(1000),
 
             extra_data: 0,
             total_mock_lookups: Arc::default(),
@@ -109,16 +153,12 @@ where
         }))
     }
 
-    pub fn new(
-        max_account_balance: Balance,
-        execution_delay: SeqNum,
-        last_commit: InMemoryBlockState,
-    ) -> InMemoryState<ST, SCT> {
+    pub fn new(execution_delay: SeqNum, last_commit: InMemoryBlockState) -> InMemoryState<ST, SCT> {
         Arc::new(Mutex::new(Self {
             commits: std::iter::once((last_commit.seq_num, last_commit)).collect(),
             proposals: Default::default(),
-            max_account_balance,
             execution_delay,
+            default_reserve_balance: Balance::from(1000),
 
             extra_data: 0,
             total_mock_lookups: Arc::default(),
@@ -137,21 +177,18 @@ where
     }
 }
 
-impl<ST, SCT> StateBackendTest<ST, SCT> for InMemoryStateInner<ST, SCT>
+impl<ST, SCT> MockExecution<ST, SCT> for InMemoryStateInner<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    // new_account_nonces is the changeset of nonces from a given block
-    // if account A's last tx nonce in a block is N, then new_account_nonces should include A=N+1
-    // this is because N+1 is the next valid nonce for A
     fn ledger_propose(
         &mut self,
         block_id: BlockId,
         seq_num: SeqNum,
         round: Round,
         parent_id: BlockId,
-        new_account_nonces: BTreeMap<Address, Nonce>,
+        txns: Vec<TxEnvelope>,
     ) {
         if self
             .commits
@@ -172,20 +209,63 @@ where
         }
 
         trace!(?block_id, ?seq_num, ?round, "ledger_propose");
-        let mut last_state_nonces = if let Some(parent_state) = self.proposals.get(&parent_id) {
-            parent_state.nonces.clone()
-        } else {
-            let last_committed_entry = self
-                .commits
-                .last_entry()
-                .expect("last_commit doesn't exist");
-            let last_committed_state = last_committed_entry.get();
-            assert_eq!(last_committed_state.block_id, parent_id);
-            last_committed_state.nonces.clone()
-        };
 
-        for (address, account_nonce) in new_account_nonces {
-            last_state_nonces.insert(address, account_nonce);
+        // get parent block state. Execute on top of that block. Generate the new state
+        let parent_state = self
+            .proposals
+            .get(&parent_id)
+            .or_else(|| self.commits.get(&(seq_num - SeqNum(1))))
+            .unwrap_or_else(|| {
+                panic!(
+                    "parent block not found for proposed block, proposed_seq_num={:?}, round={:?}",
+                    seq_num, round
+                )
+            });
+
+        let mut accounts = parent_state.accounts.clone();
+
+        trace!(
+            "block N={:?}, parent account state: {:?}",
+            seq_num,
+            accounts
+        );
+
+        for tx in txns.iter() {
+            let addr = tx.recover_signer().expect("invalid eth tx in block");
+
+            let account_entry = accounts.entry(addr).or_insert(AccountState {
+                balance: Balance::from(100_000_000_000_000_000_u64),
+                reserve_balance: self.default_reserve_balance,
+                nonce: 0,
+                is_delegated: false,
+            });
+
+            // validate the nonce
+            if account_entry.nonce != tx.nonce() {
+                panic!("tfm state backend executed invalid nonce");
+            }
+            account_entry.nonce += 1;
+
+            if tx.is_eip7702() {
+                let auth_list = tx
+                    .authorization_list()
+                    .expect("valid 7702 must have auth list");
+                for tuple in auth_list {
+                    if let Ok(addr) = tuple.recover_authority() {
+                        let auth_account_entry = accounts.entry(addr).or_insert(AccountState {
+                            balance: Balance::from(100_000_000_000_000_000_u64),
+                            reserve_balance: self.default_reserve_balance,
+                            nonce: 0,
+                            is_delegated: false,
+                        });
+                        if auth_account_entry.nonce != tuple.nonce() {
+                            // invalid tuples are skipped
+                            continue;
+                        }
+                        auth_account_entry.nonce += 1;
+                    };
+                }
+            }
         }
 
         self.proposals.insert(
@@ -195,7 +275,8 @@ where
                 seq_num,
                 round,
                 parent_id,
-                nonces: last_state_nonces,
+                txns,
+                accounts,
             },
         );
     }
@@ -289,12 +370,12 @@ where
         Ok(addresses
             .map(|address| {
                 self.total_mock_lookups.fetch_add(1, Ordering::SeqCst);
-                let nonce = state.nonces.get(address)?;
+                let account = state.accounts.get(address)?;
                 Some(EthAccount {
-                    nonce: *nonce,
-                    balance: self.max_account_balance,
+                    nonce: account.nonce,
+                    balance: account.balance,
                     code_hash: None,
-                    is_delegated: false,
+                    is_delegated: account.is_delegated,
                 })
             })
             .collect())

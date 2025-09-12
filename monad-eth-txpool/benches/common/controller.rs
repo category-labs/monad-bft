@@ -24,9 +24,9 @@ use monad_crypto::NopSignature;
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, recover_tx};
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
-use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
+use monad_state_backend::{AccountState, InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
-use monad_types::{Balance, Round, SeqNum};
+use monad_types::{Round, SeqNum};
 use rand::{seq::SliceRandom, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
@@ -147,11 +147,15 @@ impl<'a> BenchController<'a> {
 
     pub fn generate_state_backend_for_txs(txs: &[Recovered<TxEnvelope>]) -> StateBackendType {
         InMemoryStateInner::new(
-            Balance::MAX,
             SeqNum(4),
             InMemoryBlockState::genesis(
                 txs.iter()
-                    .map(|tx| (tx.recover_signer().expect("signer is recoverable"), 0))
+                    .map(|tx| {
+                        (
+                            tx.recover_signer().expect("signer is recoverable"),
+                            AccountState::max_balance(),
+                        )
+                    })
                     .collect(),
             ),
         )

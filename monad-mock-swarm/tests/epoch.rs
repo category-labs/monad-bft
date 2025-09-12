@@ -51,7 +51,7 @@ mod test {
         DropTransformer, GenericTransformer, GenericTransformerPipeline, LatencyTransformer,
         PartitionTransformer, ID,
     };
-    use monad_types::{Balance, Epoch, NodeId, Round, SeqNum};
+    use monad_types::{Epoch, NodeId, Round, SeqNum};
     use monad_updaters::{
         ledger::{MockLedger, MockableLedger},
         statesync::MockStateSyncExecutor,
@@ -223,7 +223,7 @@ mod test {
             SimpleRoundRobin::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(Balance::MAX, SeqNum::MAX),
+            || InMemoryStateInner::genesis(SeqNum::MAX),
             SeqNum::MAX, // execution_delay
             delta,       // delta
             MockChainConfig::new_with_epoch_params(&CHAIN_PARAMS, epoch_length, Round(20)), // chain config
@@ -312,7 +312,7 @@ mod test {
             SimpleRoundRobin::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(Balance::MAX, SeqNum::MAX),
+            || InMemoryStateInner::genesis(SeqNum::MAX),
             SeqNum::MAX, // execution_delay
             delta,       // delta
             MockChainConfig::new_with_epoch_params(&CHAIN_PARAMS, epoch_length, Round(20)), // chain config
@@ -474,7 +474,7 @@ mod test {
             SimpleRoundRobin::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(Balance::MAX, SeqNum::MAX),
+            || InMemoryStateInner::genesis(SeqNum::MAX),
             SeqNum::MAX,                  // execution_delay
             Duration::from_millis(delta), // delta
             MockChainConfig::new_with_epoch_params(&CHAIN_PARAMS, epoch_length, Round(20)), // chain config
@@ -683,7 +683,7 @@ mod test {
             SimpleRoundRobin::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(Balance::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(SeqNum(4)),
             SeqNum(4), // execution_delay
             delta,     // delta
             MockChainConfig::new_with_epoch_params(&CHAIN_PARAMS, epoch_length, epoch_start_delay), // chain config

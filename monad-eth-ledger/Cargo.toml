@@ -20,6 +20,5 @@ monad-types = { workspace = true }
 monad-updaters = { workspace = true }
 monad-validator = { workspace = true }
 
-alloy-consensus = { workspace = true, features = ["k256"] }
 futures = { workspace = true }
 tracing = { workspace = true }

@@ -5276,7 +5276,6 @@ dependencies = [
 name = "monad-eth-ledger"
 version = "0.1.0"
 dependencies = [
- "alloy-consensus",
  "futures",
  "monad-blocksync",
  "monad-consensus-types",
@@ -6266,7 +6265,6 @@ dependencies = [
 name = "monad-twins-utils"
 version = "0.1.0"
 dependencies = [
- "alloy-primitives",
  "itertools 0.10.5",
  "monad-chain-config",
  "monad-consensus-state",

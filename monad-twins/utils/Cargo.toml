@@ -23,7 +23,6 @@ monad-types = { workspace = true }
 monad-updaters = { workspace = true }
 monad-validator = { workspace = true }
 
-alloy-primitives = { workspace = true }
 itertools = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }

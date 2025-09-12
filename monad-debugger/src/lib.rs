@@ -29,7 +29,7 @@ use monad_transformer::{
     DropTransformer, GenericTransformer, LatencyTransformer, PeriodicTransformer,
     RandLatencyTransformer, ID,
 };
-use monad_types::{Balance, NodeId, SeqNum};
+use monad_types::{NodeId, SeqNum};
 use monad_updaters::{
     ledger::MockLedger, statesync::MockStateSyncExecutor, txpool::MockTxPoolExecutor,
     val_set::MockValSetUpdaterNop,
@@ -64,7 +64,7 @@ pub fn simulation_make() -> *mut Simulation {
             SimpleRoundRobin::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(Balance::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(SeqNum(4)),
             SeqNum(4),                           // execution_delay
             Duration::from_millis(50),           // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
