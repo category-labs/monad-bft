@@ -27,8 +27,8 @@ mod list;
 
 // These constants were set using intuition and should be changed once we have more performance
 // numbers for the txpool.
-const MAX_ADDRESSES: usize = 16 * 1024;
-const MAX_TXS: usize = 64 * 1024;
+const MAX_ADDRESSES: usize = 8 * 1024;
+const MAX_TXS: usize = 16 * 1024;
 const PROMOTE_TXS_WATERMARK: usize = MAX_TXS * 3 / 4;
 
 /// Wrapper type to store byte-validated transactions and quickly query the total number of

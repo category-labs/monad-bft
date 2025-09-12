@@ -16,7 +16,10 @@
 use std::{
     collections::{BTreeMap, HashMap},
     marker::PhantomData,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
 };
 
 use alloy_consensus::Header;
@@ -53,6 +56,8 @@ where
 
     /// can be used to mess with eth-header execution results
     pub extra_data: u64,
+
+    total_mock_lookups: Arc<AtomicU64>,
 
     _phantom: PhantomData<(ST, SCT)>,
 }
@@ -98,6 +103,7 @@ where
             execution_delay,
 
             extra_data: 0,
+            total_mock_lookups: Arc::default(),
 
             _phantom: PhantomData,
         }))
@@ -115,6 +121,7 @@ where
             execution_delay,
 
             extra_data: 0,
+            total_mock_lookups: Arc::default(),
 
             _phantom: PhantomData,
         }))
@@ -281,6 +288,7 @@ where
 
         Ok(addresses
             .map(|address| {
+                self.total_mock_lookups.fetch_add(1, Ordering::SeqCst);
                 let nonce = state.nonces.get(address)?;
                 Some(EthAccount {
                     nonce: *nonce,
@@ -351,6 +359,6 @@ where
     }
 
     fn total_db_lookups(&self) -> u64 {
-        0
+        self.total_mock_lookups.load(Ordering::SeqCst)
     }
 }

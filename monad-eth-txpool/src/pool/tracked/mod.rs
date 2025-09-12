@@ -49,19 +49,16 @@ use crate::EthTxPoolEventTracker;
 mod list;
 mod sequencer;
 
-// To produce 10k tx blocks, we need the tracked tx map to hold at least 20k addresses so that if
-// the block in the pending blocktree has 10k txs with 10k unique addresses that are also in the
-// tracked tx map then we still have 10k other addresses to use when creating the next block.
-const MAX_ADDRESSES: usize = 20 * 1024;
+// To produce 5k tx blocks, we need the tracked tx map to hold at least 15k addresses so that, after
+// pruning the txpool of up to 5k unique addresses in the last committed block update and up to 5k
+// unique addresses in the pending blocktree, the tracked tx map will still have at least 5k other
+// addresses with at least one tx each to use when creating the next block.
+const MAX_ADDRESSES: usize = 16 * 1024;
 
 // Tx batches from rpc can contain up to roughly 500 transactions. Since we don't evict based on how
 // many txs are in the pool, we need to ensure that after eviction there is always space for all 500
 // txs.
 const SOFT_EVICT_ADDRESSES_WATERMARK: usize = MAX_ADDRESSES - 512;
-
-// TODO(andr-dev): This currently limits the number of unique addresses in a
-// proposal. This will be removed once we move the txpool into its own thread.
-const MAX_PROMOTABLE_ON_CREATE_PROPOSAL: usize = 1024 * 10;
 
 /// Stores transactions using a "snapshot" system by which each address has an associated
 /// account_nonce stored in the TrackedTxList which is guaranteed to be the correct
@@ -165,7 +162,6 @@ where
         extending_blocks: Vec<&EthValidatedBlock<ST, SCT>>,
         state_backend: &SBT,
         chain_config: &CCT,
-        pending: &mut PendingTxMap,
         chain_revision: &CRT,
         execution_revision: &MonadExecutionRevision,
     ) -> Result<Vec<Recovered<TxEnvelope>>, BlockPolicyError> {
@@ -193,32 +189,14 @@ where
             debug!(?elapsed, "txpool create_proposal");
         });
 
-        if !self.try_promote_pending(
-            event_tracker,
-            block_policy,
-            state_backend,
-            pending,
-            0,
-            MAX_PROMOTABLE_ON_CREATE_PROPOSAL,
-        ) {
-            error!("txpool failed to promote pending txs during create_proposal");
-        }
-
         if self.txs.is_empty() || tx_limit == 0 {
             return Ok(Vec::new());
         }
 
-        let sequencer = ProposalSequencer::new(
-            &self.txs,
-            &extending_blocks,
-            chain_config.chain_id(),
-            base_fee,
-        );
+        let sequencer = ProposalSequencer::new(&self.txs, &extending_blocks, base_fee, tx_limit);
         let sequencer_len = sequencer.len();
 
-        let authority_addresses = sequencer.authority_addresses().cloned().collect_vec();
-
-        let (mut account_balances, authority_nonces, state_backend_lookups) = {
+        let (mut account_balances, state_backend_lookups) = {
             let _timer = DropTimer::start(Duration::ZERO, |elapsed| {
                 debug!(
                     ?elapsed,
@@ -236,12 +214,6 @@ where
                     Some(&extending_blocks),
                     sequencer.addresses(),
                 )?,
-                block_policy.get_account_base_nonces(
-                    proposed_seq_num,
-                    state_backend,
-                    &extending_blocks,
-                    authority_addresses.iter(),
-                )?,
                 state_backend.total_db_lookups() - total_db_lookups_before,
             )
         };
@@ -251,18 +223,9 @@ where
             num_txs = self.num_txs(),
             sequencer_len,
             account_balances = account_balances.len(),
-            authority_nonces = authority_nonces.len(),
             ?state_backend_lookups,
             "txpool sequencing transactions"
         );
-
-        for authority in authority_addresses.iter() {
-            let Some(account_balance) = account_balances.get_mut(&authority) else {
-                continue;
-            };
-
-            account_balance.is_delegated = true;
-        }
 
         let validator = EthBlockPolicyBlockValidator::new(
             proposed_seq_num,
@@ -279,7 +242,6 @@ where
             proposal_byte_limit,
             chain_config,
             account_balances,
-            authority_nonces,
             validator,
         );
 

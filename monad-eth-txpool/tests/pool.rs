@@ -18,7 +18,9 @@ use std::{
     sync::Arc,
 };
 
-use alloy_consensus::{transaction::Recovered, SignableTransaction, TxEnvelope, TxLegacy};
+use alloy_consensus::{
+    transaction::Recovered, SignableTransaction, Transaction, TxEnvelope, TxLegacy,
+};
 use alloy_primitives::{hex, Address, TxKind, B256, U256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
@@ -935,7 +937,30 @@ fn test_insert_low_balance() {
 
     run_custom(
         make_test_block_policy,
-        Balance::ONE,
+        (BASE_FEE_PER_GAS * tx1.gas_limit() - 1).try_into().unwrap(),
+        None,
+        [
+            TxPoolTestEvent::InsertTxs {
+                txs: vec![(&tx1, false)],
+                expected_pool_size_change: 0,
+            },
+            TxPoolTestEvent::Block(Arc::new(|pool| {
+                assert!(pool.is_empty());
+            })),
+            TxPoolTestEvent::CreateProposal {
+                base_fee: BASE_FEE_PER_GAS,
+                tx_limit: 1,
+                gas_limit: GAS_LIMIT,
+                byte_limit: PROPOSAL_SIZE_LIMIT,
+                expected_txs: vec![],
+                add_to_blocktree: true,
+            },
+        ],
+    );
+
+    run_custom(
+        make_test_block_policy,
+        (BASE_FEE_PER_GAS * tx1.gas_limit()).try_into().unwrap(),
         None,
         [
             TxPoolTestEvent::InsertTxs {
@@ -947,7 +972,7 @@ fn test_insert_low_balance() {
                 tx_limit: 1,
                 gas_limit: GAS_LIMIT,
                 byte_limit: PROPOSAL_SIZE_LIMIT,
-                expected_txs: vec![],
+                expected_txs: vec![&tx1],
                 add_to_blocktree: true,
             },
         ],
@@ -1523,6 +1548,39 @@ fn test_eip7702_authorization_nonce_higher() {
 }
 
 #[test]
+fn test_eip7702_authorization_nonce_equal() {
+    let tx1 = make_eip7702_tx(
+        S1,
+        BASE_FEE + 1,
+        1,
+        GAS_LIMIT_EIP_7702,
+        0,
+        vec![make_signed_authorization(S1, secret_to_eth_address(S1), 0)],
+        10,
+    );
+    let tx2 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 1, 0);
+
+    run_simple([
+        TxPoolTestEvent::InsertTxs {
+            txs: vec![(&tx1, true), (&tx2, true)],
+            expected_pool_size_change: 2,
+        },
+        TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
+            tx_limit: 2,
+            gas_limit: GAS_LIMIT + GAS_LIMIT_EIP_7702,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
+            expected_txs: vec![&tx1, &tx2],
+            add_to_blocktree: true,
+        },
+        TxPoolTestEvent::AssertNonce {
+            address: secret_to_eth_address(S1),
+            nonce: 2,
+        },
+    ]);
+}
+
+#[test]
 fn test_eip7702_authorization_nonce_lower() {
     let tx1 = make_eip7702_tx(
         S1,
@@ -1569,10 +1627,10 @@ fn test_eip7702_authorization_nonce_lower() {
 
 #[test]
 fn test_eip7702_authorizations_with_conflicting_txs() {
-    // tx0 is 7702 has 50 auths from S2 sent from S1, S2 should have nonce 50 after inclusion
-    // tx1 is 1559 from S2 with nonce 49 (conflicting)
-    // tx2 is 1559 from S2 with nonce 50 (should be included)
-    const AUTH_LIST_SIZE: u64 = 50;
+    // tx0 is 7702 has 4 auths from S2 sent from S1, S2 should have nonce 4 after inclusion
+    // tx1 is 1559 from S2 with nonce 3 (conflicting)
+    // tx2 is 1559 from S2 with nonce 4 (should be included)
+    const AUTH_LIST_SIZE: u64 = 4;
     let auth_list = (0..AUTH_LIST_SIZE)
         .map(|i| make_signed_authorization(S2, secret_to_eth_address(S1), i))
         .collect_vec();
@@ -1585,8 +1643,8 @@ fn test_eip7702_authorizations_with_conflicting_txs() {
         auth_list,
         0,
     );
-    let tx1 = make_eip1559_tx(S2, BASE_FEE + 1, 1, 21_000, 49, 0);
-    let tx2 = make_eip1559_tx(S2, BASE_FEE + 1, 1, 21_000, 50, 0);
+    let tx1 = make_eip1559_tx(S2, BASE_FEE + 1, 1, 21_000, 3, 0);
+    let tx2 = make_eip1559_tx(S2, BASE_FEE + 1, 1, 21_000, 4, 0);
 
     run_simple([
         TxPoolTestEvent::InsertTxs {
@@ -1607,7 +1665,7 @@ fn test_eip7702_authorizations_with_conflicting_txs() {
         },
         TxPoolTestEvent::AssertNonce {
             address: secret_to_eth_address(S2),
-            nonce: 50,
+            nonce: 4,
         },
         TxPoolTestEvent::CreateProposal {
             base_fee: BASE_FEE_PER_GAS,
@@ -1623,7 +1681,7 @@ fn test_eip7702_authorizations_with_conflicting_txs() {
         },
         TxPoolTestEvent::AssertNonce {
             address: secret_to_eth_address(S2),
-            nonce: 51,
+            nonce: 5,
         },
         TxPoolTestEvent::Block(Arc::new(|pool| {
             assert!(!pool.is_empty());
@@ -1636,4 +1694,19 @@ fn test_eip7702_authorizations_with_conflicting_txs() {
             assert!(pool.is_empty());
         })),
     ]);
+}
+
+#[test]
+fn test_eip7702_authorizations_list_too_long() {
+    for (auths, should_include) in [(4, true), (5, false)] {
+        let auth_list = (0..auths)
+            .map(|i| make_signed_authorization(S2, secret_to_eth_address(S1), i))
+            .collect_vec();
+        let tx0 = make_eip7702_tx(S1, BASE_FEE + 1, 1, 10_000_000, 0, auth_list, 0);
+
+        run_simple([TxPoolTestEvent::InsertTxs {
+            txs: vec![(&tx0, should_include)],
+            expected_pool_size_change: if should_include { 1 } else { 0 },
+        }]);
+    }
 }

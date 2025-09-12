@@ -1936,9 +1936,6 @@ mod test {
         proposal_byte_limit: 4_000_000,
         max_reserve_balance: RESERVE_BALANCE,
         vote_pace: Duration::from_millis(1000),
-
-        validate_system_txs: true,
-        eip_7702: true,
     };
 
     type SignatureType = NopSignature;
@@ -2192,7 +2189,7 @@ mod test {
                     blob_gas_used: 0,
                     excess_blob_gas: 0,
                     parent_beacon_block_root: [0_u8; 32],
-                    requests_hash: [0_u8; 32],
+                    requests_hash: Some([0_u8; 32]),
                 },
                 Vec::new(),
             )
@@ -2224,7 +2221,7 @@ mod test {
                     blob_gas_used: 0,
                     excess_blob_gas: 0,
                     parent_beacon_block_root: [0_u8; 32],
-                    requests_hash: [0_u8; 32],
+                    requests_hash: Some([0_u8; 32]),
                 },
                 delayed_execution_results,
             )
@@ -2257,7 +2254,7 @@ mod test {
                     blob_gas_used: 0,
                     excess_blob_gas: 0,
                     parent_beacon_block_root: [0_u8; 32],
-                    requests_hash: [0_u8; 32],
+                    requests_hash: Some([0_u8; 32]),
                 },
                 delayed_execution_results,
             )

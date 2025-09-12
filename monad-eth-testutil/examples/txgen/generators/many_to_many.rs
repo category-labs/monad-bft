@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use super::{erc20_transfer, native_transfer};
-use crate::{cli::TxType, prelude::*, shared::erc20::ERC20};
+use crate::{config::TxType, prelude::*, shared::erc20::ERC20};
 
 pub struct ManyToManyGenerator {
     pub recipient_keys: KeyPool,

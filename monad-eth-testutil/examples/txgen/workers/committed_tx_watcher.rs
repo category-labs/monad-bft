@@ -20,7 +20,7 @@ use eyre::Context;
 use serde_json::json;
 
 use super::*;
-use crate::{cli::Config, shared::blockstream::BlockStream};
+use crate::{config::Config, shared::blockstream::BlockStream};
 
 pub struct CommittedTxWatcher {
     sent_txs: Arc<DashMap<TxHash, Instant>>,
@@ -183,11 +183,14 @@ impl CommittedTxWatcher {
             block_num.encode(&mut (&mut block_num_bytes as &mut [u8]));
 
             metrics.receipts_rpc_calls.fetch_add(1, SeqCst);
-            client.request(method, [block_num]).await.map_err(|e| {
-                metrics.logs_rpc_calls_error.fetch_add(1, SeqCst);
-                // todo: properly wrap error
-                eyre::eyre!("Failed to get logs for block {block_num} {e}")
-            })?
+            client
+                .request(method, [format!("0x{:x}", block_num)])
+                .await
+                .map_err(|e| {
+                    metrics.logs_rpc_calls_error.fetch_add(1, SeqCst);
+                    // todo: properly wrap error
+                    eyre::eyre!("Failed to get logs for block {block_num} {e}")
+                })?
         };
 
         for rx in rxs {

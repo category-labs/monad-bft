@@ -678,7 +678,6 @@ where
         );
     }
 
-    #[cfg(test)]
     pub fn get_fullnode_map(&self) -> BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Group<ST>> {
         let mut res: BTreeMap<_, _> = BTreeMap::new();
         for (vid, group_queue) in &self.fullnode_map {

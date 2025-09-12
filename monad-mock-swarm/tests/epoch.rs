@@ -133,9 +133,6 @@ mod test {
         proposal_byte_limit: 4_000_000,
         max_reserve_balance: 1_000_000_000_000_000_000,
         vote_pace: Duration::from_millis(0),
-
-        validate_system_txs: true,
-        eip_7702: true,
     };
 
     fn verify_nodes_in_epoch(nodes: Vec<&Node<impl SwarmRelation>>, epoch: Epoch) {

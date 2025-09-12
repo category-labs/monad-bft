@@ -20,7 +20,7 @@ use alloy_consensus::{
 };
 use alloy_primitives::Address;
 use alloy_rlp::Encodable;
-use itertools::Itertools;
+use itertools::{Either, Itertools};
 use monad_chain_config::{
     execution_revision::MonadExecutionRevision,
     revision::{ChainRevision, MockChainRevision},
@@ -33,13 +33,14 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
+use monad_eth_block_policy::{timestamp_ns_to_secs, EthBlockPolicy, EthValidatedBlock};
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason, EthTxPoolSnapshot};
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ExtractEthAddress, ProposedEthHeader};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_system_calls::{SystemTransactionGenerator, SYSTEM_SENDER_ETH_ADDRESS};
-use monad_types::{Balance, Epoch, NodeId, Round, SeqNum};
+use monad_types::{Epoch, NodeId, Round, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing::{debug, info, warn};
 
 use self::{pending::PendingTxMap, tracked::TrackedTxMap, transaction::ValidEthTransaction};
@@ -53,7 +54,7 @@ mod transaction;
 // process. It was set based on intuition and should be changed once we have more data on txpool
 // performance.
 // Each account lookup takes about 30us so this should block the thread for at most roughly 8ms.
-const INSERT_TXS_MAX_PROMOTE: usize = 256;
+const INSERT_TXS_MAX_PROMOTE: usize = 128;
 const PENDING_MAX_PROMOTE: usize = 128;
 
 #[derive(Clone, Debug)]
@@ -135,20 +136,24 @@ where
             return;
         };
 
-        let txs = txs
-            .into_iter()
-            .filter_map(|tx| {
-                ValidEthTransaction::validate(
-                    event_tracker,
-                    last_commit,
-                    self.chain_id,
-                    self.chain_revision.chain_params(),
-                    self.execution_revision.execution_chain_params(),
-                    tx,
-                    owned,
-                )
-            })
-            .collect_vec();
+        let chain_params = self.chain_revision.chain_params();
+        let execution_params = self.execution_revision.execution_chain_params();
+
+        let (txs, invalid_txs): (Vec<_>, Vec<_>) = txs.into_par_iter().partition_map(|tx| {
+            Either::from(ValidEthTransaction::validate(
+                last_commit,
+                self.chain_id,
+                chain_params,
+                execution_params,
+                tx,
+                owned,
+            ))
+            .flip()
+        });
+
+        for (tx, drop_reason) in invalid_txs {
+            event_tracker.drop(*tx.tx_hash(), drop_reason);
+        }
 
         // BlockPolicy only guarantees that data is available for seqnum (N-k, N] for some execution
         // delay k. Since block_policy looks up seqnum - execution_delay, passing the last commit
@@ -181,7 +186,10 @@ where
         for tx in txs {
             if account_balances
                 .get(tx.signer_ref())
-                .is_none_or(|x| x.balance == Balance::ZERO)
+                .is_none_or(|account_balance_state| {
+                    account_balance_state.balance
+                        < last_commit_base_fee.saturating_mul(tx.gas_limit())
+                })
             {
                 event_tracker.drop(tx.hash(), EthTxPoolDropReason::InsufficientBalance);
                 continue;
@@ -264,9 +272,7 @@ where
 
         self.tracked.evict_expired_txs(event_tracker);
 
-        let timestamp_seconds = timestamp_ns / 1_000_000_000;
-        // u64::MAX seconds is ~500 Billion years
-        assert!(timestamp_seconds < u64::MAX.into());
+        let timestamp_seconds = timestamp_ns_to_secs(timestamp_ns);
 
         {
             let chain_id = chain_config.chain_id();
@@ -279,9 +285,7 @@ where
             }
 
             let chain_revision = chain_config.get_chain_revision(round);
-
-            let execution_revision =
-                chain_config.get_execution_chain_revision(timestamp_seconds as u64);
+            let execution_revision = chain_config.get_execution_chain_revision(timestamp_seconds);
 
             if chain_revision.chain_params() != self.chain_revision.chain_params()
                 || self.execution_revision != execution_revision
@@ -326,7 +330,6 @@ where
             extending_blocks.iter().collect(),
             state_backend,
             chain_config,
-            &mut self.pending,
             &self.chain_revision,
             &self.execution_revision,
         )?;
@@ -340,6 +343,17 @@ where
             ommers: Vec::new(),
             withdrawals: Vec::new(),
         };
+
+        let maybe_request_hash = if self
+            .execution_revision
+            .execution_chain_params()
+            .prague_enabled
+        {
+            Some([0_u8; 32])
+        } else {
+            None
+        };
+
         let header = ProposedEthHeader {
             transactions_root: *alloy_consensus::proofs::calculate_transaction_root(
                 &body.transactions,
@@ -357,7 +371,7 @@ where
             difficulty: 0,
             number: proposed_seq_num.0,
             gas_limit: proposal_gas_limit,
-            timestamp: timestamp_seconds as u64,
+            timestamp: timestamp_seconds,
             mix_hash: round_signature.get_hash().0,
             nonce: [0_u8; 8],
             extra_data: [0_u8; 32],
@@ -365,7 +379,7 @@ where
             blob_gas_used: 0,
             excess_blob_gas: 0,
             parent_beacon_block_root: [0_u8; 32],
-            requests_hash: [0_u8; 32],
+            requests_hash: maybe_request_hash,
         };
 
         self.update_aggregate_metrics(event_tracker);

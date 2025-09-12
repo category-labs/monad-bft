@@ -199,6 +199,10 @@ where
         self.dedicated_full_nodes = FullNodes::new(nodes);
     }
 
+    pub fn get_rebroadcast_groups(&self) -> &ReBroadcastGroupMap<ST> {
+        &self.rebroadcast_map
+    }
+
     fn enqueue_message_to_self(
         message: OM,
         pending_events: &mut VecDeque<RaptorCastEvent<M::Event, ST>>,
@@ -368,7 +372,6 @@ where
                         }
 
                         self.current_epoch = epoch;
-                        self.rebroadcast_map.delete_expired_groups(epoch, round);
                         while let Some(entry) = self.epoch_validators.first_entry() {
                             if *entry.key() + Epoch(1) < self.current_epoch {
                                 entry.remove();
@@ -377,6 +380,7 @@ where
                             }
                         }
                     }
+                    self.rebroadcast_map.delete_expired_groups(epoch, round);
                     self.peer_discovery_driver
                         .lock()
                         .unwrap()

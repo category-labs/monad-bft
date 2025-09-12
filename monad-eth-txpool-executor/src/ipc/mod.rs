@@ -39,7 +39,7 @@ pub use self::config::EthTxPoolIpcConfig;
 mod config;
 
 const MAX_BATCH_LEN: usize = 128;
-const BATCH_TIMER_INTERVAL_MS: u64 = 10;
+const BATCH_TIMER_INTERVAL_MS: u64 = 8;
 
 #[pin_project(project = EthTxPoolIpcServerProjected)]
 pub struct EthTxPoolIpcServer {

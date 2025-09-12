@@ -23,7 +23,9 @@ use alloy_consensus::{
     Eip658Value, Receipt, ReceiptWithBloom, SignableTransaction, Transaction, TxEip1559, TxEip7702,
     TxEnvelope, TxLegacy, EMPTY_OMMER_ROOT_HASH,
 };
-use alloy_eips::eip7702::{Authorization, SignedAuthorization};
+use alloy_eips::eip7702::{
+    Authorization, RecoveredAuthority, RecoveredAuthorization, SignedAuthorization,
+};
 use alloy_primitives::{keccak256, Address, Bloom, FixedBytes, Log, LogData, TxKind, U256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
@@ -44,7 +46,7 @@ use monad_eth_block_policy::{
     nonce_usage::{NonceUsage, NonceUsageMap},
     pre_tfm_compute_max_txn_cost, EthValidatedBlock,
 };
-use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader};
+use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader, ValidatedTx};
 use monad_secp::KeyPair;
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Balance, Epoch, NodeId, Round, SeqNum};
@@ -59,7 +61,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     pub block: ConsensusFullBlock<ST, SCT, EthExecutionProtocol>,
-    pub validated_txns: Vec<Recovered<TxEnvelope>>,
+    pub validated_txns: Vec<ValidatedTx>,
     pub nonce_usages: NonceUsageMap,
     pub txn_fees: BTreeMap<Address, TxnFee>,
 }
@@ -352,6 +354,7 @@ pub fn generate_consensus_test_block(
             mix_hash: signature.get_hash().0,
             base_fee_per_gas: base_fee,
             withdrawals_root: EMPTY_WITHDRAWALS.0,
+            requests_hash: Some([0_u8; 32]),
             ..Default::default()
         },
         body.get_id(),
@@ -366,9 +369,30 @@ pub fn generate_consensus_test_block(
 
     let (txn_fees, nonce_usages) = compute_expected_txn_fees_and_nonce_usages(&txs);
 
+    let mut validated_txns: Vec<ValidatedTx> = Vec::new();
+    for tx in txs.into_iter() {
+        let authorizations_7702: Vec<RecoveredAuthorization> = tx
+            .authorization_list()
+            .unwrap_or(&Vec::new())
+            .iter()
+            .filter_map(|a| {
+                a.recover_authority().ok().map(|authority| {
+                    RecoveredAuthorization::new_unchecked(
+                        a.inner().clone(),
+                        RecoveredAuthority::Valid(authority),
+                    )
+                })
+            })
+            .collect();
+        validated_txns.push(ValidatedTx {
+            tx,
+            authorizations_7702,
+        });
+    }
+
     ConsensusTestBlock {
         block: ConsensusFullBlock::new(header, body).expect("header doesn't match body"),
-        validated_txns: txs,
+        validated_txns,
         nonce_usages,
         txn_fees,
     }

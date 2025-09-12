@@ -36,12 +36,14 @@ use monad_peer_discovery::mock::NopDiscovery;
 use monad_raptor::SOURCE_SYMBOLS_MAX;
 use monad_raptorcast::{
     new_defaulted_raptorcast_for_tests,
+    raptorcast_secondary::group_message::FullNodesGroupMessage,
     udp::{build_messages, build_messages_with_length, MAX_REDUNDANCY},
-    util::{BuildTarget, EpochValidators, Redundancy},
+    util::{BuildTarget, EpochValidators, Group, Redundancy},
     RaptorCast, RaptorCastEvent,
 };
 use monad_secp::{KeyPair, SecpSignature};
-use monad_types::{Deserializable, Epoch, NodeId, Serializable, Stake};
+use monad_types::{Deserializable, Epoch, NodeId, Round, RoundSpan, Serializable, Stake};
+use tokio::sync::mpsc::unbounded_channel;
 use tracing_subscriber::fmt::format::FmtSpan;
 
 type SignatureType = SecpSignature;
@@ -612,4 +614,55 @@ async fn publish_to_full_nodes() {
     let MockEvent((from, id)) = event2;
     assert_eq!(from, validator_nodeid);
     assert_eq!(id, 42);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn delete_expired_groups() {
+    let node_keypair = keypair(1);
+    let node_id = NodeId::new(node_keypair.pubkey());
+    let node_addr = "127.0.0.1:10030".parse().unwrap();
+
+    let mut raptorcast = setup_raptorcast_service(node_keypair, node_addr, &HashMap::new());
+    raptorcast.exec(vec![RouterCommand::UpdateCurrentRound(Epoch(1), Round(1))]);
+
+    // setup
+    let (send_net_messages, _) = unbounded_channel::<FullNodesGroupMessage<SignatureType>>();
+    let (send_group_infos, recv_group_infos) = unbounded_channel::<Group<SignatureType>>();
+    raptorcast.set_is_dynamic_full_node(true);
+    raptorcast.bind_channel_to_secondary_raptorcast(send_net_messages, recv_group_infos);
+
+    // populate raptorcast group
+    let group = Group::new_fullnode_group(
+        vec![],
+        &node_id,
+        node_id,
+        RoundSpan {
+            start: Round(1),
+            end: Round(10),
+        },
+    );
+    send_group_infos.send(group).unwrap();
+
+    loop {
+        tokio::select! {
+            biased;
+            _ = raptorcast.next() => {},
+            _ = std::future::ready(()) => break,
+        }
+    }
+
+    let rebroadcast_map = raptorcast.get_rebroadcast_groups().get_fullnode_map();
+    assert_eq!(
+        rebroadcast_map.len(),
+        1,
+        "Expected one group in rebroadcast map"
+    );
+
+    // round increment beyond group end round
+    raptorcast.exec(vec![RouterCommand::UpdateCurrentRound(Epoch(1), Round(11))]);
+    let rebroadcast_map = raptorcast.get_rebroadcast_groups().get_fullnode_map();
+
+    // expired group should be deleted
+    assert!(rebroadcast_map.is_empty(), "Expected empty rebroadcast map");
 }

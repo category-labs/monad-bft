@@ -28,6 +28,8 @@ alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 indexmap = { workspace = true }
 itertools = { workspace = true }
+rand = { workspace = true }
+rayon = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }
 

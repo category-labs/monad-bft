@@ -39,6 +39,7 @@ alloy-sol-macro = { workspace = true }
 alloy-sol-types = { workspace = true }
 alloy-transport = { workspace = true }
 alloy-transport-http = { workspace = true, features = ["reqwest-rustls-tls"] }
+async-channel = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 dashmap = { workspace = true }
 eyre = { workspace = true }
@@ -53,6 +54,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+toml = { workspace = true }
 tracing = { workspace = true, features = ["log", "std"] }
 tracing-subscriber = { workspace = true, features = [
     "env-filter",

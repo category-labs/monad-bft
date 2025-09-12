@@ -47,7 +47,7 @@ pub fn static_validate_transaction(
 
     // post Ethereum Prague fork validation
     // includes EIP-7623 validation
-    EthPragueForkValidation::validate(tx, chain_params)?;
+    EthPragueForkValidation::validate(tx, execution_chain_params)?;
 
     if tx.is_eip7702() {
         match tx.authorization_list() {
@@ -168,9 +168,14 @@ impl EthShanghaiForkValidation {
 
 struct EthPragueForkValidation;
 impl EthPragueForkValidation {
-    fn validate(tx: &TxEnvelope, chain_params: &ChainParams) -> Result<(), TransactionError> {
-        Self::eip_7623(tx)?;
-        Self::eip_7702(tx, chain_params)?;
+    fn validate(
+        tx: &TxEnvelope,
+        execution_chain_params: &ExecutionChainParams,
+    ) -> Result<(), TransactionError> {
+        if execution_chain_params.prague_enabled {
+            Self::eip_7623(tx)?;
+        }
+        Self::eip_7702(tx, execution_chain_params)?;
 
         Ok(())
     }
@@ -183,12 +188,15 @@ impl EthPragueForkValidation {
         Ok(())
     }
 
-    fn eip_7702(tx: &TxEnvelope, chain_params: &ChainParams) -> Result<(), TransactionError> {
+    fn eip_7702(
+        tx: &TxEnvelope,
+        execution_chain_params: &ExecutionChainParams,
+    ) -> Result<(), TransactionError> {
         if !tx.is_eip7702() {
             return Ok(());
         }
 
-        if !chain_params.eip_7702 {
+        if !execution_chain_params.prague_enabled {
             return Err(TransactionError::UnsupportedTransactionType);
         }
 
@@ -287,9 +295,6 @@ mod test {
             proposal_byte_limit: MockChainRevision::DEFAULT.chain_params.proposal_byte_limit,
             vote_pace: MockChainRevision::DEFAULT.chain_params.vote_pace,
             max_reserve_balance: MockChainRevision::DEFAULT.chain_params.max_reserve_balance,
-
-            validate_system_txs: MockChainRevision::DEFAULT.chain_params.validate_system_txs,
-            eip_7702: MockChainRevision::DEFAULT.chain_params.eip_7702,
         }
     }
 

@@ -19,7 +19,6 @@ use std::{
 };
 
 use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
-use alloy_eips::eip7702::Authorization;
 use alloy_primitives::Address;
 use indexmap::IndexMap;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
@@ -28,44 +27,28 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{
-    nonce_usage::NonceUsageRetrievable, EthBlockPolicyBlockValidator, EthValidatedBlock,
+    nonce_usage::{NonceUsage, NonceUsageRetrievable},
+    EthBlockPolicyBlockValidator, EthValidatedBlock,
 };
-use monad_system_calls::SYSTEM_SENDER_ETH_ADDRESS;
 use monad_validator::signature_collection::SignatureCollection;
+use rand::seq::SliceRandom;
 use tracing::{debug, error, trace, warn};
 
 use super::list::TrackedTxList;
-use crate::pool::transaction::ValidEthTransaction;
+use crate::pool::transaction::{ValidEthRecoveredAuthorization, ValidEthTransaction};
 
 #[derive(Debug, PartialEq, Eq)]
 struct OrderedTx<'a> {
     tx: &'a ValidEthTransaction,
-    valid_signed_authorizations: Vec<(Address, &'a Authorization)>,
     effective_tip_per_gas: u128,
 }
 
 impl<'a> OrderedTx<'a> {
-    fn new(tx: &'a ValidEthTransaction, chain_id: u64, base_fee: u64) -> Option<Self> {
+    fn new(tx: &'a ValidEthTransaction, base_fee: u64) -> Option<Self> {
         let effective_tip_per_gas = tx.raw().effective_tip_per_gas(base_fee)?;
-
-        let mut valid_signed_authorizations = Vec::new();
-        for signed_authorization in tx.raw().authorization_list().into_iter().flatten() {
-            if signed_authorization.chain_id != 0 && signed_authorization.chain_id != chain_id {
-                continue;
-            }
-
-            if let Ok(authority) = signed_authorization.recover_authority() {
-                // system account cannot be used to sign authorizations
-                if authority == SYSTEM_SENDER_ETH_ADDRESS {
-                    return None;
-                }
-                valid_signed_authorizations.push((authority, signed_authorization.inner()));
-            }
-        }
 
         Some(Self {
             tx,
-            valid_signed_authorizations,
             effective_tip_per_gas,
         })
     }
@@ -115,8 +98,8 @@ impl<'a> ProposalSequencer<'a> {
     pub fn new<ST, SCT>(
         tracked_txs: &'a IndexMap<Address, TrackedTxList>,
         extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
-        chain_id: u64,
         base_fee: u64,
+        tx_limit: usize,
     ) -> Self
     where
         ST: CertificateSignatureRecoverable,
@@ -130,7 +113,7 @@ impl<'a> ProposalSequencer<'a> {
         for (address, tx_list) in tracked_txs {
             let mut queued = tx_list
                 .get_queued(pending_nonce_usages.remove(address))
-                .map_while(|tx| OrderedTx::new(tx, chain_id, base_fee));
+                .map_while(|tx| OrderedTx::new(tx, base_fee));
 
             let Some(tx) = queued.next() else {
                 continue;
@@ -146,6 +129,9 @@ impl<'a> ProposalSequencer<'a> {
             });
             virtual_time += 1;
         }
+
+        heap_vec.partial_shuffle(&mut rand::thread_rng(), tx_limit);
+        heap_vec.truncate(tx_limit);
 
         Self {
             heap: BinaryHeap::from(heap_vec),
@@ -168,22 +154,6 @@ impl<'a> ProposalSequencer<'a> {
         )
     }
 
-    pub fn authority_addresses(&self) -> impl Iterator<Item = &Address> {
-        self.heap.iter().flat_map(
-            |OrderedTxGroup {
-                 tx,
-                 virtual_time: _,
-                 address: _,
-                 queued,
-             }| {
-                std::iter::once(tx)
-                    .chain(queued.iter())
-                    .flat_map(|tx| tx.valid_signed_authorizations.iter())
-                    .map(|(authority, _)| authority)
-            },
-        )
-    }
-
     pub fn build_proposal<CCT, CRT>(
         mut self,
         chain_id: u64,
@@ -192,7 +162,6 @@ impl<'a> ProposalSequencer<'a> {
         proposal_byte_limit: u64,
         chain_config: &CCT,
         mut account_balances: BTreeMap<&Address, AccountBalanceState>,
-        mut authority_nonces: BTreeMap<&'a Address, u64>,
         validator: EthBlockPolicyBlockValidator<CRT>,
     ) -> Proposal
     where
@@ -201,7 +170,7 @@ impl<'a> ProposalSequencer<'a> {
     {
         let mut proposal = Proposal::default();
 
-        let mut authority_nonce_deltas = BTreeMap::<Address, usize>::default();
+        let mut authority_possible_nonce_deltas = BTreeMap::<Address, Vec<u64>>::default();
 
         'proposal: while proposal.txs.len() < tx_limit {
             let Some(OrderedTxGroup {
@@ -214,13 +183,27 @@ impl<'a> ProposalSequencer<'a> {
                 break;
             };
 
-            if let Some(authority_nonce_delta) = authority_nonce_deltas.remove(address) {
-                for _ in 0..authority_nonce_delta {
+            if let Some(possible_nonce_deltas) = authority_possible_nonce_deltas.remove(address) {
+                let new_account_nonce = NonceUsage::Possible(possible_nonce_deltas.into())
+                    .apply_to_account_nonce(tx.tx.nonce());
+
+                assert!(tx.tx.nonce() <= new_account_nonce);
+
+                while tx.tx.nonce() < new_account_nonce {
                     let Some(next_tx) = queued.pop_front() else {
                         continue 'proposal;
                     };
 
                     tx = next_tx;
+                }
+
+                if tx.tx.nonce() != new_account_nonce {
+                    error!(
+                        tx_nonce = tx.tx.nonce(),
+                        new_account_nonce,
+                        "txpool sequencer authority nonce delta invariant broken"
+                    );
+                    break 'proposal;
                 }
 
                 self.push(address, tx, queued);
@@ -240,7 +223,11 @@ impl<'a> ProposalSequencer<'a> {
                     self.push(address, next_tx, queued);
                 }
 
-                for (authority, authorization) in tx.valid_signed_authorizations {
+                for ValidEthRecoveredAuthorization {
+                    authority,
+                    authorization,
+                } in tx.tx.iter_valid_recovered_authorizations()
+                {
                     if authorization.chain_id != 0
                         && authorization.chain_id != chain_config.chain_id()
                     {
@@ -254,23 +241,15 @@ impl<'a> ProposalSequencer<'a> {
                         continue;
                     }
 
-                    let Some(authority_nonce) = authority_nonces.get_mut(&authority) else {
-                        error!(
-                            tx = ?tx.tx,
-                            ?address,
-                            ?authority,
-                            ?authorization,
-                            "txpool missing expected authority nonce"
-                        );
-                        break 'proposal;
+                    let Some(account_balance) = account_balances.get_mut(authority) else {
+                        continue;
                     };
 
-                    if authority_nonce != &authorization.nonce {
-                        continue;
-                    }
-
-                    *authority_nonce += 1;
-                    *authority_nonce_deltas.entry(authority).or_default() += 1;
+                    account_balance.is_delegated = true;
+                    authority_possible_nonce_deltas
+                        .entry(*authority)
+                        .or_default()
+                        .push(authorization.nonce);
                 }
             }
         }
@@ -304,14 +283,6 @@ impl<'a> ProposalSequencer<'a> {
         {
             return false;
         }
-
-        let Some(account_balance) = account_balances.get_mut(address) else {
-            error!(
-                ?address,
-                "txpool create_proposal account_balances lookup failed"
-            );
-            return false;
-        };
 
         if let Err(error) = validator.try_add_transaction(account_balances, tx.raw()) {
             debug!(

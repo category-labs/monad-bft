@@ -34,7 +34,7 @@ use pin_project::pin_project;
 use tracing::debug;
 
 const EGRESS_MIN_COMMITTED_SEQ_NUM_DIFF: u64 = 5;
-const EGRESS_MAX_RETRIES: usize = 2;
+const EGRESS_MAX_RETRIES: usize = 3;
 
 const INGRESS_CHUNK_MAX_SIZE: usize = 128;
 const INGRESS_CHUNK_INTERVAL_MS: u64 = 8;
