@@ -553,7 +553,7 @@ mod test {
     use monad_eth_types::EMPTY_RLP_TX_LIST;
     use monad_state_backend::{InMemoryState, InMemoryStateInner};
     use monad_testutil::signing::MockSignatures;
-    use monad_types::{Balance, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
+    use monad_types::{Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 
     use super::BlockTree;
     use crate::blocktree::RootInfo;
@@ -702,7 +702,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let state_backend = InMemoryStateInner::genesis(Balance::MAX, SeqNum(4));
+        let state_backend = InMemoryStateInner::genesis(SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         blocktree.add(g.clone().into());
 
@@ -818,7 +818,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let state_backend = InMemoryStateInner::genesis(Balance::MAX, SeqNum(4));
+        let state_backend = InMemoryStateInner::genesis(SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         blocktree.add(g.into());
 
@@ -880,7 +880,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let state_backend = InMemoryStateInner::genesis(Balance::MAX, SeqNum(4));
+        let state_backend = InMemoryStateInner::genesis(SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         blocktree.add(g.clone().into());
         blocktree.add(b1.clone().into());
@@ -933,10 +933,7 @@ mod test {
             timestamp_ns: GENESIS_TIMESTAMP,
         });
         let state_backend =
-            InMemoryStateInner::<NopSignature, MockSignatures<NopSignature>>::genesis(
-                Balance::MAX,
-                SeqNum(4),
-            );
+            InMemoryStateInner::<NopSignature, MockSignatures<NopSignature>>::genesis(SeqNum(4));
         let block_policy = PassthruBlockPolicy;
         blocktree.add(g.into());
         blocktree.add(b1.clone().into());
@@ -963,7 +960,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let state_backend = InMemoryStateInner::genesis(Balance::MAX, SeqNum(4));
+        let state_backend = InMemoryStateInner::genesis(SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         blocktree.add(g.clone().into());
         blocktree.try_update_coherency(
@@ -1050,7 +1047,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let state_backend = InMemoryStateInner::genesis(Balance::MAX, SeqNum(4));
+        let state_backend = InMemoryStateInner::genesis(SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         blocktree.add(g.clone().into());
         blocktree.try_update_coherency(
@@ -1159,7 +1156,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let state_backend = InMemoryStateInner::genesis(Balance::MAX, SeqNum(4));
+        let state_backend = InMemoryStateInner::genesis(SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         blocktree.add(g.clone().into());
         blocktree.add(b1.clone().into());
@@ -1231,7 +1228,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let state_backend = InMemoryStateInner::genesis(Balance::MAX, SeqNum(4));
+        let state_backend = InMemoryStateInner::genesis(SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         blocktree.add(g.clone().into());
         assert!(blocktree.maybe_fill_path_to_root(&g.header().qc).is_none()); // root naturally don't have missing ancestor
@@ -1311,7 +1308,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let state_backend = InMemoryStateInner::genesis(Balance::MAX, SeqNum(4));
+        let state_backend = InMemoryStateInner::genesis(SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         blocktree.add(g.clone().into());
         assert!(blocktree.maybe_fill_path_to_root(&g.header().qc).is_none()); // root naturally don't have missing ancestor
@@ -1430,7 +1427,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let state_backend = InMemoryStateInner::genesis(Balance::MAX, SeqNum(4));
+        let state_backend = InMemoryStateInner::genesis(SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         blocktree.add(g.clone().into());
         assert!(blocktree.maybe_fill_path_to_root(&g.header().qc).is_none()); // root naturally don't have missing ancestor
@@ -1549,7 +1546,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let state_backend = InMemoryStateInner::genesis(Balance::MAX, SeqNum(4));
+        let state_backend = InMemoryStateInner::genesis(SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         blocktree.add(g.clone().into());
         assert!(blocktree.maybe_fill_path_to_root(&g.header().qc).is_none()); // root naturally don't have missing ancestor
@@ -1653,7 +1650,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let state_backend = InMemoryStateInner::genesis(Balance::MAX, SeqNum(4));
+        let state_backend = InMemoryStateInner::genesis(SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         blocktree.add(g.clone().into());
         assert!(blocktree.maybe_fill_path_to_root(&g.header().qc).is_none()); // root naturally don't have missing ancestor
@@ -1806,10 +1803,7 @@ mod test {
             timestamp_ns: GENESIS_TIMESTAMP,
         });
         let state_backend =
-            InMemoryStateInner::<NopSignature, MockSignatures<NopSignature>>::genesis(
-                Balance::MAX,
-                SeqNum(4),
-            );
+            InMemoryStateInner::<NopSignature, MockSignatures<NopSignature>>::genesis(SeqNum(4));
         let block_policy = PassthruBlockPolicy;
         blocktree.add(b2.clone().into());
         assert!(blocktree.root.children_blocks.is_empty());
@@ -1860,7 +1854,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let state_backend = InMemoryStateInner::genesis(Balance::MAX, SeqNum(4));
+        let state_backend = InMemoryStateInner::genesis(SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
 
         // insertion order: insert all blocks except b3, then b3
