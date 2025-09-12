@@ -197,7 +197,7 @@ where
 
             let Some(tx) = self
                 .tracked
-                .try_insert_tx(event_tracker, tx)
+                .try_insert_tx(event_tracker, tx.clone())
                 .unwrap_or_else(|tx| {
                     self.pending
                         .try_insert_tx(event_tracker, tx, last_commit_base_fee)
