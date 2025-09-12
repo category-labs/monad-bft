@@ -23,7 +23,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use rand::{rngs::OsRng, RngCore};
 use zeroize::Zeroize;
 
-use crate::keystore::{Keystore, KeystoreVersion, SecretKey};
+use crate::keystore::{Keystore, KeystoreSecret, KeystoreVersion};
 
 pub mod checksum_module;
 pub mod cipher_module;
@@ -50,7 +50,7 @@ enum Commands {
         #[arg(long)]
         password: String,
 
-        /// Optionally print public key
+        /// Optionally print private and public key
         #[arg(long)]
         key_type: Option<KeyType>,
     },
@@ -64,15 +64,15 @@ enum Commands {
         #[arg(long)]
         password: String,
 
-        /// Optionally print public key
+        /// Optionally print private and public key
         #[arg(long)]
         key_type: Option<KeyType>,
     },
-    /// Regenerate keystore from private key
+    /// Regenerate keystore from IKM
     Import {
-        /// Private key in hex
+        /// IKM in hex
         #[arg(long)]
-        private_key: String,
+        ikm: String,
 
         /// Path to write keystore file
         #[arg(long)]
@@ -82,7 +82,7 @@ enum Commands {
         #[arg(long)]
         password: String,
 
-        /// Optionally print public key
+        /// Optionally print private and public key
         #[arg(long)]
         key_type: Option<KeyType>,
     },
@@ -107,24 +107,29 @@ fn main() {
             println!("It is recommended to generate key in air-gapped machine to be secure.");
             println!("This tool is currently not fit for production use.");
 
-            let mut ikm = vec![0u8; 32];
+            let mut ikm = vec![0_u8; 32];
             OsRng.fill_bytes(&mut ikm);
-            println!(
-                "Keep your private key material securely: {:?}",
-                hex::encode(&ikm)
-            );
+            println!("Keep your IKM secure: {}", hex::encode(&ikm));
 
             if let Some(key_type) = key_type {
-                // print public key using version 2 approach
-                let mut secret_key = SecretKey::new(ikm.clone());
+                // print private and public key using version 2 approach
+                let mut keystore_secret = KeystoreSecret::new(ikm.clone());
                 match key_type {
                     KeyType::Bls => {
-                        let bls_keypair = secret_key.to_bls(KeystoreVersion::DirectIkm).unwrap();
-                        println!("BLS public key: {:?}", bls_keypair.pubkey());
+                        let bls_keypair =
+                            keystore_secret.to_bls(KeystoreVersion::DirectIkm).unwrap();
+                        let private_key = bls_keypair.privkey_view();
+                        let public_key = bls_keypair.pubkey();
+                        println!("BLS private key: {}", private_key);
+                        println!("BLS public key: {:?}", public_key);
                     }
                     KeyType::Secp => {
-                        let secp_keypair = secret_key.to_secp(KeystoreVersion::DirectIkm).unwrap();
-                        println!("Secp public key: {:?}", secp_keypair.pubkey());
+                        let secp_keypair =
+                            keystore_secret.to_secp(KeystoreVersion::DirectIkm).unwrap();
+                        let private_key = secp_keypair.privkey_view();
+                        let public_key = secp_keypair.pubkey();
+                        println!("Secp private key: {}", private_key);
+                        println!("Secp public key: {:?}", public_key);
                     }
                 }
             }
@@ -148,14 +153,14 @@ fn main() {
             password,
             key_type,
         } => {
-            println!("Recovering private and public key from keystore file...");
+            println!("Recovering secret from keystore file...");
 
-            // recover private key with version
+            // recover keystore secret with version
             let result = Keystore::load_key_with_version(&keystore_path, &password);
-            let (mut private_key, version) = match result {
-                Ok((private_key, version)) => (private_key, version),
+            let (mut keystore_secret, version) = match result {
+                Ok((keystore_secret, version)) => (keystore_secret, version),
                 Err(err) => {
-                    println!("Unable to recover private key");
+                    println!("Unable to recover keystore secret");
                     match err {
                         keystore::KeystoreError::InvalidJSONFormat => {
                             println!("Invalid JSON format")
@@ -175,54 +180,61 @@ fn main() {
             };
 
             println!("Keystore version: {}", version);
-            println!(
-                "Keep your private key securely: {:?}",
-                hex::encode(private_key.as_ref())
-            );
 
             if let Some(key_type) = key_type {
                 // print public key based on key type and version
                 match key_type {
                     KeyType::Bls => {
-                        let bls_keypair = private_key.to_bls(version).unwrap();
-                        println!("BLS public key: {:?}", bls_keypair.pubkey());
+                        let bls_keypair = keystore_secret.to_bls(version).unwrap();
+                        let private_key = bls_keypair.privkey_view();
+                        let public_key = bls_keypair.pubkey();
+                        println!("BLS private key: {}", private_key);
+                        println!("BLS public key: {:?}", public_key);
                     }
                     KeyType::Secp => {
-                        let secp_keypair = private_key.to_secp(version).unwrap();
-                        println!("Secp public key: {:?}", secp_keypair.pubkey());
+                        let secp_keypair = keystore_secret.to_secp(version).unwrap();
+                        let private_key = secp_keypair.privkey_view();
+                        let public_key = secp_keypair.pubkey();
+                        println!("Secp private key: {}", private_key);
+                        println!("Secp public key: {:?}", public_key);
                     }
                 }
             }
         }
         Commands::Import {
-            private_key,
+            ikm,
             keystore_path,
             password,
             key_type,
         } => {
-            let private_key_hex = match private_key.strip_prefix("0x") {
+            let ikm_hex = match ikm.strip_prefix("0x") {
                 Some(hex) => hex,
-                None => &private_key,
+                None => &ikm,
             };
-            let private_key_vec =
-                hex::decode(private_key_hex).expect("failed to parse private key as hex");
-            let mut private_key: SecretKey = private_key_vec.into();
+            let ikm_vec = hex::decode(ikm_hex).expect("failed to parse ikm as hex");
+            let mut ikm: KeystoreSecret = ikm_vec.into();
 
             if let Some(key_type) = key_type {
                 match key_type {
                     KeyType::Bls => {
-                        let bls_keypair = private_key.to_bls(KeystoreVersion::DirectIkm).unwrap();
-                        println!("BLS public key: {:?}", bls_keypair.pubkey());
+                        let bls_keypair = ikm.to_bls(KeystoreVersion::DirectIkm).unwrap();
+                        let private_key = bls_keypair.privkey_view();
+                        let public_key = bls_keypair.pubkey();
+                        println!("BLS private key: {}", private_key);
+                        println!("BLS public key: {:?}", public_key);
                     }
                     KeyType::Secp => {
-                        let secp_keypair = private_key.to_secp(KeystoreVersion::DirectIkm).unwrap();
-                        println!("Secp public key: {:?}", secp_keypair.pubkey());
+                        let secp_keypair = ikm.to_secp(KeystoreVersion::DirectIkm).unwrap();
+                        let private_key = secp_keypair.privkey_view();
+                        let public_key = secp_keypair.pubkey();
+                        println!("Secp private key: {}", private_key);
+                        println!("Secp public key: {:?}", public_key);
                     }
                 }
             }
 
             let result = Keystore::create_keystore_json_with_version(
-                private_key.as_ref(),
+                ikm.as_ref(),
                 &password,
                 &keystore_path,
                 KeystoreVersion::DirectIkm,

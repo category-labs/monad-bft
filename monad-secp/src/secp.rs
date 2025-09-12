@@ -24,13 +24,23 @@ use monad_crypto::{
 };
 use secp256k1::{ffi::CPtr, Secp256k1};
 use sha2::Sha256;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// secp256k1 public key
 #[derive(Copy, Clone, PartialOrd, Ord)]
 pub struct PubKey(secp256k1::PublicKey);
 /// secp256k1 keypair
 pub struct KeyPair(secp256k1::KeyPair);
+
+#[derive(ZeroizeOnDrop)]
+pub struct PrivKeyView(Vec<u8>);
+
+impl std::fmt::Display for PrivKeyView {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", hex::encode(&self.0))
+    }
+}
+
 /// secp256k1 ecdsa recoverable signature
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SecpSignature(secp256k1::ecdsa::RecoverableSignature);
@@ -116,6 +126,10 @@ impl KeyPair {
             &msg_hash::<SD>(msg),
             &self.0.secret_key(),
         ))
+    }
+
+    pub fn privkey_view(&self) -> PrivKeyView {
+        PrivKeyView(self.0.secret_bytes().into())
     }
 
     /// Get the pubkey
