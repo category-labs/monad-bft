@@ -13,21 +13,19 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
+use alloy_consensus::TxEnvelope;
 use alloy_primitives::Address;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_types::{EthAccount, EthHeader};
-use monad_types::{BlockId, Epoch, Nonce, Round, SeqNum, Stake};
+use monad_types::{BlockId, Epoch, Round, SeqNum, Stake};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 
 pub use self::{
-    in_memory::{InMemoryBlockState, InMemoryState, InMemoryStateInner},
+    in_memory::{AccountState, InMemoryBlockState, InMemoryState, InMemoryStateInner},
     mock::NopStateBackend,
     thread::StateBackendThreadClient,
 };
@@ -79,7 +77,7 @@ where
     fn total_db_lookups(&self) -> u64;
 }
 
-pub trait StateBackendTest<ST, SCT>
+pub trait MockExecution<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -90,7 +88,7 @@ where
         seq_num: SeqNum,
         round: Round,
         parent_id: BlockId,
-        new_account_nonces: BTreeMap<Address, Nonce>,
+        txns: Vec<TxEnvelope>,
     );
 
     fn ledger_commit(&mut self, block_id: &BlockId, seq_num: &SeqNum);
@@ -151,11 +149,11 @@ where
     }
 }
 
-impl<ST, SCT, T> StateBackendTest<ST, SCT> for Arc<Mutex<T>>
+impl<ST, SCT, T> MockExecution<ST, SCT> for Arc<Mutex<T>>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    T: StateBackendTest<ST, SCT>,
+    T: MockExecution<ST, SCT>,
 {
     fn ledger_commit(&mut self, block_id: &BlockId, seq_num: &SeqNum) {
         let mut state = self.lock().unwrap();
@@ -168,9 +166,9 @@ where
         seq_num: SeqNum,
         round: Round,
         parent_id: BlockId,
-        new_account_nonces: BTreeMap<Address, Nonce>,
+        txns: Vec<TxEnvelope>,
     ) {
         let mut state = self.lock().unwrap();
-        state.ledger_propose(block_id, seq_num, round, parent_id, new_account_nonces);
+        state.ledger_propose(block_id, seq_num, round, parent_id, txns);
     }
 }

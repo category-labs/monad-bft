@@ -44,7 +44,7 @@ mod test {
         DropTransformer, GenericTransformer, LatencyTransformer, PartitionTransformer,
         PeriodicTransformer, ID,
     };
-    use monad_types::{Balance, NodeId, SeqNum};
+    use monad_types::{NodeId, SeqNum};
     use monad_updaters::{
         ledger::{MockLedger, MockableLedger},
         statesync::MockStateSyncExecutor,
@@ -73,7 +73,7 @@ mod test {
             SimpleRoundRobin::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(Balance::MAX, SeqNum::MAX),
+            || InMemoryStateInner::genesis(SeqNum::MAX),
             SeqNum::MAX,                         // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -186,7 +186,7 @@ mod test {
             SimpleRoundRobin::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(Balance::MAX, SeqNum::MAX),
+            || InMemoryStateInner::genesis(SeqNum::MAX),
             SeqNum::MAX,                         // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -261,7 +261,7 @@ mod test {
             SimpleRoundRobin::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(Balance::MAX, SeqNum::MAX),
+            || InMemoryStateInner::genesis(SeqNum::MAX),
             SeqNum::MAX,                         // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -391,7 +391,7 @@ mod test {
             SimpleRoundRobin::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(Balance::MAX, SeqNum::MAX),
+            || InMemoryStateInner::genesis(SeqNum::MAX),
             SeqNum::MAX,                         // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
