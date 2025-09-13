@@ -128,7 +128,7 @@ impl ERC20 {
         let tx = TxEip1559 {
             chain_id,
             nonce,
-            gas_limit: 800_000, // usually around 600k gas
+            gas_limit: 20_000_000, // usually around 600k gas
             max_fee_per_gas,
             max_priority_fee_per_gas: 10,
             to: TxKind::Create,

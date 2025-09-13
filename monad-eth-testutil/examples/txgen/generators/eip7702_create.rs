@@ -97,7 +97,7 @@ impl Generator for EIP7702CreateGenerator {
                     target_account,
                     authorizations,
                     calldata,
-                    ctx.base_fee,
+                    ctx.base_fee * 2, // 100% increase
                     ctx.chain_id,
                 );
 

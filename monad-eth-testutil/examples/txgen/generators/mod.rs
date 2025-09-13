@@ -207,7 +207,7 @@ pub fn erc20_transfer(
     erc20: &ERC20,
     ctx: &GenCtx,
 ) -> TxEnvelope {
-    let max_fee_per_gas = ctx.base_fee;
+    let max_fee_per_gas = ctx.base_fee * 2;
     let tx = erc20.construct_transfer(
         &from.key,
         to,
@@ -228,7 +228,7 @@ pub fn erc20_transfer(
 }
 
 pub fn erc20_mint(from: &mut SimpleAccount, erc20: &ERC20, ctx: &GenCtx) -> TxEnvelope {
-    let max_fee_per_gas = ctx.base_fee;
+    let max_fee_per_gas = ctx.base_fee * 2;
     let tx = erc20.construct_mint(&from.key, from.nonce, max_fee_per_gas, ctx.chain_id);
 
     // update from

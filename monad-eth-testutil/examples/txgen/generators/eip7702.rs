@@ -99,7 +99,7 @@ impl Generator for EIP7702Generator {
                     let tx = self.batch_call_contract.create_authorization_usage_tx(
                         sender,
                         target_account,
-                        ctx.base_fee,
+                        ctx.base_fee * 2, // 100% increase
                         ctx.chain_id,
                     );
 
@@ -108,7 +108,7 @@ impl Generator for EIP7702Generator {
                     debug!("No authorizations found, falling back to simple contract call");
                     let tx = self.batch_call_contract.create_simple_call_tx(
                         sender,
-                        ctx.base_fee,
+                        ctx.base_fee * 2, // 100% increase
                         ctx.chain_id,
                     );
                     txs.push((tx, self.batch_call_contract.addr));
