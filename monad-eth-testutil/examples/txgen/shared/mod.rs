@@ -15,6 +15,7 @@
 
 pub mod blockstream;
 pub mod ecmul;
+pub mod eip7702;
 pub mod erc20;
 pub mod eth_json_rpc;
 pub mod key_pool;

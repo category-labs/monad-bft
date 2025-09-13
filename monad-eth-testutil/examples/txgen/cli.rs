@@ -64,7 +64,7 @@ pub struct CliConfig {
 
     /// Which generation mode to use. Corresponds to Generator impls
     #[command(subcommand)]
-    pub gen_mode: CliGenMode,
+    pub gen_mode: Option<CliGenMode>,
 
     /// How many senders should be batched together when cycling between gen -> rpc sender -> refresher -> gen...
     #[arg(long, global = true)]
@@ -143,6 +143,7 @@ pub enum RequiredContract {
     ERC20,
     ECMUL,
     Uniswap,
+    EIP7702,
 }
 
 #[derive(Debug, Subcommand, Clone)]
@@ -165,6 +166,13 @@ pub enum CliGenMode {
     NullGen,
     ECMul,
     Uniswap,
+    EIP7702Reuse {
+        total_authorizations: usize,
+        authorizations_per_tx: usize,
+    },
+    EIP7702Create {
+        authorizations_per_tx: usize,
+    },
 }
 
 impl From<CliGenMode> for GenMode {
@@ -182,6 +190,18 @@ impl From<CliGenMode> for GenMode {
             CliGenMode::NullGen => GenMode::NullGen,
             CliGenMode::ECMul => GenMode::ECMul,
             CliGenMode::Uniswap => GenMode::Uniswap,
+            CliGenMode::EIP7702Reuse {
+                total_authorizations,
+                authorizations_per_tx,
+            } => GenMode::EIP7702Reuse(EIP7702Config {
+                total_authorizations,
+                authorizations_per_tx,
+            }),
+            CliGenMode::EIP7702Create {
+                authorizations_per_tx,
+            } => GenMode::EIP7702Create(EIP7702CreateConfig {
+                authorizations_per_tx,
+            }),
         }
     }
 }
@@ -258,7 +278,7 @@ impl From<CliConfig> for WorkloadGroup {
 impl From<CliConfig> for TrafficGen {
     fn from(value: CliConfig) -> Self {
         let mut traffic_gen = TrafficGen {
-            gen_mode: value.gen_mode.into(),
+            gen_mode: value.gen_mode.unwrap().into(),
             ..Default::default()
         };
 
