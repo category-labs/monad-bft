@@ -1142,12 +1142,12 @@ where
         &mut self,
         qc: &QuorumCertificate<SCT>,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+        //TODO(keep), Qc has priority than same round TC
+        // if qc.info.round < self.consensus.pacemaker.get_current_round() {
+        //     self.metrics.consensus_events.process_old_qc += 1;
+        //     return Vec::new();
+        // }
 
-        if qc.info.round < self.consensus.pacemaker.get_current_round() {
-            self.metrics.consensus_events.process_old_qc += 1;
-            return Vec::new();
-        }
-        /*
         match self.consensus.pacemaker.high_certificate() {
             RoundCertificate::Qc(_) => {
                 if qc.info.round < self.consensus.pacemaker.get_current_round() {
@@ -1167,7 +1167,7 @@ where
                 }
             }
         }
-        */
+
         self.metrics.consensus_events.process_qc += 1;
 
         let mut cmds = Vec::new();
