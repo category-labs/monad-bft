@@ -5740,9 +5740,11 @@ mod test {
            2. node1 receives Block 1/2/3 and advance to round 3
            3. node1 receives AdvanceRound(4) and advance to round 4
            4. node1/2/3/4 timeout at round 4
-           5. node1 receives node2/3/4's timeout and create QC(4), advance to round 5, and send out blocksync request
+           5. node1 receives node2/3/4's timeout and create QC(4), advance to round 5, and send out blockrange(4)
            6. node2/3/4 receives node1/2/3's timeout and create TC(4), and advance to round 5
-           7. node1 create proposal after receive blocksync
+           7. node1 create proposal(5) after receive blocksync(4)
+           8. all nodes vote for proposal(5) normally
+           9. round6_leader create proposal(6)
          */
 
         let mut scenario = setup_round4_tmo_scenario();
@@ -5822,6 +5824,7 @@ mod test {
         let cmds =node1.wrapped_state().handle_block_sync(block_sync.clone(), vec![full_block_4]);
         let create_proposal_cmd = find_create_proposal_cmd(cmds);
         assert_eq!(create_proposal_cmd.2, Round(5));
+        assert_eq!(create_proposal_cmd.3, SeqNum(5));
         assert_eq!(create_proposal_cmd.4.info.round, Round(4));
         assert_eq!(create_proposal_cmd.4.info.id,  block_4.get_id());
 
@@ -5830,15 +5833,69 @@ mod test {
         let cp = env.next_proposal(Vec::new());
         let (author, _, verified_message) = cp.destructure();
 
-        for (i, node) in [node1, node2, node3, node4].into_iter().enumerate() {
+        for (i, node) in [&mut node1, &mut node2, &mut node3, &mut node4].into_iter().enumerate() {
             let cmds = node.handle_proposal_message(author, verified_message.clone());
-            println!("after node{} process proposal", i);
-            for cmd in cmds {
-                println!("cmd: {:?}", cmd);
-            }
             assert!(
                 matches!(node.consensus_state.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(5))
             );
+
+            assert!(matches!(
+                node.consensus_state.pacemaker.high_certificate(),
+                RoundCertificate::Qc(qc) if qc.info.round == Round(4)
+            ))
         }
+
+        let epoch = Epoch(1);
+        let validator_set = node1
+            .val_epoch_map
+            .get_val_set(&epoch)
+            .expect("proposal message was verified")
+            .get_members();
+
+        let round6_leader_id = node1
+            .election.get_leader(Round(6), epoch, validator_set);
+
+        let mut round5_votes = vec![];
+        //all nodes send vote(5)
+        for (i, node) in [&mut node1, &mut node2, &mut node3, &mut node4].into_iter().enumerate() {
+            let cmds = node.wrapped_state().handle_vote_timer(Round(5));
+            let votes = extract_vote_msgs(cmds);
+            assert!(votes.len() == 2);
+            assert_eq!(votes[0].vote, votes[1].vote);
+            assert_eq!(votes[0].vote.round, Round(5));
+            round5_votes.push((node.nodeid, votes[0]));
+        }
+
+        //round6_leader collect votes(5) and create proposal(6)
+        let round6_leader = [&mut node1, &mut node2, &mut node3, &mut node4]
+            .into_iter()
+            .find(|node| node.nodeid == round6_leader_id)
+            .expect("round6_leader not found");
+
+        for (node_id,vote) in round5_votes {
+            let cmds = round6_leader.wrapped_state().handle_vote_message(node_id, vote);
+            if cmds.len() > 0 {
+               let create_proposal_cmd = find_create_proposal_cmd(cmds);
+                assert_eq!(create_proposal_cmd.2, Round(6));
+                assert_eq!(create_proposal_cmd.3, SeqNum(6));
+                assert_eq!(create_proposal_cmd.4.info.round, Round(5));
+            }
+        }
+
+        //use env to create proposal(6)
+        let cp = env.next_proposal(Vec::new());
+        let (author, _, verified_message) = cp.destructure();
+        for (i, node) in [&mut node1, &mut node2, &mut node3, &mut node4].into_iter().enumerate() {
+            let cmds = node.handle_proposal_message(author, verified_message.clone());
+            assert!(
+                matches!(node.consensus_state.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(6))
+            );
+
+            assert!(matches!(
+                node.consensus_state.pacemaker.high_certificate(),
+                RoundCertificate::Qc(qc) if qc.info.round == Round(5)
+            ))
+        }
+
     }
 }
