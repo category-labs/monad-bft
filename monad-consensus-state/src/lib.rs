@@ -1143,30 +1143,31 @@ where
         qc: &QuorumCertificate<SCT>,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         //TODO(keep), Qc has priority than same round TC
-        // if qc.info.round < self.consensus.pacemaker.get_current_round() {
-        //     self.metrics.consensus_events.process_old_qc += 1;
-        //     return Vec::new();
+        if qc.info.round < self.consensus.pacemaker.get_current_round() {
+            self.metrics.consensus_events.process_old_qc += 1;
+            return Vec::new();
+        }
+
+        // match self.consensus.pacemaker.high_certificate() {
+        //     RoundCertificate::Qc(_) => {
+        //         if qc.info.round < self.consensus.pacemaker.get_current_round() {
+        //             self.metrics.consensus_events.process_old_qc += 1;
+        //             return Vec::new();
+        //         }
+        //     }
+        //     RoundCertificate::Tc(tc) => {
+        //         if qc.info.round < tc.round {
+        //             self.metrics.consensus_events.process_old_qc += 1;
+        //             return Vec::new();
+        //         }else if qc.info.round == tc.round {
+        //             debug!(
+        //                 round =? qc.info.round,
+        //                 "QC has priority over TC in same round"
+        //             );
+        //         }
+        //     }
         // }
 
-        match self.consensus.pacemaker.high_certificate() {
-            RoundCertificate::Qc(_) => {
-                if qc.info.round < self.consensus.pacemaker.get_current_round() {
-                    self.metrics.consensus_events.process_old_qc += 1;
-                    return Vec::new();
-                }
-            }
-            RoundCertificate::Tc(tc) => {
-                if qc.info.round < tc.round {
-                    self.metrics.consensus_events.process_old_qc += 1;
-                    return Vec::new();
-                }else if qc.info.round == tc.round {
-                    debug!(
-                        round =? qc.info.round,
-                        "QC has priority over TC in same round"
-                    );
-                }
-            }
-        }
 
         self.metrics.consensus_events.process_qc += 1;
 
@@ -5896,6 +5897,5 @@ mod test {
                 RoundCertificate::Qc(qc) if qc.info.round == Round(5)
             ))
         }
-
     }
 }
