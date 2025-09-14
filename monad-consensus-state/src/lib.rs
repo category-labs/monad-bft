@@ -1143,30 +1143,31 @@ where
         qc: &QuorumCertificate<SCT>,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         //TODO(keep), Qc has priority than same round TC
-        // if qc.info.round < self.consensus.pacemaker.get_current_round() {
-        //     self.metrics.consensus_events.process_old_qc += 1;
-        //     return Vec::new();
+        if qc.info.round < self.consensus.pacemaker.get_current_round() {
+            self.metrics.consensus_events.process_old_qc += 1;
+            return Vec::new();
+        }
+
+        // match self.consensus.pacemaker.high_certificate() {
+        //     RoundCertificate::Qc(_) => {
+        //         if qc.info.round < self.consensus.pacemaker.get_current_round() {
+        //             self.metrics.consensus_events.process_old_qc += 1;
+        //             return Vec::new();
+        //         }
+        //     }
+        //     RoundCertificate::Tc(tc) => {
+        //         if qc.info.round < tc.round {
+        //             self.metrics.consensus_events.process_old_qc += 1;
+        //             return Vec::new();
+        //         }else if qc.info.round == tc.round {
+        //             debug!(
+        //                 round =? qc.info.round,
+        //                 "QC has priority over TC in same round"
+        //             );
+        //         }
+        //     }
         // }
 
-        match self.consensus.pacemaker.high_certificate() {
-            RoundCertificate::Qc(_) => {
-                if qc.info.round < self.consensus.pacemaker.get_current_round() {
-                    self.metrics.consensus_events.process_old_qc += 1;
-                    return Vec::new();
-                }
-            }
-            RoundCertificate::Tc(tc) => {
-                if qc.info.round < tc.round {
-                    self.metrics.consensus_events.process_old_qc += 1;
-                    return Vec::new();
-                }else if qc.info.round == tc.round {
-                    debug!(
-                        round =? qc.info.round,
-                        "QC has priority over TC in same round"
-                    );
-                }
-            }
-        }
 
         self.metrics.consensus_events.process_qc += 1;
 
@@ -5822,6 +5823,7 @@ mod test {
         let cmds =node1.wrapped_state().handle_block_sync(block_sync.clone(), vec![full_block_4]);
         let create_proposal_cmd = find_create_proposal_cmd(cmds);
         assert_eq!(create_proposal_cmd.2, Round(5));
+        assert_eq!(create_proposal_cmd.3, SeqNum(5));
         assert_eq!(create_proposal_cmd.4.info.round, Round(4));
         assert_eq!(create_proposal_cmd.4.info.id,  block_4.get_id());
 
@@ -5830,7 +5832,7 @@ mod test {
         let cp = env.next_proposal(Vec::new());
         let (author, _, verified_message) = cp.destructure();
 
-        for (i, node) in [node1, node2, node3, node4].into_iter().enumerate() {
+        for (i, node) in [&mut node1, &mut node2, &mut node3, &mut node4].into_iter().enumerate() {
             let cmds = node.handle_proposal_message(author, verified_message.clone());
             println!("after node{} process proposal", i);
             for cmd in cmds {
@@ -5839,6 +5841,35 @@ mod test {
             assert!(
                 matches!(node.consensus_state.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(5))
             );
+
+            assert!(matches!(
+                node.consensus_state.pacemaker.high_certificate(),
+                RoundCertificate::Qc(qc) if qc.info.round == Round(4)
+                )
+            );
         }
+
+        for (i, node) in [&mut node1, &mut node2, &mut node3, &mut node4].into_iter().enumerate() {
+           let cmds = node.wrapped_state().handle_vote_timer(Round(5));
+            println!("after node{} process vote timer", i);
+            for cmd in cmds {
+                println!("cmd: {:?}", cmd);
+            }
+
+        }
+
+        //round5 timeout again
+        // let round = Round(5);
+        // for (i, node) in[&mut node1, &mut node2, &mut node3, &mut node4].into_iter().enumerate() {
+        //     let cmds = node.wrapped_state().handle_timeout_expiry(round);
+        //     println!("after node{} process round5 timeout", i);
+        //     for cmd in cmds {
+        //         println!("cmd: {:?}", cmd);
+        //     }
+        // }
+
+
+
+
     }
 }
