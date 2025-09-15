@@ -211,6 +211,12 @@ impl Sub for Epoch {
     }
 }
 
+impl Epoch {
+    pub fn checked_sub(self, count: usize) -> Option<Self> {
+        self.0.checked_sub(count as u64).map(Epoch)
+    }
+}
+
 impl Debug for Epoch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
@@ -530,6 +536,13 @@ where
 impl Stake {
     pub const ZERO: Stake = Stake(U256::ZERO);
     pub const ONE: Stake = Stake(U256::ONE);
+
+    pub fn checked_div(self, divisor: Stake) -> Option<f64> {
+        if divisor.0.is_zero() {
+            return None;
+        }
+        Some(self / divisor)
+    }
 }
 
 impl From<u64> for Stake {

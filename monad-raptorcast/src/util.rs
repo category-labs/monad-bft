@@ -736,6 +736,15 @@ impl fmt::Debug for Redundancy {
     }
 }
 
+pub fn unix_ts_ms_now() -> u64 {
+    std::time::UNIX_EPOCH
+        .elapsed()
+        .expect("time went backwards")
+        .as_millis()
+        .try_into()
+        .expect("unix epoch doesn't fit in u64")
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
