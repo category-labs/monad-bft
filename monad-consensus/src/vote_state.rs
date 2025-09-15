@@ -32,6 +32,9 @@ use tracing::{debug, error, info, warn};
 
 use crate::messages::message::VoteMessage;
 
+/// Maximum number of signature verification attempts per vote to prevent infinite loops
+const MAX_VERIFICATION_ATTEMPTS: u32 = 3;
+
 /// VoteState accumulates votes and creates a QC if enough votes are received
 /// Only one QC should be created in a round using the first supermajority of votes received
 /// At the end of a round, older rounds can be cleaned up
@@ -52,6 +55,9 @@ struct RoundVoteState<PT: PubKey, ST: CertificateSignature> {
     // All vote hashes each node has voted on; multiple vote hashes for a given node implies
     // they're malicious
     node_votes: HashMap<NodeId<PT>, HashSet<ST>>,
+    /// Track verification attempts per vote to prevent infinite loops
+    /// Maps Vote -> number of verification attempts
+    verification_attempts: HashMap<Vote, u32>,
 }
 
 impl<PT: PubKey, ST: CertificateSignature> Default for RoundVoteState<PT, ST> {
@@ -59,6 +65,7 @@ impl<PT: PubKey, ST: CertificateSignature> Default for RoundVoteState<PT, ST> {
         RoundVoteState {
             pending_votes: HashMap::new(),
             node_votes: HashMap::new(),
+            verification_attempts: HashMap::new(),
         }
     }
 }
@@ -132,6 +139,21 @@ where
             .has_super_majority_votes(&round_pending_votes.keys().copied().collect::<Vec<_>>())
             .expect("has_super_majority_votes succeeds since addresses are unique")
         {
+            // Check verification attempt limit to prevent infinite loops
+            let verification_attempts = round_state.verification_attempts.entry(vote).or_insert(0);
+            if *verification_attempts >= MAX_VERIFICATION_ATTEMPTS {
+                warn!(
+                    round = ?vote.round,
+                    epoch = ?vote.epoch,
+                    attempts = *verification_attempts,
+                    max_attempts = MAX_VERIFICATION_ATTEMPTS,
+                    "Reached maximum verification attempts, stopping to prevent infinite loop"
+                );
+                break;
+            }
+
+            *verification_attempts += 1;
+
             assert!(round >= self.earliest_round);
             let vote_enc = alloy_rlp::encode(vote);
             match SCT::new::<signing_domain::Vote>(
@@ -150,6 +172,7 @@ where
                     info!(
                         round = ?vote.round,
                         epoch = ?vote.epoch,
+                        attempts = *verification_attempts,
                         "Created new QC"
                     );
                     return (Some(qc), ret_commands);
@@ -161,7 +184,9 @@ where
                     warn!(
                         round = ?vote.round,
                         epoch = ?vote.epoch,
-                        "Invalid signatures when creating new QC"
+                        attempts = *verification_attempts,
+                        invalid_count = invalid_sigs.len(),
+                        "Invalid signatures when creating new QC, removed invalid signatures"
                     );
                     ret_commands.extend(cmds);
                 }
