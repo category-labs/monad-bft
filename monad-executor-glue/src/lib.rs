@@ -60,6 +60,11 @@ pub enum RouterCommand<ST: CertificateSignatureRecoverable, OM> {
         target: RouterTarget<CertificateSignaturePubKey<ST>>,
         message: OM,
     },
+    PublishWithPriority {
+        target: RouterTarget<CertificateSignaturePubKey<ST>>,
+        message: OM,
+        priority: monad_dataplane::UdpPriority,
+    },
     PublishToFullNodes {
         epoch: Epoch, // Epoch gets embedded into the raptorcast message
         message: OM,
@@ -81,6 +86,15 @@ impl<ST: CertificateSignatureRecoverable, OM> Debug for RouterCommand<ST, OM> {
             Self::Publish { target, message: _ } => {
                 f.debug_struct("Publish").field("target", target).finish()
             }
+            Self::PublishWithPriority {
+                target,
+                message: _,
+                priority,
+            } => f
+                .debug_struct("PublishWithPriority")
+                .field("target", target)
+                .field("priority", priority)
+                .finish(),
             Self::PublishToFullNodes { epoch, message: _ } => f
                 .debug_struct("PublishToFullNodes")
                 .field("epoch", epoch)
