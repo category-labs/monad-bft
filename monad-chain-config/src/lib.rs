@@ -203,20 +203,20 @@ const MONAD_TESTNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
 
 const MONAD_TESTNET2_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     chain_id: MONAD_TESTNET2_CHAIN_ID,
-    epoch_length: SeqNum(50_000),
-    epoch_start_delay: Round(5_000),
+    epoch_length: SeqNum(5_000),
+    epoch_start_delay: Round(500),
 
     v_0_7_0_activation: Round::MIN,
     v_0_8_0_activation: Round::MIN,
-    v_0_10_0_activation: Round(6487752), // 2025-07-29T13:30:00.000Z
-    v_0_11_0_activation: Round::MAX,
+    v_0_10_0_activation: Round::MIN,
+    v_0_11_0_activation: Round(1000),
 
-    staking_activation: Epoch::MAX,
-    staking_rewards_activation: Epoch::MAX,
+    staking_activation: Epoch(71),
+    staking_rewards_activation: Epoch(72),
 
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
-    execution_v_four_activation: u64::MAX,
+    execution_v_four_activation: 1758029400, // 2025-09-16T13:30:00.000Z
 };
 
 // Mainnet uses latest version of testnet from genesis
