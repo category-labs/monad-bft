@@ -28,6 +28,7 @@ bytes = { workspace = true }
 fixed = { workspace = true}
 futures = { workspace = true }
 hex = { workspace = true }
+indexmap = { workspace = true }
 iset = { workspace = true }
 itertools = { workspace = true }
 lru = { workspace = true }

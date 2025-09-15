@@ -31,7 +31,7 @@ use monad_types::{NodeId, Stake};
 
 #[allow(clippy::useless_vec)]
 pub fn criterion_benchmark(c: &mut Criterion) {
-    let message_size = 10_000 * 400;
+    let message_size = 2 * 1024 * 1024; // 2 MB
     let message: Bytes = vec![123_u8; message_size].into();
 
     let mut group = c.benchmark_group("encoder/decoder");

@@ -23,7 +23,7 @@ use thiserror::Error;
 use super::raptorcast_secondary::group_message::FullNodesGroupMessage;
 
 const SERIALIZE_VERSION: u32 = 1;
-const MAX_MESSAGE_SIZE: usize = 3 * 1024 * 1024;
+pub const MAX_MESSAGE_SIZE: usize = 3 * 1024 * 1024;
 
 enum CompressionVersion {
     UncompressedVersion,
