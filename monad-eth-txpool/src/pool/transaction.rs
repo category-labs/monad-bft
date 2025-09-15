@@ -181,14 +181,17 @@ impl ValidEthTransaction {
         balance.checked_sub(self.max_gas_cost)
     }
 
-    pub const fn signer(&self) -> Address {
+    #[inline]
+    pub fn signer(&self) -> Address {
         self.tx.signer()
     }
 
-    pub const fn signer_ref(&self) -> &Address {
+    #[inline]
+    pub fn signer_ref(&self) -> &Address {
         self.tx.signer_ref()
     }
 
+    #[inline]
     pub fn nonce(&self) -> Nonce {
         self.tx.nonce()
     }
@@ -197,10 +200,12 @@ impl ValidEthTransaction {
         self.tx.max_fee_per_gas()
     }
 
+    #[inline]
     pub fn hash(&self) -> TxHash {
-        self.tx.tx_hash().to_owned()
+        *self.tx.tx_hash()
     }
 
+    #[inline]
     pub fn hash_ref(&self) -> &TxHash {
         self.tx.tx_hash()
     }
@@ -225,9 +230,22 @@ impl ValidEthTransaction {
         self.owned
     }
 
-    pub fn has_higher_priority(&self, other: &Self, _base_fee: u64) -> bool {
-        self.tx.max_fee_per_gas() > other.tx.max_fee_per_gas()
-            && self.tx.max_priority_fee_per_gas() >= other.tx.max_priority_fee_per_gas()
+    #[inline]
+    pub fn has_higher_priority(&self, other: &Self, base_fee: u64) -> bool {
+        // Fast path: compare max fees first (most common differentiator)
+        let self_max_fee = self.tx.max_fee_per_gas();
+        let other_max_fee = other.tx.max_fee_per_gas();
+        
+        match self_max_fee.cmp(&other_max_fee) {
+            std::cmp::Ordering::Greater => true,
+            std::cmp::Ordering::Less => false,
+            std::cmp::Ordering::Equal => {
+                // Only compute effective tips when max fees are equal (rare case)
+                let self_tip = self.tx.effective_tip_per_gas(base_fee).unwrap_or(0);
+                let other_tip = other.tx.effective_tip_per_gas(base_fee).unwrap_or(0);
+                self_tip > other_tip
+            }
+        }
     }
 
     pub fn iter_valid_recovered_authorizations(

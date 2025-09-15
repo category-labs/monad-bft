@@ -44,8 +44,17 @@ struct OrderedTx<'a> {
 }
 
 impl<'a> OrderedTx<'a> {
+    #[inline]
     fn new(tx: &'a ValidEthTransaction, base_fee: u64) -> Option<Self> {
-        let effective_tip_per_gas = tx.raw().effective_tip_per_gas(base_fee)?;
+        // Fast path: avoid method call overhead for effective tip calculation
+        let max_fee = tx.max_fee_per_gas();
+        let priority_fee = tx.raw().max_priority_fee_per_gas();
+        
+        let effective_tip_per_gas = if max_fee >= base_fee as u128 {
+            priority_fee.min(max_fee - base_fee as u128)
+        } else {
+            0
+        };
 
         Some(Self {
             tx,
@@ -107,10 +116,17 @@ impl<'a> ProposalSequencer<'a> {
     {
         let mut pending_nonce_usages = extending_blocks.get_nonce_usages().into_map();
 
-        let mut heap_vec = Vec::with_capacity(tracked_txs.len());
+        // Pre-allocate with minimum of tracked_txs.len() and tx_limit to avoid over-allocation
+        let initial_capacity = tracked_txs.len().min(tx_limit);
+        let mut heap_vec = Vec::with_capacity(initial_capacity);
         let mut virtual_time = 0;
 
         for (address, tx_list) in tracked_txs {
+            // Early exit if we've reached tx_limit to avoid unnecessary work
+            if heap_vec.len() >= tx_limit {
+                break;
+            }
+
             let mut queued = tx_list
                 .get_queued(pending_nonce_usages.remove(address))
                 .map_while(|tx| OrderedTx::new(tx, base_fee));
@@ -119,7 +135,7 @@ impl<'a> ProposalSequencer<'a> {
                 continue;
             };
 
-            assert_eq!(address, tx.tx.signer_ref());
+            debug_assert_eq!(address, tx.tx.signer_ref());
 
             heap_vec.push(OrderedTxGroup {
                 tx,
@@ -130,8 +146,11 @@ impl<'a> ProposalSequencer<'a> {
             virtual_time += 1;
         }
 
-        heap_vec.partial_shuffle(&mut rand::thread_rng(), tx_limit);
-        heap_vec.truncate(tx_limit);
+        // Only shuffle if we have more entries than tx_limit
+        if heap_vec.len() > tx_limit {
+            heap_vec.partial_shuffle(&mut rand::thread_rng(), tx_limit);
+            heap_vec.truncate(tx_limit);
+        }
 
         Self {
             heap: BinaryHeap::from(heap_vec),

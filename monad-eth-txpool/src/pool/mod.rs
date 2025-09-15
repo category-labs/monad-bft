@@ -184,13 +184,15 @@ where
         let last_commit_base_fee = last_commit.execution_inputs.base_fee_per_gas;
 
         for tx in txs {
-            if account_balances
-                .get(tx.signer_ref())
-                .is_none_or(|account_balance_state| {
-                    account_balance_state.balance
-                        < last_commit_base_fee.saturating_mul(tx.gas_limit())
-                })
-            {
+            // Fast balance check with early exit
+            let Some(account_balance_state) = account_balances.get(tx.signer_ref()) else {
+                event_tracker.drop(tx.hash(), EthTxPoolDropReason::InsufficientBalance);
+                continue;
+            };
+
+            // Pre-compute required balance once
+            let required_balance = last_commit_base_fee.saturating_mul(tx.gas_limit());
+            if account_balance_state.balance < required_balance {
                 event_tracker.drop(tx.hash(), EthTxPoolDropReason::InsufficientBalance);
                 continue;
             }
