@@ -52,6 +52,8 @@ use monad_types::{
 use monad_validator::signature_collection::SignatureCollection;
 use serde::{Deserialize, Serialize};
 
+pub type UdpPriority = monad_dataplane::UdpPriority;
+
 const STATESYNC_NETWORK_MESSAGE_NAME: &str = "StateSyncNetworkMessage";
 
 pub enum RouterCommand<ST: CertificateSignatureRecoverable, OM> {
@@ -63,7 +65,7 @@ pub enum RouterCommand<ST: CertificateSignatureRecoverable, OM> {
     PublishWithPriority {
         target: RouterTarget<CertificateSignaturePubKey<ST>>,
         message: OM,
-        priority: monad_dataplane::UdpPriority,
+        priority: UdpPriority,
     },
     PublishToFullNodes {
         epoch: Epoch, // Epoch gets embedded into the raptorcast message

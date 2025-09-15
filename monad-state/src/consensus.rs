@@ -656,9 +656,10 @@ where
                 }))
             }
             ConsensusCommand::Publish { target, message } => {
-                parent_cmds.push(Command::RouterCommand(RouterCommand::Publish {
+                parent_cmds.push(Command::RouterCommand(RouterCommand::PublishWithPriority {
                     target,
                     message: VerifiedMonadMessage::Consensus(message),
+                    priority: monad_executor_glue::UdpPriority::High,
                 }))
             }
             ConsensusCommand::PublishToFullNodes { epoch, message } => {
@@ -723,9 +724,9 @@ where
 
                 match commit {
                     OptimisticPolicyCommit::Proposed(block) => {
-                        let block_id = block.get_id();
-                        let round = block.get_block_round();
-                        let seq_num = block.get_seq_num();
+                        let _block_id = block.get_id();
+                        let _round = block.get_block_round();
+                        let _seq_num = block.get_seq_num();
                     }
                     OptimisticPolicyCommit::Finalized(block) => {
                         let finalized_seq_num = block.get_seq_num();
