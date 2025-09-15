@@ -21,19 +21,60 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 use futures::future::join_all;
 use monoio::{net::udp::UdpSocket, spawn, time};
 use tokio::sync::mpsc;
 use tracing::{debug, error, trace, warn};
 
-use super::{RecvUdpMsg, UdpMsg};
+use super::{RecvUdpMsg, UdpMsg, UdpPriority};
 use crate::buffer_ext::SocketBufferExt;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum UdpMessageType {
     Broadcast,
     Direct,
+}
+
+impl TryFrom<usize> for UdpPriority {
+    type Error = &'static str;
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(UdpPriority::High),
+            1 => Ok(UdpPriority::Regular),
+            _ => Err("invalid priority index"),
+        }
+    }
+}
+
+struct PriorityQueues {
+    queues: [VecDeque<UdpMsg>; 2],
+}
+
+impl PriorityQueues {
+    fn new() -> Self {
+        Self {
+            queues: [VecDeque::new(), VecDeque::new()],
+        }
+    }
+
+    fn push(&mut self, msg: UdpMsg) {
+        self.queues[msg.priority as usize].push_back(msg);
+    }
+
+    fn pop_highest_priority(&mut self) -> Option<UdpMsg> {
+        for queue in self.queues.iter_mut() {
+            if let Some(msg) = queue.pop_front() {
+                return Some(msg);
+            }
+        }
+        None
+    }
+
+    fn is_empty(&self) -> bool {
+        self.queues.iter().all(|q| q.is_empty())
+    }
 }
 
 pub const DEFAULT_MTU: u16 = ETHERNET_MTU;
@@ -107,7 +148,7 @@ pub(crate) fn spawn_tasks(
     direct_socket_port: Option<u16>,
     udp_ingress_tx: mpsc::Sender<RecvUdpMsg>,
     udp_direct_ingress_tx: mpsc::Sender<RecvUdpMsg>,
-    udp_egress_rx: mpsc::Receiver<(SocketAddr, UdpMsg)>,
+    udp_egress_rx: mpsc::Receiver<UdpMsg>,
     up_bandwidth_mbps: u64,
     buffer_size: Option<usize>,
 ) {
@@ -191,12 +232,12 @@ const PACING_SLEEP_OVERSHOOT_DETECTION_WINDOW: Duration = Duration::from_millis(
 async fn tx(
     socket_tx: UdpSocket,
     direct_socket_tx: Option<UdpSocket>,
-    mut udp_egress_rx: mpsc::Receiver<(SocketAddr, UdpMsg)>,
+    mut udp_egress_rx: mpsc::Receiver<UdpMsg>,
     up_bandwidth_mbps: u64,
 ) {
     let mut next_transmit = Instant::now();
 
-    let mut messages_to_send: VecDeque<(SocketAddr, Bytes, u16, UdpMessageType)> = VecDeque::new();
+    let mut priority_queues = PriorityQueues::new();
 
     let max_batch_bytes = max_write_size_for_segment_size(DEFAULT_SEGMENT_SIZE) as usize;
     let mut send_futures = Vec::with_capacity(MAX_AGGREGATED_SEGMENTS as usize);
@@ -207,57 +248,67 @@ async fn tx(
             time::sleep(next_transmit - now).await;
         } else {
             let late = now - next_transmit;
+
             if late > PACING_SLEEP_OVERSHOOT_DETECTION_WINDOW {
                 next_transmit = now;
             }
         }
 
-        while messages_to_send.is_empty() || !udp_egress_rx.is_empty() {
-            let Some((addr, udp_msg)) = udp_egress_rx.recv().await else {
-                return;
-            };
-
-            messages_to_send.push_back((addr, udp_msg.payload, udp_msg.stride, udp_msg.msg_type));
+        if fill_message_queues(&mut udp_egress_rx, &mut priority_queues)
+            .await
+            .is_err()
+        {
+            return;
         }
 
-        let queue_len = messages_to_send.len();
+        let queue_len = priority_queues
+            .queues
+            .iter()
+            .map(|q| q.len())
+            .sum::<usize>();
         let mut total_bytes = 0usize;
         let mut batch_count = 0usize;
         send_futures.clear();
 
-        while !messages_to_send.is_empty()
+        while !priority_queues.is_empty()
             && total_bytes < max_batch_bytes
             && batch_count < MAX_AGGREGATED_SEGMENTS as usize
         {
-            let (addr, mut payload, stride, msg_type) = messages_to_send.pop_front().unwrap();
-            let chunk_size = payload.len().min(stride as usize).min(max_batch_bytes);
+            let mut msg = priority_queues.pop_highest_priority().unwrap();
+            let chunk_size = msg
+                .payload
+                .len()
+                .min(msg.stride as usize)
+                .min(max_batch_bytes);
 
             if chunk_size + total_bytes > max_batch_bytes {
-                messages_to_send.push_front((addr, payload, stride, msg_type));
+                priority_queues.push(msg);
                 break;
             }
 
-            let chunk = payload.split_to(chunk_size);
+            let chunk = msg.payload.split_to(chunk_size);
             total_bytes += chunk.len();
 
-            let socket = match (&msg_type, &direct_socket_tx) {
+            let socket = match (&msg.msg_type, &direct_socket_tx) {
                 (UdpMessageType::Direct, Some(direct_socket)) => direct_socket,
                 _ => &socket_tx,
             };
 
-            if !payload.is_empty() {
-                // send current message fully, requestor can split message at API level
-                messages_to_send.push_front((addr, payload, stride, msg_type.clone()));
+            let dst = msg.dst;
+            let msg_type = msg.msg_type;
+
+            if !msg.payload.is_empty() {
+                priority_queues.push(msg);
             }
 
             trace!(
-                dst_addr = ?addr,
+                dst_addr = ?dst,
                 chunk_len = chunk.len(),
                 msg_type = ?msg_type,
                 "preparing udp send"
             );
 
-            send_futures.push(socket.send_to(chunk, addr));
+            send_futures.push(socket.send_to(chunk, dst));
             batch_count += 1;
         }
 
@@ -299,6 +350,21 @@ async fn tx(
                 Duration::from_nanos((total_bytes as u64) * 8 * 1000 / up_bandwidth_mbps);
         }
     }
+}
+
+async fn fill_message_queues(
+    udp_egress_rx: &mut mpsc::Receiver<UdpMsg>,
+    priority_queues: &mut PriorityQueues,
+) -> Result<(), ()> {
+    while priority_queues.is_empty() || !udp_egress_rx.is_empty() {
+        match udp_egress_rx.recv().await {
+            Some(udp_msg) => {
+                priority_queues.push(udp_msg);
+            }
+            None => return Err(()),
+        }
+    }
+    Ok(())
 }
 
 const MAX_AGGREGATED_WRITE_SIZE: u16 = 65535 - IPV4_HDR_SIZE - UDP_HDR_SIZE;

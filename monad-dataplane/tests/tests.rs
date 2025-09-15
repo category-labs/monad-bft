@@ -14,14 +14,19 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::VecDeque, io::Write, net::TcpStream, sync::Once, thread::sleep, time::Duration,
+    collections::VecDeque,
+    io::Write,
+    net::TcpStream,
+    sync::{mpsc, Once},
+    thread::{self, sleep},
+    time::Duration,
 };
 
 use futures::{channel::oneshot, executor, FutureExt};
 use monad_dataplane::{
     tcp::tx::{MSG_WAIT_TIMEOUT, QUEUED_MESSAGE_LIMIT},
     udp::DEFAULT_SEGMENT_SIZE,
-    BroadcastMsg, DataplaneBuilder, RecvUdpMsg, TcpMsg, UnicastMsg,
+    BroadcastMsg, DataplaneBuilder, RecvUdpMsg, TcpMsg, UdpPriority, UnicastMsg,
 };
 use ntest::timeout;
 use rand::Rng;
@@ -816,4 +821,189 @@ fn udp_large_stride() {
 
     assert_eq!(received, payload);
     assert_eq!(datagram_count, 2);
+}
+
+#[test]
+#[timeout(10000)]
+fn udp_priority_delivery() {
+    once_setup();
+
+    let rx_addr = find_unused_address();
+    let tx_addr = find_unused_address();
+
+    let low_bandwidth_mbps = 10;
+    let mut rx = DataplaneBuilder::new(&rx_addr, low_bandwidth_mbps).build();
+    let tx = DataplaneBuilder::new(&tx_addr, low_bandwidth_mbps).build();
+
+    assert!(rx.block_until_ready(Duration::from_secs(1)));
+    assert!(tx.block_until_ready(Duration::from_secs(1)));
+
+    let message_size = 1024 * 1024; // 1MB
+    let high_priority_data: Vec<u8> = vec![0xAA; message_size];
+    let regular_priority_data: Vec<u8> = vec![0xBB; message_size];
+
+    let expected_total_msgs = 2 * message_size.div_ceil(DEFAULT_SEGMENT_SIZE as usize);
+    let (msg_tx, msg_rx) = mpsc::channel();
+
+    let rx_handle = thread::spawn(move || {
+        let mut messages = Vec::new();
+        loop {
+            let msg = executor::block_on(rx.udp_read());
+            messages.push(msg);
+            if messages.len() == expected_total_msgs {
+                msg_tx.send(messages).unwrap();
+                break;
+            }
+        }
+    });
+
+    tx.udp_write_unicast_with_priority(
+        UnicastMsg {
+            msgs: vec![(rx_addr, high_priority_data.into())],
+            stride: DEFAULT_SEGMENT_SIZE,
+        },
+        UdpPriority::High,
+    );
+
+    tx.udp_write_unicast_with_priority(
+        UnicastMsg {
+            msgs: vec![(rx_addr, regular_priority_data.into())],
+            stride: DEFAULT_SEGMENT_SIZE,
+        },
+        UdpPriority::Regular,
+    );
+
+    let messages = msg_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("Timeout waiting for messages");
+    rx_handle.join().unwrap();
+
+    let num_msgs_per_mb = message_size.div_ceil(DEFAULT_SEGMENT_SIZE as usize);
+
+    for (i, message) in messages.iter().enumerate().take(num_msgs_per_mb) {
+        assert_eq!(message.src_addr, tx_addr);
+        let expected_size = if i == num_msgs_per_mb - 1 {
+            message_size - (i * DEFAULT_SEGMENT_SIZE as usize)
+        } else {
+            DEFAULT_SEGMENT_SIZE as usize
+        };
+        assert_eq!(message.payload.len(), expected_size);
+        assert_eq!(
+            message.payload[0], 0xAA,
+            "Expected high priority message at index {}",
+            i
+        );
+    }
+
+    for i in 0..num_msgs_per_mb {
+        let idx = num_msgs_per_mb + i;
+        assert_eq!(messages[idx].src_addr, tx_addr);
+        let expected_size = if i == num_msgs_per_mb - 1 {
+            message_size - (i * DEFAULT_SEGMENT_SIZE as usize)
+        } else {
+            DEFAULT_SEGMENT_SIZE as usize
+        };
+        assert_eq!(messages[idx].payload.len(), expected_size);
+        assert_eq!(
+            messages[idx].payload[0], 0xBB,
+            "Expected regular priority message at index {}",
+            i
+        );
+    }
+}
+
+#[test]
+#[timeout(10000)]
+fn udp_priority_with_regular_then_high_traffic() {
+    once_setup();
+
+    let rx_addr = find_unused_address();
+    let tx_addr = find_unused_address();
+    let low_bandwidth_mbps = 10;
+
+    let mut rx = DataplaneBuilder::new(&rx_addr, low_bandwidth_mbps).build();
+    let tx = DataplaneBuilder::new(&tx_addr, low_bandwidth_mbps).build();
+
+    assert!(rx.block_until_ready(Duration::from_secs(1)));
+    assert!(tx.block_until_ready(Duration::from_secs(1)));
+
+    let message_size = 1024 * 1024; // 1MB
+    let regular_priority_data: Vec<u8> = vec![0xCC; message_size];
+    let high_priority_data: Vec<u8> = vec![0xDD; message_size];
+
+    let num_msgs_per_mb = message_size.div_ceil(DEFAULT_SEGMENT_SIZE as usize);
+    let expected_total_msgs = 2 * num_msgs_per_mb;
+
+    let (msg_tx, msg_rx) = mpsc::channel();
+    let rx_handle = thread::spawn(move || {
+        let mut messages = Vec::new();
+        loop {
+            let msg = executor::block_on(rx.udp_read());
+            messages.push(msg);
+            if messages.len() == expected_total_msgs {
+                msg_tx.send(messages).unwrap();
+                break;
+            }
+        }
+    });
+
+    tx.udp_write_unicast_with_priority(
+        UnicastMsg {
+            msgs: vec![(rx_addr, regular_priority_data.into())],
+            stride: DEFAULT_SEGMENT_SIZE,
+        },
+        UdpPriority::Regular,
+    );
+
+    thread::sleep(Duration::from_millis(50));
+
+    tx.udp_write_unicast_with_priority(
+        UnicastMsg {
+            msgs: vec![(rx_addr, high_priority_data.into())],
+            stride: DEFAULT_SEGMENT_SIZE,
+        },
+        UdpPriority::High,
+    );
+
+    let messages = msg_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("Timeout waiting for messages");
+
+    rx_handle.join().unwrap();
+
+    assert_eq!(messages.len(), expected_total_msgs);
+
+    let mut regular_count = 0;
+    let mut high_count = 0;
+    let mut saw_high = false;
+    let mut regular_after_high = 0;
+
+    for msg in &messages {
+        assert_eq!(msg.src_addr, tx_addr);
+        if msg.payload[0] == 0xCC {
+            regular_count += 1;
+            if saw_high {
+                regular_after_high += 1;
+            }
+        } else if msg.payload[0] == 0xDD {
+            high_count += 1;
+            saw_high = true;
+        }
+    }
+
+    assert_eq!(
+        regular_count, num_msgs_per_mb,
+        "should receive all regular messages"
+    );
+    assert_eq!(
+        high_count, num_msgs_per_mb,
+        "should receive all high priority messages"
+    );
+
+    let regular_before_high = regular_count - regular_after_high;
+    assert!(
+        regular_before_high < num_msgs_per_mb / 4,
+        "should process only small amount of regular traffic before high traffic. Got {} regular messages before high priority",
+        regular_before_high
+    );
 }
