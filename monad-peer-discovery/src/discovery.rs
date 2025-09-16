@@ -33,6 +33,7 @@ use crate::{
     MonadNameRecord, NameRecord, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryCommand,
     PeerDiscoveryEvent, PeerDiscoveryMessage, PeerDiscoveryMetricsCommand,
     PeerDiscoveryTimerCommand, PeerLookupRequest, PeerLookupResponse, Ping, Pong, TimerKind,
+    ipv4_validation::{IpCheckError, validate_socket_ipv4_address},
 };
 
 /// Maximum number of peers to be included in a PeerLookupResponse
@@ -221,7 +222,9 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
         self.bootstrap_peers
             .into_iter()
             .for_each(|(peer_id, name_record)| {
-                cmds.extend(state.insert_peer_to_pending(peer_id, name_record));
+                if let Ok(cmds_from_insert) = state.insert_peer_to_pending(peer_id, name_record) {
+                    cmds.extend(cmds_from_insert);
+                }
             });
 
         cmds.extend(state.refresh());
@@ -326,10 +329,22 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
         &mut self,
         peer_id: NodeId<CertificateSignaturePubKey<ST>>,
         name_record: MonadNameRecord<ST>,
-    ) -> Vec<PeerDiscoveryCommand<ST>> {
+    ) -> Result<Vec<PeerDiscoveryCommand<ST>>, IpCheckError> {
         // make sure self record is never inserted
         if peer_id == self.self_id {
-            return vec![];
+            return Ok(vec![]);
+        }
+
+        // check if the peer ip address is valid
+        if let Err(err) =
+            validate_socket_ipv4_address(&name_record.address(), &self.self_record.address())
+        {
+            warn!(
+                ?peer_id,
+                ?name_record,
+                "peer ip address failed check, ignoring"
+            );
+            return Err(err);
         }
 
         // only accept new name record or name record with higher sequence number
@@ -342,14 +357,14 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
                     ?current_name_record,
                     "name record already exists with same or lower seq in routing info"
                 );
-                return vec![];
+                return Ok(vec![]);
             }
         }
         if let Some(info) = self.pending_queue.get(&peer_id) {
             if name_record.seq() <= info.name_record.seq() {
                 // no updates are required, exit
                 debug!(?peer_id, ?name_record, ?info.name_record, "name record already exists with same or lower seq in pending queue");
-                return vec![];
+                return Ok(vec![]);
             }
         }
 
@@ -366,7 +381,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
         self.metrics[GAUGE_PEER_DISC_NUM_PENDING_PEERS] = self.pending_queue.len() as u64;
 
         // send ping to the peer, which will also insert the peer into pending queue
-        self.send_ping(peer_id, name_record.address(), ping_msg)
+        Ok(self.send_ping(peer_id, name_record.address(), ping_msg))
     }
 
     fn remove_peer_from_pending(
@@ -618,7 +633,10 @@ where
                     .is_ok_and(|recovered_node_id| recovered_node_id == from);
 
                 if verified {
-                    cmds.extend(self.insert_peer_to_pending(from, peer_name_record));
+                    match self.insert_peer_to_pending(from, peer_name_record) {
+                        Ok(cmds_from_insert) => cmds.extend(cmds_from_insert),
+                        Err(_) => return cmds,
+                    }
                 } else {
                     debug!("invalid signature in ping.local_name_record");
                     return cmds;
@@ -875,7 +893,10 @@ where
                 }
             };
 
-            cmds.extend(self.insert_peer_to_pending(node_id, name_record));
+            match self.insert_peer_to_pending(node_id, name_record) {
+                Ok(cmds_from_insert) => cmds.extend(cmds_from_insert),
+                Err(_) => continue,
+            }
         }
 
         // drop from outstanding requests
@@ -1326,7 +1347,10 @@ where
                 .recover_pubkey()
                 .is_ok_and(|recovered_node_id| recovered_node_id == node_id);
             if verified {
-                cmds.extend(self.insert_peer_to_pending(node_id, name_record));
+                match self.insert_peer_to_pending(node_id, name_record) {
+                    Ok(cmds_from_insert) => cmds.extend(cmds_from_insert),
+                    Err(_) => continue,
+                }
             } else {
                 warn!(?node_id, "invalid name record signature");
             }
@@ -1815,7 +1839,7 @@ mod tests {
 
         // should add to pending queue and send ping if record has higher sequence number (seq num incremented to 2)
         let record = generate_name_record(peer1, 2);
-        let cmds = state.insert_peer_to_pending(peer1_pubkey, record);
+        let cmds = state.insert_peer_to_pending(peer1_pubkey, record).unwrap();
         let pings = extract_ping(cmds);
         assert_eq!(pings.len(), 1);
         assert_eq!(pings[0].0, peer1_pubkey);
@@ -1832,7 +1856,9 @@ mod tests {
 
         // should not replace existing entry in pending queue if record has lower sequence number (seq num decremented to 1)
         let invalid_record = generate_name_record(peer1, 1);
-        let cmds = state.insert_peer_to_pending(peer1_pubkey, invalid_record);
+        let cmds = state
+            .insert_peer_to_pending(peer1_pubkey, invalid_record)
+            .unwrap();
         assert!(cmds.is_empty());
 
         // insert into routing info after ping pong round trip
@@ -1845,7 +1871,9 @@ mod tests {
         assert!(!state.pending_queue.contains_key(&peer1_pubkey));
 
         // should not update name record if record has lower sequence number (seq num decremented to 1)
-        let cmds = state.insert_peer_to_pending(peer1_pubkey, invalid_record);
+        let cmds = state
+            .insert_peer_to_pending(peer1_pubkey, invalid_record)
+            .unwrap();
         assert!(cmds.is_empty());
     }
 

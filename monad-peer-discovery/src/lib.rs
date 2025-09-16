@@ -34,6 +34,7 @@ use tracing::warn;
 
 pub mod discovery;
 pub mod driver;
+pub mod ipv4_validation;
 pub mod message;
 pub mod mock;
 

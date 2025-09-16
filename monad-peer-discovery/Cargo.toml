@@ -24,5 +24,6 @@ monad-testutil = { workspace = true }
 
 clap = { workspace = true, features = ["derive"] }
 hex = { workspace = true }
+rstest = { workspace = true }
 test-case = { workspace = true }
 toml = { workspace = true }
