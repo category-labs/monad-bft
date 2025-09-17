@@ -49,17 +49,6 @@ pub fn static_validate_transaction(
     // includes EIP-7623 validation
     EthPragueForkValidation::validate(tx, execution_chain_params)?;
 
-    if tx.is_eip7702() {
-        match tx.authorization_list() {
-            Some(auth_list) => {
-                if auth_list.is_empty() {
-                    return Err(TransactionError::AuthorizationListEmpty);
-                }
-            }
-            None => return Err(TransactionError::AuthorizationListEmpty),
-        }
-    }
-
     Ok(())
 }
 
