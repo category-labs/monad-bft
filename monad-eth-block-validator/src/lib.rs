@@ -27,6 +27,7 @@ use alloy_consensus::{
 use alloy_eips::eip7702::{RecoveredAuthority, RecoveredAuthorization};
 use alloy_rlp::Encodable;
 use monad_chain_config::{
+    execution_revision::ExecutionChainParams,
     revision::{ChainParams, ChainRevision},
     ChainConfig,
 };
@@ -41,7 +42,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_block_policy::{
     compute_txn_max_gas_cost,
     nonce_usage::{NonceUsage, NonceUsageMap},
-    pre_tfm_compute_max_txn_cost,
+    pre_tfm_compute_max_txn_cost, timestamp_ns_to_secs,
     validation::static_validate_transaction,
     EthBlockPolicy, EthValidatedBlock,
 };
@@ -115,8 +116,17 @@ where
         let chain_params = chain_config
             .get_chain_revision(header.block_round)
             .chain_params();
+        let execution_chain_params = chain_config
+            .get_execution_chain_revision(timestamp_ns_to_secs(header.timestamp_ns))
+            .execution_chain_params();
 
-        Self::validate_block_header(&header, &body, author_pubkey, chain_params)?;
+        Self::validate_block_header(
+            &header,
+            &body,
+            author_pubkey,
+            chain_params,
+            execution_chain_params,
+        )?;
 
         match Self::validate_block_body(&header, &body, chain_config) {
             Ok((system_txns, validated_txns, nonce_usages, txn_fees)) => {
@@ -153,6 +163,7 @@ where
         body: &ConsensusBlockBody<EthExecutionProtocol>,
         author_pubkey: Option<&SignatureCollectionPubKeyType<SCT>>,
         chain_params: &ChainParams,
+        execution_chain_params: &ExecutionChainParams,
     ) -> Result<(), BlockValidationError> {
         if header.block_body_id != body.get_id() {
             return Err(BlockValidationError::HeaderPayloadMismatchError);
@@ -226,7 +237,9 @@ where
         if parent_beacon_block_root != &[0_u8; 32] {
             return Err(BlockValidationError::HeaderError);
         }
-        if requests_hash != &[0_u8; 32] {
+
+        let expected_requests_hash = execution_chain_params.prague_enabled.then_some([0_u8; 32]);
+        if requests_hash != &expected_requests_hash {
             return Err(BlockValidationError::HeaderError);
         }
 
@@ -681,8 +694,6 @@ mod test {
                     proposal_byte_limit: PROPOSAL_SIZE_LIMIT,
                     max_reserve_balance: MAX_RESERVE_BALANCE,
                     vote_pace: Duration::ZERO,
-
-                    validate_system_txs: true,
                 }),
             );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
@@ -792,6 +803,245 @@ mod test {
     }
 
     // TODO write tests for rest of eth-block-validator stuff
+
+    #[test]
+    fn test_7702_skipped_tuple() {
+        let auth_list = vec![
+            make_signed_authorization(
+                B256::repeat_byte(0xBu8),
+                secret_to_eth_address(B256::repeat_byte(0x1u8)),
+                1,
+            ),
+            make_signed_authorization(
+                B256::repeat_byte(0xBu8),
+                secret_to_eth_address(B256::repeat_byte(0x3u8)),
+                3,
+            ),
+        ];
+
+        let txn1 = make_eip7702_tx(
+            B256::repeat_byte(0xAu8),
+            BASE_FEE,
+            0,
+            1_000_000,
+            1,
+            auth_list,
+            0,
+        );
+        let txn2 = make_legacy_tx(B256::repeat_byte(0xBu8), BASE_FEE, 30_000, 2, 10);
+        let txn3 = make_legacy_tx(B256::repeat_byte(0xBu8), BASE_FEE, 30_000, 4, 10);
+
+        let txs = vec![txn1, txn2, txn3];
+        let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
+            execution_body: EthBlockBody {
+                transactions: txs,
+                ommers: Vec::new(),
+                withdrawals: Vec::new(),
+            },
+        });
+        let header = get_header(payload.get_id());
+
+        let result =
+            EthBlockValidator::<NopSignature, MockSignatures<NopSignature>>::validate_block_body(
+                &header,
+                &payload,
+                &MockChainConfig::DEFAULT,
+            );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_7702_valid_tuple() {
+        let auth_list = vec![
+            make_signed_authorization(
+                B256::repeat_byte(0xBu8),
+                secret_to_eth_address(B256::repeat_byte(0x1u8)),
+                1,
+            ),
+            make_signed_authorization(
+                B256::repeat_byte(0xBu8),
+                secret_to_eth_address(B256::repeat_byte(0x2u8)),
+                2,
+            ),
+        ];
+
+        let txn1 = make_eip7702_tx(
+            B256::repeat_byte(0xAu8),
+            BASE_FEE,
+            0,
+            1_000_000,
+            1,
+            auth_list,
+            0,
+        );
+        let txn2 = make_legacy_tx(B256::repeat_byte(0xBu8), BASE_FEE, 30_000, 3, 10);
+        let txn3 = make_legacy_tx(B256::repeat_byte(0xBu8), BASE_FEE, 30_000, 4, 10);
+
+        let txs = vec![txn1, txn2, txn3];
+        let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
+            execution_body: EthBlockBody {
+                transactions: txs,
+                ommers: Vec::new(),
+                withdrawals: Vec::new(),
+            },
+        });
+        let header = get_header(payload.get_id());
+
+        let result =
+            EthBlockValidator::<NopSignature, MockSignatures<NopSignature>>::validate_block_body(
+                &header,
+                &payload,
+                &MockChainConfig::DEFAULT,
+            );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_7702_invalid_tuple_followed_by_valid_nonces() {
+        let auth_list = vec![
+            make_signed_authorization(
+                B256::repeat_byte(0xBu8),
+                secret_to_eth_address(B256::repeat_byte(0x1u8)),
+                1,
+            ),
+            make_signed_authorization(
+                B256::repeat_byte(0xBu8),
+                secret_to_eth_address(B256::repeat_byte(0x2u8)),
+                3,
+            ),
+        ];
+
+        let txn1 = make_eip7702_tx(
+            B256::repeat_byte(0xAu8),
+            BASE_FEE,
+            0,
+            1_000_000,
+            1,
+            auth_list,
+            0,
+        );
+        let txn2 = make_legacy_tx(B256::repeat_byte(0xBu8), BASE_FEE, 30_000, 2, 10);
+        let txn3 = make_legacy_tx(B256::repeat_byte(0xBu8), BASE_FEE, 30_000, 3, 10);
+
+        let txs = vec![txn1, txn2, txn3];
+        let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
+            execution_body: EthBlockBody {
+                transactions: txs,
+                ommers: Vec::new(),
+                withdrawals: Vec::new(),
+            },
+        });
+        let header = get_header(payload.get_id());
+
+        let result =
+            EthBlockValidator::<NopSignature, MockSignatures<NopSignature>>::validate_block_body(
+                &header,
+                &payload,
+                &MockChainConfig::DEFAULT,
+            );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_7702_skipped_tuple2() {
+        let txn1 = make_legacy_tx(B256::repeat_byte(0xBu8), BASE_FEE, 30_000, 1, 10);
+
+        let auth_list = vec![
+            make_signed_authorization(
+                B256::repeat_byte(0xBu8),
+                secret_to_eth_address(B256::repeat_byte(0x1u8)),
+                2,
+            ),
+            make_signed_authorization(
+                B256::repeat_byte(0xBu8),
+                secret_to_eth_address(B256::repeat_byte(0x3u8)),
+                4,
+            ),
+        ];
+
+        let txn2 = make_eip7702_tx(
+            B256::repeat_byte(0xAu8),
+            BASE_FEE,
+            0,
+            1_000_000,
+            1,
+            auth_list,
+            0,
+        );
+        let txn3 = make_legacy_tx(B256::repeat_byte(0xBu8), BASE_FEE, 30_000, 3, 10);
+        let txn4 = make_legacy_tx(B256::repeat_byte(0xBu8), BASE_FEE, 30_000, 5, 10);
+
+        let txs = vec![txn1, txn2, txn3, txn4];
+        let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
+            execution_body: EthBlockBody {
+                transactions: txs,
+                ommers: Vec::new(),
+                withdrawals: Vec::new(),
+            },
+        });
+        let header = get_header(payload.get_id());
+
+        let result =
+            EthBlockValidator::<NopSignature, MockSignatures<NopSignature>>::validate_block_body(
+                &header,
+                &payload,
+                &MockChainConfig::DEFAULT,
+            );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_7702_skipped_tuples_across_7702_txns() {
+        let auth_list_1 = vec![make_signed_authorization(
+            B256::repeat_byte(0xBu8),
+            secret_to_eth_address(B256::repeat_byte(0x1u8)),
+            1,
+        )];
+        let auth_list_2 = vec![make_signed_authorization(
+            B256::repeat_byte(0xBu8),
+            secret_to_eth_address(B256::repeat_byte(0x2u8)),
+            3,
+        )];
+
+        let txn1 = make_eip7702_tx(
+            B256::repeat_byte(0xAu8),
+            BASE_FEE,
+            0,
+            1_000_000,
+            1,
+            auth_list_1,
+            0,
+        );
+        let txn2 = make_eip7702_tx(
+            B256::repeat_byte(0xAu8),
+            BASE_FEE,
+            0,
+            1_000_000,
+            2,
+            auth_list_2,
+            0,
+        );
+        let txn3 = make_legacy_tx(B256::repeat_byte(0xBu8), BASE_FEE, 30_000, 2, 10);
+        let txn4 = make_legacy_tx(B256::repeat_byte(0xBu8), BASE_FEE, 30_000, 4, 10);
+
+        let txs = vec![txn1, txn2, txn3, txn4];
+        let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
+            execution_body: EthBlockBody {
+                transactions: txs,
+                ommers: Vec::new(),
+                withdrawals: Vec::new(),
+            },
+        });
+        let header = get_header(payload.get_id());
+
+        let result =
+            EthBlockValidator::<NopSignature, MockSignatures<NopSignature>>::validate_block_body(
+                &header,
+                &payload,
+                &MockChainConfig::DEFAULT,
+            );
+        assert!(result.is_err());
+    }
 
     prop_compose! {
         fn signed_authorization_strategy()(authority in 1..=4u8, address in 1..=4u8, nonce in 0..8u64)

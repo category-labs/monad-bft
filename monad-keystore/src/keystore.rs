@@ -115,9 +115,9 @@ impl From<std::io::Error> for KeystoreError {
 }
 
 #[derive(Zeroize, ZeroizeOnDrop)]
-pub struct SecretKey(Vec<u8>);
+pub struct KeystoreSecret(Vec<u8>);
 
-impl SecretKey {
+impl KeystoreSecret {
     pub fn new(data: Vec<u8>) -> Self {
         Self(data)
     }
@@ -153,19 +153,19 @@ impl SecretKey {
     }
 }
 
-impl From<Vec<u8>> for SecretKey {
+impl From<Vec<u8>> for KeystoreSecret {
     fn from(data: Vec<u8>) -> Self {
         Self::new(data)
     }
 }
 
-impl AsRef<[u8]> for SecretKey {
+impl AsRef<[u8]> for KeystoreSecret {
     fn as_ref(&self) -> &[u8] {
         &self.0
     }
 }
 
-impl AsMut<[u8]> for SecretKey {
+impl AsMut<[u8]> for KeystoreSecret {
     fn as_mut(&mut self) -> &mut [u8] {
         &mut self.0
     }
@@ -203,7 +203,7 @@ impl CryptoModules {
         }
     }
 
-    /// Encrypt the private key with a passphrase Returns the corresponding
+    /// Encrypt the secret with a passphrase Returns the corresponding
     /// ciphertext and checksum
     ///
     /// Password normalization
@@ -214,7 +214,7 @@ impl CryptoModules {
     /// > UTF-8 encoded.
     pub fn encrypt(
         &self,
-        private_key: &[u8],
+        secret: &[u8],
         password: &str,
     ) -> Result<(Vec<u8>, Vec<u8>), KeystoreError> {
         let password_nfkd = password
@@ -227,7 +227,7 @@ impl CryptoModules {
             .derive_key(password_nfkd.as_bytes())
             .map_err(KeystoreError::KDFError)?;
 
-        let ciphertext = self.cipher.encrypt(private_key, &encryption_key);
+        let ciphertext = self.cipher.encrypt(secret, &encryption_key);
         let checksum = self.hash.generate_checksum(&encryption_key, &ciphertext);
 
         encryption_key.zeroize();
@@ -236,7 +236,7 @@ impl CryptoModules {
     }
 
     /// Decrypt the ciphertext with the passphrase
-    /// Returns the corresponding private key
+    /// Returns the corresponding secret
     ///
     /// See [CryptoModules::encrypt] for password normalization
     pub fn decrypt(
@@ -244,7 +244,7 @@ impl CryptoModules {
         ciphertext: &[u8],
         password: &str,
         checksum: &[u8],
-    ) -> Result<SecretKey, KeystoreError> {
+    ) -> Result<KeystoreSecret, KeystoreError> {
         let password_nfkd = password
             .nfkd()
             .filter(|&c| !c.is_control())
@@ -262,19 +262,19 @@ impl CryptoModules {
         let result = self.cipher.decrypt(ciphertext, &decryption_key);
         decryption_key.zeroize();
 
-        Ok(SecretKey::new(result))
+        Ok(KeystoreSecret::new(result))
     }
 }
 
 impl Keystore {
-    // Creates a new keystore json file by providing a private key
+    // Creates a new keystore json file by providing a secret
     pub fn create_keystore_json(
-        private_key: &[u8],
+        keystore_secret: &[u8],
         password: &str,
         path: &Path,
     ) -> Result<(), KeystoreError> {
         Self::create_keystore_json_with_version(
-            private_key,
+            keystore_secret,
             password,
             path,
             KeystoreVersion::Legacy,
@@ -283,13 +283,13 @@ impl Keystore {
 
     // Creates a new keystore json file with specified version
     pub fn create_keystore_json_with_version(
-        private_key: &[u8],
+        keystore_secret: &[u8],
         password: &str,
         path: &Path,
         version: KeystoreVersion,
     ) -> Result<(), KeystoreError> {
         let crypto_modules = CryptoModules::create_default(&mut OsRng);
-        let (ciphertext, checksum) = crypto_modules.encrypt(private_key, password)?;
+        let (ciphertext, checksum) = crypto_modules.encrypt(keystore_secret, password)?;
 
         let keystore = Keystore {
             version,
@@ -304,32 +304,32 @@ impl Keystore {
         Ok(())
     }
 
-    // Reads a keystore json file and obtain the corresponding private key and version
+    // Reads a keystore json file and obtain the corresponding keystore secret and version
     pub fn load_key_with_version(
         path: &Path,
         password: &str,
-    ) -> Result<(SecretKey, KeystoreVersion), KeystoreError> {
+    ) -> Result<(KeystoreSecret, KeystoreVersion), KeystoreError> {
         let mut file = File::open(path)?;
         let mut contents = String::new();
         file.read_to_string(&mut contents)?;
 
         let keystore: Keystore = serde_json::from_str(&contents)?;
-        let private_key =
+        let keystore_secret =
             keystore
                 .crypto
                 .decrypt(&keystore.ciphertext, password, &keystore.checksum)?;
 
-        Ok((private_key, keystore.version))
+        Ok((keystore_secret, keystore.version))
     }
 
     pub fn load_bls_key(path: &Path, password: &str) -> Result<BlsKeyPair, KeystoreError> {
-        let (mut private_key, version) = Keystore::load_key_with_version(path, password)?;
-        private_key.to_bls(version)
+        let (mut keystore_secret, version) = Keystore::load_key_with_version(path, password)?;
+        keystore_secret.to_bls(version)
     }
 
     pub fn load_secp_key(path: &Path, password: &str) -> Result<KeyPair, KeystoreError> {
-        let (mut private_key, version) = Keystore::load_key_with_version(path, password)?;
-        private_key.to_secp(version)
+        let (mut keystore_secret, version) = Keystore::load_key_with_version(path, password)?;
+        keystore_secret.to_secp(version)
     }
 }
 
@@ -423,18 +423,18 @@ mod test {
     #[test]
     fn test_keystore_file() {
         let file_path = Path::new("./test-keys");
-        let private_key = "6dd19c802af753f5b89d11becba0aeafe91493e14ade082c3af4e5797cae29b5";
+        let secret = "6dd19c802af753f5b89d11becba0aeafe91493e14ade082c3af4e5797cae29b5";
         let password = "testing";
 
         // create keystore json file
         let result =
-            Keystore::create_keystore_json(&hex::decode(private_key).unwrap(), password, file_path);
+            Keystore::create_keystore_json(&hex::decode(secret).unwrap(), password, file_path);
         assert!(result.is_ok());
 
         // decrypt keystore json file and verify version
-        let (retrieved_key, version) =
+        let (retrieved_secret, version) =
             Keystore::load_key_with_version(file_path, password).unwrap();
-        assert!(hex::encode(retrieved_key) == private_key);
+        assert!(hex::encode(retrieved_secret) == secret);
         assert_eq!(version, crate::keystore::KeystoreVersion::Legacy);
     }
 }

@@ -1548,6 +1548,39 @@ fn test_eip7702_authorization_nonce_higher() {
 }
 
 #[test]
+fn test_eip7702_authorization_nonce_equal() {
+    let tx1 = make_eip7702_tx(
+        S1,
+        BASE_FEE + 1,
+        1,
+        GAS_LIMIT_EIP_7702,
+        0,
+        vec![make_signed_authorization(S1, secret_to_eth_address(S1), 0)],
+        10,
+    );
+    let tx2 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 1, 0);
+
+    run_simple([
+        TxPoolTestEvent::InsertTxs {
+            txs: vec![(&tx1, true), (&tx2, true)],
+            expected_pool_size_change: 2,
+        },
+        TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
+            tx_limit: 2,
+            gas_limit: GAS_LIMIT + GAS_LIMIT_EIP_7702,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
+            expected_txs: vec![&tx1, &tx2],
+            add_to_blocktree: true,
+        },
+        TxPoolTestEvent::AssertNonce {
+            address: secret_to_eth_address(S1),
+            nonce: 2,
+        },
+    ]);
+}
+
+#[test]
 fn test_eip7702_authorization_nonce_lower() {
     let tx1 = make_eip7702_tx(
         S1,
@@ -1594,10 +1627,10 @@ fn test_eip7702_authorization_nonce_lower() {
 
 #[test]
 fn test_eip7702_authorizations_with_conflicting_txs() {
-    // tx0 is 7702 has 50 auths from S2 sent from S1, S2 should have nonce 50 after inclusion
-    // tx1 is 1559 from S2 with nonce 49 (conflicting)
-    // tx2 is 1559 from S2 with nonce 50 (should be included)
-    const AUTH_LIST_SIZE: u64 = 50;
+    // tx0 is 7702 has 4 auths from S2 sent from S1, S2 should have nonce 4 after inclusion
+    // tx1 is 1559 from S2 with nonce 3 (conflicting)
+    // tx2 is 1559 from S2 with nonce 4 (should be included)
+    const AUTH_LIST_SIZE: u64 = 4;
     let auth_list = (0..AUTH_LIST_SIZE)
         .map(|i| make_signed_authorization(S2, secret_to_eth_address(S1), i))
         .collect_vec();
@@ -1610,8 +1643,8 @@ fn test_eip7702_authorizations_with_conflicting_txs() {
         auth_list,
         0,
     );
-    let tx1 = make_eip1559_tx(S2, BASE_FEE + 1, 1, 21_000, 49, 0);
-    let tx2 = make_eip1559_tx(S2, BASE_FEE + 1, 1, 21_000, 50, 0);
+    let tx1 = make_eip1559_tx(S2, BASE_FEE + 1, 1, 21_000, 3, 0);
+    let tx2 = make_eip1559_tx(S2, BASE_FEE + 1, 1, 21_000, 4, 0);
 
     run_simple([
         TxPoolTestEvent::InsertTxs {
@@ -1632,7 +1665,7 @@ fn test_eip7702_authorizations_with_conflicting_txs() {
         },
         TxPoolTestEvent::AssertNonce {
             address: secret_to_eth_address(S2),
-            nonce: 50,
+            nonce: 4,
         },
         TxPoolTestEvent::CreateProposal {
             base_fee: BASE_FEE_PER_GAS,
@@ -1648,7 +1681,7 @@ fn test_eip7702_authorizations_with_conflicting_txs() {
         },
         TxPoolTestEvent::AssertNonce {
             address: secret_to_eth_address(S2),
-            nonce: 51,
+            nonce: 5,
         },
         TxPoolTestEvent::Block(Arc::new(|pool| {
             assert!(!pool.is_empty());
@@ -1659,6 +1692,86 @@ fn test_eip7702_authorizations_with_conflicting_txs() {
         },
         TxPoolTestEvent::Block(Arc::new(|pool| {
             assert!(pool.is_empty());
+        })),
+    ]);
+}
+
+#[test]
+fn test_eip7702_authorizations_list_too_long() {
+    for (auths, should_include) in [(4, true), (5, false)] {
+        let auth_list = (0..auths)
+            .map(|i| make_signed_authorization(S2, secret_to_eth_address(S1), i))
+            .collect_vec();
+        let tx0 = make_eip7702_tx(S1, BASE_FEE + 1, 1, 10_000_000, 0, auth_list, 0);
+
+        run_simple([TxPoolTestEvent::InsertTxs {
+            txs: vec![(&tx0, should_include)],
+            expected_pool_size_change: if should_include { 1 } else { 0 },
+        }]);
+    }
+}
+
+#[test]
+fn test_eip_7702_sponsor_with_1559() {
+    // 1. S2 will "sponsor" S1's eth transfer and include an authorization tuple delegating S1 to S4.
+    // 2. S1 will send a 1559 tx.
+    // Do 1 and 2 in order 10 times.
+    // Expect tx[0,2,4,6,8] in first proposal and tx[1] in second proposal.
+    let mut s1_nonce = 0;
+    let txs = (0..10)
+        .map(|s2_nonce| {
+            // Step 1
+            let auth = make_signed_authorization(S1, secret_to_eth_address(S4), s1_nonce);
+            s1_nonce += 1;
+
+            let tx1 = make_eip7702_tx(
+                S2,
+                BASE_FEE + 1,
+                1,
+                GAS_LIMIT_EIP_7702 * 2,
+                s2_nonce,
+                vec![auth],
+                10,
+            );
+
+            // Step 2
+            let tx2 = make_eip1559_tx(S1, BASE_FEE + 1, 1, 21_000, s1_nonce, 0);
+            s1_nonce += 1;
+
+            [tx1, tx2]
+        })
+        .flatten()
+        .collect_vec();
+
+    let insert_txs = txs.iter().map(|tx| (tx, true)).collect_vec();
+
+    run_simple([
+        TxPoolTestEvent::InsertTxs {
+            txs: insert_txs,
+            expected_pool_size_change: 20,
+        },
+        TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
+            tx_limit: 20,
+            gas_limit: PROPOSAL_GAS_LIMIT,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
+            expected_txs: txs.iter().step_by(2).collect(),
+            add_to_blocktree: true,
+        },
+        TxPoolTestEvent::CreateProposal {
+            base_fee: BASE_FEE_PER_GAS,
+            tx_limit: 20,
+            gas_limit: PROPOSAL_GAS_LIMIT,
+            byte_limit: PROPOSAL_SIZE_LIMIT,
+            expected_txs: vec![&txs[1]],
+            add_to_blocktree: true,
+        },
+        TxPoolTestEvent::CommitPendingBlocks {
+            num_blocks: 2,
+            expected_committed_seq_num: 2,
+        },
+        TxPoolTestEvent::Block(Arc::new(|pool| {
+            assert_eq!(pool.num_txs(), 9);
         })),
     ]);
 }

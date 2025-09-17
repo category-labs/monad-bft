@@ -276,6 +276,15 @@ impl BlsAggregatePubKey {
 #[derive(ZeroizeOnDrop)]
 struct BlsSecretKey(blst_core::SecretKey);
 
+#[derive(ZeroizeOnDrop)]
+pub struct BlsSecretKeyView(Vec<u8>);
+
+impl std::fmt::Display for BlsSecretKeyView {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", hex::encode(&self.0))
+    }
+}
+
 /// BLS keypair
 pub struct BlsKeyPair {
     pubkey: BlsPubKey,
@@ -287,6 +296,10 @@ impl BlsSecretKey {
         let blst_key = blst_core::SecretKey::key_gen(ikm, key_info);
         ikm.zeroize();
         blst_key.map(Self).map_err(BlsError)
+    }
+
+    fn sk_view(&self) -> BlsSecretKeyView {
+        BlsSecretKeyView(self.0.to_bytes().into())
     }
 
     fn sk_to_pk(&self) -> BlsPubKey {
@@ -321,6 +334,10 @@ impl BlsKeyPair {
     pub fn sign<SD: SigningDomain>(&self, msg: &[u8]) -> BlsSignature {
         let msg = [SD::PREFIX, msg].concat();
         self.secretkey.0.sign(&msg, DST, &[]).into()
+    }
+
+    pub fn privkey_view(&self) -> BlsSecretKeyView {
+        self.secretkey.sk_view()
     }
 
     pub fn pubkey(&self) -> BlsPubKey {
