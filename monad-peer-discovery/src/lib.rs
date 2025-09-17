@@ -163,6 +163,9 @@ pub enum PeerDiscoveryEvent<ST: CertificateSignatureRecoverable> {
     UpdatePeers {
         peers: Vec<PeerEntry<ST>>,
     },
+    UpdatePinnedNodes {
+        pinned_full_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
+    },
     UpdateConfirmGroup {
         end_round: Round,
         peers: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
@@ -297,6 +300,11 @@ pub trait PeerDiscoveryAlgo {
     fn update_peers(
         &mut self,
         peers: Vec<PeerEntry<Self::SignatureType>>,
+    ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
+
+    fn update_pinned_nodes(
+        &mut self,
+        pinned_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<Self::SignatureType>>>,
     ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
     fn update_peer_participation(

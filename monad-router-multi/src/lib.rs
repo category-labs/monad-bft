@@ -287,8 +287,17 @@ where
                     fullnodes_cmds.push(cmd);
                 }
                 RouterCommand::GetFullNodes => validator_cmds.push(cmd),
-                RouterCommand::UpdateFullNodes { .. } => validator_cmds.push(cmd),
-
+                RouterCommand::UpdateFullNodes {
+                    ref dedicated_full_nodes,
+                    ref prioritized_full_nodes,
+                } => {
+                    let cmd_cpy = RouterCommand::UpdateFullNodes {
+                        dedicated_full_nodes: dedicated_full_nodes.clone(),
+                        prioritized_full_nodes: prioritized_full_nodes.clone(),
+                    };
+                    validator_cmds.push(cmd_cpy);
+                    fullnodes_cmds.push(cmd);
+                }
                 RouterCommand::UpdateCurrentRound(epoch, round) => {
                     let cmd_cpy = RouterCommand::UpdateCurrentRound(epoch, round);
                     if epoch > self.current_epoch {
