@@ -1335,6 +1335,17 @@ where
         cmds
     }
 
+    fn update_pinned_nodes(
+        &mut self,
+        pinned_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
+        debug!(?pinned_nodes, "updating pinned nodes");
+
+        self.pinned_full_nodes = pinned_nodes;
+
+        Vec::new()
+    }
+
     fn update_peer_participation(
         &mut self,
         round: Round,

@@ -164,9 +164,9 @@ where
                     }
                 },
                 RouterCommand::GetPeers => {}
-                RouterCommand::UpdatePeers(_) => {}
+                RouterCommand::UpdatePeers { .. } => {}
                 RouterCommand::GetFullNodes => {}
-                RouterCommand::UpdateFullNodes(_vec) => {}
+                RouterCommand::UpdateFullNodes { .. } => {}
             }
         }
     }

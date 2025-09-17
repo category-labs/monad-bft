@@ -44,7 +44,7 @@ use publisher::Publisher;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tracing::{error, trace, warn};
+use tracing::{debug, error, trace, warn};
 
 use super::{
     config::{RaptorCastConfig, SecondaryRaptorCastMode},
@@ -314,9 +314,25 @@ where
                 Self::Command::GetFullNodes => {
                     panic!("Command routed to secondary RaptorCast: GetFullNodes")
                 }
-                Self::Command::UpdateFullNodes(..) => {
-                    panic!("Command routed to secondary RaptorCast: UpdateFullNodes")
-                }
+                Self::Command::UpdateFullNodes {
+                    dedicated_full_nodes: _,
+                    prioritized_full_nodes,
+                } => match &mut self.role {
+                    Role::Client(_) => {
+                        // client don't care about dedicated and prioritized full nodes
+                        debug!(
+                            ?prioritized_full_nodes,
+                            "RaptorCastSecondary Client ignoring UpdateFullNodes command"
+                        );
+                    }
+                    Role::Publisher(publisher) => {
+                        debug!(
+                            ?prioritized_full_nodes,
+                            "RaptorCastSecondary Publisher updating prioritized full nodes"
+                        );
+                        publisher.update_always_ask_full_nodes(prioritized_full_nodes);
+                    }
+                },
 
                 Self::Command::UpdateCurrentRound(epoch, round) => match &mut self.role {
                     Role::Client(client) => {

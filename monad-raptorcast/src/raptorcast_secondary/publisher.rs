@@ -337,14 +337,11 @@ where
         }
     }
 
-    // TODO: implement a command to update the always-ask full nodes?
-    // TODO: if we do, to also update pinned_full_nodes in peer discovery
-    #[allow(dead_code)]
     pub fn update_always_ask_full_nodes(
         &mut self,
-        prioritized_full_nodes: FullNodes<CertificateSignaturePubKey<ST>>,
+        prioritized_full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
     ) {
-        self.always_ask_full_nodes = prioritized_full_nodes;
+        self.always_ask_full_nodes.list = prioritized_full_nodes;
         // Remove the nodes from always_ask, otherwise we might send two
         // invites to the same node.
         self.peer_disc_full_nodes
@@ -1300,7 +1297,7 @@ mod tests {
         // not affect groups 1, 2, since they were generated during rounds
         // 1 and 6, respectively. This should only affect group 3 (generated
         // during round 11, confirmed at round 15, used at round 18)
-        v0_fsm.update_always_ask_full_nodes(FullNodes::new(node_ids_vec![16]));
+        v0_fsm.update_always_ask_full_nodes(node_ids_vec![16]);
         // Upserting peer-discovered full nodes that already are always-ask
         // should have no effect.
         v0_fsm.upsert_peer_disc_full_nodes(FullNodes::new(node_ids_vec![11, 16]));

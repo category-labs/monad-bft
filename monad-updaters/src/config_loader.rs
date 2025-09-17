@@ -80,7 +80,10 @@ where
 {
     config_path: PathBuf,
 
-    request_tx: Sender<Vec<NodeBootstrapPeerConfig<ST>>>,
+    request_tx: Sender<(
+        Vec<NodeBootstrapPeerConfig<ST>>,
+        Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+    )>,
     response_tx: Sender<ConfigEvent<ST, SCT>>,
     response_rx: Receiver<ConfigEvent<ST, SCT>>,
 
@@ -98,9 +101,12 @@ where
 
         let bootstrap_peers_refresh_tx = response_tx.clone();
         tokio::spawn(async move {
-            while let Some(req) = request_rx.recv().await {
-                let known_peers = Self::resolve_domains(req).await;
-                let config_event = ConfigEvent::KnownPeersUpdate(KnownPeersUpdate { known_peers });
+            while let Some((bootstrap_peers, pinned_nodes)) = request_rx.recv().await {
+                let known_peers = Self::resolve_domains(bootstrap_peers).await;
+                let config_event = ConfigEvent::KnownPeersUpdate(KnownPeersUpdate {
+                    known_peers,
+                    pinned_nodes,
+                });
 
                 match bootstrap_peers_refresh_tx.try_send(config_event) {
                     Ok(_) => {}
@@ -128,8 +134,16 @@ where
     }
 
     fn extract_config_update(&mut self, node_config: NodeConfig<ST>) -> ConfigEvent<ST, SCT> {
-        let full_nodes = node_config
+        let dedicated_full_nodes: Vec<_> = node_config
             .fullnode_dedicated
+            .identities
+            .iter()
+            .map(|full_node| NodeId::new(full_node.secp256k1_pubkey))
+            .collect();
+
+        let prioritized_full_nodes: Vec<_> = node_config
+            .fullnode_raptorcast
+            .full_nodes_prioritized
             .identities
             .iter()
             .map(|full_node| NodeId::new(full_node.secp256k1_pubkey))
@@ -142,7 +156,16 @@ where
             .map(|p| NodeId::new(p.secp256k1_pubkey))
             .collect();
 
-        match self.request_tx.try_send(node_config.bootstrap.peers) {
+        let pinned_full_nodes = dedicated_full_nodes
+            .iter()
+            .cloned()
+            .chain(prioritized_full_nodes.iter().cloned())
+            .collect();
+
+        match self
+            .request_tx
+            .try_send((node_config.bootstrap.peers, pinned_full_nodes))
+        {
             Ok(_) => {}
             Err(TrySendError::Closed(_)) => {
                 warn!("config request channel closed");
@@ -153,7 +176,8 @@ where
         };
 
         ConfigEvent::ConfigUpdate(ConfigUpdate {
-            full_nodes,
+            dedicated_full_nodes,
+            prioritized_full_nodes,
             blocksync_override_peers,
         })
     }

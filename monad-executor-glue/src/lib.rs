@@ -70,9 +70,15 @@ pub enum RouterCommand<ST: CertificateSignatureRecoverable, OM> {
     },
     UpdateCurrentRound(Epoch, Round),
     GetPeers,
-    UpdatePeers(Vec<PeerEntry<ST>>),
+    UpdatePeers {
+        peer_entries: Vec<PeerEntry<ST>>,
+        pinned_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+    },
     GetFullNodes,
-    UpdateFullNodes(Vec<NodeId<CertificateSignaturePubKey<ST>>>),
+    UpdateFullNodes {
+        dedicated_full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+        prioritized_full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+    },
 }
 
 impl<ST: CertificateSignatureRecoverable, OM> Debug for RouterCommand<ST, OM> {
@@ -99,9 +105,23 @@ impl<ST: CertificateSignatureRecoverable, OM> Debug for RouterCommand<ST, OM> {
                 .field(arg1)
                 .finish(),
             Self::GetPeers => write!(f, "GetPeers"),
-            Self::UpdatePeers(arg0) => f.debug_tuple("UpdatePeers").field(arg0).finish(),
+            Self::UpdatePeers {
+                peer_entries,
+                pinned_nodes,
+            } => f
+                .debug_struct("UpdatePeers")
+                .field("peer_entries", peer_entries)
+                .field("pinned_nodes", pinned_nodes)
+                .finish(),
             Self::GetFullNodes => write!(f, "GetFullNodes"),
-            Self::UpdateFullNodes(arg0) => f.debug_tuple("UpdateFullNodes").field(arg0).finish(),
+            Self::UpdateFullNodes {
+                dedicated_full_nodes,
+                prioritized_full_nodes,
+            } => f
+                .debug_struct("UpdateFullNodes")
+                .field("dedicated_full_nodes", dedicated_full_nodes)
+                .field("prioritized_full_nodes", prioritized_full_nodes)
+                .finish(),
         }
     }
 }
@@ -1874,7 +1894,8 @@ pub struct ConfigUpdate<SCT>
 where
     SCT: SignatureCollection,
 {
-    pub full_nodes: Vec<NodeId<SCT::NodeIdPubKey>>,
+    pub dedicated_full_nodes: Vec<NodeId<SCT::NodeIdPubKey>>,
+    pub prioritized_full_nodes: Vec<NodeId<SCT::NodeIdPubKey>>,
     pub blocksync_override_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
 }
 
@@ -1884,6 +1905,7 @@ where
     ST: CertificateSignatureRecoverable,
 {
     pub known_peers: Vec<PeerEntry<ST>>,
+    pub pinned_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
