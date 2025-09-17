@@ -708,4 +708,77 @@ mod test {
             assert!(qc.is_none(), "Should not create QC until supermajority reached");
         }
     }
+
+    #[test]
+    fn test_dos_vulnerability_realistic_scenario() {
+        // Test với scenario thực tế hơn
+        let mut votestate = VoteState::<SignatureCollectionType>::new(Round(0));
+        
+        // 21 validators (realistic size), need 15 for supermajority (>2/3)
+        let keys = create_keys::<SignatureType>(21);
+        let certkeys = create_certificate_keys::<SignatureCollectionType>(21);
+        
+        let staking_list = keys
+            .iter()
+            .map(|k| NodeId::new(k.pubkey()))
+            .zip(std::iter::repeat(Stake::ONE))
+            .collect::<Vec<_>>();
+        
+        let voting_identity = keys
+            .iter()
+            .map(|k| NodeId::new(k.pubkey()))
+            .zip(certkeys.iter().map(|k| k.pubkey()))
+            .collect::<Vec<_>>();
+        
+        let valset = ValidatorSetFactory::default()
+            .create(staking_list)
+            .expect("create validator set");
+        let vmap = ValidatorMapping::new(voting_identity);
+        
+        let vote_round = Round(0);
+        
+        // Add 14 valid votes (just under supermajority)
+        for i in 0..14 {
+            let valid_vote = create_vote_message(&certkeys[i], vote_round, true);
+            let (qc, _) = votestate.process_vote(
+                &NodeId::new(keys[i].pubkey()), 
+                &valid_vote, 
+                &valset, 
+                &vmap
+            );
+            assert!(qc.is_none()); // Should not create QC yet
+        }
+        
+        // Now add invalid signatures to trigger DoS scenario
+        // Each invalid signature should trigger verification when combined with valid votes
+        let mut verification_count = 0;
+        
+        // Simulate multiple invalid signatures from different validators
+        for i in 14..20 { // 6 invalid signatures
+            let invalid_vote = create_vote_message(&certkeys[i], vote_round, false);
+            let (qc, _) = votestate.process_vote(
+                &NodeId::new(keys[i].pubkey()), 
+                &invalid_vote, 
+                &valset, 
+                &vmap
+            );
+            verification_count += 1;
+            assert!(qc.is_none()); // Should not create QC with invalid sigs
+        }
+        
+        // Finally add one more valid vote to create legitimate QC
+        let final_valid_vote = create_vote_message(&certkeys[20], vote_round, true);
+        let (qc, _) = votestate.process_vote(
+            &NodeId::new(keys[20].pubkey()), 
+            &final_valid_vote, 
+            &valset, 
+            &vmap
+        );
+        
+        // Should still be able to create QC despite previous invalid attempts
+        assert!(qc.is_some(), "Should create QC with sufficient valid votes");
+        
+        println!("Total verification attempts made: {}", verification_count);
+        // With the fix, this should be bounded and not cause infinite loop
+    }
 }
