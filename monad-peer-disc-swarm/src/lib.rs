@@ -151,9 +151,9 @@ impl<S: PeerDiscSwarmRelation> Executor for MockPeerDiscExecutor<S> {
                 RouterCommand::AddEpochValidatorSet { .. } => {}
                 RouterCommand::UpdateCurrentRound(..) => {}
                 RouterCommand::GetPeers => {}
-                RouterCommand::UpdatePeers(_) => {}
+                RouterCommand::UpdatePeers { .. } => {}
                 RouterCommand::GetFullNodes => {}
-                RouterCommand::UpdateFullNodes(_) => {}
+                RouterCommand::UpdateFullNodes { .. } => {}
                 RouterCommand::PublishToFullNodes { .. } => {}
             }
         }

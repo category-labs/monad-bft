@@ -388,13 +388,13 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
                 RouterCommand::GetPeers => {
                     // TODO
                 }
-                RouterCommand::UpdatePeers(_) => {
+                RouterCommand::UpdatePeers { .. } => {
                     // TODO
                 }
                 RouterCommand::GetFullNodes => {
                     // TODO
                 }
-                RouterCommand::UpdateFullNodes(_vec) => {
+                RouterCommand::UpdateFullNodes { .. } => {
                     // TODO
                 }
                 RouterCommand::PublishToFullNodes { .. } => {

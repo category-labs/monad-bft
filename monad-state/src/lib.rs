@@ -1129,9 +1129,10 @@ where
                     self.block_sync
                         .set_override_peers(config_update.blocksync_override_peers);
                     let mut cmds = Vec::new();
-                    cmds.push(Command::RouterCommand(RouterCommand::UpdateFullNodes(
-                        config_update.full_nodes,
-                    )));
+                    cmds.push(Command::RouterCommand(RouterCommand::UpdateFullNodes {
+                        dedicated_full_nodes: config_update.dedicated_full_nodes,
+                        prioritized_full_nodes: config_update.prioritized_full_nodes,
+                    }));
 
                     cmds.push(Command::ControlPanelCommand(ControlPanelCommand::Write(
                         WriteCommand::ReloadConfig(ReloadConfig::Response("Success".to_string())),
@@ -1145,9 +1146,10 @@ where
                     ))]
                 }
                 ConfigEvent::KnownPeersUpdate(known_peers_update) => {
-                    vec![Command::RouterCommand(RouterCommand::UpdatePeers(
-                        known_peers_update.known_peers,
-                    ))]
+                    vec![Command::RouterCommand(RouterCommand::UpdatePeers {
+                        peer_entries: known_peers_update.known_peers,
+                        pinned_nodes: known_peers_update.pinned_nodes,
+                    })]
                 }
             },
         }

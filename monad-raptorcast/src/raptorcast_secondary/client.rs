@@ -335,7 +335,8 @@ where
             return;
         }
 
-        if confirm_msg.peers.len() > confirm_msg.prepare.max_group_size {
+        let confirm_group_size = confirm_msg.peers.len();
+        if confirm_group_size > confirm_msg.prepare.max_group_size {
             warn!(
                 "RaptorCastSecondary ignoring ConfirmGroup that \
                                 is larger ({}) than the promised max_group_size ({}). \
@@ -378,10 +379,11 @@ where
         self.metrics[CLIENT_RECEIVED_CONFIRMS] += 1;
         debug!(
             "RaptorCastSecondary Client confirmed group for \
-             rounds [{:?}, {:?}) from validator {:?}",
+             rounds [{:?}, {:?}) from validator {:?}, group size {}",
             confirm_msg.prepare.start_round,
             confirm_msg.prepare.end_round,
             confirm_msg.prepare.validator_id,
+            confirm_group_size,
         );
 
         self.confirmed_groups
