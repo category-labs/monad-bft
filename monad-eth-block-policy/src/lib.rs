@@ -1459,7 +1459,7 @@ mod test {
     type ChainConfigType = MockChainConfig;
     type ChainRevisionType = MockChainRevision;
 
-    const RESERVE_BALANCE: u128 = 1_000_000_000_000_000_000;
+    const RESERVE_BALANCE: u128 = 10_000_000_000_000_000_000; // 10 MON
     const EXEC_DELAY: SeqNum = SeqNum(3);
 
     // pubkey starts with AAA
@@ -1709,8 +1709,11 @@ mod test {
             num_committed_blocks,
             CoherencyCheckMode::ReserveBalanceCoherency,
         );
-        assert!(
-            result.is_err(),
+        assert_eq!(
+            result,
+            Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+                BlockPolicyBlockValidatorError::InsufficientBalance
+            )),
             "Block coherency check should have failed: {:?}",
             result
         );
@@ -1739,7 +1742,7 @@ mod test {
         );
         assert!(result.is_ok(), "Block coherency check failed: {:?}", result);
 
-        // first tx dips into reserve balance, second tx has gas cost more than remaining reserve balance
+        // first tx dips into reserve balance, second tx has gas cost more than balance estimate
         let tx1 = make_test_tx(50000, ONE_ETHER, 0, S1);
         let tx2 = make_test_tx(50000, HALF_ETHER, 1, S1);
         let txs = BTreeMap::from([(4, vec![tx1, tx2])]); // txs in block n
@@ -1759,19 +1762,51 @@ mod test {
             num_committed_blocks,
             CoherencyCheckMode::ReserveBalanceCoherency,
         );
-        assert!(
-            result.is_err(),
+        assert_eq!(
+            result,
+            Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+                BlockPolicyBlockValidatorError::InsufficientReserveBalance
+            )),
             "Block coherency check should have failed: {:?}",
             result
         );
 
-        // first tx doesn't dip into reserve balance, second tx has max reserve balance to spend from
-        let tx1 = make_test_tx(50000, 0, 0, S1);
-        let tx2 = make_test_tx(10_000_000, HALF_ETHER, 1, S1);
-        let txs = BTreeMap::from([(4, vec![tx1, tx2.clone()])]); // txs in block n
+        // first tx doesn't dip into reserve balance, second tx has gas cost more than max reserve balance
+        let tx1 = make_test_tx(50000, ONE_ETHER, 0, S1);
+        let gas_limit = RESERVE_BALANCE as u64 / BASE_FEE + 1;
+        let tx2 = make_test_tx(gas_limit, HALF_ETHER, 1, S1);
+        let txs = BTreeMap::from([(4, vec![tx1, tx2])]); // txs in block n
 
         // balance of signer at block n-3
-        assert_eq!(tx2.gas_limit() as u128 * BASE_FEE as u128, RESERVE_BALANCE);
+        let balance = 100 * ONE_ETHER;
+        let state_backend = NopStateBackend {
+            balances: BTreeMap::from([(signer, U256::from(balance))]),
+            ..Default::default()
+        };
+
+        let result = setup_block_policy_with_txs(
+            txs,
+            vec![signer],
+            &state_backend,
+            num_committed_blocks,
+            CoherencyCheckMode::ReserveBalanceCoherency,
+        );
+        assert_eq!(
+            result,
+            Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+                BlockPolicyBlockValidatorError::InsufficientReserveBalance
+            )),
+            "Block coherency check should have failed: {:?}",
+            result
+        );
+
+        // first tx doesn't dip into reserve balance, second tx has gas cost equal to max reserve balance
+        let tx1 = make_test_tx(50000, 0, 0, S1);
+        let gas_limit = RESERVE_BALANCE as u64 / BASE_FEE;
+        let tx2 = make_test_tx(gas_limit, HALF_ETHER, 1, S1);
+        let txs = BTreeMap::from([(4, vec![tx1, tx2])]); // txs in block n
+
+        // balance of signer at block n-3
         let first_tx_gas_cost = 50000 * BASE_FEE as u128;
         let second_tx_gas_cost = RESERVE_BALANCE;
         let balance = first_tx_gas_cost + second_tx_gas_cost;
@@ -1814,7 +1849,7 @@ mod test {
         );
         assert!(result.is_ok(), "Block coherency check failed: {:?}", result);
 
-        // first tx dips into reserve balance, second tx has gas cost more than remaining reserve balance
+        // first tx dips into reserve balance, second tx has gas cost more than balance estimate
         let tx1 = make_test_tx(50000, ONE_ETHER, 0, S1);
         let tx2 = make_test_tx(50000, HALF_ETHER, 1, S1);
         // first tx in block n-2, second tx in block n
@@ -1835,20 +1870,53 @@ mod test {
             num_committed_blocks,
             CoherencyCheckMode::ReserveBalanceCoherency,
         );
-        assert!(
-            result.is_err(),
+        assert_eq!(
+            result,
+            Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+                BlockPolicyBlockValidatorError::InsufficientReserveBalance
+            )),
             "Block coherency check should have failed: {:?}",
             result
         );
 
-        // first tx doesn't dip into reserve balance, second tx has max reserve balance to spend from
-        let tx1 = make_test_tx(50000, 0, 0, S1);
-        let tx2 = make_test_tx(10_000_000, HALF_ETHER, 1, S1);
+        // first tx doesn't dip into reserve balance, second tx has gas cost more than max reserve balance
+        let tx1 = make_test_tx(50000, ONE_ETHER, 0, S1);
+        let gas_limit = RESERVE_BALANCE as u64 / BASE_FEE + 1;
+        let tx2 = make_test_tx(gas_limit, HALF_ETHER, 1, S1);
         // first tx in block n-2, second tx in block n
-        let txs = BTreeMap::from([(2, vec![tx1]), (4, vec![tx2.clone()])]);
+        let txs = BTreeMap::from([(2, vec![tx1]), (4, vec![tx2])]);
 
         // balance of signer at block n-3
-        assert_eq!(tx2.gas_limit() as u128 * BASE_FEE as u128, RESERVE_BALANCE);
+        let balance = 100 * ONE_ETHER;
+        let state_backend = NopStateBackend {
+            balances: BTreeMap::from([(signer, U256::from(balance))]),
+            ..Default::default()
+        };
+
+        let result = setup_block_policy_with_txs(
+            txs,
+            vec![signer],
+            &state_backend,
+            num_committed_blocks,
+            CoherencyCheckMode::ReserveBalanceCoherency,
+        );
+        assert_eq!(
+            result,
+            Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+                BlockPolicyBlockValidatorError::InsufficientReserveBalance
+            )),
+            "Block coherency check should have failed: {:?}",
+            result
+        );
+
+        // first tx doesn't dip into reserve balance, second tx has gas cost equal to max reserve balance
+        let tx1 = make_test_tx(50000, 0, 0, S1);
+        let gas_limit = RESERVE_BALANCE as u64 / BASE_FEE;
+        let tx2 = make_test_tx(gas_limit, HALF_ETHER, 1, S1);
+        // first tx in block n-2, second tx in block n
+        let txs = BTreeMap::from([(2, vec![tx1]), (4, vec![tx2])]);
+
+        // balance of signer at block n-3
         let first_tx_gas_cost = 50000 * BASE_FEE as u128;
         let second_tx_gas_cost = RESERVE_BALANCE;
         let balance = first_tx_gas_cost + second_tx_gas_cost;
@@ -1893,7 +1961,7 @@ mod test {
         );
         assert!(result.is_ok(), "Block coherency check failed: {:?}", result);
 
-        // transactions exceed reserve balance
+        // transactions exceed balance estimate
         let tx1 = make_test_tx(50000, ONE_ETHER, 0, S1);
         let tx2 = make_test_tx(50000, HALF_ETHER, 1, S1);
         let tx3 = make_test_tx(50001, HALF_ETHER, 2, S1);
@@ -1914,8 +1982,44 @@ mod test {
             num_committed_blocks,
             CoherencyCheckMode::ReserveBalanceCoherency,
         );
-        assert!(
-            result.is_err(),
+        assert_eq!(
+            result,
+            Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+                BlockPolicyBlockValidatorError::InsufficientReserveBalance
+            )),
+            "Block coherency check should have failed: {:?}",
+            result
+        );
+
+        // transactions exceed max reserve balance
+        let tx1 = make_test_tx(50000, ONE_ETHER, 0, S1);
+        let tx2 = make_test_tx(50000, HALF_ETHER, 1, S1);
+        let tx2_gas_cost = 50000 * BASE_FEE as u128;
+        let tx3_gas_cost = RESERVE_BALANCE - tx2_gas_cost;
+        let gas_limit = tx3_gas_cost as u64 / BASE_FEE;
+        let tx3 = make_test_tx(gas_limit + 1, HALF_ETHER, 2, S1);
+        // first tx in block n-3, second tx in block n-2, third tx in block n
+        let txs = BTreeMap::from([(1, vec![tx1]), (2, vec![tx2]), (4, vec![tx3])]);
+
+        // balance of signer at block n-3
+        let balance = 100 * ONE_ETHER;
+        let state_backend = NopStateBackend {
+            balances: BTreeMap::from([(signer, U256::from(balance))]),
+            ..Default::default()
+        };
+
+        let result = setup_block_policy_with_txs(
+            txs,
+            vec![signer],
+            &state_backend,
+            num_committed_blocks,
+            CoherencyCheckMode::ReserveBalanceCoherency,
+        );
+        assert_eq!(
+            result,
+            Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+                BlockPolicyBlockValidatorError::InsufficientReserveBalance
+            )),
             "Block coherency check should have failed: {:?}",
             result
         );
