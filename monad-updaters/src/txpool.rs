@@ -500,7 +500,12 @@ where
             return Poll::Ready(Some(MonadEvent::MempoolEvent(event)));
         }
 
-        self.waker = Some(cx.waker().clone());
+        if let Some(waker) = self.waker.as_mut() {
+            waker.clone_from(cx.waker());
+        } else {
+            self.waker = Some(cx.waker().clone());
+        }
+
         Poll::Pending
     }
 }
