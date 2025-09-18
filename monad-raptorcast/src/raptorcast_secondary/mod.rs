@@ -105,6 +105,7 @@ where
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
         channel_from_primary: UnboundedReceiver<FullNodesGroupMessage<ST>>,
         channel_to_primary: UnboundedSender<Group<ST>>,
+        current_epoch: Epoch,
     ) -> Self {
         let node_id = NodeId::new(config.shared_key.pubkey());
 
@@ -146,7 +147,7 @@ where
             signing_key: config.shared_key.clone(),
             raptor10_redundancy: Redundancy::from_f32(raptor10_redundancy)
                 .expect("secondary raptor10_redundancy doesn't fit"),
-            curr_epoch: Epoch(0),
+            curr_epoch: current_epoch,
             mtu: config.mtu,
             dataplane_writer,
             peer_discovery_driver,

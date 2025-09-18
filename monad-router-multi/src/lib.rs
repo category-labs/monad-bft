@@ -109,6 +109,7 @@ where
             shared_pdd.clone(),
             recv_net_messages,
             send_group_infos,
+            current_epoch,
         );
 
         let mut rc_primary = RaptorCast::new(
@@ -116,6 +117,7 @@ where
             dp_reader,
             dp_writer.clone(),
             shared_pdd.clone(),
+            current_epoch,
         );
         rc_primary.bind_channel_to_secondary_raptorcast(send_net_messages, recv_group_infos);
 
@@ -132,8 +134,12 @@ where
         }
     }
 
-    fn update_role(&mut self, new_role: SecondaryRaptorCastModeConfig) {
-        debug!(?new_role, "Updating secondary raptorcast role");
+    fn update_role(&mut self, current_epoch: Epoch, new_role: SecondaryRaptorCastModeConfig) {
+        debug!(
+            ?new_role,
+            ?current_epoch,
+            "Updating secondary raptorcast role"
+        );
         self.rc_config.secondary_instance.mode = new_role;
 
         // create new channels
@@ -156,6 +162,7 @@ where
             self.shared_pdd.clone(),
             recv_net_messages,
             send_group_infos,
+            current_epoch,
         );
         self.rc_secondary = rc_secondary;
     }
@@ -166,6 +173,7 @@ where
         shared_pdd: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
         recv_net_messages: UnboundedReceiver<FullNodesGroupMessage<ST>>,
         send_group_infos: UnboundedSender<Group<ST>>,
+        current_epoch: Epoch,
     ) -> Option<RaptorCastSecondary<ST, M, OM, SE, PD>> {
         let secondary_instance: RaptorCastConfigSecondary<ST> = match cfg.secondary_instance.mode {
             SecondaryRaptorCastModeConfig::None => {
@@ -223,6 +231,7 @@ where
                 shared_pdd,
                 recv_net_messages,
                 send_group_infos,
+                current_epoch,
             )),
         }
     }
@@ -270,7 +279,7 @@ where
                             .is_some_and(|set| set.contains(&self.self_node_id))
                     {
                         // validator demoted to full node, update role to be Client
-                        self.update_role(SecondaryRaptorCastModeConfig::Client);
+                        self.update_role(self.current_epoch, SecondaryRaptorCastModeConfig::Client);
                     }
 
                     validator_cmds.push(cmd_cpy);
@@ -303,6 +312,7 @@ where
                             "Is validator before epoch increment"
                         );
                         self.current_epoch = epoch;
+
                         let is_validator_after_epoch_increment = self
                             .epoch_validators
                             .get(&self.current_epoch)
@@ -317,7 +327,7 @@ where
                             && is_validator_after_epoch_increment
                         {
                             // full node promoted to validator, update role to be Publisher
-                            self.update_role(SecondaryRaptorCastModeConfig::Publisher);
+                            self.update_role(epoch, SecondaryRaptorCastModeConfig::Publisher);
                         }
 
                         // clean old epoch validators
