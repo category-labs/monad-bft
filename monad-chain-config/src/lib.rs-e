@@ -81,61 +81,38 @@ impl MonadChainConfig {
         chain_id: u64,
         devnet_override: Option<MonadChainConfig>,
     ) -> Result<Self, ChainConfigError> {
-        let mut config = if chain_id == MONAD_MAINNET_CHAIN_ID {
+        if chain_id == MONAD_MAINNET_CHAIN_ID {
             if devnet_override.is_some() {
                 warn!("Ignoring chain config from file in mainnet");
             }
-            MONAD_MAINNET_CHAIN_CONFIG
+            Ok(MONAD_MAINNET_CHAIN_CONFIG)
         } else if chain_id == MONAD_TESTNET_CHAIN_ID {
             if devnet_override.is_some() {
                 warn!("Ignoring chain config from file in testnet");
             }
-            MONAD_TESTNET_CHAIN_CONFIG
+            Ok(MONAD_TESTNET_CHAIN_CONFIG)
         } else if chain_id == MONAD_DEVNET_CHAIN_ID {
-            let base_config = devnet_override.unwrap_or_else(|| {
+            let Some(override_config) = devnet_override else {
                 info!("Using default devnet chain config");
-                MONAD_DEVNET_CHAIN_CONFIG
-            });
+                return Ok(MONAD_DEVNET_CHAIN_CONFIG);
+            };
 
-            if let Some(override_config) = devnet_override {
-                if override_config.chain_id != MONAD_DEVNET_CHAIN_ID {
-                    return Err(ChainConfigError::WrongOverrideChainId(
-                        override_config.chain_id,
-                    ));
-                }
-                info!("Using override devnet chain config");
+            if override_config.chain_id != MONAD_DEVNET_CHAIN_ID {
+                return Err(ChainConfigError::WrongOverrideChainId(
+                    override_config.chain_id,
+                ));
             }
 
-            base_config
+            info!("Using override devnet chain config");
+            Ok(override_config)
         } else if chain_id == MONAD_TESTNET2_CHAIN_ID {
             if devnet_override.is_some() {
                 warn!("Ignoring chain config from file in testnet");
             }
-            MONAD_TESTNET2_CHAIN_CONFIG
+            Ok(MONAD_TESTNET2_CHAIN_CONFIG)
         } else {
-            return Err(ChainConfigError::UnsupportedChainId(chain_id));
-        };
-
-        // Apply runtime activation offset for devnet only
-        if chain_id == MONAD_DEVNET_CHAIN_ID {
-            let offset_minutes = std::env::var("MONAD_V4_ACTIVATION_OFFSET_MINUTES")
-                .ok()
-                .and_then(|s| s.parse::<i64>().ok())
-                .unwrap_or(30); // Default to 30 minutes
-
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
-
-            config.execution_v_four_activation = now + (offset_minutes * 60) as u64;
-            info!(
-                "Setting execution_v_four_activation to {} minutes from now: {}",
-                offset_minutes, config.execution_v_four_activation
-            );
+            Err(ChainConfigError::UnsupportedChainId(chain_id))
         }
-
-        Ok(config)
     }
 }
 
@@ -196,14 +173,14 @@ const MONAD_DEVNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     v_0_7_0_activation: Round::MIN,
     v_0_8_0_activation: Round::MIN,
     v_0_10_0_activation: Round::MIN,
-    v_0_11_0_activation: Round(12000),
+    v_0_11_0_activation: Round(50000),
 
-    staking_activation: Epoch(3),
-    staking_rewards_activation: Epoch(4),
+    staking_activation: Epoch(20),
+    staking_rewards_activation: Epoch(21),
 
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
-    execution_v_four_activation: 1758200000,
+    execution_v_four_activation: FORK_UNIX_TS_S,
 };
 
 const MONAD_TESTNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
@@ -232,14 +209,14 @@ const MONAD_TESTNET2_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     v_0_7_0_activation: Round::MIN,
     v_0_8_0_activation: Round::MIN,
     v_0_10_0_activation: Round(6487752), // 2025-07-29T13:30:00.000Z
-    v_0_11_0_activation: Round(12000),
+    v_0_11_0_activation: Round(50000),
 
-    staking_activation: Epoch(3),
-    staking_rewards_activation: Epoch(4),
+    staking_activation: Epoch(20),
+    staking_rewards_activation: Epoch(21),
 
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
-    execution_v_four_activation: 1758200000,
+    execution_v_four_activation: FORK_UNIX_TS_S,
 };
 
 // Mainnet uses latest version of testnet from genesis
@@ -258,7 +235,7 @@ const MONAD_MAINNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
 
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
-    execution_v_four_activation: 1758200000,
+    execution_v_four_activation: FORK_UNIX_TS_S,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
