@@ -101,7 +101,7 @@ where
     CRT: ChainRevision + Send + 'static,
     Self: Unpin,
 {
-    pub fn new(
+    pub fn start(
         block_policy: EthBlockPolicy<ST, SCT, CCT, CRT>,
         state_backend: SBT,
         ipc_config: EthTxPoolIpcConfig,
@@ -111,8 +111,20 @@ where
         round: Round,
         execution_timestamp_s: u64,
         do_local_insert: bool,
-    ) -> io::Result<TokioTaskUpdater<Pin<Box<Self>>, MonadEvent<ST, SCT, EthExecutionProtocol>>>
-    {
+    ) -> io::Result<
+        TokioTaskUpdater<
+            TxPoolCommand<
+                ST,
+                SCT,
+                EthExecutionProtocol,
+                EthBlockPolicy<ST, SCT, CCT, CRT>,
+                SBT,
+                CCT,
+                CRT,
+            >,
+            MonadEvent<ST, SCT, EthExecutionProtocol>,
+        >,
+    > {
         let ipc = Box::pin(EthTxPoolIpcServer::new(ipc_config)?);
 
         let (events_tx, events) = mpsc::unbounded_channel();
