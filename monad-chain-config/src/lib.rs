@@ -121,7 +121,7 @@ impl MonadChainConfig {
             let offset_minutes = std::env::var("MONAD_V4_ACTIVATION_OFFSET_MINUTES")
                 .ok()
                 .and_then(|s| s.parse::<i64>().ok())
-                .unwrap_or(30); // Default to 30 minutes
+                .unwrap_or(15); // Default to 15 minutes
 
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
