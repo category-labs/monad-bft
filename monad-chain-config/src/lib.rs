@@ -81,38 +81,61 @@ impl MonadChainConfig {
         chain_id: u64,
         devnet_override: Option<MonadChainConfig>,
     ) -> Result<Self, ChainConfigError> {
-        if chain_id == MONAD_MAINNET_CHAIN_ID {
+        let mut config = if chain_id == MONAD_MAINNET_CHAIN_ID {
             if devnet_override.is_some() {
                 warn!("Ignoring chain config from file in mainnet");
             }
-            Ok(MONAD_MAINNET_CHAIN_CONFIG)
+            MONAD_MAINNET_CHAIN_CONFIG
         } else if chain_id == MONAD_TESTNET_CHAIN_ID {
             if devnet_override.is_some() {
                 warn!("Ignoring chain config from file in testnet");
             }
-            Ok(MONAD_TESTNET_CHAIN_CONFIG)
+            MONAD_TESTNET_CHAIN_CONFIG
         } else if chain_id == MONAD_DEVNET_CHAIN_ID {
-            let Some(override_config) = devnet_override else {
+            let base_config = devnet_override.unwrap_or_else(|| {
                 info!("Using default devnet chain config");
-                return Ok(MONAD_DEVNET_CHAIN_CONFIG);
-            };
+                MONAD_DEVNET_CHAIN_CONFIG
+            });
 
-            if override_config.chain_id != MONAD_DEVNET_CHAIN_ID {
-                return Err(ChainConfigError::WrongOverrideChainId(
-                    override_config.chain_id,
-                ));
+            if let Some(override_config) = devnet_override {
+                if override_config.chain_id != MONAD_DEVNET_CHAIN_ID {
+                    return Err(ChainConfigError::WrongOverrideChainId(
+                        override_config.chain_id,
+                    ));
+                }
+                info!("Using override devnet chain config");
             }
 
-            info!("Using override devnet chain config");
-            Ok(override_config)
+            base_config
         } else if chain_id == MONAD_TESTNET2_CHAIN_ID {
             if devnet_override.is_some() {
                 warn!("Ignoring chain config from file in testnet");
             }
-            Ok(MONAD_TESTNET2_CHAIN_CONFIG)
+            MONAD_TESTNET2_CHAIN_CONFIG
         } else {
-            Err(ChainConfigError::UnsupportedChainId(chain_id))
+            return Err(ChainConfigError::UnsupportedChainId(chain_id));
+        };
+
+        // Apply runtime activation offset for devnet only
+        if chain_id == MONAD_DEVNET_CHAIN_ID {
+            let offset_minutes = std::env::var("MONAD_V4_ACTIVATION_OFFSET_MINUTES")
+                .ok()
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(15); // Default to 15 minutes
+
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+
+            config.execution_v_four_activation = now + (offset_minutes * 60) as u64;
+            info!(
+                "Setting execution_v_four_activation to {} minutes from now: {}",
+                offset_minutes, config.execution_v_four_activation
+            );
         }
+
+        Ok(config)
     }
 }
 
@@ -173,10 +196,10 @@ const MONAD_DEVNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     v_0_7_0_activation: Round::MIN,
     v_0_8_0_activation: Round::MIN,
     v_0_10_0_activation: Round::MIN,
-    v_0_11_0_activation: Round(FORK_ROUND),
+    v_0_11_0_activation: Round(12000),
 
-    staking_activation: Epoch(FORK_EPOCH_STAKING),
-    staking_rewards_activation: Epoch(FORK_EPOCH_STAKING_REWARDS),
+    staking_activation: Epoch(3),
+    staking_rewards_activation: Epoch(4),
 
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
@@ -209,10 +232,10 @@ const MONAD_TESTNET2_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     v_0_7_0_activation: Round::MIN,
     v_0_8_0_activation: Round::MIN,
     v_0_10_0_activation: Round(6487752), // 2025-07-29T13:30:00.000Z
-    v_0_11_0_activation: Round(FORK_ROUND),
+    v_0_11_0_activation: Round(12000),
 
-    staking_activation: Epoch(FORK_EPOCH_STAKING),
-    staking_rewards_activation: Epoch(FORK_EPOCH_STAKING_REWARDS),
+    staking_activation: Epoch(3),
+    staking_rewards_activation: Epoch(4),
 
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
