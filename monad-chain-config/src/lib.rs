@@ -118,21 +118,45 @@ impl MonadChainConfig {
 
         // Apply runtime activation offset for devnet only
         if chain_id == MONAD_DEVNET_CHAIN_ID {
-            let offset_minutes = std::env::var("MONAD_V4_ACTIVATION_OFFSET_MINUTES")
-                .ok()
-                .and_then(|s| s.parse::<i64>().ok())
-                .unwrap_or(15); // Default to 15 minutes
+            if let Ok(fixed_timestamp) = std::env::var("MONAD_V4_ACTIVATION_TIMESTAMP") {
+                if let Ok(timestamp) = fixed_timestamp.parse::<u64>() {
+                    config.execution_v_four_activation = timestamp;
+                    info!("Using fixed MONAD_FOUR activation timestamp: {}", timestamp);
+                } else {
+                    warn!("Invalid MONAD_V4_ACTIVATION_TIMESTAMP, falling back to offset calculation");
+                    let offset_minutes = std::env::var("MONAD_V4_ACTIVATION_OFFSET_MINUTES")
+                        .ok()
+                        .and_then(|s| s.parse::<i64>().ok())
+                        .unwrap_or(15); // Default to 15 minutes
 
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs();
 
-            config.execution_v_four_activation = now + (offset_minutes * 60) as u64;
-            info!(
-                "Setting execution_v_four_activation to {} minutes from now: {}",
-                offset_minutes, config.execution_v_four_activation
-            );
+                    config.execution_v_four_activation = now + (offset_minutes * 60) as u64;
+                    info!(
+                        "Setting execution_v_four_activation to {} minutes from now: {}",
+                        offset_minutes, config.execution_v_four_activation
+                    );
+                }
+            } else {
+                let offset_minutes = std::env::var("MONAD_V4_ACTIVATION_OFFSET_MINUTES")
+                    .ok()
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .unwrap_or(15); // Default to 15 minutes
+
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+
+                config.execution_v_four_activation = now + (offset_minutes * 60) as u64;
+                info!(
+                    "Setting execution_v_four_activation to {} minutes from now: {}",
+                    offset_minutes, config.execution_v_four_activation
+                );
+            }
         }
 
         Ok(config)
