@@ -1,8 +1,6 @@
 ## Overview
 
-The spec supports a simple peer discovery algorithm. Peers maintain connections by sending periodic pings to each other. A node can specify the desired minimum active connections and maximum active connections, where the node will actively look for new peers or prune unresponsive peers depending on size of current peer list
-
-## Message types
+The spec supports a peer discovery algorithm. A node can specify the desired minimum active connections and maximum active connections, where the node will actively look for new peers when below the minimum active connections, and stop accepting connections when above the maximum active connections.
 
 ### Base types
 
@@ -30,7 +28,7 @@ Checks if peers is alive, and advertises local name record. Sender must have rec
 ```rust
 struct Ping {
   id: u32,
-  local_name_record: Option<MonadNameRecord>,
+  local_name_record: MonadNameRecord,
 }
 ```
 
@@ -38,7 +36,7 @@ struct Ping {
 
 ---
 
-Response to ping message. Sender may update peer name record if one is attached to ping message. ping_id must match the request
+Response to ping message. Sender may update peer name record if the attached name record is more recent. ping_id must match the request
 
 ```rust
 struct Pong {
@@ -79,24 +77,20 @@ struct PeerLookupResponse {
 
 ### connect
 
-- A is assumed to have B’s name record
-- A sends a **Ping** to B, optionally advertising its own name record
-- B responds with **Pong**
-    - If advertised local_name_record is newer (higher sequence number) than B’s local record, B should update A's name record
-- A knows that B is alive
+- A ping pong round trip has to be completed before a node will add a peer's name record into its routing table
+- X receives a new name record signed by Y that it has not seen (this can happen when X receives a name record from a ping message or from a peer lookup response)
+- X sends a **Ping** to Y, also advertising its own name record
+- Y responds with **Pong**
+- X knows that Y is alive and inserts the name record into its routing table
+- If Y does not respond with a pong, X retries for a few times before dropping the name record
 
 ### discover(target)
 
-- A sends a **PeerLookupRequest** message to a peer it knows when the number of peers is below minimum active connections
+- X sends a **PeerLookupRequest** message to a peer it knows when the number of peers is below minimum active connections
 - Server responds with
     - target’s latest name record if known to the server
     - empty if unknown
     - (optional) a sample of known peers if target is unknown and if server choose to honor a set open_discovery bit. This is necessary to bootstrap nodes, but vulnerable to amplification attack. We currently limit the number of peers in a response to 16
-
-### liveness check
-
-- Occasionally, nodes checks if peer is alive by **connecting** to its peer
-- If peer doesn’t respond to consecutive pings, it’s considered offline and removed from peer list
 
 ### bootstrapping
 
@@ -107,8 +101,7 @@ struct PeerLookupResponse {
 
 ### pruning
 
-- Peer pruning is performed periodically/triggered by high watermark to keep peers manageable
-- Nodes that do not respond to consecutive pings beyond a threshold are pruned
+- Peer pruning is performed periodically and triggered by high watermark to keep peers manageable
 - Nodes that have not participated in secondary raptorcast beyond a threshold are pruned
-- Random full nodes are pruned if we're still above high watermark
-- Currently validators for the current and next epoch, and dedicated full nodes are not pruned even if unresponsive or total number of peers is above high watermark
+- Public full nodes are pruned if we're still above high watermark
+- Currently validators for the current and next epoch, dedicated and prioritized full nodes are not pruned even if unresponsive or total number of peers is above high watermark
