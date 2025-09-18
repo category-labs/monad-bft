@@ -70,10 +70,10 @@ impl ExecutedBlock {
 
                 (!withdrawals_root.const_is_zero()).then_some(withdrawals_root)
             },
-            blob_gas_used: None,
-            excess_blob_gas: None,
-            parent_beacon_block_root: None,
-            requests_hash: None,
+            blob_gas_used: Some(0),
+            excess_blob_gas: Some(0),
+            parent_beacon_block_root: Some(alloy_primitives::B256::ZERO),
+            requests_hash: Some(alloy_primitives::B256::ZERO),
             target_blobs_per_block: None,
         }
     }
