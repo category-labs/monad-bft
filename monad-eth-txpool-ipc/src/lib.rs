@@ -159,7 +159,7 @@ impl EthTxPoolIpcClient {
         let snapshot_bytes = stream.next().await.ok_or_else(|| {
             io::Error::new(
                 ErrorKind::InvalidData,
-                "EthTxPoolIpcClient must recieve snapshot on connectino",
+                "EthTxPoolIpcClient must receive snapshot on connection",
             )
         })??;
 

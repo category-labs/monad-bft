@@ -5265,6 +5265,7 @@ dependencies = [
  "monad-executor-glue",
  "monad-secp",
  "monad-state-backend",
+ "monad-testutil",
  "monad-tfm",
  "monad-types",
  "monad-updaters",
@@ -5272,6 +5273,7 @@ dependencies = [
  "pin-project",
  "rayon",
  "serde",
+ "tempfile",
  "tokio",
  "tracing",
 ]

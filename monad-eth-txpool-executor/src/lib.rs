@@ -214,8 +214,13 @@ where
                     self.exec(commands);
                 }
 
-                event = self.next() => {
-                    if let Err(err) = event_tx.send(event.unwrap()).await {
+                result = self.next() => {
+                    let Some(event) = result else {
+                        error!("txpool executor stream terminated, shutting down txpool executor");
+                        continue;
+                    };
+
+                    if let Err(err) = event_tx.send(event).await {
                         warn!(?err, "failed to send event to BFT, shutting down txpool executor");
                         break;
                     }
@@ -274,7 +279,7 @@ where
                     self.forwarding_manager
                         .as_mut()
                         .project()
-                        .add_egress_txs(&mut self.pool);
+                        .schedule_egress_txs(&mut self.pool);
                 }
                 TxPoolCommand::CreateProposal {
                     node_id,
@@ -506,12 +511,6 @@ where
             return Poll::Pending;
         }
 
-        if let Poll::Ready(forward_txs) = forwarding_manager.as_mut().poll_egress(cx) {
-            return Poll::Ready(Some(MonadEvent::MempoolEvent(MempoolEvent::ForwardTxs(
-                forward_txs,
-            ))));
-        }
-
         if let Poll::Ready(unvalidated_txs) = ipc.as_mut().poll_txs(cx, || pool.generate_snapshot())
         {
             let _span = debug_span!("ipc txs", len = unvalidated_txs.len()).entered();
@@ -550,17 +549,26 @@ where
                 true,
                 |tx| {
                     inserted_addresses.insert(tx.signer());
-                    let tx: &TxEnvelope = tx.raw().tx();
-                    inserted_txs.push(alloy_rlp::encode(tx).into());
+                    inserted_txs.push(tx.raw().tx().clone());
                 },
             );
 
-            metrics.update(executor_metrics);
-            ipc.as_mut().broadcast_tx_events(ipc_events);
             preload_manager.add_requests(inserted_addresses.iter());
 
+            forwarding_manager
+                .as_mut()
+                .project()
+                .add_egress_txs(inserted_txs.iter());
+
+            metrics.update(executor_metrics);
+            ipc.as_mut().broadcast_tx_events(ipc_events);
+
+            cx.waker().wake_by_ref();
+        }
+
+        if let Poll::Ready(forward_txs) = forwarding_manager.as_mut().poll_egress(cx) {
             return Poll::Ready(Some(MonadEvent::MempoolEvent(MempoolEvent::ForwardTxs(
-                inserted_txs,
+                forward_txs,
             ))));
         }
 
