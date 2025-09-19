@@ -169,6 +169,9 @@ where
                             self.get_headers(block_range),
                         ),
                     });
+                    if let Some(waker) = self.waker.take() {
+                        waker.wake();
+                    }
                 }
                 LedgerCommand::LedgerFetchPayload(payload_id) => {
                     let _span = debug_span!("ledger fetch payload").entered();
@@ -177,6 +180,9 @@ where
                             self.get_payload(payload_id),
                         ),
                     });
+                    if let Some(waker) = self.waker.take() {
+                        waker.wake();
+                    }
                 }
             }
         }
@@ -200,7 +206,9 @@ where
             return Poll::Ready(Some(MonadEvent::BlockSyncEvent(event)));
         }
 
-        if this.waker.is_none() {
+        if let Some(waker) = this.waker.as_mut() {
+            waker.clone_from(cx.waker());
+        } else {
             this.waker = Some(cx.waker().clone());
         }
         Poll::Pending
