@@ -13,7 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub use self::{event_tracker::EthTxPoolEventTracker, metrics::EthTxPoolMetrics, pool::EthTxPool};
+pub use self::{
+    event_tracker::EthTxPoolEventTracker,
+    metrics::EthTxPoolMetrics,
+    pool::{EthTxPool, MAX_EIP2718_ENCODED_LENGTH},
+};
 
 mod event_tracker;
 mod metrics;

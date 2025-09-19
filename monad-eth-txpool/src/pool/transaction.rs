@@ -33,6 +33,7 @@ use monad_types::{Balance, Nonce, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::trace;
 
+pub const MAX_EIP2718_ENCODED_LENGTH: usize = 384 * 1024;
 const MAX_EIP7702_AUTHORIZATION_LIST_LENGTH: usize = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,6 +66,13 @@ impl ValidEthTransaction {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
+        if tx.eip2718_encoded_length() > MAX_EIP2718_ENCODED_LENGTH {
+            return Err((
+                tx,
+                EthTxPoolDropReason::NotWellFormed(TransactionError::EncodedLengthLimitExceeded),
+            ));
+        }
+
         if SystemTransactionValidator::is_system_sender(tx.signer()) {
             return Err((tx, EthTxPoolDropReason::InvalidSignature));
         }

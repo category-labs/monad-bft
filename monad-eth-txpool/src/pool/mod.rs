@@ -43,6 +43,7 @@ use monad_validator::signature_collection::SignatureCollection;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing::{debug, info, warn};
 
+pub use self::transaction::MAX_EIP2718_ENCODED_LENGTH;
 use self::{pending::PendingTxMap, tracked::TrackedTxMap, transaction::ValidEthTransaction};
 use crate::EthTxPoolEventTracker;
 
