@@ -116,46 +116,27 @@ impl MonadChainConfig {
             return Err(ChainConfigError::UnsupportedChainId(chain_id));
         };
 
-        // Apply runtime activation offset for devnet only
+        // Apply MONAD_FOUR activation timestamp for devnet only
         if chain_id == MONAD_DEVNET_CHAIN_ID {
-            if let Ok(fixed_timestamp) = std::env::var("MONAD_V4_ACTIVATION_TIMESTAMP") {
+            if let Ok(monad_four_start) = std::env::var("MONAD_FOUR_START_TIME") {
+                if let Ok(timestamp) = monad_four_start.parse::<u64>() {
+                    config.execution_v_four_activation = timestamp;
+                    info!("Using MONAD_FOUR_START_TIME activation timestamp: {}", timestamp);
+                } else {
+                    warn!("Invalid MONAD_FOUR_START_TIME, using default far future timestamp");
+                    config.execution_v_four_activation = 2000000000; // Year 2033
+                }
+            } else if let Ok(fixed_timestamp) = std::env::var("MONAD_V4_ACTIVATION_TIMESTAMP") {
                 if let Ok(timestamp) = fixed_timestamp.parse::<u64>() {
                     config.execution_v_four_activation = timestamp;
-                    info!("Using fixed MONAD_FOUR activation timestamp: {}", timestamp);
+                    info!("Using legacy MONAD_V4_ACTIVATION_TIMESTAMP: {}", timestamp);
                 } else {
-                    warn!("Invalid MONAD_V4_ACTIVATION_TIMESTAMP, falling back to offset calculation");
-                    let offset_minutes = std::env::var("MONAD_V4_ACTIVATION_OFFSET_MINUTES")
-                        .ok()
-                        .and_then(|s| s.parse::<i64>().ok())
-                        .unwrap_or(15); // Default to 15 minutes
-
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs();
-
-                    config.execution_v_four_activation = now + (offset_minutes * 60) as u64;
-                    info!(
-                        "Setting execution_v_four_activation to {} minutes from now: {}",
-                        offset_minutes, config.execution_v_four_activation
-                    );
+                    warn!("Invalid MONAD_V4_ACTIVATION_TIMESTAMP, using default far future timestamp");
+                    config.execution_v_four_activation = 2000000000; // Year 2033
                 }
             } else {
-                let offset_minutes = std::env::var("MONAD_V4_ACTIVATION_OFFSET_MINUTES")
-                    .ok()
-                    .and_then(|s| s.parse::<i64>().ok())
-                    .unwrap_or(15); // Default to 15 minutes
-
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs();
-
-                config.execution_v_four_activation = now + (offset_minutes * 60) as u64;
-                info!(
-                    "Setting execution_v_four_activation to {} minutes from now: {}",
-                    offset_minutes, config.execution_v_four_activation
-                );
+                warn!("No MONAD_FOUR_START_TIME configured, using default far future timestamp");
+                config.execution_v_four_activation = 2000000000; // Year 2033
             }
         }
 
