@@ -1,27 +1,31 @@
-FROM rust:1-buster AS builder
+# syntax=docker/dockerfile:1.4
 
-WORKDIR /usr/src/monad-bft
-RUN apt update
-RUN apt install -y python3 clang
+FROM golang:1.18-alpine AS builder
 
-# Builder
+WORKDIR /app
+
+COPY go.mod go.sum ./
+RUN go mod download
+
 COPY . .
-RUN cargo build --release --example service && \
-    mv target/release/examples/service service
-RUN python3 docker/gossip-testground/topology-gen.py topo.json
-RUN python3 monad-scripts/tc/tc-gen.py topo.json tc.sh addresses
 
-# Runner
-FROM debian:buster-slim
-SHELL ["/bin/bash", "-c"]
-WORKDIR /usr/src/monad-bft
+RUN CGO_ENABLED=0 go build -o /go/bin/gossip-testground ./cmd/gossip-testground
 
-RUN apt update
-RUN apt install -y iproute2
-RUN apt clean
-COPY --from=builder /usr/src/monad-bft/service /usr/local/bin/service
-COPY --from=builder /usr/src/monad-bft/tc.sh .
-COPY --from=builder /usr/src/monad-bft/addresses .
 
-ENV RUST_LOG=service=INFO
-CMD source tc.sh && service --addresses $(<addresses)
+FROM alpine:latest
+
+# Create a non-root user and group for security purposes
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+# Copy the binary from the builder stage and set the correct ownership
+COPY --from=builder --chown=appuser:appgroup /go/bin/gossip-testground /usr/local/bin/gossip-testground
+
+# Switch to the non-root user
+USER appuser
+
+
+# Create a non-root user to run the application
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup && \
+    chown appuser:appgroup /usr/bin/gossip-testground /usr/bin/entrypoint.sh
+USER appuser
+ENTRYPOINT ["/usr/local/bin/gossip-testground"]
