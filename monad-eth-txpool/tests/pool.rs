@@ -822,7 +822,7 @@ fn test_intermediary_nonce_gap() {
 #[test]
 #[traced_test]
 fn test_nonce_exists_in_committed_block() {
-    // A transaction with nonce 0 should not be included in the block if the latest nonce of the account is 0
+    // A transaction with nonce 0 should not be included in the block if the latest nonce of the account is 1
 
     let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
     let tx2 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
@@ -837,7 +837,7 @@ fn test_nonce_exists_in_committed_block() {
         Some(nonces),
         [
             TxPoolTestEvent::InsertTxs {
-                txs: vec![(&tx1, true), (&tx2, true)],
+                txs: vec![(&tx1, false), (&tx2, true)],
                 expected_pool_size_change: 1,
             },
             TxPoolTestEvent::CreateProposal {
@@ -1331,10 +1331,10 @@ fn test_large_batch_many_senders() {
             let txs = txs.clone();
 
             move |pool| {
-                let EthTxPoolSnapshot { pending, tracked } = pool.generate_snapshot();
+                let EthTxPoolSnapshot { txs: snapshot_txs } = pool.generate_snapshot();
 
                 let mut txs = txs.clone();
-                txs.retain(|tx| !pending.contains(tx.tx_hash()) && !tracked.contains(tx.tx_hash()));
+                txs.retain(|tx| !snapshot_txs.contains(tx.tx_hash()));
 
                 assert!(txs.is_empty())
             }

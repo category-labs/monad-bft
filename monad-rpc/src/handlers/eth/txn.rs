@@ -250,9 +250,7 @@ pub async fn monad_eth_sendRawTransaction(
                     TxStatus::Dropped { reason } => {
                         return Err(JsonRpcError::custom(reason.as_user_string()))
                     }
-                    TxStatus::Pending | TxStatus::Tracked | TxStatus::Committed => {
-                        return Ok(hash.to_string())
-                    }
+                    TxStatus::Tracked | TxStatus::Committed => return Ok(hash.to_string()),
                     TxStatus::Unknown => {
                         error!("txpool bridge sent unknown status");
                     }

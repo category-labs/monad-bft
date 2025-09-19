@@ -48,23 +48,12 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing::{debug, error, info, warn};
 
 pub use self::transaction::max_eip2718_encoded_length;
-use self::{
-    pending::PendingTxMap, sequencer::ProposalSequencer, tracked::TrackedTxMap,
-    transaction::ValidEthTransaction,
-};
+use self::{sequencer::ProposalSequencer, tracked::TrackedTxMap, transaction::ValidEthTransaction};
 use crate::EthTxPoolEventTracker;
 
-mod pending;
 mod sequencer;
 mod tracked;
 mod transaction;
-
-// This constants controls the maximum number of addresses that get promoted during the tx insertion
-// process. It was set based on intuition and should be changed once we have more data on txpool
-// performance.
-// Each account lookup takes about 30us so this should block the thread for at most roughly 8ms.
-const INSERT_TXS_MAX_PROMOTE: usize = 128;
-const PENDING_MAX_PROMOTE: usize = 128;
 
 #[derive(Clone, Debug)]
 pub struct EthTxPool<ST, SCT, SBT, CCT, CRT>
@@ -75,7 +64,6 @@ where
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
-    pending: PendingTxMap,
     tracked: TrackedTxMap<ST, SCT, SBT, CCT, CRT>,
 
     last_commit: Option<ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>>,
@@ -105,7 +93,6 @@ where
         do_local_insert: bool,
     ) -> Self {
         Self {
-            pending: PendingTxMap::default(),
             tracked: TrackedTxMap::new(soft_tx_expiry, hard_tx_expiry),
 
             last_commit: None,
@@ -119,14 +106,11 @@ where
     }
 
     pub fn is_empty(&self) -> bool {
-        self.pending.is_empty() && self.tracked.is_empty()
+        self.tracked.is_empty()
     }
 
     pub fn num_txs(&self) -> usize {
-        self.pending
-            .num_txs()
-            .checked_add(self.tracked.num_txs())
-            .expect("pool size does not overflow")
+        self.tracked.num_txs()
     }
 
     pub fn current_revision(&self) -> (&CRT, &MonadExecutionRevision) {
@@ -178,18 +162,21 @@ where
         // the range at N-k+1.
         let block_seq_num = block_policy.get_last_commit() + SeqNum(1);
 
-        let addresses = txs.iter().map(ValidEthTransaction::signer).collect_vec();
+        let account_balance_addresses = txs.iter().map(ValidEthTransaction::signer).collect_vec();
 
         let account_balances = match block_policy.compute_account_base_balances(
             block_seq_num,
             state_backend,
             chain_config,
             None,
-            addresses.iter(),
+            account_balance_addresses.iter(),
         ) {
             Ok(account_balances) => account_balances,
             Err(err) => {
-                warn!(?err, "failed to insert transactions");
+                warn!(
+                    ?err,
+                    "failed to insert transactions at account_balance lookups"
+                );
                 event_tracker.drop_all(
                     txs.into_iter().map(ValidEthTransaction::into_raw),
                     EthTxPoolDropReason::Internal(EthTxPoolInternalDropReason::StateBackendError),
@@ -200,68 +187,68 @@ where
 
         let last_commit_base_fee = last_commit.execution_inputs.base_fee_per_gas;
 
-        for tx in txs {
-            if account_balances
-                .get(tx.signer_ref())
-                .is_none_or(|account_balance_state| {
-                    account_balance_state.balance
-                        < last_commit_base_fee.saturating_mul(tx.gas_limit())
-                })
-            {
-                event_tracker.drop(tx.hash(), EthTxPoolDropReason::InsufficientBalance);
-                continue;
-            }
+        let txs = txs
+            .into_iter()
+            .filter(|tx| {
+                if account_balances
+                    .get(tx.signer_ref())
+                    .is_none_or(|account_balance_state| {
+                        account_balance_state.balance
+                            < last_commit_base_fee.saturating_mul(tx.gas_limit())
+                    })
+                {
+                    event_tracker.drop(tx.hash(), EthTxPoolDropReason::InsufficientBalance);
+                    return false;
+                }
 
-            let Some(tx) = self
-                .tracked
-                .try_insert_tx(event_tracker, last_commit, tx)
-                .unwrap_or_else(|tx| {
-                    self.pending
-                        .try_insert_tx(event_tracker, tx, last_commit_base_fee)
-                })
-            else {
+                true
+            })
+            .into_group_map_by(|tx| tx.signer());
+
+        let account_nonce_addresses = txs.keys().cloned().collect_vec();
+
+        let mut account_nonces = match block_policy.get_account_base_nonces(
+            block_seq_num,
+            state_backend,
+            &vec![],
+            account_nonce_addresses.iter(),
+        ) {
+            Ok(account_nonces) => account_nonces,
+            Err(err) => {
+                warn!(
+                    ?err,
+                    "failed to insert transactions at account_nonce lookups"
+                );
+                event_tracker.drop_all(
+                    txs.into_values()
+                        .flatten()
+                        .map(ValidEthTransaction::into_raw),
+                    EthTxPoolDropReason::Internal(EthTxPoolInternalDropReason::StateBackendError),
+                );
+                return;
+            }
+        };
+
+        for (address, txs) in txs {
+            let Some(account_nonce) = account_nonces.remove(&address) else {
+                event_tracker.drop_all(
+                    txs.into_iter().map(ValidEthTransaction::into_raw),
+                    EthTxPoolDropReason::Internal(EthTxPoolInternalDropReason::StateBackendError),
+                );
                 continue;
             };
 
-            on_insert(tx);
-        }
-
-        if !self.tracked.try_promote_pending(
-            event_tracker,
-            last_commit,
-            block_policy,
-            state_backend,
-            &mut self.pending,
-            INSERT_TXS_MAX_PROMOTE,
-        ) && self.pending.is_at_promote_txs_watermark()
-        {
-            warn!("txpool failed to promote at pending promote txs watermark");
+            self.tracked.try_insert_txs(
+                event_tracker,
+                last_commit,
+                address,
+                txs,
+                account_nonce,
+                &mut on_insert,
+            );
         }
 
         self.update_aggregate_metrics(event_tracker);
-    }
-
-    pub fn promote_pending(
-        &mut self,
-        event_tracker: &mut EthTxPoolEventTracker<'_>,
-        block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
-        state_backend: &SBT,
-    ) {
-        let Some(last_commit) = self.last_commit.as_ref() else {
-            warn!("txpool promote_pending called before last committed block set");
-            return;
-        };
-
-        if !self.tracked.try_promote_pending(
-            event_tracker,
-            last_commit,
-            block_policy,
-            state_backend,
-            &mut self.pending,
-            PENDING_MAX_PROMOTE,
-        ) {
-            warn!("txpool failed to promote during promote_pending call");
-        }
     }
 
     pub fn create_proposal(
@@ -461,11 +448,8 @@ where
             self.static_validate_all_txs(event_tracker);
         }
 
-        self.tracked.update_committed_nonce_usages(
-            event_tracker,
-            committed_block.nonce_usages,
-            &mut self.pending,
-        );
+        self.tracked
+            .update_committed_nonce_usages(event_tracker, committed_block.nonce_usages);
 
         self.tracked.evict_expired_txs(event_tracker);
 
@@ -509,12 +493,6 @@ where
             &self.chain_revision,
             &self.execution_revision,
         );
-        self.pending.static_validate_all_txs(
-            event_tracker,
-            self.chain_id,
-            &self.chain_revision,
-            &self.execution_revision,
-        );
     }
 
     pub fn get_forwardable_txs<const MIN_SEQNUM_DIFF: u64, const MAX_RETRIES: usize>(
@@ -535,8 +513,6 @@ where
 
     fn update_aggregate_metrics(&self, event_tracker: &mut EthTxPoolEventTracker<'_>) {
         event_tracker.update_aggregate_metrics(
-            self.pending.num_addresses() as u64,
-            self.pending.num_txs() as u64,
             self.tracked.num_addresses() as u64,
             self.tracked.num_txs() as u64,
         );
@@ -544,12 +520,7 @@ where
 
     pub fn generate_snapshot(&self) -> EthTxPoolSnapshot {
         EthTxPoolSnapshot {
-            pending: self
-                .pending
-                .iter_txs()
-                .map(ValidEthTransaction::hash)
-                .collect(),
-            tracked: self
+            txs: self
                 .tracked
                 .iter_txs()
                 .map(ValidEthTransaction::hash)
@@ -561,7 +532,6 @@ where
         self.tracked
             .iter_txs()
             .map(ValidEthTransaction::signer)
-            .chain(self.pending.iter_txs().map(ValidEthTransaction::signer))
             .unique()
             .collect()
     }

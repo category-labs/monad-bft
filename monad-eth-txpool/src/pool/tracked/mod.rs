@@ -13,11 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
+use std::{marker::PhantomData, time::Duration};
 
 use alloy_primitives::Address;
 use indexmap::{map::Entry as IndexMapEntry, IndexMap};
-use itertools::Itertools;
 use monad_chain_config::{
     execution_revision::MonadExecutionRevision, revision::ChainRevision, ChainConfig,
 };
@@ -25,22 +24,14 @@ use monad_consensus_types::block::ConsensusBlockHeader;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_block_policy::{
-    nonce_usage::{NonceUsage, NonceUsageMap},
-    EthBlockPolicy,
-};
-use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason};
+use monad_eth_block_policy::nonce_usage::NonceUsageMap;
 use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
 use monad_state_backend::StateBackend;
-use monad_types::{DropTimer, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
-use tracing::{debug, error, info, warn};
+use tracing::info;
 
 pub(super) use self::list::TrackedTxList;
-use super::{
-    pending::{PendingTxList, PendingTxMap},
-    transaction::ValidEthTransaction,
-};
+use super::transaction::ValidEthTransaction;
 use crate::EthTxPoolEventTracker;
 
 mod list;
@@ -120,161 +111,55 @@ where
         self.txs.values_mut().flat_map(TrackedTxList::iter_mut)
     }
 
-    /// Produces a reference to the tx if it was inserted, producing None when the tx signer was
-    /// tracked but the tx was not inserted. If the tx signer is not tracked or the tracked pool is
-    /// not ready to accept txs, an error is produced with the original tx.
-    pub fn try_insert_tx(
+    pub fn try_insert_txs(
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         last_commit: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
-        tx: ValidEthTransaction,
-    ) -> Result<Option<&ValidEthTransaction>, ValidEthTransaction> {
-        let Some(tx_list) = self.txs.get_mut(tx.signer_ref()) else {
-            return Err(tx);
-        };
+        address: Address,
+        txs: Vec<ValidEthTransaction>,
+        account_nonce: u64,
+        on_insert: &mut impl FnMut(&ValidEthTransaction),
+    ) {
+        match self.txs.entry(address) {
+            IndexMapEntry::Occupied(o) => {
+                let tx_list = o.into_mut();
 
-        Ok(tx_list.try_insert_tx(
-            event_tracker,
-            tx,
-            last_commit.execution_inputs.base_fee_per_gas,
-            self.hard_tx_expiry,
-        ))
-    }
-
-    pub fn try_promote_pending(
-        &mut self,
-        event_tracker: &mut EthTxPoolEventTracker<'_>,
-        last_commit: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
-        block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
-        state_backend: &SBT,
-        pending: &mut PendingTxMap,
-        max_promotable: usize,
-    ) -> bool {
-        let Some(insertable) = MAX_ADDRESSES.checked_sub(self.txs.len()) else {
-            return false;
-        };
-
-        let insertable = insertable.min(max_promotable);
-
-        if insertable == 0 {
-            return true;
-        }
-
-        let to_insert = pending.split_off(insertable);
-
-        if to_insert.is_empty() {
-            return true;
-        }
-
-        let last_commit_seq_num = last_commit.seq_num;
-
-        let addresses = to_insert.len();
-        let _timer = DropTimer::start(Duration::ZERO, |elapsed| {
-            debug!(?elapsed, addresses, "txpool promote_pending")
-        });
-
-        let addresses = to_insert.keys().cloned().collect_vec();
-
-        // BlockPolicy only guarantees that data is available for seqnum (N-k, N] for some execution
-        // delay k. Since block_policy looks up seqnum - execution_delay, passing the last commit
-        // seqnum will result in a lookup outside that range. As a fix, we add 1 so the seqnum is on
-        // the edge of the range.
-        let account_nonces = match block_policy.get_account_base_nonces(
-            last_commit_seq_num + SeqNum(1),
-            state_backend,
-            &Vec::default(),
-            addresses.iter(),
-        ) {
-            Ok(account_nonces) => account_nonces,
-            Err(err) => {
-                warn!(
-                    ?err,
-                    "failed to lookup account nonces during promote pending"
-                );
-                event_tracker.drop_all(
-                    to_insert
-                        .into_values()
-                        .map(PendingTxList::into_map)
-                        .flat_map(BTreeMap::into_values)
-                        .map(ValidEthTransaction::into_raw),
-                    EthTxPoolDropReason::Internal(EthTxPoolInternalDropReason::StateBackendError),
-                );
-                return false;
-            }
-        };
-
-        for (address, pending_tx_list) in to_insert {
-            let Some(account_nonce) = account_nonces.get(&address) else {
-                error!("txpool address missing from state backend");
-
-                event_tracker
-                    .pending_drop_unknown(pending_tx_list.into_map().values().map(|tx| tx.hash()));
-
-                continue;
-            };
-
-            match self.txs.entry(address) {
-                IndexMapEntry::Occupied(_) => {
-                    unreachable!("pending address present in tracked map")
-                }
-                IndexMapEntry::Vacant(v) => {
-                    let Some(tracked_tx_list) = TrackedTxList::new_from_promote_pending(
+                for tx in txs {
+                    if let Some(tx) = tx_list.try_insert_tx(
                         event_tracker,
-                        *account_nonce,
-                        pending_tx_list,
-                    ) else {
-                        continue;
-                    };
-
-                    v.insert(tracked_tx_list);
+                        tx,
+                        last_commit.execution_inputs.base_fee_per_gas,
+                        self.hard_tx_expiry,
+                    ) {
+                        on_insert(tx);
+                    }
                 }
             }
+            IndexMapEntry::Vacant(v) => {
+                TrackedTxList::try_new(
+                    v,
+                    event_tracker,
+                    txs,
+                    account_nonce,
+                    on_insert,
+                    last_commit.execution_inputs.base_fee_per_gas,
+                    self.hard_tx_expiry,
+                );
+            }
         }
-
-        true
     }
 
     pub fn update_committed_nonce_usages(
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         nonce_usages: NonceUsageMap,
-        pending: &mut PendingTxMap,
     ) {
-        let mut insertable = MAX_ADDRESSES.saturating_sub(self.txs.len());
-
         for (address, nonce_usage) in nonce_usages.into_map() {
             match self.txs.entry(address) {
                 IndexMapEntry::Occupied(tx_list) => {
                     TrackedTxList::update_committed_nonce_usage(event_tracker, tx_list, nonce_usage)
                 }
-                IndexMapEntry::Vacant(v) => match nonce_usage {
-                    NonceUsage::Possible(_) => continue,
-                    NonceUsage::Known(nonce) => {
-                        if insertable == 0 {
-                            continue;
-                        }
-
-                        let Some(pending_tx_list) = pending.remove(&address) else {
-                            continue;
-                        };
-
-                        let account_nonce = nonce
-                            .checked_add(1)
-                            .expect("account nonce does not overflow");
-
-                        let Some(tracked_tx_list) = TrackedTxList::new_from_promote_pending(
-                            event_tracker,
-                            account_nonce,
-                            pending_tx_list,
-                        ) else {
-                            continue;
-                        };
-
-                        insertable -= 1;
-
-                        v.insert(tracked_tx_list);
-                    }
-                },
+                IndexMapEntry::Vacant(_) => {}
             }
         }
     }

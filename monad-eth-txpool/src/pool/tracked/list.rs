@@ -19,16 +19,14 @@ use std::{
 };
 
 use alloy_primitives::Address;
+use indexmap::map::VacantEntry;
 use monad_chain_config::{execution_revision::MonadExecutionRevision, revision::ChainRevision};
 use monad_eth_block_policy::nonce_usage::NonceUsage;
 use monad_eth_txpool_types::EthTxPoolDropReason;
 use monad_types::Nonce;
 use tracing::error;
 
-use crate::{
-    pool::{pending::PendingTxList, transaction::ValidEthTransaction},
-    EthTxPoolEventTracker,
-};
+use crate::{pool::transaction::ValidEthTransaction, EthTxPoolEventTracker};
 
 /// Stores byte-validated transactions alongside the an account_nonce to enforce at the type level
 /// that all the transactions in the txs map have a nonce at least account_nonce. Similar to
@@ -41,41 +39,40 @@ pub struct TrackedTxList {
 }
 
 impl TrackedTxList {
+    pub fn try_new(
+        this_entry: VacantEntry<'_, Address, Self>,
+        event_tracker: &mut EthTxPoolEventTracker<'_>,
+        txs: Vec<ValidEthTransaction>,
+        account_nonce: u64,
+        on_insert: &mut impl FnMut(&ValidEthTransaction),
+        last_commit_base_fee: u64,
+        tx_expiry: Duration,
+    ) {
+        let mut this = TrackedTxList {
+            account_nonce,
+            txs: BTreeMap::default(),
+        };
+
+        for tx in txs {
+            if let Some(tx) = this.try_insert_tx(event_tracker, tx, last_commit_base_fee, tx_expiry)
+            {
+                on_insert(tx);
+            }
+        }
+
+        if this.txs.is_empty() {
+            return;
+        }
+
+        this_entry.insert(this);
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = &ValidEthTransaction> {
         self.txs.values().map(|(tx, _)| tx)
     }
 
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut ValidEthTransaction> {
         self.txs.values_mut().map(|(tx, _)| tx)
-    }
-
-    pub fn new_from_promote_pending(
-        event_tracker: &mut EthTxPoolEventTracker<'_>,
-        account_nonce: u64,
-        tx_list: PendingTxList,
-    ) -> Option<Self> {
-        let mut tx_list = tx_list.into_map();
-
-        let txs = tx_list.split_off(&account_nonce);
-
-        event_tracker.pending_drop_low_nonce(
-            txs.is_empty(),
-            tx_list.values().map(ValidEthTransaction::hash),
-        );
-
-        if txs.is_empty() {
-            return None;
-        }
-
-        event_tracker.pending_promote(txs.values().map(|tx| (tx.is_owned(), tx.raw())));
-
-        Some(Self {
-            account_nonce,
-            txs: txs
-                .into_iter()
-                .map(|(nonce, tx)| (nonce, (tx, event_tracker.now)))
-                .collect(),
-        })
     }
 
     pub fn num_txs(&self) -> usize {
@@ -119,7 +116,7 @@ impl TrackedTxList {
 
         match self.txs.entry(tx.nonce()) {
             btree_map::Entry::Vacant(v) => {
-                event_tracker.insert_pending(tx.raw(), tx.is_owned());
+                event_tracker.insert(tx.raw(), tx.is_owned());
                 Some(&v.insert((tx, event_tracker.now)).0)
             }
             btree_map::Entry::Occupied(mut entry) => {
@@ -128,7 +125,7 @@ impl TrackedTxList {
                 if tx_expired(existing_tx_insert_time, tx_expiry, &event_tracker.now)
                     || tx.has_higher_priority(existing_tx, last_commit_base_fee)
                 {
-                    event_tracker.replace_tracked(
+                    event_tracker.replace(
                         tx.signer_ref(),
                         existing_tx.hash(),
                         tx.hash(),

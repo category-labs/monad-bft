@@ -43,7 +43,7 @@ impl<'a> EthTxPoolEventTracker<'a> {
         }
     }
 
-    pub fn insert_pending(&mut self, tx: &Recovered<TxEnvelope>, owned: bool) {
+    pub fn insert(&mut self, tx: &Recovered<TxEnvelope>, owned: bool) {
         if owned {
             self.metrics.insert_owned_txs.fetch_add(1, Ordering::SeqCst);
         } else {
@@ -57,31 +57,11 @@ impl<'a> EthTxPoolEventTracker<'a> {
             EthTxPoolEventType::Insert {
                 address: tx.signer(),
                 owned,
-                tracked: false,
             },
         );
     }
 
-    pub fn insert_tracked(&mut self, tx: &Recovered<TxEnvelope>, owned: bool) {
-        if owned {
-            self.metrics.insert_owned_txs.fetch_add(1, Ordering::SeqCst);
-        } else {
-            self.metrics
-                .insert_forwarded_txs
-                .fetch_add(1, Ordering::SeqCst);
-        }
-
-        self.events.insert(
-            *tx.tx_hash(),
-            EthTxPoolEventType::Insert {
-                address: tx.signer(),
-                owned,
-                tracked: true,
-            },
-        );
-    }
-
-    pub fn replace_pending(
+    pub fn replace(
         &mut self,
         address: &Address,
         old_tx_hash: TxHash,
@@ -109,40 +89,6 @@ impl<'a> EthTxPoolEventTracker<'a> {
             EthTxPoolEventType::Insert {
                 address: *address,
                 owned: new_owned,
-                tracked: false,
-            },
-        );
-    }
-
-    pub fn replace_tracked(
-        &mut self,
-        address: &Address,
-        old_tx_hash: TxHash,
-        new_tx_hash: TxHash,
-        new_owned: bool,
-    ) {
-        if new_owned {
-            self.metrics.insert_owned_txs.fetch_add(1, Ordering::SeqCst);
-        } else {
-            self.metrics
-                .insert_forwarded_txs
-                .fetch_add(1, Ordering::SeqCst);
-        }
-
-        self.events.insert(
-            old_tx_hash,
-            EthTxPoolEventType::Drop {
-                reason: EthTxPoolDropReason::ReplacedByHigherPriority {
-                    replacement: new_tx_hash,
-                },
-            },
-        );
-        self.events.insert(
-            new_tx_hash,
-            EthTxPoolEventType::Insert {
-                address: *address,
-                owned: new_owned,
-                tracked: true,
             },
         );
     }
@@ -216,80 +162,6 @@ impl<'a> EthTxPoolEventTracker<'a> {
         }
     }
 
-    pub fn pending_promote<'b>(
-        &mut self,
-        txs: impl Iterator<Item = (bool, &'b Recovered<TxEnvelope>)>,
-    ) {
-        self.metrics
-            .pending
-            .promote_addresses
-            .fetch_add(1, Ordering::SeqCst);
-
-        for (owned, tx) in txs {
-            self.metrics
-                .pending
-                .promote_txs
-                .fetch_add(1, Ordering::SeqCst);
-
-            self.events.insert(
-                *tx.tx_hash(),
-                EthTxPoolEventType::Insert {
-                    address: tx.signer(),
-                    owned,
-                    tracked: true,
-                },
-            );
-        }
-    }
-
-    pub fn pending_drop_unknown(&mut self, tx_hashes: impl Iterator<Item = TxHash>) {
-        self.metrics
-            .pending
-            .drop_unknown_addresses
-            .fetch_add(1, Ordering::SeqCst);
-
-        for tx_hash in tx_hashes {
-            self.metrics
-                .pending
-                .drop_unknown_txs
-                .fetch_add(1, Ordering::SeqCst);
-
-            self.events.insert(
-                tx_hash,
-                EthTxPoolEventType::Drop {
-                    reason: EthTxPoolDropReason::InsufficientBalance,
-                },
-            );
-        }
-    }
-
-    pub fn pending_drop_low_nonce(
-        &mut self,
-        address: bool,
-        tx_hashes: impl Iterator<Item = TxHash>,
-    ) {
-        if address {
-            self.metrics
-                .pending
-                .drop_low_nonce_addresses
-                .fetch_add(1, Ordering::SeqCst);
-        }
-
-        for tx_hash in tx_hashes {
-            self.metrics
-                .pending
-                .drop_low_nonce_txs
-                .fetch_add(1, Ordering::SeqCst);
-
-            self.events.insert(
-                tx_hash,
-                EthTxPoolEventType::Drop {
-                    reason: EthTxPoolDropReason::NonceTooLow,
-                },
-            );
-        }
-    }
-
     pub fn tracked_commit(&mut self, address: bool, tx_hashes: impl Iterator<Item = TxHash>) {
         if address {
             self.metrics
@@ -335,21 +207,7 @@ impl<'a> EthTxPoolEventTracker<'a> {
         }
     }
 
-    pub fn update_aggregate_metrics(
-        &mut self,
-        pending_addresses: u64,
-        pending_txs: u64,
-        tracked_addresses: u64,
-        tracked_txs: u64,
-    ) {
-        self.metrics
-            .pending
-            .addresses
-            .store(pending_addresses, Ordering::SeqCst);
-        self.metrics
-            .pending
-            .txs
-            .store(pending_txs, Ordering::SeqCst);
+    pub fn update_aggregate_metrics(&mut self, tracked_addresses: u64, tracked_txs: u64) {
         self.metrics
             .tracked
             .addresses

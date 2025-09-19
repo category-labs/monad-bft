@@ -21,7 +21,6 @@ pub enum TxStatus {
     Unknown,
 
     // Alive
-    Pending,
     Tracked,
 
     // Dead
