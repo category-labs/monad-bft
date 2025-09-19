@@ -41,7 +41,6 @@ pub struct EthTxPoolMetrics {
     pub create_proposal_available_addresses: AtomicU64,
     pub create_proposal_backend_lookups: AtomicU64,
 
-    pub pending: EthTxpoolPendingMetrics,
     pub tracked: EthTxPoolTrackedMetrics,
 }
 
@@ -87,39 +86,7 @@ impl EthTxPoolMetrics {
         metrics["monad.bft.txpool.pool.create_proposal_backend_lookups"] =
             self.create_proposal_backend_lookups.load(Ordering::SeqCst);
 
-        self.pending.update(metrics);
         self.tracked.update(metrics);
-    }
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-pub struct EthTxpoolPendingMetrics {
-    pub addresses: AtomicU64,
-    pub txs: AtomicU64,
-    pub promote_addresses: AtomicU64,
-    pub promote_txs: AtomicU64,
-    pub drop_unknown_addresses: AtomicU64,
-    pub drop_unknown_txs: AtomicU64,
-    pub drop_low_nonce_addresses: AtomicU64,
-    pub drop_low_nonce_txs: AtomicU64,
-}
-
-impl EthTxpoolPendingMetrics {
-    pub fn update(&self, metrics: &mut ExecutorMetrics) {
-        metrics["monad.bft.txpool.pool.pending.addresses"] = self.addresses.load(Ordering::SeqCst);
-        metrics["monad.bft.txpool.pool.pending.txs"] = self.txs.load(Ordering::SeqCst);
-        metrics["monad.bft.txpool.pool.pending.promote_addresses"] =
-            self.promote_addresses.load(Ordering::SeqCst);
-        metrics["monad.bft.txpool.pool.pending.promote_txs"] =
-            self.promote_txs.load(Ordering::SeqCst);
-        metrics["monad.bft.txpool.pool.pending.drop_unknown_addresses"] =
-            self.drop_unknown_addresses.load(Ordering::SeqCst);
-        metrics["monad.bft.txpool.pool.pending.drop_unknown_txs"] =
-            self.drop_unknown_txs.load(Ordering::SeqCst);
-        metrics["monad.bft.txpool.pool.pending.drop_low_nonce_addresses"] =
-            self.drop_low_nonce_addresses.load(Ordering::SeqCst);
-        metrics["monad.bft.txpool.pool.pending.drop_low_nonce_txs"] =
-            self.drop_low_nonce_txs.load(Ordering::SeqCst);
     }
 }
 
