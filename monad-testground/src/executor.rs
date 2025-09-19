@@ -41,7 +41,7 @@ use monad_peer_discovery::{
 use monad_raptorcast::{config::RaptorCastConfig, RaptorCast};
 use monad_state::{Forkpoint, MonadMessage, MonadState, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::InMemoryState;
-use monad_types::{ExecutionProtocol, NodeId, Round, SeqNum};
+use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, SeqNum};
 use monad_updaters::{
     config_file::MockConfigFile, config_loader::MockConfigLoader, ledger::MockLedger,
     local_router::LocalPeerRouter, loopback::LoopbackExecutor, parent::ParentExecutor,
@@ -162,7 +162,11 @@ where
                     MonadEvent<ST, SCT, MockExecutionProtocol>,
                     NopDiscovery<ST>,
                 >::new(
-                    cfg, dp_reader, dp_writer, shared_peer_discovery_driver
+                    cfg,
+                    dp_reader,
+                    dp_writer,
+                    shared_peer_discovery_driver,
+                    Epoch(0),
                 ))
             }
         },

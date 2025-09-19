@@ -59,29 +59,27 @@ const DEFAULT_COMMAND_BUFFER_SIZE: usize = 1024;
 const DEFAULT_EVENT_BUFFER_SIZE: usize = 1024;
 
 #[cfg(feature = "tokio")]
-pub struct TokioTaskUpdater<U, E>
+pub struct TokioTaskUpdater<C, E>
 where
-    U: Updater<E>,
-    U::Command: Send + 'static,
+    C: Send + 'static,
     E: Send + 'static,
 {
     handle: tokio::task::JoinHandle<()>,
     metrics: ExecutorMetrics,
     update_metrics: Box<dyn Fn(&mut ExecutorMetrics)>,
 
-    command_tx: tokio::sync::mpsc::Sender<Vec<U::Command>>,
+    command_tx: tokio::sync::mpsc::Sender<Vec<C>>,
     event_rx: tokio::sync::mpsc::Receiver<E>,
 }
 
 #[cfg(feature = "tokio")]
-impl<U, E> TokioTaskUpdater<U, E>
+impl<C, E> TokioTaskUpdater<C, E>
 where
-    U: Updater<E>,
-    U::Command: Send + 'static,
+    C: Send + 'static,
     E: Send + 'static,
 {
     pub fn new<F>(
-        updater: impl FnOnce(tokio::sync::mpsc::Receiver<Vec<U::Command>>, tokio::sync::mpsc::Sender<E>) -> F
+        updater: impl FnOnce(tokio::sync::mpsc::Receiver<Vec<C>>, tokio::sync::mpsc::Sender<E>) -> F
             + Send
             + 'static,
         update_metrics: Box<dyn Fn(&mut ExecutorMetrics) + Send + 'static>,
@@ -98,7 +96,7 @@ where
     }
 
     pub fn new_with_buffer_sizes<F>(
-        updater: impl FnOnce(tokio::sync::mpsc::Receiver<Vec<U::Command>>, tokio::sync::mpsc::Sender<E>) -> F
+        updater: impl FnOnce(tokio::sync::mpsc::Receiver<Vec<C>>, tokio::sync::mpsc::Sender<E>) -> F
             + Send
             + 'static,
         update_metrics: Box<dyn Fn(&mut ExecutorMetrics) + Send + 'static>,
@@ -139,13 +137,12 @@ where
 }
 
 #[cfg(feature = "tokio")]
-impl<U, E> Executor for TokioTaskUpdater<U, E>
+impl<C, E> Executor for TokioTaskUpdater<C, E>
 where
-    U: Updater<E>,
-    U::Command: Send + 'static,
+    C: Send + 'static,
     E: Send + 'static,
 {
-    type Command = U::Command;
+    type Command = C;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         self.verify_handle_liveness();
@@ -161,13 +158,12 @@ where
 }
 
 #[cfg(feature = "tokio")]
-impl<U, E> Stream for TokioTaskUpdater<U, E>
+impl<C, E> Stream for TokioTaskUpdater<C, E>
 where
-    U: Updater<E>,
-    U::Command: Send + 'static,
+    C: Send + 'static,
     E: Send + 'static,
 {
-    type Item = U::Item;
+    type Item = E;
 
     fn poll_next(
         self: Pin<&mut Self>,

@@ -100,10 +100,6 @@ pub struct CliConfig {
     #[clap(long, global = true)]
     pub use_get_logs: Option<bool>,
 
-    /// Base fee used when calculating gas costs and value
-    #[clap(long, global = true)]
-    pub base_fee_gwei: Option<u128>,
-
     /// Chain id
     #[arg(long, global = true)]
     pub chain_id: Option<u64>,
@@ -212,9 +208,6 @@ impl From<CliConfig> for Config {
         }
         if let Some(use_get_logs) = value.use_get_logs {
             config.use_get_logs = use_get_logs;
-        }
-        if let Some(base_fee_gwei) = value.base_fee_gwei {
-            config.base_fee_gwei = base_fee_gwei as u64;
         }
         if let Some(chain_id) = value.chain_id {
             config.chain_id = chain_id;

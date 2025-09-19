@@ -50,9 +50,6 @@ pub struct Config {
     /// Fetches logs for each tx sent
     pub use_get_logs: bool,
 
-    /// Base fee used when calculating gas costs and value
-    pub base_fee_gwei: u64,
-
     /// Chain id
     pub chain_id: u64,
 
@@ -96,7 +93,6 @@ impl Default for Config {
             use_receipts: false,
             use_receipts_by_block: false,
             use_get_logs: false,
-            base_fee_gwei: 50,
             chain_id: 20143,
             min_native_amount: "100_000_000_000_000_000_000".to_string(),
             seed_native_amount: "1_000_000_000_000_000_000_000".to_string(),
@@ -230,13 +226,6 @@ impl Config {
             toml::to_string_pretty(self).wrap_err("Failed to serialize config to TOML")?;
         std::fs::write(path, content)
             .wrap_err_with(|| format!("Failed to write config to {:?}", path))
-    }
-
-    pub fn base_fee(&self) -> u128 {
-        let base_fee_gwei = self.base_fee_gwei as u128;
-        base_fee_gwei
-            .checked_mul(10u128.pow(9))
-            .expect("Gwei must be convertable to wei using u128")
     }
 
     pub fn rpc_urls(&self) -> Result<Vec<Url>> {

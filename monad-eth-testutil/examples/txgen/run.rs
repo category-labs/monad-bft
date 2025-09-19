@@ -184,7 +184,11 @@ fn run_traffic_gen(
     let (rpc_sender, gen_rx) = mpsc::channel(2);
     let (gen_sender, refresh_rx) = async_channel::bounded::<Accounts>(100);
     let (refresh_sender, rpc_rx) = mpsc::unbounded_channel();
-    let base_fee = Arc::new(Mutex::new(config.base_fee()));
+    let base_fee = Arc::new(Mutex::new(
+        // safe to default to 0; it'll get set later by the refresher
+        // TODO share base_fee across all traffic gens?
+        0_128,
+    ));
 
     // kick start cycle by injecting accounts
     generate_sender_groups(config, traffic_gen).for_each(|group| {
@@ -318,7 +322,8 @@ async fn load_or_deploy_contracts(
 
     const PATH: &str = "deployed_contracts.json";
     let deployer = PrivateKey::new(&config.root_private_keys[0]);
-    let max_fee_per_gas = config.base_fee() * 2;
+    let base_fee = client.get_base_fee().await?;
+    let max_fee_per_gas = base_fee * 2;
     let chain_id = config.chain_id;
 
     match contract_to_ensure {

@@ -313,7 +313,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
             state_backend.clone(),
         ),
         timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
-        txpool: EthTxPoolExecutor::new(
+        txpool: EthTxPoolExecutor::start(
             create_block_policy(),
             state_backend.clone(),
             EthTxPoolIpcConfig {

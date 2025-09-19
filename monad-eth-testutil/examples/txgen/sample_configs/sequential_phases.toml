@@ -7,7 +7,6 @@ refresh_delay_secs = 5
 use_receipts = false
 use_receipts_by_block = false
 use_get_logs = false
-base_fee_gwei = 50
 chain_id = 20_143
 min_native_amount = "100000000000000000000"
 seed_native_amount = "1000000000000000000000"

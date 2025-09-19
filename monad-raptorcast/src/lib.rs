@@ -127,6 +127,7 @@ where
         dataplane_reader: DataplaneReader,
         dataplane_writer: DataplaneWriter,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
+        current_epoch: Epoch,
     ) -> Self {
         if config.primary_instance.raptor10_redundancy < 1f32 {
             panic!(
@@ -156,7 +157,7 @@ where
             redundancy: Redundancy::from_f32(config.primary_instance.raptor10_redundancy)
                 .expect("primary raptor10_redundancy doesn't fit"),
 
-            current_epoch: Epoch(0),
+            current_epoch,
 
             udp_state: udp::UdpState::new(self_id, config.udp_message_max_age_ms),
             mtu: config.mtu,
@@ -332,7 +333,13 @@ where
     };
     let pd = PeerDiscoveryDriver::new(peer_discovery_builder);
     let shared_pd = Arc::new(Mutex::new(pd));
-    RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>>::new(config, dp_reader, dp_writer, shared_pd)
+    RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>>::new(
+        config,
+        dp_reader,
+        dp_writer,
+        shared_pd,
+        Epoch(0),
+    )
 }
 
 impl<ST, M, OM, SE, PD> Executor for RaptorCast<ST, M, OM, SE, PD>
