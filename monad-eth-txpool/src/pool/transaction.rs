@@ -35,6 +35,10 @@ use tracing::trace;
 
 const MAX_EIP7702_AUTHORIZATION_LIST_LENGTH: usize = 4;
 
+pub const fn max_eip2718_encoded_length(execution_params: &ExecutionChainParams) -> usize {
+    2 * execution_params.max_code_size + 128 * 1024
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValidEthTransaction {
     tx: Recovered<TxEnvelope>,
@@ -65,6 +69,13 @@ impl ValidEthTransaction {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
+        if tx.eip2718_encoded_length() > max_eip2718_encoded_length(execution_params) {
+            return Err((
+                tx,
+                EthTxPoolDropReason::NotWellFormed(TransactionError::EncodedLengthLimitExceeded),
+            ));
+        }
+
         if SystemTransactionValidator::is_system_sender(tx.signer()) {
             return Err((tx, EthTxPoolDropReason::InvalidSignature));
         }
