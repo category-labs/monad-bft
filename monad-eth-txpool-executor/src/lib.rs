@@ -54,7 +54,7 @@ use self::{
     reset::EthTxPoolResetTrigger,
 };
 
-mod forward;
+pub mod forward;
 mod ipc;
 mod metrics;
 mod preload;
@@ -164,7 +164,7 @@ where
                         events_tx,
                         events,
 
-                        forwarding_manager: Box::pin(EthTxPoolForwardingManager::new()),
+                        forwarding_manager: Box::pin(EthTxPoolForwardingManager::default()),
                         preload_manager: Box::pin(EthTxPoolPreloadManager::default()),
                         promote_pending_timer,
 
