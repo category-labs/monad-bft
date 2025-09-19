@@ -60,8 +60,6 @@ mod metrics;
 mod preload;
 mod reset;
 
-const PROMOTE_PENDING_INTERVAL_MS: u64 = 2;
-
 pub struct EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
@@ -83,7 +81,6 @@ where
 
     forwarding_manager: Pin<Box<EthTxPoolForwardingManager>>,
     preload_manager: Pin<Box<EthTxPoolPreloadManager>>,
-    promote_pending_timer: tokio::time::Interval,
 
     metrics: Arc<EthTxPoolExecutorMetrics>,
     executor_metrics: ExecutorMetrics,
@@ -138,11 +135,6 @@ where
             {
                 let metrics = metrics.clone();
 
-                let mut promote_pending_timer =
-                    tokio::time::interval(Duration::from_millis(PROMOTE_PENDING_INTERVAL_MS));
-                promote_pending_timer
-                    .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
                 move |command_rx, event_tx| {
                     let pool = EthTxPool::new(
                         soft_tx_expiry,
@@ -166,7 +158,6 @@ where
 
                         forwarding_manager: Box::pin(EthTxPoolForwardingManager::default()),
                         preload_manager: Box::pin(EthTxPoolPreloadManager::default()),
-                        promote_pending_timer,
 
                         metrics,
                         executor_metrics,
@@ -493,7 +484,6 @@ where
 
             forwarding_manager,
             preload_manager,
-            promote_pending_timer,
 
             metrics,
             executor_metrics,
@@ -617,16 +607,6 @@ where
             preload_manager.add_requests(inserted_addresses.iter());
 
             forwarding_manager.as_mut().complete_ingress();
-        }
-
-        while promote_pending_timer.poll_tick(cx).is_ready() {
-            pool.promote_pending(
-                &mut EthTxPoolEventTracker::new(&metrics.pool, &mut ipc_events),
-                block_policy,
-                state_backend,
-            );
-
-            promote_pending_timer.reset();
         }
 
         while let Poll::Ready((predicted_proposal_seqnum, addresses)) =
