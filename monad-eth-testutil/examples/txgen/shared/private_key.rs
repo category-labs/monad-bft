@@ -66,4 +66,8 @@ impl PrivateKey {
             .sign_hash_sync(&transaction.signature_hash())
             .expect("signature works")
     }
+
+    pub fn sign_hash(&self, hash: &B256) -> PrimitiveSignature {
+        self.priv_key.sign_hash_sync(hash).expect("signature works")
+    }
 }

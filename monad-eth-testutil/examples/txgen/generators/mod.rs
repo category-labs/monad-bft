@@ -17,6 +17,8 @@ use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
 use alloy_primitives::TxKind;
 use duplicates::DuplicateTxGenerator;
 use ecmul::ECMulGenerator;
+use eip7702::EIP7702Generator;
+use eip7702_create::EIP7702CreateGenerator;
 use few_to_many::CreateAccountsGenerator;
 use high_call_data::HighCallDataTxGenerator;
 use many_to_many::ManyToManyGenerator;
@@ -36,6 +38,8 @@ use crate::{
 
 mod duplicates;
 mod ecmul;
+mod eip7702;
+mod eip7702_create;
 mod few_to_many;
 mod high_call_data;
 mod many_to_many;
@@ -131,6 +135,17 @@ pub fn make_generator(
             system_nonce: 0,
             random_priority_fee: true,
         }),
+        GenMode::EIP7702Reuse(config) => Box::new(EIP7702Generator::new(
+            deployed_contract.eip7702()?,
+            tx_per_sender,
+            config.total_authorizations,
+            config.authorizations_per_tx,
+        )),
+        GenMode::EIP7702Create(config) => Box::new(EIP7702CreateGenerator::new(
+            deployed_contract.eip7702()?,
+            tx_per_sender,
+            config.authorizations_per_tx,
+        )),
     })
 }
 
@@ -192,7 +207,7 @@ pub fn erc20_transfer(
     erc20: &ERC20,
     ctx: &GenCtx,
 ) -> TxEnvelope {
-    let max_fee_per_gas = ctx.base_fee;
+    let max_fee_per_gas = ctx.base_fee * 2;
     let tx = erc20.construct_transfer(
         &from.key,
         to,
@@ -213,7 +228,7 @@ pub fn erc20_transfer(
 }
 
 pub fn erc20_mint(from: &mut SimpleAccount, erc20: &ERC20, ctx: &GenCtx) -> TxEnvelope {
-    let max_fee_per_gas = ctx.base_fee;
+    let max_fee_per_gas = ctx.base_fee * 2;
     let tx = erc20.construct_mint(&from.key, from.nonce, max_fee_per_gas, ctx.chain_id);
 
     // update from
