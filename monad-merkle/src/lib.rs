@@ -36,6 +36,7 @@ impl MerkleProof {
             siblings,
         })
     }
+
     pub fn compute_root(&self, leaf: &Hash) -> Option<MerkleHash> {
         let mut merkle_hash = hash_to_merkle(leaf);
         let mut current_idx = Some(self.tree_leaf_idx as usize);

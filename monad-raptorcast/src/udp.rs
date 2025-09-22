@@ -59,12 +59,12 @@ pub const SIGNATURE_CACHE_SIZE: NonZero<usize> = NonZero::new(10_000).unwrap();
 // depth of 9 gives a symbol size of 960 bytes, which we will use as the minimum chunk length for
 // received packets, and we'll drop received chunks that are smaller than this to mitigate attacks
 // involving a peer sending us a message as a very large set of very small chunks.
-const MIN_CHUNK_LENGTH: usize = 960;
+pub const MIN_CHUNK_LENGTH: usize = 960;
 
 // Drop a message to be transmitted if it would lead to more than this number of packets
 // to be transmitted.  This can happen in Broadcast mode when the message is large or
 // if we have many peers to transmit the message to.
-const MAX_NUM_PACKETS: usize = 65535;
+pub const MAX_NUM_PACKETS: usize = 65535;
 
 // For a message with K source symbols, we accept up to the first MAX_REDUNDANCY * K
 // encoded symbols.
@@ -360,6 +360,7 @@ const CHUNK_HEADER_LEN: u16 = 20 // Chunk recipient hash
             + 1  // reserved
             + 2; // Chunk idx
 
+#[expect(clippy::too_many_arguments)]
 pub fn build_messages<ST>(
     key: &ST::KeyPairType,
     segment_size: u16, // Each chunk in the returned Vec (Bytes element of the tuple) will be limited to this size
@@ -385,6 +386,41 @@ where
         unix_ts_ms,
         build_target,
         known_addresses,
+        &mut rand::thread_rng(),
+    )
+}
+
+// Used for testing. Uses an externally passed RNG for deterministic
+// behavior, otherwise identical to `build_message`.
+#[cfg(test)]
+#[expect(clippy::too_many_arguments)]
+pub fn build_messages_with_rng<ST>(
+    key: &ST::KeyPairType,
+    segment_size: u16, // Each chunk in the returned Vec (Bytes element of the tuple) will be limited to this size
+    app_message: Bytes, // This is the actual message that gets raptor-10 encoded and split into UDP chunks
+    redundancy: Redundancy,
+    epoch_no: u64,
+    unix_ts_ms: u64,
+    build_target: BuildTarget<ST>,
+    known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
+    rng: &mut impl rand::Rng,
+) -> Vec<(SocketAddr, Bytes)>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    let app_message_len: u32 = app_message.len().try_into().expect("message too big");
+
+    build_messages_with_length(
+        key,
+        segment_size,
+        app_message,
+        app_message_len,
+        redundancy,
+        epoch_no,
+        unix_ts_ms,
+        build_target,
+        known_addresses,
+        rng,
     )
 }
 
@@ -394,6 +430,7 @@ where
 // to verify that the RaptorCast receive path doesn't crash when it receives such a message,
 // as previous versions of the RaptorCast receive path would indeed crash when receiving
 // such a message.
+#[expect(clippy::too_many_arguments)]
 pub fn build_messages_with_length<ST>(
     key: &ST::KeyPairType,
     segment_size: u16,
@@ -404,6 +441,7 @@ pub fn build_messages_with_length<ST>(
     unix_ts_ms: u64,
     build_target: BuildTarget<ST>,
     known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
+    rng: &mut impl rand::Rng,
 ) -> Vec<(SocketAddr, Bytes)>
 where
     ST: CertificateSignatureRecoverable,
@@ -585,6 +623,13 @@ where
                 "RaptorCast v2v message"
             );
 
+            if epoch_validators.is_empty() {
+                tracing::warn!(
+                    ?self_id,
+                    "RaptorCast build_message got empty epoch_validators, not sending message"
+                );
+                return Vec::new();
+            }
             assert!(!epoch_validators.is_empty());
 
             // generate chunks if epoch validators is not empty
@@ -604,7 +649,7 @@ where
             let mut validator_set: Vec<_> = epoch_validators.iter().collect();
             // Group shuffling so chunks for small proposals aren't always assigned
             // to the same nodes, until researchers come up with something better.
-            validator_set.shuffle(&mut rand::thread_rng());
+            validator_set.shuffle(rng);
             for (node_id, stake) in validator_set {
                 let start_idx: usize =
                     (num_packets as f64 * (running_stake / total_stake)) as usize;
@@ -654,7 +699,7 @@ where
             let mut chunk_idx = 0_u16;
             // Group shuffling so chunks for small proposals aren't always assigned
             // to the same nodes, until researchers come up with something better.
-            for node_id in group.iter_skip_self_and_author(&self_id, rand::random::<usize>()) {
+            for node_id in group.iter_skip_self_and_author(&self_id, rng.gen::<usize>()) {
                 let start_idx: usize = num_packets * pp / total_peers;
                 pp += 1;
                 let end_idx: usize = num_packets * pp / total_peers;

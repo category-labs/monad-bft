@@ -721,11 +721,13 @@ impl Redundancy {
         self.0.to_num()
     }
 
-    pub fn scale(&self, base: usize) -> Option<usize> {
+    pub const fn scale(&self, base: usize) -> Option<usize> {
         if base > Self::MAX_MULTIPLIER {
             return None;
         }
-        let scaled = (self.0.to_bits() as usize).checked_mul(base)?;
+        let Some(scaled) = (self.0.to_bits() as usize).checked_mul(base) else {
+            return None;
+        };
         Some(scaled.div_ceil(1 << Self::FRAC_BITS))
     }
 }

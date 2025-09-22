@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #![allow(clippy::manual_range_contains)]
+#![allow(clippy::identity_op)]
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     hash::Hash,
