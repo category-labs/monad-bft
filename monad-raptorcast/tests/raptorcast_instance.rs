@@ -197,7 +197,7 @@ pub fn oversized_message() {
         validators: BTreeMap::from([(rx_nodeid, Stake::ONE), (tx_nodeid, Stake::ONE)]),
     };
 
-    let epoch_validators = validators.view_without(vec![&tx_nodeid]);
+    let epoch_validators = EpochValidators::view_without(&validators, vec![&tx_nodeid]);
 
     let messages = build_messages_with_length::<SignatureType>(
         &tx_keypair,
@@ -211,6 +211,7 @@ pub fn oversized_message() {
         0, // unix_ts_ms
         BuildTarget::Raptorcast(epoch_validators),
         &known_addresses,
+        &mut rand::thread_rng(),
     );
 
     // Sending a single packet of an oversized message is sufficient to crash the
