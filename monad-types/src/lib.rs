@@ -537,11 +537,8 @@ impl Stake {
     pub const ZERO: Stake = Stake(U256::ZERO);
     pub const ONE: Stake = Stake(U256::ONE);
 
-    pub fn checked_div(self, divisor: Stake) -> Option<f64> {
-        if divisor.0.is_zero() {
-            return None;
-        }
-        Some(self / divisor)
+    pub fn checked_div(self, rhs: Self) -> Option<Self> {
+        self.0.checked_div(rhs.0).map(Stake)
     }
 }
 

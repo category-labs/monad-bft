@@ -34,7 +34,7 @@ use monad_dataplane::RecvUdpMsg;
 use monad_merkle::{MerkleHash, MerkleProof, MerkleTree};
 use monad_raptor::SOURCE_SYMBOLS_MIN;
 use monad_types::{Epoch, NodeId, Stake};
-use rand::seq::SliceRandom;
+use rand::{seq::SliceRandom, Rng as _};
 use tracing::{debug, warn};
 
 use crate::{
@@ -390,6 +390,40 @@ where
         unix_ts_ms,
         build_target,
         known_addresses,
+        &mut rand::thread_rng(),
+    )
+}
+
+// used for testing
+#[cfg(debug_assertions)]
+pub fn build_messages_with_rng<ST>(
+    key: &ST::KeyPairType,
+    segment_size: u16, // Each chunk in the returned Vec (Bytes element of the tuple) will be limited to this size
+    app_message: Bytes, // This is the actual message that gets raptor-10 encoded and split into UDP chunks
+    redundancy: Redundancy,
+    epoch_no: u64,
+    unix_ts_ms: u64,
+    build_target: BuildTarget<ST>,
+    known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
+    rng: &mut R,
+) -> Vec<(SocketAddr, Bytes)>
+where
+    ST: CertificateSignatureRecoverable,
+    R: rand::Rng,
+{
+    let app_message_len: u32 = app_message.len().try_into().expect("message too big");
+
+    build_messages_with_length(
+        key,
+        segment_size,
+        app_message,
+        app_message_len,
+        redundancy,
+        epoch_no,
+        unix_ts_ms,
+        build_target,
+        known_addresses,
+        rng,
     )
 }
 
@@ -399,7 +433,7 @@ where
 // to verify that the RaptorCast receive path doesn't crash when it receives such a message,
 // as previous versions of the RaptorCast receive path would indeed crash when receiving
 // such a message.
-pub fn build_messages_with_length<ST>(
+pub fn build_messages_with_length<ST, R>(
     key: &ST::KeyPairType,
     segment_size: u16,
     app_message: Bytes,
@@ -409,9 +443,11 @@ pub fn build_messages_with_length<ST>(
     unix_ts_ms: u64,
     build_target: BuildTarget<ST>,
     known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
+    rng: &mut R,
 ) -> Vec<(SocketAddr, Bytes)>
 where
     ST: CertificateSignatureRecoverable,
+    R: rand::Rng,
 {
     if app_message_len == 0 {
         tracing::warn!("build_messages_with_length() called with app_message_len = 0");
@@ -609,7 +645,7 @@ where
             let mut validator_set: Vec<_> = epoch_validators.iter().collect();
             // Group shuffling so chunks for small proposals aren't always assigned
             // to the same nodes, until researchers come up with something better.
-            validator_set.shuffle(&mut rand::thread_rng());
+            validator_set.shuffle(rng);
             for (node_id, stake) in validator_set {
                 let start_idx: usize =
                     (num_packets as f64 * (running_stake / total_stake)) as usize;
@@ -659,7 +695,7 @@ where
             let mut chunk_idx = 0_u16;
             // Group shuffling so chunks for small proposals aren't always assigned
             // to the same nodes, until researchers come up with something better.
-            for node_id in group.iter_skip_self_and_author(&self_id, rand::random::<usize>()) {
+            for node_id in group.iter_skip_self_and_author(&self_id, rng.gen::<usize>()) {
                 let start_idx: usize = num_packets * pp / total_peers;
                 pp += 1;
                 let end_idx: usize = num_packets * pp / total_peers;

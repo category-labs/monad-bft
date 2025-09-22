@@ -66,6 +66,7 @@ use util::{
 pub mod config;
 pub mod decoding;
 pub mod message;
+pub mod packet;
 pub mod raptorcast_secondary;
 pub mod udp;
 pub mod util;
