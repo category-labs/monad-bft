@@ -30,7 +30,10 @@ use serde::{Deserialize, Serialize};
 use crate::{
     config::{Config, DeployedContract, TrafficGen},
     generators::make_generator,
-    prelude::*,
+    prelude::{
+        rpc_request_gen::{RpcWalletSpam, RpcWsCompare},
+        *,
+    },
     shared::{
         ecmul::ECMul, eip7702::EIP7702, erc20::ERC20, eth_json_rpc::EthJsonRpc, uniswap::Uniswap,
     },
@@ -232,7 +235,7 @@ fn run_traffic_gen(
     let refresher = Refresher::new(
         rpc_rx,
         gen_sender,
-        read_client,
+        read_client.clone(),
         Arc::clone(&metrics),
         base_fee,
         Duration::from_secs_f64(config.refresh_delay_secs),
@@ -242,12 +245,40 @@ fn run_traffic_gen(
         Arc::clone(shutdown),
     )?;
 
-    Ok([
-        critical_task("Refresher", tokio::spawn(refresher.run())).boxed(),
-        critical_task("Rpc Sender", tokio::spawn(rpc_sender.run())).boxed(),
-        critical_task("Generator Harness", tokio::spawn(gen.run())).boxed(),
-    ]
-    .into_iter())
+    let mut tasks = Vec::new();
+
+    if traffic_gen.spam_rpc {
+        let spammer = RpcWalletSpam::new(
+            read_client.clone(),
+            config.ws_url().expect("WS URL is not valid"),
+        );
+        tasks.push(
+            critical_task("Spammer", tokio::spawn(async move { spammer.run().await })).boxed(),
+        );
+    }
+
+    if traffic_gen.compare_rpc_ws {
+        let compare_rpc_ws = RpcWsCompare::new(
+            read_client.clone(),
+            config.ws_url().expect("WS URL is not valid"),
+        );
+        tasks.push(
+            critical_task(
+                "Compare RPC WS",
+                tokio::spawn(async move { compare_rpc_ws.run().await }),
+            )
+            .boxed(),
+        );
+    }
+
+    Ok(tasks
+        .into_iter()
+        .chain([
+            critical_task("Refresher", tokio::spawn(refresher.run())).boxed(),
+            critical_task("Rpc Sender", tokio::spawn(rpc_sender.run())).boxed(),
+            critical_task("Generator Harness", tokio::spawn(gen.run())).boxed(),
+        ])
+        .into_iter())
 }
 
 async fn helper_task(
