@@ -26,6 +26,7 @@ alloy-primitives = { workspace = true }
 alloy-signer = { workspace = true }
 alloy-signer-local = { workspace = true }
 rand = { workspace = true }
+tokio-tungstenite = { workspace = true, features = ["native-tls"]}
 
 [dev-dependencies]
 alloy-json-rpc = { workspace = true }

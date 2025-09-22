@@ -42,6 +42,9 @@ pub struct CliConfig {
     #[arg(long, global = true)]
     pub rpc_url: Option<Url>,
 
+    #[arg(long, global = true)]
+    pub ws_url: Option<Url>,
+
     /// Target tps of the generator
     #[arg(long, global = true)]
     pub tps: Option<u64>,
@@ -138,6 +141,14 @@ pub struct CliConfig {
 
     #[arg(long, global = true)]
     pub use_static_tps_interval: Option<bool>,
+
+    /// Spams rpc with common wallet workflow requests
+    #[arg(long, global = true)]
+    pub spam_rpc: Option<bool>,
+
+    /// Compares rpc and websocket responses
+    #[arg(long, global = true)]
+    pub compare_rpc_ws: Option<bool>,
 
     /// Otel endpoint
     #[arg(long, global = true)]
