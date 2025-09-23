@@ -21,16 +21,9 @@ use super::fullnode::FullNodeConfig;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
-pub enum SecondaryRaptorCastModeConfig {
-    Client,
-    Publisher,
-    None, // Disables secondary raptorcast
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(deny_unknown_fields)]
 pub struct FullNodeRaptorCastConfig<P: PubKey> {
-    pub mode: SecondaryRaptorCastModeConfig,
+    pub enable_publisher: bool,
+    pub enable_client: bool,
 
     #[serde(bound = "P:PubKey")]
     pub full_nodes_prioritized: FullNodeConfig<P>,

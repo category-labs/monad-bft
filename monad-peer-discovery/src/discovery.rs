@@ -156,12 +156,15 @@ pub struct PeerDiscovery<ST: CertificateSignatureRecoverable> {
     pub min_num_peers: usize,
     // maximum number of peers before pruning
     pub max_num_peers: usize,
+    // secondary raptorcast setting: enable publisher mode when self is a validator
+    pub enable_publisher: bool,
+    // secondary raptorcast setting: enable client mode when self is a full node
+    pub enable_client: bool,
     pub rng: ChaCha8Rng,
 }
 
 pub struct PeerDiscoveryBuilder<ST: CertificateSignatureRecoverable> {
     pub self_id: NodeId<CertificateSignaturePubKey<ST>>,
-    pub self_role: PeerDiscoveryRole,
     pub self_record: MonadNameRecord<ST>,
     pub current_round: Round,
     pub current_epoch: Epoch,
@@ -174,6 +177,8 @@ pub struct PeerDiscoveryBuilder<ST: CertificateSignatureRecoverable> {
     pub last_participation_prune_threshold: Round,
     pub min_num_peers: usize,
     pub max_num_peers: usize,
+    pub enable_publisher: bool,
+    pub enable_client: bool,
     pub rng: ChaCha8Rng,
 }
 
@@ -191,10 +196,37 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
         debug!("initializing peer discovery");
         assert!(self.max_num_peers > self.min_num_peers);
 
+        let is_current_epoch_validator = self
+            .epoch_validators
+            .get(&self.current_epoch)
+            .is_some_and(|validators| validators.contains(&self.self_id));
+        let self_role = match (
+            is_current_epoch_validator,
+            self.enable_publisher,
+            self.enable_client,
+        ) {
+            (true, true, _) => {
+                info!("Starting peer discovery as ValidatorPublisher");
+                PeerDiscoveryRole::ValidatorPublisher
+            }
+            (true, false, _) => {
+                info!("Starting peer discovery as ValidatorNone");
+                PeerDiscoveryRole::ValidatorNone
+            }
+            (false, _, true) => {
+                info!("Starting peer discovery as FullNodeClient");
+                PeerDiscoveryRole::FullNodeClient
+            }
+            (false, _, false) => {
+                info!("Starting peer discovery as FullNodeNone");
+                PeerDiscoveryRole::FullNodeNone
+            }
+        };
+
         let mut state = PeerDiscovery {
             self_id: self.self_id,
             self_record: self.self_record,
-            self_role: self.self_role,
+            self_role,
             current_round: self.current_round,
             current_epoch: self.current_epoch,
             epoch_validators: self.epoch_validators,
@@ -215,6 +247,8 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
             last_participation_prune_threshold: self.last_participation_prune_threshold,
             min_num_peers: self.min_num_peers,
             max_num_peers: self.max_num_peers,
+            enable_publisher: self.enable_publisher,
+            enable_client: self.enable_client,
             rng: self.rng,
         };
 
@@ -1248,13 +1282,19 @@ where
             debug!(?epoch, "updating current epoch in peer discovery");
             self.current_epoch = epoch;
 
-            // when a full node is promoted to a validator, defaults to ValidatorPublisher
+            // when a full node is promoted to a validator
+            // if publisher mode is enabled, switch role to ValidatorPublisher
+            // if publisher mode is not enabled, switch role to ValidatorNone
             if (self.self_role == PeerDiscoveryRole::FullNodeNone
                 || self.self_role == PeerDiscoveryRole::FullNodeClient)
                 && self.check_current_epoch_validator(&self.self_id)
             {
-                debug!(?epoch, "full node promoted to validator");
-                self.self_role = PeerDiscoveryRole::ValidatorPublisher;
+                debug!(?epoch, ?self.enable_publisher, "full node promoted to validator");
+                if self.enable_publisher {
+                    self.self_role = PeerDiscoveryRole::ValidatorPublisher;
+                } else {
+                    self.self_role = PeerDiscoveryRole::ValidatorNone;
+                }
                 // clear secondary raptorcast connection info
                 self.clear_connection_info();
             }
@@ -1310,17 +1350,22 @@ where
                     }
                 }
             }
-            // if a validator is going to be demoted to a full node, switch role to FullNodeClient
-            // and start looking for upstream validators
+            // validator is going to be demoted to a full node in the next epoch
+            // if client mode is enabled, switch role to FullNodeClient and start looking for upstream validators
+            // if client mode is not enabled, switch role to FullNodeNone
             else if (self.self_role == PeerDiscoveryRole::ValidatorNone
                 || self.self_role == PeerDiscoveryRole::ValidatorPublisher)
                 && !is_next_epoch_validator
             {
-                debug!(?epoch, "validator demoted to full node");
-                self.self_role = PeerDiscoveryRole::FullNodeClient;
-                // clear secondary raptorcast connection info
-                self.clear_connection_info();
-                cmds.extend(self.look_for_upstream_validators());
+                debug!(?epoch, ?self.enable_client, "validator demoted to full node");
+                if self.enable_client {
+                    self.self_role = PeerDiscoveryRole::FullNodeClient;
+                    self.clear_connection_info();
+                    cmds.extend(self.look_for_upstream_validators());
+                } else {
+                    self.self_role = PeerDiscoveryRole::FullNodeNone;
+                    self.clear_connection_info();
+                }
             }
         }
 
@@ -1533,6 +1578,8 @@ mod tests {
             last_participation_prune_threshold: Round(5000),
             min_num_peers: 5,
             max_num_peers: 50,
+            enable_publisher: false,
+            enable_client: false,
             rng: ChaCha8Rng::seed_from_u64(123456),
         }
     }
