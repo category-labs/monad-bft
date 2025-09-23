@@ -35,9 +35,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_dataplane::udp::DEFAULT_MTU;
 use monad_executor::Executor;
-use monad_node_config::{
-    fullnode_raptorcast::SecondaryRaptorCastModeConfig, FullNodeConfig, FullNodeRaptorCastConfig,
-};
+use monad_node_config::{FullNodeConfig, FullNodeRaptorCastConfig};
 use monad_raptorcast::config::RaptorCastConfig;
 use monad_secp::SecpSignature;
 use monad_state_backend::InMemoryStateInner;
@@ -339,7 +337,8 @@ where
                             udp_message_max_age_ms: u64::MAX,
                             primary_instance: Default::default(),
                             secondary_instance: FullNodeRaptorCastConfig {
-                                mode: SecondaryRaptorCastModeConfig::None,
+                                enable_publisher: false,
+                                enable_client: false,
                                 raptor10_fullnode_redundancy_factor: 2f32,
                                 full_nodes_prioritized: FullNodeConfig { identities: vec![] },
                                 round_span: Round(10),

@@ -42,7 +42,7 @@ use monad_peer_discovery::{
         GAUGE_PEER_DISC_RECV_PING, GAUGE_PEER_DISC_RECV_PONG,
         GAUGE_PEER_DISC_RECV_TARGETED_LOOKUP_REQUEST, GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST,
         GAUGE_PEER_DISC_SEND_PING, GAUGE_PEER_DISC_SEND_PONG, PeerDiscovery, PeerDiscoveryBuilder,
-        PeerDiscoveryRole, SecondaryRaptorcastConnectionStatus,
+        SecondaryRaptorcastConnectionStatus,
     },
 };
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
@@ -90,7 +90,7 @@ struct TestConfig {
     pub current_epoch: Epoch,
     pub epoch_validators: BTreeMap<Epoch, BTreeSet<usize>>,
     pub pinned_full_nodes: BTreeMap<usize, BTreeSet<usize>>,
-    pub roles: BTreeMap<usize, PeerDiscoveryRole>,
+    pub roles: BTreeMap<usize, bool>, // true for secondary raptorcast enabled, false for disabled
     pub bootstrap_peers: BTreeMap<usize, BTreeSet<usize>>,
     pub refresh_period: Duration,
     pub request_timeout: Duration,
@@ -110,10 +110,7 @@ impl Default for TestConfig {
             current_epoch: Epoch(1),
             epoch_validators: BTreeMap::from([(Epoch(1), BTreeSet::from([0, 1]))]),
             pinned_full_nodes: BTreeMap::default(),
-            roles: BTreeMap::from([
-                (0, PeerDiscoveryRole::ValidatorNone),
-                (1, PeerDiscoveryRole::ValidatorNone),
-            ]),
+            roles: BTreeMap::from([(0, false), (1, false)]),
             bootstrap_peers: BTreeMap::from([(0, BTreeSet::from([1])), (1, BTreeSet::from([0]))]),
             refresh_period: Duration::from_secs(30),
             request_timeout: Duration::from_secs(1),
@@ -177,21 +174,7 @@ fn setup_keys_and_swarm_builder(
             .enumerate()
             .map(|(i, key)| {
                 let self_id = NodeId::new(key.pubkey());
-                let self_role = if epoch_validators
-                    .get(&config.current_epoch)
-                    .map(|validators| validators.contains(&self_id))
-                    .unwrap_or(false)
-                {
-                    if config.roles.get(&i) == Some(&PeerDiscoveryRole::ValidatorPublisher) {
-                        PeerDiscoveryRole::ValidatorPublisher
-                    } else {
-                        PeerDiscoveryRole::ValidatorNone
-                    }
-                } else if config.roles.get(&i) == Some(&PeerDiscoveryRole::FullNodeClient) {
-                    PeerDiscoveryRole::FullNodeClient
-                } else {
-                    PeerDiscoveryRole::FullNodeNone
-                };
+                let secondary_raptorcast_enabled = config.roles.get(&i).cloned().unwrap_or(false);
                 let bootstrap_peers = config
                     .bootstrap_peers
                     .get(&i)
@@ -218,7 +201,6 @@ fn setup_keys_and_swarm_builder(
                     addr: generate_name_record(key).address(),
                     algo_builder: PeerDiscoveryBuilder {
                         self_id,
-                        self_role,
                         self_record: generate_name_record(key),
                         current_round: config.current_round,
                         current_epoch: config.current_epoch,
@@ -232,6 +214,8 @@ fn setup_keys_and_swarm_builder(
                             .last_participation_prune_threshold,
                         min_num_peers: config.min_num_peers,
                         max_num_peers: config.max_num_peers,
+                        enable_publisher: secondary_raptorcast_enabled,
+                        enable_client: secondary_raptorcast_enabled,
                         rng: ChaCha8Rng::seed_from_u64(123456), // fixed seed for reproducibility
                     },
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
@@ -393,7 +377,6 @@ fn test_update_name_record() {
         addr: new_name_record.address(),
         algo_builder: PeerDiscoveryBuilder {
             self_id: node_0,
-            self_role: PeerDiscoveryRole::FullNodeNone,
             self_record: new_name_record,
             current_round: config.current_round,
             current_epoch: config.current_epoch,
@@ -406,6 +389,8 @@ fn test_update_name_record() {
             last_participation_prune_threshold: config.last_participation_prune_threshold,
             min_num_peers: config.min_num_peers,
             max_num_peers: config.max_num_peers,
+            enable_publisher: false,
+            enable_client: false,
             rng: ChaCha8Rng::seed_from_u64(123456),
         },
         router_scheduler: NoSerRouterConfig::new(node_ids.iter().cloned().collect()).build(),
@@ -785,11 +770,7 @@ fn test_full_nodes_connections() {
     let config = TestConfig {
         num_nodes: 3,
         epoch_validators: BTreeMap::from([(Epoch(1), BTreeSet::from([0, 1]))]),
-        roles: BTreeMap::from([
-            (0, PeerDiscoveryRole::ValidatorNone),
-            (1, PeerDiscoveryRole::ValidatorPublisher),
-            (2, PeerDiscoveryRole::FullNodeClient),
-        ]),
+        roles: BTreeMap::from([(0, false), (1, true), (2, true)]),
         bootstrap_peers: BTreeMap::from([
             (0, BTreeSet::from([1])),
             (1, BTreeSet::from([0])),
@@ -1023,13 +1004,7 @@ fn test_validator_demoted_to_full_node() {
     // Fully connected network
     let config = TestConfig {
         num_nodes: 5,
-        roles: BTreeMap::from([
-            (0, PeerDiscoveryRole::ValidatorPublisher),
-            (1, PeerDiscoveryRole::ValidatorPublisher),
-            (2, PeerDiscoveryRole::ValidatorPublisher),
-            (3, PeerDiscoveryRole::ValidatorNone),
-            (4, PeerDiscoveryRole::ValidatorNone),
-        ]),
+        roles: BTreeMap::from([(0, true), (1, true), (2, true), (3, false), (4, true)]),
         epoch_validators: BTreeMap::from([
             (Epoch(1), BTreeSet::from([0, 1, 2, 3, 4])),
             (Epoch(2), BTreeSet::from([0, 1, 2, 3])),

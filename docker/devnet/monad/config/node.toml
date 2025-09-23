@@ -62,8 +62,9 @@ peers = []
 # secp256k1_pubkey = "..."
 
 [fullnode_raptorcast]
-mode = "None"
-raptor10_fullnode_redundancy_factor = 3
+enable_publisher = false
+enable_client = false
+raptor10_fullnode_redundancy_factor = 3.0
 max_group_size = 10
 round_span = 240
 invite_lookahead = 120

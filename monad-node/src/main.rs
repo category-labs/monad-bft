@@ -52,7 +52,7 @@ use monad_node_config::{
     PeerDiscoveryConfig, SignatureCollectionType, SignatureType,
 };
 use monad_peer_discovery::{
-    discovery::{PeerDiscovery, PeerDiscoveryBuilder, PeerDiscoveryRole},
+    discovery::{PeerDiscovery, PeerDiscoveryBuilder},
     MonadNameRecord, NameRecord,
 };
 use monad_pprof::start_pprof_server;
@@ -678,41 +678,21 @@ where
                 )
             })
             .collect();
-    let mut pinned_full_nodes: BTreeSet<_> = full_nodes
+    let pinned_full_nodes: BTreeSet<_> = full_nodes
         .iter()
         .map(|full_node| NodeId::new(full_node.secp256k1_pubkey))
-        .collect();
-
-    let self_peer_disc_role = match node_config.fullnode_raptorcast.mode {
-        monad_node_config::fullnode_raptorcast::SecondaryRaptorCastModeConfig::None => {
-            match epoch_validators
-                .get(&current_epoch)
-                .and_then(|validators| validators.get(&self_id))
-            {
-                Some(_) => PeerDiscoveryRole::ValidatorNone,
-                None => PeerDiscoveryRole::FullNodeNone,
-            }
-        }
-        monad_node_config::fullnode_raptorcast::SecondaryRaptorCastModeConfig::Client => {
-            PeerDiscoveryRole::FullNodeClient
-        }
-        monad_node_config::fullnode_raptorcast::SecondaryRaptorCastModeConfig::Publisher => {
-            // also pin prioritized full nodes in peer discovery
-            let full_nodes_prioritized: Vec<NodeId<CertificateSignaturePubKey<ST>>> = node_config
+        .chain(
+            node_config
                 .fullnode_raptorcast
                 .full_nodes_prioritized
                 .identities
                 .iter()
-                .map(|id| NodeId::new(id.secp256k1_pubkey))
-                .collect();
-            pinned_full_nodes.extend(full_nodes_prioritized.iter());
-            PeerDiscoveryRole::ValidatorPublisher
-        }
-    };
+                .map(|id| NodeId::new(id.secp256k1_pubkey)),
+        )
+        .collect();
 
     let peer_discovery_builder = PeerDiscoveryBuilder {
         self_id,
-        self_role: self_peer_disc_role,
         self_record,
         current_round,
         current_epoch,
@@ -726,6 +706,8 @@ where
             .last_participation_prune_threshold,
         min_num_peers: peer_discovery_config.min_num_peers,
         max_num_peers: peer_discovery_config.max_num_peers,
+        enable_publisher: node_config.fullnode_raptorcast.enable_publisher,
+        enable_client: node_config.fullnode_raptorcast.enable_client,
         rng: ChaCha8Rng::from_entropy(),
     };
 

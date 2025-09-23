@@ -45,9 +45,7 @@ use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
     ControlPanelEvent, GetFullNodes, GetPeers, Message, MonadEvent, PeerEntry, RouterCommand,
 };
-use monad_node_config::{
-    fullnode_raptorcast::SecondaryRaptorCastModeConfig, FullNodeConfig, FullNodeRaptorCastConfig,
-};
+use monad_node_config::{FullNodeConfig, FullNodeRaptorCastConfig};
 use monad_peer_discovery::{
     driver::{PeerDiscoveryDriver, PeerDiscoveryEmit},
     message::PeerDiscoveryMessage,
@@ -56,7 +54,7 @@ use monad_peer_discovery::{
 };
 use monad_types::{DropTimer, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget};
 use monad_validator::signature_collection::SignatureCollection;
-use raptorcast_secondary::group_message::FullNodesGroupMessage;
+use raptorcast_secondary::{group_message::FullNodesGroupMessage, SecondaryRaptorCastModeConfig};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, debug_span, error, warn};
 use util::{
@@ -127,6 +125,7 @@ where
 {
     pub fn new(
         config: config::RaptorCastConfig<ST>,
+        secondary_mode: SecondaryRaptorCastModeConfig,
         dataplane_reader: DataplaneReader,
         dataplane_writer: DataplaneWriter,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
@@ -140,10 +139,7 @@ where
             );
         }
         let self_id = NodeId::new(config.shared_key.pubkey());
-        let is_dynamic_fullnode = matches!(
-            config.secondary_instance.mode,
-            SecondaryRaptorCastModeConfig::Client
-        );
+        let is_dynamic_fullnode = matches!(secondary_mode, SecondaryRaptorCastModeConfig::Client);
         tracing::debug!(
             ?is_dynamic_fullnode, ?self_id, ?config.mtu, "RaptorCast::new",
         );
@@ -314,7 +310,8 @@ where
         udp_message_max_age_ms: u64::MAX, // No timestamp validation for tests
         primary_instance: Default::default(),
         secondary_instance: FullNodeRaptorCastConfig {
-            mode: SecondaryRaptorCastModeConfig::None,
+            enable_publisher: false,
+            enable_client: false,
             raptor10_fullnode_redundancy_factor: 2f32,
             full_nodes_prioritized: FullNodeConfig { identities: vec![] },
             round_span: Round(10),
@@ -333,6 +330,7 @@ where
     let shared_pd = Arc::new(Mutex::new(pd));
     RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>>::new(
         config,
+        SecondaryRaptorCastModeConfig::None,
         dp_reader,
         dp_writer,
         shared_pd,

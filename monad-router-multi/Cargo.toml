@@ -8,7 +8,6 @@ monad-crypto = { workspace = true }
 monad-dataplane = { workspace = true }
 monad-executor = { workspace = true }
 monad-executor-glue = { workspace = true }
-monad-node-config = { workspace = true }
 monad-peer-discovery = { workspace = true }
 monad-raptorcast = { workspace = true }
 monad-types = { workspace = true }

@@ -30,7 +30,6 @@ use monad_crypto::certificate_signature::{
 use monad_dataplane::{DataplaneBuilder, DataplaneWriter};
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{Message, RouterCommand};
-use monad_node_config::fullnode_raptorcast::SecondaryRaptorCastModeConfig;
 use monad_peer_discovery::{
     driver::PeerDiscoveryDriver, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder,
 };
@@ -40,7 +39,9 @@ use monad_raptorcast::{
         RaptorCastConfigSecondaryClient, RaptorCastConfigSecondaryPublisher,
         SecondaryRaptorCastMode,
     },
-    raptorcast_secondary::{group_message::FullNodesGroupMessage, RaptorCastSecondary},
+    raptorcast_secondary::{
+        group_message::FullNodesGroupMessage, RaptorCastSecondary, SecondaryRaptorCastModeConfig,
+    },
     util::Group,
     RaptorCast, RaptorCastEvent,
 };
@@ -103,8 +104,23 @@ where
             unbounded_channel::<FullNodesGroupMessage<ST>>();
         let (send_group_infos, recv_group_infos) = unbounded_channel::<Group<ST>>();
 
+        // Determine initial secondary raptorcast role
+        let is_current_epoch_validator = epoch_validators
+            .get(&current_epoch)
+            .is_some_and(|set| set.contains(&self_node_id));
+        let secondary_mode =
+            if is_current_epoch_validator && cfg.secondary_instance.enable_publisher {
+                SecondaryRaptorCastModeConfig::Publisher
+            } else if !is_current_epoch_validator && cfg.secondary_instance.enable_client {
+                SecondaryRaptorCastModeConfig::Client
+            } else {
+                SecondaryRaptorCastModeConfig::None
+            };
+
+        // Instantiate secondary raptorcast instance
         let rc_secondary = Self::build_secondary(
             cfg.clone(),
+            secondary_mode,
             dp_writer.clone(),
             shared_pdd.clone(),
             recv_net_messages,
@@ -114,6 +130,7 @@ where
 
         let mut rc_primary = RaptorCast::new(
             cfg.clone(),
+            secondary_mode,
             dp_reader,
             dp_writer.clone(),
             shared_pdd.clone(),
@@ -140,17 +157,13 @@ where
             ?current_epoch,
             "Updating secondary raptorcast role"
         );
-        self.rc_config.secondary_instance.mode = new_role;
 
         // create new channels
         let (send_net_messages, recv_net_messages) =
             unbounded_channel::<FullNodesGroupMessage<ST>>();
         let (send_group_infos, recv_group_infos) = unbounded_channel::<Group<ST>>();
 
-        let is_dynamic = matches!(
-            self.rc_config.secondary_instance.mode,
-            SecondaryRaptorCastModeConfig::Client
-        );
+        let is_dynamic = matches!(new_role, SecondaryRaptorCastModeConfig::Client);
         // we first need to update is_dynamic_full_node before binding the channels
         self.rc_primary.set_is_dynamic_full_node(is_dynamic);
         self.rc_primary
@@ -158,6 +171,7 @@ where
 
         let rc_secondary = Self::build_secondary(
             self.rc_config.clone(),
+            new_role,
             self.dp_writer.clone(),
             self.shared_pdd.clone(),
             recv_net_messages,
@@ -169,13 +183,14 @@ where
 
     fn build_secondary(
         cfg: RaptorCastConfig<ST>,
+        mode: SecondaryRaptorCastModeConfig,
         dp_writer: DataplaneWriter,
         shared_pdd: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
         recv_net_messages: UnboundedReceiver<FullNodesGroupMessage<ST>>,
         send_group_infos: UnboundedSender<Group<ST>>,
         current_epoch: Epoch,
     ) -> Option<RaptorCastSecondary<ST, M, OM, SE, PD>> {
-        let secondary_instance: RaptorCastConfigSecondary<ST> = match cfg.secondary_instance.mode {
+        let secondary_instance: RaptorCastConfigSecondary<ST> = match mode {
             SecondaryRaptorCastModeConfig::None => {
                 debug!("Configured with Secondary RaptorCast instance: None");
                 RaptorCastConfigSecondary::default()
@@ -278,8 +293,19 @@ where
                             .get(&(self.current_epoch + Epoch(1)))
                             .is_some_and(|set| set.contains(&self.self_node_id))
                     {
-                        // validator demoted to full node, update role to be Client
-                        self.update_role(self.current_epoch, SecondaryRaptorCastModeConfig::Client);
+                        if self.rc_config.secondary_instance.enable_client {
+                            // validator demoted to full node, update role to be Client
+                            self.update_role(
+                                self.current_epoch,
+                                SecondaryRaptorCastModeConfig::Client,
+                            );
+                        } else {
+                            // demoted to full node but Client mode not enabled, disable secondary raptorcast
+                            self.update_role(
+                                self.current_epoch,
+                                SecondaryRaptorCastModeConfig::None,
+                            );
+                        }
                     }
 
                     validator_cmds.push(cmd_cpy);
@@ -335,8 +361,13 @@ where
                         if !is_validator_before_epoch_increment
                             && is_validator_after_epoch_increment
                         {
-                            // full node promoted to validator, update role to be Publisher
-                            self.update_role(epoch, SecondaryRaptorCastModeConfig::Publisher);
+                            if self.rc_config.secondary_instance.enable_publisher {
+                                // full node promoted to validator, update role to be Publisher
+                                self.update_role(epoch, SecondaryRaptorCastModeConfig::Publisher);
+                            } else {
+                                // promoted to validator but Publisher mode not enabled, disable secondary raptorcast
+                                self.update_role(epoch, SecondaryRaptorCastModeConfig::None);
+                            }
                         }
 
                         // clean old epoch validators
