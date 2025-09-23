@@ -293,6 +293,7 @@ impl<PT: PubKey> SignatureCollection for BlsSignatureCollection<PT> {
 
         let mut aggpk = BlsAggregatePubKey::infinity();
         let mut signers = Vec::new();
+
         for (bit, (node_id, pubkey)) in self.signers.0.iter().zip(validator_mapping.map.iter()) {
             if *bit {
                 aggpk.add_assign(pubkey).expect("pubkey aggregation");
@@ -300,14 +301,19 @@ impl<PT: PubKey> SignatureCollection for BlsSignatureCollection<PT> {
             }
         }
 
-        // return empty signers for empty signature collection
-        if signers.is_empty() && self.sig == BlsAggregateSignature::infinity() {
+        // infinity signature is invalid unless validator set is empty (signers
+        // bitmap length is zero) and signers are empty
+        if signers.is_empty()
+            && self.signers.0.is_empty()
+            && self.sig == BlsAggregateSignature::infinity()
+        {
             return Ok(signers);
         }
 
         if self.sig.fast_verify::<SD>(msg, &aggpk).is_err() {
             return Err(SignatureCollectionError::InvalidSignaturesVerify);
         }
+
         Ok(signers)
     }
 
@@ -355,6 +361,7 @@ mod test {
     use test_case::test_case;
 
     use super::{merge_nodes, AggregationTree, BlsSignatureCollection, SignerMap};
+    use crate::BlsAggregateSignature;
 
     type SigningDomainType = signing_domain::Vote;
     type SignatureType = NopSignature;
@@ -721,9 +728,10 @@ mod test {
         assert_eq!(tree.nodes, expected);
     }
 
-    #[test_case(5,0; "5 signatures, 0-5 split")]
     #[test_case(5,1; "5 signatures, 1-4 split")]
     #[test_case(5,2; "5 signatures, 2-3 split")]
+    #[test_case(5,3; "5 signatures, 3-2 split")]
+    #[test_case(5,4; "5 signatures, 4-1 split")]
     fn test_merge_node(num_sigs: u32, first: usize) {
         assert!(num_sigs as usize >= first);
         let (keys, voting_keys, _, valmap) = create_keys_w_validators::<
@@ -981,5 +989,26 @@ mod test {
             <SignerMap>::decode(&mut input1),
             Err(alloy_rlp::Error::Custom(_))
         ));
+    }
+
+    #[test]
+    fn test_reject_universal_signature() {
+        let bitvector = BitVec::repeat(false, 5);
+
+        let (_keys, _voting_keys, _, valmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(5, ValidatorSetFactory::default());
+
+        let sigs = SignatureCollectionType {
+            signers: SignerMap(bitvector),
+            sig: BlsAggregateSignature::infinity(),
+            _phantom: Default::default(),
+        };
+
+        assert!(sigs.verify::<SigningDomainType>(&valmap, &[]).is_err());
+        assert!(sigs.verify::<SigningDomainType>(&valmap, &[0x12]).is_err());
+        assert!(sigs.verify::<SigningDomainType>(&valmap, &[0x34]).is_err());
     }
 }
