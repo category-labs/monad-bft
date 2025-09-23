@@ -124,6 +124,7 @@ impl TrafficGen {
             GenMode::Uniswap => 10,
             GenMode::HighCallDataLowGasLimit => 30,
             GenMode::ReserveBalance => 1,
+            GenMode::ReserveBalanceFail(..) => 1,
             GenMode::SystemSpam(..) => 500,
             GenMode::SystemKeyNormal => 500,
             GenMode::SystemKeyNormalRandomPriorityFee => 500,
@@ -150,6 +151,7 @@ impl TrafficGen {
             GenMode::HighCallDataLowGasLimit => 3,
             GenMode::Uniswap => 20,
             GenMode::ReserveBalance => 100,
+            GenMode::ReserveBalanceFail(..) => 100,
             GenMode::SystemSpam(..) => 1,
             GenMode::SystemKeyNormal => 1,
             GenMode::SystemKeyNormalRandomPriorityFee => 1,
@@ -176,6 +178,7 @@ impl TrafficGen {
             GenMode::ECMul => 100,
             GenMode::Uniswap => 200,
             GenMode::ReserveBalance => 2500,
+            GenMode::ReserveBalanceFail(..) => 2500,
             GenMode::SystemSpam(..) => 1,
             GenMode::SystemKeyNormal => 1,
             GenMode::SystemKeyNormalRandomPriorityFee => 1,
@@ -206,6 +209,7 @@ impl TrafficGen {
             GenMode::ECMul => ECMUL,
             GenMode::Uniswap => Uniswap,
             GenMode::ReserveBalance => None,
+            GenMode::ReserveBalanceFail(..) => None,
             GenMode::SystemSpam(..) => None,
             GenMode::SystemKeyNormal => None,
             GenMode::SystemKeyNormalRandomPriorityFee => None,
@@ -390,6 +394,7 @@ pub enum GenMode {
     #[serde(rename = "uniswap")]
     Uniswap,
     ReserveBalance,
+    ReserveBalanceFail(ReserveBalanceFailConfig),
     SystemSpam(SystemSpamConfig),
     SystemKeyNormal,
     SystemKeyNormalRandomPriorityFee,
@@ -449,6 +454,19 @@ impl Default for EIP7702CreateConfig {
         Self {
             authorizations_per_tx: DEFAULT_AUTHORIZATIONS_PER_TX,
         }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ReserveBalanceFailConfig {
+    /// Number of failing transactions to generate per account
+    pub num_fail_txs: usize,
+}
+
+impl Default for ReserveBalanceFailConfig {
+    fn default() -> Self {
+        Self { num_fail_txs: 5 }
     }
 }
 
