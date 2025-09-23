@@ -18,7 +18,7 @@ ExecStart=/usr/local/bin/monad-node \
     --otel-endpoint "http://0.0.0.0:4317" \
     --statesync-sq-thread-cpu 1 \
     --record-metrics-interval-seconds 1 \
-    --validators-path /home/monad/monad-bft/config/validators.toml \
+    --validators-path /home/monad/monad-bft/config/validators/validators.toml \
     --keystore-password "${KEYSTORE_PASSWORD}"
 EnvironmentFile=-/home/monad/.env
 Environment="RUST_LOG=debug,h2=warn,tower=warn,opentelemetry_sdk=warn,opentelemetry-otlp=warn"
