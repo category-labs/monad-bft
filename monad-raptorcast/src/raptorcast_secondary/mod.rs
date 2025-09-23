@@ -54,9 +54,14 @@ use super::{
     RaptorCastEvent,
 };
 
-// We're planning to merge monad-node (validator binary) and monad-full-node
-// (full node binary), so it's possible for a node to switch between roles at
-// runtime.
+#[derive(Debug, Clone, Copy)]
+pub enum SecondaryRaptorCastModeConfig {
+    Client,
+    Publisher,
+    None, // Disables secondary raptorcast
+}
+
+// It's possible to switch role during runtime
 enum Role<ST>
 where
     ST: CertificateSignatureRecoverable,

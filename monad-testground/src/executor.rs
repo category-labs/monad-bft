@@ -38,7 +38,9 @@ use monad_peer_discovery::{
     driver::PeerDiscoveryDriver,
     mock::{NopDiscovery, NopDiscoveryBuilder},
 };
-use monad_raptorcast::{config::RaptorCastConfig, RaptorCast};
+use monad_raptorcast::{
+    config::RaptorCastConfig, raptorcast_secondary::SecondaryRaptorCastModeConfig, RaptorCast,
+};
 use monad_state::{Forkpoint, MonadMessage, MonadState, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::InMemoryState;
 use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, SeqNum};
@@ -163,6 +165,7 @@ where
                     NopDiscovery<ST>,
                 >::new(
                     cfg,
+                    SecondaryRaptorCastModeConfig::None,
                     dp_reader,
                     dp_writer,
                     shared_peer_discovery_driver,
