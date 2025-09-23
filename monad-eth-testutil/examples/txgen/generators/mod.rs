@@ -24,6 +24,7 @@ use high_call_data::HighCallDataTxGenerator;
 use many_to_many::ManyToManyGenerator;
 use non_deterministic_storage::NonDeterministicStorageTxGenerator;
 use reserve_balance::ReserveBalanceGenerator;
+use reserve_balance_fail::ReserveBalanceFailGenerator;
 use self_destruct::SelfDestructTxGenerator;
 use storage_deletes::StorageDeletesTxGenerator;
 use system_key_normal::SystemKeyNormalTxGenerator;
@@ -45,6 +46,7 @@ mod high_call_data;
 mod many_to_many;
 mod non_deterministic_storage;
 mod reserve_balance;
+mod reserve_balance_fail;
 mod self_destruct;
 mod storage_deletes;
 mod system_key_normal;
@@ -116,6 +118,10 @@ pub fn make_generator(
         GenMode::ReserveBalance => Box::new(ReserveBalanceGenerator {
             recipient_keys,
             num_drain_txs: 2,
+        }),
+        GenMode::ReserveBalanceFail(config) => Box::new(ReserveBalanceFailGenerator {
+            recipient_keys,
+            num_fail_txs: config.num_fail_txs,
         }),
         GenMode::SystemSpam(config) => Box::new(SystemTransactionSpamGenerator {
             recipient_keys,
