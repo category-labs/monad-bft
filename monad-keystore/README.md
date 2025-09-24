@@ -5,7 +5,7 @@ The keystore CLI tool can be used to generate keystore json files for the BLS ke
 ### Getting Started
 
 ```sh
-cargo run --release -- --mode [create|recover] --key-type [bls|secp] --keystore-path <path_to_output_file>
+cargo run --release --bin monad-keystore -- [create|recover|import] --keystore-path <path> --password <password> --key-type [bls|secp]
 ```
 
 ### Disclaimer
