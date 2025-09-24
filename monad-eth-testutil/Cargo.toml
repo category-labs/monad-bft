@@ -41,6 +41,7 @@ alloy-transport = { workspace = true }
 alloy-transport-http = { workspace = true, features = ["reqwest-rustls-tls"] }
 async-channel = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
+chrono = { workspace = true }
 dashmap = { workspace = true }
 eyre = { workspace = true }
 futures = { workspace = true }

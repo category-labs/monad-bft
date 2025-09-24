@@ -26,6 +26,7 @@ pub mod cli;
 pub mod config;
 pub mod generators;
 pub mod prelude;
+pub mod report;
 pub mod run;
 pub mod shared;
 pub mod workers;

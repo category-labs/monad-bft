@@ -92,6 +92,9 @@ pub struct Config {
 
     /// Override for native contract address
     pub native_contract: Option<String>,
+
+    /// Report directory
+    pub report_dir: Option<String>,
 }
 
 impl Default for Config {
@@ -125,6 +128,7 @@ impl Default for Config {
             random_priority_fee_range: None,
             erc20_contract: None,
             native_contract: None,
+            report_dir: Some("reports".to_string()),
         }
     }
 }
