@@ -254,12 +254,24 @@ async fn main() -> std::io::Result<()> {
         }
     };
 
+    let low_pool_config = monad_ethcall::PoolConfig {
+        num_threads: args.eth_call_executor_threads,
+        num_fibers: args.eth_call_executor_fibers,
+        timeout_sec: args.eth_call_executor_queuing_timeout,
+        queue_limit: args.eth_call_max_concurrent_requests,
+    };
+    let high_pool_config = monad_ethcall::PoolConfig {
+        num_threads: args.eth_call_high_executor_threads,
+        num_fibers: args.eth_call_high_executor_fibers,
+        timeout_sec: args.eth_call_high_executor_queuing_timeout,
+        queue_limit: args.eth_call_high_max_concurrent_requests,
+    };
+
     let eth_call_executor = args.triedb_path.clone().as_deref().map(|path| {
         Arc::new(tokio::sync::Mutex::new(EthCallExecutor::new(
-            args.eth_call_executor_threads,
-            args.eth_call_executor_fibers,
+            low_pool_config,
+            high_pool_config,
             args.eth_call_executor_node_lru_max_mem,
-            args.eth_call_executor_queuing_timeout,
             path,
         )))
     });
