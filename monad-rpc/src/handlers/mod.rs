@@ -791,7 +791,28 @@ async fn web3_clientVersion(
 }
 
 macro_rules! enabled_methods {
-    ($($(#[$attr:meta])* $method:ident),* $(,)?) => {
+    (
+        groups: [ $($group:ident),* $(,)? ];
+        methods: $( $(#[$attr:meta])* $method:ident $( [ $($method_group:ident),* $(,)? ] )? ),* $(,)?
+    ) => {
+        #[derive(Debug, Clone, Copy, clap::ValueEnum)]
+        #[allow(non_camel_case_types)]
+        pub enum MethodGroup { $($group),* }
+
+        #[allow(non_snake_case)]
+        mod __method_gate {
+            use super::MethodGroup;
+            use std::sync::atomic::{AtomicU8, Ordering};
+
+            // Bitmask of enabled method groups
+            pub static ENABLED: AtomicU8 = AtomicU8::new(0);
+
+            #[inline] pub const fn bit(g: MethodGroup) -> u8 { 1u8 << (g as u8) }
+            #[inline] pub fn enable(g: MethodGroup) { ENABLED.fetch_or(bit(g), Ordering::Relaxed); }
+            #[inline] pub fn enabled_mask() -> u8 { ENABLED.load(Ordering::Relaxed) }
+        }
+
+        #[inline] pub fn enable_group(g: MethodGroup) { __method_gate::enable(g) }
 
         #[derive(Debug, Clone, Copy)]
         #[allow(non_camel_case_types)]
@@ -805,13 +826,18 @@ macro_rules! enabled_methods {
         impl TryFrom<&str> for EnabledMethod {
             type Error = JsonRpcError;
 
+            #[inline]
             fn try_from(method: &str) -> Result<Self, Self::Error> {
-                match method {
+                let m = match method {
                     $(
-                        stringify!($method) => Ok(EnabledMethod::$method),
+                        stringify!($method) => EnabledMethod::$method,
                     )*
-                    _ => Err(JsonRpcError::method_not_found()),
+                    _ => return Err(JsonRpcError::method_not_found()),
+                };
+                if !m.allowed() {
+                    return Err(JsonRpcError::method_not_found());
                 }
+                Ok(m)
             }
         }
 
@@ -824,12 +850,34 @@ macro_rules! enabled_methods {
                 }
             }
 
+            #[inline]
+            fn mask(&self) -> u8 {
+                match self {
+                    $(
+                        EnabledMethod::$method => {
+                            // Return 0 for always allowed or check group bit if method has a group
+                            0u8 $( $( | __method_gate::bit(MethodGroup::$method_group) )* )?
+                        }
+                    ),*
+                }
+            }
+
+            #[inline]
+            fn allowed(&self) -> bool {
+                let m = self.mask();
+                m == 0 || (__method_gate::enabled_mask() & m) != 0
+            }
+
+            #[inline]
             async fn call(
                 &self,
                 request_id: RequestId,
                 app_state: &MonadRpcResources,
                 params: Value,
             ) -> Result<Box<RawValue>, JsonRpcError> {
+                if !self.allowed() {
+                    return Err(JsonRpcError::method_not_found());
+                }
                 match self {
                     $(
                         EnabledMethod::$method => $method(request_id, app_state, params).await,
@@ -841,42 +889,45 @@ macro_rules! enabled_methods {
 }
 
 enabled_methods!(
-    admin_ethCallStatistics,
-    debug_getRawBlock,
-    debug_getRawHeader,
-    debug_getRawReceipts,
-    debug_getRawTransaction,
-    debug_traceBlockByHash,
-    debug_traceBlockByNumber,
-    debug_traceCall,
-    debug_traceTransaction,
-    eth_call,
-    eth_sendRawTransaction,
-    eth_getLogs,
-    eth_getTransactionByHash,
-    eth_getBlockByHash,
-    eth_getBlockByNumber,
-    eth_getTransactionByBlockHashAndIndex,
-    eth_getTransactionByBlockNumberAndIndex,
-    eth_getBlockTransactionCountByHash,
-    eth_getBlockTransactionCountByNumber,
-    eth_getBalance,
-    eth_getCode,
-    eth_getStorageAt,
-    eth_getTransactionCount,
-    eth_blockNumber,
-    eth_chainId,
-    eth_syncing,
-    eth_estimateGas,
-    eth_gasPrice,
-    eth_maxPriorityFeePerGas,
-    eth_feeHistory,
-    eth_getTransactionReceipt,
-    eth_getBlockReceipts,
-    net_version,
-    txpool_statusByHash,
-    txpool_statusByAddress,
-    web3_clientVersion
+    groups: [admin, debug];
+
+    methods:
+        admin_ethCallStatistics [admin],
+        debug_getRawBlock         [debug],
+        debug_getRawHeader        [debug],
+        debug_getRawReceipts      [debug],
+        debug_getRawTransaction   [debug],
+        debug_traceBlockByHash    [debug],
+        debug_traceBlockByNumber  [debug],
+        debug_traceCall           [debug],
+        debug_traceTransaction    [debug],
+        eth_call,
+        eth_sendRawTransaction,
+        eth_getLogs,
+        eth_getTransactionByHash,
+        eth_getBlockByHash,
+        eth_getBlockByNumber,
+        eth_getTransactionByBlockHashAndIndex,
+        eth_getTransactionByBlockNumberAndIndex,
+        eth_getBlockTransactionCountByHash,
+        eth_getBlockTransactionCountByNumber,
+        eth_getBalance,
+        eth_getCode,
+        eth_getStorageAt,
+        eth_getTransactionCount,
+        eth_blockNumber,
+        eth_chainId,
+        eth_syncing,
+        eth_estimateGas,
+        eth_gasPrice,
+        eth_maxPriorityFeePerGas,
+        eth_feeHistory,
+        eth_getTransactionReceipt,
+        eth_getBlockReceipts,
+        net_version,
+        txpool_statusByHash,
+        txpool_statusByAddress,
+        web3_clientVersion
 );
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -895,4 +946,12 @@ pub async fn rpc_select(
         .call(request_id, app_state, params)
         .instrument(span)
         .await
+}
+
+#[test]
+fn test_enable_debug() {
+    assert!(EnabledMethod::try_from("debug_getRawBlock").is_err());
+    enable_group(MethodGroup::debug);
+    let method = EnabledMethod::try_from("debug_getRawBlock").unwrap();
+    assert!(method.allowed());
 }
