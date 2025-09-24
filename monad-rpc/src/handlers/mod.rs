@@ -51,12 +51,10 @@ use self::{
     resources::MonadRpcResources,
 };
 use crate::{
-    eth_json_types::serialize_result,
-    jsonrpc::{JsonRpcError, JsonRpcResultExt, Request, RequestWrapper, Response, ResponseWrapper},
-    timing::RequestId,
-    vpool::{monad_txpool_statusByAddress, monad_txpool_statusByHash},
+    eth_json_types::serialize_result, handlers::trace::monad_trace_block, jsonrpc::{JsonRpcError, JsonRpcResultExt, Request, RequestWrapper, Response, ResponseWrapper}, timing::RequestId, vpool::{monad_txpool_statusByAddress, monad_txpool_statusByHash}
 };
 
+mod trace;
 mod debug;
 pub mod eth;
 mod meta;
@@ -757,6 +755,18 @@ async fn net_version(
     monad_net_version(app_state.chain_id).map(serialize_result)?
 }
 
+async fn trace_block(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Box<RawValue>, JsonRpcError> {
+    let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+    let params = serde_json::from_value(params).invalid_params()?;
+    monad_trace_block(triedb_env, &app_state.archive_reader, params)
+        .await
+        .map(serialize_result)?
+}
+
 #[allow(non_snake_case)]
 async fn txpool_statusByHash(
     _: RequestId,
@@ -874,6 +884,7 @@ enabled_methods!(
     eth_getTransactionReceipt,
     eth_getBlockReceipts,
     net_version,
+    trace_block,
     txpool_statusByHash,
     txpool_statusByAddress,
     web3_clientVersion

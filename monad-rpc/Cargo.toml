@@ -47,7 +47,7 @@ alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
-alloy-rpc-types = { workspace = true, features = ["eth"] }
+alloy-rpc-types = { workspace = true, features = ["eth", "trace"] }
 bytes = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 dashmap = { workspace = true }

@@ -268,30 +268,30 @@ pub struct MonadDebugTraceTransactionParams {
     tracer: TracerObject,
 }
 
-#[derive(Serialize, Debug, schemars::JsonSchema)]
+#[derive(Clone, Serialize, Debug, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MonadCallFrame {
     #[serde(rename = "type")]
-    typ: CallKind,
-    from: EthAddress,
-    to: Option<EthAddress>,
+    pub typ: CallKind,
+    pub from: EthAddress,
+    pub to: Option<EthAddress>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    value: Option<MonadU256>,
-    gas: Quantity,
-    gas_used: Quantity,
-    input: UnformattedData,
+    pub value: Option<MonadU256>,
+    pub gas: Quantity,
+    pub gas_used: Quantity, 
+    pub input: UnformattedData,
     #[serde(skip_serializing_if = "UnformattedData::is_empty")]
-    output: UnformattedData,
+    pub output: UnformattedData,
     #[serde(skip)]
-    depth: usize,
+    pub depth: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
+    pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    revert_reason: Option<String>,
+    pub revert_reason: Option<String>,
     // FIXME why Rc<RefCell<_>> ?
     #[serde(skip_serializing_if = "Vec::is_empty")]
     #[schemars(skip)] // TODO: handle recursive generation in jsonrpc schema
-    calls: Vec<std::rc::Rc<std::cell::RefCell<MonadCallFrame>>>,
+    pub calls: Vec<std::rc::Rc<std::cell::RefCell<MonadCallFrame>>>,
 }
 
 impl From<CallFrame> for MonadCallFrame {
@@ -423,8 +423,8 @@ pub struct MonadDebugTraceBlockByNumberParams {
 #[derive(Serialize, Debug, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MonadDebugTraceBlockResult {
-    tx_hash: EthHash,
-    result: MonadCallFrame,
+    pub tx_hash: EthHash,
+    pub result: MonadCallFrame,
 }
 
 #[rpc(method = "debug_traceBlockByNumber")]
@@ -520,7 +520,7 @@ pub async fn monad_debug_traceTransaction<T: Triedb>(
     Ok(None)
 }
 
-async fn get_call_frames_from_triedb<T: Triedb>(
+pub async fn get_call_frames_from_triedb<T: Triedb>(
     triedb_env: &T,
     block_key: BlockKey,
     tracer: &TracerObject,
