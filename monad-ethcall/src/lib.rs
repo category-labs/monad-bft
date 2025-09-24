@@ -40,6 +40,8 @@ pub mod bindings {
     include!(concat!(env!("OUT_DIR"), "/ethcall.rs"));
 }
 
+pub use bindings::monad_eth_call_pool_config as PoolConfig;
+
 #[derive(Debug)]
 pub struct EthCallExecutor {
     eth_call_executor: *mut bindings::monad_eth_call_executor,
@@ -50,23 +52,19 @@ unsafe impl Sync for EthCallExecutor {}
 
 impl EthCallExecutor {
     pub fn new(
-        num_threads: u32,
-        num_fibers: u32,
+        low_pool_config: PoolConfig,
+        high_pool_config: PoolConfig,
         node_lru_size: u32,
-        high_pool_timeout_sec: u32,
         triedb_path: &Path,
     ) -> Self {
         let dbpath = CString::new(triedb_path.to_str().expect("invalid path"))
             .expect("failed to create CString");
 
-        const LOW_POOL_TIMEOUT_SEC: u32 = 2;
         let eth_call_executor = unsafe {
             bindings::monad_eth_call_executor_create(
-                num_threads,
-                num_fibers,
+                low_pool_config,
+                high_pool_config,
                 node_lru_size,
-                LOW_POOL_TIMEOUT_SEC,
-                high_pool_timeout_sec,
                 dbpath.as_c_str().as_ptr(),
             )
         };

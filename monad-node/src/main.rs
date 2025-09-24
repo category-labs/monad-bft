@@ -465,7 +465,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
         .map(|provider| provider.meter("opentelemetry"));
 
     let mut gauge_cache = HashMap::new();
-    let mut process_start = Instant::now();
+    let process_start = Instant::now();
     let mut total_state_update_elapsed = Duration::ZERO;
 
     let mut sigterm = signal(SignalKind::terminate()).expect("in tokio rt");
