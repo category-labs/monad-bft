@@ -153,14 +153,14 @@ mod tests {
         let mut idxs = Vec::with_capacity(100);
         let mut gen = SeededKeyPoolCached::new(11, 1);
 
-        for i in 0..12 {
+        for _ in 0..12 {
             idxs.push(gen.next_idx());
         }
 
         assert_eq!(idxs, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0]);
 
         idxs.clear();
-        for i in 0..12 {
+        for _ in 0..12 {
             idxs.push(gen.next_idx());
         }
 
