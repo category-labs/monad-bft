@@ -18,6 +18,20 @@ use url::Url;
 
 use crate::prelude::*;
 
+fn parse_priority_fee_range(range_str: &str) -> Option<(u64, u64)> {
+    let parts: Vec<&str> = range_str.split(',').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+    let min = parts[0].parse().ok()?;
+    let max = parts[1].parse().ok()?;
+    if min <= max {
+        Some((min, max))
+    } else {
+        None
+    }
+}
+
 #[derive(Debug, Parser, Clone)]
 #[command(name = "monad-node", about, long_about = None)]
 pub struct CliConfig {
@@ -132,6 +146,26 @@ pub struct CliConfig {
     /// Otel replica name
     #[arg(long, global = true)]
     pub otel_replica_name: Option<String>,
+
+    /// Gas limit for contract deployment transactions
+    #[arg(long, global = true)]
+    pub gas_limit_contract_deployment: Option<u64>,
+
+    /// Gas limit for contract call transactions (native and ERC20)
+    #[arg(long, global = true)]
+    pub set_tx_gas_limit: Option<u64>,
+
+    /// Static priority fee for transactions (native and ERC20)
+    #[arg(long, global = true)]
+    pub priority_fee: Option<u64>,
+
+    /// Range for random priority fee (format: min,max in wei)
+    #[arg(long, global = true)]
+    pub random_priority_fee_range: Option<String>,
+
+    /// Override for native contract address
+    #[arg(long, global = true)]
+    pub native_contract: Option<String>,
 }
 
 pub enum RequiredContract {
@@ -153,7 +187,10 @@ pub enum CliGenMode {
         tx_type: TxType,
     },
     Duplicates,
-    RandomPriorityFee,
+    RandomPriorityFee {
+        #[clap(long, default_value = "native")]
+        tx_type: TxType,
+    },
     HighCallData,
     HighCallDataLowGasLimit,
     SelfDestructs,
@@ -177,7 +214,9 @@ impl From<CliGenMode> for GenMode {
             CliGenMode::FewToMany { tx_type } => GenMode::FewToMany(FewToManyConfig { tx_type }),
             CliGenMode::ManyToMany { tx_type } => GenMode::ManyToMany(ManyToManyConfig { tx_type }),
             CliGenMode::Duplicates => GenMode::Duplicates,
-            CliGenMode::RandomPriorityFee => GenMode::RandomPriorityFee,
+            CliGenMode::RandomPriorityFee { tx_type } => {
+                GenMode::RandomPriorityFee(RandomPriorityFeeConfig { tx_type })
+            }
             CliGenMode::HighCallData => GenMode::HighCallData,
             CliGenMode::HighCallDataLowGasLimit => GenMode::HighCallDataLowGasLimit,
             CliGenMode::SelfDestructs => GenMode::SelfDestructs,
@@ -252,6 +291,26 @@ impl From<CliConfig> for Config {
         }
         if let Some(otel_replica_name) = value.otel_replica_name {
             config.otel_replica_name = otel_replica_name;
+        }
+        if let Some(gas_limit) = value.gas_limit_contract_deployment {
+            config.gas_limit_contract_deployment = Some(gas_limit);
+        }
+        if let Some(gas_limit) = value.set_tx_gas_limit {
+            config.set_tx_gas_limit = Some(gas_limit);
+        }
+        if let Some(priority_fee) = value.priority_fee {
+            config.priority_fee = Some(priority_fee);
+        }
+        if let Some(range_str) = value.random_priority_fee_range {
+            if let Some((min, max)) = parse_priority_fee_range(&range_str) {
+                config.random_priority_fee_range = Some((min, max));
+            }
+        }
+        if let Some(erc20_contract) = value.erc20_contract {
+            config.erc20_contract = Some(erc20_contract);
+        }
+        if let Some(native_contract) = value.native_contract {
+            config.native_contract = Some(native_contract);
         }
         config
     }

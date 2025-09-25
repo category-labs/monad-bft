@@ -38,8 +38,9 @@ impl Generator for ReserveBalanceGenerator {
                 };
 
                 let max_fee_per_gas = ctx.base_fee * 2;
+                let gas_limit = ctx.set_tx_gas_limit.unwrap_or(21_000);
 
-                let total_gas_cost = (num_txs.checked_mul(21_000).unwrap() as u128)
+                let total_gas_cost = (num_txs.checked_mul(gas_limit as usize).unwrap() as u128)
                     .checked_mul(max_fee_per_gas)
                     .unwrap();
 
@@ -57,9 +58,9 @@ impl Generator for ReserveBalanceGenerator {
                         let tx = TxEip1559 {
                             chain_id: ctx.chain_id,
                             nonce: sender.nonce,
-                            gas_limit: 21_000,
+                            gas_limit,
                             max_fee_per_gas,
-                            max_priority_fee_per_gas: 0,
+                            max_priority_fee_per_gas: ctx.priority_fee.unwrap_or(0) as u128,
                             to: TxKind::Call(to),
                             value: drain_per_tx,
                             access_list: Default::default(),
@@ -68,7 +69,9 @@ impl Generator for ReserveBalanceGenerator {
 
                         let new_native_bal = sender
                             .native_bal
-                            .checked_sub(drain_per_tx + U256::from(21_000 * max_fee_per_gas))
+                            .checked_sub(
+                                drain_per_tx + U256::from(gas_limit as u128 * max_fee_per_gas),
+                            )
                             .unwrap();
 
                         sender.nonce += 1;

@@ -32,7 +32,7 @@ impl Generator for ReserveBalanceFailGenerator {
             .iter_mut()
             .flat_map(|sender| {
                 let max_fee_per_gas = ctx.base_fee * 2;
-                let gas_limit = 50_000;
+                let gas_limit = ctx.set_tx_gas_limit.unwrap_or(50_000); // 50k default, override with --set-tx-gas-limit
 
                 if sender.native_bal > U256::from(5_000_000_000_000_000_u64) {
                     warn!(
@@ -49,7 +49,7 @@ impl Generator for ReserveBalanceFailGenerator {
                             nonce: sender.nonce,
                             gas_limit,
                             max_fee_per_gas,
-                            max_priority_fee_per_gas: 0,
+                            max_priority_fee_per_gas: ctx.priority_fee.unwrap_or(0) as u128, // 0 default, override with --priority-fee
                             to: TxKind::Call(to),
                             value: U256::from(1000),
                             access_list: Default::default(),
