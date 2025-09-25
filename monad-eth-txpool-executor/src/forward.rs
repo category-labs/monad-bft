@@ -22,16 +22,18 @@ use std::{
 
 use alloy_consensus::TxEnvelope;
 use bytes::Bytes;
-use monad_chain_config::{revision::ChainRevision, ChainConfig};
+use monad_chain_config::{
+    execution_revision::ExecutionChainParams, revision::ChainRevision, ChainConfig,
+};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_txpool::EthTxPool;
+use monad_eth_txpool::{max_eip2718_encoded_length, EthTxPool};
 use monad_eth_types::ExtractEthAddress;
 use monad_state_backend::StateBackend;
 use monad_validator::signature_collection::SignatureCollection;
 use pin_project::pin_project;
-use tracing::debug;
+use tracing::{debug, error};
 
 const EGRESS_MIN_COMMITTED_SEQ_NUM_DIFF: u64 = 5;
 const EGRESS_MAX_RETRIES: usize = 3;
@@ -39,7 +41,10 @@ const EGRESS_MAX_RETRIES: usize = 3;
 const INGRESS_CHUNK_MAX_SIZE: usize = 128;
 const INGRESS_CHUNK_INTERVAL_MS: u64 = 8;
 const INGRESS_MAX_SIZE: usize = 8 * 1024;
-const EGRESS_MAX_SIZE_BYTES: usize = 256 * 1024;
+
+pub fn egress_max_size_bytes(execution_params: &ExecutionChainParams) -> usize {
+    max_eip2718_encoded_length(execution_params)
+}
 
 #[pin_project(project = EthTxPoolForwardingManagerProjected)]
 pub struct EthTxPoolForwardingManager {
@@ -52,8 +57,8 @@ pub struct EthTxPoolForwardingManager {
     egress_waker: Option<Waker>,
 }
 
-impl EthTxPoolForwardingManager {
-    pub fn new() -> Self {
+impl Default for EthTxPoolForwardingManager {
+    fn default() -> Self {
         let mut ingress_timer =
             tokio::time::interval(Duration::from_millis(INGRESS_CHUNK_INTERVAL_MS));
 
@@ -68,7 +73,9 @@ impl EthTxPoolForwardingManager {
             egress_waker: None,
         }
     }
+}
 
+impl EthTxPoolForwardingManager {
     pub fn poll_ingress(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Vec<TxEnvelope>> {
         let EthTxPoolForwardingManagerProjected {
             ingress,
@@ -96,33 +103,61 @@ impl EthTxPoolForwardingManager {
         )
     }
 
-    pub fn poll_egress(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Vec<Bytes>> {
+    pub fn poll_egress(
+        self: Pin<&mut Self>,
+        execution_params: &ExecutionChainParams,
+        cx: &mut Context<'_>,
+    ) -> Poll<Vec<Bytes>> {
         let EthTxPoolForwardingManagerProjected {
             egress,
             egress_waker,
             ..
         } = self.project();
 
-        if egress.is_empty() {
-            match egress_waker.as_mut() {
-                Some(waker) => waker.clone_from(cx.waker()),
-                None => *egress_waker = Some(cx.waker().clone()),
+        loop {
+            if egress.is_empty() {
+                match egress_waker.as_mut() {
+                    Some(waker) => waker.clone_from(cx.waker()),
+                    None => *egress_waker = Some(cx.waker().clone()),
+                }
+
+                return Poll::Pending;
             }
-            return Poll::Pending;
-        }
 
-        let mut total_size = 0;
-        let mut drain_count = 0;
+            let egress_max_size_bytes = egress_max_size_bytes(execution_params);
 
-        for (i, tx) in egress.iter().enumerate() {
-            let tx_size = tx.len();
-            if total_size + tx_size > EGRESS_MAX_SIZE_BYTES && i > 0 {
+            let mut txs = Vec::default();
+            let mut total_bytes = 0;
+
+            while let Some(tx) = egress.front() {
+                let new_total_bytes = total_bytes + tx.len();
+
+                if new_total_bytes <= egress_max_size_bytes {
+                    txs.push(egress.pop_front().unwrap());
+                    total_bytes = new_total_bytes;
+                    continue;
+                }
+
+                if tx.len() > egress_max_size_bytes {
+                    error!("txpool forwarding manager detected tx larger than max tx byte size, skipping forwarding");
+                    egress.pop_front();
+                    continue;
+                }
+
                 break;
             }
-            total_size += tx_size;
-            drain_count = i + 1;
+
+            if txs.is_empty() {
+                let tx = egress.pop_front();
+                error!(
+                    ?tx,
+                    "txpool forwarding manager detected empty forward, dropping next tx"
+                );
+                continue;
+            }
+
+            return Poll::Ready(txs);
         }
-        Poll::Ready(egress.drain(..drain_count).collect())
     }
 
     pub fn complete_ingress(self: Pin<&mut Self>) {
@@ -209,17 +244,20 @@ mod test {
         time::Duration,
     };
 
-    use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
+    use alloy_consensus::{Transaction, TxEnvelope};
     use alloy_primitives::{hex, B256};
     use bytes::Bytes;
     use futures::task::noop_waker_ref;
     use itertools::Itertools;
-    use monad_eth_testutil::{make_legacy_tx, recover_tx};
+    use monad_chain_config::execution_revision::MonadExecutionRevision;
+    use monad_eth_testutil::{make_eip1559_tx, make_eip7702_tx, make_legacy_tx};
 
     use crate::forward::{
-        EthTxPoolForwardingManager, EGRESS_MAX_SIZE_BYTES, INGRESS_CHUNK_INTERVAL_MS,
+        egress_max_size_bytes, EthTxPoolForwardingManager, INGRESS_CHUNK_INTERVAL_MS,
         INGRESS_CHUNK_MAX_SIZE,
     };
+
+    const EXECUTION_REVISION: MonadExecutionRevision = MonadExecutionRevision::LATEST;
 
     // pubkey starts with AAA
     const S1: B256 = B256::new(hex!(
@@ -229,17 +267,13 @@ mod test {
 
     fn setup<'a>() -> (EthTxPoolForwardingManager, Context<'a>) {
         (
-            EthTxPoolForwardingManager::new(),
+            EthTxPoolForwardingManager::default(),
             Context::from_waker(noop_waker_ref()),
         )
     }
 
     fn generate_tx(nonce: u64) -> TxEnvelope {
         make_legacy_tx(S1, BASE_FEE_PER_GAS, 100_000, nonce, 0)
-    }
-
-    fn generate_recovered_tx(nonce: u64) -> Recovered<TxEnvelope> {
-        recover_tx(generate_tx(nonce))
     }
 
     async fn assert_pending_now_and_forever(
@@ -251,7 +285,9 @@ mod test {
             Poll::Pending
         );
         assert_eq!(
-            forwarding_manager.as_mut().poll_egress(&mut cx),
+            forwarding_manager
+                .as_mut()
+                .poll_egress(EXECUTION_REVISION.execution_chain_params(), &mut cx),
             Poll::Pending
         );
 
@@ -262,7 +298,9 @@ mod test {
             Poll::Pending
         );
         assert_eq!(
-            forwarding_manager.as_mut().poll_egress(&mut cx),
+            forwarding_manager
+                .as_mut()
+                .poll_egress(EXECUTION_REVISION.execution_chain_params(), &mut cx),
             Poll::Pending
         );
     }
@@ -467,7 +505,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_egress_256kb_limit() {
+    async fn test_egress_limit() {
         let (forwarding_manager, mut cx) = setup();
         let mut forwarding_manager = pin!(forwarding_manager);
 
@@ -477,44 +515,131 @@ mod test {
 
         let mut nonce = 0u64;
         while total_size < target_size {
-            let tx = generate_recovered_tx(nonce);
-            let encoded = alloy_rlp::encode(&tx);
-            let tx_bytes: Bytes = encoded.into();
-            total_size += tx_bytes.len();
-            egress_txs.push(tx_bytes);
+            let tx = generate_tx(nonce);
+            total_size += tx.eip2718_encoded_length();
+            egress_txs.push(tx);
             nonce += 1;
         }
 
-        let actual_total_size = egress_txs.iter().map(|b| b.len()).sum::<usize>();
+        let actual_total_size = egress_txs
+            .iter()
+            .map(|b| b.eip2718_encoded_length())
+            .sum::<usize>();
         assert!(actual_total_size >= target_size);
 
         forwarding_manager
             .as_mut()
             .project()
-            .egress
-            .extend(egress_txs.clone());
+            .add_egress_txs(egress_txs.iter());
 
-        let Poll::Ready(first_batch) = forwarding_manager.as_mut().poll_egress(&mut cx) else {
+        let Poll::Ready(first_batch) = forwarding_manager
+            .as_mut()
+            .poll_egress(EXECUTION_REVISION.execution_chain_params(), &mut cx)
+        else {
             panic!("first poll should be ready");
         };
 
         let first_batch_size: usize = first_batch.iter().map(|b| b.len()).sum();
-        assert!(first_batch_size <= EGRESS_MAX_SIZE_BYTES,);
+        assert!(
+            first_batch_size <= egress_max_size_bytes(EXECUTION_REVISION.execution_chain_params())
+        );
         assert!(!first_batch.is_empty());
 
-        let Poll::Ready(second_batch) = forwarding_manager.as_mut().poll_egress(&mut cx) else {
+        let Poll::Ready(second_batch) = forwarding_manager
+            .as_mut()
+            .poll_egress(EXECUTION_REVISION.execution_chain_params(), &mut cx)
+        else {
             panic!("second poll should be ready");
         };
 
         let second_batch_size: usize = second_batch.iter().map(|b| b.len()).sum();
         assert!(!second_batch.is_empty());
 
-        assert_eq!(first_batch_size + second_batch_size, actual_total_size,);
-        assert_eq!(first_batch.len() + second_batch.len(), egress_txs.len(),);
+        assert_eq!(first_batch.len() + second_batch.len(), egress_txs.len());
+        assert_eq!(first_batch_size + second_batch_size, actual_total_size);
 
         assert_eq!(
-            forwarding_manager.as_mut().poll_egress(&mut cx),
-            Poll::Pending,
-        );
+            forwarding_manager
+                .as_mut()
+                .poll_egress(EXECUTION_REVISION.execution_chain_params(), &mut cx),
+            Poll::Pending
+        )
+    }
+
+    #[tokio::test]
+    async fn test_egress_limit_exceeded() {
+        let (forwarding_manager, mut cx) = setup();
+        let mut forwarding_manager = pin!(forwarding_manager);
+
+        let legacy_tx_generator =
+            |nonce, input_len| make_legacy_tx(S1, BASE_FEE_PER_GAS, 30_000_000, nonce, input_len);
+        let eip1559_tx_generator = |nonce, input_len| {
+            make_eip1559_tx(S1, BASE_FEE_PER_GAS, 0, 30_000_000, nonce, input_len)
+        };
+        let eip7702_tx_generator = |nonce, input_len| {
+            make_eip7702_tx(
+                S1,
+                BASE_FEE_PER_GAS,
+                0,
+                30_000_000,
+                nonce,
+                vec![],
+                input_len,
+            )
+        };
+
+        for tx_generator in [
+            legacy_tx_generator,
+            eip1559_tx_generator,
+            eip7702_tx_generator,
+        ] {
+            let tx1 = tx_generator(0, 0);
+            assert!(
+                tx1.eip2718_encoded_length()
+                    <= egress_max_size_bytes(EXECUTION_REVISION.execution_chain_params())
+            );
+
+            let tx2 = tx_generator(
+                1,
+                egress_max_size_bytes(EXECUTION_REVISION.execution_chain_params()),
+            );
+            assert!(
+                tx2.eip2718_encoded_length()
+                    > egress_max_size_bytes(EXECUTION_REVISION.execution_chain_params())
+            );
+
+            let tx3 = tx_generator(2, 0);
+            assert!(
+                tx3.eip2718_encoded_length()
+                    <= egress_max_size_bytes(EXECUTION_REVISION.execution_chain_params())
+            );
+
+            forwarding_manager
+                .as_mut()
+                .project()
+                .add_egress_txs([&tx1, &tx2, &tx3].into_iter());
+
+            let Poll::Ready(first_batch) = forwarding_manager
+                .as_mut()
+                .poll_egress(EXECUTION_REVISION.execution_chain_params(), &mut cx)
+            else {
+                panic!("first poll should be ready");
+            };
+
+            eprintln!("{first_batch:#?}\n{tx1:#?}\n{tx3:#?}");
+
+            assert_eq!(first_batch.len(), 2);
+            assert_eq!(
+                first_batch.iter().map(Bytes::len).sum::<usize>(),
+                alloy_rlp::encode(tx1).len() + alloy_rlp::encode(tx3).len(),
+            );
+
+            assert_eq!(
+                forwarding_manager
+                    .as_mut()
+                    .poll_egress(EXECUTION_REVISION.execution_chain_params(), &mut cx),
+                Poll::Pending
+            )
+        }
     }
 }

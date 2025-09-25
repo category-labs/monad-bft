@@ -117,6 +117,10 @@ where
             .expect("pool size does not overflow")
     }
 
+    pub fn current_revision(&self) -> (&CRT, &MonadExecutionRevision) {
+        (&self.chain_revision, &self.execution_revision)
+    }
+
     pub fn insert_txs(
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
