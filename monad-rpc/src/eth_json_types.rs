@@ -35,7 +35,7 @@ use crate::{
 pub type EthAddress = FixedData<20>;
 pub type EthHash = FixedData<32>;
 
-#[derive(Debug, JsonSchema)]
+#[derive(Clone, Debug, JsonSchema)]
 pub struct MonadU256(#[schemars(with = "u128")] pub U256);
 
 impl Serialize for MonadU256 {
@@ -113,7 +113,7 @@ fn schema_for_fee_history(_: &mut schemars::gen::SchemaGenerator) -> schemars::s
 }
 
 // https://ethereum.org/developers/docs/apis/json-rpc#unformatted-data-encoding
-#[derive(Debug, PartialEq, Eq, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, JsonSchema)]
 #[schemars(with = "String")]
 pub struct UnformattedData(pub Vec<u8>);
 
