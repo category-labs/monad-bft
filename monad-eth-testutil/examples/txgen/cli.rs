@@ -162,10 +162,6 @@ pub struct CliConfig {
     /// Range for random priority fee (format: min,max in wei)
     #[arg(long, global = true)]
     pub random_priority_fee_range: Option<String>,
-
-    /// Override for native contract address
-    #[arg(long, global = true)]
-    pub native_contract: Option<String>,
 }
 
 pub enum RequiredContract {
@@ -308,9 +304,6 @@ impl From<CliConfig> for Config {
         }
         if let Some(erc20_contract) = value.erc20_contract {
             config.erc20_contract = Some(erc20_contract);
-        }
-        if let Some(native_contract) = value.native_contract {
-            config.native_contract = Some(native_contract);
         }
         config
     }

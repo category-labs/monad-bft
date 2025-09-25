@@ -43,10 +43,10 @@ impl ECMul {
         client: &ReqwestClient,
         max_fee_per_gas: u128,
         chain_id: u64,
-        _gas_limit: Option<u64>,
+        gas_limit: Option<u64>,
     ) -> Result<Self> {
         let nonce = client.get_transaction_count(&deployer.0).await?;
-        let tx = Self::deploy_tx(nonce, &deployer.1, max_fee_per_gas, chain_id);
+        let tx = Self::deploy_tx_with_gas_limit(nonce, &deployer.1, max_fee_per_gas, chain_id, gas_limit.unwrap_or(2_000_000));
         let mut rlp_encoded_tx = Vec::new();
         tx.encode_2718(&mut rlp_encoded_tx);
 
@@ -73,6 +73,30 @@ impl ECMul {
             chain_id,
             nonce,
             gas_limit: 2_000_000,
+            max_fee_per_gas,
+            max_priority_fee_per_gas: 10,
+            to: TxKind::Create,
+            value: U256::ZERO,
+            access_list: Default::default(),
+            input,
+        };
+
+        let sig = deployer.sign_transaction(&tx);
+        TxEnvelope::Eip1559(tx.into_signed(sig))
+    }
+
+    pub fn deploy_tx_with_gas_limit(
+        nonce: u64,
+        deployer: &PrivateKey,
+        max_fee_per_gas: u128,
+        chain_id: u64,
+        gas_limit: u64,
+    ) -> TxEnvelope {
+        let input = Bytes::from_hex(BYTECODE).unwrap();
+        let tx = TxEip1559 {
+            chain_id,
+            nonce,
+            gas_limit,
             max_fee_per_gas,
             max_priority_fee_per_gas: 10,
             to: TxKind::Create,

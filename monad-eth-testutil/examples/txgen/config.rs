@@ -89,9 +89,6 @@ pub struct Config {
 
     /// Override for ERC20 contract address
     pub erc20_contract: Option<String>,
-
-    /// Override for native contract address
-    pub native_contract: Option<String>,
 }
 
 impl Default for Config {
@@ -124,7 +121,6 @@ impl Default for Config {
             priority_fee: None,
             random_priority_fee_range: None,
             erc20_contract: None,
-            native_contract: None,
         }
     }
 }
