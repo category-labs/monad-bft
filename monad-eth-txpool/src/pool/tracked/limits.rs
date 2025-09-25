@@ -37,10 +37,13 @@ const MAX_ADDRESSES: usize = 16 * 1024;
 
 const MAX_TXS: usize = 64 * 1024;
 
+const MAX_EIP2718_BYTES: usize = 4 * 1024 * 1024 * 1024;
+
 #[derive(Clone, Debug)]
 pub(super) struct TrackedTxLimitsConfig {
     max_addresses: usize,
     max_txs: usize,
+    max_eip2718_bytes: usize,
 
     soft_tx_expiry: Duration,
     hard_tx_expiry: Duration,
@@ -51,6 +54,7 @@ impl TrackedTxLimitsConfig {
         Self {
             max_addresses: MAX_ADDRESSES,
             max_txs: MAX_TXS,
+            max_eip2718_bytes: MAX_EIP2718_BYTES,
 
             soft_tx_expiry,
             hard_tx_expiry,
@@ -64,6 +68,7 @@ pub(super) struct TrackedTxLimits {
 
     addresses: usize,
     txs: usize,
+    eip2718_bytes: usize,
 }
 
 impl TrackedTxLimits {
@@ -73,6 +78,7 @@ impl TrackedTxLimits {
 
             addresses: 0,
             txs: 0,
+            eip2718_bytes: 0,
         }
     }
 
@@ -95,12 +101,18 @@ impl TrackedTxLimits {
     }
 
     #[inline]
-    fn can_increase_limits(&self, inc_addresses: usize, inc_txs: usize) -> bool {
+    fn can_increase_limits(
+        &self,
+        inc_addresses: usize,
+        inc_txs: usize,
+        inc_eip2718_bytes: usize,
+    ) -> bool {
         let Self {
             config,
 
             addresses,
             txs,
+            eip2718_bytes,
         } = self;
 
         if addresses.saturating_add(inc_addresses) > config.max_addresses {
@@ -108,6 +120,10 @@ impl TrackedTxLimits {
         }
 
         if txs.saturating_add(inc_txs) > config.max_txs {
+            return false;
+        }
+
+        if eip2718_bytes.saturating_add(inc_eip2718_bytes) > config.max_eip2718_bytes {
             return false;
         }
 
@@ -119,8 +135,7 @@ impl TrackedTxLimits {
         event_tracker: &'et mut EthTxPoolEventTracker<'t>,
         tx: ValidEthTransaction,
     ) -> Option<TrackedTxLimitAddToken<'et, 'l, 't>> {
-        if !self.can_increase_limits(1, 1) {
-            event_tracker.drop(tx.hash(), EthTxPoolDropReason::PoolFull);
+        if !self.can_increase_limits(1, 1, tx.raw().eip2718_encoded_length()) {
             return None;
         }
 
@@ -137,8 +152,7 @@ impl TrackedTxLimits {
         event_tracker: &'et mut EthTxPoolEventTracker<'t>,
         tx: ValidEthTransaction,
     ) -> Option<TrackedTxLimitAddToken<'et, 'l, 't>> {
-        if !self.can_increase_limits(0, 1) {
-            event_tracker.drop(tx.hash(), EthTxPoolDropReason::PoolFull);
+        if !self.can_increase_limits(0, 1, tx.raw().eip2718_encoded_length()) {
             return None;
         }
 
@@ -157,12 +171,20 @@ impl TrackedTxLimits {
 
             addresses: _,
             txs,
+            eip2718_bytes,
         } = self;
 
         *txs = txs.checked_sub(1).unwrap_or_else(|| {
             error!("txpool txs limit underflowed");
             0
         });
+
+        *eip2718_bytes = eip2718_bytes
+            .checked_sub(tx.raw().eip2718_encoded_length())
+            .unwrap_or_else(|| {
+                error!("txpool eip2718_bytes limit underflowed");
+                0
+            });
     }
 
     #[inline]
@@ -172,6 +194,7 @@ impl TrackedTxLimits {
 
             addresses,
             txs: _,
+            eip2718_bytes: _,
         } = self;
 
         *addresses = addresses.checked_sub(1).unwrap_or_else(|| {
@@ -323,12 +346,14 @@ impl<'et, 'l, 't> TrackedTxLimitAddToken<'et, 'l, 't> {
 
                     addresses,
                     txs,
+                    eip2718_bytes,
                 },
             event_tracker: _,
-            tx: _,
+            tx,
             used,
         } = self;
 
+        *eip2718_bytes += tx.raw().eip2718_encoded_length();
         *txs += 1;
 
         match kind {
@@ -422,6 +447,7 @@ mod tests {
         let mut limits = TrackedTxLimits::new(TrackedTxLimitsConfig {
             max_addresses: 1,
             max_txs: 2,
+            max_eip2718_bytes: 256 * 1024,
             soft_tx_expiry: Duration::from_secs(1),
             hard_tx_expiry: Duration::from_secs(5),
         });
@@ -437,6 +463,7 @@ mod tests {
 
         assert_eq!(limits.addresses, 1);
         assert_eq!(limits.txs, 1);
+        assert_eq!(limits.eip2718_bytes, tx.raw().eip2718_encoded_length());
 
         assert!(
             limits
@@ -447,6 +474,7 @@ mod tests {
 
         assert_eq!(limits.addresses, 1);
         assert_eq!(limits.txs, 1);
+        assert_eq!(limits.eip2718_bytes, tx.raw().eip2718_encoded_length());
 
         limits
             .prepare_add_tx_to_existing(&mut event_tracker, tx.clone())
@@ -455,16 +483,18 @@ mod tests {
 
         assert_eq!(limits.addresses, 1);
         assert_eq!(limits.txs, 2);
+        assert_eq!(limits.eip2718_bytes, 2 * tx.raw().eip2718_encoded_length());
 
         assert!(
             limits
-                .prepare_add_tx_to_existing(&mut event_tracker, tx)
+                .prepare_add_tx_to_existing(&mut event_tracker, tx.clone())
                 .is_none(),
             "Exceeds max txs limit"
         );
 
         assert_eq!(limits.addresses, 1);
         assert_eq!(limits.txs, 2);
+        assert_eq!(limits.eip2718_bytes, 2 * tx.raw().eip2718_encoded_length());
     }
 
     #[test]
@@ -475,6 +505,7 @@ mod tests {
             let mut limits = TrackedTxLimits::new(TrackedTxLimitsConfig {
                 max_addresses,
                 max_txs: max_addresses + 1,
+                max_eip2718_bytes: 16 * 1024 * 1024,
                 soft_tx_expiry: Duration::from_secs(1),
                 hard_tx_expiry: Duration::from_secs(5),
             });
@@ -492,6 +523,10 @@ mod tests {
 
             assert_eq!(limits.addresses, max_addresses);
             assert_eq!(limits.txs, max_addresses);
+            assert_eq!(
+                limits.eip2718_bytes,
+                max_addresses * tx.raw().eip2718_encoded_length()
+            );
 
             assert!(
                 limits
@@ -507,6 +542,10 @@ mod tests {
 
             assert_eq!(limits.addresses, max_addresses);
             assert_eq!(limits.txs, max_addresses + 1);
+            assert_eq!(
+                limits.eip2718_bytes,
+                (max_addresses + 1) * tx.raw().eip2718_encoded_length()
+            );
         }
     }
 
@@ -519,6 +558,7 @@ mod tests {
                 // This use-case is not permitted by the pool but can be used for testing just txs
                 max_addresses: 0,
                 max_txs,
+                max_eip2718_bytes: 16 * 1024 * 1024,
                 soft_tx_expiry: Duration::from_secs(1),
                 hard_tx_expiry: Duration::from_secs(5),
             });
@@ -536,6 +576,10 @@ mod tests {
 
             assert_eq!(limits.addresses, 0);
             assert_eq!(limits.txs, max_txs);
+            assert_eq!(
+                limits.eip2718_bytes,
+                max_txs * tx.raw().eip2718_encoded_length()
+            );
 
             assert!(
                 limits
@@ -553,6 +597,10 @@ mod tests {
 
             assert_eq!(limits.addresses, 0);
             assert_eq!(limits.txs, max_txs);
+            assert_eq!(
+                limits.eip2718_bytes,
+                max_txs * tx.raw().eip2718_encoded_length()
+            );
         }
     }
 
@@ -563,6 +611,7 @@ mod tests {
         let mut limits = TrackedTxLimits::new(TrackedTxLimitsConfig {
             max_addresses: 2,
             max_txs: 2,
+            max_eip2718_bytes: 256 * 1024,
             soft_tx_expiry: Duration::from_secs(1),
             hard_tx_expiry: Duration::from_secs(5),
         });
@@ -579,6 +628,7 @@ mod tests {
 
         assert_eq!(limits.addresses, 0);
         assert_eq!(limits.txs, 0);
+        assert_eq!(limits.eip2718_bytes, 0);
 
         limits
             .prepare_add_tx_to_new_address(&mut event_tracker, tx.clone())
@@ -587,6 +637,7 @@ mod tests {
 
         assert_eq!(limits.addresses, 1);
         assert_eq!(limits.txs, 1);
+        assert_eq!(limits.eip2718_bytes, tx.raw().eip2718_encoded_length());
 
         // Existing
 
@@ -596,13 +647,15 @@ mod tests {
 
         assert_eq!(limits.addresses, 1);
         assert_eq!(limits.txs, 1);
+        assert_eq!(limits.eip2718_bytes, tx.raw().eip2718_encoded_length());
 
         limits
-            .prepare_add_tx_to_existing(&mut event_tracker, tx)
+            .prepare_add_tx_to_existing(&mut event_tracker, tx.clone())
             .expect("Can add new tx")
             .apply_limits();
 
         assert_eq!(limits.addresses, 1);
         assert_eq!(limits.txs, 2);
+        assert_eq!(limits.eip2718_bytes, 2 * tx.raw().eip2718_encoded_length());
     }
 }
