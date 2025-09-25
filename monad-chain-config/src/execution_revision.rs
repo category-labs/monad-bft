@@ -20,10 +20,11 @@ pub enum MonadExecutionRevision {
     V_ONE,
     V_TWO,
     V_FOUR,
+    V_FIVE,
 }
 
 impl MonadExecutionRevision {
-    pub const LATEST: Self = Self::V_FOUR;
+    pub const LATEST: Self = Self::V_FIVE;
 }
 
 impl MonadExecutionRevision {
@@ -33,6 +34,7 @@ impl MonadExecutionRevision {
             Self::V_ONE => &EXECUTION_CHAIN_PARAMS_V_ONE,
             Self::V_TWO => &EXECUTION_CHAIN_PARAMS_V_TWO,
             Self::V_FOUR => &EXECUTION_CHAIN_PARAMS_V_FOUR,
+            Self::V_FIVE => &EXECUTION_CHAIN_PARAMS_V_FIVE,
         }
     }
 }
@@ -67,6 +69,13 @@ const EXECUTION_CHAIN_PARAMS_V_TWO: ExecutionChainParams = ExecutionChainParams 
 };
 
 const EXECUTION_CHAIN_PARAMS_V_FOUR: ExecutionChainParams = ExecutionChainParams {
+    max_code_size: 128 * 1024,
+    tfm_enabled: true,
+    prague_enabled: true,
+    validate_system_txs: true,
+};
+
+const EXECUTION_CHAIN_PARAMS_V_FIVE: ExecutionChainParams = ExecutionChainParams {
     max_code_size: 128 * 1024,
     tfm_enabled: true,
     prague_enabled: true,
