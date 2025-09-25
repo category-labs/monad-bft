@@ -30,6 +30,8 @@ const MAX_ADDRESSES: usize = 16 * 1024;
 
 const MAX_TXS: usize = 64 * 1024;
 
+const MAX_EIP2718_BYTES: usize = 4 * 1024 * 1024 * 1024;
+
 // Tx batches from rpc can contain up to roughly 500 transactions. Since we don't evict based on how
 // many txs are in the pool, we need to ensure that after eviction there is always space for all 500
 // txs.
@@ -39,6 +41,7 @@ const SOFT_EVICT_ADDRESSES_WATERMARK: usize = MAX_ADDRESSES - 512;
 pub(super) struct TrackedTxLimitsConfig {
     max_addresses: usize,
     max_txs: usize,
+    max_eip2718_bytes: usize,
 
     soft_tx_expiry: Duration,
     hard_tx_expiry: Duration,
@@ -49,6 +52,7 @@ impl TrackedTxLimitsConfig {
         Self {
             max_addresses: MAX_ADDRESSES,
             max_txs: MAX_TXS,
+            max_eip2718_bytes: MAX_EIP2718_BYTES,
 
             soft_tx_expiry,
             hard_tx_expiry,
@@ -62,6 +66,7 @@ pub(super) struct TrackedTxLimits {
 
     addresses: usize,
     txs: usize,
+    eip2718_bytes: usize,
 }
 
 impl TrackedTxLimits {
@@ -71,6 +76,7 @@ impl TrackedTxLimits {
 
             addresses: 0,
             txs: 0,
+            eip2718_bytes: 0,
         }
     }
 
@@ -93,12 +99,18 @@ impl TrackedTxLimits {
     }
 
     #[inline]
-    fn can_increase_limits(&self, inc_addresses: usize, inc_txs: usize) -> bool {
+    fn can_increase_limits(
+        &self,
+        inc_addresses: usize,
+        inc_txs: usize,
+        inc_eip2718_bytes: usize,
+    ) -> bool {
         let Self {
             config,
 
             addresses,
             txs,
+            eip2718_bytes,
         } = self;
 
         if addresses.saturating_add(inc_addresses) > config.max_addresses {
@@ -109,6 +121,10 @@ impl TrackedTxLimits {
             return false;
         }
 
+        if eip2718_bytes.saturating_add(inc_eip2718_bytes) > config.max_eip2718_bytes {
+            return false;
+        }
+
         true
     }
 
@@ -116,7 +132,7 @@ impl TrackedTxLimits {
         &'l mut self,
         tx: ValidEthTransaction,
     ) -> Result<TrackedTxLimitAddToken<'l>, ValidEthTransaction> {
-        if !self.can_increase_limits(1, 1) {
+        if !self.can_increase_limits(1, 1, tx.raw().eip2718_encoded_length()) {
             return Err(tx);
         }
 
@@ -131,7 +147,7 @@ impl TrackedTxLimits {
         &'l mut self,
         tx: ValidEthTransaction,
     ) -> Result<TrackedTxLimitAddToken<'l>, ValidEthTransaction> {
-        if !self.can_increase_limits(0, 1) {
+        if !self.can_increase_limits(0, 1, tx.raw().eip2718_encoded_length()) {
             return Err(tx);
         }
 
@@ -148,10 +164,16 @@ impl TrackedTxLimits {
 
             addresses: _,
             txs,
+            eip2718_bytes,
         } = self;
 
         *txs = txs.checked_sub(1).unwrap_or_else(|| {
             error!("txpool txs limit underflowed");
+            0
+        });
+
+        *eip2718_bytes = eip2718_bytes.checked_sub(1).unwrap_or_else(|| {
+            error!("txpool eip2718_bytes limit underflowed");
             0
         });
     }
@@ -162,6 +184,7 @@ impl TrackedTxLimits {
 
             addresses,
             txs: _,
+            eip2718_bytes: _,
         } = self;
 
         *addresses = addresses.checked_sub(1).unwrap_or_else(|| {
@@ -176,6 +199,7 @@ impl TrackedTxLimits {
 
             addresses,
             txs,
+            eip2718_bytes,
         } = self;
 
         if removed_address {
@@ -189,6 +213,11 @@ impl TrackedTxLimits {
             error!("txpool txs limit underflowed");
             0
         });
+
+        *eip2718_bytes = eip2718_bytes.checked_sub(1).unwrap_or_else(|| {
+            error!("txpool eip2718_bytes limit underflowed");
+            0
+        });
     }
 
     pub fn reset(&mut self) {
@@ -197,10 +226,12 @@ impl TrackedTxLimits {
 
             addresses,
             txs,
+            eip2718_bytes,
         } = self;
 
         *addresses = 0;
         *txs = 0;
+        *eip2718_bytes = 0;
     }
 }
 
@@ -226,13 +257,16 @@ impl<'l> TrackedTxLimitAddToken<'l> {
             limits:
                 TrackedTxLimits {
                     config,
+
                     addresses,
                     txs,
+                    eip2718_bytes,
                 },
             tx,
         } = self;
 
         *txs += 1;
+        *eip2718_bytes += tx.raw().eip2718_encoded_length();
 
         match kind {
             TrackedTxLimitAddTokenKind::NewAddress => {
