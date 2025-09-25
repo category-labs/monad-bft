@@ -71,11 +71,15 @@ pub fn make_generator(
             recipient_keys,
             tx_per_sender,
             random_priority_fee: false,
+            tx_type: TxType::Native,
+            erc20: None,
         }),
-        GenMode::RandomPriorityFee => Box::new(DuplicateTxGenerator {
+        GenMode::RandomPriorityFee(config) => Box::new(DuplicateTxGenerator {
             recipient_keys,
             tx_per_sender,
             random_priority_fee: true,
+            tx_type: config.tx_type,
+            erc20: deployed_contract.erc20().ok(),
         }),
         GenMode::HighCallData => Box::new(HighCallDataTxGenerator {
             recipient_keys,
@@ -85,7 +89,7 @@ pub fn make_generator(
         GenMode::HighCallDataLowGasLimit => Box::new(HighCallDataTxGenerator {
             recipient_keys,
             tx_per_sender,
-            gas_limit: 100_000,
+            gas_limit: 200_000, // raised 2x from 100k
         }),
         GenMode::NonDeterministicStorage => Box::new(NonDeterministicStorageTxGenerator {
             recipient_keys,
@@ -162,10 +166,12 @@ pub fn native_transfer_priority_fee(
     ctx: &GenCtx,
 ) -> TxEnvelope {
     let max_fee_per_gas = ctx.base_fee * 2;
+    let gas_limit = ctx.set_tx_gas_limit.unwrap_or(42_000); // use override or default
+    let priority_fee = ctx.priority_fee.unwrap_or(priority_fee as u64) as u128;
     let tx = TxEip1559 {
         chain_id: ctx.chain_id,
         nonce: from.nonce,
-        gas_limit: 21_000,
+        gas_limit,
         max_fee_per_gas,
         max_priority_fee_per_gas: priority_fee,
         to: TxKind::Call(to),
@@ -178,7 +184,7 @@ pub fn native_transfer_priority_fee(
     from.nonce += 1;
     from.native_bal = from
         .native_bal
-        .checked_sub(amt + U256::from(21_000 * max_fee_per_gas))
+        .checked_sub(amt + U256::from(gas_limit * max_fee_per_gas))
         .unwrap_or(U256::ZERO);
 
     let sig = from.key.sign_transaction(&tx);
@@ -200,29 +206,42 @@ pub fn erc20_transfer(
         amt,
         max_fee_per_gas,
         ctx.chain_id,
+        ctx.set_tx_gas_limit,
+        ctx.priority_fee,
     );
 
     // update from
     from.nonce += 1;
     from.native_bal = from
         .native_bal
-        .checked_sub(U256::from(400_000 * max_fee_per_gas))
-        .unwrap_or(U256::ZERO); // todo: wire gas correctly, see above comment
+        .checked_sub(U256::from(
+            ctx.set_tx_gas_limit.unwrap_or(200_000) * max_fee_per_gas,
+        ))
+        .unwrap_or(U256::ZERO); // updated to use gas limit override
     from.erc20_bal = from.erc20_bal.checked_sub(amt).unwrap_or(U256::ZERO);
     tx
 }
 
 pub fn erc20_mint(from: &mut SimpleAccount, erc20: &ERC20, ctx: &GenCtx) -> TxEnvelope {
     let max_fee_per_gas = ctx.base_fee;
-    let tx = erc20.construct_mint(&from.key, from.nonce, max_fee_per_gas, ctx.chain_id);
+    let tx = erc20.construct_mint(
+        &from.key,
+        from.nonce,
+        max_fee_per_gas,
+        ctx.chain_id,
+        ctx.set_tx_gas_limit,
+        ctx.priority_fee,
+    );
 
     // update from
     from.nonce += 1;
 
     from.native_bal = from
         .native_bal
-        .checked_sub(U256::from(400_000 * max_fee_per_gas))
-        .unwrap_or(U256::ZERO); // todo: wire gas correctly, see above comment
+        .checked_sub(U256::from(
+            ctx.set_tx_gas_limit.unwrap_or(200_000) * max_fee_per_gas,
+        ))
+        .unwrap_or(U256::ZERO); // updated to use gas limit override
     from.erc20_bal += U256::from(10_u128.pow(30)); // todo: current erc20 impl just mints a constant
     tx
 }

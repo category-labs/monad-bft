@@ -50,6 +50,7 @@ impl Uniswap {
         client: &ReqwestClient,
         max_fee_per_gas: u128,
         chain_id: u64,
+        gas_limit: Option<u64>,
     ) -> Result<Self> {
         let nonce = client.get_transaction_count(&deployer.0).await?;
 
@@ -280,6 +281,8 @@ impl Uniswap {
         sender: &mut SimpleAccount,
         max_fee_per_gas: u128,
         chain_id: u64,
+        gas_limit: Option<u64>,
+        priority_fee: Option<u64>,
     ) -> TxEnvelope {
         // price point of 300.0 has a tick value of 57000
         // with tick spacing of 60, lower tick is 10 ticks below current tick
@@ -294,9 +297,9 @@ impl Uniswap {
         let tx = TxEip1559 {
             chain_id,
             nonce: sender.nonce,
-            gas_limit: 400_000,
+            gas_limit: gas_limit.unwrap_or(400_000),
             max_fee_per_gas,
-            max_priority_fee_per_gas: 0,
+            max_priority_fee_per_gas: priority_fee.unwrap_or(0),
             to: TxKind::Call(self.addr),
             value: U256::ZERO,
             access_list: Default::default(),

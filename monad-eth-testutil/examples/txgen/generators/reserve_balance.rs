@@ -57,7 +57,7 @@ impl Generator for ReserveBalanceGenerator {
                         let tx = TxEip1559 {
                             chain_id: ctx.chain_id,
                             nonce: sender.nonce,
-                            gas_limit: 21_000,
+                            gas_limit: 42_000, // raised 2x from 21k
                             max_fee_per_gas,
                             max_priority_fee_per_gas: 0,
                             to: TxKind::Call(to),
