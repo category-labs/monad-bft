@@ -13,13 +13,15 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use super::native_transfer_priority_fee;
-use crate::prelude::*;
+use super::{erc20_transfer, native_transfer_priority_fee};
+use crate::{config::TxType, prelude::*, shared::erc20::ERC20};
 
 pub struct DuplicateTxGenerator {
     pub(crate) recipient_keys: KeyPool,
     pub(crate) tx_per_sender: usize,
     pub random_priority_fee: bool,
+    pub tx_type: TxType,
+    pub erc20: Option<ERC20>,
 }
 
 impl Generator for DuplicateTxGenerator {
@@ -35,12 +37,29 @@ impl Generator for DuplicateTxGenerator {
             let to = self.recipient_keys.next_addr(); // change sampling strategy?
             for _ in 0..self.tx_per_sender {
                 let priority_fee = if self.random_priority_fee {
-                    rng.gen_range(0..1000)
+                    let (min, max) = ctx.random_priority_fee_range.unwrap_or((0, 1000));
+                    rng.gen_range(min..=max)
                 } else {
                     0
                 };
-                let tx =
-                    native_transfer_priority_fee(sender, to, U256::from(10), priority_fee, ctx);
+                let tx = match self.tx_type {
+                    TxType::ERC20 => erc20_transfer(
+                        sender,
+                        to,
+                        U256::from(10),
+                        self.erc20
+                            .as_ref()
+                            .expect("No ERC20 contract found, but tx_type is erc20"),
+                        ctx,
+                    ),
+                    TxType::Native => native_transfer_priority_fee(
+                        sender,
+                        to,
+                        U256::from(10),
+                        priority_fee as u128,
+                        ctx,
+                    ),
+                };
                 txs.push((tx, to));
             }
         }

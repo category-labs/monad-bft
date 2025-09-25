@@ -215,6 +215,10 @@ fn run_traffic_gen(
         &base_fee,
         config.chain_id,
         traffic_gen.gen_mode.clone(),
+        config.gas_limit_contract_deployment,
+        config.set_tx_gas_limit,
+        config.priority_fee,
+        config.random_priority_fee_range,
         Arc::clone(shutdown),
     );
 
@@ -332,6 +336,18 @@ async fn load_or_deploy_contracts(
     match contract_to_ensure {
         RequiredContract::None => Ok(DeployedContract::None),
         RequiredContract::ERC20 => {
+            // Check CLI override first
+            if let Some(addr_str) = &config.erc20_contract {
+                if let Ok(addr) = addr_str.parse::<Address>() {
+                    if verify_contract_code(client, addr).await? {
+                        info!("Using ERC20 contract from CLI: {}", addr);
+                        return Ok(DeployedContract::ERC20(ERC20 { addr }));
+                    } else {
+                        warn!("ERC20 contract from CLI has no code, falling back to auto-deploy");
+                    }
+                }
+            }
+
             match open_deployed_contracts_file(PATH) {
                 Ok(DeployedContractFile {
                     erc20: Some(erc20), ..
@@ -349,7 +365,14 @@ async fn load_or_deploy_contracts(
             }
 
             // if not found, deploy new contract
-            let erc20 = ERC20::deploy(&deployer, client, max_fee_per_gas, chain_id).await?;
+            let erc20 = ERC20::deploy(
+                &deployer,
+                client,
+                max_fee_per_gas,
+                chain_id,
+                config.gas_limit_contract_deployment,
+            )
+            .await?;
 
             let deployed = DeployedContractFile {
                 erc20: Some(erc20.addr),
@@ -379,7 +402,14 @@ async fn load_or_deploy_contracts(
             }
 
             // if not found, deploy new contract
-            let ecmul = ECMul::deploy(&deployer, client, max_fee_per_gas, chain_id).await?;
+            let ecmul = ECMul::deploy(
+                &deployer,
+                client,
+                max_fee_per_gas,
+                chain_id,
+                config.gas_limit_contract_deployment,
+            )
+            .await?;
 
             let deployed = DeployedContractFile {
                 erc20: None,
@@ -410,7 +440,14 @@ async fn load_or_deploy_contracts(
             }
 
             // if not found, deploy new contract
-            let uniswap = Uniswap::deploy(&deployer, client, max_fee_per_gas, chain_id).await?;
+            let uniswap = Uniswap::deploy(
+                &deployer,
+                client,
+                max_fee_per_gas,
+                chain_id,
+                config.gas_limit_contract_deployment,
+            )
+            .await?;
 
             let deployed = DeployedContractFile {
                 erc20: None,
@@ -441,7 +478,14 @@ async fn load_or_deploy_contracts(
             }
 
             // if not found, deploy new contract
-            let eip7702 = EIP7702::deploy(&deployer, client, max_fee_per_gas, chain_id).await?;
+            let eip7702 = EIP7702::deploy(
+                &deployer,
+                client,
+                max_fee_per_gas,
+                chain_id,
+                config.gas_limit_contract_deployment,
+            )
+            .await?;
 
             let deployed = DeployedContractFile {
                 erc20: None,

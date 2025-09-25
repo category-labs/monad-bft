@@ -48,6 +48,8 @@ impl Generator for StorageDeletesTxGenerator {
                         IERC20::resetCall { addr: to },
                         ctx.base_fee,
                         ctx.chain_id,
+                        ctx.set_tx_gas_limit,
+                        ctx.priority_fee,
                     )
                 } else {
                     self.erc20.construct_tx(
@@ -58,6 +60,8 @@ impl Generator for StorageDeletesTxGenerator {
                         },
                         ctx.base_fee,
                         ctx.chain_id,
+                        ctx.set_tx_gas_limit,
+                        ctx.priority_fee,
                     )
                 };
 
