@@ -423,7 +423,7 @@ where
                     NonceUsage::Known(old_nonce) => {
                         let Some(expected_nonce) = eth_txn.nonce().checked_sub(1) else {
                             // eth_txn replaced tx with nonce `old_nonce` but
-                            // `eth_txn.nonce() == 0` so old tx muts be invalid
+                            // `eth_txn.nonce() == 0` so old tx must be invalid
                             return Err(BlockValidationError::TxnError);
                         };
 
@@ -477,8 +477,13 @@ where
                     match nonce_usages.entry(authority) {
                         BTreeMapEntry::Occupied(nonce_usage) => match nonce_usage.into_mut() {
                             NonceUsage::Known(nonce) => {
-                                if *nonce + 1 == recovered_auth.nonce() {
-                                    *nonce += 1;
+                                if let Some(next) = nonce.checked_add(1) {
+                                    if next == recovered_auth.nonce() {
+                                        *nonce = next;
+                                    }
+                                } else {
+                                    // nonce overflow, invalid
+                                    return Err(BlockValidationError::TxnError);
                                 }
                             }
                             NonceUsage::Possible(possible_nonces) => {
@@ -617,6 +622,47 @@ mod test {
         // txn1 with nonce 1 while txn2 with nonce 3 (there is a nonce gap)
         let txn1 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 1, 10);
         let txn2 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 3, 10);
+
+        // create a block with the above transactions
+        let txs = vec![txn1, txn2];
+        let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
+            execution_body: EthBlockBody {
+                transactions: txs,
+                ommers: Vec::new(),
+                withdrawals: Vec::new(),
+            },
+        });
+        let header = get_header(payload.get_id());
+
+        // block validation should return error
+        let result =
+            EthBlockValidator::<NopSignature, MockSignatures<NopSignature>>::validate_block_body(
+                &header,
+                &payload,
+                &MockChainConfig::DEFAULT,
+            );
+        assert!(matches!(result, Err(BlockValidationError::TxnError)));
+    }
+
+    #[test]
+    fn test_invalid_block_with_max_nonce() {
+        // txn1 with max nonce while txn2 is a 7702 transaction with any nonce from the same signer
+        let txn1 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, u64::MAX, 10);
+
+        let auth_list = vec![make_signed_authorization(
+            B256::repeat_byte(0xAu8),
+            secret_to_eth_address(B256::repeat_byte(0x1u8)),
+            1,
+        )];
+        let txn2 = make_eip7702_tx(
+            B256::repeat_byte(0xBu8),
+            BASE_FEE,
+            0,
+            1_000_000,
+            1,
+            auth_list,
+            0,
+        );
 
         // create a block with the above transactions
         let txs = vec![txn1, txn2];
