@@ -27,7 +27,9 @@ use monad_consensus_types::block::GENESIS_TIMESTAMP;
 use monad_crypto::NopSignature;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, secret_to_eth_address};
-use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig};
+use monad_eth_txpool_executor::{
+    forward::EGRESS_MAX_SIZE_BYTES, EthTxPoolExecutor, EthTxPoolIpcConfig,
+};
 use monad_eth_txpool_ipc::EthTxPoolIpcClient;
 use monad_eth_txpool_types::EthTxPoolSnapshot;
 use monad_eth_types::EthExecutionProtocol;
@@ -130,7 +132,7 @@ async fn test_ipc_tx_forwarding_pacing() {
                 MIN_BASE_FEE.into(),
                 30_000_000,
                 nonce as u64,
-                100_000,
+                EGRESS_MAX_SIZE_BYTES / 2 - 256,
             ))
             .await
             .unwrap();
@@ -162,7 +164,7 @@ async fn test_ipc_tx_forwarding_pacing() {
                 MempoolEvent::ForwardTxs(vec) => {
                     assert!(!vec.is_empty());
                     assert!(vec.len() <= 2, "vec len was {}", vec.len());
-                    assert!(vec.iter().map(Bytes::len).sum::<usize>() < 256 * 1024);
+                    assert!(vec.iter().map(Bytes::len).sum::<usize>() <= EGRESS_MAX_SIZE_BYTES);
 
                     forwarded_txs += vec.len();
                 }
