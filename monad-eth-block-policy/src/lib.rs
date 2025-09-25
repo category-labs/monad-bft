@@ -75,6 +75,16 @@ pub fn compute_txn_max_value(txn: &TxEnvelope, base_fee: u64) -> U256 {
 }
 
 pub fn compute_txn_max_gas_cost(txn: &TxEnvelope, base_fee: u64) -> U256 {
+    // pre eip-1559 transactions do not have priority fee
+    // full gas price is charged
+    if txn.is_legacy() || txn.is_eip2930() {
+        let gas_limit = U256::from(txn.gas_limit());
+        let max_fee = U256::from(txn.max_fee_per_gas());
+        return gas_limit.checked_mul(max_fee).expect("no overflow");
+    }
+
+    // post eip-1559 transactions
+    // gas price is min(max_fee, base_fee + priority_fee)
     let gas_limit = U256::from(txn.gas_limit());
     let max_fee = U256::from(txn.max_fee_per_gas());
     let priority_fee = U256::from(txn.max_priority_fee_per_gas().unwrap_or(0));
@@ -1436,9 +1446,9 @@ mod test {
     use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
     use monad_crypto::NopSignature;
     use monad_eth_testutil::{
-        generate_consensus_test_block, make_eip1559_tx_with_value, make_eip7702_tx,
-        make_eip7702_tx_with_value, make_signed_authorization, recover_tx, secret_to_eth_address,
-        sign_authorization,
+        generate_consensus_test_block, make_eip1559_tx, make_eip1559_tx_with_value,
+        make_eip7702_tx, make_eip7702_tx_with_value, make_legacy_tx, make_signed_authorization,
+        recover_tx, secret_to_eth_address, sign_authorization,
     };
     use monad_state_backend::NopStateBackend;
     use monad_testutil::signing::MockSignatures;
@@ -3660,5 +3670,40 @@ mod test {
                 expect,
             );
         }
+    }
+
+    #[test]
+    fn test_compute_txn_max_gas_cost_legacy() {
+        let base_fee = 100_000_000_000; // 100 gwei
+        let gas_price = 300_000_000_000; // 300 gwei
+        let gas_limit = 100_000;
+
+        let tx = make_legacy_tx(S1, gas_price, gas_limit, 0, 0);
+        let max_gas_cost = compute_txn_max_gas_cost(&tx, base_fee);
+
+        assert_eq!(max_gas_cost, Balance::from(gas_price * gas_limit as u128));
+    }
+
+    #[test]
+    fn test_compute_txn_max_gas_cost_eip1559() {
+        let base_fee = 100_000_000_000; // 100 gwei
+        let max_fee_per_gas = 300_000_000_000;
+        let max_priority_fee_per_gas = 2_000_000_000; // 2 gwei
+        let gas_limit = 100_000;
+
+        let tx = make_eip1559_tx(
+            S1,
+            max_fee_per_gas,
+            max_priority_fee_per_gas,
+            gas_limit,
+            0,
+            0,
+        );
+        let max_gas_cost = compute_txn_max_gas_cost(&tx, base_fee);
+
+        assert_eq!(
+            max_gas_cost,
+            Balance::from((base_fee as u128 + max_priority_fee_per_gas) * gas_limit as u128)
+        );
     }
 }
