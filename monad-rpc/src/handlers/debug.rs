@@ -39,6 +39,13 @@ use crate::{
     jsonrpc::{JsonRpcError, JsonRpcResult},
 };
 
+/// A trait for determining if a debug request requires transaction replay.
+pub trait DebugTraceable {
+    fn requires_replay(&self) -> bool {
+        false
+    }
+}
+
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct DebugBlockParams {
     block: BlockTags,
@@ -280,9 +287,15 @@ pub struct TracerConfig {
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadDebugTraceTransactionParams {
-    tx_hash: EthHash,
+    pub tx_hash: EthHash,
     #[serde(default)]
-    tracer: TracerObject,
+    pub tracer: TracerObject,
+}
+
+impl DebugTraceable for MonadDebugTraceTransactionParams {
+    fn requires_replay(&self) -> bool {
+        matches!(self.tracer.tracer, Tracer::PreStateTracer)
+    }
 }
 
 #[derive(Serialize, Debug, schemars::JsonSchema)]
@@ -465,9 +478,15 @@ pub async fn monad_debug_traceBlockByHash<T: Triedb>(
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadDebugTraceBlockByNumberParams {
-    block_number: BlockTags,
+    pub block_number: BlockTags,
     #[serde(default)]
-    tracer: TracerObject,
+    pub tracer: TracerObject,
+}
+
+impl DebugTraceable for MonadDebugTraceBlockByNumberParams {
+    fn requires_replay(&self) -> bool {
+        matches!(self.tracer.tracer, Tracer::PreStateTracer)
+    }
 }
 
 #[derive(Serialize, Debug, schemars::JsonSchema)]
