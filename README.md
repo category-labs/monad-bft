@@ -1,7 +1,5 @@
 # Monad BFT
 
-![Nightly Tests][tests-badge]
-
 ## Overview
 
 This repository contains implementation for the Monad consensus client and JsonRpc server. Monad consensus collects transactions and produces blocks which are written to a ledger filestream. These blocks are consumed by Monad execution, which then updates the state of the blockchain. The [triedb](monad-triedb/README.md) is a database which stores block information and the blockchain state.
@@ -17,6 +15,8 @@ git submodule update --init --recursive
 The most straightforward way to start a consensus client + an execution client + a JsonRpc server. Run the following:
 1. `cd docker/single-node`
 2. `nets/run.sh`
+
+This will start a single node with chain ID of 20143 and RPC at localhost:8080. The known [Foundry/Anvil accounts](https://getfoundry.sh/anvil/overview/) have each been loaded with [large initial balances](https://github.com/category-labs/monad/blob/ce4101b11701bf4ef3a9cd996a6144883735187f/category/execution/monad/chain/monad_devnet_alloc.hpp#L22).
 
 ### Using Cargo
 
