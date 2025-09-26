@@ -24,7 +24,11 @@ use self::{
     debug::{
         monad_debug_getRawBlock, monad_debug_getRawHeader, monad_debug_getRawReceipts,
         monad_debug_getRawTransaction, monad_debug_traceBlockByHash,
-        monad_debug_traceBlockByNumber, monad_debug_traceTransaction,
+        monad_debug_traceBlockByNumber, monad_debug_traceTransaction, DebugTraceable,
+    },
+    debug_replay::{
+        DebugTraceExecutor, MonadDebugTraceBlockByNumberExecutor,
+        MonadDebugTraceTransactionExecutor,
     },
     eth::{
         account::{
@@ -52,12 +56,14 @@ use self::{
 };
 use crate::{
     eth_json_types::serialize_result,
+    handlers::debug::{MonadDebugTraceBlockByNumberParams, MonadDebugTraceTransactionParams},
     jsonrpc::{JsonRpcError, JsonRpcResultExt, Request, RequestWrapper, Response, ResponseWrapper},
     timing::RequestId,
     vpool::{monad_txpool_statusByAddress, monad_txpool_statusByHash},
 };
 
 mod debug;
+mod debug_replay;
 pub mod eth;
 mod meta;
 pub mod resources;
@@ -271,14 +277,57 @@ async fn debug_traceBlockByHash(
         .map(serialize_result)?
 }
 
+async fn collect_debug_trace_via_replay(
+    request_id: RequestId,
+    app_state: &MonadRpcResources,
+    tracer: &impl DebugTraceExecutor,
+) -> Result<Box<RawValue>, JsonRpcError> {
+    let Some(ref eth_call_executor) = app_state.eth_call_executor else {
+        return Err(JsonRpcError::method_not_supported());
+    };
+    // acquire the concurrent requests permit
+    let _permit = match app_state.rate_limiter.try_acquire() {
+        Ok(permit) => permit,
+        Err(_) => {
+            if let Some(tracker) = &app_state.eth_call_stats_tracker {
+                tracker.record_queue_rejection().await;
+            }
+            return Err(JsonRpcError::internal_error(
+                "eth_call concurrent requests limit".into(),
+            ));
+        }
+    };
+
+    if let Some(tracker) = &app_state.eth_call_stats_tracker {
+        tracker.record_request_start(request_id).await;
+    }
+
+    let result = tracer
+        .eth_call(eth_call_executor.clone(), app_state.chain_id)
+        .await;
+
+    if let Some(tracker) = &app_state.eth_call_stats_tracker {
+        let is_error = result.is_err();
+        tracker.record_request_complete(&request_id, is_error).await;
+    }
+
+    result
+}
+
 #[allow(non_snake_case)]
 async fn debug_traceBlockByNumber(
-    _: RequestId,
+    request_id: RequestId,
     app_state: &MonadRpcResources,
     params: &RawValue,
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-    let params = serde_json::from_str(params.get()).invalid_params()?;
+    let params: MonadDebugTraceBlockByNumberParams =
+        serde_json::from_str(params.get()).invalid_params()?;
+    if params.requires_replay() {
+        let tracer = MonadDebugTraceBlockByNumberExecutor::new(triedb_env, params);
+        return collect_debug_trace_via_replay(request_id, app_state, &tracer).await;
+    }
+
     monad_debug_traceBlockByNumber(triedb_env, &app_state.archive_reader, params)
         .await
         .map(serialize_result)?
@@ -314,12 +363,18 @@ async fn debug_traceCall(
 
 #[allow(non_snake_case)]
 async fn debug_traceTransaction(
-    _: RequestId,
+    request_id: RequestId,
     app_state: &MonadRpcResources,
     params: &RawValue,
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-    let params = serde_json::from_str(params.get()).invalid_params()?;
+    let params: MonadDebugTraceTransactionParams =
+        serde_json::from_str(params.get()).invalid_params()?;
+    if params.requires_replay() {
+        let tracer = MonadDebugTraceTransactionExecutor::new(triedb_env, params);
+        return collect_debug_trace_via_replay(request_id, app_state, &tracer).await;
+    }
+
     monad_debug_traceTransaction(triedb_env, &app_state.archive_reader, params)
         .await
         .map(serialize_result)?
