@@ -467,6 +467,127 @@ pub fn decode_revert_message(output_data: &[u8]) -> Option<String> {
     })
 }
 
+pub async fn eth_trace_block_or_transaction(
+    chain_id: u64,
+    block_header: Header,
+    block_number: u64,
+    block_id: Option<[u8; 32]>,
+    parent_id: Option<[u8; 32]>,
+    trace_transaction: bool,
+    transaction_index: u64,
+    eth_call_executor: Arc<Mutex<EthCallExecutor>>,
+    tracer: MonadTracer,
+) -> CallResult {
+    let chain_config = match chain_id {
+        ETHEREUM_MAINNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_ETHEREUM_MAINNET,
+        MONAD_DEVNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_DEVNET,
+        MONAD_TESTNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_TESTNET,
+        MONAD_MAINNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_MAINNET,
+        _ => {
+            return CallResult::Failure(FailureCallResult {
+                error_code: EthCallResult::OtherError,
+                message: "unsupported chain id".to_string(),
+                data: Some(chain_id.to_string()),
+            });
+        }
+    };
+
+    let mut rlp_encoded_block_header = vec![];
+    block_header.encode(&mut rlp_encoded_block_header);
+
+    let rlp_encoded_block_id = alloy_rlp::encode(block_id.unwrap_or([0_u8; 32]));
+
+    let rlp_encoded_parent_id = alloy_rlp::encode(parent_id.unwrap_or([0_u8; 32]));
+
+    let (send, recv) = channel();
+    let sender_ctx = Box::new(SenderContext { sender: send });
+
+    // hold lock on executor while submitting the task
+    let executor_lock = eth_call_executor.lock().await;
+    let eth_call_executor = executor_lock.eth_call_executor;
+
+    unsafe {
+        let sender_ctx_ptr = Box::into_raw(sender_ctx);
+
+        bindings::monad_eth_trace_block_or_transaction_executor_submit(
+            eth_call_executor,
+            chain_config,
+            rlp_encoded_block_header.as_ptr(),
+            rlp_encoded_block_header.len(),
+            block_number,
+            rlp_encoded_block_id.as_ptr(),
+            rlp_encoded_block_id.len(),
+            rlp_encoded_parent_id.as_ptr(),
+            rlp_encoded_parent_id.len(),
+            trace_transaction,
+            transaction_index,
+            Some(eth_call_submit_callback),
+            sender_ctx_ptr as *mut std::ffi::c_void,
+            tracer.into(),
+        )
+    };
+
+    let result = match recv.await {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(
+                "callback from eth_trace_block_or_transaction_executor failed: {:?}",
+                e
+            );
+
+            return CallResult::Failure(FailureCallResult {
+                error_code: EthCallResult::OtherError,
+                message: "internal eth_trace_block_or_transaction error".to_string(),
+                data: None,
+            });
+        }
+    };
+
+    unsafe {
+        let status_code = (*result).status_code;
+
+        let call_result = match status_code {
+            ETH_CALL_SUCCESS => {
+                // TODO(dhil): I don't think these matter for the output of prestate tracing. Other providers don't seem to return them in prestate mode.
+                let gas_used = (*result).gas_used as u64;
+                let gas_refund = (*result).gas_refund as u64;
+
+                let output_data_len = (*result).encoded_trace_len;
+                let output_data = if output_data_len != 0 {
+                    std::slice::from_raw_parts((*result).encoded_trace, output_data_len).to_vec()
+                } else {
+                    vec![]
+                };
+
+                CallResult::Success(SuccessCallResult {
+                    gas_used,
+                    gas_refund,
+                    output_data,
+                })
+            }
+            _ => {
+                let cstr_msg = CStr::from_ptr((*result).message.cast());
+                let message = match cstr_msg.to_str() {
+                    Ok(str) => String::from(str),
+                    Err(_) => String::from(
+                        "execution error eth_trace_block_or_transaction message invalid utf-8",
+                    ),
+                };
+
+                CallResult::Failure(FailureCallResult {
+                    error_code: EthCallResult::OtherError,
+                    message,
+                    data: None,
+                })
+            }
+        };
+
+        bindings::monad_eth_call_result_release(result);
+
+        call_result
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloy_primitives::hex;

@@ -616,7 +616,7 @@ impl CallParams {
 }
 
 #[tracing::instrument(level = "debug")]
-async fn prepare_eth_call<T: Triedb + TriedbPath>(
+pub async fn prepare_eth_call<T: Triedb + TriedbPath>(
     triedb_env: &T,
     eth_call_executor: Arc<Mutex<EthCallExecutor>>,
     chain_id: u64,
