@@ -28,6 +28,7 @@ pub mod gen_harness;
 pub mod metrics;
 pub mod refresher;
 pub mod rpc_sender;
+pub mod rpc_request_gen;
 
 pub use committed_tx_watcher::*;
 pub use gen_harness::*;
