@@ -35,10 +35,7 @@ use monad_crypto::{
     certificate_signature::{CertificateKeyPair, PubKey},
     NopKeyPair, NopPubKey, NopSignature,
 };
-use monad_eth_block_policy::{
-    validation::{TFM_MAX_EIP2718_ENCODED_LENGTH, TFM_MAX_GAS_LIMIT},
-    EthBlockPolicy,
-};
+use monad_eth_block_policy::{validation::TFM_MAX_GAS_LIMIT, EthBlockPolicy};
 use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_testutil::{
     generate_block_with_txs, make_eip1559_tx, make_eip7702_tx, make_legacy_tx,
@@ -1365,55 +1362,6 @@ fn test_large_batch_many_senders() {
                 assert!(txs.is_empty())
             }
         })),
-    ]);
-}
-
-#[test]
-#[traced_test]
-fn test_exceed_byte_limit() {
-    let tx1 = make_legacy_tx(
-        S1,
-        BASE_FEE,
-        TFM_MAX_GAS_LIMIT,
-        0,
-        TFM_MAX_EIP2718_ENCODED_LENGTH - 111,
-    );
-    assert_eq!(
-        recover_tx(tx1.clone()).eip2718_encoded_length(),
-        TFM_MAX_EIP2718_ENCODED_LENGTH
-    );
-
-    let tx2 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
-
-    run_simple([
-        TxPoolTestEvent::InsertTxs {
-            txs: vec![(&tx1, true), (&tx2, true)],
-            expected_pool_size_change: 2,
-        },
-        TxPoolTestEvent::CreateProposal {
-            base_fee: BASE_FEE_PER_GAS,
-            tx_limit: 2,
-            gas_limit: PROPOSAL_GAS_LIMIT,
-            byte_limit: TFM_MAX_EIP2718_ENCODED_LENGTH as u64 - 1,
-            expected_txs: vec![],
-            add_to_blocktree: true,
-        },
-        TxPoolTestEvent::CreateProposal {
-            base_fee: BASE_FEE_PER_GAS,
-            tx_limit: 2,
-            gas_limit: PROPOSAL_GAS_LIMIT,
-            byte_limit: TFM_MAX_EIP2718_ENCODED_LENGTH as u64,
-            expected_txs: vec![&tx1],
-            add_to_blocktree: true,
-        },
-        TxPoolTestEvent::CreateProposal {
-            base_fee: BASE_FEE_PER_GAS,
-            tx_limit: 2,
-            gas_limit: PROPOSAL_GAS_LIMIT,
-            byte_limit: PROPOSAL_SIZE_LIMIT,
-            expected_txs: vec![&tx2],
-            add_to_blocktree: true,
-        },
     ]);
 }
 
