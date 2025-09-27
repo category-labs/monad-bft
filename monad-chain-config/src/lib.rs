@@ -167,8 +167,8 @@ impl ChainConfig<MonadChainRevision> for MonadChainConfig {
 
 const MONAD_DEVNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     chain_id: MONAD_DEVNET_CHAIN_ID,
-    epoch_length: SeqNum(10_000),
-    epoch_start_delay: Round(1000),
+    epoch_length: SeqNum(5_000),
+    epoch_start_delay: Round(500),
 
     v_0_7_0_activation: Round::MIN,
     v_0_8_0_activation: Round::MIN,
