@@ -17,3 +17,6 @@ monad-mpt --storage /dev/triedb --truncate --yes
 if [ -f "/home/monad/.config/forkpoint.genesis.toml" ]; then
   yes | cp -rf /home/monad/.config/forkpoint.genesis.toml /home/monad/monad-bft/config/forkpoint/forkpoint.toml
 fi
+if [ -f "/home/monad/.config/validators.genesis.toml" ]; then
+  yes | cp -rf /home/monad/.config/validators.genesis.toml /home/monad/monad-bft/config/validators/validators.toml
+fi
