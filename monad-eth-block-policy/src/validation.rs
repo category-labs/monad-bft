@@ -16,6 +16,7 @@
 use alloy_consensus::{Transaction, TxEnvelope};
 use monad_chain_config::{execution_revision::ExecutionChainParams, revision::ChainParams};
 use monad_eth_txpool_types::TransactionError;
+use tracing::debug;
 
 /// Stateless helper function to check validity of an Ethereum transaction
 pub fn static_validate_transaction(
@@ -53,10 +54,14 @@ pub fn static_validate_transaction(
         match tx.authorization_list() {
             Some(auth_list) => {
                 if auth_list.is_empty() {
+                    debug!("invalid block: 7702 txn has empty auth list");
                     return Err(TransactionError::AuthorizationListEmpty);
                 }
             }
-            None => return Err(TransactionError::AuthorizationListEmpty),
+            None => {
+                debug!("invalid block: 7702 txn has empty auth list");
+                return Err(TransactionError::AuthorizationListEmpty);
+            }
         }
     }
 
@@ -71,14 +76,23 @@ struct TfmValidator;
 impl TfmValidator {
     fn validate(tx: &TxEnvelope, chain_params: &ChainParams) -> Result<(), TransactionError> {
         if tx.eip2718_encoded_length() > TFM_MAX_EIP2718_ENCODED_LENGTH {
+            debug!(
+                "invalid block: eip2718 encoded limit length exceeded {}",
+                tx.eip2718_encoded_length()
+            );
             return Err(TransactionError::EncodedLengthLimitExceeded);
         }
 
         if tx.gas_limit() > TFM_MAX_GAS_LIMIT {
+            debug!("invalid block: tfm gas limit exceeded, {}", tx.gas_limit());
             return Err(TransactionError::GasLimitTooHigh);
         }
 
         if tx.gas_limit() > chain_params.proposal_gas_limit {
+            debug!(
+                "invalid block: chain param gas limit exceeded, {}",
+                tx.gas_limit()
+            );
             return Err(TransactionError::GasLimitTooHigh);
         }
 
@@ -183,6 +197,7 @@ impl EthPragueForkValidation {
     fn eip_7623(tx: &TxEnvelope) -> Result<(), TransactionError> {
         let floor_data_gas = compute_floor_data_gas(tx);
         if tx.gas_limit() < floor_data_gas {
+            debug!("invalid block: gas limit too low {}", tx.gas_limit());
             return Err(TransactionError::GasLimitTooLow);
         }
         Ok(())

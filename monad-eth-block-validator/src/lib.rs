@@ -278,22 +278,33 @@ where
         } = &body.execution_body;
 
         if !ommers.is_empty() {
+            debug!("invalid block: ommers not empty");
             return Err(BlockValidationError::PayloadError);
         }
 
         if !withdrawals.is_empty() {
+            debug!("invalid block: withdrawals not empty");
             return Err(BlockValidationError::PayloadError);
         }
 
         // early return if number of transactions exceed limit
         // no need to individually validate transactions
         if transactions.len() > chain_params.tx_limit {
+            debug!(
+                "invalid block: num txns = {}, limit is {}",
+                transactions.len(),
+                chain_params.tx_limit
+            );
             return Err(BlockValidationError::TxnError);
         }
 
         // early return if sum of transaction gas limits exceed block gas limit
         let total_gas: u64 = transactions.iter().map(|tx| tx.gas_limit()).sum();
         if total_gas > chain_params.proposal_gas_limit {
+            debug!(
+                "invalid block: total gas = {}, limit is {}",
+                total_gas, chain_params.proposal_gas_limit
+            );
             return Err(BlockValidationError::TxnError);
         }
 
@@ -334,6 +345,10 @@ where
         );
 
         if proposal_size as u64 > chain_params.proposal_byte_limit {
+            debug!(
+                "invalid block: proposal byte size = {}, exceeds limit {}",
+                proposal_size, chain_params.proposal_byte_limit
+            );
             return Err(BlockValidationError::TxnError);
         }
 
@@ -368,6 +383,7 @@ where
             if static_validate_transaction(eth_txn, chain_id, chain_params, execution_chain_params)
                 .is_err()
             {
+                debug!("invalid block: txn failed static validation {:?}", eth_txn);
                 return Err(BlockValidationError::TxnError);
             }
         }
@@ -408,6 +424,11 @@ where
                 .base_fee
                 .unwrap_or(monad_tfm::base_fee::PRE_TFM_BASE_FEE);
             if eth_txn.max_fee_per_gas() < block_base_fee.into() {
+                debug!(
+                    "invalid block: txn fee = {}, less than base fee = {}",
+                    eth_txn.max_fee_per_gas(),
+                    block_base_fee
+                );
                 return Err(BlockValidationError::TxnError);
             }
 
@@ -424,10 +445,15 @@ where
                         let Some(expected_nonce) = eth_txn.nonce().checked_sub(1) else {
                             // eth_txn replaced tx with nonce `old_nonce` but
                             // `eth_txn.nonce() == 0` so old tx muts be invalid
+                            debug!("invalid block: nonce is 0");
                             return Err(BlockValidationError::TxnError);
                         };
 
                         if expected_nonce != old_nonce {
+                            debug!(
+                                "invalid block: expected nonce {} does not equal old nonce {}",
+                                expected_nonce, old_nonce
+                            );
                             return Err(BlockValidationError::TxnError);
                         }
                     }
@@ -465,6 +491,7 @@ where
 
                     // do not allow system account from sending authorization
                     if authority == SYSTEM_SENDER_ETH_ADDRESS {
+                        debug!("invalid block: system sender addr used as 7702 authority");
                         return Err(BlockValidationError::TxnError);
                     }
 
