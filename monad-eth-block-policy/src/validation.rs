@@ -63,7 +63,6 @@ pub fn static_validate_transaction(
     Ok(())
 }
 
-pub const TFM_MAX_EIP2718_ENCODED_LENGTH: usize = 384 * 1024;
 pub const TFM_MAX_GAS_LIMIT: u64 = 30_000_000;
 pub const EIP_7702_PER_EMPTY_ACCOUNT_COST: u64 = 25_000;
 
@@ -76,10 +75,6 @@ impl TfmValidator {
     ) -> Result<(), TransactionError> {
         if execution_chain_params.tfm_enabled {
             // tfm-specific gating
-            if tx.eip2718_encoded_length() > TFM_MAX_EIP2718_ENCODED_LENGTH {
-                return Err(TransactionError::EncodedLengthLimitExceeded);
-            }
-
             if tx.gas_limit() > TFM_MAX_GAS_LIMIT {
                 return Err(TransactionError::GasLimitTooHigh);
             }
@@ -316,36 +311,6 @@ mod test {
         let address = Address(FixedBytes([0x11; 20]));
 
         let chain_id: u64 = MockChainConfig::DEFAULT.chain_id();
-
-        // tx exceeds tfm encoded length limit
-        let tx_exceeds_length_limit = TxLegacy {
-            chain_id: None,
-            nonce: 0,
-            to: TxKind::Call(address),
-            gas_price: 1000,
-            gas_limit: 1_000_000,
-            input: Bytes::from(vec![0u8;
-                // 104: Magic number such that txn.eip2718_encoded_length() == TFM_MAX_EIP2718_ENCODED_LENGTH + 1
-                 TFM_MAX_EIP2718_ENCODED_LENGTH - 104]),
-            ..Default::default()
-        };
-        let signature = sign_tx(&tx_exceeds_length_limit.signature_hash());
-        let txn = tx_exceeds_length_limit.into_signed(signature);
-        assert_eq!(
-            txn.eip2718_encoded_length(),
-            TFM_MAX_EIP2718_ENCODED_LENGTH + 1
-        );
-
-        let result = static_validate_transaction(
-            &txn.into(),
-            chain_id,
-            MockChainRevision::DEFAULT.chain_params,
-            MonadExecutionRevision::LATEST.execution_chain_params(),
-        );
-        assert!(matches!(
-            result,
-            Err(TransactionError::EncodedLengthLimitExceeded)
-        ));
 
         // tx exceeds tfm gas limit
         let tx_exceeds_length_limit = TxLegacy {
