@@ -31,7 +31,13 @@ impl Generator for ECMulGenerator {
 
         for sender in accts {
             for _ in 0..self.tx_per_sender {
-                let tx = self.ecmul.construct_tx(sender, ctx.base_fee, ctx.chain_id);
+                let tx = self.ecmul.construct_tx(
+                    sender,
+                    ctx.base_fee,
+                    ctx.chain_id,
+                    ctx.set_tx_gas_limit,
+                    ctx.priority_fee,
+                );
                 txs.push((tx, self.ecmul.addr));
             }
         }

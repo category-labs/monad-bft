@@ -33,6 +33,10 @@ pub trait Generator {
 pub struct GenCtx {
     pub base_fee: u128,
     pub chain_id: u64,
+    pub gas_limit_contract_deployment: Option<u64>,
+    pub set_tx_gas_limit: Option<u64>,
+    pub priority_fee: Option<u64>,
+    pub random_priority_fee_range: Option<(u64, u64)>,
 }
 
 impl GenCtx {
@@ -59,6 +63,12 @@ pub struct GeneratorHarness {
     pub chain_id: u64,
     pub gen_mode: GenMode,
 
+    // New config fields
+    pub gas_limit_contract_deployment: Option<u64>,
+    pub set_tx_gas_limit: Option<u64>,
+    pub priority_fee: Option<u64>,
+    pub random_priority_fee_range: Option<(u64, u64)>,
+
     pub shutdown: Arc<AtomicBool>,
 }
 
@@ -74,6 +84,10 @@ impl GeneratorHarness {
         base_fee: &Arc<Mutex<u128>>,
         chain_id: u64,
         gen_mode: GenMode,
+        gas_limit_contract_deployment: Option<u64>,
+        set_tx_gas_limit: Option<u64>,
+        priority_fee: Option<u64>,
+        random_priority_fee_range: Option<(u64, u64)>,
         shutdown: Arc<AtomicBool>,
     ) -> Self {
         Self {
@@ -88,6 +102,10 @@ impl GeneratorHarness {
             base_fee: Arc::clone(base_fee),
             chain_id,
             gen_mode,
+            gas_limit_contract_deployment,
+            set_tx_gas_limit,
+            priority_fee,
+            random_priority_fee_range,
             shutdown,
         }
     }
@@ -118,6 +136,10 @@ impl GeneratorHarness {
                 &GenCtx {
                     base_fee,
                     chain_id: self.chain_id,
+                    gas_limit_contract_deployment: self.gas_limit_contract_deployment,
+                    set_tx_gas_limit: self.set_tx_gas_limit,
+                    priority_fee: self.priority_fee,
+                    random_priority_fee_range: self.random_priority_fee_range,
                 },
             );
 
@@ -135,6 +157,10 @@ impl GeneratorHarness {
                             &GenCtx {
                                 base_fee,
                                 chain_id: self.chain_id,
+                                gas_limit_contract_deployment: self.gas_limit_contract_deployment,
+                                set_tx_gas_limit: self.set_tx_gas_limit,
+                                priority_fee: self.priority_fee,
+                                random_priority_fee_range: self.random_priority_fee_range,
                             },
                         );
                         txs.push((tx, acct.addr));

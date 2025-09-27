@@ -33,12 +33,13 @@ impl Generator for HighCallDataTxGenerator {
             for _ in 0..self.tx_per_sender {
                 let to = self.recipient_keys.next_addr();
 
-                let tx = ERC20::deploy_tx_with_gas_limit(
+                let tx = ERC20::deploy_tx_with_gas_limit_and_priority(
                     sender.nonce,
                     &sender.key,
                     ctx.base_fee * 2,
                     ctx.chain_id,
-                    self.gas_limit,
+                    ctx.set_tx_gas_limit.unwrap_or(self.gas_limit), // use CLI override or generator default
+                    ctx.priority_fee.unwrap_or(10), // 10 default, override with --priority-fee
                 );
                 sender.nonce += 1;
 
