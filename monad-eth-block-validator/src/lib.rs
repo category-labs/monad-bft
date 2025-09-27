@@ -365,9 +365,10 @@ where
 
         // early return if any user transaction fails static validation
         for eth_txn in eth_txns.iter() {
-            if static_validate_transaction(eth_txn, chain_id, chain_params, execution_chain_params)
-                .is_err()
+            if let Err(e) =
+                static_validate_transaction(eth_txn, chain_id, chain_params, execution_chain_params)
             {
+                tracing::debug!("block body static validation failed: {:?}", e);
                 return Err(BlockValidationError::TxnError);
             }
         }
