@@ -6,8 +6,48 @@ This repository contains implementation for the Monad consensus client and JsonR
 
 ## Getting Started
 
+From within the `monad-bft` root directory, initialize and update submodules.
+
 ```sh
 git submodule update --init --recursive
+```
+
+Setup the required hugepages and networking configuration.
+
+```bash
+# Hugepages allocation
+sudo sysctl -w vm.nr_hugepages=2048
+# UDP buffer sizes
+sudo sysctl -w net.core.rmem_max=62500000
+sudo sysctl -w net.core.rmem_default=62500000
+sudo sysctl -w net.core.wmem_max=62500000
+sudo sysctl -w net.core.wmem_default=62500000
+# TCP buffer sizes
+sudo sysctl -w net.ipv4.tcp_rmem='4096 62500000 62500000'
+sudo sysctl -w net.ipv4.tcp_wmem='4096 62500000 62500000'
+```
+
+To make these persistent, you can create a custom settings file, e.g. `/etc/sysctl.d/99-custom-monad.conf` with the following settings:
+
+```bash
+# Huge Pages Configuration
+vm.nr_hugepages = 2048
+
+# UDP Buffer Sizes
+net.core.rmem_max = 62500000
+net.core.rmem_default = 62500000
+net.core.wmem_max = 62500000
+net.core.wmem_default = 62500000
+
+# TCP Buffer Sizes
+net.ipv4.tcp_rmem = 4096 62500000 62500000
+net.ipv4.tcp_wmem = 4096 62500000 62500000
+```
+
+Apply these changes if needed.
+
+```bash
+sudo sysctl -p /etc/sysctl.d/99-custom-monad.conf
 ```
 
 ### Using Docker
@@ -16,7 +56,19 @@ The most straightforward way to start a consensus client + an execution client +
 1. `cd docker/single-node`
 2. `nets/run.sh`
 
-This will start a single node with chain ID of 20143 and RPC at localhost:8080. The known [Foundry/Anvil accounts](https://getfoundry.sh/anvil/overview/) have each been loaded with [large initial balances](https://github.com/category-labs/monad/blob/ce4101b11701bf4ef3a9cd996a6144883735187f/category/execution/monad/chain/monad_devnet_alloc.hpp#L22).
+This will start a single node with chain ID of 20143 and RPC at localhost:8080. The known [Foundry/Anvil accounts](https://getfoundry.sh/anvil/overview/) have each been loaded with [large initial balances](https://github.com/category-labs/monad/blob/ce4101b11701bf4ef3a9cd996a6144883735187f/category/execution/monad/chain/monad_devnet_alloc.hpp#L22). The easiest way to fund transactions is to import the private key from one of those pre-allocated accounts.
+
+To test the RPC connection, try the following query:
+
+```bash
+curl -X POST http://localhost:8080 \
+  -H "Content-Type: application/json" \
+  --data '{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}'
+```
+
+This should return `{"jsonrpc":"2.0","result":"0x4eaf","id":1}`, which [converts](https://www.rapidtables.com/convert/number/hex-to-decimal.html?x=4EAF) to 20143.
+
+Please consult the [official RPC docs](https://docs.monad.xyz/reference/) as there are small differences between Monad and Ethereum JSON-RPC.
 
 ### Using Cargo
 
