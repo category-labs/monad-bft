@@ -95,6 +95,9 @@ pub struct Config {
 
     /// Report directory
     pub report_dir: Option<String>,
+
+    /// Prometheus URL
+    pub prom_url: Option<String>,
 }
 
 impl Default for Config {
@@ -129,6 +132,7 @@ impl Default for Config {
             erc20_contract: None,
             native_contract: None,
             report_dir: Some("reports".to_string()),
+            prom_url: None,
         }
     }
 }

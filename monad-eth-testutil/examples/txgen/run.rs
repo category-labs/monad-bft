@@ -175,9 +175,11 @@ async fn run_workload_group(
 
     // Write report regardless of result
     if let Some(report_dir) = config.report_dir.as_deref() {
-        if let Err(e) = Report::new(config.clone(), workload_group_index, start_time, &metrics)
-            .to_json_file(report_dir.as_ref())
-        {
+        let mut report = Report::new(config.clone(), workload_group_index, start_time, &metrics);
+        if let Err(e) = report.join_stats(config.prom_url.clone()).await {
+            error!("Failed to join stats for report: {e:?}");
+        }
+        if let Err(e) = report.to_json_file(report_dir.as_ref()) {
             error!("Failed to write report: {e:?}");
         }
     };

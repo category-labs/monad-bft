@@ -21,6 +21,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::prelude::*;
 
+pub mod join;
+pub mod stats;
+
+pub use join::*;
+pub use stats::*;
+
 impl Report {
     pub fn new(
         config: Config,
@@ -41,7 +47,18 @@ impl Report {
             txs_committed,
             txs_dropped,
             target_tps,
+            stats: HashMap::new(),
+            stats_str: String::new(),
         }
+    }
+
+    pub async fn join_stats(&mut self, prom_url: Option<String>) -> Result<()> {
+        let report = join_stats(prom_url, self.start_time, self.end_time)
+            .await
+            .wrap_err("Failed to join stats for Workload Group Report")?;
+        self.stats = report.0;
+        self.stats_str = report.1;
+        Ok(())
     }
 
     pub fn to_json_file(&self, dir: &std::path::Path) -> Result<()> {
@@ -79,4 +96,6 @@ pub struct Report {
     txs_committed: usize,
     txs_dropped: usize,
     target_tps: usize,
+    stats: HashMap<String, CounterStatsReport>,
+    stats_str: String,
 }
