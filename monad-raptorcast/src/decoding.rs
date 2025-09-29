@@ -65,6 +65,11 @@ pub(crate) const P2P_TIER_CONFIG: SoftQuotaCacheConfig = SoftQuotaCacheConfig {
     max_total_size_per_validator: None,
 };
 
+/// The maximum total message size considered sane for a single cache
+/// tier. Panic on startup if a cache's max_total_size exceeds this
+/// limit.
+pub const MAX_TOTAL_SIZE_LIMIT: usize = 20 * 1024 * 1024 * 1024; // 20 GB
+
 // An abstract size of a message loosely corresponding to the memory
 // usage of its corresponding cache entry. We currently use
 // app_message_length as the value of this size.
@@ -451,8 +456,13 @@ struct SoftQuotaCache<PT: PubKey> {
     total_slots: usize,
     max_total_size: MessageSize,
 
+    // Any updates to the cache must be atomic such that `cache_store`
+    // and `author_index` remain consistent (*) before and after the
+    // update. (*): Consistent in the sense that they always track the
+    // same set of cache entries.
     cache_store: CacheStore<PT>,
     author_index: AuthorIndex<PT>,
+
     quota_policy: Box<dyn QuotaPolicy<PT> + Send + Sync>,
 }
 
@@ -462,6 +472,10 @@ impl<PT: PubKey> SoftQuotaCache<PT> {
 
         let approx_num_authors = (config.total_slots / config.min_slots_per_author).max(1);
         let max_total_size = config.max_total_size_per_author * approx_num_authors;
+
+        if max_total_size > MAX_TOTAL_SIZE_LIMIT {
+            panic!("SoftQuotaCache max_total_size ({max_total_size}) exceeds the sane limit of {MAX_TOTAL_SIZE_LIMIT} bytes");
+        }
 
         Self {
             total_slots: config.total_slots,
@@ -495,14 +509,22 @@ impl<PT: PubKey> SoftQuotaCache<PT> {
             // current author is over quota, evict overquota cache entries
             // from this author.
             let evicted_keys = self.author_index.enforce_quota(&message.author, context);
-            self.cache_store.remove_many(&evicted_keys);
-            debug_assert!(!self.is_full());
-            tracing::debug!(
-                ?message,
-                ?context,
-                "enforced decoding cache quota for author"
-            );
-            return;
+
+            // evicted_keys should be non-empty. However, it may be
+            // possible to be empty if the author's quota increases
+            // on-the-fly should a by-stake quota policy be used. In
+            // this case, we fall back to other eviction mechanisms
+            // for safety.
+            if !evicted_keys.is_empty() {
+                self.cache_store.remove_many(&evicted_keys);
+                debug_assert!(!self.is_full());
+                tracing::debug!(
+                    ?message,
+                    ?context,
+                    "enforced decoding cache quota for author"
+                );
+                return;
+            }
         }
 
         // current author is below its quota, evict overquota entries
