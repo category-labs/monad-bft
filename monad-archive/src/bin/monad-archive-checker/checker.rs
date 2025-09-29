@@ -833,7 +833,7 @@ pub fn find_inconsistent_reason(
 
 #[cfg(test)]
 pub mod tests {
-    use alloy_primitives::{Address, Bytes, FixedBytes, U8};
+    use alloy_primitives::{Address, Bytes, FixedBytes, Log, LogData, U8};
     use alloy_rlp::Encodable;
     use monad_archive::{
         kvstore::memory::MemoryStorage,
@@ -1032,6 +1032,35 @@ pub mod tests {
             output: Bytes::from(vec![4, 5, 6]),
             status: U8::from(1),
             depth: U64::from(1),
+            logs: Some(vec![
+                CallFrameLog {
+                    log: Log {
+                        address: Address::default(),
+                        data: LogData::new(
+                            vec![FixedBytes::<32>::from([1u8; 32])],
+                            Bytes::from(vec![7, 8, 9]),
+                        )
+                        .unwrap(),
+                    },
+                    position: U64::from(1),
+                },
+                CallFrameLog {
+                    log: Log {
+                        address: Address::default(),
+                        data: LogData::new(
+                            vec![
+                                FixedBytes::<32>::from([1u8; 32]),
+                                FixedBytes::<32>::from([2u8; 32]),
+                                FixedBytes::<32>::from([3u8; 32]),
+                                FixedBytes::<32>::from([4u8; 32]),
+                            ],
+                            Bytes::from(vec![10, 11, 12]),
+                        )
+                        .unwrap(),
+                    },
+                    position: U64::from(1),
+                },
+            ]),
         };
         let mut buf = Vec::new();
         vec![vec![call_frame; 2]; 2].encode(&mut &mut buf);
