@@ -46,8 +46,8 @@ use monad_crypto::certificate_signature::{
 };
 use monad_state_backend::StateBackend;
 use monad_types::{
-    deserialize_certificate_signature, deserialize_pubkey, serialize_certificate_signature,
-    serialize_pubkey, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum, Stake,
+    deserialize_pubkey, serialize_pubkey, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget,
+    SeqNum, Stake,
 };
 use monad_validator::signature_collection::SignatureCollection;
 use serde::{Deserialize, Serialize};
@@ -233,16 +233,13 @@ pub enum GetMetrics {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(bound = "ST: CertificateSignatureRecoverable")]
 pub struct PeerEntry<ST: CertificateSignatureRecoverable> {
     #[serde(serialize_with = "serialize_pubkey::<_, CertificateSignaturePubKey<ST>>")]
     #[serde(deserialize_with = "deserialize_pubkey::<_, CertificateSignaturePubKey<ST>>")]
-    #[serde(bound = "ST: CertificateSignatureRecoverable")]
     pub pubkey: CertificateSignaturePubKey<ST>,
     pub addr: SocketAddrV4,
 
-    #[serde(serialize_with = "serialize_certificate_signature::<_, ST>")]
-    #[serde(deserialize_with = "deserialize_certificate_signature::<_, ST>")]
-    #[serde(bound = "ST: CertificateSignatureRecoverable")]
     pub signature: ST,
     pub record_seq_num: u64,
 }
@@ -707,7 +704,7 @@ where
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 pub enum ConsensusEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -836,7 +833,7 @@ where
 }
 
 /// BlockSync related events
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 pub enum BlockSyncEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -1006,7 +1003,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum ValidatorEvent<SCT: SignatureCollection> {
     UpdateValidators(ValidatorSetDataWithEpoch<SCT>),
 }
@@ -1037,7 +1034,7 @@ impl<SCT: SignatureCollection> Decodable for ValidatorEvent<SCT> {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 pub enum MempoolEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -1348,7 +1345,9 @@ pub const STATESYNC_VERSION_V2: StateSyncVersion = StateSyncVersion { major: 1, 
 pub const SELF_STATESYNC_VERSION: StateSyncVersion = STATESYNC_VERSION_V2;
 pub const STATESYNC_VERSION_MIN: StateSyncVersion = STATESYNC_VERSION_V0;
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, RlpEncodable, RlpDecodable)]
+#[derive(
+    Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, RlpEncodable, RlpDecodable, Serialize,
+)]
 pub struct StateSyncVersion {
     major: u16,
     minor: u16,
@@ -1371,7 +1370,7 @@ impl StateSyncVersion {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, RlpEncodable)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, RlpEncodable, Serialize)]
 pub struct StateSyncRequest {
     pub version: StateSyncVersion,
 
@@ -1421,7 +1420,7 @@ impl Decodable for StateSyncRequest {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum StateSyncUpsertType {
     Code,
     Account,
@@ -1431,13 +1430,13 @@ pub enum StateSyncUpsertType {
     Header,
 }
 
-#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
 pub struct StateSyncUpsertV0 {
     pub upsert_type: StateSyncUpsertType,
     pub data: Vec<u8>,
 }
 
-#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
 pub struct StateSyncUpsertV1 {
     pub upsert_type: StateSyncUpsertType,
     pub data: Bytes,
@@ -1521,13 +1520,13 @@ impl Decodable for StateSyncUpsertType {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
 pub struct StateSyncBadVersion {
     pub min_version: StateSyncVersion,
     pub max_version: StateSyncVersion,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 pub struct StateSyncResponse {
     pub version: StateSyncVersion,
     pub nonce: u64,
@@ -1636,10 +1635,10 @@ impl Debug for StateSyncResponse {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
 pub struct SessionId(pub u64);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum StateSyncNetworkMessage {
     Request(StateSyncRequest),
     Response(StateSyncResponse),
@@ -1715,7 +1714,7 @@ impl Decodable for StateSyncNetworkMessage {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub enum StateSyncEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -1726,7 +1725,7 @@ where
     Outbound(
         NodeId<SCT::NodeIdPubKey>,
         StateSyncNetworkMessage,
-        Option<oneshot::Sender<()>>, // completion
+        #[serde(skip)] Option<oneshot::Sender<()>>, // completion
     ),
 
     /// Execution done syncing
@@ -1822,7 +1821,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum ControlPanelEvent<ST>
 where
     ST: CertificateSignatureRecoverable,
@@ -1889,7 +1888,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
 pub struct ConfigUpdate<SCT>
 where
     SCT: SignatureCollection,
@@ -1899,7 +1898,7 @@ where
     pub blocksync_override_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
 pub struct KnownPeersUpdate<ST>
 where
     ST: CertificateSignatureRecoverable,
@@ -1908,7 +1907,7 @@ where
     pub pinned_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum ConfigEvent<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
@@ -1965,7 +1964,7 @@ where
 }
 
 /// MonadEvent are inputs to MonadState
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub enum MonadEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -2197,7 +2196,7 @@ where
 
 /// Wrapper around MonadEvent to capture more information that is useful in logs for
 /// retrospection
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct LogFriendlyMonadEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,

@@ -17,6 +17,7 @@ monad-validator = { workspace = true }
 
 alloy-rlp = { workspace = true }
 lru = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 tracing = { workspace = true }
 
 [dev-dependencies]

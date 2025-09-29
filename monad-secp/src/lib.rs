@@ -26,6 +26,7 @@ use monad_crypto::{
 };
 pub use recoverable_address::RecoverableAddress;
 pub use secp::{Error, KeyPair, PubKey, SecpSignature};
+use serde::{Deserialize, Serialize};
 
 impl std::fmt::Display for PubKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -122,6 +123,34 @@ impl CertificateSignatureRecoverable for SecpSignature {
         msg: &[u8],
     ) -> Result<CertificateSignaturePubKey<Self>, <Self as CertificateSignature>::Error> {
         self.recover_pubkey::<SD>(msg)
+    }
+}
+
+impl Serialize for SecpSignature {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let hex_str = "0x".to_string() + &hex::encode(self.serialize());
+        serializer.serialize_str(&hex_str)
+    }
+}
+
+impl<'de> Deserialize<'de> for SecpSignature {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let buf = <String as Deserialize>::deserialize(deserializer)?;
+
+        let hex_str = match buf.strip_prefix("0x") {
+            Some(hex_str) => hex_str,
+            None => &buf,
+        };
+
+        let bytes = hex::decode(hex_str).map_err(<D::Error as serde::de::Error>::custom)?;
+
+        Self::deserialize(bytes.as_ref()).map_err(<D::Error as serde::de::Error>::custom)
     }
 }
 

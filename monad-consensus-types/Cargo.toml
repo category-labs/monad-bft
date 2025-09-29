@@ -20,7 +20,7 @@ alloy-rlp = { workspace = true }
 auto_impl = { workspace = true }
 bytes = { workspace = true }
 hex = { workspace = true }
-serde = { workspace = true, features = ["serde_derive"] }
+serde = { workspace = true, features = ["rc", "serde_derive"] }
 toml = { workspace = true }
 
 [dev-dependencies]

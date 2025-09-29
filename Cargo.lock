@@ -4852,6 +4852,7 @@ dependencies = [
  "monad-validator",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
+ "serde",
  "test-case",
  "tracing",
 ]
@@ -4884,6 +4885,7 @@ dependencies = [
  "monad-types",
  "monad-validator",
  "rand 0.8.5",
+ "serde",
  "test-case",
  "zeroize",
 ]
@@ -4926,6 +4928,7 @@ dependencies = [
  "monad-testutil",
  "monad-types",
  "monad-validator",
+ "serde",
  "test-case",
  "tracing",
 ]
@@ -5841,6 +5844,7 @@ dependencies = [
  "rand 0.8.5",
  "rstest",
  "secp256k1",
+ "serde",
  "sha2",
  "tiny-keccak",
  "zeroize",

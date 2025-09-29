@@ -32,7 +32,8 @@ use itertools::Itertools;
 use message::{InboundRouterMessage, OutboundRouterMessage};
 use monad_crypto::{
     certificate_signature::{
-        CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
+        CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
+        CertificateSignatureRecoverable,
     },
     signing_domain,
 };
@@ -234,11 +235,12 @@ where
                 // TODO make this more sophisticated
                 // include timestamp, etc
                 let mut signed_message = BytesMut::zeroed(SIGNATURE_SIZE + app_message.len());
-                let signature = ST::sign::<signing_domain::RaptorcastAppMessage>(
+                let signature = <ST as CertificateSignature>::serialize(&ST::sign::<
+                    signing_domain::RaptorcastAppMessage,
+                >(
                     &app_message,
                     &self.signing_key,
-                )
-                .serialize();
+                ));
                 assert_eq!(signature.len(), SIGNATURE_SIZE);
                 signed_message[..SIGNATURE_SIZE].copy_from_slice(&signature);
                 signed_message[SIGNATURE_SIZE..].copy_from_slice(&app_message);
@@ -831,7 +833,7 @@ where
                 continue;
             }
             let signature_bytes = &payload[..SIGNATURE_SIZE];
-            let signature = match ST::deserialize(signature_bytes) {
+            let signature = match <ST as CertificateSignature>::deserialize(signature_bytes) {
                 Ok(signature) => signature,
                 Err(err) => {
                     warn!(?err, ?src_addr, "invalid signature");

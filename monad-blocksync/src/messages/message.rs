@@ -23,6 +23,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_types::ExecutionProtocol;
 use monad_validator::signature_collection::SignatureCollection;
+use serde::Serialize;
 
 const BLOCK_SYNC_REQUEST_MESSAGE_NAME: &str = "BlockSyncRequestMessage";
 const BLOCK_SYNC_RESPONSE_MESSAGE_NAME: &str = "BlockSyncResponseMessage";
@@ -33,7 +34,7 @@ const BLOCK_SYNC_PAYLOAD_RESPONSE_NAME: &str = "BlockSyncBodyResponse";
 ///
 /// The node sends the block sync request either missing blocks headers or
 /// a single payload
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize)]
 pub enum BlockSyncRequestMessage {
     Headers(BlockRange),
     Payload(ConsensusBlockBodyId),
@@ -74,7 +75,7 @@ impl Decodable for BlockSyncRequestMessage {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum BlockSyncHeadersResponse<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -147,7 +148,7 @@ where
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum BlockSyncBodyResponse<EPT>
 where
     EPT: ExecutionProtocol,
@@ -211,7 +212,7 @@ where
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum BlockSyncResponseMessage<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,

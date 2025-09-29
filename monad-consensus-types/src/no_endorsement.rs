@@ -16,10 +16,11 @@
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use monad_types::{Epoch, Round};
 use monad_validator::signature_collection::SignatureCollection;
+use serde::Serialize;
 
 use crate::timeout::NoTipCertificate;
 
-#[derive(PartialEq, Eq, Clone, Debug, RlpEncodable, RlpDecodable)]
+#[derive(PartialEq, Eq, Clone, Debug, RlpEncodable, RlpDecodable, Serialize)]
 pub struct NoEndorsement {
     /// The epoch this message was generated in
     pub epoch: Epoch,
@@ -30,14 +31,14 @@ pub struct NoEndorsement {
     pub tip_qc_round: Round,
 }
 
-#[derive(PartialEq, Eq, Clone, Debug, RlpEncodable, RlpDecodable)]
+#[derive(PartialEq, Eq, Clone, Debug, RlpEncodable, RlpDecodable, Serialize)]
 pub struct NoEndorsementCertificate<SCT: SignatureCollection> {
     pub msg: NoEndorsement,
 
     pub signatures: SCT,
 }
 
-#[derive(PartialEq, Eq, Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug, Serialize)]
 pub enum FreshProposalCertificate<SCT: SignatureCollection> {
     Nec(NoEndorsementCertificate<SCT>),
     NoTip(NoTipCertificate<SCT>),

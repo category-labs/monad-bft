@@ -17,6 +17,7 @@ alloy-rlp = { workspace = true }
 hex = { workspace = true }
 k256 = { workspace = true }
 secp256k1 = { workspace = true, features = ["global-context", "recovery"] }
+serde = { workspace = true, features = ["derive"] }
 sha2 = { workspace = true }
 zeroize = { workspace = true, features = ["derive"] }
 

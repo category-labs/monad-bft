@@ -17,6 +17,7 @@ alloy-rlp = { workspace = true }
 bitvec = { workspace = true, features = ["serde"] }
 blst = { workspace = true }
 hex = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 zeroize = { workspace = true }
 
 [dev-dependencies]

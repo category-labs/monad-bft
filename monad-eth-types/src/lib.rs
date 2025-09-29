@@ -15,6 +15,7 @@
 
 use std::{fmt::Debug, ops::Deref};
 
+use ::serde::Serialize;
 use alloy_consensus::{transaction::Recovered, Header, TxEnvelope};
 use alloy_eips::eip7702::RecoveredAuthorization;
 use alloy_primitives::{Address, B256};
@@ -53,7 +54,7 @@ pub struct EthAccount {
     pub is_delegated: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct ProposedEthHeader {
     pub ommers_hash: [u8; 32],
     pub beneficiary: Address,
@@ -180,7 +181,7 @@ impl Decodable for ProposedEthHeader {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, RlpEncodableWrapper, RlpDecodableWrapper)]
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodableWrapper, RlpDecodableWrapper, Serialize)]
 pub struct EthHeader(pub Header);
 
 impl FinalizedHeader for EthHeader {
@@ -189,7 +190,7 @@ impl FinalizedHeader for EthHeader {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Default)]
+#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Default)]
 pub struct EthBlockBody {
     // TODO consider storing recovered txs inline here
     pub transactions: Vec<TxEnvelope>,
@@ -197,9 +198,9 @@ pub struct EthBlockBody {
     pub withdrawals: Vec<Withdrawal>,
 }
 
-#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
 pub struct Ommer {}
-#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
 pub struct Withdrawal {}
 
 impl Debug for EthBlockBody {
@@ -210,7 +211,7 @@ impl Debug for EthBlockBody {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, RlpEncodable, RlpDecodable)]
+#[derive(Clone, PartialEq, Eq, Debug, RlpEncodable, RlpDecodable, Serialize)]
 pub struct EthExecutionProtocol;
 impl ExecutionProtocol for EthExecutionProtocol {
     type ProposedHeader = ProposedEthHeader;

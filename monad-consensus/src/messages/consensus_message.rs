@@ -21,6 +21,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_types::{ExecutionProtocol, Round};
 use monad_validator::signature_collection::SignatureCollection;
+use serde::Serialize;
 
 use crate::{
     messages::message::{
@@ -33,7 +34,7 @@ use crate::{
 const PROTOCOL_MESSAGE_NAME: &str = "ProtocolMessage";
 
 /// Consensus protocol messages
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 pub enum ProtocolMessage<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -156,7 +157,7 @@ where
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
 pub struct ConsensusMessage<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,

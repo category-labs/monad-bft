@@ -16,6 +16,7 @@
 use std::fmt::{Debug, Display};
 
 use alloy_rlp::{RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
+use serde::{Deserialize, Serialize};
 
 pub mod certificate_signature;
 pub mod hasher;
@@ -27,7 +28,17 @@ pub struct NopKeyPair {
 }
 
 #[derive(
-    Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, RlpDecodableWrapper, RlpEncodableWrapper,
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    RlpDecodableWrapper,
+    RlpEncodableWrapper,
+    Serialize,
+    Deserialize,
 )]
 pub struct NopPubKey([u8; 32]);
 
@@ -48,7 +59,9 @@ impl Display for NopPubKey {
 }
 
 /// NopSignature is an implementation of CertificateSignature that's not cryptographically secure
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, RlpEncodable, RlpDecodable)]
+#[derive(
+    Debug, Copy, Clone, PartialEq, Eq, Hash, RlpEncodable, RlpDecodable, Serialize, Deserialize,
+)]
 pub struct NopSignature {
     pub pubkey: NopPubKey,
     pub id: u64,

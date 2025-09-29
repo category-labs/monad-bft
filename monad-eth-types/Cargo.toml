@@ -13,7 +13,7 @@ monad-crypto = { workspace = true }
 monad-secp = { workspace = true }
 monad-types = { workspace = true }
 
-alloy-consensus = { workspace = true }
+alloy-consensus = { workspace = true, features = ["serde"] }
 alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true, features = ["serde"] }
 alloy-rlp = { workspace = true, features = ["derive"] }

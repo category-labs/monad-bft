@@ -14,18 +14,16 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
-use monad_types::{deserialize_certificate_signature, serialize_certificate_signature, Round};
+use monad_types::Round;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
+#[serde(bound = "ST: CertificateSignatureRecoverable")]
 pub struct PeerDiscoveryConfig<ST: CertificateSignatureRecoverable> {
     pub self_address: String,
     pub self_record_seq_num: u64,
 
-    #[serde(serialize_with = "serialize_certificate_signature::<_, ST>")]
-    #[serde(deserialize_with = "deserialize_certificate_signature::<_, ST>")]
-    #[serde(bound = "ST: CertificateSignatureRecoverable")]
     pub self_name_record_sig: ST,
 
     pub refresh_period: u64,

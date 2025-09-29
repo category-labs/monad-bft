@@ -34,6 +34,7 @@ use monad_types::{
     GENESIS_SEQ_NUM,
 };
 use monad_validator::signature_collection::SignatureCollection;
+use serde::Serialize;
 
 use crate::{
     block_validator::BlockValidationError,
@@ -45,7 +46,7 @@ use crate::{
 pub const GENESIS_TIMESTAMP: u128 = 0;
 
 /// Represent a range of blocks the last of which is `last_block_id` and includes `num_blocks`.
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
 pub struct BlockRange {
     pub last_block_id: BlockId,
     pub num_blocks: SeqNum,
@@ -59,7 +60,7 @@ pub struct BlockRange {
 /// We do not derive RlpEncodable/RlpDecodable with #[rlp(trailing)] because
 /// decoding of 0x80 in trailing fields is ambiguous. Both None and Some(0_u64)
 /// encode to 0x80. It decodes 0x80 to None only
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 pub struct ConsensusBlockHeader<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -531,7 +532,7 @@ where
     fn reset(&mut self, _: Vec<&Self::ValidatedBlock>, _: &MockChainConfig) {}
 }
 
-#[derive(Debug, Clone, RlpEncodable, RlpDecodable)]
+#[derive(Debug, Clone, RlpEncodable, RlpDecodable, Serialize)]
 pub struct ConsensusFullBlock<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -632,7 +633,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, RlpDecodable, RlpEncodable)]
+#[derive(Debug, Clone, PartialEq, Eq, RlpDecodable, RlpEncodable, Serialize)]
 pub struct ProposedExecutionInputs<EPT>
 where
     EPT: ExecutionProtocol,
@@ -641,7 +642,7 @@ where
     pub body: EPT::Body,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
 pub struct MockExecutionProtocol {}
 
 impl ExecutionProtocol for MockExecutionProtocol {
@@ -650,14 +651,14 @@ impl ExecutionProtocol for MockExecutionProtocol {
     type FinalizedHeader = MockExecutionFinalizedHeader;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Default)]
 pub struct MockExecutionProposedHeader {}
 
-#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Default)]
 pub struct MockExecutionBody {
     pub data: Bytes,
 }
-#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
 pub struct MockExecutionFinalizedHeader {
     number: SeqNum,
 }

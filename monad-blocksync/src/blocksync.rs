@@ -39,6 +39,7 @@ use monad_validator::{
 };
 use rand::{seq::SliceRandom, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
+use serde::Serialize;
 use tracing::{debug, warn};
 
 use crate::messages::message::{
@@ -50,7 +51,7 @@ use crate::messages::message::{
 // determines the max number of parallel payload requests self can make
 const BLOCKSYNC_MAX_PAYLOAD_REQUESTS: usize = 10;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum BlockSyncSelfRequester {
     /// Consensus requested this blocksync request
     Consensus,

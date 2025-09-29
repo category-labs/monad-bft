@@ -20,6 +20,7 @@ use std::{
 };
 
 use alloy_rlp::{Decodable, Encodable};
+use serde::{Deserialize, Serialize};
 
 use crate::{signing_domain::SigningDomain, NopKeyPair, NopPubKey, NopSignature};
 
@@ -55,7 +56,19 @@ pub type CertificateSignaturePubKey<T> =
     <<T as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType;
 
 pub trait CertificateSignature:
-    Copy + Clone + Eq + Debug + Hash + Send + Sync + Unpin + Encodable + Decodable + 'static
+    Copy
+    + Clone
+    + Eq
+    + Debug
+    + Hash
+    + Send
+    + Sync
+    + Unpin
+    + Encodable
+    + Decodable
+    + Serialize
+    + for<'de> Deserialize<'de>
+    + 'static
 {
     type KeyPairType: CertificateKeyPair;
     type Error: Display + Debug + Send + Sync;

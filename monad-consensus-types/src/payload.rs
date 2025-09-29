@@ -25,7 +25,7 @@ use monad_types::{ExecutionProtocol, Round};
 use serde::{Deserialize, Serialize};
 
 /// randao_reveal uses a proposer's public key to contribute randomness
-#[derive(Debug, Clone, PartialEq, Eq, RlpEncodableWrapper, RlpDecodableWrapper)]
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodableWrapper, RlpDecodableWrapper, Serialize)]
 pub struct RoundSignature<CST: CertificateSignature>(CST);
 
 impl<CST: CertificateSignature> RoundSignature<CST> {
@@ -57,7 +57,7 @@ impl<CST: CertificateSignature> RoundSignature<CST> {
 
 /// Contents of a proposal that are part of the Monad protocol
 /// but not in the core bft consensus protocol
-#[derive(Debug, Clone, PartialEq, Eq, RlpEncodableWrapper, RlpDecodableWrapper)]
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodableWrapper, RlpDecodableWrapper, Serialize)]
 pub struct ConsensusBlockBody<EPT>(Arc<ConsensusBlockBodyInner<EPT>>)
 where
     EPT: ExecutionProtocol;
@@ -87,7 +87,7 @@ where
     }
 }
 
-#[derive(Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Debug, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
 pub struct ConsensusBlockBodyInner<EPT>
 where
     EPT: ExecutionProtocol,

@@ -18,6 +18,7 @@ use std::cmp::Ordering;
 use alloy_rlp::{Decodable, Encodable};
 use blst::BLST_ERROR::BLST_BAD_ENCODING;
 use monad_crypto::signing_domain::SigningDomain;
+use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// The cipher suite
@@ -487,6 +488,34 @@ impl Decodable for BlsSignature {
     }
 }
 
+impl Serialize for BlsSignature {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let hex_str = "0x".to_string() + &hex::encode(self.serialize());
+        serializer.serialize_str(&hex_str)
+    }
+}
+
+impl<'de> Deserialize<'de> for BlsSignature {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let buf = <String as Deserialize>::deserialize(deserializer)?;
+
+        let hex_str = match buf.strip_prefix("0x") {
+            Some(hex_str) => hex_str,
+            None => &buf,
+        };
+
+        let bytes = hex::decode(hex_str).map_err(<D::Error as serde::de::Error>::custom)?;
+
+        Self::deserialize(bytes.as_ref()).map_err(<D::Error as serde::de::Error>::custom)
+    }
+}
+
 impl From<blst_core::AggregateSignature> for BlsAggregateSignature {
     fn from(value: blst_core::AggregateSignature) -> Self {
         Self(value)
@@ -608,6 +637,34 @@ impl Decodable for BlsAggregateSignature {
             Ok(sig) => Ok(sig),
             Err(_) => Err(alloy_rlp::Error::Custom("invalid bls aggregate signature")),
         }
+    }
+}
+
+impl Serialize for BlsAggregateSignature {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let hex_str = "0x".to_string() + &hex::encode(self.serialize());
+        serializer.serialize_str(&hex_str)
+    }
+}
+
+impl<'de> Deserialize<'de> for BlsAggregateSignature {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let buf = <String as Deserialize>::deserialize(deserializer)?;
+
+        let hex_str = match buf.strip_prefix("0x") {
+            Some(hex_str) => hex_str,
+            None => &buf,
+        };
+
+        let bytes = hex::decode(hex_str).map_err(<D::Error as serde::de::Error>::custom)?;
+
+        Self::deserialize(bytes.as_ref()).map_err(<D::Error as serde::de::Error>::custom)
     }
 }
 

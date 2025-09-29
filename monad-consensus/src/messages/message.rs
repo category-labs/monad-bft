@@ -32,12 +32,13 @@ use monad_crypto::{
 };
 use monad_types::{Epoch, ExecutionProtocol, Round};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionKeyPairType};
+use serde::Serialize;
 
 /// Consensus protocol vote message
 ///
 /// The signature is a protocol signature, can be collected into the
 /// corresponding SignatureCollection type, used to create QC from the votes
-#[derive(PartialEq, Eq, Clone, RlpEncodable, RlpDecodable)]
+#[derive(PartialEq, Eq, Clone, RlpEncodable, RlpDecodable, Serialize)]
 pub struct VoteMessage<SCT: SignatureCollection> {
     pub vote: Vote,
     pub sig: SCT::SignatureType,
@@ -69,7 +70,7 @@ impl<SCT: SignatureCollection> VoteMessage<SCT> {
 }
 
 /// Wrapper for Timeout to keep validation in the same crate
-#[derive(Clone, Debug, PartialEq, Eq, RlpDecodableWrapper, RlpEncodableWrapper)]
+#[derive(Clone, Debug, PartialEq, Eq, RlpDecodableWrapper, RlpEncodableWrapper, Serialize)]
 pub struct TimeoutMessage<ST, SCT, EPT>(pub Timeout<ST, SCT, EPT>)
 where
     ST: CertificateSignatureRecoverable,
@@ -135,7 +136,7 @@ where
 }
 
 /// Consensus protocol proposal message
-#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
 #[rlp(trailing)]
 pub struct ProposalMessage<ST, SCT, EPT>
 where
@@ -154,7 +155,7 @@ where
 
 /// This message is broadcasted upon locally constructing QC(r)
 /// This helps other nodes advance their round faster
-#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
 pub struct AdvanceRoundMessage<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -164,7 +165,7 @@ where
     pub last_round_certificate: RoundCertificate<ST, SCT, EPT>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
 pub struct RoundRecoveryMessage<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -176,7 +177,7 @@ where
     pub tc: TimeoutCertificate<ST, SCT, EPT>,
 }
 
-#[derive(PartialEq, Eq, Clone, Debug, RlpEncodable, RlpDecodable)]
+#[derive(PartialEq, Eq, Clone, Debug, RlpEncodable, RlpDecodable, Serialize)]
 pub struct NoEndorsementMessage<SCT: SignatureCollection> {
     pub msg: NoEndorsement,
 

@@ -37,7 +37,7 @@ use crate::{
 };
 
 /// Timeout message to broadcast to other nodes after a local timeout
-#[derive(Clone, Debug, PartialEq, Eq, RlpDecodable, RlpEncodable)]
+#[derive(Clone, Debug, PartialEq, Eq, RlpDecodable, RlpEncodable, Serialize)]
 #[rlp(trailing)]
 pub struct Timeout<ST, SCT, EPT>
 where
@@ -218,7 +218,7 @@ where
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum HighExtendVote<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -316,7 +316,7 @@ where
 }
 
 /// Data to include in a timeout
-#[derive(Clone, Debug, PartialEq, Eq, Hash, RlpEncodable, RlpDecodable)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, RlpEncodable, RlpDecodable, Serialize)]
 pub struct TimeoutInfo {
     /// Epoch where the timeout happens
     pub epoch: Epoch,
@@ -416,7 +416,7 @@ where
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
 pub struct NoTipCertificate<SCT>
 where
     SCT: SignatureCollection,

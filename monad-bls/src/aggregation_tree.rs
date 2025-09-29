@@ -28,6 +28,7 @@ use monad_validator::{
     },
     validator_mapping::ValidatorMapping,
 };
+use serde::Serialize;
 
 use crate::{bls::BlsAggregatePubKey, BlsAggregateSignature, BlsKeyPair, BlsSignature};
 
@@ -149,10 +150,10 @@ fn merge_nodes<PT: PubKey>(
     cert
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SignerMap(pub BitVec<u8, Lsb0>);
 
-#[derive(Clone, PartialEq, Eq, RlpDecodable, RlpEncodable)]
+#[derive(Clone, PartialEq, Eq, RlpDecodable, RlpEncodable, Serialize)]
 pub struct BlsSignatureCollection<PT: PubKey> {
     pub signers: SignerMap,
 

@@ -21,7 +21,6 @@ use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_eth_types::EthExecutionProtocol;
 use monad_executor_glue::LogFriendlyMonadEvent;
 use monad_secp::SecpSignature;
-use monad_types::Serializable;
 use monad_wal::wal::WALoggerConfig;
 
 #[derive(Parser, Debug)]
@@ -40,10 +39,7 @@ fn main() {
 
     let logger_config: WALoggerConfig<WrappedEvent> = WALoggerConfig::new(args.wal_path, false);
     logger_config.events().for_each(|event| {
-        let serialized_event = event.serialize();
-
-        let event_json =
-            serde_json::to_string(&serialized_event).expect("failed to serialize event");
+        let event_json = serde_json::to_string(&event).expect("failed to serialize event");
         println!("{}", event_json);
     })
 }

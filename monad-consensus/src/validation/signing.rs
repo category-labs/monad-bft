@@ -43,6 +43,7 @@ use monad_validator::{
     validator_set::{ValidatorSetError, ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
+use serde::Serialize;
 
 use crate::{
     messages::{
@@ -117,7 +118,7 @@ impl<S: CertificateSignatureRecoverable, M> AsRef<Unverified<S, M>> for Verified
 /// An unverified message is a message with a signature, but the signature hasn't
 /// been verified. It does not allow access the message content. For safety, a
 /// message received on the wire is only deserializable to an unverified message
-#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
 pub struct Unverified<S, M> {
     obj: M,
     author_signature: S,
@@ -280,7 +281,7 @@ where
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Unvalidated<M> {
     obj: M,
 }
