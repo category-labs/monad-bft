@@ -74,6 +74,9 @@ pub struct Config {
 
     /// Otel replica name
     pub otel_replica_name: String,
+
+    /// Report directory
+    pub report_dir: Option<String>,
 }
 
 impl Default for Config {
@@ -101,6 +104,7 @@ impl Default for Config {
             use_static_tps_interval: false,
             otel_endpoint: None,
             otel_replica_name: "default".to_string(),
+            report_dir: Some("reports".to_string()),
         }
     }
 }

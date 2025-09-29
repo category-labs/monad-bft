@@ -41,6 +41,7 @@ alloy-transport = { workspace = true }
 alloy-transport-http = { workspace = true, features = ["reqwest-rustls-tls"] }
 async-channel = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
+chrono = { workspace = true }
 dashmap = { workspace = true }
 eyre = { workspace = true }
 futures = { workspace = true }
@@ -50,6 +51,7 @@ opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 opentelemetry-otlp = { workspace = true, features = ["metrics", "grpc-tonic"] }
 opentelemetry-semantic-conventions = { workspace = true }
 rand = { workspace = true }
+reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
