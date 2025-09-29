@@ -562,6 +562,7 @@ pub struct MonadDebugTraceCallParams {
     transaction: CallRequest,
     #[serde(default)]
     block: BlockTagOrHash,
+    #[serde(default)]
     tracer: EnrichedTracerObject,
 }
 
@@ -1167,5 +1168,17 @@ mod tests {
 
         let result: Result<TxEnvelope, _> = call_request.try_into();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_debug_trace_call_params() {
+        let raw = r#"
+        {
+            "transaction": {},
+            "block": "latest"
+        }
+        "#;
+        let params: MonadDebugTraceCallParams = from_str(raw).unwrap();
+        assert_eq!(params.tracer.tracer_params.tracer, Tracer::CallTracer);
     }
 }
