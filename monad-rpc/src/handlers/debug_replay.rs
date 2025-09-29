@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{any::Any, sync::Arc};
+use std::sync::Arc;
 
 use monad_ethcall::{eth_call, CallResult, EthCallExecutor, MonadTracer, StateOverrideSet};
 use monad_triedb_utils::triedb_env::Triedb;
@@ -25,7 +25,8 @@ use crate::{
     chainstate::get_block_key_from_tag,
     eth_json_types::{BlockTags, EthHash},
     handlers::debug::{
-        MonadDebugTraceBlockByNumberParams, MonadDebugTraceTransactionParams, Tracer, TracerObject,
+        MonadDebugTraceBlockByHashParams, MonadDebugTraceBlockByNumberParams,
+        MonadDebugTraceTransactionParams, Tracer, TracerObject,
     },
     jsonrpc::JsonRpcError,
 };
@@ -40,10 +41,15 @@ impl From<TracerObject> for MonadTracer {
     }
 }
 
+/// A trait for debug trace parameters as well as determining if a request requires transaction replay.
 pub trait DebugTraceParams {
+    /// Returns true if the tracer requires transaction replay (e.g., PreStateTracer).
     fn requires_replay(&self) -> bool;
+    /// Returns the hash or tag parameter payload associated with the trace request.
     fn hash_or_tag(&self) -> HashOrTag;
+    /// Returns whether the trace request is a single operation or bulk operation (e.g. traceTransaction vs traceBlockByNumber).
     fn execution_mode(&self) -> ExecutionMode;
+    /// Returns the tracer configuration associated with the trace request.
     fn tracer(&self) -> TracerObject;
 }
 
@@ -77,16 +83,34 @@ impl DebugTraceParams for MonadDebugTraceBlockByNumberParams {
     }
 }
 
+impl DebugTraceParams for MonadDebugTraceBlockByHashParams {
+    fn requires_replay(&self) -> bool {
+        matches!(self.tracer.tracer, Tracer::PreStateTracer)
+    }
+    fn hash_or_tag(&self) -> HashOrTag {
+        HashOrTag::Hash(self.block_hash)
+    }
+    fn execution_mode(&self) -> ExecutionMode {
+        ExecutionMode::Bulk
+    }
+    fn tracer(&self) -> TracerObject {
+        self.tracer
+    }
+}
+
+/// Indicates whether the trace request is for a single transaction or for all transactions in a block.
 pub enum ExecutionMode {
     Single,
     Bulk,
 }
 
+/// Represents either a block or transaction hash, or a block tag.
 pub enum HashOrTag {
     Hash(EthHash),
     Tag(BlockTags),
 }
 
+/// Converts a HashOrTag into BlockTags, treating any hash as 'latest'. Useful for block key retrieval.
 impl From<HashOrTag> for BlockTags {
     fn from(value: HashOrTag) -> Self {
         match value {
@@ -114,6 +138,7 @@ impl TryFrom<HashOrTag> for EthHash {
     }
 }
 
+/// A generic handler for debug trace requests that requires transaction replay (e.g., PreStateTracer).
 pub async fn monad_debug_trace_replay<T: Triedb>(
     triedb_env: &T,
     eth_call_executor: Arc<Mutex<EthCallExecutor>>,
@@ -202,6 +227,7 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
             let mut results: Vec<serde_cbor::Value> = Vec::with_capacity(txns.len());
             for txn in txns {
                 let tx_hash = txn.tx.signature_hash();
+                // TODO(dhil): May skew the eth_call statistics tracker.
                 let raw_payload = match eth_call(
                     chain_id,
                     txn.tx,

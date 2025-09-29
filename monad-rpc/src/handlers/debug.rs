@@ -394,9 +394,9 @@ pub enum CallKind {
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadDebugTraceBlockByHashParams {
-    block_hash: EthHash,
+    pub block_hash: EthHash,
     #[serde(default)]
-    tracer: TracerObject,
+    pub tracer: TracerObject,
 }
 
 #[rpc(method = "debug_traceBlockByHash")]

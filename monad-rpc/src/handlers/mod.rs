@@ -53,7 +53,10 @@ use self::{
 };
 use crate::{
     eth_json_types::serialize_result,
-    handlers::debug::{MonadDebugTraceBlockByNumberParams, MonadDebugTraceTransactionParams},
+    handlers::debug::{
+        MonadDebugTraceBlockByHashParams, MonadDebugTraceBlockByNumberParams,
+        MonadDebugTraceTransactionParams,
+    },
     jsonrpc::{JsonRpcError, JsonRpcResultExt, Request, RequestWrapper, Response, ResponseWrapper},
     timing::RequestId,
     vpool::{monad_txpool_statusByAddress, monad_txpool_statusByHash},
@@ -263,12 +266,16 @@ async fn debug_getRawTransaction(
 
 #[allow(non_snake_case)]
 async fn debug_traceBlockByHash(
-    _: RequestId,
+    request_id: RequestId,
     app_state: &MonadRpcResources,
     params: &RawValue,
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-    let params = serde_json::from_str(params.get()).invalid_params()?;
+    let params: MonadDebugTraceBlockByHashParams =
+        serde_json::from_str(params.get()).invalid_params()?;
+    if params.requires_replay() {
+        return collect_debug_trace_via_replay(request_id, triedb_env, app_state, &params).await;
+    }
     monad_debug_traceBlockByHash(triedb_env, &app_state.archive_reader, params)
         .await
         .map(serialize_result)?
