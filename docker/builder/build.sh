@@ -6,7 +6,7 @@
 set -e
 
 # Configuration
-IMAGE_NAME="peach10.devcore4.com/category-labs/builder"
+IMAGE_NAME="registry.devcore4.com/category-labs/builder"
 DOCKERFILE_PATH="docker/builder/Dockerfile"
 
 echo "Building Docker image..."
