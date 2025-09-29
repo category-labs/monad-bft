@@ -39,13 +39,6 @@ use crate::{
     jsonrpc::{JsonRpcError, JsonRpcResult},
 };
 
-/// A trait for determining if a debug request requires transaction replay.
-pub trait DebugTraceable {
-    fn requires_replay(&self) -> bool {
-        false
-    }
-}
-
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct DebugBlockParams {
     block: BlockTags,
@@ -251,7 +244,7 @@ impl Decodable for CallFrame {
     }
 }
 
-#[derive(Deserialize, Debug, Default, schemars::JsonSchema, Clone)]
+#[derive(Deserialize, Debug, Default, schemars::JsonSchema, Clone, Copy)]
 #[serde(rename_all = "camelCase")]
 pub struct TracerObject {
     #[serde(default)]
@@ -260,7 +253,7 @@ pub struct TracerObject {
     pub config: TracerConfig,
 }
 
-#[derive(Deserialize, Debug, Default, schemars::JsonSchema, Clone, PartialEq, Eq)]
+#[derive(Deserialize, Debug, Default, schemars::JsonSchema, Clone, Copy, PartialEq, Eq)]
 pub enum Tracer {
     #[default]
     #[serde(rename = "callTracer")]
@@ -269,7 +262,7 @@ pub enum Tracer {
     PreStateTracer,
 }
 
-#[derive(Clone, Debug, Deserialize, Default, schemars::JsonSchema)]
+#[derive(Clone, Copy, Debug, Deserialize, Default, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TracerConfig {
     /// onlyTopCall for callTracer, ignored for prestateTracer
@@ -285,17 +278,11 @@ pub struct TracerConfig {
     pub with_log: bool,
 }
 
-#[derive(Deserialize, Debug, schemars::JsonSchema)]
+#[derive(Clone, Copy, Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadDebugTraceTransactionParams {
     pub tx_hash: EthHash,
     #[serde(default)]
     pub tracer: TracerObject,
-}
-
-impl DebugTraceable for MonadDebugTraceTransactionParams {
-    fn requires_replay(&self) -> bool {
-        matches!(self.tracer.tracer, Tracer::PreStateTracer)
-    }
 }
 
 #[derive(Serialize, Debug, schemars::JsonSchema)]
@@ -476,17 +463,11 @@ pub async fn monad_debug_traceBlockByHash<T: Triedb>(
     Err(JsonRpcError::internal_error("block not found".into()))
 }
 
-#[derive(Deserialize, Debug, schemars::JsonSchema)]
+#[derive(Clone, Copy, Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadDebugTraceBlockByNumberParams {
     pub block_number: BlockTags,
     #[serde(default)]
     pub tracer: TracerObject,
-}
-
-impl DebugTraceable for MonadDebugTraceBlockByNumberParams {
-    fn requires_replay(&self) -> bool {
-        matches!(self.tracer.tracer, Tracer::PreStateTracer)
-    }
 }
 
 #[derive(Serialize, Debug, schemars::JsonSchema)]

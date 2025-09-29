@@ -24,12 +24,9 @@ use self::{
     debug::{
         monad_debug_getRawBlock, monad_debug_getRawHeader, monad_debug_getRawReceipts,
         monad_debug_getRawTransaction, monad_debug_traceBlockByHash,
-        monad_debug_traceBlockByNumber, monad_debug_traceTransaction, DebugTraceable,
+        monad_debug_traceBlockByNumber, monad_debug_traceTransaction,
     },
-    debug_replay::{
-        DebugTraceExecutor, MonadDebugTraceBlockByNumberExecutor,
-        MonadDebugTraceTransactionExecutor,
-    },
+    debug_replay::{monad_debug_trace_replay, DebugTraceParams},
     eth::{
         account::{
             monad_eth_getBalance, monad_eth_getCode, monad_eth_getStorageAt,
@@ -279,8 +276,9 @@ async fn debug_traceBlockByHash(
 
 async fn collect_debug_trace_via_replay(
     request_id: RequestId,
+    triedb_env: &impl Triedb,
     app_state: &MonadRpcResources,
-    tracer: &impl DebugTraceExecutor,
+    params: &impl DebugTraceParams,
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let Some(ref eth_call_executor) = app_state.eth_call_executor else {
         return Err(JsonRpcError::method_not_supported());
@@ -302,9 +300,13 @@ async fn collect_debug_trace_via_replay(
         tracker.record_request_start(request_id).await;
     }
 
-    let result = tracer
-        .eth_call(eth_call_executor.clone(), app_state.chain_id)
-        .await;
+    let result = monad_debug_trace_replay(
+        triedb_env,
+        eth_call_executor.clone(),
+        app_state.chain_id,
+        params,
+    )
+    .await;
 
     if let Some(tracker) = &app_state.eth_call_stats_tracker {
         let is_error = result.is_err();
@@ -324,8 +326,7 @@ async fn debug_traceBlockByNumber(
     let params: MonadDebugTraceBlockByNumberParams =
         serde_json::from_str(params.get()).invalid_params()?;
     if params.requires_replay() {
-        let tracer = MonadDebugTraceBlockByNumberExecutor::new(triedb_env, params);
-        return collect_debug_trace_via_replay(request_id, app_state, &tracer).await;
+        return collect_debug_trace_via_replay(request_id, triedb_env, app_state, &params).await;
     }
 
     monad_debug_traceBlockByNumber(triedb_env, &app_state.archive_reader, params)
@@ -371,8 +372,7 @@ async fn debug_traceTransaction(
     let params: MonadDebugTraceTransactionParams =
         serde_json::from_str(params.get()).invalid_params()?;
     if params.requires_replay() {
-        let tracer = MonadDebugTraceTransactionExecutor::new(triedb_env, params);
-        return collect_debug_trace_via_replay(request_id, app_state, &tracer).await;
+        return collect_debug_trace_via_replay(request_id, triedb_env, app_state, &params).await;
     }
 
     monad_debug_traceTransaction(triedb_env, &app_state.archive_reader, params)
