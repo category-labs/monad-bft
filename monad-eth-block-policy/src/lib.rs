@@ -292,7 +292,7 @@ where
 
     fn update_committed_block(&mut self, block: &EthValidatedBlock<ST, SCT>) {
         let block_number = block.get_seq_num();
-        debug!(?block_number, ?block.txn_fees, "update_committed_block");
+        debug!(?block_number, "update_committed_block");
         if let Some((&last_block_num, _)) = self.blocks.last_key_value() {
             assert_eq!(last_block_num + SeqNum(1), block_number);
         }

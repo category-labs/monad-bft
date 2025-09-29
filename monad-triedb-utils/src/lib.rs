@@ -176,14 +176,14 @@ impl TriedbReader {
                 let res = maybe_rlp_account.and_then(rlp_decode_account);
                 match res {
                     Some(mut eth_account) => {
-                        debug!(?eth_account, block_id = ?seq_num.0, "account code_hash");
+                        trace!(?eth_account, block_id = ?seq_num.0, "account code_hash");
                         match eth_account.code_hash {
                             Some(code_hash) => {
                                 // Request code
                                 let (triedb_key, key_len_nibbles) =
                                     create_triedb_key(version, KeyInput::CodeHash(&code_hash));
                                 let res = self.handle.read(&triedb_key, key_len_nibbles, seq_num.0);
-                                debug!(?res, block_id = ?seq_num.0, ?eth_account, "account code_data");
+                                trace!(?res, block_id = ?seq_num.0, ?eth_account, "account code_data");
                                 match res {
                                     Some(data) => {
                                         if data.len() >= 3 {
@@ -191,7 +191,7 @@ impl TriedbReader {
                                             eth_account.is_delegated =
                                                 delegation_code == [0xef, 0x01, 0x00];
                                             if eth_account.is_delegated {
-                                                debug!(?eth_account, block_id = ?seq_num.0, "is_delegated == true");
+                                                trace!(?eth_account, block_id = ?seq_num.0, "is_delegated == true");
                                             }
                                         }
                                         Some(eth_account)
