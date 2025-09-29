@@ -732,7 +732,10 @@ async fn prepare_eth_call<T: Triedb + TriedbPath>(
 
 /// Executes a new message call immediately without creating a transaction on the block chain.
 #[tracing::instrument(level = "debug")]
-#[rpc(method = "eth_call", ignore = "chain_id", ignore = "eth_call_executor")]
+#[rpc(
+    method = "eth_call",
+    ignore = "eth_call_executor,chain_id,eth_call_provider_gas_limit"
+)]
 pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     triedb_env: &T,
     eth_call_executor: Arc<EthCallExecutor>,
@@ -840,7 +843,10 @@ pub struct EthCallCapacityStats {
 /// Returns statistics about eth_call capacity including inactive executors and queued requests
 #[allow(non_snake_case)]
 #[tracing::instrument(level = "debug")]
-#[monad_rpc_docs::rpc(method = "admin_ethCallStatistics")]
+#[monad_rpc_docs::rpc(
+    method = "admin_ethCallStatistics",
+    ignore = "eth_call_executor_fibers,total_permits,available_permits"
+)]
 pub async fn monad_admin_ethCallStatistics(
     eth_call_executor_fibers: usize,
     total_permits: usize,
