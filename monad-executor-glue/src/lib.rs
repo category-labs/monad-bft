@@ -1092,65 +1092,50 @@ where
                 last_round_tc,
                 fresh_proposal_certificate,
             } => {
-                let mut tc_buf = BytesMut::new();
-                match last_round_tc {
+                let tc_buf: Vec<&dyn Encodable> = match last_round_tc {
                     None => {
-                        let enc: [&dyn Encodable; 1] = [&1u8];
-                        encode_list::<_, dyn Encodable>(&enc, &mut tc_buf);
+                        vec![&1u8]
                     }
                     Some(tc) => {
-                        let enc: [&dyn Encodable; 2] = [&2u8, &tc];
-                        encode_list::<_, dyn Encodable>(&enc, &mut tc_buf);
+                        vec![&2u8, tc]
                     }
-                }
+                };
 
-                let mut fc_buf = BytesMut::new();
-                match fresh_proposal_certificate {
+                let fc_buf: Vec<&dyn Encodable> = match fresh_proposal_certificate {
                     None => {
-                        let enc: [&dyn Encodable; 1] = [&1u8];
-                        encode_list::<_, dyn Encodable>(&enc, &mut fc_buf);
+                        vec![&1u8]
                     }
-                    Some(nec) => {
-                        let enc: [&dyn Encodable; 2] = [&2u8, &nec];
-                        encode_list::<_, dyn Encodable>(&enc, &mut fc_buf);
+                    Some(fec) => {
+                        vec![&2u8, fec]
                     }
-                }
+                };
 
-                let mut base_fee_buf = BytesMut::new();
-                match base_fee {
+                let base_fee_buf: Vec<&dyn Encodable> = match base_fee {
                     None => {
-                        let enc: [&dyn Encodable; 1] = [&1u8];
-                        encode_list::<_, dyn Encodable>(&enc, &mut base_fee_buf);
+                        vec![&1u8]
                     }
                     Some(bf) => {
-                        let enc: [&dyn Encodable; 2] = [&2u8, &bf];
-                        encode_list::<_, dyn Encodable>(&enc, &mut base_fee_buf);
+                        vec![&2u8, bf]
                     }
-                }
+                };
 
-                let mut base_fee_trend_buf = BytesMut::new();
-                match base_fee_trend {
+                let base_fee_trend_buf: Vec<&dyn Encodable> = match base_fee_trend {
                     None => {
-                        let enc: [&dyn Encodable; 1] = [&1u8];
-                        encode_list::<_, dyn Encodable>(&enc, &mut base_fee_trend_buf);
+                        vec![&1u8]
                     }
                     Some(bft) => {
-                        let enc: [&dyn Encodable; 2] = [&2u8, &bft];
-                        encode_list::<_, dyn Encodable>(&enc, &mut base_fee_trend_buf);
+                        vec![&2u8, bft]
                     }
-                }
+                };
 
-                let mut base_fee_moment_buf = BytesMut::new();
-                match base_fee_moment {
+                let base_fee_moment_buf: Vec<&dyn Encodable> = match base_fee_moment {
                     None => {
-                        let enc: [&dyn Encodable; 1] = [&1u8];
-                        encode_list::<_, dyn Encodable>(&enc, &mut base_fee_moment_buf);
+                        vec![&1u8]
                     }
                     Some(bfm) => {
-                        let enc: [&dyn Encodable; 2] = [&2u8, &bfm];
-                        encode_list::<_, dyn Encodable>(&enc, &mut base_fee_moment_buf);
+                        vec![&2u8, bfm]
                     }
-                }
+                };
 
                 let enc: [&dyn Encodable; 14] = [
                     &1u8,

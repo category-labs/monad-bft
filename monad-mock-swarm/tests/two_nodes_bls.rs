@@ -26,6 +26,7 @@ use monad_consensus_types::{
     block_validator::MockValidator,
 };
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
+use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
     mock::TimestamperConfig,
     mock_swarm::SwarmBuilder,
@@ -173,10 +174,22 @@ fn two_nodes_bls() {
     );
 
     let mut swarm = swarm_config.build();
-    while swarm
-        .step_until(&mut UntilTerminator::new().until_block(100))
-        .is_some()
-    {}
+    while let Some((_, _, event)) = swarm.step_until(&mut UntilTerminator::new().until_block(100)) {
+        // assert that we can round-trip MonadEvents properly
+        let event_encoded = alloy_rlp::encode(&event);
+        let event_roundtrip: MonadEvent<
+            <BLSSwarm as SwarmRelation>::SignatureType,
+            <BLSSwarm as SwarmRelation>::SignatureCollectionType,
+            <BLSSwarm as SwarmRelation>::ExecutionProtocolType,
+        > = alloy_rlp::decode_exact(&event_encoded).unwrap_or_else(|err| {
+            panic!("failed to rlp roundtrip event={:?}, err={:?}", event, err)
+        });
+        assert_eq!(
+            serde_json::to_string(&event).unwrap(),
+            serde_json::to_string(&event_roundtrip).unwrap(),
+            "failed to rlp roundtrip MonadEvent"
+        );
+    }
     swarm_ledger_verification(&swarm, 98);
 
     // the calculation is correct with two nodes because NoSerRouterScheduler
