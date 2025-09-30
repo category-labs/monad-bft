@@ -255,18 +255,9 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
 
                 results.push(result);
             }
-            results
-                .iter()
-                .map(serde_json::value::to_raw_value)
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| {
-                    JsonRpcError::internal_error(format!("json serialization error: {}", e))
-                })
-                .and_then(|v| {
-                    serde_json::value::to_raw_value(&v).map_err(|e| {
-                        JsonRpcError::internal_error(format!("json serialization error: {}", e))
-                    })
-                })
+            serde_json::value::to_raw_value(&results).map_err(|e| {
+                JsonRpcError::internal_error(format!("json serialization error: {}", e))
+            })
         }
     }
 }
