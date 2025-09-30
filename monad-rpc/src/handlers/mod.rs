@@ -15,7 +15,7 @@
 
 use actix_web::{web, HttpResponse};
 use monad_tracing_timing::TimingSpanExtension;
-use monad_triedb_utils::triedb_env::{self, Triedb};
+use monad_triedb_utils::triedb_env::Triedb;
 use serde_json::{value::RawValue, Value};
 use tracing::{debug, info, trace_span, Instrument, Span};
 use tracing_actix_web::RootSpan;
