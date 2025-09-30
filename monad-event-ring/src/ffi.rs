@@ -175,7 +175,7 @@ pub(crate) fn monad_check_path_supports_map_hugetlb(
     get_last_ring_library_error(r).map(|()| supported)
 }
 
-pub(crate) fn monad_event_open_ring_dir_fd(path: impl AsRef<Path>) -> Result<PathBuf, String> {
+pub(crate) fn monad_event_open_ring_dir_fd() -> Result<PathBuf, String> {
     let mut ring_dir_buf = vec![0u8; libc::PATH_MAX as usize];
     let r = unsafe {
         self::bindings::monad_event_open_ring_dir_fd(
@@ -193,4 +193,60 @@ pub(crate) fn monad_event_open_ring_dir_fd(path: impl AsRef<Path>) -> Result<Pat
         .to_str()
         .map_err(|utf_err| utf_err.to_string())?;
     Ok(PathBuf::from(ring_dir_str))
+}
+
+pub(crate) fn monad_event_set_ring_dir_override(
+    opt_path_ref: Option<impl AsRef<Path>>,
+) -> Result<(), String> {
+    let opt_cstring = if let Some(path_ref) = opt_path_ref {
+        let opt_path_str = path_ref.as_ref().to_str();
+        let path_str = opt_path_str.ok_or("invalid UTF-8 in path")?;
+        Some(CString::new(path_str).map_err(|nul_err| nul_err.to_string())?)
+    } else {
+        None
+    };
+    let r = unsafe {
+        self::bindings::monad_event_set_ring_dir_override(
+            opt_cstring.map_or(std::ptr::null(), |str| str.as_ptr()),
+        )
+    };
+    get_last_ring_library_error(r)?;
+    Ok(())
+}
+
+pub(crate) fn monad_event_get_ring_dir_override() -> Result<Option<PathBuf>, String> {
+    let ptr = unsafe { self::bindings::monad_event_get_ring_dir_override() };
+    if ptr.is_null() {
+        Ok(None)
+    } else {
+        let c_str =
+            unsafe { CStr::from_ptr(ptr).to_str() }.map_err(|utf8_err| utf8_err.to_string())?;
+        Ok(Some(PathBuf::from(c_str)))
+    }
+}
+
+pub(crate) fn monad_event_resolve_ring_file(input: impl AsRef<Path>) -> Result<PathBuf, String> {
+    let input_bytes = input.as_ref().to_str().ok_or(format!(
+        "cannot extract path bytes from `{:?}`",
+        input.as_ref()
+    ))?;
+    let c_input = CString::new(input_bytes).map_err(|e| e.to_string())?;
+
+    let mut pathbuf = vec![0u8; libc::PATH_MAX as usize];
+    let r = unsafe {
+        self::bindings::monad_event_resolve_ring_file(
+            c_input.as_ptr(),
+            pathbuf.as_mut_ptr() as *mut libc::c_char,
+            pathbuf.len(),
+        )
+    };
+    get_last_ring_library_error(r)?;
+    let pathbuf_cstr = match CStr::from_bytes_until_nul(pathbuf.as_slice()) {
+        Ok(cstr) => cstr,
+        Err(err) => return Err(err.to_string()),
+    };
+    let pathbuf_str = pathbuf_cstr
+        .to_str()
+        .map_err(|utf_err| utf_err.to_string())?;
+    Ok(PathBuf::from(pathbuf_str))
 }
