@@ -484,7 +484,7 @@ pub async fn fill_gas_params<T: Triedb>(
             header.base_fee_per_gas = Some(0);
             tx.fill_gas_prices(U256::ZERO)?;
             if tx.gas.is_none() {
-                tx.gas = Some(U256::from(header.gas_limit).min(eth_call_provider_gas_limit));
+                tx.gas = Some(eth_call_provider_gas_limit);
             }
         }
     }
@@ -662,7 +662,6 @@ async fn prepare_eth_call<T: Triedb + TriedbPath>(
         .tx()
         .gas
         .unwrap_or(U256::from(header.header.gas_limit));
-    let eth_call_provider_gas_limit = eth_call_provider_gas_limit.min(header.header.gas_limit);
     fill_gas_params(
         triedb_env,
         block_key,
@@ -968,7 +967,7 @@ mod tests {
         let mock_triedb = MockTriedb::default();
 
         // when gas price is not populated, then
-        // (1) header base fee is set to zero and (2) tx gas limit is set to block gas limit
+        // (1) header base fee is set to zero and (2) tx gas limit is set to the provider gas limit
         let mut call_request = CallRequest::default();
         let mut header = Header {
             base_fee_per_gas: Some(10_000_000_000),
@@ -988,7 +987,7 @@ mod tests {
         )
         .await;
         assert!(result.is_ok());
-        assert_eq!(call_request.gas, Some(U256::from(300_000_000)));
+        assert_eq!(call_request.gas, Some(U256::MAX));
         assert_eq!(header.base_fee_per_gas, Some(0));
 
         // when gas price is populated but sender address is not populated, then
