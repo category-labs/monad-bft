@@ -214,11 +214,10 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
             let (seq_number, block_id) = block_key.seq_num_block_id();
             let mut results: Vec<serde_cbor::Value> = Vec::with_capacity(txns.len());
             for txn in txns {
-                let tx_hash = txn.tx.signature_hash();
                 // TODO(dhil): May skew the eth_call statistics tracker.
                 let raw_payload = match eth_call(
                     chain_id,
-                    txn.tx,
+                    txn.tx.clone(),
                     header.header.clone(),
                     txn.sender,
                     seq_number.0,
@@ -248,7 +247,7 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
                 let mut result_obj = std::collections::BTreeMap::new();
                 result_obj.insert(
                     serde_cbor::Value::Text("txHash".to_string()),
-                    serde_cbor::Value::Text(format!("{}", tx_hash)),
+                    serde_cbor::Value::Text(format!("{}", txn.tx.tx_hash())),
                 );
                 result_obj.insert(serde_cbor::Value::Text("result".to_string()), trace);
                 let result = serde_cbor::Value::Map(result_obj);
