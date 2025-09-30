@@ -23,7 +23,7 @@ use tokio::sync::Mutex;
 
 use crate::{
     chainstate::get_block_key_from_tag,
-    eth_json_types::{BlockTags, EthHash},
+    eth_json_types::{BlockTagOrHash, BlockTags, EthHash},
     handlers::debug::{
         MonadDebugTraceBlockByHashParams, MonadDebugTraceBlockByNumberParams,
         MonadDebugTraceTransactionParams, Tracer, TracerObject,
@@ -46,7 +46,7 @@ pub trait DebugTraceParams {
     /// Returns true if the tracer requires transaction replay (e.g., PreStateTracer).
     fn requires_replay(&self) -> bool;
     /// Returns the hash or tag parameter payload associated with the trace request.
-    fn hash_or_tag(&self) -> HashOrTag;
+    fn block_tag_or_hash(&self) -> BlockTagOrHash;
     /// Returns whether the trace request is a single operation or bulk operation (e.g. traceTransaction vs traceBlockByNumber).
     fn execution_mode(&self) -> ExecutionMode;
     /// Returns the tracer configuration associated with the trace request.
@@ -57,8 +57,8 @@ impl DebugTraceParams for MonadDebugTraceTransactionParams {
     fn requires_replay(&self) -> bool {
         matches!(self.tracer.tracer, Tracer::PreStateTracer)
     }
-    fn hash_or_tag(&self) -> HashOrTag {
-        HashOrTag::Hash(self.tx_hash)
+    fn block_tag_or_hash(&self) -> BlockTagOrHash {
+        BlockTagOrHash::Hash(self.tx_hash)
     }
     fn execution_mode(&self) -> ExecutionMode {
         ExecutionMode::Single
@@ -72,8 +72,8 @@ impl DebugTraceParams for MonadDebugTraceBlockByNumberParams {
     fn requires_replay(&self) -> bool {
         matches!(self.tracer.tracer, Tracer::PreStateTracer)
     }
-    fn hash_or_tag(&self) -> HashOrTag {
-        HashOrTag::Tag(self.block_number)
+    fn block_tag_or_hash(&self) -> BlockTagOrHash {
+        BlockTagOrHash::BlockTags(self.block_number)
     }
     fn execution_mode(&self) -> ExecutionMode {
         ExecutionMode::Bulk
@@ -87,8 +87,8 @@ impl DebugTraceParams for MonadDebugTraceBlockByHashParams {
     fn requires_replay(&self) -> bool {
         matches!(self.tracer.tracer, Tracer::PreStateTracer)
     }
-    fn hash_or_tag(&self) -> HashOrTag {
-        HashOrTag::Hash(self.block_hash)
+    fn block_tag_or_hash(&self) -> BlockTagOrHash {
+        BlockTagOrHash::Hash(self.block_hash)
     }
     fn execution_mode(&self) -> ExecutionMode {
         ExecutionMode::Bulk
@@ -104,34 +104,22 @@ pub enum ExecutionMode {
     Bulk,
 }
 
-/// Represents either a block or transaction hash, or a block tag.
-pub enum HashOrTag {
-    Hash(EthHash),
-    Tag(BlockTags),
-}
-
-/// Converts a HashOrTag into BlockTags, treating any hash as 'latest'. Useful for block key retrieval.
-impl From<HashOrTag> for BlockTags {
-    fn from(value: HashOrTag) -> Self {
-        match value {
-            HashOrTag::Hash(_) => BlockTags::Latest,
-            HashOrTag::Tag(tag) => tag,
+/// Projects the block tag, treating any hash as 'latest'. Useful for block key retrieval.
+impl<T: DebugTraceParams> From<&T> for BlockTags {
+    fn from(params: &T) -> Self {
+        match params.block_tag_or_hash() {
+            BlockTagOrHash::Hash(_) => BlockTags::Latest,
+            BlockTagOrHash::BlockTags(tag) => tag,
         }
     }
 }
 
-impl<T: DebugTraceParams> From<&T> for BlockTags {
-    fn from(params: &T) -> Self {
-        params.hash_or_tag().into()
-    }
-}
-
-impl TryFrom<HashOrTag> for EthHash {
+impl TryFrom<BlockTagOrHash> for EthHash {
     type Error = JsonRpcError;
-    fn try_from(value: HashOrTag) -> Result<Self, Self::Error> {
+    fn try_from(value: BlockTagOrHash) -> Result<Self, Self::Error> {
         match value {
-            HashOrTag::Hash(hash) => Ok(hash),
-            HashOrTag::Tag(_) => Err(JsonRpcError::internal_error(
+            BlockTagOrHash::Hash(hash) => Ok(hash),
+            BlockTagOrHash::BlockTags(_) => Err(JsonRpcError::internal_error(
                 "expected block hash, found tag".into(),
             )),
         }
@@ -146,7 +134,7 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
     params: &impl DebugTraceParams,
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let state_overrides = StateOverrideSet::default();
-    let block_key = get_block_key_from_tag(triedb_env, params.into());
+    let block_key = get_block_key_from_tag(triedb_env, params.into()).unwrap();
     let header = triedb_env
         .get_block_header(block_key)
         .await
@@ -157,7 +145,7 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
     let tracer: MonadTracer = params.tracer().into();
     match params.execution_mode() {
         ExecutionMode::Single => {
-            let tx_hash: EthHash = params.hash_or_tag().try_into()?;
+            let tx_hash: EthHash = params.block_tag_or_hash().try_into()?;
             let tx_loc = triedb_env
                 .get_transaction_location_by_hash(block_key, tx_hash.0)
                 .await
@@ -165,7 +153,7 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
                 .ok_or_else(|| {
                     JsonRpcError::internal_error(format!("transaction not found: {:?}", tx_hash))
                 })?;
-            let block_key = triedb_env.get_block_key(SeqNum(tx_loc.block_num));
+            let block_key = triedb_env.get_block_key(SeqNum(tx_loc.block_num)).unwrap();
             let txn = triedb_env
                 .get_transaction(block_key, tx_loc.tx_index)
                 .await
@@ -203,14 +191,14 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
             })
         }
         ExecutionMode::Bulk => {
-            let block_key = match params.hash_or_tag() {
-                HashOrTag::Hash(block_hash) => {
+            let block_key = match params.block_tag_or_hash() {
+                BlockTagOrHash::Hash(block_hash) => {
                     if let Some(block_num) = triedb_env
                         .get_block_number_by_hash(block_key, block_hash.0)
                         .await
                         .map_err(JsonRpcError::internal_error)?
                     {
-                        triedb_env.get_block_key(SeqNum(block_num))
+                        triedb_env.get_block_key(SeqNum(block_num)).unwrap()
                     } else {
                         return Err(JsonRpcError::internal_error(format!(
                             "block not found: {:?}",
@@ -218,7 +206,7 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
                         )));
                     }
                 }
-                HashOrTag::Tag(_) => block_key,
+                BlockTagOrHash::BlockTags(_) => block_key,
             };
             let txns = triedb_env.get_transactions(block_key).await.map_err(|e| {
                 JsonRpcError::internal_error(format!("error getting transactions: {}", e))

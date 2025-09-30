@@ -312,7 +312,7 @@ impl<T: Triedb> ChainState<T> {
         };
 
         let block_key = match &block {
-            BlockTagOrHash::BlockTags(tag) => get_block_key_from_tag(&self.triedb_env, tag.clone()),
+            BlockTagOrHash::BlockTags(tag) => get_block_key_from_tag(&self.triedb_env, *tag),
             BlockTagOrHash::Hash(hash) => {
                 let latest_block_key = get_latest_block_key(&self.triedb_env);
 
@@ -394,7 +394,7 @@ impl<T: Triedb> ChainState<T> {
         }
 
         let block_key = match &block {
-            BlockTagOrHash::BlockTags(tag) => get_block_key_from_tag(&self.triedb_env, tag.clone()),
+            BlockTagOrHash::BlockTags(tag) => get_block_key_from_tag(&self.triedb_env, *tag),
             BlockTagOrHash::Hash(hash) => {
                 let latest_block_key = get_latest_block_key(&self.triedb_env);
 
