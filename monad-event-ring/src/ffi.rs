@@ -175,10 +175,10 @@ pub(crate) fn monad_check_path_supports_map_hugetlb(
     get_last_ring_library_error(r).map(|()| supported)
 }
 
-pub(crate) fn monad_event_open_ring_dir_fd(path: impl AsRef<Path>) -> Result<PathBuf, String> {
+pub(crate) fn monad_event_open_hugetlbfs_dir_fd() -> Result<PathBuf, String> {
     let mut ring_dir_buf = vec![0u8; libc::PATH_MAX as usize];
     let r = unsafe {
-        self::bindings::monad_event_open_ring_dir_fd(
+        self::bindings::monad_event_open_hugetlbfs_dir_fd(
             std::ptr::null_mut(),
             ring_dir_buf.as_mut_ptr() as *mut libc::c_char,
             ring_dir_buf.len(),
@@ -193,4 +193,45 @@ pub(crate) fn monad_event_open_ring_dir_fd(path: impl AsRef<Path>) -> Result<Pat
         .to_str()
         .map_err(|utf_err| utf_err.to_string())?;
     Ok(PathBuf::from(ring_dir_str))
+}
+
+pub(crate) fn monad_event_resolve_ring_file(
+    default_path: Option<impl AsRef<Path>>,
+    input: impl AsRef<Path>,
+) -> Result<PathBuf, String> {
+    let opt_default_path_cstring = match default_path {
+        Some(ref_path) => {
+            let p = ref_path.as_ref().to_str().ok_or(format!(
+                "cannot extract path bytes from `{:?}`",
+                input.as_ref()
+            ))?;
+            let p_cstr = CString::new(p).map_err(|e| e.to_string())?;
+            Some(p_cstr)
+        }
+        None => None,
+    };
+    let input_bytes = input.as_ref().to_str().ok_or(format!(
+        "cannot extract path bytes from `{:?}`",
+        input.as_ref()
+    ))?;
+    let c_input = CString::new(input_bytes).map_err(|e| e.to_string())?;
+
+    let mut pathbuf = vec![0u8; libc::PATH_MAX as usize];
+    let r = unsafe {
+        self::bindings::monad_event_resolve_ring_file(
+            opt_default_path_cstring.map_or(std::ptr::null(), |c| c.as_ptr()),
+            c_input.as_ptr(),
+            pathbuf.as_mut_ptr() as *mut libc::c_char,
+            pathbuf.len(),
+        )
+    };
+    get_last_ring_library_error(r)?;
+    let pathbuf_cstr = match CStr::from_bytes_until_nul(pathbuf.as_slice()) {
+        Ok(cstr) => cstr,
+        Err(err) => return Err(err.to_string()),
+    };
+    let pathbuf_str = pathbuf_cstr
+        .to_str()
+        .map_err(|utf_err| utf_err.to_string())?;
+    Ok(PathBuf::from(pathbuf_str))
 }
