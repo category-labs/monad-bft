@@ -60,41 +60,11 @@ where
 {
     /// Synchronously creates a new event ring from the provided path.
     pub fn new_from_path(path: impl AsRef<Path>) -> Result<Self, String> {
-        Self::new_from_path_with_offset(path, 0)
-    }
-
-    /// Synchronously creates a new event ring from the provided path and offset.
-    ///
-    /// This method should only be used if the event ring starts at an offset within the file at the
-    /// provided path. In most cases, you should use [`new_from_path()`](Self::new_from_path)
-    /// instead.
-    pub fn new_from_path_with_offset(
-        path: impl AsRef<Path>,
-        ring_offset: libc::off_t,
-    ) -> Result<Self, String> {
-        let mmap_prot = libc::PROT_READ;
-        let translated_path = if path.as_ref().components().count() == 1 {
-            // Interpreted as relative to the directory computed
-            // by monad_event_open_ring_dir_fd
-            let base_dir = crate::ffi::monad_event_open_ring_dir_fd(path.as_ref())?;
-            base_dir.join(path)
-        } else {
-            std::path::PathBuf::from(path.as_ref())
-        };
-
-        let supports_hugetlb = monad_check_path_supports_map_hugetlb(&translated_path)
-            .expect("failed to determine if event ring file supports MAP_HUGETLB");
-
-        let mmap_extra_flags = if supports_hugetlb {
-            libc::MAP_POPULATE | libc::MAP_HUGETLB
-        } else {
-            libc::MAP_POPULATE
-        };
-
-        let ring_file = File::open(&translated_path).map_err(|e| {
+        let resolved_path = crate::ffi::monad_event_resolve_ring_file(None::<&str>, path)?;
+        let ring_file = File::open(&resolved_path).map_err(|e| {
             format!(
                 "error loading {}: {}",
-                translated_path.display(),
+                resolved_path.display(),
                 e.to_string()
             )
         })?;
@@ -106,7 +76,7 @@ where
             mmap_extra_flags,
             ring_fd,
             ring_offset,
-            translated_path.to_str().unwrap(),
+            resolved_path.to_str().unwrap(),
         )?;
 
         Self::new(raw)
