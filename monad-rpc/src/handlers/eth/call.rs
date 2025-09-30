@@ -673,7 +673,6 @@ async fn prepare_eth_call<T: Triedb + TriedbPath>(
         .tx()
         .gas
         .unwrap_or(U256::from(header.header.gas_limit));
-    let eth_call_provider_gas_limit = eth_call_provider_gas_limit.min(header.header.gas_limit);
     fill_gas_params(
         triedb_env,
         block_key,

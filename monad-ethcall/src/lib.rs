@@ -198,15 +198,6 @@ pub async fn eth_call(
     tracer: MonadTracer,
     gas_specified: bool,
 ) -> CallResult {
-    // upper bound gas limit of transaction to block gas limit to prevent abuse of eth_call
-    if transaction.gas_limit() > block_header.gas_limit {
-        return CallResult::Failure(FailureCallResult {
-            error_code: EthCallResult::OtherError,
-            message: "gas limit too high".into(),
-            data: None,
-        });
-    }
-
     let mut rlp_encoded_tx = vec![];
     transaction.encode_2718(&mut rlp_encoded_tx);
 
