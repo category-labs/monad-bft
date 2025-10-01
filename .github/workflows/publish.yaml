@@ -49,6 +49,7 @@ jobs:
         with:
           submodules: recursive
           token: ${{ steps.generate_token.outputs.token }}
+          fetch-depth: 0
 
       - name: Log in to the Peach10 Container registry
         uses: docker/login-action@v3.1.0
@@ -66,6 +67,10 @@ jobs:
           tags: |
             type=ref,event=branch
             type=sha,prefix=
+
+      - name: Set Git Tag Version
+        if: ${{ matrix.dockerfile.name == 'monad-bft' || matrix.dockerfile.name == 'monad-rpc' }}
+        run: echo "GIT_TAG_VERSION=$(git describe --tags --always)" >> $GITHUB_ENV
 
       - name: Setup Docker Buildx
         id: setup-buildx
@@ -96,5 +101,6 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             GIT_COMMIT_HASH=${{ env.GIT_COMMIT_HASH }}
+            GIT_TAG_VERSION=${{ env.GIT_TAG_VERSION }}
           builder: ${{ steps.setup-buildx.outputs.name }}
           allow: security.insecure

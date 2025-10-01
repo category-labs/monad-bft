@@ -15,7 +15,7 @@
 
 use monad_rpc_docs::rpc;
 
-use crate::{jsonrpc::JsonRpcResult, WEB3_RPC_CLIENT_VERSION};
+use crate::{jsonrpc::JsonRpcResult, MONAD_RPC_VERSION};
 
 #[rpc(method = "net_version", ignore = "chain_id")]
 pub fn monad_net_version(chain_id: u64) -> JsonRpcResult<String> {
@@ -24,5 +24,5 @@ pub fn monad_net_version(chain_id: u64) -> JsonRpcResult<String> {
 
 #[rpc(method = "web3_clientVersion")]
 pub fn monad_web3_client_version() -> JsonRpcResult<String> {
-    Ok(WEB3_RPC_CLIENT_VERSION.to_string())
+    Ok(format!("Monad/{}", MONAD_RPC_VERSION.unwrap_or("unknown")))
 }

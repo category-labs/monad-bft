@@ -28,4 +28,4 @@ pub mod txpool;
 pub mod vpool;
 pub mod websocket;
 
-pub const WEB3_RPC_CLIENT_VERSION: &str = concat!("Monad/", env!("VERGEN_GIT_DESCRIBE"));
+pub const MONAD_RPC_VERSION: Option<&str> = option_env!("MONAD_VERSION");

@@ -101,7 +101,7 @@ static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 #[export_name = "malloc_conf"]
 pub static malloc_conf: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0";
 
-const CLIENT_VERSION: &str = env!("VERGEN_GIT_DESCRIBE");
+const MONAD_NODE_VERSION: Option<&str> = option_env!("MONAD_VERSION");
 const STATESYNC_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 const EXECUTION_DELAY: u64 = 3;
@@ -128,6 +128,8 @@ fn main() {
         .unwrap_or_else(|e: NodeSetupError| cmd.error(e.kind(), e).exit());
 
     drop(cmd);
+
+    MONAD_NODE_VERSION.map(|v| info!("starting monad-bft with version {}", v));
 
     if !node_state.pprof.is_empty() {
         runtime.spawn({
@@ -807,21 +809,25 @@ fn build_otel_meter_provider(
         .with_interval(interval / 2)
         .build();
 
+    let mut attrs = vec![
+        opentelemetry::KeyValue::new(
+            opentelemetry_semantic_conventions::resource::SERVICE_NAME,
+            service_name,
+        ),
+        opentelemetry::KeyValue::new("network", network_name),
+    ];
+    if let Some(version) = MONAD_NODE_VERSION {
+        attrs.push(opentelemetry::KeyValue::new(
+            opentelemetry_semantic_conventions::resource::SERVICE_VERSION,
+            version,
+        ));
+    }
+
     let provider_builder = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
         .with_reader(reader)
         .with_resource(
             opentelemetry_sdk::Resource::builder_empty()
-                .with_attributes(vec![
-                    opentelemetry::KeyValue::new(
-                        opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-                        service_name,
-                    ),
-                    opentelemetry::KeyValue::new(
-                        opentelemetry_semantic_conventions::resource::SERVICE_VERSION,
-                        CLIENT_VERSION,
-                    ),
-                    opentelemetry::KeyValue::new("network", network_name),
-                ])
+                .with_attributes(attrs)
                 .build(),
         );
 

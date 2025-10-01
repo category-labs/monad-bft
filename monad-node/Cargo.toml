@@ -68,9 +68,6 @@ monad-block-persist = { workspace = true }
 inotify = { workspace = true }
 lru = { workspace = true }
 
-[build-dependencies]
-vergen-git2 = { workspace = true }
-
 [features]
 default = ["jemallocator"]
 jemallocator = ["tikv-jemallocator", "monad-pprof/jemallocator"]
