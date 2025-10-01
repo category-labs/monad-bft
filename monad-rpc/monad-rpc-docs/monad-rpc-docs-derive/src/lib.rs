@@ -36,7 +36,7 @@ pub fn rpc(attr_args: TokenStream, decorated: TokenStream) -> TokenStream {
     let attr_args: AttributeArgs = parse_macro_input!(attr_args);
     let attr_args = extract_attrs(&attr_args);
     let method_name = attr_args.method_name.unwrap_or(fn_name.to_string());
-    let input_infos = extract_input_info(inputs, &attr_args.ignore_inputs);
+    let input_info = extract_input_info(inputs, &attr_args.ignore_inputs);
     let output = &input.sig.output;
     let output_info = extract_output_info(output.clone());
 
@@ -51,11 +51,14 @@ pub fn rpc(attr_args: TokenStream, decorated: TokenStream) -> TokenStream {
         fn_name.span(),
     );
 
-    let input_types: Vec<Type> = input_infos.iter().map(|(_, typ, _)| typ.clone()).collect();
-    let input_schemas: Vec<TokenStream2> = input_infos
-        .iter()
+    let input_type: Type = input_info
+        .as_ref()
+        .map(|(_, typ, _)| typ.clone())
+        .unwrap_or(parse_quote!([u8; 0]));
+    let input_schema: TokenStream2 = input_info
+        .as_ref()
         .map(|(_, _, schema)| schema.clone())
-        .collect();
+        .unwrap_or(parse_quote!(None));
 
     let output_type: Type = output_info
         .as_ref()
@@ -66,10 +69,6 @@ pub fn rpc(attr_args: TokenStream, decorated: TokenStream) -> TokenStream {
         .map(|(_, _, schema)| schema.clone())
         .unwrap_or(parse_quote!(None));
 
-    let default_input = parse_quote!([u8; 0]);
-    let input_type = input_types.first().unwrap_or(&default_input);
-    let default_schema = parse_quote!(None);
-    let input_schema = input_schemas.first().unwrap_or(&default_schema);
     TokenStream::from(quote! {
         #input
 
@@ -169,7 +168,10 @@ fn extract_attrs(attrs: &[NestedMeta]) -> Args {
 
             if nv.path.is_ident("ignore") {
                 if let Lit::Str(lit) = &nv.lit {
-                    args.ignore_inputs.push(lit.value());
+                    let value = lit.value();
+                    for item in value.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                        args.ignore_inputs.push(item.to_string());
+                    }
                 }
             }
         }
@@ -181,8 +183,8 @@ fn extract_attrs(attrs: &[NestedMeta]) -> Args {
 fn extract_input_info(
     inputs: &syn::punctuated::Punctuated<FnArg, syn::token::Comma>,
     ignore_inputs: &[String],
-) -> Vec<(String, Type, TokenStream2)> {
-    inputs
+) -> Option<(String, Type, TokenStream2)> {
+    let collected: Vec<(String, Type, TokenStream2)> = inputs
         .iter()
         .filter_map(|arg| {
             if let FnArg::Typed(PatType { pat, ty, .. }) = arg {
@@ -202,7 +204,13 @@ fn extract_input_info(
                 None
             }
         })
-        .collect()
+        .collect();
+
+    if collected.len() > 1 {
+        panic!("Expected at most one input, got {}", collected.len());
+    }
+
+    collected.into_iter().next()
 }
 
 fn extract_output_info(output: ReturnType) -> Option<(String, Type, TokenStream2)> {
