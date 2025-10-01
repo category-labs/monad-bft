@@ -42,6 +42,7 @@ fn main() {
         client_dst.display()
     );
     println!("cargo:rustc-link-lib=static=monad_event");
+    println!("cargo:rustc-link-lib=zstd");
     println!("cargo:rustc-link-lib=hugetlbfs");
 
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());

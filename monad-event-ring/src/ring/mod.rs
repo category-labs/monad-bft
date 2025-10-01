@@ -17,9 +17,7 @@ use std::{fs::File, marker::PhantomData, os::fd::AsRawFd, path::Path};
 
 pub(crate) use self::raw::RawEventRing;
 pub use self::snapshot::SnapshotEventRing;
-use crate::{
-    ffi::monad_check_path_supports_map_hugetlb, EventDecoder, EventReader, RawEventReader,
-};
+use crate::{EventDecoder, EventReader, RawEventReader};
 
 mod raw;
 mod snapshot;
@@ -63,22 +61,19 @@ where
         let resolved_path = crate::ffi::monad_event_resolve_ring_file(None::<&str>, path)?;
         let ring_file = File::open(&resolved_path).map_err(|e| {
             format!(
-                "error loading {}: {}",
+                "could not open event ring file `{}`: {}",
                 resolved_path.display(),
                 e.to_string()
             )
         })?;
-
-        let ring_fd = ring_file.as_raw_fd();
-
+        let mmap_prot = libc::PROT_READ;
         let raw = RawEventRing::mmap_from_fd(
             mmap_prot,
-            mmap_extra_flags,
-            ring_fd,
-            ring_offset,
+            libc::MAP_POPULATE,
+            ring_file.as_raw_fd(),
+            0,
             resolved_path.to_str().unwrap(),
         )?;
-
         Self::new(raw)
     }
 
