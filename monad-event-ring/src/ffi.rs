@@ -18,6 +18,7 @@
 
 use std::{
     ffi::{CStr, CString},
+    os::fd::{AsRawFd, FromRawFd},
     path::{Path, PathBuf},
 };
 
@@ -234,4 +235,77 @@ pub(crate) fn monad_event_resolve_ring_file(
         .to_str()
         .map_err(|utf_err| utf_err.to_string())?;
     Ok(PathBuf::from(pathbuf_str))
+}
+
+fn error_name_to_cstring(str_ref: impl AsRef<str>) -> Result<CString, String> {
+    let str_ref = str_ref.as_ref();
+    CString::new(str_ref).map_err(|nul_err| nul_err.to_string())
+}
+
+pub(crate) fn monad_event_is_snapshot_file(
+    file: &std::fs::File,
+    error_name: impl AsRef<str>,
+) -> Result<bool, String> {
+    let mut is_snapshot = false;
+    let error_name_cstring =
+        CString::new(error_name.as_ref()).map_err(|nul_err| nul_err.to_string())?;
+    let r = unsafe {
+        self::bindings::monad_event_is_snapshot_file(
+            file.as_raw_fd(),
+            error_name_cstring.as_ptr(),
+            &mut is_snapshot,
+        )
+    };
+    get_last_ring_library_error(r)?;
+    Ok(is_snapshot)
+}
+
+pub(crate) fn monad_event_decompress_snapshot_fd(
+    file: &std::fs::File,
+    max_size: Option<usize>,
+    error_name: impl AsRef<str>,
+) -> Result<Option<std::fs::File>, String> {
+    let error_name_cstring =
+        CString::new(error_name.as_ref()).map_err(|nul_err| nul_err.to_string())?;
+    let mut fd_out: libc::c_int = -1;
+    let r = unsafe {
+        self::bindings::monad_event_decompress_snapshot_fd(
+            file.as_raw_fd(),
+            max_size.unwrap_or(0),
+            error_name_cstring.as_ptr(),
+            &mut fd_out,
+        )
+    };
+    get_last_ring_library_error(r)?;
+    if fd_out == -1 {
+        Ok(None)
+    } else {
+        Ok(Some(unsafe { std::fs::File::from_raw_fd(fd_out) }))
+    }
+}
+
+pub(crate) fn monad_event_decompress_snapshot_mem(
+    bytes: &[u8],
+    max_size: Option<usize>,
+    error_name: impl AsRef<str>,
+) -> Result<Option<std::fs::File>, String> {
+    let error_name_cstring =
+        CString::new(error_name.as_ref()).map_err(|nul_err| nul_err.to_string())?;
+    let mut fd: libc::c_int = -1;
+    let r = unsafe {
+        self::bindings::monad_event_decompress_snapshot_mem(
+            bytes.as_ptr() as *const ::std::os::raw::c_void,
+            bytes.len(),
+            max_size.unwrap_or(0),
+            error_name_cstring.as_ptr(),
+            &mut fd,
+        )
+    };
+    get_last_ring_library_error(r)?;
+    if fd == -1 {
+        Ok(None)
+    } else {
+        let file = unsafe { std::fs::File::from_raw_fd(fd) };
+        Ok(Some(file))
+    }
 }

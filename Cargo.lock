@@ -5399,7 +5399,6 @@ dependencies = [
  "criterion",
  "itertools 0.10.5",
  "libc",
- "zstd",
 ]
 
 [[package]]
