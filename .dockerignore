@@ -11,8 +11,7 @@
 /docker/devnet/monad/mempool.sock
 /docker/single-node/logs
 
-# unfortunately some submodules and rpc's build script require .git folder to exist...
-!/.git
+**/.git
 
 **/target
 

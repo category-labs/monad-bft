@@ -103,9 +103,6 @@ reqwest = { workspace = true }
 test-case = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 
-[build-dependencies]
-vergen-git2 = { workspace = true }
-
 [[bench]]
 name = "serialize"
 harness = false

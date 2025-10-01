@@ -69,6 +69,10 @@ ENV PATH="${CARGO_ROOT}/bin:$PATH"
 RUN rustup toolchain install 1.85.0-x86_64-unknown-linux-gnu
 ARG TRIEDB_TARGET=triedb_driver
 
+ARG GIT_TAG_VERSION
+RUN test -n "$GIT_TAG_VERSION"
+ENV MONAD_VERSION=$GIT_TAG_VERSION
+
 # Builder
 COPY . .
 RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell -fno-omit-frame-pointer" CXXFLAGS="-march=haswell -fno-omit-frame-pointer" \
