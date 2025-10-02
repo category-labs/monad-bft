@@ -39,21 +39,21 @@ pub async fn monad_eth_getBalance<T: Triedb>(
     params: MonadEthGetBalanceParams,
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_getBalance: {params:?}");
-
     let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block_number).await?;
+    let version_exist = triedb_env
+        .get_state_availability(block_key)
+        .await
+        .map_err(JsonRpcError::internal_error)?;
+    if !version_exist {
+        return Err(JsonRpcError::block_not_found());
+    }
+
     let account = triedb_env
         .get_account(block_key, params.account.0)
         .await
         .map_err(JsonRpcError::internal_error)?;
 
-    match triedb_env
-        .get_state_availability(block_key)
-        .await
-        .map_err(JsonRpcError::internal_error)?
-    {
-        true => Ok(format!("0x{:x}", account.balance)),
-        false => Err(JsonRpcError::block_not_found()),
-    }
+    Ok(format!("0x{:x}", account.balance))
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -72,6 +72,14 @@ pub async fn monad_eth_getCode<T: Triedb>(
     trace!("monad_eth_getCode: {params:?}");
 
     let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block).await?;
+    let version_exist = triedb_env
+        .get_state_availability(block_key)
+        .await
+        .map_err(JsonRpcError::internal_error)?;
+    if !version_exist {
+        return Err(JsonRpcError::block_not_found());
+    }
+
     let account = triedb_env
         .get_account(block_key, params.account.0)
         .await
@@ -82,14 +90,7 @@ pub async fn monad_eth_getCode<T: Triedb>(
         .await
         .map_err(JsonRpcError::internal_error)?;
 
-    match triedb_env
-        .get_state_availability(block_key)
-        .await
-        .map_err(JsonRpcError::internal_error)?
-    {
-        true => Ok(code),
-        false => Err(JsonRpcError::block_not_found()),
-    }
+    Ok(code)
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -109,19 +110,20 @@ pub async fn monad_eth_getStorageAt<T: Triedb>(
     trace!("monad_eth_getStorageAt: {params:?}");
 
     let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block).await?;
+    let version_exist = triedb_env
+        .get_state_availability(block_key)
+        .await
+        .map_err(JsonRpcError::internal_error)?;
+    if !version_exist {
+        return Err(JsonRpcError::block_not_found());
+    }
+
     let storage_value = triedb_env
         .get_storage_at(block_key, params.account.0, B256::from(params.position.0).0)
         .await
         .map_err(JsonRpcError::internal_error)?;
 
-    match triedb_env
-        .get_state_availability(block_key)
-        .await
-        .map_err(JsonRpcError::internal_error)?
-    {
-        true => Ok(storage_value),
-        false => Err(JsonRpcError::block_not_found()),
-    }
+    Ok(storage_value)
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -140,19 +142,20 @@ pub async fn monad_eth_getTransactionCount<T: Triedb>(
     trace!("monad_eth_getTransactionCount: {params:?}");
 
     let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block).await?;
+    let version_exist = triedb_env
+        .get_state_availability(block_key)
+        .await
+        .map_err(JsonRpcError::internal_error)?;
+    if !version_exist {
+        return Err(JsonRpcError::block_not_found());
+    }
+
     let account = triedb_env
         .get_account(block_key, params.account.0)
         .await
         .map_err(JsonRpcError::internal_error)?;
 
-    match triedb_env
-        .get_state_availability(block_key)
-        .await
-        .map_err(JsonRpcError::internal_error)?
-    {
-        true => Ok(format!("0x{:x}", account.nonce)),
-        false => Err(JsonRpcError::block_not_found()),
-    }
+    Ok(format!("0x{:x}", account.nonce))
 }
 
 #[allow(non_snake_case)]
