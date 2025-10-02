@@ -30,6 +30,9 @@ pub struct Config {
     #[serde(default)]
     pub rpc_urls: Vec<String>,
 
+    #[serde(default)]
+    pub ws_url: String,
+
     /// Funded private keys used to seed native tokens to sender accounts
     pub root_private_keys: Vec<String>,
 
@@ -98,6 +101,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             rpc_urls: vec!["http://localhost:8545".to_string()],
+            ws_url: "ws://localhost:8546".to_string(),
             root_private_keys: vec![
                 "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80".to_string(),
                 "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d".to_string(),
@@ -280,6 +284,12 @@ impl Config {
             })
             .collect()
     }
+
+    pub fn ws_url(&self) -> Result<Url> {
+        self.ws_url
+            .parse()
+            .wrap_err_with(|| format!("Failed to parse WS URL: {}", self.ws_url))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -332,6 +342,12 @@ pub struct TrafficGen {
     /// How many txs should be generated per sender per cycle.
     /// Or put another way, how many txs should be generated before refreshing the nonce from chain state
     pub tx_per_sender: Option<usize>,
+
+    // Should the txgen spam rpc and websocket with wallet workflow requests
+    pub spam_rpc: bool,
+
+    /// Should the txgen compare rpc and websocket responses
+    pub compare_rpc_ws: bool,
 }
 
 impl Default for TrafficGen {
@@ -348,6 +364,8 @@ impl Default for TrafficGen {
             }),
             sender_group_size: None,
             tx_per_sender: None,
+            spam_rpc: false,
+            compare_rpc_ws: false,
         }
     }
 }
