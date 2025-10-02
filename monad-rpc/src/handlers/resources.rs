@@ -23,7 +23,7 @@ use actix_web::{
 use monad_archive::prelude::ArchiveReader;
 use monad_ethcall::EthCallExecutor;
 use monad_triedb_utils::triedb_env::TriedbEnv;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Semaphore;
 use tracing_actix_web::RootSpanBuilder;
 
 use super::eth::call::EthCallStatsTracker;
@@ -36,7 +36,7 @@ use crate::{
 pub struct MonadRpcResources {
     pub txpool_bridge_client: EthTxPoolBridgeClient,
     pub triedb_reader: Option<TriedbEnv>,
-    pub eth_call_executor: Option<Arc<Mutex<EthCallExecutor>>>,
+    pub eth_call_executor: Option<Arc<EthCallExecutor>>,
     pub eth_call_executor_fibers: usize,
     pub eth_call_stats_tracker: Option<Arc<EthCallStatsTracker>>,
     pub archive_reader: Option<ArchiveReader>,
@@ -62,7 +62,7 @@ impl MonadRpcResources {
     pub fn new(
         txpool_bridge_client: EthTxPoolBridgeClient,
         triedb_reader: Option<TriedbEnv>,
-        eth_call_executor: Option<Arc<Mutex<EthCallExecutor>>>,
+        eth_call_executor: Option<Arc<EthCallExecutor>>,
         eth_call_executor_fibers: usize,
         archive_reader: Option<ArchiveReader>,
         chain_id: u64,
