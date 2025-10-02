@@ -73,9 +73,16 @@ impl EIP7702 {
         client: &ReqwestClient,
         max_fee_per_gas: u128,
         chain_id: u64,
+        gas_limit: Option<u64>,
     ) -> Result<Self> {
         let nonce = client.get_transaction_count(&deployer.0).await?;
-        let tx = Self::deploy_tx(nonce, &deployer.1, max_fee_per_gas, chain_id);
+        let tx = Self::deploy_tx_with_gas_limit(
+            nonce,
+            &deployer.1,
+            max_fee_per_gas,
+            chain_id,
+            gas_limit.unwrap_or(2_000_000),
+        );
         let mut rlp_encoded_tx = Vec::new();
         tx.encode_2718(&mut rlp_encoded_tx);
 
@@ -97,11 +104,21 @@ impl EIP7702 {
         max_fee_per_gas: u128,
         chain_id: u64,
     ) -> TxEnvelope {
+        Self::deploy_tx_with_gas_limit(nonce, deployer, max_fee_per_gas, chain_id, 2_000_000)
+    }
+
+    pub fn deploy_tx_with_gas_limit(
+        nonce: u64,
+        deployer: &PrivateKey,
+        max_fee_per_gas: u128,
+        chain_id: u64,
+        gas_limit: u64,
+    ) -> TxEnvelope {
         let input = Bytes::from_hex(BYTECODE).unwrap();
         let tx = TxEip1559 {
             chain_id,
             nonce,
-            gas_limit: 2_000_000,
+            gas_limit,
             max_fee_per_gas,
             max_priority_fee_per_gas: 10,
             to: TxKind::Create,
@@ -138,15 +155,20 @@ impl EIP7702 {
         calldata: Bytes,
         max_fee_per_gas: u128,
         chain_id: u64,
+        gas_limit: Option<u64>,
+        priority_fee: Option<u64>,
     ) -> TxEnvelope {
         use alloy_consensus::TxEip7702;
+
+        let gas_limit_val = gas_limit.unwrap_or(200_000); // 200k default, override with --set-tx-gas-limit
+        let priority_fee_val = priority_fee.unwrap_or(0) as u128; // 0 default, override with --priority-fee
 
         let tx = TxEip7702 {
             chain_id,
             nonce: sender.nonce,
-            gas_limit: 200_000,
+            gas_limit: gas_limit_val,
             max_fee_per_gas,
-            max_priority_fee_per_gas: 0,
+            max_priority_fee_per_gas: priority_fee_val,
             to: authorized_account,
             value: U256::ZERO,
             access_list: Default::default(),
@@ -160,7 +182,7 @@ impl EIP7702 {
         sender.nonce += 1;
         sender.native_bal = sender
             .native_bal
-            .checked_sub(U256::from(200_000 * max_fee_per_gas))
+            .checked_sub(U256::from(gas_limit_val as u128 * max_fee_per_gas))
             .unwrap_or(U256::ZERO);
 
         TxEnvelope::Eip7702(tx.into_signed(sig))
@@ -171,15 +193,19 @@ impl EIP7702 {
         sender: &mut SimpleAccount,
         max_fee_per_gas: u128,
         chain_id: u64,
+        gas_limit: Option<u64>,
+        priority_fee: Option<u64>,
     ) -> TxEnvelope {
         let calldata = Bytes::from(vec![0u8; 100]);
+        let gas_limit_val = gas_limit.unwrap_or(200_000); // 200k default, override with --set-tx-gas-limit
+        let priority_fee_val = priority_fee.unwrap_or(0) as u128; // 0 default, override with --priority-fee
 
         let tx = TxEip1559 {
             chain_id,
             nonce: sender.nonce,
-            gas_limit: 200_000,
+            gas_limit: gas_limit_val,
             max_fee_per_gas,
-            max_priority_fee_per_gas: 0,
+            max_priority_fee_per_gas: priority_fee_val,
             to: TxKind::Call(self.addr),
             value: U256::ZERO,
             access_list: Default::default(),
@@ -191,7 +217,7 @@ impl EIP7702 {
         sender.nonce += 1;
         sender.native_bal = sender
             .native_bal
-            .checked_sub(U256::from(200_000 * max_fee_per_gas))
+            .checked_sub(U256::from(gas_limit_val as u128 * max_fee_per_gas))
             .unwrap_or(U256::ZERO);
 
         TxEnvelope::Eip1559(tx.into_signed(sig))
@@ -203,15 +229,19 @@ impl EIP7702 {
         authorized_account: Address,
         max_fee_per_gas: u128,
         chain_id: u64,
+        gas_limit: Option<u64>,
+        priority_fee: Option<u64>,
     ) -> TxEnvelope {
         let execute_calldata = self.create_execute_calldata(authorized_account);
+        let gas_limit_val = gas_limit.unwrap_or(200_000); // 200k default, override with --set-tx-gas-limit
+        let priority_fee_val = priority_fee.unwrap_or(0) as u128; // 0 default, override with --priority-fee
 
         let tx = TxEip1559 {
             chain_id,
             nonce: sender.nonce,
-            gas_limit: 200_000,
+            gas_limit: gas_limit_val,
             max_fee_per_gas,
-            max_priority_fee_per_gas: 0,
+            max_priority_fee_per_gas: priority_fee_val,
             to: TxKind::Call(authorized_account),
             value: U256::ZERO,
             access_list: Default::default(),
@@ -223,7 +253,7 @@ impl EIP7702 {
         sender.nonce += 1;
         sender.native_bal = sender
             .native_bal
-            .checked_sub(U256::from(200_000 * max_fee_per_gas))
+            .checked_sub(U256::from(gas_limit_val as u128 * max_fee_per_gas))
             .unwrap_or(U256::ZERO);
 
         TxEnvelope::Eip1559(tx.into_signed(sig))

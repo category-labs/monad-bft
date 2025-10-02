@@ -44,17 +44,18 @@ impl Generator for SystemKeyNormalTxGenerator {
         for i in 0..self.tx_per_sender {
             let to = self.recipient_keys.next_addr();
             let priority_fee = if self.random_priority_fee {
-                rng.gen_range(0..1000)
+                let (min, max) = ctx.random_priority_fee_range.unwrap_or((0, 1000));
+                rng.gen_range(min..=max)
             } else {
-                0
+                ctx.priority_fee.unwrap_or(0)
             };
 
             let tx = TxEip1559 {
                 chain_id: ctx.chain_id,
                 nonce: self.system_nonce + u64::try_from(i).unwrap_or(0),
-                gas_limit: 0,
+                gas_limit: ctx.set_tx_gas_limit.unwrap_or(0), // 0 default for system txs, override with --set-tx-gas-limit
                 max_fee_per_gas: 0,
-                max_priority_fee_per_gas: priority_fee,
+                max_priority_fee_per_gas: priority_fee as u128,
                 to: TxKind::Call(to),
                 value: U256::from(10),
                 access_list: Default::default(),

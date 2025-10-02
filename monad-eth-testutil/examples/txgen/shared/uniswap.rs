@@ -50,11 +50,19 @@ impl Uniswap {
         client: &ReqwestClient,
         max_fee_per_gas: u128,
         chain_id: u64,
+        gas_limit: Option<u64>,
     ) -> Result<Self> {
         let nonce = client.get_transaction_count(&deployer.0).await?;
+        let deployment_gas = gas_limit.unwrap_or(800_000); // Default 800k, override with --gas-limit-contract-deployment
 
         // deploy factory
-        let tx = Self::deploy_factory_tx(nonce, &deployer.1, max_fee_per_gas, chain_id);
+        let tx = Self::deploy_factory_tx_with_gas_limit(
+            nonce,
+            &deployer.1,
+            max_fee_per_gas,
+            chain_id,
+            deployment_gas,
+        );
         let mut rlp_encoded_tx = Vec::new();
         tx.encode_2718(&mut rlp_encoded_tx);
         let _: String = client
@@ -66,7 +74,13 @@ impl Uniswap {
         let factory_addr = calculate_contract_addr(&deployer.0, nonce);
 
         // deploy two ERC20 tokens for uniswap pool
-        let tx = ERC20::deploy_tx(nonce + 1, &deployer.1, max_fee_per_gas, chain_id);
+        let tx = ERC20::deploy_tx_with_gas_limit(
+            nonce + 1,
+            &deployer.1,
+            max_fee_per_gas,
+            chain_id,
+            deployment_gas,
+        );
         let mut rlp_encoded_tx = Vec::new();
         tx.encode_2718(&mut rlp_encoded_tx);
         let _: String = client
@@ -77,7 +91,13 @@ impl Uniswap {
             .await?;
         let token_a_addr = calculate_contract_addr(&deployer.0, nonce + 1);
 
-        let tx = ERC20::deploy_tx(nonce + 2, &deployer.1, max_fee_per_gas, chain_id);
+        let tx = ERC20::deploy_tx_with_gas_limit(
+            nonce + 2,
+            &deployer.1,
+            max_fee_per_gas,
+            chain_id,
+            deployment_gas,
+        );
         let mut rlp_encoded_tx = Vec::new();
         tx.encode_2718(&mut rlp_encoded_tx);
         let _: String = client
@@ -97,6 +117,7 @@ impl Uniswap {
             token_b_addr,
             max_fee_per_gas,
             chain_id,
+            deployment_gas,
         );
         let mut rlp_encoded_tx = Vec::new();
         tx.encode_2718(&mut rlp_encoded_tx);
@@ -120,8 +141,14 @@ impl Uniswap {
         let pool_addr = Address::from_slice(&log_data[log_data.len() - 20..]);
 
         // initialize pool
-        let tx =
-            Self::initialize_pool(nonce + 4, &deployer.1, pool_addr, max_fee_per_gas, chain_id);
+        let tx = Self::initialize_pool(
+            nonce + 4,
+            &deployer.1,
+            pool_addr,
+            max_fee_per_gas,
+            chain_id,
+            deployment_gas,
+        );
         let mut rlp_encoded_tx = Vec::new();
         tx.encode_2718(&mut rlp_encoded_tx);
         let _: String = client
@@ -140,6 +167,7 @@ impl Uniswap {
             token_b_addr,
             max_fee_per_gas,
             chain_id,
+            deployment_gas,
         );
         let mut rlp_encoded_tx = Vec::new();
         tx.encode_2718(&mut rlp_encoded_tx);
@@ -163,11 +191,27 @@ impl Uniswap {
         max_fee_per_gas: u128,
         chain_id: u64,
     ) -> TxEnvelope {
+        Self::deploy_factory_tx_with_gas_limit(
+            nonce,
+            deployer,
+            max_fee_per_gas,
+            chain_id,
+            20_000_000,
+        )
+    }
+
+    pub fn deploy_factory_tx_with_gas_limit(
+        nonce: u64,
+        deployer: &PrivateKey,
+        max_fee_per_gas: u128,
+        chain_id: u64,
+        gas_limit: u64,
+    ) -> TxEnvelope {
         let input = Bytes::from_hex(FACTORY_BYTECODE).unwrap();
         let tx = TxEip1559 {
             chain_id,
             nonce,
-            gas_limit: 20_000_000,
+            gas_limit,
             max_fee_per_gas,
             max_priority_fee_per_gas: 10,
             to: TxKind::Create,
@@ -189,6 +233,7 @@ impl Uniswap {
         token_b: Address,
         max_fee_per_gas: u128,
         chain_id: u64,
+        gas_limit: u64,
     ) -> TxEnvelope {
         let input = UniswapV3Factory::createPoolCall {
             tokenA: token_a,
@@ -200,7 +245,7 @@ impl Uniswap {
         let tx = TxEip1559 {
             chain_id,
             nonce,
-            gas_limit: 20_000_000,
+            gas_limit,
             max_fee_per_gas,
             max_priority_fee_per_gas: 10,
             to: TxKind::Call(factory),
@@ -220,6 +265,7 @@ impl Uniswap {
         pool: Address,
         max_fee_per_gas: u128,
         chain_id: u64,
+        gas_limit: u64,
     ) -> TxEnvelope {
         let input = UniswapV3Pool::initializeCall {
             sqrtPriceX96: calculate_sqrt_price_x96(INITIAL_PRICE),
@@ -229,7 +275,7 @@ impl Uniswap {
         let tx = TxEip1559 {
             chain_id,
             nonce,
-            gas_limit: 500_000,
+            gas_limit,
             max_fee_per_gas,
             max_priority_fee_per_gas: 10,
             to: TxKind::Call(pool),
@@ -251,6 +297,7 @@ impl Uniswap {
         token_b: Address,
         max_fee_per_gas: u128,
         chain_id: u64,
+        gas_limit: u64,
     ) -> TxEnvelope {
         let input = Bytes::from_hex(MANAGER_BYTECODE).unwrap();
         let mut extended_input = input.to_vec();
@@ -261,7 +308,7 @@ impl Uniswap {
         let tx = TxEip1559 {
             chain_id,
             nonce,
-            gas_limit: 20_000_000,
+            gas_limit,
             max_fee_per_gas,
             max_priority_fee_per_gas: 10,
             to: TxKind::Create,
@@ -280,6 +327,8 @@ impl Uniswap {
         sender: &mut SimpleAccount,
         max_fee_per_gas: u128,
         chain_id: u64,
+        gas_limit: Option<u64>,
+        priority_fee: Option<u64>,
     ) -> TxEnvelope {
         // price point of 300.0 has a tick value of 57000
         // with tick spacing of 60, lower tick is 10 ticks below current tick
@@ -294,9 +343,9 @@ impl Uniswap {
         let tx = TxEip1559 {
             chain_id,
             nonce: sender.nonce,
-            gas_limit: 400_000,
+            gas_limit: gas_limit.unwrap_or(400_000), // 400k default, override with --set-tx-gas-limit
             max_fee_per_gas,
-            max_priority_fee_per_gas: 0,
+            max_priority_fee_per_gas: priority_fee.unwrap_or(0) as u128, // 0 default, override with --priority-fee
             to: TxKind::Call(self.addr),
             value: U256::ZERO,
             access_list: Default::default(),

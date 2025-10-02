@@ -72,9 +72,9 @@ impl Generator for SystemTransactionSpamGenerator {
             let tx = TxEip1559 {
                 chain_id: ctx.chain_id,
                 nonce: self.system_nonce + u64::try_from(i).unwrap_or(0),
-                gas_limit: 0,
+                gas_limit: ctx.set_tx_gas_limit.unwrap_or(0), // 0 default for system txs, override with --set-tx-gas-limit
                 max_fee_per_gas: 0,
-                max_priority_fee_per_gas: 0,
+                max_priority_fee_per_gas: ctx.priority_fee.unwrap_or(0) as u128, // 0 default for system txs, override with --priority-fee
                 to: TxKind::Call(STAKING_CONTRACT_ADDRESS),
                 value,
                 access_list: Default::default(),

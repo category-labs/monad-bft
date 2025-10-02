@@ -43,9 +43,16 @@ impl ECMul {
         client: &ReqwestClient,
         max_fee_per_gas: u128,
         chain_id: u64,
+        gas_limit: Option<u64>,
     ) -> Result<Self> {
         let nonce = client.get_transaction_count(&deployer.0).await?;
-        let tx = Self::deploy_tx(nonce, &deployer.1, max_fee_per_gas, chain_id);
+        let tx = Self::deploy_tx_with_gas_limit(
+            nonce,
+            &deployer.1,
+            max_fee_per_gas,
+            chain_id,
+            gas_limit.unwrap_or(2_000_000),
+        );
         let mut rlp_encoded_tx = Vec::new();
         tx.encode_2718(&mut rlp_encoded_tx);
 
@@ -84,12 +91,38 @@ impl ECMul {
         TxEnvelope::Eip1559(tx.into_signed(sig))
     }
 
+    pub fn deploy_tx_with_gas_limit(
+        nonce: u64,
+        deployer: &PrivateKey,
+        max_fee_per_gas: u128,
+        chain_id: u64,
+        gas_limit: u64,
+    ) -> TxEnvelope {
+        let input = Bytes::from_hex(BYTECODE).unwrap();
+        let tx = TxEip1559 {
+            chain_id,
+            nonce,
+            gas_limit,
+            max_fee_per_gas,
+            max_priority_fee_per_gas: 10,
+            to: TxKind::Create,
+            value: U256::ZERO,
+            access_list: Default::default(),
+            input,
+        };
+
+        let sig = deployer.sign_transaction(&tx);
+        TxEnvelope::Eip1559(tx.into_signed(sig))
+    }
+
     // Helper function to construct an ECMul transaction
     pub fn construct_tx(
         &self,
         sender: &mut SimpleAccount,
         max_fee_per_gas: u128,
         chain_id: u64,
+        gas_limit: Option<u64>,
+        priority_fee: Option<u64>,
     ) -> TxEnvelope {
         let input = IECMul::performzksyncECMulsCall {
             iterations: U256::from(200),
@@ -99,9 +132,9 @@ impl ECMul {
         let tx = TxEip1559 {
             chain_id,
             nonce: sender.nonce,
-            gas_limit: 2_000_000,
+            gas_limit: gas_limit.unwrap_or(2_000_000), // 2M default, override with --set-tx-gas-limit
             max_fee_per_gas,
-            max_priority_fee_per_gas: 0,
+            max_priority_fee_per_gas: priority_fee.unwrap_or(0) as u128, // 0 default, override with --priority-fee
             to: TxKind::Call(self.addr),
             value: U256::ZERO,
             access_list: Default::default(),
