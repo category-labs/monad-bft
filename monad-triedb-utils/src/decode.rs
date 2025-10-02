@@ -47,7 +47,7 @@ pub fn rlp_decode_account(account_rlp: Vec<u8>) -> Option<EthAccount> {
         return None;
     };
 
-    let mut is_delegated = false;
+    let is_delegated = false;
     let code_hash = if buf.is_empty() {
         None
     } else {

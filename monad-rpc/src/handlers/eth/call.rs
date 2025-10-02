@@ -618,7 +618,7 @@ impl CallParams {
 #[tracing::instrument(level = "debug")]
 async fn prepare_eth_call<T: Triedb + TriedbPath>(
     triedb_env: &T,
-    eth_call_executor: Arc<Mutex<EthCallExecutor>>,
+    eth_call_executor: Arc<EthCallExecutor>,
     chain_id: u64,
     eth_call_provider_gas_limit: u64,
     mut params: CallParams,
@@ -735,7 +735,7 @@ async fn prepare_eth_call<T: Triedb + TriedbPath>(
 #[rpc(method = "eth_call", ignore = "chain_id", ignore = "eth_call_executor")]
 pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     triedb_env: &T,
-    eth_call_executor: Arc<Mutex<EthCallExecutor>>,
+    eth_call_executor: Arc<EthCallExecutor>,
     chain_id: u64,
     eth_call_provider_gas_limit: u64,
     params: MonadEthCallParams,
@@ -771,7 +771,7 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
 #[allow(non_snake_case)]
 pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
     triedb_env: &T,
-    eth_call_executor: Arc<Mutex<EthCallExecutor>>,
+    eth_call_executor: Arc<EthCallExecutor>,
     chain_id: u64,
     eth_call_gas_limit: u64,
     params: MonadDebugTraceCallParams,

@@ -20,7 +20,6 @@ alloy-sol-types = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-tokio = { workspace = true }
 tracing = { workspace = true }
 
 [build-dependencies]
