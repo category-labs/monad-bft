@@ -5,6 +5,7 @@ systemctl stop monad-bft monad-execution monad-rpc monad-mpt monad-execution-gen
 mkdir /home/monad/monad-bft/empty-dir
 rsync -r --delete /home/monad/monad-bft/empty-dir/ /home/monad/monad-bft/ledger/
 rsync -r --delete /home/monad/monad-bft/empty-dir/ /home/monad/monad-bft/config/forkpoint/
+rsync -r --delete /home/monad/monad-bft/empty-dir/ /home/monad/monad-bft/config/validators/
 touch /home/monad/monad-bft/ledger/wal
 rm -rf /home/monad/monad-bft/empty-dir
 rm -rf /home/monad/monad-bft/snapshots
