@@ -1,0 +1,52 @@
+name: Test
+
+on:
+  push:
+
+env:
+  AWS_REGION: "us-east-2"
+  MONAD_EXECUTION_ROOT: ${{ github.workspace }}/monad-cxx/monad-execution
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04-32
+
+    strategy:
+      matrix:
+        dockerfile:
+          - { name: "monad-bft", file: "docker/devnet/Dockerfile" }
+          - { name: "monad-bft", file: "docker/devnet/Dockerfile", target_postfix: -debug }
+          - { name: "monad-rpc", file: "docker/rpc/Dockerfile" }
+          - { name: "monad-rpc", file: "docker/rpc/Dockerfile", target_postfix: -debug }
+          - { name: "monad-tx-gen", file: "docker/txgen/Dockerfile" }
+
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Generate a token
+        id: generate_token
+        uses: tibdex/github-app-token@v1
+        with:
+          app_id: ${{ secrets.REPO_READONLY_GITHUB_APP_ID }}
+          private_key: ${{ secrets.REPO_READONLY_GITHUB_APP_KEY }}
+          permissions: >-
+            {"contents": "read"}
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ steps.generate_token.outputs.token }}
+          fetch-depth: 0
+
+      - name: Set Git Tag Version
+        if: ${{ matrix.dockerfile.name == 'monad-bft' || matrix.dockerfile.name == 'monad-rpc' }}
+        run: echo "GIT_TAG_VERSION=$(git describe --tags --always)" >> $GITHUB_ENV
+
+      - name: Print Git Tag Version
+        if: ${{ matrix.dockerfile.name == 'monad-bft' || matrix.dockerfile.name == 'monad-rpc' }}
+        run: |
+          echo "Git Tag Version: ${{ env.GIT_TAG_VERSION }}"
