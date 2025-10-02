@@ -8,7 +8,7 @@ WorkingDirectory=/home/monad
 Type=simple
 ExecStart=/usr/local/bin/monad-archive-checker \
     --bucket "${ARCHIVE_BUCKET}" \
-    --otel-endpoint http://monad-otel-collector-1:4317 \
+    --otel-endpoint ${OTEL_ENDPOINT} \
     --max-compute-threads 2 \
     checker \
     --recheck-freq-min 50 \
