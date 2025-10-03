@@ -28,7 +28,7 @@ use monad_event_ring::{DecodedEventRing, EventNextResult};
 use monad_exec_events::{
     ffi::{monad_exec_block_end, monad_exec_block_start, monad_exec_block_tag},
     BlockBuilderError, BlockBuilderResult, BlockCommitState, CommitStateBlockBuilder,
-    CommitStateBlockUpdate, ExecEventRing, ExecutedBlock, ExecutedTxn,
+    CommitStateBlockUpdate, ExecEventRing, ExecutedBlock, ExecutedBlockBuilder, ExecutedTxn,
 };
 use ratatui::{
     crossterm::event::{Event, KeyCode, KeyModifiers},
@@ -264,7 +264,7 @@ impl App {
 
         let mut event_reader = event_ring.create_reader();
 
-        let mut block_builder = CommitStateBlockBuilder::default();
+        let mut block_builder = CommitStateBlockBuilder::new(ExecutedBlockBuilder::new(false));
 
         let tick_rate = Duration::from_millis(100);
         let mut last_tick = Instant::now();

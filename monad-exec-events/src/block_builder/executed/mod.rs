@@ -32,7 +32,7 @@ use crate::{
 mod state;
 
 /// Reassembles execution events from event ring event descriptors into full execution blocks.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ExecutedBlockBuilder {
     state: Option<BlockReassemblyState>,
     include_call_frames: bool,
@@ -485,7 +485,7 @@ mod test {
 
         let mut event_reader = snapshot.create_reader();
 
-        let mut block_builder = ExecutedBlockBuilder::default();
+        let mut block_builder = ExecutedBlockBuilder::new(true);
 
         loop {
             let event_descriptor = match event_reader.next_descriptor() {
