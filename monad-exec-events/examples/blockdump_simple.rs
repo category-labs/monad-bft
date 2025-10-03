@@ -33,7 +33,7 @@ fn main() {
 
     let mut event_reader = event_ring.create_reader();
 
-    let mut block_builder = ExecutedBlockBuilder::default();
+    let mut block_builder = ExecutedBlockBuilder::new(true);
 
     loop {
         let event = match event_reader.next_descriptor() {

@@ -19,7 +19,7 @@ use itertools::Itertools;
 use monad_event_ring::{DecodedEventRing, EventNextResult, SnapshotEventRing};
 use monad_exec_events::{
     BlockBuilderError, BlockCommitState, CommitStateBlockBuilder, CommitStateBlockUpdate,
-    ExecEventDecoder, ExecEventRing, ExecutedBlock,
+    ExecEventDecoder, ExecEventRing, ExecutedBlock, ExecutedBlockBuilder,
 };
 use monad_types::BlockId;
 use tokio::sync::broadcast;
@@ -43,7 +43,7 @@ impl EventServer<ExecEventRing> {
 
         let this = Self {
             event_ring,
-            block_builder: CommitStateBlockBuilder::default(),
+            block_builder: CommitStateBlockBuilder::new(ExecutedBlockBuilder::new(false)),
             broadcast_tx: broadcast_tx.clone(),
         };
 
@@ -125,7 +125,7 @@ impl EventServer<SnapshotEventRing<ExecEventDecoder>> {
 
         let this = Self {
             event_ring: snapshot_event_ring,
-            block_builder: CommitStateBlockBuilder::default(),
+            block_builder: CommitStateBlockBuilder::new(ExecutedBlockBuilder::new(false)),
             broadcast_tx: broadcast_tx.clone(),
         };
 
