@@ -19,7 +19,7 @@ use clap::{CommandFactory, Parser};
 use monad_event_ring::{DecodedEventRing, EventNextResult};
 use monad_exec_events::{
     BlockBuilderError, BlockCommitState, CommitStateBlockBuilder, CommitStateBlockUpdate,
-    ExecEventRing,
+    ExecEventRing, ExecutedBlockBuilder,
 };
 
 #[derive(Debug, Parser)]
@@ -63,7 +63,7 @@ fn main() {
 
     let mut event_reader = event_ring.create_reader();
 
-    let mut block_builder = CommitStateBlockBuilder::default();
+    let mut block_builder = CommitStateBlockBuilder::new(ExecutedBlockBuilder::new(true));
 
     loop {
         let event = match event_reader.next_descriptor() {

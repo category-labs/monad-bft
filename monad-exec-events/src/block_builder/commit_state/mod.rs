@@ -66,17 +66,17 @@ pub struct CommitStateBlockBuilder {
     block_builder: ExecutedBlockBuilder,
 }
 
-impl Default for CommitStateBlockBuilder {
-    fn default() -> Self {
+impl CommitStateBlockBuilder {
+    /// Creates a new [`CommitStateBlockBuilder`] using the provided [`ExecutedBlockBuilder`] as the
+    /// underlying block builder.
+    pub fn new(block_builder: ExecutedBlockBuilder) -> Self {
         Self {
-            state: Default::default(),
-            proposals: Default::default(),
-            block_builder: Default::default(),
+            state: HashMap::default(),
+            proposals: BTreeMap::default(),
+            block_builder,
         }
     }
-}
 
-impl CommitStateBlockBuilder {
     /// Processes the execution event in the provided event descriptor.
     pub fn process_event_descriptor(
         &mut self,
@@ -292,7 +292,9 @@ mod test {
     use monad_event_ring::{DecodedEventRing, EventNextResult};
 
     use super::CommitStateBlockBuilder;
-    use crate::{BlockBuilderError, CommitStateBlockUpdate, ExecSnapshotEventRing};
+    use crate::{
+        BlockBuilderError, CommitStateBlockUpdate, ExecSnapshotEventRing, ExecutedBlockBuilder,
+    };
 
     fn run_commit_state_block_builder(
         snapshot_name: &'static str,
@@ -303,7 +305,7 @@ mod test {
 
         let mut event_reader = snapshot.create_reader();
 
-        let mut block_builder = CommitStateBlockBuilder::default();
+        let mut block_builder = CommitStateBlockBuilder::new(ExecutedBlockBuilder::new(true));
 
         loop {
             let event_descriptor = match event_reader.next_descriptor() {
