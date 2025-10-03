@@ -16,8 +16,8 @@
 use core::str;
 
 use alloy_consensus::{Block as AlloyBlock, BlockBody, Header, ReceiptEnvelope, TxEnvelope};
-use alloy_primitives::{Address, BlockHash, Bytes, U8};
-use alloy_rlp::{Decodable, Encodable, EMPTY_LIST_CODE};
+use alloy_primitives::{Address, BlockHash, Bytes, Log, U8};
+use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable, EMPTY_LIST_CODE};
 use bytes::BufMut;
 use eyre::bail;
 use futures::try_join;
@@ -535,6 +535,12 @@ pub enum CallKind {
     StaticCall,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+pub struct CallFrameLog {
+    pub log: Log,
+    pub position: U64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CallFrame {
     pub typ: CallKind,
@@ -548,6 +554,7 @@ pub struct CallFrame {
     pub output: Bytes,
     pub status: U8,
     pub depth: U64,
+    pub logs: Option<Vec<CallFrameLog>>,
 }
 
 impl Decodable for CallFrame {
@@ -576,6 +583,11 @@ impl Decodable for CallFrame {
         let output = Bytes::decode(rlp_buf)?;
         let status: U8 = U8::decode(rlp_buf)?;
         let depth: U64 = U64::decode(rlp_buf)?;
+        let logs = if rlp_buf.is_empty() {
+            None
+        } else {
+            Some(Vec::decode(rlp_buf)?)
+        };
 
         let typ = match typ.to::<u8>() {
             0 if flags == U64::from(1) => CallKind::StaticCall,
@@ -600,6 +612,7 @@ impl Decodable for CallFrame {
             output,
             status,
             depth,
+            logs,
         })
     }
 }
@@ -630,6 +643,9 @@ impl Encodable for CallFrame {
         self.output.encode(out);
         self.status.encode(out);
         self.depth.encode(out);
+        if let Some(logs) = &self.logs {
+            logs.encode(out);
+        }
     }
 }
 

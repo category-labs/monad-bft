@@ -100,6 +100,18 @@ pub struct Cli {
     #[arg(long, default_value_t = 64)]
     pub eth_call_executor_fibers: u32,
 
+    /// Set the max concurrent requests for eth_call and eth_estimateGas with high gas cost
+    #[arg(long, default_value_t = 20)]
+    pub eth_call_high_max_concurrent_requests: u32,
+
+    /// Set the number of threads used for executing eth_call and eth_estimateGas with high gas cost
+    #[arg(long, default_value_t = 1)]
+    pub eth_call_high_executor_threads: u32,
+
+    /// Set the number of fibers used for executing eth_call and eth_estimateGas with high gas cost
+    #[arg(long, default_value_t = 2)]
+    pub eth_call_high_executor_fibers: u32,
+
     /// Set the memory limit of the node cache when executing eth_call and eth_estimateGas
     #[arg(long, default_value_t = 100 << 20)] // 100 MB
     pub eth_call_executor_node_lru_max_mem: u64,
@@ -116,8 +128,12 @@ pub struct Cli {
     #[arg(long, default_value_t = false)]
     pub enable_admin_eth_call_statistics: bool,
 
-    /// Set the maximum timeout (in seconds) for queuing when executing eth_call and eth_estimateGas
+    /// Set the maximum timeout (in seconds) for queuing when executing eth_call with high gas cost
     #[arg(long, default_value_t = 30)]
+    pub eth_call_high_executor_queuing_timeout: u32,
+
+    /// Set the maximum timeout (in seconds) for queuing when executing eth_call and eth_estimateGas
+    #[arg(long, default_value_t = 2)]
     pub eth_call_executor_queuing_timeout: u32,
 
     /// Set the memory limit of the node cache for RPC requests other than eth_call and eth_estimateGas

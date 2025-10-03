@@ -99,6 +99,8 @@ impl Generator for EIP7702CreateGenerator {
                     calldata,
                     ctx.base_fee * 2, // 100% increase
                     ctx.chain_id,
+                    ctx.set_tx_gas_limit,
+                    ctx.priority_fee,
                 );
 
                 txs.push((tx, target_account));

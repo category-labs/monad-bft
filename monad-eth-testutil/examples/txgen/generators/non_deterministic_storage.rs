@@ -50,6 +50,8 @@ impl Generator for NonDeterministicStorageTxGenerator {
                             },
                             ctx.base_fee,
                             ctx.chain_id,
+                            ctx.set_tx_gas_limit,
+                            ctx.priority_fee,
                         ),
                         from.addr,
                     ));
@@ -61,6 +63,8 @@ impl Generator for NonDeterministicStorageTxGenerator {
                             IERC20::addFriendCall { friend: to },
                             ctx.base_fee,
                             ctx.chain_id,
+                            ctx.set_tx_gas_limit,
+                            ctx.priority_fee,
                         ),
                         to,
                     ));
