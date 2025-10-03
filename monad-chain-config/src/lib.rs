@@ -173,14 +173,14 @@ const MONAD_DEVNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     v_0_7_0_activation: Round::MIN,
     v_0_8_0_activation: Round::MIN,
     v_0_10_0_activation: Round::MIN,
-    v_0_11_0_activation: Round(FORK_ROUND),
+    v_0_11_0_activation: Round(2500),
 
-    staking_activation: Epoch(FORK_EPOCH_STAKING),
-    staking_rewards_activation: Epoch(FORK_EPOCH_STAKING_REWARDS),
+    staking_activation: Epoch(4),
+    staking_rewards_activation: Epoch(5),
 
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
-    execution_v_four_activation: FORK_UNIX_TS_S,
+    execution_v_four_activation: 1759534242,
 };
 
 const MONAD_TESTNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
