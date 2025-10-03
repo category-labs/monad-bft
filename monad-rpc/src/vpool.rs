@@ -38,7 +38,6 @@ impl From<TxStatus> for TxPoolStatusResult {
     fn from(value: TxStatus) -> Self {
         let (status, reason) = match value {
             TxStatus::Unknown => ("unknown", None),
-            TxStatus::Pending => ("pending", None),
             TxStatus::Tracked => ("tracked", None),
             TxStatus::Dropped { reason } => ("dropped", Some(reason.as_user_string())),
             TxStatus::Evicted { reason } => (
