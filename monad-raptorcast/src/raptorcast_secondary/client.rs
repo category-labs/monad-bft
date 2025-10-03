@@ -130,11 +130,13 @@ where
 
         // Remove all groups that should already have been consumed
         let mut keys_to_remove = Vec::new();
-        for iv in self.confirmed_groups.intervals(..self.curr_round) {
-            keys_to_remove.push(iv);
+        for interval in self.confirmed_groups.intervals(..self.curr_round) {
+            if interval.end <= self.curr_round {
+                keys_to_remove.push(interval.clone());
+            }
         }
-        for iv in keys_to_remove {
-            self.confirmed_groups.remove(iv);
+        for interval_key in keys_to_remove {
+            self.confirmed_groups.remove(interval_key);
         }
         self.metrics[CLIENT_NUM_CURRENT_GROUPS] = self.get_current_group_count();
     }
@@ -574,6 +576,41 @@ mod tests {
         };
         let resp = clt.handle_prepare_group_message(malformed_message);
         assert!(!resp.accept);
+    }
+
+    #[test]
+    fn test_get_current_group_count() {
+        let (clt_tx, _clt_rx): RcToRcChannelGrp<ST> = unbounded_channel();
+        let self_id = nid(1);
+        let mut clt = Client::<ST>::new(
+            self_id,
+            clt_tx,
+            RaptorCastConfigSecondaryClient {
+                max_num_group: 2,
+                max_group_size: 50,
+                invite_future_dist_min: Round(1),
+                invite_future_dist_max: Round(100),
+                invite_accept_heartbeat: Duration::from_secs(10),
+            },
+        );
+
+        clt.curr_round = Round(2);
+        clt.confirmed_groups.insert(
+            Round(1)..Round(5),
+            GroupAsClient::new_fullnode_group(
+                vec![self_id, nid(3), nid(4), nid(5)],
+                &self_id,
+                nid(2),
+                RoundSpan::new(Round(1), Round(5)).unwrap(),
+            ),
+        );
+
+        clt.enter_round(Round(3));
+        assert_eq!(clt.get_current_group_count(), 1);
+
+        // when we enter round 5, the group [1, 5) is expired
+        clt.enter_round(Round(5));
+        assert_eq!(clt.get_current_group_count(), 0);
     }
 
     // Creates a node id that we can refer to just from its seed

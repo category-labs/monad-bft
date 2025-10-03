@@ -198,12 +198,6 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                     &parsed_message.author,
                     broadcast_mode,
                 ) {
-                    tracing::debug!(
-                        src_addr = ?message.src_addr,
-                        author =? parsed_message.author,
-                        epoch =? parsed_message.epoch,
-                        "not in raptorcast group"
-                    );
                     continue;
                 }
             } else if self_hash != parsed_message.recipient_hash {
