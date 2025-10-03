@@ -16,13 +16,13 @@
 use itertools::Itertools;
 use monad_event_ring::{EventDescriptor, EventPayloadResult};
 
-use self::state::{BlockReassemblyState, TxnReassemblyState};
+use self::state::{BlockReassemblyState, TxnOutputReassemblyState, TxnReassemblyState};
 use super::{BlockBuilderError, BlockBuilderResult, ReassemblyError};
 use crate::{
     ffi::{
         monad_c_access_list_entry, monad_c_auth_list_entry, monad_c_bytes32,
         monad_exec_txn_access_list_entry, monad_exec_txn_auth_list_entry,
-        monad_exec_txn_header_start,
+        monad_exec_txn_evm_output, monad_exec_txn_header_start,
     },
     ExecEvent, ExecEventDecoder, ExecEventRef, ExecutedBlock, ExecutedTxn,
     ExecutedTxnAccessListEntry, ExecutedTxnCallFrame, ExecutedTxnLog,
@@ -179,14 +179,13 @@ impl ExecutedBlockBuilder {
                                  input,
                                  access_list,
                                  authorization_list,
-                                 logs,
                                  output,
-                                 call_frames,
                              }| {
-                                let output = output
-                                    .expect("ExecutedBlockBuilder received TxnEvmOutput for txn");
-
-                                assert_eq!(logs.len(), output.receipt.log_count as usize);
+                                let TxnOutputReassemblyState {
+                                    receipt,
+                                    logs,
+                                    call_frames,
+                                } = output.expect("ExecutedBlockBuilder populated output");
 
                                 ExecutedTxn {
                                     hash,
@@ -195,15 +194,24 @@ impl ExecutedBlockBuilder {
                                     input,
                                     access_list: access_list.into_boxed_slice(),
                                     authorization_list: authorization_list.into_boxed_slice(),
-                                    logs: logs.into_boxed_slice(),
-                                    output,
+                                    receipt,
+                                    logs: logs
+                                        .into_vec()
+                                        .into_iter()
+                                        .map(|log| log.expect("ExecutedBlockBuilder populated log"))
+                                        .collect_vec()
+                                        .into_boxed_slice(),
                                     call_frames: call_frames.map(|call_frames| {
-                                        assert_eq!(
-                                            call_frames.len(),
-                                            output.call_frame_count as usize
-                                        );
-
-                                        Vec::into_boxed_slice(call_frames)
+                                        call_frames
+                                            .into_vec()
+                                            .into_iter()
+                                            .map(|call_frame| {
+                                                call_frame.expect(
+                                                    "ExecutedBlockBuilder populated call_frame",
+                                                )
+                                            })
+                                            .collect_vec()
+                                            .into_boxed_slice()
                                     }),
                                 }
                             },
@@ -239,9 +247,7 @@ impl ExecutedBlockBuilder {
                     input: data_bytes,
                     access_list: Vec::default(),
                     authorization_list: Vec::default(),
-                    logs: Vec::default(),
                     output: None,
-                    call_frames: self.include_call_frames.then(Vec::default),
                 });
 
                 None
@@ -339,7 +345,14 @@ impl ExecutedBlockBuilder {
 
                 Some(Err(BlockBuilderError::Rejected))
             }
-            ExecEvent::TxnEvmOutput { txn_index, output } => {
+            ExecEvent::TxnEvmOutput {
+                txn_index,
+                output:
+                    monad_exec_txn_evm_output {
+                        receipt,
+                        call_frame_count,
+                    },
+            } => {
                 let state = self.state.as_mut()?;
 
                 let txn_ref = state
@@ -350,18 +363,20 @@ impl ExecutedBlockBuilder {
                     .expect("ExecutedBlockBuilder TxnReceipt txn_index populated from preceding TxnStart");
 
                 assert!(txn_ref.output.is_none());
-                assert!(txn_ref.logs.is_empty());
 
-                if self.include_call_frames {
-                    let txn_call_frames = txn_ref
-                        .call_frames
-                        .as_mut()
-                        .expect("ExecutedBlockBuilder TxnReassemblyState call_frames set to Some");
-
-                    assert!(txn_call_frames.is_empty());
-                }
-
-                txn_ref.output = Some(output);
+                txn_ref.output = Some(TxnOutputReassemblyState {
+                    receipt,
+                    logs: (0..receipt.log_count as usize)
+                        .map(|_| None)
+                        .collect_vec()
+                        .into_boxed_slice(),
+                    call_frames: self.include_call_frames.then(|| {
+                        (0..call_frame_count as usize)
+                            .map(|_| None)
+                            .collect_vec()
+                            .into_boxed_slice()
+                    }),
+                });
 
                 None
             }
@@ -382,22 +397,30 @@ impl ExecutedBlockBuilder {
                         "ExecutedBlockBuilder TxnLog txn_index populated from preceding TxnStart",
                     );
 
-                assert_eq!(txn_ref.logs.len(), txn_log.index as usize);
+                let txn_output = txn_ref.output.as_mut().expect(
+                    "ExecutedBlockBuilder TxnLog output populated from preceding TxnEvmOutput",
+                );
 
-                txn_ref.logs.push(ExecutedTxnLog {
-                    address: txn_log.address,
-                    topic: topic_bytes
-                        .into_vec()
-                        .into_iter()
-                        .chunks(std::mem::size_of::<monad_c_bytes32>())
-                        .into_iter()
-                        .take(4)
-                        .map(|chunk| monad_c_bytes32 {
-                            bytes: chunk.collect_vec().try_into().unwrap(),
-                        })
-                        .collect(),
-                    data: data_bytes,
-                });
+                let existing_txn_log = txn_output
+                    .logs
+                    .get_mut(txn_log.index as usize)
+                    .expect("ExecutedBlockBuilder TxnLog index within bounds")
+                    .replace(ExecutedTxnLog {
+                        address: txn_log.address,
+                        topic: topic_bytes
+                            .into_vec()
+                            .into_iter()
+                            .chunks(std::mem::size_of::<monad_c_bytes32>())
+                            .into_iter()
+                            .take(4)
+                            .map(|chunk| monad_c_bytes32 {
+                                bytes: chunk.collect_vec().try_into().unwrap(),
+                            })
+                            .collect(),
+                        data: data_bytes,
+                    });
+
+                assert!(existing_txn_log.is_none());
 
                 None
             }
@@ -412,24 +435,31 @@ impl ExecutedBlockBuilder {
                 let txn_ref = state
                     .txns
                     .get_mut(TryInto::<usize>::try_into(txn_index).unwrap())
-                    .expect("ExecutedBlockBuilder TxnLog txn_index within bounds")
+                    .expect("ExecutedBlockBuilder TxnCallFrame txn_index within bounds")
                     .as_mut()
                     .expect(
-                        "ExecutedBlockBuilder TxnLog txn_index populated from preceding TxnStart",
+                        "ExecutedBlockBuilder TxnCallFrame txn_index populated from preceding TxnStart",
                     );
 
-                let txn_call_frames = txn_ref
+                let txn_output = txn_ref.output.as_mut().expect(
+                    "ExecutedBlockBuilder TxnCallFrame output populated from preceding TxnEvmOutput",
+                );
+
+                let txn_call_frames = txn_output
                     .call_frames
                     .as_mut()
                     .expect("ExecutedBlockBuilder TxnReassemblyState call_frames set to Some");
 
-                assert_eq!(txn_call_frames.len(), txn_call_frame.index as usize);
+                let existing_txn_call_frame = txn_call_frames
+                    .get_mut(txn_call_frame.index as usize)
+                    .expect("ExecutedBlockBuilder TxnCallFrame index within bounds")
+                    .replace(ExecutedTxnCallFrame {
+                        call_frame: txn_call_frame,
+                        input: input_bytes,
+                        r#return: return_bytes,
+                    });
 
-                txn_call_frames.push(ExecutedTxnCallFrame {
-                    call_frame: txn_call_frame,
-                    input: input_bytes,
-                    r#return: return_bytes,
-                });
+                assert!(existing_txn_call_frame.is_none());
 
                 None
             }

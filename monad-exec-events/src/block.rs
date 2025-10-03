@@ -19,9 +19,8 @@ use itertools::Itertools;
 #[cfg(feature = "alloy")]
 use crate::ffi;
 use crate::ffi::{
-    monad_c_address, monad_c_bytes32, monad_c_eth_txn_header, monad_c_uint256_ne,
-    monad_exec_block_end, monad_exec_block_start, monad_exec_txn_call_frame,
-    monad_exec_txn_evm_output,
+    monad_c_address, monad_c_bytes32, monad_c_eth_txn_header, monad_c_eth_txn_receipt,
+    monad_c_uint256_ne, monad_exec_block_end, monad_exec_block_start, monad_exec_txn_call_frame,
 };
 
 /// Block reconstructed from execution events.
@@ -163,8 +162,8 @@ pub struct ExecutedTxn {
     pub input: Box<[u8]>,
     pub access_list: Box<[ExecutedTxnAccessListEntry]>,
     pub authorization_list: Box<[ExecutedTxnSignedAuthorization]>,
+    pub receipt: monad_c_eth_txn_receipt,
     pub logs: Box<[ExecutedTxnLog]>,
-    pub output: monad_exec_txn_evm_output,
     pub call_frames: Option<Box<[ExecutedTxnCallFrame]>>,
 }
 
