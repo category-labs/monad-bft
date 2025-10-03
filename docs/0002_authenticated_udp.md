@@ -264,7 +264,7 @@ if let Some(cookie) = stored_cookie {
 
 After successful handshake, both parties have derived transport keys. The initiator's send_key equals the responder's recv_key, and vice versa, enabling bidirectional encrypted communication.
 
-Data packets use a 16-byte header containing the message type, receiver index, and nonce, followed by the encrypted payload (including 16-byte authentication tag):
+Data packets use a 32-byte header containing the message type, receiver index, nonce, and authentication tag:
 
 ```mermaid
 packet-beta
@@ -272,7 +272,8 @@ packet-beta
 1-3: "Reserved"
 4-7: "Receiver Index"
 8-15: "Nonce (8 bytes)"
-16-63: "Variable encrypted payload (including 16 bytes authentication tag)"
+16-31: "Authentication Tag (16 bytes)"
+32-63: "Variable encrypted payload"
 ```
 
 Field descriptions:
@@ -280,6 +281,7 @@ Field descriptions:
 - Reserved: Padding for alignment and future protocol extensions
 - Receiver Index: Session identifier from handshake that routes packet to correct session
 - Nonce: 64-bit nonce for AEAD encryption that prevents replay within session
+- Authentication Tag: 16-byte AEGIS128L authentication tag in header
 - Encrypted Payload: Application data encrypted with session keys
 
 After the handshake completes, both parties derive transport keys:
@@ -321,7 +323,7 @@ When a session is closed (either due to timeout, explicit termination, or rekeyi
 
 Under normal operation, the MAC2 field in handshake packets is set to zero and its validation can be skipped. When under load, a responder replies with a cookie instead of processing the handshake. The initiator must use this cookie to compute MAC2 field of a retransmitted handshake initiation. This mechanism ensures that attackers cannot overwhelm nodes with spoofed source addresses, as only legitimate initiators who receive the cookie response can complete the handshake.
 
-Cookie replies are triggered when the global handshake request rate exceeds 1,000 requests per second. Known validators receive special treatment with a separate rate limit of 10 requests per second per validator, bypassing the global rate limit. This ensures legitimate validators can establish sessions even during attack scenarios while preventing any single validator from consuming excessive resources.
+Cookie replies are triggered when the global handshake request rate exceeds 2,000 requests per second.
 
 Cookie reply packets contain 56 bytes:
 
@@ -365,17 +367,23 @@ sequenceDiagram
     end
 ```
 
-The cookie construction uses BLAKE3 keyed hashing with a secret that rotates every two minutes, limiting cookie validity while preventing replay attacks across rotation periods. When under load, the responder generates a cookie:
+The cookie construction uses BLAKE3 keyed hashing with a secret that rotates every two minutes, limiting cookie validity while preventing replay attacks across rotation periods.
+
+The cookie reply nonce is derived from a nonce secret obtained at startup and a monotonically increasing counter. This provides deterministic nonce generation without relying on system randomness for each cookie reply. When under load, the responder generates a cookie:
 
 ```rust
 let cookie_secret = get_or_rotate_cookie_secret();
 let cookie = mac(&cookie_secret, &initiator.address);
 
+let nonce_hash = keyed_hash(&nonce_secret, &nonce_counter.to_le_bytes());
+let nonce = &nonce_hash[..16];
+nonce_counter += 1;
+
 let mut reply = CookieReply::new();
 reply.message_type = 3;
 reply.reserved = [0, 0, 0];
 reply.receiver_index = msg.sender_index;
-reply.nonce = rand::random::<[u8; 16]>();
+reply.nonce = nonce;
 
 let temp_key = hash(&[LABEL_COOKIE, &responder.static_public].concat());
 reply.cookie_encrypted = aead_encrypt(&temp_key, &reply.nonce, &cookie, &msg.mac1);
