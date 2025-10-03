@@ -1,0 +1,50 @@
+[package]
+name = "monad-wireauth-api"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+monad-wireauth-session = { workspace = true, features = ["bench"] }
+monad-wireauth-protocol.workspace = true
+bytes.workspace = true
+rand.workspace = true
+thiserror.workspace = true
+secp256k1 = { workspace = true, features = ["global-context"] }
+zerocopy.workspace = true
+tracing.workspace = true
+hex.workspace = true
+lru.workspace = true
+
+[dependencies.clap]
+workspace = true
+features = ["derive"]
+optional = true
+
+[dependencies.monoio]
+workspace = true
+features = ["sync", "macros"]
+optional = true
+
+[dependencies.tracing-subscriber]
+workspace = true
+features = ["env-filter"]
+optional = true
+
+[dev-dependencies]
+monoio = { workspace = true, features = ["sync", "macros"] }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+rstest.workspace = true
+proptest.workspace = true
+divan.workspace = true
+
+[features]
+bench = ["monad-wireauth-session/bench"]
+
+[[bench]]
+name = "manager_bench"
+harness = false
+required-features = ["bench"]
+
+[[example]]
+name = "demo"
+required-features = ["clap", "monoio", "tracing-subscriber"]

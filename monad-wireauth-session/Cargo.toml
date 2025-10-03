@@ -1,0 +1,22 @@
+[package]
+name = "monad-wireauth-session"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+monad-wireauth-protocol.workspace = true
+bytes.workspace = true
+rand.workspace = true
+thiserror.workspace = true
+secp256k1 = { workspace = true, features = ["global-context"] }
+zerocopy.workspace = true
+tracing.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+rstest.workspace = true
+proptest.workspace = true
+
+[features]
+bench = []
