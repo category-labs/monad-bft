@@ -243,6 +243,8 @@ where
             .cloned()
             .filter(|peer| peer != &self.our_nodeid)
             .collect();
+        debug!( num_choices =? peers_excl_self.len(),
+                "Updated blocksync peer secondary_raptorcast_peers");
         self.secondary_raptorcast_peers = peers_excl_self;
     }
 
@@ -486,10 +488,14 @@ where
         if !override_peers.is_empty() {
             // As a first choice, prick random peer from override_peers
             // Note that self nodeid is already excluded
+            debug!( num_choices =? override_peers.len(),
+                "Picking blocksync peer from override_peers");
             *override_peers.choose(rng).expect("non empty")
         } else if !secondary_raptorcast_peers.is_empty() {
             // Second choice: a peer mentioned in last ConfirmGroup message
             // Note that self nodeid is also here already excluded
+            debug!( num_choices =? secondary_raptorcast_peers.len(),
+                "Picking blocksync peer from secondary_raptorcast_peers");
             *secondary_raptorcast_peers.choose(rng).expect("non empty")
         } else {
             // stake-weighted choose from validators
@@ -501,6 +507,8 @@ where
                 .iter()
                 .filter(|(peer, _)| peer != &self_node_id)
                 .collect_vec();
+            debug!( num_choices =? members.len(),
+                "Picking blocksync peer from validators");
             assert!(!members.is_empty(), "no nodes to blocksync from");
             Self::choose_weighted(members, rng)
         }
