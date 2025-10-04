@@ -34,7 +34,7 @@ use monad_rpc::{
     metrics,
     timing::TimingMiddleware,
     txpool::EthTxPoolBridge,
-    websocket,
+    websocket, MONAD_RPC_VERSION,
 };
 use monad_tracing_timing::TimingsLayer;
 use monad_triedb_utils::triedb_env::TriedbEnv;
@@ -127,6 +127,8 @@ async fn main() -> std::io::Result<()> {
     let concurrent_requests_limiter = Arc::new(Semaphore::new(
         args.eth_call_max_concurrent_requests as usize,
     ));
+
+    MONAD_RPC_VERSION.map(|v| info!("starting monad-rpc with version {}", v));
 
     // Wait for bft to be in a ready state before starting the RPC server.
     // Bft will bind to the ipc socket after state syncing.
