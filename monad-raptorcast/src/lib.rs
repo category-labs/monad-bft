@@ -44,7 +44,8 @@ use monad_dataplane::{
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
-    ControlPanelEvent, GetFullNodes, GetPeers, Message, MonadEvent, PeerEntry, RouterCommand,
+    ControlPanelEvent, DynamicOverridePeersEvent, GetFullNodes, GetPeers, Message, MonadEvent,
+    PeerEntry, RouterCommand,
 };
 use monad_node_config::{FullNodeConfig, FullNodeRaptorCastConfig};
 use monad_peer_discovery::{
@@ -115,6 +116,7 @@ pub enum PeerManagerResponse<ST: CertificateSignatureRecoverable> {
 pub enum RaptorCastEvent<E, ST: CertificateSignatureRecoverable> {
     Message(E),
     PeerManagerResponse(PeerManagerResponse<ST>),
+    DynamicOverridePeersUpdate(Vec<NodeId<CertificateSignaturePubKey<ST>>>),
 }
 
 impl<ST, M, OM, SE, PD> RaptorCast<ST, M, OM, SE, PD>
@@ -977,6 +979,12 @@ where
                         ControlPanelEvent::GetFullNodes(GetFullNodes::Response(full_nodes)),
                     ),
                 }
+            }
+            RaptorCastEvent::DynamicOverridePeersUpdate(peer_list) => {
+                let event_data = DynamicOverridePeersEvent {
+                    current_confirm_group_peers: peer_list,
+                };
+                MonadEvent::DynamicOverridePeersEvent(event_data)
             }
         }
     }
