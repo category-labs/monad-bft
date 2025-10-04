@@ -858,7 +858,7 @@ where
                 self.locked_epoch_validators.clone(),
             ),
             certificate_cache: CertificateCache::default(),
-            block_sync: BlockSync::new(self.block_sync_override_peers),
+            block_sync: BlockSync::new(self.block_sync_override_peers, nodeid),
 
             leader_election: self.leader_election,
             epoch_manager,
@@ -1152,6 +1152,13 @@ where
                     })]
                 }
             },
+            MonadEvent::DynamicOverridePeersEvent(event_data) => {
+                self.block_sync
+                    .set_secondary_raptorcast_peers(event_data.current_confirm_group_peers);
+                // No need to push UpdatePeers, since this is already done
+                // when receiving the ConfirmGroup message
+                vec![]
+            }
         }
     }
 

@@ -1892,6 +1892,14 @@ where
     pub pinned_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
+pub struct DynamicOverridePeersEvent<SCT>
+where
+    SCT: SignatureCollection,
+{
+    pub current_confirm_group_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum ConfigEvent<ST, SCT>
 where
@@ -1972,6 +1980,11 @@ where
     StateSyncEvent(StateSyncEvent<ST, SCT, EPT>),
     /// Config updates
     ConfigEvent(ConfigEvent<ST, SCT>),
+    // These peers are used as a fallback for requesting blocksync from when
+    // blocksync_override_peers is empty, rather than using from random validators
+    // which we don't yet have valid peer entries for. These are filled when
+    // we receive a ConfirmGroup message.
+    DynamicOverridePeersEvent(DynamicOverridePeersEvent<SCT>),
 }
 
 impl<ST, SCT, EPT> MonadEvent<ST, SCT, EPT>
@@ -2024,6 +2037,9 @@ where
                 MonadEvent::StateSyncEvent(event)
             }
             MonadEvent::ConfigEvent(event) => MonadEvent::ConfigEvent(event.clone()),
+            MonadEvent::DynamicOverridePeersEvent(event) => {
+                MonadEvent::DynamicOverridePeersEvent(event.clone())
+            }
         }
     }
 }
@@ -2068,6 +2084,10 @@ where
                 let enc: [&dyn Encodable; 2] = [&8u8, &event];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
+            Self::DynamicOverridePeersEvent(event) => {
+                let enc: [&dyn Encodable; 2] = [&9u8, &event];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
         }
     }
 }
@@ -2103,6 +2123,9 @@ where
             8 => Ok(Self::ConfigEvent(ConfigEvent::<ST, SCT>::decode(
                 &mut payload,
             )?)),
+            9 => Ok(Self::DynamicOverridePeersEvent(
+                DynamicOverridePeersEvent::<SCT>::decode(&mut payload)?,
+            )),
             _ => Err(alloy_rlp::Error::Custom(
                 "failed to decode unknown MonadEvent",
             )),
@@ -2173,6 +2196,7 @@ where
             MonadEvent::TimestampUpdateEvent(t) => format!("MempoolEvent::TimestampUpdate: {t}"),
             MonadEvent::StateSyncEvent(_) => "STATESYNC".to_string(),
             MonadEvent::ConfigEvent(_) => "CONFIGEVENT".to_string(),
+            MonadEvent::DynamicOverridePeersEvent(_) => "DYNAMICOVERRIDEPEERSEVENT".to_string(),
         };
 
         write!(f, "{}", s)
