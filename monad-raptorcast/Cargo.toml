@@ -53,5 +53,9 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 name = "raptor_bench"
 harness = false
 
+[[bench]]
+name = "encode_bench"
+harness = false
+
 [[example]]
 name = "service"
