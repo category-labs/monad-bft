@@ -763,7 +763,7 @@ mod test {
         // TODO: all the metrics here should be equal to happy path metrics
         // but since validator switching is mimicked using unstaked validators,
         // there are extra messages sent from unstaked validators which are
-        // ignored. should change it back to happy path once they are seperated
+        // ignored. should change it back to happy path once they are separated
         verifier
             .metric_exact(&node_ids, fetch_metric!(consensus_events.local_timeout), 1)
             .metric_exact(
