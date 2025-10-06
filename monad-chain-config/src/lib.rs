@@ -209,10 +209,10 @@ const MONAD_TESTNET2_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     v_0_7_0_activation: Round::MIN,
     v_0_8_0_activation: Round::MIN,
     v_0_10_0_activation: Round::MIN,
-    v_0_11_0_activation: Round(90_000),
+    v_0_11_0_activation: Round::MIN,
 
-    staking_activation: Epoch(71),
-    staking_rewards_activation: Epoch(72),
+    staking_activation: Epoch(4),
+    staking_rewards_activation: Epoch(5),
 
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
