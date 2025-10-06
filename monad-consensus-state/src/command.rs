@@ -61,6 +61,7 @@ where
     },
     PublishToFullNodes {
         epoch: Epoch,
+        round: Round,
         message: Verified<ST, Validated<ConsensusMessage<ST, SCT, EPT>>>,
     },
     /// Schedule a timeout event for `round` to be emitted in `duration`
@@ -137,6 +138,7 @@ where
                 cmds.push(ConsensusCommand::EnterRound(epoch, round));
                 cmds.push(ConsensusCommand::PublishToFullNodes {
                     epoch,
+                    round: high_certificate.round(),
                     message: ConsensusMessage {
                         version,
                         message: ProtocolMessage::AdvanceRound(AdvanceRoundMessage {

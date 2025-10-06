@@ -31,6 +31,7 @@ use super::{
     BuildError, Collector, PeerAddrLookup, Result, UdpMessage,
 };
 use crate::{
+    udp::GroupId,
     util::{compute_hash, Redundancy},
     SIGNATURE_SIZE,
 };
@@ -580,7 +581,7 @@ pub(crate) fn build_header(
     version: u16,
     broadcast_type: BroadcastType,
     merkle_tree_depth: u8,
-    epoch_no: u64,
+    group_id: GroupId,
     unix_ts_ms: u64,
     app_message_hash: &[u8; 20],
     app_message_len: usize,
@@ -590,7 +591,7 @@ pub(crate) fn build_header(
     //       Secondary broadcast bit,
     //       2 unused bits,
     //       4 bits for Merkle Tree Depth
-    // 8  // Epoch #
+    // 8  // Group id
     // 8  // Unix timestamp
     // 20 // AppMessage hash
     // 4  // AppMessage length
@@ -614,8 +615,9 @@ pub(crate) fn build_header(
     broadcast_byte |= merkle_tree_depth & 0b0000_1111;
     cursor_broadcast_merkle_depth[0] = broadcast_byte;
 
-    let (cursor_epoch_no, cursor) = cursor.split_at_mut_checked(8).expect("header too short");
-    cursor_epoch_no.copy_from_slice(&epoch_no.to_le_bytes());
+    let group_id: u64 = group_id.into();
+    let (cursor_group_id, cursor) = cursor.split_at_mut_checked(8).expect("header too short");
+    cursor_group_id.copy_from_slice(&group_id.to_le_bytes());
 
     let (cursor_unix_ts_ms, cursor) = cursor.split_at_mut_checked(8).expect("header too short");
     cursor_unix_ts_ms.copy_from_slice(&unix_ts_ms.to_le_bytes());

@@ -30,7 +30,10 @@ pub(crate) use self::{
     assigner::ChunkAssigner,
     builder::MessageBuilder,
 };
-use crate::util::{BuildTarget, Redundancy};
+use crate::{
+    udp::GroupId,
+    util::{BuildTarget, Redundancy},
+};
 
 #[derive(Debug, Clone)]
 pub struct UdpMessage {
@@ -80,7 +83,7 @@ pub fn build_messages<ST>(
     segment_size: u16,
     app_message: Bytes,
     redundancy: Redundancy,
-    epoch_no: u64,
+    group_id: GroupId,
     unix_ts_ms: u64,
     build_target: BuildTarget<ST>,
     known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
@@ -90,7 +93,7 @@ where
 {
     let builder = MessageBuilder::new(key, known_addresses)
         .segment_size(segment_size)
-        .epoch_no(epoch_no)
+        .group_id(group_id)
         .unix_ts_ms(unix_ts_ms)
         .redundancy(redundancy);
 

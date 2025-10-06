@@ -15,8 +15,9 @@
 
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, BinaryHeap, HashSet},
+    collections::{BTreeMap, HashSet},
     fmt,
+    net::SocketAddr,
 };
 
 use fixed::{types::extra::U11, FixedU16};
@@ -27,6 +28,8 @@ use monad_crypto::{
 };
 use monad_types::{Epoch, NodeId, Round, RoundSpan, Stake};
 use tracing::{debug, warn};
+
+use crate::udp::GroupId;
 
 #[derive(Clone, Debug, Default)]
 pub struct EpochValidators<ST>
@@ -289,7 +292,8 @@ where
     sorted_other_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>, // Excludes self
 }
 
-type GroupQueue<ST> = BinaryHeap<Group<ST>>;
+// Keyed by starting round
+type GroupQueue<ST> = BTreeMap<Round, Group<ST>>;
 
 // Groups in a GroupQueue should be sorted by start round, earliest round first
 impl<ST> Ord for Group<ST>
@@ -549,7 +553,8 @@ where
     // For Validator->validator re-raptorcasting
     validator_map: BTreeMap<Epoch, Group<ST>>,
 
-    // For Validator->fullnode re-raptorcasting
+    // For Validator->fullnode re-raptorcasting: each entry is keyed by
+    // validator NodeId. GroupQueue is a BTreeMap keyed by starting round
     fullnode_map: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, GroupQueue<ST>>,
 }
 
@@ -569,17 +574,17 @@ where
     // before calling iterate_rebroadcast_peers().
     pub fn check_source(
         &self,
-        msg_epoch: Epoch,
+        msg_group_id: GroupId,
         author_node_id: &NodeId<CertificateSignaturePubKey<ST>>,
-        broadcast_mode: BroadcastMode,
+        src_addr: &SocketAddr,
     ) -> bool {
-        match broadcast_mode {
-            BroadcastMode::Primary => {
+        match msg_group_id {
+            GroupId::Primary(msg_epoch) => {
                 // validator to validator raptorcast
                 if let Some(group) = self.validator_map.get(&msg_epoch) {
                     let author_found = group.check_author_node_id(author_node_id);
                     if !author_found {
-                        debug!(?author_node_id, ?self.validator_map,
+                        debug!(?author_node_id, ?self.validator_map, ?src_addr,
                             "Validator author for v2v group not found in validator_map");
                     }
                     author_found
@@ -588,15 +593,29 @@ where
                     false
                 }
             }
-            BroadcastMode::Secondary => {
+            GroupId::Secondary(msg_round) => {
                 // Source node id (validator) is already the key to the map, so
                 // we don't need to look into the group itself.
-                let author_found = self.fullnode_map.contains_key(author_node_id);
-                if !author_found {
-                    debug!(?author_node_id, ?self.fullnode_map,
+                if let Some(groups) = self.fullnode_map.get(author_node_id) {
+                    if let Some((_start_round, group)) = groups.range(..=msg_round).next_back() {
+                        if group.get_round_span().contains(msg_round) {
+                            return true;
+                        }
+                    }
+                    debug!(
+                        ?msg_round,
+                        ?author_node_id,
+                        ?self.fullnode_map,
+                        ?src_addr,
+                        "msg_round not found for validator's round span");
+                    // FIXME: returning true for backward compatibility,
+                    // to be removed after upgrade
+                    return true;
+                } else {
+                    debug!(?author_node_id, ?self.fullnode_map, ?src_addr,
                         "Validator author for v2fn group not found in fullnode_map");
                 }
-                author_found
+                false
             }
         }
     }
@@ -608,30 +627,33 @@ where
     // and author field (for validator-to-fullnodes raptorcasting)
     pub fn iterate_rebroadcast_peers(
         &self,
-        msg_epoch: Epoch, // for validator-to-validator re-raptorcasting only
+        msg_group_id: GroupId,
         msg_author: &NodeId<CertificateSignaturePubKey<ST>>, // skipped when iterating RaptorCast group
-        broadcast_mode: BroadcastMode,
     ) -> Option<GroupIterator<ST>> {
-        let maybe_group = match broadcast_mode {
-            BroadcastMode::Primary => self.validator_map.get(&msg_epoch),
-            BroadcastMode::Secondary => {
-                let maybe_group_queue = self.fullnode_map.get(msg_author);
-                if let Some(group_queue) = maybe_group_queue {
-                    group_queue.peek() // Take earliest among all future groups for msg_author
-                } else {
-                    None
-                }
+        let rebroadcast_group = match msg_group_id {
+            GroupId::Primary(msg_epoch) => self.validator_map.get(&msg_epoch)?,
+            GroupId::Secondary(msg_round) => {
+                let group_queue = self.fullnode_map.get(msg_author)?;
+
+                // FIXME: or_else defaults to the old behavior, which can be hit
+                // if full node is upgraded before the validator. It'll be
+                // removed after the upgrade
+                group_queue
+                    .range(..=msg_round)
+                    .next_back()
+                    .filter(|(_start_round, group)| group.get_round_span().contains(msg_round))
+                    .or_else(|| group_queue.first_key_value())
+                    .map(|(_key, group)| group)?
             }
         };
 
-        if let Some(group) = maybe_group {
+        if rebroadcast_group.size_excl_self() == 0 {
             // If there's no other peers in the group, then there's no one to broadcast to
-            if group.size_excl_self() == 0 {
-                return None;
-            }
-            return Some(group.iter_skip_self_and_author(msg_author, 0)); // this validates author
+            return None;
         }
-        None
+
+        // this validates author
+        Some(rebroadcast_group.iter_skip_self_and_author(msg_author, 0))
     }
 
     // As Validator: When we get an AddEpochValidatorSet.
@@ -653,12 +675,12 @@ where
 
     // As Full-node: When secondary RaptorCast instance (Client) sends us a Group<>
     pub fn push_group_fullnodes(&mut self, group: Group<ST>) {
-        let vid = group.get_validator_id();
-        let prev_group_queue_from_vid = format!("{:?}", self.fullnode_map.get(vid));
+        let vid = *group.get_validator_id();
+        let prev_group_queue_from_vid = format!("{:?}", self.fullnode_map.get(&vid));
         self.fullnode_map
-            .entry(*vid)
+            .entry(vid)
             .or_default()
-            .push(group.clone());
+            .insert(group.round_span.start, group);
         debug!(?vid, ?prev_group_queue_from_vid, "RaptorCast Group insert",);
     }
 
@@ -670,7 +692,7 @@ where
         // aren't received proposals yet and hence do not know what the current
         // round is.
         for (_vid, group_queue) in self.fullnode_map.iter_mut() {
-            group_queue.retain(|group| curr_round < group.round_span.end);
+            group_queue.retain(|_start_round, group| curr_round < group.round_span.end);
         }
         self.fullnode_map
             .retain(|_vid, group_queue| !group_queue.is_empty());
@@ -691,7 +713,7 @@ where
     pub fn get_fullnode_map(&self) -> BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Group<ST>> {
         let mut res: BTreeMap<_, _> = BTreeMap::new();
         for (vid, group_queue) in &self.fullnode_map {
-            if let Some(group) = group_queue.peek() {
+            if let Some((_start_round, group)) = group_queue.first_key_value() {
                 res.insert(*vid, group.clone());
             }
         }

@@ -57,6 +57,7 @@ use monad_types::{DropTimer, Epoch, ExecutionProtocol, NodeId, Round, RouterTarg
 use monad_validator::signature_collection::SignatureCollection;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, debug_span, error, trace, warn};
+use udp::GroupId;
 use util::{BuildTarget, EpochValidators, FullNodes, Group, ReBroadcastGroupMap, Redundancy};
 
 use crate::{
@@ -160,7 +161,7 @@ where
         let message_builder =
             OwnedMessageBuilder::new(config.shared_key.clone(), peer_discovery_driver.clone())
                 .segment_size(segment_size_for_mtu(config.mtu))
-                .epoch_no(current_epoch)
+                .group_id(GroupId::Primary(current_epoch))
                 .redundancy(redundancy);
 
         Self {
@@ -343,7 +344,7 @@ where
 
                 self.message_builder
                     .prepare()
-                    .epoch_no(epoch)
+                    .group_id(GroupId::Primary(epoch))
                     .build_into(&outbound_message, &build_target, &mut sink)
                     .unwrap_log_on_error(&outbound_message, &build_target);
             }
@@ -499,7 +500,7 @@ where
                         }
 
                         self.current_epoch = epoch;
-                        self.message_builder.set_epoch_no(epoch);
+                        self.message_builder.set_group_id(GroupId::Primary(epoch));
 
                         while let Some(entry) = self.epoch_validators.first_entry() {
                             if *entry.key() + Epoch(1) < self.current_epoch {
@@ -558,7 +559,11 @@ where
                 } => {
                     self.handle_publish(target, message, priority, self_id);
                 }
-                RouterCommand::PublishToFullNodes { epoch, message } => {
+                RouterCommand::PublishToFullNodes {
+                    epoch,
+                    round: _,
+                    message,
+                } => {
                     let full_nodes_view = self.dedicated_full_nodes.view();
                     if self.is_dynamic_fullnode {
                         debug!("self is dynamic full node, skipping publishing to full nodes");
@@ -610,7 +615,7 @@ where
                         let build_target = BuildTarget::PointToPoint(node);
                         self.message_builder
                             .prepare_with_peer_lookup(&node_addrs)
-                            .epoch_no(epoch)
+                            .group_id(GroupId::Primary(epoch))
                             .build_into(&outbound_message, &build_target, &mut sink)
                             .unwrap_log_on_error(&outbound_message, &build_target);
                     }
@@ -740,7 +745,6 @@ where
             let decoded_app_messages = {
                 // FIXME: pass dataplane as arg to handle_message
                 this.udp_state.handle_message(
-                    this.current_epoch,
                     &this.rebroadcast_map, // contains the NodeIds for all the RC participants for each epoch
                     &this.epoch_validators,
                     |targets, payload, bcast_stride| {

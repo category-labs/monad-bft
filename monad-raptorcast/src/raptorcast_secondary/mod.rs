@@ -48,6 +48,7 @@ use crate::{
     config::{RaptorCastConfig, SecondaryRaptorCastMode},
     message::OutboundRouterMessage,
     packet::{RetrofitResult as _, UdpMessageBatcher},
+    udp::GroupId,
     util::{BuildTarget, FullNodes, Group, Redundancy},
     OwnedMessageBuilder, RaptorCastEvent, UNICAST_MSG_BATCH_SIZE,
 };
@@ -149,7 +150,7 @@ where
         let message_builder =
             OwnedMessageBuilder::new(config.shared_key, peer_discovery_driver.clone())
                 .segment_size(segment_size_for_mtu(config.mtu))
-                .epoch_no(current_epoch)
+                .group_id(GroupId::Primary(current_epoch))
                 .redundancy(redundancy);
 
         Self {
@@ -317,7 +318,7 @@ where
                             "RaptorCastSecondary UpdateCurrentRound (Publisher)"
                         );
                         self.curr_epoch = epoch;
-                        self.message_builder.set_epoch_no(epoch);
+                        self.message_builder.set_group_id(GroupId::Primary(epoch));
                         // The publisher needs to be periodically informed about new nodes out there,
                         // so that it can randomize when creating new groups.
                         let full_nodes = self
@@ -353,7 +354,11 @@ where
                     }
                 },
 
-                Self::Command::PublishToFullNodes { epoch, message } => {
+                Self::Command::PublishToFullNodes {
+                    epoch: _,
+                    round,
+                    message,
+                } => {
                     let _timer = DropTimer::start(Duration::from_millis(20), |elapsed| {
                         warn!(?elapsed, "long time to publish message")
                     });
@@ -412,7 +417,7 @@ where
                     // send to full nodes.
                     self.message_builder
                         .prepare()
-                        .epoch_no(epoch)
+                        .group_id(GroupId::Secondary(round))
                         .build_into(&outbound_message, &build_target, &mut sink)
                         .unwrap_log_on_error(&outbound_message, &build_target);
                 }
