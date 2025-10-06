@@ -29,7 +29,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_state_backend::StateBackend;
-use monad_types::{Epoch, ExecutionProtocol, NodeId, SeqNum, Stake};
+use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, RoundSpan, SeqNum, Stake};
 use monad_validator::{
     epoch_manager::EpochManager,
     signature_collection::SignatureCollection,
@@ -167,7 +167,8 @@ where
     override_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
 
     /// Excludes self node id
-    secondary_raptorcast_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+    /// Expiry round -> NodeId
+    secondary_raptorcast_peers: BTreeMap<Round, NodeId<CertificateSignaturePubKey<ST>>>,
 
     self_node_id: NodeId<CertificateSignaturePubKey<ST>>,
 
@@ -232,12 +233,25 @@ where
     pub fn set_secondary_raptorcast_peers(
         &mut self,
         secondary_raptorcast_peers_inc_self: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+        round_span: RoundSpan,
     ) {
         let peers_excl_self: Vec<_> = secondary_raptorcast_peers_inc_self
             .into_iter()
             .filter(|peer| peer != &self.self_node_id)
             .collect();
-        self.secondary_raptorcast_peers = peers_excl_self;
+
+        // Trim peers that have expired
+        self.secondary_raptorcast_peers
+            .retain(|expiry_round, _| *expiry_round > round_span.start);
+
+        // Trim peers that are already included in peers_excl_self, as we will
+        // be re-adding them with new expiry keys.
+        self.secondary_raptorcast_peers
+            .retain(|_, peer| !peers_excl_self.contains(peer));
+
+        for peer in peers_excl_self {
+            self.secondary_raptorcast_peers.insert(round_span.end, peer);
+        }
     }
 
     fn clear_self_requests(&mut self) {
@@ -479,7 +493,7 @@ where
         current_epoch: Epoch,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         override_peers: &[NodeId<CertificateSignaturePubKey<ST>>],
-        secondary_raptorcast_peers: &[NodeId<CertificateSignaturePubKey<ST>>],
+        secondary_raptorcast_peers: &BTreeMap<Round, NodeId<CertificateSignaturePubKey<ST>>>,
         rng: &mut ChaCha8Rng,
     ) -> NodeId<CertificateSignaturePubKey<ST>> {
         if !override_peers.is_empty() {
@@ -494,8 +508,13 @@ where
         let self_is_validator = validators.keys().contains(self_node_id);
 
         if !secondary_raptorcast_peers.is_empty() && !self_is_validator {
-            // secondary peers is set and self is a full node
-            *secondary_raptorcast_peers.choose(rng).expect("non empty")
+            // Choose a random peer from secondary_raptorcast_peers
+            let candidate_peers: Vec<_> = secondary_raptorcast_peers.values().collect();
+            assert!(
+                !candidate_peers.is_empty(),
+                "no secondary raptorcast peers to blocksync from"
+            );
+            **candidate_peers.choose(rng).expect("non empty")
         } else {
             // stake-weighted choose from validators
             let members = validators

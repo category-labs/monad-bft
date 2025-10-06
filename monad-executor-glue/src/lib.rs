@@ -46,8 +46,8 @@ use monad_crypto::certificate_signature::{
 };
 use monad_state_backend::StateBackend;
 use monad_types::{
-    deserialize_pubkey, serialize_pubkey, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget,
-    SeqNum, Stake,
+    deserialize_pubkey, serialize_pubkey, Epoch, ExecutionProtocol, NodeId, Round, RoundSpan,
+    RouterTarget, SeqNum, Stake,
 };
 use monad_validator::signature_collection::SignatureCollection;
 use serde::{Deserialize, Serialize};
@@ -1897,6 +1897,7 @@ pub struct SecondaryRaptorcastEvent<SCT>
 where
     SCT: SignatureCollection,
 {
+    pub round_span: RoundSpan,
     pub confirm_group_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
 }
 
