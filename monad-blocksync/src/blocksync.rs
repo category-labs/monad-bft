@@ -240,11 +240,6 @@ where
         self.secondary_raptorcast_peers = peers_excl_self;
     }
 
-    // This is for clearing ConfirmGroup peers ahead of role switch to validator
-    pub fn clear_secondary_raptorcast_peers(&mut self) {
-        self.secondary_raptorcast_peers.clear();
-    }
-
     fn clear_self_requests(&mut self) {
         self.self_headers_requests.clear();
         self.self_payload_requests.clear();

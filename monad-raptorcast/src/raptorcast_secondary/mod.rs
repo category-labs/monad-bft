@@ -527,6 +527,7 @@ where
                             .unwrap()
                             .update(PeerDiscoveryEvent::UpdatePeers { peers });
 
+                        // participated_nodes contains the validator and all full nodes in the group
                         let mut participated_nodes: BTreeSet<
                             NodeId<CertificateSignaturePubKey<ST>>,
                         > = confirm_msg.peers.clone().into_iter().collect();
@@ -534,13 +535,13 @@ where
                         this.peer_discovery_driver.lock().unwrap().update(
                             PeerDiscoveryEvent::UpdateConfirmGroup {
                                 end_round: confirm_msg.prepare.end_round,
-                                peers: participated_nodes,
+                                peers: participated_nodes.clone(),
                             },
                         );
 
                         ret = Poll::Ready(Some(
                             RaptorCastEvent::SecondaryRaptorcastPeersUpdate(
-                                confirm_msg.peers.clone(),
+                                participated_nodes.into_iter().collect(),
                             )
                             .into(),
                         ));
