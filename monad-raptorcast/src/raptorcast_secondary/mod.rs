@@ -531,8 +531,6 @@ where
                             NodeId<CertificateSignaturePubKey<ST>>,
                         > = confirm_msg.peers.clone().into_iter().collect();
                         participated_nodes.insert(confirm_msg.prepare.validator_id);
-                        let current_confirm_group_peers =
-                            participated_nodes.iter().cloned().collect::<Vec<_>>();
                         this.peer_discovery_driver.lock().unwrap().update(
                             PeerDiscoveryEvent::UpdateConfirmGroup {
                                 end_round: confirm_msg.prepare.end_round,
@@ -541,8 +539,8 @@ where
                         );
 
                         ret = Poll::Ready(Some(
-                            RaptorCastEvent::DynamicOverridePeersUpdate(
-                                current_confirm_group_peers,
+                            RaptorCastEvent::SecondaryRaptorcastPeersUpdate(
+                                confirm_msg.peers.clone(),
                             )
                             .into(),
                         ));

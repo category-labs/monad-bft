@@ -166,15 +166,10 @@ where
     /// Excludes self node id
     override_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
 
-    /// If `override_peers` is set, always blocksync from these override peers.
-    /// if they are not set, and `secondary_raptorcast_peers` is not empty, blocksync from
-    /// secondary raptorcast peers (validators should have secondary_raptorcast_peers to be
-    /// empty, i.e. we don't need to send the groups for Publisher)
-    /// otherwise randomly select from current validator set and blocksync
     /// Excludes self node id
     secondary_raptorcast_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
 
-    our_nodeid: NodeId<CertificateSignaturePubKey<ST>>,
+    self_node_id: NodeId<CertificateSignaturePubKey<ST>>,
 
     rng: ChaCha8Rng,
 }
@@ -203,9 +198,9 @@ where
 {
     pub fn new(
         override_peers_inc_self: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
-        our_nodeid: NodeId<CertificateSignaturePubKey<ST>>,
+        self_node_id: NodeId<CertificateSignaturePubKey<ST>>,
     ) -> Self {
-        let mut obj = Self {
+        let mut blocksync_instance = Self {
             headers_requests: Default::default(),
             payload_requests: Default::default(),
             self_headers_requests: Default::default(),
@@ -213,13 +208,14 @@ where
             self_payload_requests_in_flight: 0,
             self_completed_headers_requests: Default::default(),
             self_request_mode: BlockSyncSelfRequester::StateSync,
-            override_peers: vec![],
-            secondary_raptorcast_peers: vec![],
-            our_nodeid,
+            override_peers: Default::default(),
+            secondary_raptorcast_peers: Default::default(),
+            self_node_id,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
-        obj.set_override_peers(override_peers_inc_self);
-        obj
+        blocksync_instance.set_override_peers(override_peers_inc_self);
+
+        blocksync_instance
     }
 
     pub fn set_override_peers(
@@ -227,9 +223,8 @@ where
         override_peers_inc_self: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
     ) {
         let peers_excl_self: Vec<_> = override_peers_inc_self
-            .iter()
-            .cloned()
-            .filter(|peer| peer != &self.our_nodeid)
+            .into_iter()
+            .filter(|peer| peer != &self.self_node_id)
             .collect();
         self.override_peers = peers_excl_self;
     }
@@ -239,12 +234,9 @@ where
         secondary_raptorcast_peers_inc_self: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
     ) {
         let peers_excl_self: Vec<_> = secondary_raptorcast_peers_inc_self
-            .iter()
-            .cloned()
-            .filter(|peer| peer != &self.our_nodeid)
+            .into_iter()
+            .filter(|peer| peer != &self.self_node_id)
             .collect();
-        debug!( num_choices =? peers_excl_self.len(),
-                "Updated blocksync peer secondary_raptorcast_peers");
         self.secondary_raptorcast_peers = peers_excl_self;
     }
 
@@ -482,6 +474,11 @@ where
         generate_random_validator_with_randomizer(validators, randomizer)
     }
 
+    /// Blocksync peers are selected based on the following rules:
+    /// 1. If `override_peers` is set, randomly select from one of the override peers.
+    /// 2. Otherwise if self is a full node and `secondary_raptorcast_peers` is not empty,
+    ///    randomly select from `secondary_raptorcast_peers`
+    /// 3. Otherwise, randomly select from validators based on stake weight
     fn pick_peer(
         self_node_id: &NodeId<CertificateSignaturePubKey<ST>>,
         current_epoch: Epoch,
@@ -491,16 +488,11 @@ where
         rng: &mut ChaCha8Rng,
     ) -> NodeId<CertificateSignaturePubKey<ST>> {
         if !override_peers.is_empty() {
-            // As a first choice, pick random peer from override_peers
-            // Note that self nodeid is already excluded
-            debug!( num_choices =? override_peers.len(),
-                "Picking blocksync peer from override_peers");
+            // self node id is already excluded
             *override_peers.choose(rng).expect("non empty")
         } else if !secondary_raptorcast_peers.is_empty() {
-            // Second choice: a peer mentioned in last ConfirmGroup message
-            // Note that self nodeid is also here already excluded
-            debug!( num_choices =? secondary_raptorcast_peers.len(),
-                "Picking blocksync peer from secondary_raptorcast_peers");
+            // TODO: only enter this code path if self is a full node
+            // self node id is also already excluded
             *secondary_raptorcast_peers.choose(rng).expect("non empty")
         } else {
             // stake-weighted choose from validators
@@ -512,8 +504,6 @@ where
                 .iter()
                 .filter(|(peer, _)| peer != &self_node_id)
                 .collect_vec();
-            debug!( num_choices =? members.len(),
-                "Picking blocksync peer from validators");
             assert!(!members.is_empty(), "no nodes to blocksync from");
             Self::choose_weighted(members, rng)
         }

@@ -485,7 +485,7 @@ where
             RaptorCastEvent::PeerManagerResponse(_peer_manager_response) => {
                 unimplemented!()
             }
-            RaptorCastEvent::DynamicOverridePeersUpdate(_event) => {
+            RaptorCastEvent::SecondaryRaptorcastPeersUpdate(_event) => {
                 unimplemented!()
             }
         }
