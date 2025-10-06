@@ -24,11 +24,11 @@ use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_raptor::ManagedDecoder;
 use monad_raptorcast::{
     packet::build_messages,
-    udp::{parse_message, MAX_REDUNDANCY, SIGNATURE_CACHE_SIZE},
+    udp::{parse_message, GroupId, MAX_REDUNDANCY, SIGNATURE_CACHE_SIZE},
     util::{BuildTarget, EpochValidators, Redundancy},
 };
 use monad_secp::{KeyPair, SecpSignature};
-use monad_types::{NodeId, Stake};
+use monad_types::{Epoch, NodeId, Stake};
 
 #[allow(clippy::useless_vec)]
 pub fn criterion_benchmark(c: &mut Criterion) {
@@ -71,8 +71,8 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 DEFAULT_SEGMENT_SIZE, // segment_size
                 message.clone(),
                 Redundancy::from_u8(2),
-                0, // epoch_no
-                0, // unix_ts_ms
+                GroupId::Primary(Epoch(0)), // epoch_no
+                0,                          // unix_ts_ms
                 BuildTarget::Raptorcast(epoch_validators),
                 &known_addresses,
             );
@@ -112,8 +112,8 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             DEFAULT_SEGMENT_SIZE, // segment_size
             message.clone(),
             Redundancy::from_u8(2),
-            0, // epoch_no
-            0, // unix_ts_ms
+            GroupId::Primary(Epoch(0)), // epoch_no
+            0,                          // unix_ts_ms
             BuildTarget::Raptorcast(epoch_validators),
             &known_addresses,
         )

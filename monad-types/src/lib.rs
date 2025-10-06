@@ -222,13 +222,6 @@ impl Debug for Epoch {
         self.0.fmt(f)
     }
 }
-
-impl From<Epoch> for u64 {
-    fn from(epoch: Epoch) -> Self {
-        epoch.0
-    }
-}
-
 /// Block sequence number
 ///
 /// Consecutive blocks in the same branch have consecutive sequence numbers,
