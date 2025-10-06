@@ -761,12 +761,7 @@ impl<PT: PubKey> AuthorIndex<PT> {
 
         let message_size = message.app_message_len as MessageSize;
 
-        index.insert(
-            cache_key.clone(),
-            message.unix_ts_ms,
-            Epoch(message.epoch),
-            message_size,
-        );
+        index.insert(cache_key.clone(), message.unix_ts_ms, message_size);
         self.used_size += message_size;
 
         if index.is_overquota() {
@@ -999,8 +994,7 @@ struct PerAuthorIndex {
     quota: Quota,
     used_size: MessageSize,
     time_index: BTreeSet<(UnixTimestamp, CacheKey)>,
-    epoch_index: BTreeSet<(Epoch, CacheKey)>,
-    reverse_index: HashMap<CacheKey, (UnixTimestamp, Epoch, MessageSize)>,
+    reverse_index: HashMap<CacheKey, (UnixTimestamp, MessageSize)>,
 }
 
 impl PerAuthorIndex {
@@ -1009,7 +1003,6 @@ impl PerAuthorIndex {
             quota,
             used_size: 0,
             time_index: BTreeSet::new(),
-            epoch_index: BTreeSet::new(),
             reverse_index: HashMap::new(),
         }
     }
@@ -1027,12 +1020,11 @@ impl PerAuthorIndex {
     }
 
     pub fn remove(&mut self, key: &CacheKey) -> PrunedKeys {
-        let Some((unix_ts_ms, epoch, size)) = self.reverse_index.remove(key) else {
+        let Some((unix_ts_ms, size)) = self.reverse_index.remove(key) else {
             return PrunedKeys::empty();
         };
 
         self.time_index.remove(&(unix_ts_ms, key.clone()));
-        self.epoch_index.remove(&(epoch, key.clone()));
         self.used_size -= size;
         PrunedKeys::singleton(key.clone(), size)
     }
@@ -1053,17 +1045,9 @@ impl PerAuthorIndex {
             .collect()
     }
 
-    pub fn insert(
-        &mut self,
-        cache_key: CacheKey,
-        unix_ts_ms: UnixTimestamp,
-        epoch: Epoch,
-        size: MessageSize,
-    ) {
+    pub fn insert(&mut self, cache_key: CacheKey, unix_ts_ms: UnixTimestamp, size: MessageSize) {
         self.time_index.insert((unix_ts_ms, cache_key.clone()));
-        self.epoch_index.insert((epoch, cache_key.clone()));
-        self.reverse_index
-            .insert(cache_key, (unix_ts_ms, epoch, size));
+        self.reverse_index.insert(cache_key, (unix_ts_ms, size));
         self.used_size += size;
     }
 
@@ -1077,9 +1061,6 @@ impl PerAuthorIndex {
         // first, we prune all expired keys
         if let Some(threshold) = unix_ts_threshold {
             evicted_keys.extend(self.prune_by_time(threshold));
-        }
-        if let Some(threshold) = epoch_threshold {
-            evicted_keys.extend(self.prune_by_epoch(threshold));
         }
         evicted_keys
     }
@@ -1114,17 +1095,6 @@ impl PerAuthorIndex {
         self.remove_many(&to_prune_keys)
     }
 
-    fn prune_by_epoch(&mut self, epoch_threshold: Epoch) -> PrunedKeys {
-        let mut to_prune_keys = vec![];
-        for (epoch, key) in &self.epoch_index {
-            if *epoch >= epoch_threshold {
-                break;
-            }
-            to_prune_keys.push(key.clone());
-        }
-        self.remove_many(&to_prune_keys)
-    }
-
     fn prune_by_slots(&mut self, target_len: usize) -> PrunedKeys {
         let slots_to_free_up = self.len().saturating_sub(target_len);
         if slots_to_free_up == 0 {
@@ -1149,20 +1119,14 @@ impl PerAuthorIndex {
     #[cfg(test)]
     fn consistency_breaches(&self, prefix: &str) -> Vec<String> {
         let mut breaches = vec![];
-        if self.epoch_index.len() != self.reverse_index.len() {
-            breaches.push(format!("{prefix}.epoch-index-size-mismatch"));
-        }
         if self.time_index.len() != self.reverse_index.len() {
             breaches.push(format!("{prefix}.time-index-size-mismatch"));
         }
 
         let mut used_size = self.used_size;
-        for (key, (unix_ts, epoch, _size)) in &self.reverse_index {
+        for (key, (unix_ts, _size)) in &self.reverse_index {
             if !self.time_index.contains(&(*unix_ts, key.clone())) {
                 breaches.push(format!("{prefix}.time-index-missing-key"));
-            }
-            if !self.epoch_index.contains(&(*epoch, key.clone())) {
-                breaches.push(format!("{prefix}.epoch-index-missing-key"));
             }
             used_size -= *_size;
         }
@@ -1654,7 +1618,7 @@ mod test {
                 // these fields are never touched in this module
                 recipient_hash: HexBytes([0; 20]),
                 message: Bytes::new(),
-                epoch: EPOCH.0,
+                group_id: EPOCH.0,
                 unix_ts_ms,
                 secondary_broadcast: false,
             };

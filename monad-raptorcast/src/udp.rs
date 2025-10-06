@@ -34,7 +34,7 @@ use monad_crypto::{
 use monad_dataplane::RecvUdpMsg;
 use monad_merkle::{MerkleHash, MerkleProof, MerkleTree};
 use monad_raptor::SOURCE_SYMBOLS_MIN;
-use monad_types::{Epoch, NodeId, Stake};
+use monad_types::{Epoch, NodeId, Round, Stake};
 use rand::seq::SliceRandom;
 use tracing::{debug, warn};
 
@@ -189,8 +189,9 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             // chunks ASAP, before changing `recently_decoded_state`.
             if let Some(broadcast_mode) = maybe_broadcast_mode {
                 if !group_map.check_source(
-                    Epoch(parsed_message.epoch),
+                    parsed_message.group_id,
                     &parsed_message.author,
+                    &message.src_addr,
                     broadcast_mode,
                 ) {
                     continue;
@@ -221,7 +222,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 if let Some(broadcast_mode) = maybe_broadcast_mode {
                     if self_hash == parsed_message.recipient_hash {
                         let maybe_targets = group_map.iterate_rebroadcast_peers(
-                            Epoch(parsed_message.epoch),
+                            parsed_message.group_id,
                             &parsed_message.author,
                             broadcast_mode,
                         );
@@ -237,9 +238,12 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 }
             };
 
-            let validator_set = epoch_validators
-                .get(&Epoch(parsed_message.epoch))
-                .map(|ev| &ev.validators);
+            let validator_set = match maybe_broadcast_mode {
+                Some(BroadcastMode::Primary) | None => epoch_validators
+                    .get(&Epoch(parsed_message.group_id))
+                    .map(|ev| &ev.validators),
+                Some(BroadcastMode::Secondary) => None, // full-node raptorcast or point-to-point
+            };
 
             let decoding_context =
                 DecodingContext::new(validator_set, unix_ts_ms_now(), current_epoch);
@@ -359,7 +363,7 @@ pub fn build_messages<ST>(
     segment_size: u16, // Each chunk in the returned Vec (Bytes element of the tuple) will be limited to this size
     app_message: Bytes, // This is the actual message that gets raptor-10 encoded and split into UDP chunks
     redundancy: Redundancy,
-    epoch_no: u64,
+    group_id: u64,
     unix_ts_ms: u64,
     build_target: BuildTarget<ST>,
     known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
@@ -375,7 +379,7 @@ where
         app_message,
         app_message_len,
         redundancy,
-        epoch_no,
+        group_id,
         unix_ts_ms,
         build_target,
         known_addresses,
@@ -394,7 +398,7 @@ pub fn build_messages_with_length<ST>(
     app_message: Bytes,
     app_message_len: u32,
     redundancy: Redundancy,
-    epoch_no: u64,
+    group_id: u64,
     unix_ts_ms: u64,
     build_target: BuildTarget<ST>,
     known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
@@ -715,7 +719,6 @@ where
     // At this point, everything BELOW chunk_merkle_leaf_idx is populated
     // populate merkle trees/roots/leaf_idx + signatures (cached)
     let version: u16 = 0;
-    let epoch_no: u64 = epoch_no;
     let unix_ts_ms: u64 = unix_ts_ms;
     message
         // .par_chunks_mut(segment_size as usize * chunks_per_merkle_batch)
@@ -750,8 +753,9 @@ where
                 cursor_broadcast_merkle_depth[0] = ((is_raptor_broadcast as u8) << 7)
                     | ((is_secondary_raptor_broadcast as u8) << 6)
                     | (tree_depth & 0b0000_1111); // tree_depth max 4 bits
-                let (cursor_epoch_no, cursor) = cursor.split_at_mut(8);
-                cursor_epoch_no.copy_from_slice(&epoch_no.to_le_bytes());
+
+                let (cursor_group_id, cursor) = cursor.split_at_mut(8);
+                cursor_group_id.copy_from_slice(&group_id.to_le_bytes());
                 let (cursor_unix_ts_ms, cursor) = cursor.split_at_mut(8);
                 cursor_unix_ts_ms.copy_from_slice(&unix_ts_ms.to_le_bytes());
                 let (cursor_app_message_hash, cursor) = cursor.split_at_mut(20);
@@ -815,7 +819,10 @@ where
     // This applies to both validator-to-validator and validator-to-full-node
     // raptorcasting.
     pub author: NodeId<PT>,
-    pub epoch: u64,
+    // group_id is set to
+    // - epoch number for validator-to-validator raptorcast
+    // - round number for validator-to-fullnode raptorcast
+    pub group_id: u64,
     pub unix_ts_ms: u64,
     pub app_message_hash: AppMessageHash,
     pub app_message_len: u32,
@@ -906,8 +913,8 @@ where
         return Err(MessageValidationError::InvalidTreeDepth);
     }
 
-    let cursor_epoch = split_off(8)?;
-    let epoch = u64::from_le_bytes(cursor_epoch.as_ref().try_into().expect("u64 is 8 bytes"));
+    let cursor_group_id = split_off(8)?;
+    let group_id = u64::from_le_bytes(cursor_group_id.as_ref().try_into().expect("u64 is 8 bytes"));
 
     let cursor_unix_ts_ms = split_off(8)?;
     let unix_ts_ms = u64::from_le_bytes(
@@ -1002,7 +1009,7 @@ where
     Ok(ValidatedMessage {
         message,
         author,
-        epoch,
+        group_id,
         unix_ts_ms,
         app_message_hash,
         app_message_len,
