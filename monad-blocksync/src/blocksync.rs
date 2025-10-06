@@ -488,19 +488,22 @@ where
         rng: &mut ChaCha8Rng,
     ) -> NodeId<CertificateSignaturePubKey<ST>> {
         if !override_peers.is_empty() {
-            // self node id is already excluded
-            *override_peers.choose(rng).expect("non empty")
-        } else if !secondary_raptorcast_peers.is_empty() {
-            // TODO: only enter this code path if self is a full node
-            // self node id is also already excluded
+            // override peers is set
+            return *override_peers.choose(rng).expect("non empty");
+        }
+
+        let validators = val_epoch_map
+            .get_val_set(&current_epoch)
+            .expect("current epoch exists");
+        let validators = validators.get_members();
+        let self_is_validator = validators.keys().contains(self_node_id);
+
+        if !secondary_raptorcast_peers.is_empty() && !self_is_validator {
+            // secondary peers is set and self is a full node
             *secondary_raptorcast_peers.choose(rng).expect("non empty")
         } else {
             // stake-weighted choose from validators
-            let validators = val_epoch_map
-                .get_val_set(&current_epoch)
-                .expect("current epoch exists");
-            let members = validators.get_members();
-            let members = members
+            let members = validators
                 .iter()
                 .filter(|(peer, _)| peer != &self_node_id)
                 .collect_vec();
