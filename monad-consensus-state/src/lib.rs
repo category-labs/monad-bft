@@ -433,7 +433,7 @@ where
     /// proposal's payload
     #[must_use]
     #[tracing::instrument(
-        level = "debug", 
+        level = "debug",
         skip_all,
         fields(
             round = p.tip.block_header.block_round.as_u64(),
@@ -504,7 +504,7 @@ where
             .is_safe_to_handle_proposal(proposal_round)
         {
             // TODO emit evidence if this is a *different* block for the same round
-            warn!(
+            debug!(
                 ?proposal_round,
                 "dropping proposal, already received for this round"
             );
