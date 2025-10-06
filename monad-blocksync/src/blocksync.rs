@@ -237,6 +237,10 @@ where
             .into_iter()
             .filter(|peer| peer != &self.self_node_id)
             .collect();
+        warn!(
+            ?peers_excl_self,
+            "blocksync: setting secondary raptorcast peers"
+        );
         self.secondary_raptorcast_peers = peers_excl_self;
     }
 
@@ -482,8 +486,10 @@ where
         secondary_raptorcast_peers: &[NodeId<CertificateSignaturePubKey<ST>>],
         rng: &mut ChaCha8Rng,
     ) -> NodeId<CertificateSignaturePubKey<ST>> {
+        warn!("picking blocksync peers");
         if !override_peers.is_empty() {
             // override peers is set
+            warn!(?override_peers, "blocksync: picking from override peers");
             return *override_peers.choose(rng).expect("non empty");
         }
 
@@ -495,6 +501,7 @@ where
 
         if !secondary_raptorcast_peers.is_empty() && !self_is_validator {
             // secondary peers is set and self is a full node
+            warn!(?secondary_raptorcast_peers, "blocksync: picking from secondary raptorcast peers");
             *secondary_raptorcast_peers.choose(rng).expect("non empty")
         } else {
             // stake-weighted choose from validators
@@ -503,6 +510,7 @@ where
                 .filter(|(peer, _)| peer != &self_node_id)
                 .collect_vec();
             assert!(!members.is_empty(), "no nodes to blocksync from");
+            warn!(?members, "blocksync: picking from validators");
             Self::choose_weighted(members, rng)
         }
     }

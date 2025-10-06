@@ -539,6 +539,8 @@ where
                             },
                         );
 
+                        warn!(?participated_nodes, "Updating blocksync secondary raptorcast peers");
+
                         ret = Poll::Ready(Some(
                             RaptorCastEvent::SecondaryRaptorcastPeersUpdate(
                                 participated_nodes.into_iter().collect(),
