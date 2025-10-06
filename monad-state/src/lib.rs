@@ -1152,11 +1152,9 @@ where
                     })]
                 }
             },
-            MonadEvent::DynamicOverridePeersEvent(event_data) => {
+            MonadEvent::SecondaryRaptorcastEvent(event_data) => {
                 self.block_sync
-                    .set_secondary_raptorcast_peers(event_data.current_confirm_group_peers);
-                // No need to push UpdatePeers, since this is already done
-                // when receiving the ConfirmGroup message
+                    .set_secondary_raptorcast_peers(event_data.confirm_group_peers);
                 vec![]
             }
         }

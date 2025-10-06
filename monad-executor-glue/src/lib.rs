@@ -1893,11 +1893,11 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
-pub struct DynamicOverridePeersEvent<SCT>
+pub struct SecondaryRaptorcastEvent<SCT>
 where
     SCT: SignatureCollection,
 {
-    pub current_confirm_group_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
+    pub confirm_group_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1980,11 +1980,8 @@ where
     StateSyncEvent(StateSyncEvent<ST, SCT, EPT>),
     /// Config updates
     ConfigEvent(ConfigEvent<ST, SCT>),
-    // These peers are used as a fallback for requesting blocksync from when
-    // blocksync_override_peers is empty, rather than using from random validators
-    // which we don't yet have valid peer entries for. These are filled when
-    // we receive a ConfirmGroup message.
-    DynamicOverridePeersEvent(DynamicOverridePeersEvent<SCT>),
+    /// Events for secondary raptorcast updates
+    SecondaryRaptorcastEvent(SecondaryRaptorcastEvent<SCT>),
 }
 
 impl<ST, SCT, EPT> MonadEvent<ST, SCT, EPT>
@@ -2037,8 +2034,8 @@ where
                 MonadEvent::StateSyncEvent(event)
             }
             MonadEvent::ConfigEvent(event) => MonadEvent::ConfigEvent(event.clone()),
-            MonadEvent::DynamicOverridePeersEvent(event) => {
-                MonadEvent::DynamicOverridePeersEvent(event.clone())
+            MonadEvent::SecondaryRaptorcastEvent(event) => {
+                MonadEvent::SecondaryRaptorcastEvent(event.clone())
             }
         }
     }
@@ -2084,7 +2081,7 @@ where
                 let enc: [&dyn Encodable; 2] = [&8u8, &event];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
-            Self::DynamicOverridePeersEvent(event) => {
+            Self::SecondaryRaptorcastEvent(event) => {
                 let enc: [&dyn Encodable; 2] = [&9u8, &event];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
@@ -2123,9 +2120,11 @@ where
             8 => Ok(Self::ConfigEvent(ConfigEvent::<ST, SCT>::decode(
                 &mut payload,
             )?)),
-            9 => Ok(Self::DynamicOverridePeersEvent(
-                DynamicOverridePeersEvent::<SCT>::decode(&mut payload)?,
-            )),
+            9 => Ok(Self::SecondaryRaptorcastEvent(SecondaryRaptorcastEvent::<
+                SCT,
+            >::decode(
+                &mut payload
+            )?)),
             _ => Err(alloy_rlp::Error::Custom(
                 "failed to decode unknown MonadEvent",
             )),
@@ -2196,7 +2195,7 @@ where
             MonadEvent::TimestampUpdateEvent(t) => format!("MempoolEvent::TimestampUpdate: {t}"),
             MonadEvent::StateSyncEvent(_) => "STATESYNC".to_string(),
             MonadEvent::ConfigEvent(_) => "CONFIGEVENT".to_string(),
-            MonadEvent::DynamicOverridePeersEvent(_) => "DYNAMICOVERRIDEPEERSEVENT".to_string(),
+            MonadEvent::SecondaryRaptorcastEvent(_) => "SECONDARYRAPTORCASTEVENT".to_string(),
         };
 
         write!(f, "{}", s)

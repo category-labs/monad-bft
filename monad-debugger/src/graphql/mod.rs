@@ -24,8 +24,8 @@ use bytes::Bytes;
 use monad_consensus_types::metrics::Metrics;
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_executor_glue::{
-    BlockSyncEvent, ConfigEvent, ConsensusEvent, ControlPanelEvent, DynamicOverridePeersEvent,
-    MempoolEvent, MonadEvent, StateSyncEvent, ValidatorEvent,
+    BlockSyncEvent, ConfigEvent, ConsensusEvent, ControlPanelEvent, MempoolEvent, MonadEvent,
+    SecondaryRaptorcastEvent, StateSyncEvent, ValidatorEvent,
 };
 use monad_mock_swarm::{
     node::Node,
@@ -377,7 +377,7 @@ enum GraphQLMonadEvent<'s> {
     TimestampEvent(GraphQLTimestampEvent),
     StateSyncEvent(GraphQLStateSyncEvent<'s>),
     ConfigEvent(GraphQLConfigEvent<'s>),
-    DynamicOverridePeersEvent(GraphQLDynamicOverridePeersEvent<'s>),
+    SecondaryRaptorcastEvent(GraphQLSecondaryRaptorcastEvent<'s>),
 }
 
 impl<'s> From<&'s MonadEventType> for GraphQLMonadEvent<'s> {
@@ -396,8 +396,8 @@ impl<'s> From<&'s MonadEventType> for GraphQLMonadEvent<'s> {
             }
             MonadEvent::StateSyncEvent(event) => Self::StateSyncEvent(GraphQLStateSyncEvent(event)),
             MonadEvent::ConfigEvent(event) => Self::ConfigEvent(GraphQLConfigEvent(event)),
-            MonadEvent::DynamicOverridePeersEvent(event) => {
-                Self::DynamicOverridePeersEvent(GraphQLDynamicOverridePeersEvent(event))
+            MonadEvent::SecondaryRaptorcastEvent(event) => {
+                Self::SecondaryRaptorcastEvent(GraphQLSecondaryRaptorcastEvent(event))
             }
         }
     }
@@ -478,10 +478,10 @@ impl GraphQLConfigEvent<'_> {
     }
 }
 
-struct GraphQLDynamicOverridePeersEvent<'s>(&'s DynamicOverridePeersEvent<SignatureCollectionType>);
+struct GraphQLSecondaryRaptorcastEvent<'s>(&'s SecondaryRaptorcastEvent<SignatureCollectionType>);
 
 #[Object]
-impl GraphQLDynamicOverridePeersEvent<'_> {
+impl GraphQLSecondaryRaptorcastEvent<'_> {
     async fn debug(&self) -> String {
         format!("{:?}", self.0)
     }
