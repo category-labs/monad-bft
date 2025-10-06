@@ -621,7 +621,7 @@ where
     );
 
     // initial set of peers
-    let bootstrap_peers = bootstrap_nodes
+    let bootstrap_peers: BTreeMap<_, _> = bootstrap_nodes
         .peers
         .iter()
         .filter_map(|peer| {
@@ -689,6 +689,7 @@ where
                 .iter()
                 .map(|id| NodeId::new(id.secp256k1_pubkey)),
         )
+        .chain(bootstrap_peers.keys().cloned())
         .collect();
 
     let peer_discovery_builder = PeerDiscoveryBuilder {
