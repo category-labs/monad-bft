@@ -60,7 +60,7 @@ impl Generator for ReserveBalanceGenerator {
                             nonce: sender.nonce,
                             gas_limit,
                             max_fee_per_gas,
-                            max_priority_fee_per_gas: ctx.priority_fee.unwrap_or(0) as u128,
+                            max_priority_fee_per_gas: ctx.priority_fee.unwrap_or(0),
                             to: TxKind::Call(to),
                             value: drain_per_tx,
                             access_list: Default::default(),

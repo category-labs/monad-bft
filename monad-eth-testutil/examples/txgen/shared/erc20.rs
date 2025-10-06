@@ -83,7 +83,7 @@ impl ERC20 {
             &deployer.1,
             max_fee_per_gas,
             chain_id,
-            gas_limit.unwrap_or(800_000),
+            gas_limit.unwrap_or(8_000_000),
         );
         let mut rlp_encoded_tx = Vec::new();
         tx.encode_2718(&mut rlp_encoded_tx);
@@ -124,7 +124,7 @@ impl ERC20 {
         max_fee_per_gas: u128,
         chain_id: u64,
         gas_limit: u64,
-        priority_fee: u64,
+        priority_fee: u128,
     ) -> TxEnvelope {
         let input = Bytes::from_hex(BYTECODE).unwrap();
         let tx = TxEip1559 {
@@ -132,7 +132,7 @@ impl ERC20 {
             nonce,
             gas_limit,
             max_fee_per_gas,
-            max_priority_fee_per_gas: priority_fee as u128,
+            max_priority_fee_per_gas: priority_fee,
             to: TxKind::Create,
             value: U256::ZERO,
             access_list: Default::default(),
@@ -172,7 +172,7 @@ impl ERC20 {
         max_fee_per_gas: u128,
         chain_id: u64,
         gas_limit: Option<u64>,
-        priority_fee: Option<u64>,
+        priority_fee: Option<u128>,
     ) -> TxEnvelope {
         self.construct_tx(
             sender,
@@ -191,7 +191,7 @@ impl ERC20 {
         max_fee_per_gas: u128,
         chain_id: u64,
         gas_limit: Option<u64>,
-        priority_fee: Option<u64>,
+        priority_fee: Option<u128>,
     ) -> TxEnvelope {
         let input = input.abi_encode();
         let tx = make_tx(
@@ -216,7 +216,7 @@ impl ERC20 {
         max_fee_per_gas: u128,
         chain_id: u64,
         gas_limit: Option<u64>,
-        priority_fee: Option<u64>,
+        priority_fee: Option<u128>,
     ) -> TxEnvelope {
         let input = IERC20::mintCall {}.abi_encode();
         make_tx(
@@ -241,7 +241,7 @@ impl ERC20 {
         max_fee_per_gas: u128,
         chain_id: u64,
         gas_limit: Option<u64>,
-        priority_fee: Option<u64>,
+        priority_fee: Option<u128>,
     ) -> TxEnvelope {
         let input = IERC20::transferCall { recipient, amount }.abi_encode();
         make_tx(
@@ -276,14 +276,14 @@ fn make_tx(
     max_fee_per_gas: u128,
     chain_id: u64,
     gas_limit: Option<u64>,
-    priority_fee: Option<u64>,
+    priority_fee: Option<u128>,
 ) -> TxEnvelope {
     let tx = TxEip1559 {
         chain_id,
         nonce,
         gas_limit: gas_limit.unwrap_or(100_000), // use override or default
         max_fee_per_gas,
-        max_priority_fee_per_gas: priority_fee.unwrap_or(0) as u128,
+        max_priority_fee_per_gas: priority_fee.unwrap_or(0),
         to: TxKind::Call(contract_or_to),
         value,
         access_list: Default::default(),

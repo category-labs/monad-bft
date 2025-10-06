@@ -49,7 +49,7 @@ impl Generator for ReserveBalanceFailGenerator {
                             nonce: sender.nonce,
                             gas_limit,
                             max_fee_per_gas,
-                            max_priority_fee_per_gas: ctx.priority_fee.unwrap_or(0) as u128, // 0 default, override with --priority-fee
+                            max_priority_fee_per_gas: ctx.priority_fee.unwrap_or(0), // 0 default, override with --priority-fee
                             to: TxKind::Call(to),
                             value: U256::from(1000),
                             access_list: Default::default(),

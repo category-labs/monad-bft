@@ -14,11 +14,12 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
-use alloy_primitives::TxKind;
+use alloy_primitives::{Bytes, TxKind};
 use duplicates::DuplicateTxGenerator;
 use ecmul::ECMulGenerator;
 use eip7702::EIP7702Generator;
 use eip7702_create::EIP7702CreateGenerator;
+use extreme_values::ExtremeValuesGenerator;
 use few_to_many::CreateAccountsGenerator;
 use high_call_data::HighCallDataTxGenerator;
 use many_to_many::ManyToManyGenerator;
@@ -41,6 +42,7 @@ mod duplicates;
 mod ecmul;
 mod eip7702;
 mod eip7702_create;
+mod extreme_values;
 mod few_to_many;
 mod high_call_data;
 mod many_to_many;
@@ -156,6 +158,11 @@ pub fn make_generator(
             tx_per_sender,
             config.authorizations_per_tx,
         )),
+        GenMode::ExtremeValues => Box::new(ExtremeValuesGenerator::new(
+            recipient_keys,
+            tx_per_sender,
+            deployed_contract.erc20()?,
+        )),
     })
 }
 
@@ -179,6 +186,52 @@ pub fn native_transfer(
     native_transfer_priority_fee(from, to, amt, 0, ctx)
 }
 
+pub fn native_transfer_with_params(
+    from: &mut SimpleAccount,
+    to: Address,
+    value: U256,
+    nonce: Option<u64>,
+    gas_limit: Option<u64>,
+    max_fee_per_gas: Option<u128>,
+    max_priority_fee_per_gas: Option<u128>,
+    input_data: Option<Bytes>,
+    ctx: &GenCtx,
+) -> TxEnvelope {
+    let nonce = nonce.unwrap_or(from.nonce);
+    let gas_limit = gas_limit.unwrap_or(ctx.set_tx_gas_limit.unwrap_or(21_000));
+    let max_fee_per_gas = max_fee_per_gas.unwrap_or(ctx.base_fee * 2);
+    let max_priority_fee_per_gas =
+        max_priority_fee_per_gas.unwrap_or(ctx.priority_fee.unwrap_or(0));
+    let input_data = input_data.unwrap_or_default();
+
+    let tx = TxEip1559 {
+        chain_id: ctx.chain_id,
+        nonce,
+        gas_limit,
+        max_fee_per_gas,
+        max_priority_fee_per_gas,
+        to: TxKind::Call(to),
+        value,
+        access_list: Default::default(),
+        input: input_data,
+    };
+
+    // update from
+    if nonce == from.nonce {
+        from.nonce += 1;
+    } else {
+        from.nonce = nonce + 1;
+    }
+    let gas_cost = U256::from(gas_limit as u128 * max_fee_per_gas);
+    from.native_bal = from
+        .native_bal
+        .checked_sub(value + gas_cost)
+        .unwrap_or(U256::ZERO);
+
+    let sig = from.key.sign_transaction(&tx);
+    TxEnvelope::Eip1559(tx.into_signed(sig))
+}
+
 pub fn native_transfer_priority_fee(
     from: &mut SimpleAccount,
     to: Address,
@@ -186,30 +239,17 @@ pub fn native_transfer_priority_fee(
     priority_fee: u128,
     ctx: &GenCtx,
 ) -> TxEnvelope {
-    let max_fee_per_gas = ctx.base_fee * 2;
-    let gas_limit = ctx.set_tx_gas_limit.unwrap_or(21_000);
-    let priority_fee = ctx.priority_fee.unwrap_or(priority_fee as u64) as u128;
-    let tx = TxEip1559 {
-        chain_id: ctx.chain_id,
-        nonce: from.nonce,
-        gas_limit,
-        max_fee_per_gas,
-        max_priority_fee_per_gas: priority_fee,
-        to: TxKind::Call(to),
-        value: amt,
-        access_list: Default::default(),
-        input: Default::default(),
-    };
-
-    // update from
-    from.nonce += 1;
-    from.native_bal = from
-        .native_bal
-        .checked_sub(amt + U256::from(gas_limit as u128 * max_fee_per_gas))
-        .unwrap_or(U256::ZERO);
-
-    let sig = from.key.sign_transaction(&tx);
-    TxEnvelope::Eip1559(tx.into_signed(sig))
+    native_transfer_with_params(
+        from,
+        to,
+        amt,
+        None,
+        None,
+        None,
+        Some(priority_fee),
+        None,
+        ctx,
+    )
 }
 
 pub fn erc20_transfer(

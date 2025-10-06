@@ -18,7 +18,7 @@ use url::Url;
 
 use crate::prelude::*;
 
-fn parse_priority_fee_range(range_str: &str) -> Option<(u64, u64)> {
+fn parse_priority_fee_range(range_str: &str) -> Option<(u128, u128)> {
     let parts: Vec<&str> = range_str.split(',').collect();
     if parts.len() != 2 {
         return None;
@@ -157,7 +157,7 @@ pub struct CliConfig {
 
     /// Static priority fee for transactions (native and ERC20)
     #[arg(long, global = true)]
-    pub priority_fee: Option<u64>,
+    pub priority_fee: Option<u128>,
 
     /// Range for random priority fee (format: min,max in wei)
     #[arg(long, global = true)]

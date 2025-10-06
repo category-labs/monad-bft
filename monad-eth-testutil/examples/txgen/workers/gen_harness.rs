@@ -35,8 +35,8 @@ pub struct GenCtx {
     pub chain_id: u64,
     pub gas_limit_contract_deployment: Option<u64>,
     pub set_tx_gas_limit: Option<u64>,
-    pub priority_fee: Option<u64>,
-    pub random_priority_fee_range: Option<(u64, u64)>,
+    pub priority_fee: Option<u128>,
+    pub random_priority_fee_range: Option<(u128, u128)>,
 }
 
 impl GenCtx {
@@ -66,8 +66,8 @@ pub struct GeneratorHarness {
     // New config fields
     pub gas_limit_contract_deployment: Option<u64>,
     pub set_tx_gas_limit: Option<u64>,
-    pub priority_fee: Option<u64>,
-    pub random_priority_fee_range: Option<(u64, u64)>,
+    pub priority_fee: Option<u128>,
+    pub random_priority_fee_range: Option<(u128, u128)>,
 
     pub shutdown: Arc<AtomicBool>,
 }
@@ -86,8 +86,8 @@ impl GeneratorHarness {
         gen_mode: GenMode,
         gas_limit_contract_deployment: Option<u64>,
         set_tx_gas_limit: Option<u64>,
-        priority_fee: Option<u64>,
-        random_priority_fee_range: Option<(u64, u64)>,
+        priority_fee: Option<u128>,
+        random_priority_fee_range: Option<(u128, u128)>,
         shutdown: Arc<AtomicBool>,
     ) -> Self {
         Self {

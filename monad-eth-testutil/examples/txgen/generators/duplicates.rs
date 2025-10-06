@@ -52,13 +52,9 @@ impl Generator for DuplicateTxGenerator {
                             .expect("No ERC20 contract found, but tx_type is erc20"),
                         ctx,
                     ),
-                    TxType::Native => native_transfer_priority_fee(
-                        sender,
-                        to,
-                        U256::from(10),
-                        priority_fee as u128,
-                        ctx,
-                    ),
+                    TxType::Native => {
+                        native_transfer_priority_fee(sender, to, U256::from(10), priority_fee, ctx)
+                    }
                 };
                 txs.push((tx, to));
             }

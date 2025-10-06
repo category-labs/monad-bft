@@ -82,10 +82,10 @@ pub struct Config {
     pub set_tx_gas_limit: Option<u64>,
 
     /// Static priority fee for transactions (native and ERC20)
-    pub priority_fee: Option<u64>,
+    pub priority_fee: Option<u128>,
 
     /// Range for random priority fee (min,max in wei)
-    pub random_priority_fee_range: Option<(u64, u64)>,
+    pub random_priority_fee_range: Option<(u128, u128)>,
 
     /// Override for ERC20 contract address
     pub erc20_contract: Option<String>,
@@ -154,6 +154,7 @@ impl TrafficGen {
             GenMode::SystemKeyNormalRandomPriorityFee => 500,
             GenMode::EIP7702Reuse(..) => 10,
             GenMode::EIP7702Create(..) => 10,
+            GenMode::ExtremeValues => 10,
         }
     }
 
@@ -181,6 +182,7 @@ impl TrafficGen {
             GenMode::SystemKeyNormalRandomPriorityFee => 1,
             GenMode::EIP7702Reuse(..) => 10,
             GenMode::EIP7702Create(..) => 10,
+            GenMode::ExtremeValues => 10,
         }
     }
 
@@ -208,6 +210,7 @@ impl TrafficGen {
             GenMode::SystemKeyNormalRandomPriorityFee => 1,
             GenMode::EIP7702Reuse(..) => 100,
             GenMode::EIP7702Create(..) => 100,
+            GenMode::ExtremeValues => 100,
         }
     }
 
@@ -242,6 +245,7 @@ impl TrafficGen {
             GenMode::SystemKeyNormalRandomPriorityFee => None,
             GenMode::EIP7702Reuse(..) => EIP7702,
             GenMode::EIP7702Create(..) => EIP7702,
+            GenMode::ExtremeValues => ERC20,
         }
     }
 }
@@ -425,6 +429,7 @@ pub enum GenMode {
     SystemSpam(SystemSpamConfig),
     SystemKeyNormal,
     SystemKeyNormalRandomPriorityFee,
+    ExtremeValues,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

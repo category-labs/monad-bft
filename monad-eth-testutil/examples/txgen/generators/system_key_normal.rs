@@ -55,7 +55,7 @@ impl Generator for SystemKeyNormalTxGenerator {
                 nonce: self.system_nonce + u64::try_from(i).unwrap_or(0),
                 gas_limit: ctx.set_tx_gas_limit.unwrap_or(0), // 0 default for system txs, override with --set-tx-gas-limit
                 max_fee_per_gas: 0,
-                max_priority_fee_per_gas: priority_fee as u128,
+                max_priority_fee_per_gas: priority_fee,
                 to: TxKind::Call(to),
                 value: U256::from(10),
                 access_list: Default::default(),

@@ -282,7 +282,7 @@ impl Uniswap {
         max_fee_per_gas: u128,
         chain_id: u64,
         gas_limit: Option<u64>,
-        priority_fee: Option<u64>,
+        priority_fee: Option<u128>,
     ) -> TxEnvelope {
         // price point of 300.0 has a tick value of 57000
         // with tick spacing of 60, lower tick is 10 ticks below current tick
@@ -299,7 +299,7 @@ impl Uniswap {
             nonce: sender.nonce,
             gas_limit: gas_limit.unwrap_or(400_000), // 400k default, override with --set-tx-gas-limit
             max_fee_per_gas,
-            max_priority_fee_per_gas: priority_fee.unwrap_or(0) as u128, // 0 default, override with --priority-fee
+            max_priority_fee_per_gas: priority_fee.unwrap_or(0), // 0 default, override with --priority-fee
             to: TxKind::Call(self.addr),
             value: U256::ZERO,
             access_list: Default::default(),

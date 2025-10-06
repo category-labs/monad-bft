@@ -140,7 +140,7 @@ impl EIP7702 {
         max_fee_per_gas: u128,
         chain_id: u64,
         gas_limit: Option<u64>,
-        priority_fee: Option<u64>,
+        priority_fee: Option<u128>,
     ) -> TxEnvelope {
         use alloy_consensus::TxEip7702;
 
@@ -149,7 +149,7 @@ impl EIP7702 {
             nonce: sender.nonce,
             gas_limit: gas_limit.unwrap_or(200_000), // 200k default, override with --set-tx-gas-limit
             max_fee_per_gas,
-            max_priority_fee_per_gas: priority_fee.unwrap_or(0) as u128, // 0 default, override with --priority-fee
+            max_priority_fee_per_gas: priority_fee.unwrap_or(0), // 0 default, override with --priority-fee
             to: authorized_account,
             value: U256::ZERO,
             access_list: Default::default(),
@@ -177,7 +177,7 @@ impl EIP7702 {
         max_fee_per_gas: u128,
         chain_id: u64,
         gas_limit: Option<u64>,
-        priority_fee: Option<u64>,
+        priority_fee: Option<u128>,
     ) -> TxEnvelope {
         let calldata = Bytes::from(vec![0u8; 100]);
 
@@ -186,7 +186,7 @@ impl EIP7702 {
             nonce: sender.nonce,
             gas_limit: gas_limit.unwrap_or(200_000), // 200k default, override with --set-tx-gas-limit
             max_fee_per_gas,
-            max_priority_fee_per_gas: priority_fee.unwrap_or(0) as u128, // 0 default, override with --priority-fee
+            max_priority_fee_per_gas: priority_fee.unwrap_or(0), // 0 default, override with --priority-fee
             to: TxKind::Call(self.addr),
             value: U256::ZERO,
             access_list: Default::default(),
@@ -213,7 +213,7 @@ impl EIP7702 {
         max_fee_per_gas: u128,
         chain_id: u64,
         gas_limit: Option<u64>,
-        priority_fee: Option<u64>,
+        priority_fee: Option<u128>,
     ) -> TxEnvelope {
         let execute_calldata = self.create_execute_calldata(authorized_account);
 
@@ -222,7 +222,7 @@ impl EIP7702 {
             nonce: sender.nonce,
             gas_limit: gas_limit.unwrap_or(200_000), // 200k default, override with --set-tx-gas-limit
             max_fee_per_gas,
-            max_priority_fee_per_gas: priority_fee.unwrap_or(0) as u128, // 0 default, override with --priority-fee
+            max_priority_fee_per_gas: priority_fee.unwrap_or(0), // 0 default, override with --priority-fee
             to: TxKind::Call(authorized_account),
             value: U256::ZERO,
             access_list: Default::default(),
