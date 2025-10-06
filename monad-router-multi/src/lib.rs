@@ -315,9 +315,14 @@ where
                 RouterCommand::GetPeers => validator_cmds.push(cmd),
                 RouterCommand::UpdatePeers { .. } => validator_cmds.push(cmd),
 
-                RouterCommand::PublishToFullNodes { epoch, ref message } => {
+                RouterCommand::PublishToFullNodes {
+                    epoch,
+                    round,
+                    ref message,
+                } => {
                     let cmd_cpy = RouterCommand::PublishToFullNodes {
                         epoch,
+                        round,
                         message: message.clone(),
                     };
                     validator_cmds.push(cmd_cpy);
