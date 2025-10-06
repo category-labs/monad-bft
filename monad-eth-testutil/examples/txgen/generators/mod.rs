@@ -92,12 +92,7 @@ pub fn make_generator(
         GenMode::HighCallData => Box::new(HighCallDataTxGenerator {
             recipient_keys,
             tx_per_sender,
-            gas_limit: 800_000,
-        }),
-        GenMode::HighCallDataLowGasLimit => Box::new(HighCallDataTxGenerator {
-            recipient_keys,
-            tx_per_sender,
-            gas_limit: 100_000,
+            erc20: deployed_contract.erc20().ok(),
         }),
         GenMode::NonDeterministicStorage => Box::new(NonDeterministicStorageTxGenerator {
             recipient_keys,

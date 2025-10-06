@@ -267,7 +267,7 @@ impl ERC20 {
     }
 }
 
-fn make_tx(
+pub fn make_tx(
     nonce: u64,
     signer: &PrivateKey,
     contract_or_to: Address,
