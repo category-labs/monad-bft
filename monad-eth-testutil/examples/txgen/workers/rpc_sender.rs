@@ -25,6 +25,8 @@ use tokio::time::MissedTickBehavior;
 use super::*;
 use crate::config::{Config, GenMode};
 
+const MAX_BATCH_PAYLOAD_SIZE: usize = 2_000_000; // RPC server default max payload
+
 pub struct RpcSender {
     pub gen_rx: mpsc::Receiver<AccountsWithTxs>,
     pub refresh_sender: mpsc::UnboundedSender<AccountsWithTime>,
@@ -114,7 +116,11 @@ impl RpcSender {
                     interval = self.maybe_update_interval(interval, now);
                 }
 
-                self.spawn_send_batch(batch);
+                // Server only accepts payloads under 2MB - split into multiple smaller batches if needed
+                let size_aware_batches = self.create_size_aware_batches(batch);
+                for sub_batch in size_aware_batches {
+                    self.spawn_send_batch(&sub_batch);
+                }
 
                 // limit sending batch by interval
                 interval.tick().await;
@@ -220,6 +226,48 @@ impl RpcSender {
 
         // Calculate average, rounded to nearest integer
         (total_txs as f64 / count as f64).round() as u64
+    }
+
+    fn create_size_aware_batches(
+        &self,
+        txs: &[(TxEnvelope, Address)],
+    ) -> Vec<Vec<(TxEnvelope, Address)>> {
+        let mut batches = Vec::new();
+        let mut current_batch = Vec::new();
+        let mut current_batch_size = 0;
+
+        for (tx, addr) in txs {
+            let tx_size = self.calculate_tx_payload_size(tx);
+
+            // Start new batch if this would exceed max payload
+            if !current_batch.is_empty() && current_batch_size + tx_size > MAX_BATCH_PAYLOAD_SIZE {
+                batches.push(current_batch);
+                current_batch = Vec::new();
+                current_batch_size = 0;
+            }
+
+            current_batch.push((tx.clone(), *addr));
+            current_batch_size += tx_size;
+        }
+
+        if !current_batch.is_empty() {
+            batches.push(current_batch);
+        }
+
+        info!(
+            total_txs = txs.len(),
+            num_batches = batches.len(),
+            "Created size-aware batches"
+        );
+
+        batches
+    }
+
+    fn calculate_tx_payload_size(&self, tx: &TxEnvelope) -> usize {
+        let mut rlp_encoded_tx = Vec::new();
+        tx.encode_2718(&mut rlp_encoded_tx);
+        // Currently encoded as binary - get length as hex string prepended with "0x"
+        rlp_encoded_tx.len() * 2 + 2
     }
 
     fn spawn_send_batch(&mut self, batch: &[(TxEnvelope, Address)]) {
