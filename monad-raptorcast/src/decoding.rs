@@ -304,7 +304,7 @@ impl MessageTier {
     where
         PT: PubKey,
     {
-        if message.broadcast {
+        if message.broadcast || message.secondary_broadcast {
             return MessageTier::Broadcast;
         }
 
