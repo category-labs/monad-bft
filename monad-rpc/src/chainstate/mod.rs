@@ -35,7 +35,7 @@ use monad_triedb_utils::triedb_env::{
     BlockHeader, BlockKey, FinalizedBlockKey, TransactionLocation, Triedb,
 };
 use monad_types::SeqNum;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, trace, warn, Span};
 
 use crate::{
     chainstate::buffer::{block_height_from_tag, ChainStateBuffer},
@@ -48,6 +48,21 @@ use crate::{
 };
 
 pub mod buffer;
+
+/// Records a chainstate data source on the current span.
+/// The timing layer will automatically propagate this to parent spans when the span closes.
+#[macro_export]
+macro_rules! record_source {
+    (buffer) => {
+        ::tracing::Span::current().record("chainstate.source", "buffer")
+    };
+    (triedb) => {
+        ::tracing::Span::current().record("chainstate.source", "triedb")
+    };
+    (archive) => {
+        ::tracing::Span::current().record("chainstate.source", "archive")
+    };
+}
 
 #[derive(Clone)]
 pub struct ChainState<T> {
@@ -93,12 +108,16 @@ impl<T: Triedb> ChainState<T> {
         }
     }
 
+
     pub fn get_latest_block_number(&self) -> u64 {
         if let Some(buffer) = &self.buffer {
+            record_source!(buffer);
             buffer.get_latest_safe_voted_block_num()
         } else {
+            record_source!(triedb);
             self.triedb_env.get_latest_voted_block_key().seq_num().0
         }
+
     }
 
     pub async fn get_transaction_receipt(
@@ -119,6 +138,7 @@ impl<T: Triedb> ChainState<T> {
             if let Some(receipt) =
                 get_receipt_from_triedb(&self.triedb_env, block_key, tx_index).await?
             {
+                record_source!(triedb);
                 return Ok(receipt);
             }
         }
@@ -137,6 +157,7 @@ impl<T: Triedb> ChainState<T> {
                     tx_data.header_subset.tx_index,
                 );
 
+                record_source!(archive);
                 return Ok(receipt);
             }
         }
@@ -162,6 +183,7 @@ impl<T: Triedb> ChainState<T> {
                 if let Some(tx) =
                     get_transaction_from_triedb(&self.triedb_env, block_key, index).await?
                 {
+                    record_source!(triedb);
                     return Ok(tx);
                 }
 
@@ -172,6 +194,7 @@ impl<T: Triedb> ChainState<T> {
                     if let Some(block) = archive_reader.try_get_block_by_number(block_num.0).await?
                     {
                         if let Some(tx) = block.body.transactions.get(index as usize) {
+                            record_source!(archive);
                             return Ok(parse_tx_content(
                                 block.header.hash_slow(),
                                 block.header.number,
@@ -189,6 +212,7 @@ impl<T: Triedb> ChainState<T> {
                         if let Some(tx) =
                             buffer.get_transaction_by_location(blk.header.number, index)
                         {
+                            record_source!(buffer);
                             return Ok(tx);
                         }
                     }
@@ -205,6 +229,7 @@ impl<T: Triedb> ChainState<T> {
                     if let Some(tx) =
                         get_transaction_from_triedb(&self.triedb_env, block_key, index).await?
                     {
+                        record_source!(triedb);
                         return Ok(tx);
                     }
                 }
@@ -215,6 +240,7 @@ impl<T: Triedb> ChainState<T> {
                         archive_reader.try_get_block_by_hash(&hash.0.into()).await?
                     {
                         if let Some(tx) = block.body.transactions.get(index as usize) {
+                            record_source!(archive);
                             return Ok(parse_tx_content(
                                 hash.0.into(),
                                 block.header.number,
@@ -234,6 +260,7 @@ impl<T: Triedb> ChainState<T> {
     pub async fn get_transaction(&self, hash: [u8; 32]) -> Result<Transaction, ChainStateError> {
         if let Some(buffer) = &self.buffer {
             if let Some(tx) = buffer.get_transaction_by_hash(&FixedData(hash)) {
+                record_source!(buffer);
                 return Ok(tx);
             }
         }
@@ -252,6 +279,7 @@ impl<T: Triedb> ChainState<T> {
             if let Some(tx) =
                 get_transaction_from_triedb(&self.triedb_env, block_key, tx_index).await?
             {
+                record_source!(triedb);
                 return Ok(tx);
             };
         }
@@ -259,6 +287,7 @@ impl<T: Triedb> ChainState<T> {
         // try archive if transaction hash not found and archive reader specified
         if let Some(archive_reader) = &self.archive_reader {
             if let Some((tx, header_subset)) = archive_reader.get_tx(&hash.into()).await? {
+                record_source!(archive);
                 return Ok(parse_tx_content(
                     header_subset.block_hash,
                     header_subset.block_number,
@@ -281,6 +310,7 @@ impl<T: Triedb> ChainState<T> {
                 if let Some(buffer) = &self.buffer {
                     let height = block_height_from_tag(buffer, tag);
                     if let Some(block) = buffer.get_block_by_height(height) {
+                        record_source!(buffer);
                         return Ok(block.header.inner);
                     }
                 }
@@ -288,6 +318,7 @@ impl<T: Triedb> ChainState<T> {
             BlockTagOrHash::Hash(hash) => {
                 if let Some(buffer) = &self.buffer {
                     if let Some(block) = buffer.get_block_by_hash(hash) {
+                        record_source!(buffer);
                         return Ok(block.header.inner);
                     }
                 }
@@ -316,6 +347,7 @@ impl<T: Triedb> ChainState<T> {
                 .await
                 .map_err(ChainStateError::Triedb)?
             {
+                record_source!(triedb);
                 return Ok(header.header);
             }
         };
@@ -324,6 +356,7 @@ impl<T: Triedb> ChainState<T> {
             match block {
                 BlockTagOrHash::BlockTags(BlockTags::Number(n)) => {
                     if let Some(block) = archive_reader.try_get_block_by_number(n.0).await? {
+                        record_source!(archive);
                         return Ok(block.header);
                     }
                 }
@@ -332,6 +365,7 @@ impl<T: Triedb> ChainState<T> {
                         .try_get_block_by_hash(&FixedBytes(hash.0))
                         .await?
                     {
+                        record_source!(archive);
                         return Ok(block.header);
                     }
                 }
@@ -355,6 +389,7 @@ impl<T: Triedb> ChainState<T> {
                         if !return_full_txns {
                             block.transactions = block.transactions.into_hashes();
                         }
+                        record_source!(buffer);
                         return Ok(block);
                     }
                 }
@@ -363,6 +398,7 @@ impl<T: Triedb> ChainState<T> {
                         if !return_full_txns {
                             block.transactions = block.transactions.into_hashes();
                         }
+                        record_source!(buffer);
                         return Ok(block);
                     }
                 }
@@ -392,6 +428,7 @@ impl<T: Triedb> ChainState<T> {
                 .map_err(ChainStateError::Triedb)?
             {
                 if let Ok(transactions) = self.triedb_env.get_transactions(block_key).await {
+                    record_source!(triedb);
                     return Ok(parse_block_content(
                         header.hash,
                         header.header,
@@ -406,6 +443,7 @@ impl<T: Triedb> ChainState<T> {
             match block {
                 BlockTagOrHash::BlockTags(BlockTags::Number(n)) => {
                     if let Some(block) = archive_reader.try_get_block_by_number(n.0).await? {
+                        record_source!(archive);
                         return Ok(parse_block_content(
                             block.header.hash_slow(),
                             block.header,
@@ -419,6 +457,7 @@ impl<T: Triedb> ChainState<T> {
                         .try_get_block_by_hash(&FixedBytes(hash.0))
                         .await?
                     {
+                        record_source!(archive);
                         return Ok(parse_block_content(
                             block.header.hash_slow(),
                             block.header,
@@ -445,6 +484,7 @@ impl<T: Triedb> ChainState<T> {
                 .into_iter()
                 .map(|receipt_with_log_index| receipt_with_log_index.receipt)
                 .collect();
+            record_source!(triedb);
             return Ok(receipts);
         };
 
@@ -456,6 +496,7 @@ impl<T: Triedb> ChainState<T> {
                     .into_iter()
                     .map(|receipt_with_log_index| receipt_with_log_index.receipt)
                     .collect();
+                record_source!(archive);
                 return Ok(receipts);
             }
         }
@@ -491,6 +532,7 @@ impl<T: Triedb> ChainState<T> {
                             crate::eth_json_types::MonadTransactionReceipt,
                         )
                         .map_err(|_| ChainStateError::ResourceNotFound)?;
+                        record_source!(triedb);
                         return Ok(block_receipts);
                     }
                 }
@@ -524,6 +566,7 @@ impl<T: Triedb> ChainState<T> {
                         crate::eth_json_types::MonadTransactionReceipt,
                     )
                     .map_err(|_| ChainStateError::ResourceNotFound)?;
+                    record_source!(archive);
                     return Ok(block_receipts);
                 }
             }
@@ -692,10 +735,14 @@ impl<T: Triedb> ChainState<T> {
             .map(|result| {
                 async move {
                     match result {
-                        Ok(Either::Left(data)) => Ok(data), // successfully fetched from triedb
+                        Ok(Either::Left(data)) => {
+                            record_source!(triedb);
+                            Ok(data) // successfully fetched from triedb
+                        }
                         Ok(Either::Right(block_num)) => {
                             // fallback and try fetching from archive
                             if let Some(archive_reader) = &self.archive_reader {
+                                record_source!(archive);
                                 fetch_from_archive(archive_reader, block_num, filter_match).await
                             } else {
                                 Err(JsonRpcError::internal_error(

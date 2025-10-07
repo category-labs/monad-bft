@@ -16,8 +16,44 @@
 use std::{any::TypeId, cell::RefCell};
 
 use opentelemetry::{metrics::Histogram, KeyValue};
-use tracing::{error, span::Id, Dispatch, Span, Subscriber};
+use tracing::{error, field::Visit, span::Id, Dispatch, Span, Subscriber};
 use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
+
+/// Storage for the chainstate source values in span extensions
+/// Tracks all data sources accessed during a span
+#[derive(Debug, Clone, Default)]
+struct ChainstateSource {
+    sources: std::collections::HashSet<String>,
+}
+
+/// Visitor to extract a string field value from a span
+struct FieldValueVisitor<'a> {
+    field_name: &'a str,
+    value: Option<String>,
+}
+
+impl<'a> FieldValueVisitor<'a> {
+    fn new(field_name: &'a str) -> Self {
+        Self {
+            field_name,
+            value: None,
+        }
+    }
+}
+
+impl<'a> Visit for FieldValueVisitor<'a> {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == self.field_name {
+            self.value = Some(format!("{:?}", value));
+        }
+    }
+
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() == self.field_name {
+            self.value = Some(value.to_string());
+        }
+    }
+}
 
 thread_local! {
     // NOTE(dshulyak) it doesn't matter what we use here for id, it will be always overwritten
@@ -173,8 +209,44 @@ where
         }
     }
 
+    fn on_record(
+        &self,
+        span: &Id,
+        values: &tracing::span::Record<'_>,
+        ctx: Context<'_, S>,
+    ) {
+        let span = ctx.span(span).expect("span must exist");
+        let mut visitor = FieldValueVisitor::new("chainstate.source");
+        values.record(&mut visitor);
+        
+        if let Some(value) = visitor.value {
+            let mut extensions = span.extensions_mut();
+            let chainstate_source = extensions
+                .get_mut::<ChainstateSource>()
+                .map(|s| {
+                    s.sources.insert(value.clone());
+                });
+            
+            // If not present, insert a new one
+            if chainstate_source.is_none() {
+                let mut source = ChainstateSource::default();
+                source.sources.insert(value);
+                extensions.insert(source);
+            }
+        }
+    }
+
     fn on_close(&self, id: Id, ctx: Context<'_, S>) {
         let span = ctx.span(&id).expect("span must exist");
+
+        // Extract all chainstate sources used during this span
+        // Format as a sorted, comma-separated string for consistent metric labels
+        let data_source = span.extensions().get::<ChainstateSource>().map(|s| {
+            let mut sources: Vec<_> = s.sources.iter().cloned().collect();
+            sources.sort();
+            sources.join(",")
+        });
+
         let mut extensions = span.extensions_mut();
         if let Some(timing) = extensions.get_mut::<TimingContext>() {
             if let Some(entered) = timing.entered.take() {
@@ -182,41 +254,47 @@ where
                 match &timing.span_type {
                     SpanType::Secondary(main) => {
                         if let Some(main_span) = ctx.span(main) {
-                            timing.histogram.record(
-                                elapsed,
-                                &[
-                                    KeyValue::new("main", main_span.name()),
-                                    KeyValue::new("secondary", span.name()),
-                                    KeyValue::new("type", "total"),
-                                ],
-                            );
-                            timing.histogram.record(
-                                timing.wait_time,
-                                &[
-                                    KeyValue::new("main", main_span.name()),
-                                    KeyValue::new("secondary", span.name()),
-                                    KeyValue::new("type", "wait"),
-                                ],
-                            );
+                            let mut attributes = vec![
+                                KeyValue::new("main", main_span.name()),
+                                KeyValue::new("secondary", span.name()),
+                                KeyValue::new("type", "total"),
+                            ];
+                            if let Some(ref source) = data_source {
+                                attributes.push(KeyValue::new("chainstate_source", source.clone()));
+                            }
+                            timing.histogram.record(elapsed, &attributes);
+                            
+                            let mut wait_attributes = vec![
+                                KeyValue::new("main", main_span.name()),
+                                KeyValue::new("secondary", span.name()),
+                                KeyValue::new("type", "wait"),
+                            ];
+                            if let Some(ref source) = data_source {
+                                wait_attributes.push(KeyValue::new("chainstate_source", source.clone()));
+                            }
+                            timing.histogram.record(timing.wait_time, &wait_attributes);
                         } else {
                             error!("main span not found");
                         }
                     }
                     SpanType::Main => {
-                        timing.histogram.record(
-                            elapsed,
-                            &[
-                                KeyValue::new("main", span.name()),
-                                KeyValue::new("type", "total"),
-                            ],
-                        );
-                        timing.histogram.record(
-                            timing.wait_time,
-                            &[
-                                KeyValue::new("main", span.name()),
-                                KeyValue::new("type", "wait"),
-                            ],
-                        );
+                        let mut attributes = vec![
+                            KeyValue::new("main", span.name()),
+                            KeyValue::new("type", "total"),
+                        ];
+                        if let Some(ref source) = data_source {
+                            attributes.push(KeyValue::new("chainstate_source", source.clone()));
+                        }
+                        timing.histogram.record(elapsed, &attributes);
+                        
+                        let mut wait_attributes = vec![
+                            KeyValue::new("main", span.name()),
+                            KeyValue::new("type", "wait"),
+                        ];
+                        if let Some(ref source) = data_source {
+                            wait_attributes.push(KeyValue::new("chainstate_source", source.clone()));
+                        }
+                        timing.histogram.record(timing.wait_time, &wait_attributes);
                     }
                 }
             }

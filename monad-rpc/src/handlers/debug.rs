@@ -37,6 +37,7 @@ use crate::{
     },
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
+    record_source,
 };
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -401,6 +402,7 @@ pub struct MonadDebugTraceBlockByHashParams {
 
 #[rpc(method = "debug_traceBlockByHash")]
 #[allow(non_snake_case)]
+#[tracing::instrument(level = "debug", skip_all, fields(chainstate.source))]
 /// Returns the tracing result by executing all transactions in the block specified by the block hash with a tracer.
 pub async fn monad_debug_traceBlockByHash<T: Triedb>(
     triedb_env: &T,
@@ -418,6 +420,7 @@ pub async fn monad_debug_traceBlockByHash<T: Triedb>(
         let block_key = triedb_env.get_block_key(SeqNum(block_num));
         if let Ok(result) = get_call_frames_from_triedb(triedb_env, block_key, &params.tracer).await
         {
+            record_source!(triedb);
             return Ok(result);
         }
     }
@@ -453,6 +456,7 @@ pub async fn monad_debug_traceBlockByHash<T: Triedb>(
                     });
                 }
 
+                record_source!(archive);
                 return Ok(resp);
             }
         }
@@ -477,6 +481,7 @@ pub struct MonadDebugTraceBlockResult {
 
 #[rpc(method = "debug_traceBlockByNumber")]
 #[allow(non_snake_case)]
+#[tracing::instrument(level = "debug", skip_all, fields(chainstate.source))]
 /// Returns the tracing result by executing all transactions in the block specified by the block number with a tracer.
 pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
     triedb_env: &T,
@@ -487,6 +492,7 @@ pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
 
     let block_key = get_block_key_from_tag(triedb_env, params.block_number);
     if let Ok(result) = get_call_frames_from_triedb(triedb_env, block_key, &params.tracer).await {
+        record_source!(triedb);
         return Ok(result);
     }
 
@@ -514,6 +520,7 @@ pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
                     });
                 }
 
+                record_source!(archive);
                 return Ok(resp);
             }
         }
@@ -524,6 +531,7 @@ pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
 
 #[rpc(method = "debug_traceTransaction")]
 #[allow(non_snake_case)]
+#[tracing::instrument(level = "debug", skip_all, fields(chainstate.source))]
 /// Returns all traces of a given transaction.
 pub async fn monad_debug_traceTransaction<T: Triedb>(
     triedb_env: &T,
@@ -545,6 +553,7 @@ pub async fn monad_debug_traceTransaction<T: Triedb>(
             .map_err(JsonRpcError::internal_error)?
         {
             let rlp_call_frame = &mut rlp_call_frame.as_slice();
+            record_source!(triedb);
             return decode_call_frame(triedb_env, rlp_call_frame, block_key, &params.tracer).await;
         }
     }
@@ -555,6 +564,7 @@ pub async fn monad_debug_traceTransaction<T: Triedb>(
             archive_reader.get_trace(&params.tx_hash.0.into()).await?
         {
             let rlp_call_frame = &mut trace.as_slice();
+            record_source!(archive);
             return decode_call_frame(
                 triedb_env,
                 rlp_call_frame,
