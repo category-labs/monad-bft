@@ -34,7 +34,7 @@ use tokio::sync::mpsc::{
     error::{TryRecvError, TrySendError},
 };
 use tracing::{debug, enabled, trace, warn, Level};
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 use super::{message_timeout, TcpMsg, TcpMsgHdr, TCP_MESSAGE_LENGTH_LIMIT};
 

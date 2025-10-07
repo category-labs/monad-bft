@@ -218,6 +218,6 @@ unicode-normalization = "0.1"
 url = "2.5.0"
 vergen-git2 = "1.0.5"
 wasm-bindgen = "0.2"
-zerocopy = "0.6"
+zerocopy = { version = "0.8", features = ["derive"] }
 zeroize = "1.3"
 zstd = "0.13"

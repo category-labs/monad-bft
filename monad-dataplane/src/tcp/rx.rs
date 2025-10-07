@@ -288,7 +288,7 @@ async fn read_message(
 
     let header = match timeout(HEADER_TIMEOUT, tcp_stream.read_exact(header_bytes)).await {
         Ok((ret, header_bytes)) => match ret {
-            Ok(_len) => TcpMsgHdr::read_from(&header_bytes[..]).unwrap(),
+            Ok(_len) => TcpMsgHdr::read_from_bytes(&header_bytes[..]).unwrap(),
             Err(err) => {
                 if message_id == 0 || err.kind() != ErrorKind::UnexpectedEof {
                     debug!(

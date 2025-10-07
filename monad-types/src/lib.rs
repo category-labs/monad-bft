@@ -30,7 +30,7 @@ use monad_crypto::certificate_signature::PubKey;
 pub use monad_crypto::hasher::Hash;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 pub const GENESIS_SEQ_NUM: SeqNum = SeqNum(0);
 pub const GENESIS_ROUND: Round = Round(0);
@@ -53,7 +53,7 @@ const SERIALIZE_VERSION: u16 = 1;
     Ord,
     PartialEq,
     PartialOrd,
-    AsBytes,
+    IntoBytes,
     Serialize,
     Deserialize,
     RlpEncodableWrapper,
@@ -171,7 +171,7 @@ impl Default for RoundSpan {
     Ord,
     Serialize,
     Deserialize,
-    AsBytes,
+    IntoBytes,
     RlpEncodableWrapper,
     RlpDecodableWrapper,
 )]
@@ -238,7 +238,7 @@ impl Debug for Epoch {
     Ord,
     PartialEq,
     PartialOrd,
-    AsBytes,
+    IntoBytes,
     Serialize,
     Deserialize,
     RlpEncodableWrapper,

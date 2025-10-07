@@ -18,7 +18,7 @@ use std::{fmt::Debug, ops::Deref};
 use alloy_rlp::{RlpDecodableWrapper, RlpEncodableWrapper};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::Digest;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 /// A 32-byte/256-bit hash
 #[derive(

@@ -29,7 +29,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tracing::trace;
 use zerocopy::{
     byteorder::little_endian::{U32, U64},
-    AsBytes, FromBytes,
+    FromBytes, Immutable, IntoBytes,
 };
 
 use super::{RecvTcpMsg, TcpMsg};
@@ -43,7 +43,7 @@ const TCP_MESSAGE_LENGTH_LIMIT: usize = 3 * 1024 * 1024;
 const HEADER_MAGIC: u32 = 0x434e5353; // "SSNC"
 const HEADER_VERSION: u32 = 1;
 
-#[derive(AsBytes, Debug, FromBytes)]
+#[derive(IntoBytes, Debug, FromBytes, Immutable)]
 #[repr(C)]
 struct TcpMsgHdr {
     magic: U32,
