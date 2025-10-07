@@ -868,8 +868,8 @@ where
         response: BlockSyncResponseMessage<ST, SCT, EPT>,
     },
     /// Events for secondary raptorcast updates
-    SecondaryRaptorcastEvent {
-        event: SecondaryRaptorcastEvent<SCT>,
+    SecondaryRaptorcastPeersUpdate {
+        confirm_group_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
     },
 }
 
@@ -911,9 +911,11 @@ where
                 .debug_struct("BlockSyncSelfResponse")
                 .field("response", response)
                 .finish(),
-            Self::SecondaryRaptorcastEvent { event } => f
+            Self::SecondaryRaptorcastPeersUpdate {
+                confirm_group_peers,
+            } => f
                 .debug_struct("BlockSyncSecondaryRaptorcastEvent")
-                .field("event", event)
+                .field("confirm_group_peers", confirm_group_peers)
                 .finish(),
             Self::Timeout(request) => f.debug_struct("Timeout").field("request", request).finish(),
         }
@@ -958,8 +960,10 @@ where
                 let enc: [&dyn Encodable; 2] = [&6u8, &response];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
-            Self::SecondaryRaptorcastEvent { event } => {
-                let enc: [&dyn Encodable; 2] = [&7u8, &event];
+            Self::SecondaryRaptorcastPeersUpdate {
+                confirm_group_peers,
+            } => {
+                let enc: [&dyn Encodable; 2] = [&7u8, &confirm_group_peers];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
         }
@@ -1009,8 +1013,10 @@ where
                 Ok(Self::SelfResponse { response })
             }
             7 => {
-                let event = SecondaryRaptorcastEvent::<SCT>::decode(&mut payload)?;
-                Ok(Self::SecondaryRaptorcastEvent { event })
+                let confirm_group_peers = Vec::<NodeId<SCT::NodeIdPubKey>>::decode(&mut payload)?;
+                Ok(Self::SecondaryRaptorcastPeersUpdate {
+                    confirm_group_peers,
+                })
             }
             _ => Err(alloy_rlp::Error::Custom(
                 "failed to decode unknown BlockSyncEvent",
@@ -1906,14 +1912,6 @@ where
 {
     pub known_peers: Vec<PeerEntry<ST>>,
     pub pinned_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
-pub struct SecondaryRaptorcastEvent<SCT>
-where
-    SCT: SignatureCollection,
-{
-    pub confirm_group_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
