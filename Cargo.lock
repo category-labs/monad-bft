@@ -341,7 +341,8 @@ dependencies = [
 
 [[package]]
 name = "agent"
-version = "0.1.0"
+version = "0.1.1"
+source = "git+https://github.com/category-labs/manytrace.git?tag=v0.1.1#1598f5c4fb725b54c83c224c1d58c27dcda9b61f"
 dependencies = [
  "arc-swap",
  "libc",
@@ -6317,7 +6318,8 @@ dependencies = [
 
 [[package]]
 name = "mpscbuf"
-version = "0.1.0"
+version = "0.1.1"
+source = "git+https://github.com/category-labs/manytrace.git?tag=v0.1.1#1598f5c4fb725b54c83c224c1d58c27dcda9b61f"
 dependencies = [
  "crossbeam",
  "eyre",
@@ -7206,7 +7208,8 @@ dependencies = [
 
 [[package]]
 name = "protocol"
-version = "0.1.0"
+version = "0.1.1"
+source = "git+https://github.com/category-labs/manytrace.git?tag=v0.1.1#1598f5c4fb725b54c83c224c1d58c27dcda9b61f"
 dependencies = [
  "bitcode",
  "rkyv",
@@ -9234,7 +9237,8 @@ dependencies = [
 
 [[package]]
 name = "tracing-manytrace"
-version = "0.1.0"
+version = "0.1.1"
+source = "git+https://github.com/category-labs/manytrace.git?tag=v0.1.1#1598f5c4fb725b54c83c224c1d58c27dcda9b61f"
 dependencies = [
  "agent",
  "arc-swap",

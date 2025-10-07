@@ -1,6 +1,3 @@
 [submodule "monad-cxx/monad-execution"]
 	path = monad-cxx/monad-execution
 	url = https://github.com/category-labs/monad.git
-[submodule "manytrace"]
-	path = manytrace
-	url = https://github.com/category-labs/manytrace.git
