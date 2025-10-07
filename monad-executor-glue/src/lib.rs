@@ -1892,6 +1892,14 @@ where
     pub pinned_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
+pub struct SecondaryRaptorcastEvent<SCT>
+where
+    SCT: SignatureCollection,
+{
+    pub confirm_group_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum ConfigEvent<ST, SCT>
 where
@@ -1972,6 +1980,8 @@ where
     StateSyncEvent(StateSyncEvent<ST, SCT, EPT>),
     /// Config updates
     ConfigEvent(ConfigEvent<ST, SCT>),
+    /// Events for secondary raptorcast updates
+    SecondaryRaptorcastEvent(SecondaryRaptorcastEvent<SCT>),
 }
 
 impl<ST, SCT, EPT> MonadEvent<ST, SCT, EPT>
@@ -2024,6 +2034,9 @@ where
                 MonadEvent::StateSyncEvent(event)
             }
             MonadEvent::ConfigEvent(event) => MonadEvent::ConfigEvent(event.clone()),
+            MonadEvent::SecondaryRaptorcastEvent(event) => {
+                MonadEvent::SecondaryRaptorcastEvent(event.clone())
+            }
         }
     }
 }
@@ -2068,6 +2081,10 @@ where
                 let enc: [&dyn Encodable; 2] = [&8u8, &event];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
+            Self::SecondaryRaptorcastEvent(event) => {
+                let enc: [&dyn Encodable; 2] = [&9u8, &event];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
         }
     }
 }
@@ -2102,6 +2119,11 @@ where
             )),
             8 => Ok(Self::ConfigEvent(ConfigEvent::<ST, SCT>::decode(
                 &mut payload,
+            )?)),
+            9 => Ok(Self::SecondaryRaptorcastEvent(SecondaryRaptorcastEvent::<
+                SCT,
+            >::decode(
+                &mut payload
             )?)),
             _ => Err(alloy_rlp::Error::Custom(
                 "failed to decode unknown MonadEvent",
@@ -2173,6 +2195,7 @@ where
             MonadEvent::TimestampUpdateEvent(t) => format!("MempoolEvent::TimestampUpdate: {t}"),
             MonadEvent::StateSyncEvent(_) => "STATESYNC".to_string(),
             MonadEvent::ConfigEvent(_) => "CONFIGEVENT".to_string(),
+            MonadEvent::SecondaryRaptorcastEvent(_) => "SECONDARYRAPTORCASTEVENT".to_string(),
         };
 
         write!(f, "{}", s)
