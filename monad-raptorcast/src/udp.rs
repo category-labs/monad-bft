@@ -30,7 +30,7 @@ use monad_dataplane::{
 };
 use monad_merkle::{MerkleHash, MerkleProof};
 use monad_types::{Epoch, NodeId};
-use tracing::{debug, warn};
+use tracing::warn;
 
 pub use crate::packet::build_messages;
 use crate::{
@@ -183,27 +183,10 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 continue;
             }
 
-            let maybe_broadcast_mode = match (
-                parsed_message.broadcast,
-                parsed_message.secondary_broadcast,
-            ) {
-                (true, false) => Some(BroadcastMode::Primary),
-                (false, true) => Some(BroadcastMode::Secondary),
-                (false, false) => None,
-                (true, true) => {
-                    // invalid to have both primary and secondary broadcast bit set
-                    debug!(
-                        ?parsed_message.author,
-                        "Receiving invalid message with both broadcast and secondary broadcast bit set"
-                    );
-                    continue;
-                }
-            };
-
             // Note: The check that parsed_message.author is valid is already
             // done in iterate_rebroadcast_peers(), but we want to drop invalid
             // chunks ASAP, before changing `recently_decoded_state`.
-            if let Some(broadcast_mode) = maybe_broadcast_mode {
+            if let Some(broadcast_mode) = parsed_message.maybe_broadcast_mode {
                 if !group_map.check_source(
                     Epoch(parsed_message.epoch),
                     &parsed_message.author,
@@ -234,7 +217,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
 
             let mut try_rebroadcast_symbol = || {
                 // rebroadcast raptorcast chunks if necessary
-                if let Some(broadcast_mode) = maybe_broadcast_mode {
+                if let Some(broadcast_mode) = parsed_message.maybe_broadcast_mode {
                     if self_hash == parsed_message.recipient_hash {
                         let maybe_targets = group_map.iterate_rebroadcast_peers(
                             Epoch(parsed_message.epoch),
@@ -327,8 +310,7 @@ where
     pub unix_ts_ms: u64,
     pub app_message_hash: AppMessageHash,
     pub app_message_len: u32,
-    pub broadcast: bool,
-    pub secondary_broadcast: bool,
+    pub maybe_broadcast_mode: Option<BroadcastMode>,
     pub recipient_hash: NodeIdHash, // if this matches our node_id, then we need to re-broadcast RaptorCast chunks
     pub chunk_id: u16,
     pub chunk: Bytes, // raptor-coded portion
@@ -347,6 +329,7 @@ pub enum MessageValidationError {
         max: u64,
         delta: i64,
     },
+    InvalidBroadcastBits,
 }
 
 /// - 65 bytes => Signature of sender over hash(rest of message up to merkle proof, concatenated with merkle root)
@@ -401,6 +384,15 @@ where
     let broadcast = (cursor_broadcast_tree_depth & (1 << 7)) != 0;
     let secondary_broadcast = (cursor_broadcast_tree_depth & (1 << 6)) != 0;
     let tree_depth = cursor_broadcast_tree_depth & 0b0000_1111; // bottom 4 bits
+
+    let maybe_broadcast_mode = match (broadcast, secondary_broadcast) {
+        (true, false) => Some(BroadcastMode::Primary),
+        (false, true) => Some(BroadcastMode::Secondary),
+        (false, false) => None,
+        (true, true) => {
+            return Err(MessageValidationError::InvalidBroadcastBits);
+        }
+    };
 
     if !(MIN_MERKLE_TREE_DEPTH..=MAX_MERKLE_TREE_DEPTH).contains(&tree_depth) {
         return Err(MessageValidationError::InvalidTreeDepth);
@@ -506,8 +498,7 @@ where
         unix_ts_ms,
         app_message_hash,
         app_message_len,
-        broadcast,
-        secondary_broadcast,
+        maybe_broadcast_mode,
         recipient_hash,
         chunk_id,
         chunk: cursor_payload,
@@ -682,7 +673,9 @@ mod tests {
     use super::{MessageValidationError, UdpState};
     use crate::{
         udp::{build_messages, parse_message, SIGNATURE_CACHE_SIZE},
-        util::{BuildTarget, EpochValidators, Group, ReBroadcastGroupMap, Redundancy},
+        util::{
+            BroadcastMode, BuildTarget, EpochValidators, Group, ReBroadcastGroupMap, Redundancy,
+        },
     };
 
     type SignatureType = SecpSignature;
@@ -762,7 +755,10 @@ mod tests {
                 assert_eq!(parsed_message.message, message);
                 assert_eq!(parsed_message.app_message_hash.0, app_message_hash.0[..20]);
                 assert_eq!(parsed_message.unix_ts_ms, UNIX_TS_MS);
-                assert!(parsed_message.broadcast);
+                assert!(matches!(
+                    parsed_message.maybe_broadcast_mode,
+                    Some(BroadcastMode::Primary)
+                ));
                 assert_eq!(parsed_message.app_message_len, app_message.len() as u32);
                 assert_eq!(parsed_message.author, NodeId::new(key.pubkey()));
             }
@@ -897,12 +893,16 @@ mod tests {
 
                     match build_target {
                         BuildTarget::Raptorcast(_) => {
-                            assert!(parsed_message.broadcast);
-                            assert!(!parsed_message.secondary_broadcast);
+                            assert!(matches!(
+                                parsed_message.maybe_broadcast_mode,
+                                Some(BroadcastMode::Primary)
+                            ));
                         }
                         BuildTarget::FullNodeRaptorCast(_) => {
-                            assert!(!parsed_message.broadcast);
-                            assert!(parsed_message.secondary_broadcast);
+                            assert!(matches!(
+                                parsed_message.maybe_broadcast_mode,
+                                Some(BroadcastMode::Secondary)
+                            ));
                         }
                         _ => unreachable!(),
                     }

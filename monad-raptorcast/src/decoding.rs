@@ -305,7 +305,7 @@ impl MessageTier {
     where
         PT: PubKey,
     {
-        if message.broadcast || message.secondary_broadcast {
+        if message.maybe_broadcast_mode.is_some() {
             return MessageTier::Broadcast;
         }
 
@@ -1587,6 +1587,7 @@ mod test {
     use rand::seq::SliceRandom as _;
 
     use super::*;
+    use crate::util::BroadcastMode;
     type PT = monad_crypto::NopPubKey;
 
     const EPOCH: Epoch = Epoch(1);
@@ -1650,14 +1651,13 @@ mod test {
                 author,
                 app_message_hash,
                 app_message_len: app_message.len() as u32,
-                broadcast: false,
+                maybe_broadcast_mode: None,
                 chunk: chunk.freeze(),
                 // these fields are never touched in this module
                 recipient_hash: HexBytes([0; 20]),
                 message: Bytes::new(),
                 epoch: EPOCH.0,
                 unix_ts_ms,
-                secondary_broadcast: false,
             };
             messages.push(message);
         }
@@ -1724,7 +1724,7 @@ mod test {
         );
         symbols_broadcast
             .iter_mut()
-            .for_each(|msg| msg.broadcast = true);
+            .for_each(|msg| msg.maybe_broadcast_mode = Some(BroadcastMode::Primary));
 
         let symbols_validator = make_symbols(
             &Bytes::from(vec![3u8; APP_MESSAGE_LEN]),
@@ -1912,10 +1912,10 @@ mod test {
         // Use broadcast tier so that validator's and non-validator's
         // messages get mixed in the same cache.
         for msg in &mut all_symbols_part_1 {
-            msg.broadcast = true;
+            msg.maybe_broadcast_mode = Some(BroadcastMode::Primary);
         }
         for msg in &mut all_symbols_part_2 {
-            msg.broadcast = true;
+            msg.maybe_broadcast_mode = Some(BroadcastMode::Primary);
         }
 
         let mut cache = DecoderCache::new(config);
