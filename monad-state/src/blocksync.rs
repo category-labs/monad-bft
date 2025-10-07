@@ -135,6 +135,13 @@ where
                 block_sync_wrapper.handle_peer_response(sender, response)
             }
             BlockSyncEvent::Timeout(request) => block_sync_wrapper.handle_timeout(request),
+            BlockSyncEvent::SecondaryRaptorcastPeersUpdate {
+                confirm_group_peers,
+            } => {
+                self.block_sync
+                    .set_secondary_raptorcast_peers(confirm_group_peers);
+                Vec::new()
+            }
         };
         cmds.into_iter()
             .map(|command| WrappedBlockSyncCommand {

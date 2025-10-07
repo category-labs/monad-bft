@@ -858,7 +858,7 @@ where
                 self.locked_epoch_validators.clone(),
             ),
             certificate_cache: CertificateCache::default(),
-            block_sync: BlockSync::new(self.block_sync_override_peers),
+            block_sync: BlockSync::new(self.block_sync_override_peers, nodeid),
 
             leader_election: self.leader_election,
             epoch_manager,
