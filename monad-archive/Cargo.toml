@@ -49,6 +49,9 @@ eyre = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
 mongodb = { workspace = true }
+monad-block-persist = { workspace = true }
+monad-consensus-types = { workspace = true }
+monad-node-config = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 opentelemetry-otlp = { workspace = true, features = ["metrics", "grpc-tonic"] }
