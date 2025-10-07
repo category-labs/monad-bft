@@ -23,7 +23,6 @@ use alloy_rlp::{
     Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper,
 };
 use monad_crypto::NopPubKey;
-use monad_secp::PubKey as SecpPubkey;
 use monad_types::{Balance, ExecutionProtocol, FinalizedHeader, Nonce, SeqNum};
 
 pub mod serde;
@@ -37,12 +36,6 @@ pub trait ExtractEthAddress {
 impl ExtractEthAddress for NopPubKey {
     fn get_eth_address(&self) -> Address {
         Address::new([0_u8; 20])
-    }
-}
-
-impl ExtractEthAddress for SecpPubkey {
-    fn get_eth_address(&self) -> Address {
-        Address::from_raw_public_key(&Self::bytes(self)[1..])
     }
 }
 

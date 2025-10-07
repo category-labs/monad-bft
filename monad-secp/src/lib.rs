@@ -16,6 +16,7 @@
 mod recoverable_address;
 mod secp;
 
+use alloy_primitives::Address;
 use alloy_rlp::{Decodable, Encodable};
 use monad_crypto::{
     certificate_signature::{
@@ -24,9 +25,16 @@ use monad_crypto::{
     },
     signing_domain::SigningDomain,
 };
+pub use monad_eth_types::ExtractEthAddress;
 pub use recoverable_address::RecoverableAddress;
 pub use secp::{Error, KeyPair, PubKey, SecpSignature};
 use serde::{Deserialize, Serialize};
+
+impl ExtractEthAddress for PubKey {
+    fn get_eth_address(&self) -> Address {
+        Address::from_raw_public_key(&self.bytes()[1..])
+    }
+}
 
 impl std::fmt::Display for PubKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

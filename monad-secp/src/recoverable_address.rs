@@ -29,7 +29,7 @@ pub trait RecoverableAddress {
 impl RecoverableAddress for TxEnvelope {
     fn secp256k1_recover(&self) -> Result<Address, Error> {
         let signature_hash = self.signature_hash();
-        let secp_message = Message::from_slice(signature_hash.as_ref())?;
+        let secp_message = Message::from_digest(*signature_hash.as_ref());
 
         let secp = Secp256k1::new();
 
@@ -38,10 +38,10 @@ impl RecoverableAddress for TxEnvelope {
 
         let recoverable_sig = RecoverableSignature::from_compact(
             &signature[0..64],
-            RecoveryId::from_i32(recid as i32)?,
+            RecoveryId::try_from(recid as i32)?,
         )?;
 
-        let recovered_pubkey = secp.recover_ecdsa(&secp_message, &recoverable_sig)?;
+        let recovered_pubkey = secp.recover_ecdsa(secp_message, &recoverable_sig)?;
         let recovered_pubkey_bytes = recovered_pubkey.serialize_uncompressed();
         let recovered_hash = keccak256(&recovered_pubkey_bytes[1..]);
         Ok(Address::from_slice(&recovered_hash[12..]))

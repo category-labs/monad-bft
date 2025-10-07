@@ -22,7 +22,7 @@ use monad_crypto::{
     hasher::{Hasher, HasherType},
     signing_domain::SigningDomain,
 };
-use secp256k1::{ffi::CPtr, Secp256k1};
+use secp256k1::Secp256k1;
 use sha2::Sha256;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -30,7 +30,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 #[derive(Copy, Clone, PartialOrd, Ord)]
 pub struct PubKey(secp256k1::PublicKey);
 /// secp256k1 keypair
-pub struct KeyPair(secp256k1::KeyPair);
+pub struct KeyPair(secp256k1::Keypair);
 
 #[derive(ZeroizeOnDrop)]
 pub struct PrivKeyView(Vec<u8>);
@@ -94,16 +94,20 @@ fn msg_hash<SD: SigningDomain>(msg: &[u8]) -> secp256k1::Message {
     hasher.update(msg);
     let hash = hasher.hash();
 
-    secp256k1::Message::from_slice(&hash.0).expect("32 bytes")
+    secp256k1::Message::from_digest(hash.0)
 }
 
 impl KeyPair {
     /// Create a keypair from a secret key slice. The secret is zero-ized after
     /// use. The secret must be 32 byytes.
     pub fn from_bytes(secret: &mut [u8]) -> Result<Self, Error> {
-        let keypair = secp256k1::KeyPair::from_seckey_slice(secp256k1::SECP256K1, secret)
-            .map(Self)
-            .map_err(Error);
+        let secret_array: [u8; 32] = secret
+            .try_into()
+            .map_err(|_| Error(secp256k1::Error::InvalidSecretKey))?;
+        let keypair =
+            secp256k1::Keypair::from_seckey_byte_array(secp256k1::SECP256K1, secret_array)
+                .map(Self)
+                .map_err(Error);
         secret.zeroize();
         keypair
     }
@@ -123,7 +127,7 @@ impl KeyPair {
     pub fn sign<SD: SigningDomain>(&self, msg: &[u8]) -> SecpSignature {
         SecpSignature(Secp256k1::sign_ecdsa_recoverable(
             secp256k1::SECP256K1,
-            &msg_hash::<SD>(msg),
+            msg_hash::<SD>(msg),
             &self.0.secret_key(),
         ))
     }
@@ -164,7 +168,7 @@ impl PubKey {
     ) -> Result<(), Error> {
         Secp256k1::verify_ecdsa(
             secp256k1::SECP256K1,
-            &msg_hash::<SD>(msg),
+            msg_hash::<SD>(msg),
             &signature.0.to_standard(),
             &self.0,
         )
@@ -175,7 +179,7 @@ impl PubKey {
 impl SecpSignature {
     /// Recover the pubkey from signature given the message
     pub fn recover_pubkey<SD: SigningDomain>(&self, msg: &[u8]) -> Result<PubKey, Error> {
-        Secp256k1::recover_ecdsa(secp256k1::SECP256K1, &msg_hash::<SD>(msg), &self.0)
+        Secp256k1::recover_ecdsa(secp256k1::SECP256K1, msg_hash::<SD>(msg), &self.0)
             .map(PubKey)
             .map_err(Error)
     }
@@ -185,9 +189,10 @@ impl SecpSignature {
     pub fn serialize(&self) -> [u8; secp256k1::constants::COMPACT_SIGNATURE_SIZE + 1] {
         // recid is 0..3, fit in a single byte (see secp256k1 https://docs.rs/secp256k1/0.27.0/src/secp256k1/ecdsa/recovery.rs.html#39)
         let (recid, sig) = self.0.serialize_compact();
-        assert!((0..=3).contains(&recid.to_i32()));
+        let recid_byte = recid as u8;
+        assert!((0..=3).contains(&recid_byte));
         let mut sig_vec = sig.to_vec();
-        sig_vec.push(recid.to_i32() as u8);
+        sig_vec.push(recid_byte);
         sig_vec.try_into().unwrap()
     }
 
@@ -197,7 +202,7 @@ impl SecpSignature {
             return Err(Error(secp256k1::Error::InvalidSignature));
         }
         let sig_data = &data[..secp256k1::constants::COMPACT_SIGNATURE_SIZE];
-        let recid = secp256k1::ecdsa::RecoveryId::from_i32(
+        let recid = secp256k1::ecdsa::RecoveryId::try_from(
             data[secp256k1::constants::COMPACT_SIGNATURE_SIZE] as i32,
         )
         .map_err(Error)?;
@@ -226,10 +231,7 @@ impl Decodable for SecpSignature {
 
 impl Drop for KeyPair {
     fn drop(&mut self) {
-        let ptr = self.0.as_mut_c_ptr();
-        unsafe {
-            (*ptr).non_secure_erase();
-        }
+        self.0.non_secure_erase();
     }
 }
 

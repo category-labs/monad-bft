@@ -10,6 +10,7 @@ bench = false
 
 [dependencies]
 monad-crypto = { workspace = true }
+monad-eth-types = { workspace = true }
 
 alloy-consensus = { workspace = true }
 alloy-primitives = { workspace = true, features = ["k256"] }
