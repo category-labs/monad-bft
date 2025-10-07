@@ -44,8 +44,8 @@ use monad_dataplane::{
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
-    ControlPanelEvent, GetFullNodes, GetPeers, Message, MonadEvent, PeerEntry, RouterCommand,
-    SecondaryRaptorcastEvent,
+    BlockSyncEvent, ControlPanelEvent, GetFullNodes, GetPeers, Message, MonadEvent, PeerEntry,
+    RouterCommand, SecondaryRaptorcastEvent,
 };
 use monad_node_config::{FullNodeConfig, FullNodeRaptorCastConfig};
 use monad_peer_discovery::{
@@ -981,10 +981,10 @@ where
                 }
             }
             RaptorCastEvent::SecondaryRaptorcastPeersUpdate(peer_list) => {
-                let event_data = SecondaryRaptorcastEvent {
+                let event = SecondaryRaptorcastEvent {
                     confirm_group_peers: peer_list,
                 };
-                MonadEvent::SecondaryRaptorcastEvent(event_data)
+                MonadEvent::BlockSyncEvent(BlockSyncEvent::SecondaryRaptorcastEvent { event })
             }
         }
     }

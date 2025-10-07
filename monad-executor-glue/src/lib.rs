@@ -867,6 +867,10 @@ where
     SelfResponse {
         response: BlockSyncResponseMessage<ST, SCT, EPT>,
     },
+    /// Events for secondary raptorcast updates
+    SecondaryRaptorcastEvent {
+        event: SecondaryRaptorcastEvent<SCT>,
+    },
 }
 
 impl<ST, SCT, EPT> Debug for BlockSyncEvent<ST, SCT, EPT>
@@ -906,6 +910,10 @@ where
             Self::SelfResponse { response } => f
                 .debug_struct("BlockSyncSelfResponse")
                 .field("response", response)
+                .finish(),
+            Self::SecondaryRaptorcastEvent { event } => f
+                .debug_struct("BlockSyncSecondaryRaptorcastEvent")
+                .field("event", event)
                 .finish(),
             Self::Timeout(request) => f.debug_struct("Timeout").field("request", request).finish(),
         }
@@ -948,6 +956,10 @@ where
             }
             Self::SelfResponse { response } => {
                 let enc: [&dyn Encodable; 2] = [&6u8, &response];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::SecondaryRaptorcastEvent { event } => {
+                let enc: [&dyn Encodable; 2] = [&7u8, &event];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
         }
@@ -995,6 +1007,10 @@ where
             6 => {
                 let response = BlockSyncResponseMessage::<ST, SCT, EPT>::decode(&mut payload)?;
                 Ok(Self::SelfResponse { response })
+            }
+            7 => {
+                let event = SecondaryRaptorcastEvent::<SCT>::decode(&mut payload)?;
+                Ok(Self::SecondaryRaptorcastEvent { event })
             }
             _ => Err(alloy_rlp::Error::Custom(
                 "failed to decode unknown BlockSyncEvent",
@@ -1980,8 +1996,6 @@ where
     StateSyncEvent(StateSyncEvent<ST, SCT, EPT>),
     /// Config updates
     ConfigEvent(ConfigEvent<ST, SCT>),
-    /// Events for secondary raptorcast updates
-    SecondaryRaptorcastEvent(SecondaryRaptorcastEvent<SCT>),
 }
 
 impl<ST, SCT, EPT> MonadEvent<ST, SCT, EPT>
@@ -2034,9 +2048,6 @@ where
                 MonadEvent::StateSyncEvent(event)
             }
             MonadEvent::ConfigEvent(event) => MonadEvent::ConfigEvent(event.clone()),
-            MonadEvent::SecondaryRaptorcastEvent(event) => {
-                MonadEvent::SecondaryRaptorcastEvent(event.clone())
-            }
         }
     }
 }
@@ -2081,10 +2092,6 @@ where
                 let enc: [&dyn Encodable; 2] = [&8u8, &event];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
-            Self::SecondaryRaptorcastEvent(event) => {
-                let enc: [&dyn Encodable; 2] = [&9u8, &event];
-                encode_list::<_, dyn Encodable>(&enc, out);
-            }
         }
     }
 }
@@ -2119,11 +2126,6 @@ where
             )),
             8 => Ok(Self::ConfigEvent(ConfigEvent::<ST, SCT>::decode(
                 &mut payload,
-            )?)),
-            9 => Ok(Self::SecondaryRaptorcastEvent(SecondaryRaptorcastEvent::<
-                SCT,
-            >::decode(
-                &mut payload
             )?)),
             _ => Err(alloy_rlp::Error::Custom(
                 "failed to decode unknown MonadEvent",
@@ -2195,7 +2197,6 @@ where
             MonadEvent::TimestampUpdateEvent(t) => format!("MempoolEvent::TimestampUpdate: {t}"),
             MonadEvent::StateSyncEvent(_) => "STATESYNC".to_string(),
             MonadEvent::ConfigEvent(_) => "CONFIGEVENT".to_string(),
-            MonadEvent::SecondaryRaptorcastEvent(_) => "SECONDARYRAPTORCASTEVENT".to_string(),
         };
 
         write!(f, "{}", s)

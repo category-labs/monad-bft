@@ -25,7 +25,7 @@ use monad_consensus_types::metrics::Metrics;
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_executor_glue::{
     BlockSyncEvent, ConfigEvent, ConsensusEvent, ControlPanelEvent, MempoolEvent, MonadEvent,
-    SecondaryRaptorcastEvent, StateSyncEvent, ValidatorEvent,
+    StateSyncEvent, ValidatorEvent,
 };
 use monad_mock_swarm::{
     node::Node,
@@ -377,7 +377,6 @@ enum GraphQLMonadEvent<'s> {
     TimestampEvent(GraphQLTimestampEvent),
     StateSyncEvent(GraphQLStateSyncEvent<'s>),
     ConfigEvent(GraphQLConfigEvent<'s>),
-    SecondaryRaptorcastEvent(GraphQLSecondaryRaptorcastEvent<'s>),
 }
 
 impl<'s> From<&'s MonadEventType> for GraphQLMonadEvent<'s> {
@@ -396,9 +395,6 @@ impl<'s> From<&'s MonadEventType> for GraphQLMonadEvent<'s> {
             }
             MonadEvent::StateSyncEvent(event) => Self::StateSyncEvent(GraphQLStateSyncEvent(event)),
             MonadEvent::ConfigEvent(event) => Self::ConfigEvent(GraphQLConfigEvent(event)),
-            MonadEvent::SecondaryRaptorcastEvent(event) => {
-                Self::SecondaryRaptorcastEvent(GraphQLSecondaryRaptorcastEvent(event))
-            }
         }
     }
 }
@@ -473,15 +469,6 @@ struct GraphQLConfigEvent<'s>(&'s ConfigEvent<SignatureType, SignatureCollection
 
 #[Object]
 impl GraphQLConfigEvent<'_> {
-    async fn debug(&self) -> String {
-        format!("{:?}", self.0)
-    }
-}
-
-struct GraphQLSecondaryRaptorcastEvent<'s>(&'s SecondaryRaptorcastEvent<SignatureCollectionType>);
-
-#[Object]
-impl GraphQLSecondaryRaptorcastEvent<'_> {
     async fn debug(&self) -> String {
         format!("{:?}", self.0)
     }

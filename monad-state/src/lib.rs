@@ -1152,11 +1152,6 @@ where
                     })]
                 }
             },
-            MonadEvent::SecondaryRaptorcastEvent(event_data) => {
-                self.block_sync
-                    .set_secondary_raptorcast_peers(event_data.confirm_group_peers);
-                vec![]
-            }
         }
     }
 
