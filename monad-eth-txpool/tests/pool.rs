@@ -21,7 +21,7 @@ use std::{
 use alloy_consensus::{
     transaction::Recovered, SignableTransaction, Transaction, TxEnvelope, TxLegacy,
 };
-use alloy_primitives::{hex, Address, TxKind, B256, U256};
+use alloy_primitives::{Address, TxKind, B256, U256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use itertools::Itertools;
@@ -39,7 +39,7 @@ use monad_eth_block_policy::{validation::TFM_MAX_GAS_LIMIT, EthBlockPolicy};
 use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_testutil::{
     generate_block_with_txs, make_eip1559_tx, make_eip7702_tx, make_legacy_tx,
-    make_signed_authorization, recover_tx, secret_to_eth_address,
+    make_signed_authorization, recover_tx, secret_to_eth_address, S1, S2, S3, S4, S5,
 };
 use monad_eth_txpool::{
     max_eip2718_encoded_length, EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics,
@@ -58,31 +58,6 @@ const GAS_LIMIT: u64 = 30000;
 const GAS_LIMIT_EIP_7702: u64 = 55000;
 const PROPOSAL_GAS_LIMIT: u64 = 300_000_000;
 const PROPOSAL_SIZE_LIMIT: u64 = 4_000_000;
-
-// pubkey starts with AAA
-const S1: B256 = B256::new(hex!(
-    "0ed2e19e3aca1a321349f295837988e9c6f95d4a6fc54cfab6befd5ee82662ad"
-));
-
-// pubkey starts with BBB
-const S2: B256 = B256::new(hex!(
-    "009ac901cf45a2e92e7e7bdf167dc52e3a6232be3c56cc3b05622b247c2c716a"
-));
-
-// pubkey starts with CCC
-const S3: B256 = B256::new(hex!(
-    "0d756f31a3e98f1ae46475687cbfe3085ec74b3abdd712decff3e1e5e4c697a2"
-));
-
-// pubkey starts with DDD
-const S4: B256 = B256::new(hex!(
-    "871683e86bef90f2e790e60e4245916c731f540eec4a998697c2cbab4e156868"
-));
-
-// pubkey starts with EEE
-const S5: B256 = B256::new(hex!(
-    "9c82e5ab4dda8da5391393c5eb7cb8b79ca8e03b3028be9ba1e31f2480e17dc8"
-));
 
 type SignatureType = NopSignature;
 type SignatureCollectionType = MockSignatures<SignatureType>;

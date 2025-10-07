@@ -245,12 +245,11 @@ mod test {
     };
 
     use alloy_consensus::{Transaction, TxEnvelope};
-    use alloy_primitives::{hex, B256};
     use bytes::Bytes;
     use futures::task::noop_waker_ref;
     use itertools::Itertools;
     use monad_chain_config::execution_revision::MonadExecutionRevision;
-    use monad_eth_testutil::{make_eip1559_tx, make_eip7702_tx, make_legacy_tx};
+    use monad_eth_testutil::{make_eip1559_tx, make_eip7702_tx, make_legacy_tx, S1};
 
     use crate::forward::{
         egress_max_size_bytes, EthTxPoolForwardingManager, INGRESS_CHUNK_INTERVAL_MS,
@@ -259,10 +258,6 @@ mod test {
 
     const EXECUTION_REVISION: MonadExecutionRevision = MonadExecutionRevision::LATEST;
 
-    // pubkey starts with AAA
-    const S1: B256 = B256::new(hex!(
-        "0ed2e19e3aca1a321349f295837988e9c6f95d4a6fc54cfab6befd5ee82662ad"
-    ));
     const BASE_FEE_PER_GAS: u128 = 100_000_000_000; // 100 Gwei
 
     fn setup<'a>() -> (EthTxPoolForwardingManager, Context<'a>) {

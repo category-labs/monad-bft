@@ -15,11 +15,10 @@
 
 use std::collections::BTreeMap;
 
-use alloy_primitives::{hex, B256};
 use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
 use monad_crypto::NopSignature;
 use monad_eth_block_policy::EthBlockPolicy;
-use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, recover_tx};
+use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, recover_tx, S1};
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
@@ -27,11 +26,6 @@ use monad_types::{Balance, Round, SeqNum, GENESIS_SEQ_NUM};
 
 type SignatureType = NopSignature;
 type SignatureCollectionType = MockSignatures<SignatureType>;
-
-// pubkey starts with AAA
-const S1: B256 = B256::new(hex!(
-    "0ed2e19e3aca1a321349f295837988e9c6f95d4a6fc54cfab6befd5ee82662ad"
-));
 
 const FORWARD_MIN_SEQ_NUM_DIFF: u64 = 3;
 const FORWARD_MAX_RETRIES: usize = 2;

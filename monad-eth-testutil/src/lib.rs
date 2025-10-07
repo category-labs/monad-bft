@@ -26,7 +26,9 @@ use alloy_consensus::{
 use alloy_eips::eip7702::{
     Authorization, RecoveredAuthority, RecoveredAuthorization, SignedAuthorization,
 };
-use alloy_primitives::{keccak256, Address, Bloom, FixedBytes, Log, LogData, TxKind, U256};
+use alloy_primitives::{
+    hex, keccak256, Address, Bloom, FixedBytes, Log, LogData, TxKind, B256, U256,
+};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use monad_chain_config::{revision::ChainRevision, ChainConfig, MockChainConfig};
@@ -53,6 +55,31 @@ use monad_types::{Balance, Epoch, NodeId, Round, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 
 const BASE_FEE: u64 = 100_000_000_000;
+
+// pubkey starts with AAA
+pub const S1: B256 = B256::new(hex!(
+    "0ed2e19e3aca1a321349f295837988e9c6f95d4a6fc54cfab6befd5ee82662ad"
+));
+
+// pubkey starts with BBB
+pub const S2: B256 = B256::new(hex!(
+    "009ac901cf45a2e92e7e7bdf167dc52e3a6232be3c56cc3b05622b247c2c716a"
+));
+
+// pubkey starts with CCC
+pub const S3: B256 = B256::new(hex!(
+    "0d756f31a3e98f1ae46475687cbfe3085ec74b3abdd712decff3e1e5e4c697a2"
+));
+
+// pubkey starts with DDD
+pub const S4: B256 = B256::new(hex!(
+    "871683e86bef90f2e790e60e4245916c731f540eec4a998697c2cbab4e156868"
+));
+
+// pubkey starts with EEE
+pub const S5: B256 = B256::new(hex!(
+    "9c82e5ab4dda8da5391393c5eb7cb8b79ca8e03b3028be9ba1e31f2480e17dc8"
+));
 
 #[derive(Debug)]
 pub struct ConsensusTestBlock<ST, SCT>

@@ -15,7 +15,7 @@
 
 use std::collections::BTreeMap;
 
-use alloy_primitives::{hex, FixedBytes, B256};
+use alloy_primitives::FixedBytes;
 use monad_chain_config::MockChainConfig;
 use monad_consensus_types::{block::GENESIS_TIMESTAMP, payload::RoundSignature};
 use monad_crypto::{
@@ -25,7 +25,7 @@ use monad_crypto::{
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{
     generate_block_with_txs, make_eip7702_tx, make_legacy_tx, make_signed_authorization,
-    recover_tx, secret_to_eth_address,
+    recover_tx, secret_to_eth_address, S1, S2,
 };
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner, StateBackend};
@@ -36,16 +36,6 @@ use monad_types::{Balance, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 type SignatureType = NopSignature;
 type SignatureCollectionType = MockSignatures<SignatureType>;
 type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
-
-// pubkey starts with AAA
-const S1: B256 = B256::new(hex!(
-    "0ed2e19e3aca1a321349f295837988e9c6f95d4a6fc54cfab6befd5ee82662ad"
-));
-
-// pubkey starts with BBB
-const S2: B256 = B256::new(hex!(
-    "009ac901cf45a2e92e7e7bdf167dc52e3a6232be3c56cc3b05622b247c2c716a"
-));
 
 #[test]
 fn txpool_create_proposal_lookups_bound_by_tx_limit() {

@@ -257,25 +257,18 @@ mod test {
     use std::str::FromStr;
 
     use alloy_consensus::{SignableTransaction, TxEip1559, TxLegacy};
-    use alloy_primitives::{hex, Address, Bytes, FixedBytes, PrimitiveSignature, TxKind, B256};
+    use alloy_primitives::{Address, Bytes, FixedBytes, PrimitiveSignature, TxKind, B256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use monad_chain_config::{
         execution_revision::MonadExecutionRevision, revision::MockChainRevision, ChainConfig,
         MockChainConfig,
     };
-    use monad_eth_testutil::{make_eip7702_tx, make_signed_authorization, secret_to_eth_address};
+    use monad_eth_testutil::{
+        make_eip7702_tx, make_signed_authorization, secret_to_eth_address, S1, S2,
+    };
 
     use super::*;
-
-    // pubkey starts with AAA
-    const S1: B256 = B256::new(hex!(
-        "0ed2e19e3aca1a321349f295837988e9c6f95d4a6fc54cfab6befd5ee82662ad"
-    ));
-    // pubkey starts with BBB
-    const S2: B256 = B256::new(hex!(
-        "009ac901cf45a2e92e7e7bdf167dc52e3a6232be3c56cc3b05622b247c2c716a"
-    ));
 
     const BASE_FEE: u64 = 100_000_000_000;
 

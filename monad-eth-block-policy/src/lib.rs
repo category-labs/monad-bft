@@ -1440,7 +1440,7 @@ mod test {
 
     use alloy_consensus::{SignableTransaction, TxEip1559};
     use alloy_eips::eip7702::Authorization;
-    use alloy_primitives::{hex, Address, FixedBytes, PrimitiveSignature, TxKind, B256};
+    use alloy_primitives::{Address, FixedBytes, PrimitiveSignature, TxKind, B256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
@@ -1448,7 +1448,7 @@ mod test {
     use monad_eth_testutil::{
         generate_consensus_test_block, make_eip1559_tx, make_eip1559_tx_with_value,
         make_eip7702_tx, make_eip7702_tx_with_value, make_legacy_tx, make_signed_authorization,
-        recover_tx, secret_to_eth_address, sign_authorization,
+        recover_tx, secret_to_eth_address, sign_authorization, S1, S2,
     };
     use monad_state_backend::NopStateBackend;
     use monad_testutil::signing::MockSignatures;
@@ -1471,15 +1471,6 @@ mod test {
 
     const RESERVE_BALANCE: u128 = 10_000_000_000_000_000_000; // 10 MON
     const EXEC_DELAY: SeqNum = SeqNum(3);
-
-    // pubkey starts with AAA
-    const S1: B256 = B256::new(hex!(
-        "0ed2e19e3aca1a321349f295837988e9c6f95d4a6fc54cfab6befd5ee82662ad"
-    ));
-    // pubkey starts with BBB
-    const S2: B256 = B256::new(hex!(
-        "009ac901cf45a2e92e7e7bdf167dc52e3a6232be3c56cc3b05622b247c2c716a"
-    ));
 
     const ONE_ETHER: u128 = 1_000_000_000_000_000_000;
     const HALF_ETHER: u128 = 500_000_000_000_000_000;

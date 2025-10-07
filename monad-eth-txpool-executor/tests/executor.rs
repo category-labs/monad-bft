@@ -19,14 +19,13 @@ use std::{
     time::Duration,
 };
 
-use alloy_primitives::{hex, B256};
 use bytes::Bytes;
 use futures::{task::noop_waker_ref, SinkExt, StreamExt};
 use monad_chain_config::{revision::MockChainRevision, ChainConfig, MockChainConfig};
 use monad_consensus_types::block::GENESIS_TIMESTAMP;
 use monad_crypto::NopSignature;
 use monad_eth_block_policy::EthBlockPolicy;
-use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, secret_to_eth_address};
+use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, secret_to_eth_address, S1};
 use monad_eth_txpool_executor::{
     forward::egress_max_size_bytes, EthTxPoolExecutor, EthTxPoolIpcConfig,
 };
@@ -46,11 +45,6 @@ type SignatureCollectionType = MockSignatures<SignatureType>;
 type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
 type BlockPolicyType =
     EthBlockPolicy<SignatureType, SignatureCollectionType, MockChainConfig, MockChainRevision>;
-
-// pubkey starts with AAA
-const S1: B256 = B256::new(hex!(
-    "0ed2e19e3aca1a321349f295837988e9c6f95d4a6fc54cfab6befd5ee82662ad"
-));
 
 async fn setup_txpool_executor_with_client() -> (
     TokioTaskUpdater<

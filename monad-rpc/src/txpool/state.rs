@@ -266,8 +266,7 @@ mod test {
     use std::{collections::HashSet, time::Duration};
 
     use alloy_consensus::TxEnvelope;
-    use alloy_primitives::{hex, B256};
-    use monad_eth_testutil::make_legacy_tx;
+    use monad_eth_testutil::{make_legacy_tx, S1};
     use monad_eth_txpool_types::{
         EthTxPoolDropReason, EthTxPoolEvent, EthTxPoolEventType, EthTxPoolEvictReason,
         EthTxPoolSnapshot,
@@ -281,10 +280,6 @@ mod test {
     };
 
     const BASE_FEE_PER_GAS: u64 = 100_000_000_000;
-    // pubkey starts with AAA
-    const S1: B256 = B256::new(hex!(
-        "0ed2e19e3aca1a321349f295837988e9c6f95d4a6fc54cfab6befd5ee82662ad"
-    ));
 
     fn setup() -> (
         EthTxPoolBridgeState,
