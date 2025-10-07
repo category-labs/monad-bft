@@ -173,22 +173,16 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 continue;
             }
 
-            let maybe_broadcast_mode = match (
-                parsed_message.broadcast,
-                parsed_message.secondary_broadcast,
-            ) {
-                (true, false) => Some(BroadcastMode::Primary),
-                (false, true) => Some(BroadcastMode::Secondary),
-                (false, false) => None,
-                (true, true) => {
-                    // invalid to have both primary and secondary broadcast bit set
-                    debug!(
-                        ?parsed_message.author,
-                        "Receiving invalid message with both broadcast and secondary broadcast bit set"
-                    );
-                    continue;
-                }
-            };
+            let maybe_broadcast_mode =
+                match (parsed_message.broadcast, parsed_message.secondary_broadcast) {
+                    (true, false) => Some(BroadcastMode::Primary),
+                    (false, true) => Some(BroadcastMode::Secondary),
+                    (false, false) => None,
+                    (true, true) => {
+                        // rejected by parse_message() with InvalidBroadcastBits
+                        unreachable!()
+                    }
+                };
 
             // Note: The check that parsed_message.author is valid is already
             // done in iterate_rebroadcast_peers(), but we want to drop invalid
@@ -845,6 +839,7 @@ pub enum MessageValidationError {
         max: u64,
         delta: i64,
     },
+    InvalidBroadcastBits,
 }
 
 /// - 65 bytes => Signature of sender over hash(rest of message up to merkle proof, concatenated with merkle root)
@@ -902,6 +897,10 @@ where
     let broadcast = (cursor_broadcast_tree_depth & (1 << 7)) != 0;
     let secondary_broadcast = (cursor_broadcast_tree_depth & (1 << 6)) != 0;
     let tree_depth = cursor_broadcast_tree_depth & 0b0000_1111; // bottom 4 bits
+
+    if broadcast && secondary_broadcast {
+        return Err(MessageValidationError::InvalidBroadcastBits);
+    }
 
     if !(MIN_MERKLE_TREE_DEPTH..=MAX_MERKLE_TREE_DEPTH).contains(&tree_depth) {
         return Err(MessageValidationError::InvalidTreeDepth);
