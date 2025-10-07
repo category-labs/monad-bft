@@ -192,7 +192,6 @@ pub enum CliGenMode {
         tx_type: TxType,
     },
     HighCallData,
-    HighCallDataLowGasLimit,
     SelfDestructs,
     NonDeterministicStorage,
     StorageDeletes,
@@ -218,7 +217,6 @@ impl From<CliGenMode> for GenMode {
                 GenMode::RandomPriorityFee(RandomPriorityFeeConfig { tx_type })
             }
             CliGenMode::HighCallData => GenMode::HighCallData,
-            CliGenMode::HighCallDataLowGasLimit => GenMode::HighCallDataLowGasLimit,
             CliGenMode::SelfDestructs => GenMode::SelfDestructs,
             CliGenMode::NonDeterministicStorage => GenMode::NonDeterministicStorage,
             CliGenMode::StorageDeletes => GenMode::StorageDeletes,
