@@ -497,6 +497,8 @@ where
             }
         };
 
+        let mut ret = Poll::Pending;
+
         match &mut this.role {
             Role::Publisher(publisher) => {
                 publisher.on_candidate_response(inbound_grp_msg);
@@ -525,6 +527,7 @@ where
                             .unwrap()
                             .update(PeerDiscoveryEvent::UpdatePeers { peers });
 
+                        // participated_nodes contains the validator and all full nodes in the group
                         let mut participated_nodes: BTreeSet<
                             NodeId<CertificateSignaturePubKey<ST>>,
                         > = confirm_msg.peers.clone().into_iter().collect();
@@ -532,9 +535,16 @@ where
                         this.peer_discovery_driver.lock().unwrap().update(
                             PeerDiscoveryEvent::UpdateConfirmGroup {
                                 end_round: confirm_msg.prepare.end_round,
-                                peers: participated_nodes,
+                                peers: participated_nodes.clone(),
                             },
                         );
+
+                        ret = Poll::Ready(Some(
+                            RaptorCastEvent::SecondaryRaptorcastPeersUpdate(
+                                participated_nodes.into_iter().collect(),
+                            )
+                            .into(),
+                        ));
                     } else if num_mappings > 0 {
                         warn!( ?confirm_msg, num_peers =? confirm_msg.peers.len(), num_name_recs =? confirm_msg.name_records.len(),
                             "Number of peers does not match the number \
@@ -561,6 +571,6 @@ where
             }
         }
 
-        Poll::Pending
+        ret
     }
 }

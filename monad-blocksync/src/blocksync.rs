@@ -163,7 +163,13 @@ where
 
     self_request_mode: BlockSyncSelfRequester,
 
+    /// Excludes self node id
     override_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+
+    /// Excludes self node id
+    secondary_raptorcast_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+
+    self_node_id: NodeId<CertificateSignaturePubKey<ST>>,
 
     rng: ChaCha8Rng,
 }
@@ -190,8 +196,11 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    pub fn new(override_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>) -> Self {
-        Self {
+    pub fn new(
+        override_peers_inc_self: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+        self_node_id: NodeId<CertificateSignaturePubKey<ST>>,
+    ) -> Self {
+        let mut blocksync_instance = Self {
             headers_requests: Default::default(),
             payload_requests: Default::default(),
             self_headers_requests: Default::default(),
@@ -199,17 +208,36 @@ where
             self_payload_requests_in_flight: 0,
             self_completed_headers_requests: Default::default(),
             self_request_mode: BlockSyncSelfRequester::StateSync,
-            override_peers,
+            override_peers: Default::default(),
+            secondary_raptorcast_peers: Default::default(),
+            self_node_id,
             rng: ChaCha8Rng::seed_from_u64(123456),
-        }
+        };
+        blocksync_instance.set_override_peers(override_peers_inc_self);
+
+        blocksync_instance
     }
 
     pub fn set_override_peers(
         &mut self,
-        override_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+        override_peers_inc_self: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
     ) {
-        let override_peers = override_peers.into_iter().unique().collect();
-        self.override_peers = override_peers;
+        let peers_excl_self: Vec<_> = override_peers_inc_self
+            .into_iter()
+            .filter(|peer| peer != &self.self_node_id)
+            .collect();
+        self.override_peers = peers_excl_self;
+    }
+
+    pub fn set_secondary_raptorcast_peers(
+        &mut self,
+        secondary_raptorcast_peers_inc_self: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+    ) {
+        let peers_excl_self: Vec<_> = secondary_raptorcast_peers_inc_self
+            .into_iter()
+            .filter(|peer| peer != &self.self_node_id)
+            .collect();
+        self.secondary_raptorcast_peers = peers_excl_self;
     }
 
     fn clear_self_requests(&mut self) {
@@ -441,30 +469,36 @@ where
         generate_random_validator_with_randomizer(validators, randomizer)
     }
 
+    /// Blocksync peers are selected based on the following rules:
+    /// 1. If `override_peers` is set, randomly select from one of the override peers.
+    /// 2. Otherwise if self is a full node and `secondary_raptorcast_peers` is not empty,
+    ///    randomly select from `secondary_raptorcast_peers`
+    /// 3. Otherwise, randomly select from validators based on stake weight
     fn pick_peer(
         self_node_id: &NodeId<CertificateSignaturePubKey<ST>>,
         current_epoch: Epoch,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         override_peers: &[NodeId<CertificateSignaturePubKey<ST>>],
+        secondary_raptorcast_peers: &[NodeId<CertificateSignaturePubKey<ST>>],
         rng: &mut ChaCha8Rng,
     ) -> NodeId<CertificateSignaturePubKey<ST>> {
-        if !(override_peers.is_empty()
-            || (override_peers.len() == 1 && &override_peers[0] == self_node_id))
-        {
-            // uniformly choose from override peers
-            let remote_peers: Vec<&NodeId<_>> = override_peers
-                .iter()
-                .filter(|p| p != &self_node_id)
-                .collect();
-            assert!(!remote_peers.is_empty(), "no nodes to blocksync from");
-            **remote_peers.choose(rng).expect("non empty")
+        if !override_peers.is_empty() {
+            // override peers is set
+            return *override_peers.choose(rng).expect("non empty");
+        }
+
+        let validators = val_epoch_map
+            .get_val_set(&current_epoch)
+            .expect("current epoch exists");
+        let validators = validators.get_members();
+        let self_is_validator = validators.keys().contains(self_node_id);
+
+        if !secondary_raptorcast_peers.is_empty() && !self_is_validator {
+            // secondary peers is set and self is a full node
+            *secondary_raptorcast_peers.choose(rng).expect("non empty")
         } else {
             // stake-weighted choose from validators
-            let validators = val_epoch_map
-                .get_val_set(&current_epoch)
-                .expect("current epoch exists");
-            let members = validators.get_members();
-            let members = members
+            let members = validators
                 .iter()
                 .filter(|(peer, _)| peer != &self_node_id)
                 .collect_vec();
@@ -696,6 +730,7 @@ where
                         self.current_epoch,
                         self.val_epoch_map,
                         &self.block_sync.override_peers,
+                        &self.block_sync.secondary_raptorcast_peers,
                         &mut self.block_sync.rng,
                     );
                     self_request.to = Some(to);
@@ -807,6 +842,7 @@ where
                         self.current_epoch,
                         self.val_epoch_map,
                         &self.block_sync.override_peers,
+                        &self.block_sync.secondary_raptorcast_peers,
                         &mut self.block_sync.rng,
                     );
                     self_request.to = Some(to);
@@ -1009,6 +1045,7 @@ where
                             self.current_epoch,
                             self.val_epoch_map,
                             &self.block_sync.override_peers,
+                            &self.block_sync.secondary_raptorcast_peers,
                             &mut self.block_sync.rng,
                         );
                         self_request.to = Some(to);
@@ -1045,6 +1082,7 @@ where
                             self.current_epoch,
                             self.val_epoch_map,
                             &self.block_sync.override_peers,
+                            &self.block_sync.secondary_raptorcast_peers,
                             &mut self.block_sync.rng,
                         );
                         self_request.to = Some(to);
@@ -1437,7 +1475,7 @@ mod test {
         let peer_id = NodeId::new(keys[1].pubkey());
 
         BlockSyncContext {
-            block_sync: BlockSync::new(Default::default()),
+            block_sync: BlockSync::new(Default::default(), self_node_id),
             blocktree,
             metrics: Metrics::default(),
             self_node_id,
