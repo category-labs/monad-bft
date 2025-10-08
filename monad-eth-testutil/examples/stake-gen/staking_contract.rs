@@ -20,8 +20,8 @@ const STAKING_CONTRACT_ADDRESS: Address =
     Address::new(hex!("0x0000000000000000000000000000000000001000"));
 
 pub const MON: u64 = 1_000_000_000_000_000_000;
-pub const MIN_STAKE_MON: u64 = 1_000_000;
-pub const ACTIVE_VALIDATOR_STAKE_MON: u64 = 50_000_000;
+pub const MIN_STAKE_MON: u64 = 100_000;
+pub const ACTIVE_VALIDATOR_STAKE_MON: u64 = 25_000_000;
 
 const ADD_VALIDATOR_FUNCTION_SELECTOR: FixedBytes<4> = FixedBytes::new(hex!("0xf145204c"));
 const DELEGATE_FUNCTION_SELECTOR: FixedBytes<4> = FixedBytes::new(hex!("0x84994fec"));
