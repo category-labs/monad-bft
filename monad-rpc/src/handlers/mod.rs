@@ -192,16 +192,15 @@ async fn admin_ethCallStatistics(
     _params: Value,
 ) -> Result<Box<RawValue>, JsonRpcError> {
     if app_state.enable_eth_call_statistics {
-        let available_permits = app_state.rate_limiter.available_permits();
         if let Some(tracker) = &app_state.eth_call_stats_tracker {
-            monad_admin_ethCallStatistics(
-                app_state.eth_call_executor_fibers,
-                app_state.total_permits,
-                available_permits,
-                tracker,
-            )
-            .await
-            .map(serialize_result)?
+            let executor_state = app_state
+                .eth_call_executor
+                .as_ref()
+                .map(|e| e.get_state())
+                .unwrap_or_default();
+            monad_admin_ethCallStatistics(&executor_state, tracker)
+                .await
+                .map(serialize_result)?
         } else {
             Err(JsonRpcError::internal_error(
                 "stats tracking not initialized".into(),
@@ -300,11 +299,6 @@ async fn debug_traceCall(
     let Some(ref eth_call_executor) = app_state.eth_call_executor else {
         return Err(JsonRpcError::method_not_supported());
     };
-    // acquire the concurrent requests permit
-    let _permit = &app_state
-        .rate_limiter
-        .try_acquire()
-        .map_err(|_| JsonRpcError::internal_error("eth_call concurrent requests limit".into()))?;
 
     let params = serde_json::from_value(params).invalid_params()?;
     monad_debug_traceCall(
@@ -342,19 +336,6 @@ async fn eth_call(
         return Err(JsonRpcError::method_not_supported());
     };
 
-    // acquire the concurrent requests permit
-    let _permit = match app_state.rate_limiter.try_acquire() {
-        Ok(permit) => permit,
-        Err(_) => {
-            if let Some(tracker) = &app_state.eth_call_stats_tracker {
-                tracker.record_queue_rejection().await;
-            }
-            return Err(JsonRpcError::internal_error(
-                "eth_call concurrent requests limit".into(),
-            ));
-        }
-    };
-
     let params = serde_json::from_value(params).invalid_params()?;
 
     if let Some(tracker) = &app_state.eth_call_stats_tracker {
@@ -371,8 +352,9 @@ async fn eth_call(
     .await;
 
     if let Some(tracker) = &app_state.eth_call_stats_tracker {
-        let is_error = result.is_err();
-        tracker.record_request_complete(&request_id, is_error).await;
+        tracker
+            .record_request_complete(&request_id, result.is_err())
+            .await;
     }
 
     result.map(serialize_result)?
@@ -642,19 +624,6 @@ async fn eth_estimateGas(
         return Err(JsonRpcError::method_not_supported());
     };
 
-    // acquire the concurrent requests permit
-    let _permit = match app_state.rate_limiter.try_acquire() {
-        Ok(permit) => permit,
-        Err(_) => {
-            if let Some(tracker) = &app_state.eth_call_stats_tracker {
-                tracker.record_queue_rejection().await;
-            }
-            return Err(JsonRpcError::internal_error(
-                "eth_estimateGas concurrent requests limit".into(),
-            ));
-        }
-    };
-
     if let Some(tracker) = &app_state.eth_call_stats_tracker {
         tracker.record_request_start(&request_id).await;
     }
@@ -670,8 +639,9 @@ async fn eth_estimateGas(
     .await;
 
     if let Some(tracker) = &app_state.eth_call_stats_tracker {
-        let is_error = result.is_err();
-        tracker.record_request_complete(&request_id, is_error).await;
+        tracker
+            .record_request_complete(&request_id, result.is_err())
+            .await;
     }
 
     result.map(serialize_result)?
