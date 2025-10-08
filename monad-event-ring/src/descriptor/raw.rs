@@ -35,7 +35,7 @@ impl<'ring> RawEventDescriptor<'ring> {
         }
     }
 
-    pub(crate) fn info(&self) -> RawEventDescriptorInfo {
+    pub(super) fn info(&self) -> RawEventDescriptorInfo {
         RawEventDescriptorInfo {
             seqno: self.inner.seqno,
             event_type: self.inner.event_type,

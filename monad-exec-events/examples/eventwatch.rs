@@ -20,6 +20,7 @@ use clap::Parser;
 use lazy_static::lazy_static;
 use monad_event_ring::{
     DecodedEventRing, EventDescriptor, EventDescriptorInfo, EventNextResult, EventPayloadResult,
+    EventRingPath,
 };
 use monad_exec_events::{
     ffi::{g_monad_exec_event_metadata, DEFAULT_FILE_NAME, MONAD_EXEC_EVENT_COUNT},
@@ -126,13 +127,15 @@ enum OpenEventRing {
     Snapshot(ExecSnapshotEventRing),
 }
 
-fn try_open_event_ring(event_ring_path: PathBuf) -> Result<OpenEventRing, String> {
-    if ExecSnapshotEventRing::is_snapshot_file(&event_ring_path)? {
-        let snapshot = ExecSnapshotEventRing::new_from_zstd_path(&event_ring_path, None)?;
-        Ok(OpenEventRing::Snapshot(snapshot))
-    } else {
-        let live = ExecEventRing::new_from_path(&event_ring_path)?;
-        Ok(OpenEventRing::Live(live))
+impl OpenEventRing {
+    fn new(event_ring_path: EventRingPath) -> Result<Self, String> {
+        if event_ring_path.is_snapshot_file()? {
+            let snapshot = ExecSnapshotEventRing::new_from_zstd_path(event_ring_path, None)?;
+            Ok(OpenEventRing::Snapshot(snapshot))
+        } else {
+            let live = ExecEventRing::new(event_ring_path)?;
+            Ok(OpenEventRing::Live(live))
+        }
     }
 }
 
@@ -150,15 +153,12 @@ fn main() {
     // Most real-time programs take a path to the event ring file as a CLI
     // input parameter, but also allow it to be absent, in which case the
     // default file name is used.
-    let event_ring_path = event_ring_path.unwrap_or(PathBuf::from(DEFAULT_FILE_NAME));
+    let event_ring_path =
+        EventRingPath::resolve(event_ring_path.unwrap_or(PathBuf::from(DEFAULT_FILE_NAME)))
+            .unwrap();
 
     // Try to open the event ring file, and exit if we can't
-    let event_ring = match try_open_event_ring(event_ring_path) {
-        Ok(r) => r,
-        Err(err) => {
-            panic!("{err}");
-        }
-    };
+    let event_ring = OpenEventRing::new(event_ring_path).unwrap();
 
     let mut event_reader = match event_ring {
         OpenEventRing::Live(ref live) => {
