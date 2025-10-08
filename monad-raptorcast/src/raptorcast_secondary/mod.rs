@@ -39,7 +39,7 @@ use monad_dataplane::{udp::segment_size_for_mtu, DataplaneWriter, UnicastMsg};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, PeerEntry, RouterCommand};
 use monad_peer_discovery::{driver::PeerDiscoveryDriver, PeerDiscoveryAlgo, PeerDiscoveryEvent};
-use monad_types::{DropTimer, Epoch, NodeId};
+use monad_types::{DropTimer, Epoch, NodeId, Round};
 use publisher::Publisher;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
@@ -163,7 +163,7 @@ where
     }
 
     fn udp_build(
-        epoch: &Epoch,
+        group_id: u64,
         build_target: BuildTarget<ST>,
         outbound_message: Bytes,
         mtu: u16,
@@ -197,7 +197,7 @@ where
             segment_size,
             outbound_message,
             redundancy,
-            epoch.0,
+            group_id,
             unix_ts_ms,
             build_target,
             known_addresses,
@@ -230,7 +230,7 @@ where
             }
         };
         let udp_messages = Self::udp_build(
-            &self.curr_epoch,
+            self.curr_epoch.0,
             BuildTarget::<ST>::PointToPoint(dest_node),
             msg_bytes,
             self.mtu,
@@ -392,7 +392,11 @@ where
                     }
                 },
 
-                Self::Command::PublishToFullNodes { epoch, message } => {
+                Self::Command::PublishToFullNodes {
+                    epoch: _,
+                    round,
+                    message,
+                } => {
                     let _timer = DropTimer::start(Duration::from_millis(20), |elapsed| {
                         warn!(?elapsed, "long time to publish message")
                     });
@@ -444,7 +448,7 @@ where
                     // Split outbound_message into raptorcast chunks that we can
                     // send to full nodes.
                     let rc_chunks: UnicastMsg = Self::udp_build(
-                        &epoch,
+                        round.0,
                         build_target,
                         outbound_message,
                         self.mtu,

@@ -555,7 +555,11 @@ where
                         }
                     };
                 }
-                RouterCommand::PublishToFullNodes { epoch, message } => {
+                RouterCommand::PublishToFullNodes {
+                    epoch,
+                    round,
+                    message,
+                } => {
                     let full_nodes_view = self.dedicated_full_nodes.view();
                     if self.is_dynamic_fullnode {
                         debug!("self is dynamic full node, skipping publishing to full nodes");

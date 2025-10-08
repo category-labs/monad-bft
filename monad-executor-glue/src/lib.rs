@@ -60,8 +60,12 @@ pub enum RouterCommand<ST: CertificateSignatureRecoverable, OM> {
         target: RouterTarget<CertificateSignaturePubKey<ST>>,
         message: OM,
     },
+    // Primary publishing embeds epoch in chunk header. Secondary publishing
+    // embeds round in chunk header, as rebroadcasting periods are defined in
+    // rounds
     PublishToFullNodes {
-        epoch: Epoch, // Epoch gets embedded into the raptorcast message
+        epoch: Epoch,
+        round: Round,
         message: OM,
     },
     AddEpochValidatorSet {
@@ -87,9 +91,14 @@ impl<ST: CertificateSignatureRecoverable, OM> Debug for RouterCommand<ST, OM> {
             Self::Publish { target, message: _ } => {
                 f.debug_struct("Publish").field("target", target).finish()
             }
-            Self::PublishToFullNodes { epoch, message: _ } => f
+            Self::PublishToFullNodes {
+                epoch,
+                round,
+                message: _,
+            } => f
                 .debug_struct("PublishToFullNodes")
                 .field("epoch", epoch)
+                .field("round", round)
                 .finish(),
             Self::AddEpochValidatorSet {
                 epoch,
