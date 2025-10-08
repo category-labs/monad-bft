@@ -148,11 +148,29 @@ fn main() {
     // The event ring shared memory data structure typically lives inside
     // of a regular file; any process that wants shared access to it, first
     // locates it via the filesystem, then maps a shared view of it into the
-    // process' virtual memory map using the mmap(2) system call
+    // process' virtual memory map using the mmap(2) system call.
     //
     // Most real-time programs take a path to the event ring file as a CLI
     // input parameter, but also allow it to be absent, in which case the
     // default file name is used.
+    //
+    // Event ring files can be located anywhere, but there is a performance
+    // benefit to placing them on a hugetlbfs in-memory filesystem; the function
+    // EventRingPath::resolve will turn "pure" file names (i.e., those with no
+    // '/' character in the path) into a full path located in a special
+    // directory on a hugetlbfs filesystem, e.g., `my-ring` will be translated
+    // into `<hugetlbfs-root>/my-ring`. Any path that already contains a path
+    // separator character, e.g., `./my-ring`, will be not be modified.
+    //
+    // An "EventRingPath" is just a regular filesystem path that has gone
+    // through the automatic path expansion rules for "pure" filenames, so
+    // that the application writers do not need to understand all the logic
+    // for how the hugetlbfs path location works. The functions that open
+    // event rings take an "EventRingPath" instead of a PathBuf to ensure
+    // that these expansions rules have been followed. To see all the details,
+    // check the SDK documentation section:
+    //
+    //   Execution Events > Advanced Topics > Location of event ring files
     let event_ring_path =
         EventRingPath::resolve(event_ring_path.unwrap_or(PathBuf::from(DEFAULT_FILE_NAME)))
             .unwrap();
