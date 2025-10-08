@@ -54,6 +54,11 @@ fn get_last_ring_library_error(r: libc::c_int) -> Result<(), String> {
     Err(String::from(err_str))
 }
 
+#[inline]
+fn error_name_to_cstring(str_ref: impl AsRef<str>) -> Result<CString, String> {
+    CString::new(str_ref.as_ref()).map_err(|nul_err| nul_err.to_string())
+}
+
 pub(crate) fn monad_event_ring_mmap(
     mmap_prot: libc::c_int,
     mmap_extra_flags: libc::c_int,
@@ -63,8 +68,7 @@ pub(crate) fn monad_event_ring_mmap(
 ) -> Result<monad_event_ring, String> {
     let mut c_event_ring: monad_event_ring = unsafe { std::mem::zeroed() };
 
-    let error_name_cstr = CString::new(error_name)
-        .map_err(|err| format!("error_name contained embedded nul: {err}"))?;
+    let error_name_cstring = error_name_to_cstring(error_name)?;
 
     let r = unsafe {
         self::bindings::monad_event_ring_mmap(
@@ -73,7 +77,7 @@ pub(crate) fn monad_event_ring_mmap(
             mmap_extra_flags,
             ring_fd,
             ring_offset,
-            error_name_cstr.as_ptr(),
+            error_name_cstring.as_ptr(),
         )
     };
 
@@ -157,89 +161,65 @@ pub(crate) fn monad_event_ring_payload_check(
     unsafe { self::bindings::monad_event_ring_payload_check(c_event_ring, c_event_descriptor) }
 }
 
-pub(crate) fn monad_check_path_supports_map_hugetlb(
-    path: impl AsRef<Path>,
-) -> Result<bool, String> {
-    let path_bytes = path.as_ref().to_str().ok_or(format!(
-        "cannot extract path bytes from `{:?}`",
-        path.as_ref()
-    ))?;
-
-    let c_path = CString::new(path_bytes).map_err(|e| e.to_string())?;
-
-    let mut supported = false;
-
-    let r = unsafe {
-        self::bindings::monad_check_path_supports_map_hugetlb(c_path.as_ptr(), &mut supported)
-    };
-
-    get_last_ring_library_error(r).map(|()| supported)
+pub(crate) fn monad_event_resolve_ring_path(input: impl AsRef<Path>) -> Result<PathBuf, String> {
+    monad_event_resolve_ring_path_with_basepath(Option::<PathBuf>::None, input)
 }
 
-pub(crate) fn monad_event_open_hugetlbfs_dir_fd() -> Result<PathBuf, String> {
-    let mut ring_dir_buf = vec![0u8; libc::PATH_MAX as usize];
-    let r = unsafe {
-        self::bindings::monad_event_open_hugetlbfs_dir_fd(
-            std::ptr::null_mut(),
-            ring_dir_buf.as_mut_ptr() as *mut libc::c_char,
-            ring_dir_buf.len(),
-        )
-    };
-    get_last_ring_library_error(r)?;
-    let ring_dir_cstr = match CStr::from_bytes_until_nul(ring_dir_buf.as_slice()) {
-        Ok(cstr) => cstr,
-        Err(err) => return Err(err.to_string()),
-    };
-    let ring_dir_str = ring_dir_cstr
-        .to_str()
-        .map_err(|utf_err| utf_err.to_string())?;
-    Ok(PathBuf::from(ring_dir_str))
-}
-
-pub(crate) fn monad_event_resolve_ring_file(
+pub(crate) fn monad_event_resolve_ring_path_with_basepath(
     default_path: Option<impl AsRef<Path>>,
     input: impl AsRef<Path>,
 ) -> Result<PathBuf, String> {
-    let opt_default_path_cstring = match default_path {
-        Some(ref_path) => {
-            let p = ref_path.as_ref().to_str().ok_or(format!(
-                "cannot extract path bytes from `{:?}`",
-                input.as_ref()
-            ))?;
-            let p_cstr = CString::new(p).map_err(|e| e.to_string())?;
-            Some(p_cstr)
-        }
+    let default_path = match &default_path {
+        Some(default_path) => Some(default_path.as_ref().to_str().ok_or(format!(
+            "cannot extract path bytes from `{:?}`",
+            input.as_ref()
+        ))?),
         None => None,
     };
-    let input_bytes = input.as_ref().to_str().ok_or(format!(
+
+    let input = input.as_ref().to_str().ok_or(format!(
         "cannot extract path bytes from `{:?}`",
         input.as_ref()
     ))?;
-    let c_input = CString::new(input_bytes).map_err(|e| e.to_string())?;
 
-    let mut pathbuf = vec![0u8; libc::PATH_MAX as usize];
+    _monad_event_resolve_ring_path(default_path, input)
+}
+
+#[inline]
+fn _monad_event_resolve_ring_path(
+    default_path: Option<&str>,
+    input: &str,
+) -> Result<PathBuf, String> {
+    let opt_default_path_cstring = match default_path {
+        Some(default_path) => Some(CString::new(default_path).map_err(|e| e.to_string())?),
+        None => None,
+    };
+
+    let input_cstring = CString::new(input).map_err(|e| e.to_string())?;
+
+    let mut pathbuf_cstr_bytes = vec![0u8; libc::PATH_MAX as usize];
+
     let r = unsafe {
         self::bindings::monad_event_resolve_ring_file(
             opt_default_path_cstring.map_or(std::ptr::null(), |c| c.as_ptr()),
-            c_input.as_ptr(),
-            pathbuf.as_mut_ptr() as *mut libc::c_char,
-            pathbuf.len(),
+            input_cstring.as_ptr(),
+            pathbuf_cstr_bytes.as_mut_ptr() as *mut libc::c_char,
+            pathbuf_cstr_bytes.len(),
         )
     };
+
     get_last_ring_library_error(r)?;
-    let pathbuf_cstr = match CStr::from_bytes_until_nul(pathbuf.as_slice()) {
+
+    let pathbuf_cstr = match CStr::from_bytes_until_nul(pathbuf_cstr_bytes.as_slice()) {
         Ok(cstr) => cstr,
         Err(err) => return Err(err.to_string()),
     };
+
     let pathbuf_str = pathbuf_cstr
         .to_str()
         .map_err(|utf_err| utf_err.to_string())?;
-    Ok(PathBuf::from(pathbuf_str))
-}
 
-fn error_name_to_cstring(str_ref: impl AsRef<str>) -> Result<CString, String> {
-    let str_ref = str_ref.as_ref();
-    CString::new(str_ref).map_err(|nul_err| nul_err.to_string())
+    Ok(PathBuf::from(pathbuf_str))
 }
 
 pub(crate) fn monad_event_is_snapshot_file(
@@ -247,8 +227,9 @@ pub(crate) fn monad_event_is_snapshot_file(
     error_name: impl AsRef<str>,
 ) -> Result<bool, String> {
     let mut is_snapshot = false;
-    let error_name_cstring =
-        CString::new(error_name.as_ref()).map_err(|nul_err| nul_err.to_string())?;
+
+    let error_name_cstring = error_name_to_cstring(error_name)?;
+
     let r = unsafe {
         self::bindings::monad_event_is_snapshot_file(
             file.as_raw_fd(),
@@ -256,8 +237,8 @@ pub(crate) fn monad_event_is_snapshot_file(
             &mut is_snapshot,
         )
     };
-    get_last_ring_library_error(r)?;
-    Ok(is_snapshot)
+
+    get_last_ring_library_error(r).map(|()| is_snapshot)
 }
 
 pub(crate) fn monad_event_decompress_snapshot_fd(
@@ -265,23 +246,20 @@ pub(crate) fn monad_event_decompress_snapshot_fd(
     max_size: Option<usize>,
     error_name: impl AsRef<str>,
 ) -> Result<Option<std::fs::File>, String> {
-    let error_name_cstring =
-        CString::new(error_name.as_ref()).map_err(|nul_err| nul_err.to_string())?;
-    let mut fd_out: libc::c_int = -1;
+    let error_name_cstring = error_name_to_cstring(error_name)?;
+
+    let mut fd: libc::c_int = -1;
+
     let r = unsafe {
         self::bindings::monad_event_decompress_snapshot_fd(
             file.as_raw_fd(),
-            max_size.unwrap_or(0),
+            max_size.unwrap_or_default(),
             error_name_cstring.as_ptr(),
-            &mut fd_out,
+            &mut fd,
         )
     };
-    get_last_ring_library_error(r)?;
-    if fd_out == -1 {
-        Ok(None)
-    } else {
-        Ok(Some(unsafe { std::fs::File::from_raw_fd(fd_out) }))
-    }
+
+    handle_error_and_produce_file(fd, r)
 }
 
 pub(crate) fn monad_event_decompress_snapshot_mem(
@@ -289,9 +267,10 @@ pub(crate) fn monad_event_decompress_snapshot_mem(
     max_size: Option<usize>,
     error_name: impl AsRef<str>,
 ) -> Result<Option<std::fs::File>, String> {
-    let error_name_cstring =
-        CString::new(error_name.as_ref()).map_err(|nul_err| nul_err.to_string())?;
+    let error_name_cstring = error_name_to_cstring(error_name)?;
+
     let mut fd: libc::c_int = -1;
+
     let r = unsafe {
         self::bindings::monad_event_decompress_snapshot_mem(
             bytes.as_ptr() as *const ::std::os::raw::c_void,
@@ -301,11 +280,21 @@ pub(crate) fn monad_event_decompress_snapshot_mem(
             &mut fd,
         )
     };
+
+    handle_error_and_produce_file(fd, r)
+}
+
+fn handle_error_and_produce_file(
+    fd: libc::c_int,
+    r: libc::c_int,
+) -> Result<Option<std::fs::File>, String> {
     get_last_ring_library_error(r)?;
+
     if fd == -1 {
-        Ok(None)
-    } else {
-        let file = unsafe { std::fs::File::from_raw_fd(fd) };
-        Ok(Some(file))
+        return Ok(None);
     }
+
+    assert!(fd >= 0);
+
+    Ok(Some(unsafe { std::fs::File::from_raw_fd(fd) }))
 }

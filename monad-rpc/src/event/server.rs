@@ -290,10 +290,11 @@ mod test {
     #[tokio::test]
     async fn testing_server() {
         let snapshot_event_ring = SnapshotEventRing::new_from_zstd_bytes(
+            "TEST",
             include_bytes!(
                 "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/snapshot.zst"
             ),
-            "TEST",
+            None,
         )
         .unwrap();
 
@@ -317,10 +318,11 @@ mod test {
     #[tokio::test]
     async fn json() {
         let snapshot_event_ring = SnapshotEventRing::new_from_zstd_bytes(
+            "TEST",
             include_bytes!(
                 "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/snapshot.zst"
             ),
-            "TEST",
+            None,
         )
         .unwrap();
 

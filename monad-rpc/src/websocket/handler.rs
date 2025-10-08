@@ -668,7 +668,8 @@ mod tests {
         );
 
         let snapshot =
-            SnapshotEventRing::new_from_zstd_bytes(SNAPSHOT_ZSTD_BYTES, SNAPSHOT_NAME).unwrap();
+            SnapshotEventRing::new_from_zstd_bytes(SNAPSHOT_NAME, SNAPSHOT_ZSTD_BYTES, None)
+                .unwrap();
 
         let ws_server_handle =
             EventServer::start_for_testing_with_delay(snapshot, Duration::from_secs(1));

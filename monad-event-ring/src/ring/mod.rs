@@ -13,11 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{fs::File, marker::PhantomData, os::fd::AsRawFd, path::Path};
+use std::marker::PhantomData;
 
 pub(crate) use self::raw::RawEventRing;
 pub use self::snapshot::SnapshotEventRing;
-use crate::{EventDecoder, EventReader, RawEventReader};
+use crate::{EventDecoder, EventReader, EventRingPath, RawEventReader};
 
 mod raw;
 mod snapshot;
@@ -57,27 +57,23 @@ where
     D: EventDecoder,
 {
     /// Synchronously creates a new event ring from the provided path.
-    pub fn new_from_path(path: impl AsRef<Path>) -> Result<Self, String> {
-        let resolved_path = crate::ffi::monad_event_resolve_ring_file(None::<&str>, path)?;
-        let ring_file = File::open(&resolved_path).map_err(|e| {
-            format!(
-                "could not open event ring file `{}`: {}",
-                resolved_path.display(),
-                e.to_string()
-            )
-        })?;
-        let mmap_prot = libc::PROT_READ;
+    pub fn new(path: impl AsRef<EventRingPath>) -> Result<Self, String> {
+        use std::os::fd::AsRawFd;
+
+        let file = path.as_ref().open().map_err(|err| err.to_string())?;
+
         let raw = RawEventRing::mmap_from_fd(
-            mmap_prot,
+            libc::PROT_READ,
             libc::MAP_POPULATE,
-            ring_file.as_raw_fd(),
+            file.as_raw_fd(),
             0,
-            resolved_path.to_str().unwrap(),
+            &path.as_ref().as_error_name(),
         )?;
-        Self::new(raw)
+
+        Self::new_from_raw(raw)
     }
 
-    pub(crate) fn new(raw: RawEventRing) -> Result<Self, String> {
+    pub(crate) fn new_from_raw(raw: RawEventRing) -> Result<Self, String> {
         raw.check_type::<D>()?;
 
         Ok(Self {

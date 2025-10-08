@@ -20,7 +20,7 @@ use agent::AgentBuilder;
 use clap::Parser;
 use monad_archive::archive_reader::ArchiveReader;
 use monad_ethcall::EthCallExecutor;
-use monad_event_ring::EventRing;
+use monad_event_ring::{EventRing, EventRingPath};
 use monad_node_config::MonadNodeConfig;
 use monad_pprof::start_pprof_server;
 use monad_rpc::{
@@ -305,8 +305,10 @@ async fn main() -> std::io::Result<()> {
 
     // Configure event ring, websocket server and event cache.
     let (events_client, events_for_cache) = if let Some(exec_event_path) = args.exec_event_path {
-        let event_ring =
-            EventRing::new_from_path(exec_event_path).expect("Execution event ring is ready");
+        let event_ring_path = EventRingPath::resolve(exec_event_path)
+            .expect("Execution event ring path is resolvable");
+
+        let event_ring = EventRing::new(event_ring_path).expect("Execution event ring is ready");
 
         let events_client = EventServer::start(event_ring);
 
