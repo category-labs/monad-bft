@@ -244,7 +244,7 @@ impl Decodable for CallFrame {
     }
 }
 
-#[derive(Deserialize, Debug, Default, schemars::JsonSchema, Clone)]
+#[derive(Deserialize, Debug, Default, schemars::JsonSchema, Clone, Copy)]
 #[serde(rename_all = "camelCase")]
 pub struct TracerObject {
     #[serde(default)]
@@ -253,7 +253,7 @@ pub struct TracerObject {
     pub config: TracerConfig,
 }
 
-#[derive(Deserialize, Debug, Default, schemars::JsonSchema, Clone, PartialEq, Eq)]
+#[derive(Deserialize, Debug, Default, schemars::JsonSchema, Clone, Copy, PartialEq, Eq)]
 pub enum Tracer {
     #[default]
     #[serde(rename = "callTracer")]
@@ -262,7 +262,7 @@ pub enum Tracer {
     PreStateTracer,
 }
 
-#[derive(Clone, Debug, Deserialize, Default, schemars::JsonSchema)]
+#[derive(Clone, Copy, Debug, Deserialize, Default, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TracerConfig {
     /// onlyTopCall for callTracer, ignored for prestateTracer
@@ -278,11 +278,11 @@ pub struct TracerConfig {
     pub with_log: bool,
 }
 
-#[derive(Deserialize, Debug, schemars::JsonSchema)]
+#[derive(Clone, Copy, Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadDebugTraceTransactionParams {
-    tx_hash: EthHash,
+    pub tx_hash: EthHash,
     #[serde(default)]
-    tracer: TracerObject,
+    pub tracer: TracerObject,
 }
 
 #[derive(Serialize, Debug, schemars::JsonSchema)]
@@ -394,9 +394,9 @@ pub enum CallKind {
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadDebugTraceBlockByHashParams {
-    block_hash: EthHash,
+    pub block_hash: EthHash,
     #[serde(default)]
-    tracer: TracerObject,
+    pub tracer: TracerObject,
 }
 
 #[rpc(method = "debug_traceBlockByHash")]
@@ -461,11 +461,11 @@ pub async fn monad_debug_traceBlockByHash<T: Triedb>(
     Err(JsonRpcError::internal_error("block not found".into()))
 }
 
-#[derive(Deserialize, Debug, schemars::JsonSchema)]
+#[derive(Clone, Copy, Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadDebugTraceBlockByNumberParams {
-    block_number: BlockTags,
+    pub block_number: BlockTags,
     #[serde(default)]
-    tracer: TracerObject,
+    pub tracer: TracerObject,
 }
 
 #[derive(Serialize, Debug, schemars::JsonSchema)]
