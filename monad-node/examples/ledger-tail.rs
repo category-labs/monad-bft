@@ -20,6 +20,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use clap::{CommandFactory, FromArgMatches, Parser};
 use futures_util::{Stream, StreamExt};
 use inotify::{Inotify, WatchMask};
 use lru::LruCache;
@@ -99,14 +100,19 @@ async fn main() {
     );
     tracing::subscriber::set_global_default(subscriber).expect("unable to set default subscriber");
 
+    let mut cmd = Cli::command();
+    let Cli {
+        forkpoint_path,
+        ledger_path,
+        node_config_path,
+        validators_path,
+    } = Cli::from_arg_matches_mut(&mut cmd.get_matches_mut()).expect("unable to parse CLI");
+
     let mut visited_blocks: CachedBlocks = LruCache::new(NonZero::new(100).unwrap());
 
-    let forkpoint_path: PathBuf = PathBuf::from("/monad/config/forkpoint");
-    let ledger_path: PathBuf = PathBuf::from("/monad/ledger");
-    let node_config: MonadNodeConfig = toml::from_str(
-        &std::fs::read_to_string("/monad/config/node.toml").expect("node.toml not found"),
-    )
-    .unwrap();
+    let node_config: MonadNodeConfig =
+        toml::from_str(&std::fs::read_to_string(&node_config_path).expect("node.toml not found"))
+            .unwrap();
     let addresses: HashMap<_, _> = node_config
         .bootstrap
         .peers
@@ -137,7 +143,7 @@ async fn main() {
                 .entry(tc.epoch)
                 .or_insert_with(|| {
                     let validators: ValidatorsConfig<SignatureCollectionType> =
-                        ValidatorsConfig::read_from_path("/monad/config/validators.toml")
+                        ValidatorsConfig::read_from_path(&validators_path)
                             .unwrap_or_else(|err| panic!("failed to read validators.toml, or validators.toml corrupt. was this edited manually? err={:?}", err));
                     validators
                         .get_validator_set(&tc.epoch)
@@ -261,7 +267,14 @@ pub fn latest_tip_stream(
         .expect("failed to watch ledger path");
     inotify
         .watches()
-        .add(forkpoint_path, WatchMask::CLOSE_WRITE | WatchMask::MOVE)
+        .add(
+            {
+                let mut forkpoint_dir = PathBuf::from(forkpoint_path);
+                forkpoint_dir.pop();
+                forkpoint_dir
+            },
+            WatchMask::CLOSE_WRITE | WatchMask::MOVE,
+        )
         .expect("failed to watch forkpoint path");
 
     let inotify_buffer = [0; 1024];
@@ -275,8 +288,7 @@ pub fn latest_tip_stream(
         ExecutionProtocolType,
     > = FileBlockPersist::new(ledger_path.to_owned());
 
-    let mut forkpoint_path = forkpoint_path.to_owned();
-    forkpoint_path.push("forkpoint.toml");
+    let forkpoint_path = forkpoint_path.to_owned();
 
     inotify_events.filter_map(move |maybe_event| {
         let result = (|| match maybe_event {
@@ -300,4 +312,20 @@ pub fn latest_tip_stream(
         })();
         async move { result }
     })
+}
+
+#[derive(Debug, Parser)]
+#[command(about, long_about = None)]
+pub struct Cli {
+    #[arg(long, default_value = "/monad/ledger")]
+    pub ledger_path: PathBuf,
+
+    #[arg(long, default_value = "/monad/config/forkpoint/forkpoint.toml")]
+    pub forkpoint_path: PathBuf,
+
+    #[arg(long, default_value = "/monad/config/node.toml")]
+    pub node_config_path: PathBuf,
+
+    #[arg(long, default_value = "/monad/config/validators/validators.toml")]
+    pub validators_path: PathBuf,
 }
