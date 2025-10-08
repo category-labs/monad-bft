@@ -15,10 +15,10 @@
 
 use crate::{
     ffi::{
-        monad_c_address, monad_c_bytes32, monad_c_eth_txn_header, monad_c_eth_txn_receipt,
-        monad_exec_block_start,
+        monad_c_address, monad_c_bytes32, monad_c_eth_account_state, monad_c_eth_txn_header,
+        monad_c_eth_txn_receipt, monad_c_uint256_ne, monad_exec_block_start,
     },
-    ExecutedTxnAccessListEntry, ExecutedTxnCallFrame, ExecutedTxnLog,
+    ExecutedStorageAccess, ExecutedTxnAccessListEntry, ExecutedTxnCallFrame, ExecutedTxnLog,
     ExecutedTxnSignedAuthorization,
 };
 
@@ -44,4 +44,17 @@ pub(super) struct TxnOutputReassemblyState {
     pub receipt: monad_c_eth_txn_receipt,
     pub logs: Box<[Option<ExecutedTxnLog>]>,
     pub call_frames: Option<Box<[Option<ExecutedTxnCallFrame>]>>,
+    pub account_accesses: Option<Box<[Option<AccountAccessReassemblyState>]>>,
+}
+
+#[derive(Debug)]
+pub(super) struct AccountAccessReassemblyState {
+    pub address: monad_c_address,
+    pub is_balance_modified: bool,
+    pub is_nonce_modified: bool,
+    pub prestate: monad_c_eth_account_state,
+    pub modified_balance: monad_c_uint256_ne,
+    pub modified_nonce: u64,
+    pub storage_accesses: Box<[Option<ExecutedStorageAccess>]>,
+    pub transient_accesses: Box<[Option<ExecutedStorageAccess>]>,
 }

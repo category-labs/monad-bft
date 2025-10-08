@@ -266,7 +266,8 @@ impl App {
 
         let mut event_reader = event_ring.create_reader();
 
-        let mut block_builder = CommitStateBlockBuilder::new(ExecutedBlockBuilder::new(false));
+        let mut block_builder =
+            CommitStateBlockBuilder::new(ExecutedBlockBuilder::new(false, false));
 
         let tick_rate = Duration::from_millis(100);
         let mut last_tick = Instant::now();

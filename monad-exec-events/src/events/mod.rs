@@ -93,9 +93,19 @@ pub enum ExecEvent {
         return_bytes: Box<[u8]>,
     },
     TxnEnd,
-    AccountAccessListHeader(monad_exec_account_access_list_header),
-    AccountAccess(monad_exec_account_access),
-    StorageAccess(monad_exec_storage_access),
+    AccountAccessListHeader {
+        txn_index: Option<usize>,
+        account_access_list_header: monad_exec_account_access_list_header,
+    },
+    AccountAccess {
+        txn_index: Option<usize>,
+        account_access: monad_exec_account_access,
+    },
+    StorageAccess {
+        txn_index: Option<usize>,
+        account_index: u64,
+        storage_access: monad_exec_storage_access,
+    },
     EvmError(monad_exec_evm_error),
 }
 
@@ -156,9 +166,19 @@ pub enum ExecEventRef<'ring> {
         return_bytes: &'ring [u8],
     },
     TxnEnd,
-    AccountAccessListHeader(&'ring monad_exec_account_access_list_header),
-    AccountAccess(&'ring monad_exec_account_access),
-    StorageAccess(&'ring monad_exec_storage_access),
+    AccountAccessListHeader {
+        txn_index: Option<usize>,
+        account_access_list_header: &'ring monad_exec_account_access_list_header,
+    },
+    AccountAccess {
+        txn_index: Option<usize>,
+        account_access: &'ring monad_exec_account_access,
+    },
+    StorageAccess {
+        txn_index: Option<usize>,
+        account_index: u64,
+        storage_access: &'ring monad_exec_storage_access,
+    },
     EvmError(&'ring monad_exec_evm_error),
 }
 
@@ -267,11 +287,29 @@ impl<'ring> ExecEventRef<'ring> {
                 return_bytes: return_bytes.to_vec().into_boxed_slice(),
             },
             Self::TxnEnd => ExecEvent::TxnEnd,
-            Self::AccountAccessListHeader(account_access_list_header) => {
-                ExecEvent::AccountAccessListHeader(*account_access_list_header)
-            }
-            Self::AccountAccess(account_access) => ExecEvent::AccountAccess(*account_access),
-            Self::StorageAccess(storage_access) => ExecEvent::StorageAccess(*storage_access),
+            Self::AccountAccessListHeader {
+                txn_index,
+                account_access_list_header,
+            } => ExecEvent::AccountAccessListHeader {
+                txn_index,
+                account_access_list_header: *account_access_list_header,
+            },
+            Self::AccountAccess {
+                txn_index,
+                account_access,
+            } => ExecEvent::AccountAccess {
+                txn_index,
+                account_access: *account_access,
+            },
+            Self::StorageAccess {
+                txn_index,
+                account_index,
+                storage_access,
+            } => ExecEvent::StorageAccess {
+                txn_index,
+                account_index,
+                storage_access: *storage_access,
+            },
             Self::EvmError(evm_error) => ExecEvent::EvmError(*evm_error),
         }
     }
@@ -480,19 +518,26 @@ impl EventDecoder for ExecEventDecoder {
                 assert_eq!(bytes.len(), 0, "TxnEnd payload is empty");
                 ExecEventRef::TxnEnd
             }
-            ffi::MONAD_EXEC_ACCOUNT_ACCESS_LIST_HEADER => ExecEventRef::AccountAccessListHeader(
-                ref_from_bytes(bytes).expect("AccountAccessListHeader event valid"),
-            ),
-            ffi::MONAD_EXEC_ACCOUNT_ACCESS => ExecEventRef::AccountAccess(
-                ref_from_bytes(bytes).expect("AccountAccess event valid"),
-            ),
-            ffi::MONAD_EXEC_STORAGE_ACCESS => ExecEventRef::StorageAccess(
-                ref_from_bytes(bytes).expect("StorageAccess event valid"),
-            ),
+            ffi::MONAD_EXEC_ACCOUNT_ACCESS_LIST_HEADER => ExecEventRef::AccountAccessListHeader {
+                txn_index: info.flow_info.txn_idx,
+                account_access_list_header: ref_from_bytes(bytes)
+                    .expect("AccountAccessListHeader event valid"),
+            },
+            ffi::MONAD_EXEC_ACCOUNT_ACCESS => ExecEventRef::AccountAccess {
+                txn_index: info.flow_info.txn_idx,
+                account_access: ref_from_bytes(bytes).expect("AccountAccess event valid"),
+            },
+            ffi::MONAD_EXEC_STORAGE_ACCESS => ExecEventRef::StorageAccess {
+                txn_index: info.flow_info.txn_idx,
+                account_index: info.flow_info.account_idx,
+                storage_access: ref_from_bytes(bytes).expect("StorageAccess event valid"),
+            },
             ffi::MONAD_EXEC_EVM_ERROR => {
                 ExecEventRef::EvmError(ref_from_bytes(bytes).expect("EvmError event valid"))
             }
-            event_type => panic!("ExecEventDecoder encountered unknown event_type {event_type}"),
+            event_type => {
+                panic!("ExecEventDecoder encountered unknown event_type {event_type}")
+            }
         }
     }
 

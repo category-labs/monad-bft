@@ -306,7 +306,7 @@ mod test {
 
         let mut event_reader = snapshot.create_reader();
 
-        let mut block_builder = CommitStateBlockBuilder::new(ExecutedBlockBuilder::new(true));
+        let mut block_builder = CommitStateBlockBuilder::new(ExecutedBlockBuilder::new(true, true));
 
         loop {
             let event_descriptor = match event_reader.next_descriptor() {

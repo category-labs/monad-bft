@@ -19,8 +19,9 @@ use itertools::Itertools;
 #[cfg(feature = "alloy")]
 use crate::ffi;
 use crate::ffi::{
-    monad_c_address, monad_c_bytes32, monad_c_eth_txn_header, monad_c_eth_txn_receipt,
-    monad_c_uint256_ne, monad_exec_block_end, monad_exec_block_start, monad_exec_txn_call_frame,
+    monad_c_address, monad_c_bytes32, monad_c_eth_account_state, monad_c_eth_txn_header,
+    monad_c_eth_txn_receipt, monad_c_uint256_ne, monad_exec_account_access_context,
+    monad_exec_block_end, monad_exec_block_start, monad_exec_txn_call_frame,
 };
 
 /// Block reconstructed from execution events.
@@ -165,6 +166,7 @@ pub struct ExecutedTxn {
     pub receipt: monad_c_eth_txn_receipt,
     pub logs: Box<[ExecutedTxnLog]>,
     pub call_frames: Option<Box<[ExecutedTxnCallFrame]>>,
+    pub account_accesses: Option<Box<[ExecutedAccountAccess]>>,
 }
 
 #[cfg(feature = "alloy")]
@@ -350,6 +352,27 @@ impl ExecutedTxn {
     }
 }
 
+/// Access List entry reconstructed from execution events.
+#[allow(missing_docs)]
+#[derive(Clone, Debug)]
+pub struct ExecutedTxnAccessListEntry {
+    pub address: monad_c_address,
+    pub storage_keys: Box<[monad_c_bytes32]>,
+}
+
+/// Authorization reconstructed from execution events.
+#[allow(missing_docs)]
+#[derive(Clone, Debug)]
+pub struct ExecutedTxnSignedAuthorization {
+    pub chain_id: monad_c_uint256_ne,
+    pub address: monad_c_address,
+    pub nonce: u64,
+
+    pub y_parity: bool,
+    pub r: monad_c_uint256_ne,
+    pub s: monad_c_uint256_ne,
+}
+
 /// Transaction log reconstructed from execution events.
 #[allow(missing_docs)]
 #[derive(Clone, Debug)]
@@ -385,23 +408,26 @@ pub struct ExecutedTxnCallFrame {
     pub r#return: Box<[u8]>,
 }
 
-/// Access List entry reconstructed from execution events.
+/// TODO: Add docs
 #[allow(missing_docs)]
 #[derive(Clone, Debug)]
-pub struct ExecutedTxnAccessListEntry {
+pub struct ExecutedAccountAccess {
     pub address: monad_c_address,
-    pub storage_keys: Box<[monad_c_bytes32]>,
+    pub is_balance_modified: bool,
+    pub is_nonce_modified: bool,
+    pub prestate: monad_c_eth_account_state,
+    pub modified_balance: monad_c_uint256_ne,
+    pub modified_nonce: u64,
+    pub storage_accesses: Box<[ExecutedStorageAccess]>,
+    pub transient_accesses: Box<[ExecutedStorageAccess]>,
 }
 
-/// Authorization reconstructed from execution events.
+/// TODO: Add docs
 #[allow(missing_docs)]
 #[derive(Clone, Debug)]
-pub struct ExecutedTxnSignedAuthorization {
-    pub chain_id: monad_c_uint256_ne,
-    pub address: monad_c_address,
-    pub nonce: u64,
-
-    pub y_parity: bool,
-    pub r: monad_c_uint256_ne,
-    pub s: monad_c_uint256_ne,
+pub struct ExecutedStorageAccess {
+    pub modified: bool,
+    pub key: monad_c_bytes32,
+    pub start_value: monad_c_bytes32,
+    pub end_value: monad_c_bytes32,
 }
