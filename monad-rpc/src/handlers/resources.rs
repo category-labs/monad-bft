@@ -23,7 +23,6 @@ use actix_web::{
 use monad_archive::prelude::ArchiveReader;
 use monad_ethcall::EthCallExecutor;
 use monad_triedb_utils::triedb_env::TriedbEnv;
-use tokio::sync::Semaphore;
 use tracing_actix_web::RootSpanBuilder;
 
 use super::eth::call::EthCallStatsTracker;
@@ -37,7 +36,6 @@ pub struct MonadRpcResources {
     pub txpool_bridge_client: EthTxPoolBridgeClient,
     pub triedb_reader: Option<TriedbEnv>,
     pub eth_call_executor: Option<Arc<EthCallExecutor>>,
-    pub eth_call_executor_fibers: usize,
     pub eth_call_stats_tracker: Option<Arc<EthCallStatsTracker>>,
     pub archive_reader: Option<ArchiveReader>,
     pub chain_id: u64,
@@ -45,8 +43,6 @@ pub struct MonadRpcResources {
     pub batch_request_limit: u16,
     pub max_response_size: u32,
     pub allow_unprotected_txs: bool,
-    pub rate_limiter: Arc<Semaphore>,
-    pub total_permits: usize,
     pub logs_max_block_range: u64,
     pub eth_call_provider_gas_limit: u64,
     pub eth_estimate_gas_provider_gas_limit: u64,
@@ -63,15 +59,12 @@ impl MonadRpcResources {
         txpool_bridge_client: EthTxPoolBridgeClient,
         triedb_reader: Option<TriedbEnv>,
         eth_call_executor: Option<Arc<EthCallExecutor>>,
-        eth_call_executor_fibers: usize,
         archive_reader: Option<ArchiveReader>,
         chain_id: u64,
         chain_state: Option<ChainState<TriedbEnv>>,
         batch_request_limit: u16,
         max_response_size: u32,
         allow_unprotected_txs: bool,
-        rate_limiter: Arc<Semaphore>,
-        total_permits: usize,
         logs_max_block_range: u64,
         eth_call_provider_gas_limit: u64,
         eth_estimate_gas_provider_gas_limit: u64,
@@ -86,7 +79,6 @@ impl MonadRpcResources {
             txpool_bridge_client,
             triedb_reader,
             eth_call_executor,
-            eth_call_executor_fibers,
             eth_call_stats_tracker: if enable_eth_call_statistics {
                 Some(Arc::new(EthCallStatsTracker::default()))
             } else {
@@ -98,8 +90,6 @@ impl MonadRpcResources {
             batch_request_limit,
             max_response_size,
             allow_unprotected_txs,
-            rate_limiter,
-            total_permits,
             logs_max_block_range,
             eth_call_provider_gas_limit,
             eth_estimate_gas_provider_gas_limit,

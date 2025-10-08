@@ -39,7 +39,6 @@ use monad_rpc::{
 use monad_tracing_timing::TimingsLayer;
 use monad_triedb_utils::triedb_env::TriedbEnv;
 use opentelemetry::metrics::MeterProvider;
-use tokio::sync::Semaphore;
 use tracing::{debug, error, info, warn};
 use tracing_actix_web::TracingLogger;
 use tracing_manytrace::{ManytraceLayer, TracingExtension};
@@ -122,11 +121,6 @@ async fn main() -> std::io::Result<()> {
             }
         });
     }
-
-    // initialize concurrent requests limiter
-    let concurrent_requests_limiter = Arc::new(Semaphore::new(
-        args.eth_call_max_concurrent_requests as usize,
-    ));
 
     MONAD_RPC_VERSION.map(|v| info!("starting monad-rpc with version {}", v));
 
@@ -343,15 +337,12 @@ async fn main() -> std::io::Result<()> {
         txpool_bridge_client,
         triedb_env,
         eth_call_executor,
-        args.eth_call_executor_fibers as usize,
         archive_reader,
         node_config.chain_id,
         chain_state,
         args.batch_request_limit,
         args.max_response_size,
         args.allow_unprotected_txs,
-        concurrent_requests_limiter,
-        args.eth_call_max_concurrent_requests as usize,
         args.eth_get_logs_max_block_range,
         args.eth_call_provider_gas_limit,
         args.eth_estimate_gas_provider_gas_limit,
@@ -472,8 +463,6 @@ mod tests {
             batch_request_limit: 5,
             max_response_size: 25_000_000,
             allow_unprotected_txs: false,
-            rate_limiter: Arc::new(Semaphore::new(1000)),
-            total_permits: 1000,
             logs_max_block_range: 1000,
             eth_call_provider_gas_limit: u64::MAX,
             eth_estimate_gas_provider_gas_limit: u64::MAX,
