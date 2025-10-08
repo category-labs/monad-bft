@@ -35,9 +35,7 @@ pub(crate) enum UdpMessageType {
     Direct,
 }
 
-// When running in docker with vpnkit, the maximum safe MTU is 1480, as per:
-// https://github.com/moby/vpnkit/tree/v0.5.0/src/hostnet/slirp.ml#L17-L18
-pub const DEFAULT_MTU: u16 = 1480;
+pub const DEFAULT_MTU: u16 = ETHERNET_MTU;
 
 const IPV4_HDR_SIZE: u16 = 20;
 const UDP_HDR_SIZE: u16 = 8;
