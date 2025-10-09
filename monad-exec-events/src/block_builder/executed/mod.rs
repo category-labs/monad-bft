@@ -20,6 +20,7 @@ use state::AccountAccessReassemblyState;
 use self::state::{BlockReassemblyState, TxnOutputReassemblyState, TxnReassemblyState};
 use super::{BlockBuilderError, BlockBuilderResult, ReassemblyError};
 use crate::{
+    block_builder::executed::state::BlockAccountAccessesReassemblyState,
     ffi::{
         self, monad_c_access_list_entry, monad_c_auth_list_entry, monad_c_bytes32,
         monad_exec_account_access, monad_exec_account_access_list_header,
@@ -27,8 +28,8 @@ use crate::{
         monad_exec_txn_auth_list_entry, monad_exec_txn_evm_output, monad_exec_txn_header_start,
     },
     ExecEvent, ExecEventDecoder, ExecEventRef, ExecutedAccountAccess, ExecutedBlock,
-    ExecutedStorageAccess, ExecutedTxn, ExecutedTxnAccessListEntry, ExecutedTxnCallFrame,
-    ExecutedTxnLog, ExecutedTxnSignedAuthorization,
+    ExecutedBlockAccountAccesses, ExecutedStorageAccess, ExecutedTxn, ExecutedTxnAccessListEntry,
+    ExecutedTxnCallFrame, ExecutedTxnLog, ExecutedTxnSignedAuthorization,
 };
 
 mod state;
@@ -162,6 +163,12 @@ impl ExecutedBlockBuilder {
                 self.state = Some(BlockReassemblyState {
                     start: block_header,
                     txns: txns.into_boxed_slice(),
+                    account_accesses: self.include_accesses.then(|| {
+                        BlockAccountAccessesReassemblyState {
+                            prologue: None,
+                            epilogue: None,
+                        }
+                    }),
                 });
 
                 None
@@ -177,7 +184,59 @@ impl ExecutedBlockBuilder {
                 let BlockReassemblyState {
                     start: header,
                     txns,
+                    account_accesses,
                 } = self.state.take()?;
+
+                let build_account_accesses = |account_accesses: Box<
+                    [Option<AccountAccessReassemblyState>],
+                >| {
+                    account_accesses
+                        .into_vec()
+                        .into_iter()
+                        .map(|account_access| {
+                            let AccountAccessReassemblyState {
+                                address,
+                                is_balance_modified,
+                                is_nonce_modified,
+                                prestate,
+                                modified_balance,
+                                modified_nonce,
+                                storage_accesses,
+                                transient_accesses,
+                            } = account_access
+                                .expect("ExecutedBlockBuilder populated account_access");
+
+                            ExecutedAccountAccess {
+                                address,
+                                is_balance_modified,
+                                is_nonce_modified,
+                                prestate,
+                                modified_balance,
+                                modified_nonce,
+                                storage_accesses: storage_accesses
+                                    .into_vec()
+                                    .into_iter()
+                                    .map(|storage_access| {
+                                        storage_access
+                                            .expect("ExecutedBlockBuilder populated storage_access")
+                                    })
+                                    .collect_vec()
+                                    .into_boxed_slice(),
+                                transient_accesses: transient_accesses
+                                    .into_vec()
+                                    .into_iter()
+                                    .map(|storage_access| {
+                                        storage_access.expect(
+                                            "ExecutedBlockBuilder populated transient_accesses",
+                                        )
+                                    })
+                                    .collect_vec()
+                                    .into_boxed_slice(),
+                            }
+                        })
+                        .collect_vec()
+                        .into_boxed_slice()
+                };
 
                 Some(Ok(ExecutedBlock {
                     start: header,
@@ -231,42 +290,23 @@ impl ExecutedBlockBuilder {
                                             .collect_vec()
                                             .into_boxed_slice()
                                     }),
-                                    account_accesses: account_accesses.map(|account_accesses| {
-                                        account_accesses
-                                            .into_vec()
-                                            .into_iter()
-                                            .map(|account_access| {
-                                                let AccountAccessReassemblyState {
-                                                    address,
-                                                    is_balance_modified,
-                                                    is_nonce_modified,
-                                                    prestate,
-                                                    modified_balance,
-                                                    modified_nonce,
-                                                    storage_accesses,
-                                                    transient_accesses,
-                                                } = account_access.expect(
-                                                    "ExecutedBlockBuilder populated account_access",
-                                                );
-
-                                                ExecutedAccountAccess {
-                                                    address,
-                                                    is_balance_modified,
-                                                    is_nonce_modified,
-                                                    prestate,
-                                                    modified_balance,
-                                                    modified_nonce,
-                                                    storage_accesses: storage_accesses.into_vec().into_iter().map(|storage_access| storage_access.expect("ExecutedBlockBuilder populated storage_access")).collect_vec().into_boxed_slice(),
-                                                    transient_accesses: transient_accesses.into_vec().into_iter().map(|storage_access| storage_access.expect("ExecutedBlockBuilder populated transient_accesses")).collect_vec().into_boxed_slice(),
-                                                }
-                                            })
-                                            .collect_vec()
-                                            .into_boxed_slice()
-                                    }),
+                                    account_accesses: account_accesses.map(build_account_accesses),
                                 }
                             },
                         )
                         .collect(),
+                    account_accesses: account_accesses.map(
+                        |BlockAccountAccessesReassemblyState { prologue, epilogue }| {
+                            ExecutedBlockAccountAccesses {
+                                prologue: build_account_accesses(
+                                    prologue.expect("ExecutedBlockBuilder populated prologue"),
+                                ),
+                                epilogue: build_account_accesses(
+                                    epilogue.expect("ExecutedBlockBuilder populated epilogue"),
+                                ),
+                            }
+                        },
+                    ),
                 }))
             }
             ExecEvent::TxnHeaderStart {
@@ -525,9 +565,13 @@ impl ExecutedBlockBuilder {
             } => {
                 let state = self.state.as_mut()?;
 
-                match access_context {
+                let account_accesses = match access_context {
                     ffi::MONAD_ACCT_ACCESS_BLOCK_PROLOGUE => {
                         assert!(txn_index.is_none());
+
+                        let account_accesses = state.account_accesses.as_mut().expect("ExecutedBlockBuilder AccountAccessListHeader account_accesses set to Some");
+
+                        &mut account_accesses.prologue
                     }
                     ffi::MONAD_ACCT_ACCESS_TRANSACTION => {
                         let txn_index = txn_index.expect(
@@ -547,22 +591,28 @@ impl ExecutedBlockBuilder {
                             "ExecutedBlockBuilder AccountAccessListHeader output populated from preceding TxnEvmOutput",
                         );
 
-                        assert!(txn_output.account_accesses.is_none());
-
-                        txn_output.account_accesses = Some(
-                            (0..entry_count as usize)
-                                .map(|_| None)
-                                .collect_vec()
-                                .into_boxed_slice(),
-                        );
+                        &mut txn_output.account_accesses
                     }
                     ffi::MONAD_ACCT_ACCESS_BLOCK_EPILOGUE => {
                         assert!(txn_index.is_none());
+
+                        let account_accesses = state.account_accesses.as_mut().expect("ExecutedBlockBuilder AccountAccessListHeader account_accesses set to Some");
+
+                        &mut account_accesses.epilogue
                     }
                     access_context => {
                         panic!("ExecutedBlockBuilder encountered unknown access_context {access_context}")
                     }
-                }
+                };
+
+                assert!(account_accesses.is_none());
+
+                *account_accesses = Some(
+                    (0..entry_count as usize)
+                        .map(|_| None)
+                        .collect_vec()
+                        .into_boxed_slice(),
+                );
 
                 None
             }
@@ -584,9 +634,15 @@ impl ExecutedBlockBuilder {
             } => {
                 let state = self.state.as_mut()?;
 
-                match access_context {
+                let account_accesses = match access_context {
                     ffi::MONAD_ACCT_ACCESS_BLOCK_PROLOGUE => {
                         assert!(txn_index.is_none());
+
+                        let account_accesses = state.account_accesses.as_mut().expect(
+                            "ExecutedBlockBuilder AccountAccess account_accesses set to Some",
+                        );
+
+                        account_accesses.prologue.as_mut().expect("ExecutedBlockBuilder AccountAccess account_accesses prologue set to Some")
                     }
                     ffi::MONAD_ACCT_ACCESS_TRANSACTION => {
                         let txn_index = txn_index
@@ -605,41 +661,45 @@ impl ExecutedBlockBuilder {
                             "ExecutedBlockBuilder AccountAccess output populated from preceding TxnEvmOutput",
                         );
 
-                        let txn_account_accesses = txn_output.account_accesses.as_mut().expect(
+                        txn_output.account_accesses.as_mut().expect(
                             "ExecutedBlockBuilder AccountAccess output account_accesses set to Some",
-                        );
-
-                        let existing_txn_account_access = txn_account_accesses
-                            .get_mut(account_index as usize)
-                            .expect(
-                                "ExecutedBlockBuilder AccountAccess account_index within bounds",
-                            )
-                            .replace(AccountAccessReassemblyState {
-                                address,
-                                is_balance_modified,
-                                is_nonce_modified,
-                                prestate,
-                                modified_balance,
-                                modified_nonce,
-                                storage_accesses: (0..storage_key_count)
-                                    .map(|_| None)
-                                    .collect_vec()
-                                    .into_boxed_slice(),
-                                transient_accesses: (0..transient_count)
-                                    .map(|_| None)
-                                    .collect_vec()
-                                    .into_boxed_slice(),
-                            });
-
-                        assert!(existing_txn_account_access.is_none());
+                        )
                     }
                     ffi::MONAD_ACCT_ACCESS_BLOCK_EPILOGUE => {
                         assert!(txn_index.is_none());
+
+                        let account_accesses = state.account_accesses.as_mut().expect(
+                            "ExecutedBlockBuilder AccountAccess account_accesses set to Some",
+                        );
+
+                        account_accesses.epilogue.as_mut().expect("ExecutedBlockBuilder AccountAccess account_accesses epilogue set to Some")
                     }
                     access_context => {
                         panic!("ExecutedBlockBuilder encountered unknown access_context {access_context}")
                     }
-                }
+                };
+
+                let existing_account_access = account_accesses
+                    .get_mut(account_index as usize)
+                    .expect("ExecutedBlockBuilder AccountAccess account_index within bounds")
+                    .replace(AccountAccessReassemblyState {
+                        address,
+                        is_balance_modified,
+                        is_nonce_modified,
+                        prestate,
+                        modified_balance,
+                        modified_nonce,
+                        storage_accesses: (0..storage_key_count)
+                            .map(|_| None)
+                            .collect_vec()
+                            .into_boxed_slice(),
+                        transient_accesses: (0..transient_count)
+                            .map(|_| None)
+                            .collect_vec()
+                            .into_boxed_slice(),
+                    });
+
+                assert!(existing_account_access.is_none());
 
                 None
             }
@@ -660,9 +720,15 @@ impl ExecutedBlockBuilder {
             } => {
                 let state = self.state.as_mut()?;
 
-                match access_context {
+                let account_accesses = match access_context {
                     ffi::MONAD_ACCT_ACCESS_BLOCK_PROLOGUE => {
                         assert!(txn_index.is_none());
+
+                        let account_accesses = state.account_accesses.as_mut().expect(
+                            "ExecutedBlockBuilder StorageAccess account_accesses set to Some",
+                        );
+
+                        account_accesses.prologue.as_mut().expect("ExecutedBlockBuilder StorageAccess account_accesses prologue set to Some")
                     }
                     ffi::MONAD_ACCT_ACCESS_TRANSACTION => {
                         let txn_index = txn_index
@@ -681,47 +747,49 @@ impl ExecutedBlockBuilder {
                             "ExecutedBlockBuilder StorageAccess output populated from preceding TxnEvmOutput",
                         );
 
-                        let txn_account_accesses = txn_output.account_accesses.as_mut().expect(
+                        txn_output.account_accesses.as_mut().expect(
                             "ExecutedBlockBuilder StorageAccess output account_accesses set to Some",
-                        );
-
-                        let txn_account_access = txn_account_accesses
-                            .get_mut(account_index as usize)
-                            .expect(
-                                "ExecutedBlockBuilder StorageAccess account_index within bounds",
-                            )
-                            .as_mut()
-                            .expect("ExecutedBlockBuilder StorageAccess set to Some");
-
-                        assert_eq!(txn_account_access.address, address);
-
-                        let storage_accesses = if transient {
-                            &mut txn_account_access.transient_accesses
-                        } else {
-                            &mut txn_account_access.storage_accesses
-                        };
-
-                        let existing_storage_access = storage_accesses
-                            .get_mut(storage_index as usize)
-                            .expect(
-                                "ExecutedBlockBuilder StorageAccess storage_index within bounds",
-                            )
-                            .replace(ExecutedStorageAccess {
-                                modified,
-                                key,
-                                start_value,
-                                end_value,
-                            });
-
-                        assert!(existing_storage_access.is_none());
+                        )
                     }
                     ffi::MONAD_ACCT_ACCESS_BLOCK_EPILOGUE => {
                         assert!(txn_index.is_none());
+
+                        let account_accesses = state.account_accesses.as_mut().expect(
+                            "ExecutedBlockBuilder StorageAccess account_accesses set to Some",
+                        );
+
+                        account_accesses.epilogue.as_mut().expect("ExecutedBlockBuilder StorageAccess account_accesses epilogue set to Some")
                     }
                     access_context => {
                         panic!("ExecutedBlockBuilder encountered unknown access_context {access_context}")
                     }
-                }
+                };
+
+                let account_access = account_accesses
+                    .get_mut(account_index as usize)
+                    .expect("ExecutedBlockBuilder StorageAccess account_index within bounds")
+                    .as_mut()
+                    .expect("ExecutedBlockBuilder StorageAccess set to Some");
+
+                assert_eq!(account_access.address, address);
+
+                let storage_accesses = if transient {
+                    &mut account_access.transient_accesses
+                } else {
+                    &mut account_access.storage_accesses
+                };
+
+                let existing_storage_access = storage_accesses
+                    .get_mut(storage_index as usize)
+                    .expect("ExecutedBlockBuilder StorageAccess storage_index within bounds")
+                    .replace(ExecutedStorageAccess {
+                        modified,
+                        key,
+                        start_value,
+                        end_value,
+                    });
+
+                assert!(existing_storage_access.is_none());
 
                 None
             }

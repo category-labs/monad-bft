@@ -575,7 +575,12 @@ impl App {
     }
 
     fn render_block(&mut self, frame: &mut Frame<'_>, area: Rect) {
-        let ExecutedBlock { start, end, txns } = self.block_current.as_ref().unwrap().as_ref();
+        let ExecutedBlock {
+            start,
+            end,
+            txns,
+            account_accesses: _,
+        } = self.block_current.as_ref().unwrap().as_ref();
 
         let areas =
             Layout::vertical([Constraint::Length(3), Constraint::Fill(u16::MAX)]).split(area);

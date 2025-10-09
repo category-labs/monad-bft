@@ -26,6 +26,7 @@ use crate::{
 pub(super) struct BlockReassemblyState {
     pub start: monad_exec_block_start,
     pub txns: Box<[Option<TxnReassemblyState>]>,
+    pub account_accesses: Option<BlockAccountAccessesReassemblyState>,
 }
 
 #[derive(Debug)]
@@ -57,4 +58,10 @@ pub(super) struct AccountAccessReassemblyState {
     pub modified_nonce: u64,
     pub storage_accesses: Box<[Option<ExecutedStorageAccess>]>,
     pub transient_accesses: Box<[Option<ExecutedStorageAccess>]>,
+}
+
+#[derive(Debug)]
+pub struct BlockAccountAccessesReassemblyState {
+    pub prologue: Option<Box<[Option<AccountAccessReassemblyState>]>>,
+    pub epilogue: Option<Box<[Option<AccountAccessReassemblyState>]>>,
 }

@@ -20,8 +20,8 @@ use itertools::Itertools;
 use crate::ffi;
 use crate::ffi::{
     monad_c_address, monad_c_bytes32, monad_c_eth_account_state, monad_c_eth_txn_header,
-    monad_c_eth_txn_receipt, monad_c_uint256_ne, monad_exec_account_access_context,
-    monad_exec_block_end, monad_exec_block_start, monad_exec_txn_call_frame,
+    monad_c_eth_txn_receipt, monad_c_uint256_ne, monad_exec_block_end, monad_exec_block_start,
+    monad_exec_txn_call_frame,
 };
 
 /// Block reconstructed from execution events.
@@ -31,6 +31,7 @@ pub struct ExecutedBlock {
     pub start: monad_exec_block_start,
     pub end: monad_exec_block_end,
     pub txns: Box<[ExecutedTxn]>,
+    pub account_accesses: Option<ExecutedBlockAccountAccesses>,
 }
 
 #[cfg(feature = "alloy")]
@@ -430,4 +431,12 @@ pub struct ExecutedStorageAccess {
     pub key: monad_c_bytes32,
     pub start_value: monad_c_bytes32,
     pub end_value: monad_c_bytes32,
+}
+
+/// TODO: Add docs
+#[allow(missing_docs)]
+#[derive(Clone, Debug)]
+pub struct ExecutedBlockAccountAccesses {
+    pub prologue: Box<[ExecutedAccountAccess]>,
+    pub epilogue: Box<[ExecutedAccountAccess]>,
 }
