@@ -98,6 +98,7 @@ struct TestConfig {
     pub last_participation_prune_threshold: Round,
     pub min_num_peers: usize,
     pub max_num_peers: usize,
+    pub max_group_size: usize,
     pub outbound_pipeline: Vec<GenericTransformer<PubKeyType, PeerDiscoveryMessage<SignatureType>>>,
 }
 
@@ -118,6 +119,7 @@ impl Default for TestConfig {
             last_participation_prune_threshold: Round(5000),
             min_num_peers: 5,
             max_num_peers: 50,
+            max_group_size: 50,
             outbound_pipeline: vec![],
         }
     }
@@ -206,6 +208,7 @@ fn setup_keys_and_swarm_builder(
                         current_epoch: config.current_epoch,
                         epoch_validators: epoch_validators.clone(),
                         pinned_full_nodes,
+                        prioritized_full_nodes: BTreeSet::new(),
                         bootstrap_peers,
                         refresh_period: config.refresh_period,
                         request_timeout: config.request_timeout,
@@ -214,6 +217,7 @@ fn setup_keys_and_swarm_builder(
                             .last_participation_prune_threshold,
                         min_num_peers: config.min_num_peers,
                         max_num_peers: config.max_num_peers,
+                        max_group_size: config.max_group_size,
                         enable_publisher: secondary_raptorcast_enabled,
                         enable_client: secondary_raptorcast_enabled,
                         rng: ChaCha8Rng::seed_from_u64(123456), // fixed seed for reproducibility
@@ -382,6 +386,7 @@ fn test_update_name_record() {
             current_epoch: config.current_epoch,
             epoch_validators: BTreeMap::new(),
             pinned_full_nodes: BTreeSet::new(),
+            prioritized_full_nodes: BTreeSet::new(),
             bootstrap_peers: BTreeMap::from([(node_1, generate_name_record(node_1_key))]),
             refresh_period: config.refresh_period,
             request_timeout: config.request_timeout,
@@ -389,6 +394,7 @@ fn test_update_name_record() {
             last_participation_prune_threshold: config.last_participation_prune_threshold,
             min_num_peers: config.min_num_peers,
             max_num_peers: config.max_num_peers,
+            max_group_size: config.max_group_size,
             enable_publisher: false,
             enable_client: false,
             rng: ChaCha8Rng::seed_from_u64(123456),

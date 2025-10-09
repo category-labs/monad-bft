@@ -187,9 +187,12 @@ where
                 self.algo.update_validator_set(epoch, validators)
             }
             PeerDiscoveryEvent::UpdatePeers { peers } => self.algo.update_peers(peers),
-            PeerDiscoveryEvent::UpdatePinnedNodes { pinned_full_nodes } => {
-                self.algo.update_pinned_nodes(pinned_full_nodes)
-            }
+            PeerDiscoveryEvent::UpdatePinnedNodes {
+                dedicated_full_nodes,
+                prioritized_full_nodes,
+            } => self
+                .algo
+                .update_pinned_nodes(dedicated_full_nodes, prioritized_full_nodes),
             PeerDiscoveryEvent::UpdateConfirmGroup { end_round, peers } => {
                 self.algo.update_peer_participation(end_round, peers)
             }

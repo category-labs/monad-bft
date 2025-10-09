@@ -83,6 +83,7 @@ where
     request_tx: Sender<(
         Vec<NodeBootstrapPeerConfig<ST>>,
         Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+        Vec<NodeId<CertificateSignaturePubKey<ST>>>,
     )>,
     response_tx: Sender<ConfigEvent<ST, SCT>>,
     response_rx: Receiver<ConfigEvent<ST, SCT>>,
@@ -101,11 +102,14 @@ where
 
         let bootstrap_peers_refresh_tx = response_tx.clone();
         tokio::spawn(async move {
-            while let Some((bootstrap_peers, pinned_nodes)) = request_rx.recv().await {
+            while let Some((bootstrap_peers, dedicated_full_nodes, prioritized_full_nodes)) =
+                request_rx.recv().await
+            {
                 let known_peers = Self::resolve_domains(bootstrap_peers).await;
                 let config_event = ConfigEvent::KnownPeersUpdate(KnownPeersUpdate {
                     known_peers,
-                    pinned_nodes,
+                    dedicated_full_nodes,
+                    prioritized_full_nodes,
                 });
 
                 match bootstrap_peers_refresh_tx.try_send(config_event) {
@@ -156,16 +160,11 @@ where
             .map(|p| NodeId::new(p.secp256k1_pubkey))
             .collect();
 
-        let pinned_full_nodes = dedicated_full_nodes
-            .iter()
-            .cloned()
-            .chain(prioritized_full_nodes.iter().cloned())
-            .collect();
-
-        match self
-            .request_tx
-            .try_send((node_config.bootstrap.peers, pinned_full_nodes))
-        {
+        match self.request_tx.try_send((
+            node_config.bootstrap.peers,
+            dedicated_full_nodes.clone(),
+            prioritized_full_nodes.clone(),
+        )) {
             Ok(_) => {}
             Err(TrySendError::Closed(_)) => {
                 warn!("config request channel closed");

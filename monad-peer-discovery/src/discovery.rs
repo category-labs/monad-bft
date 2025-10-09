@@ -129,7 +129,9 @@ pub struct PeerDiscovery<ST: CertificateSignatureRecoverable> {
     pub epoch_validators: BTreeMap<Epoch, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
     // initial bootstrap peers set in config file
     pub initial_bootstrap_peers: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
-    // pinned full nodes are dedicated and prioritized full nodes passed in from config that will not be pruned
+    // prioritized full nodes for secondary raptorcast, set in config file
+    pub prioritized_full_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
+    // pinned full nodes contains dedicated and prioritized full nodes, and initial bootstrap peers that will not be pruned
     pub pinned_full_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
     // mapping of node IDs to their corresponding name records
     pub routing_info: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<ST>>,
@@ -156,6 +158,8 @@ pub struct PeerDiscovery<ST: CertificateSignatureRecoverable> {
     pub min_num_peers: usize,
     // maximum number of peers before pruning
     pub max_num_peers: usize,
+    // maximum number of peers in a raptorcast group
+    pub max_group_size: usize,
     // secondary raptorcast setting: enable publisher mode when self is a validator
     pub enable_publisher: bool,
     // secondary raptorcast setting: enable client mode when self is a full node
@@ -170,6 +174,7 @@ pub struct PeerDiscoveryBuilder<ST: CertificateSignatureRecoverable> {
     pub current_epoch: Epoch,
     pub epoch_validators: BTreeMap<Epoch, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
     pub pinned_full_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
+    pub prioritized_full_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
     pub bootstrap_peers: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<ST>>,
     pub refresh_period: Duration,
     pub request_timeout: Duration,
@@ -177,6 +182,7 @@ pub struct PeerDiscoveryBuilder<ST: CertificateSignatureRecoverable> {
     pub last_participation_prune_threshold: Round,
     pub min_num_peers: usize,
     pub max_num_peers: usize,
+    pub max_group_size: usize,
     pub enable_publisher: bool,
     pub enable_client: bool,
     pub rng: ChaCha8Rng,
@@ -235,6 +241,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
                 .keys()
                 .cloned()
                 .collect::<BTreeSet<_>>(),
+            prioritized_full_nodes: self.prioritized_full_nodes,
             pinned_full_nodes: self.pinned_full_nodes,
             routing_info: Default::default(),
             participation_info: Default::default(),
@@ -247,6 +254,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
             last_participation_prune_threshold: self.last_participation_prune_threshold,
             min_num_peers: self.min_num_peers,
             max_num_peers: self.max_num_peers,
+            max_group_size: self.max_group_size,
             enable_publisher: self.enable_publisher,
             enable_client: self.enable_client,
             rng: self.rng,
@@ -643,8 +651,7 @@ where
         // we still respond with pong even if peer list is full
         let mut peer_list_full = false;
         if self.routing_info.len() + self.pending_queue.len() >= self.max_num_peers
-            && !self.check_validator_membership(&from)
-            && !self.pinned_full_nodes.contains(&from)
+            && !self.is_pinned_node(&from)
             && !self.routing_info.contains_key(&from)
         {
             debug!(
@@ -1089,6 +1096,28 @@ where
             return cmds;
         }
 
+        // drop request if incoming request is a public full node and max_group_size is already reached
+        if !self.prioritized_full_nodes.contains(&from) {
+            let connected_public_full_nodes = self
+                .participation_info
+                .iter()
+                .filter(|(node_id, info)| {
+                    info.status == SecondaryRaptorcastConnectionStatus::Connected
+                        && !self.prioritized_full_nodes.contains(node_id)
+                })
+                .count();
+
+            if connected_public_full_nodes + self.prioritized_full_nodes.len()
+                >= self.max_group_size
+            {
+                debug!(
+                    ?from,
+                    "connected full nodes already exceeds max group size, dropping request"
+                );
+                return cmds;
+            }
+        }
+
         if let Some(info) = self.participation_info.get_mut(&from) {
             info.status = SecondaryRaptorcastConnectionStatus::Connected;
         } else {
@@ -1154,7 +1183,6 @@ where
             .filter_map(|(node_id, info)| {
                 if self.current_round.max(info.last_active) - info.last_active
                     >= self.last_participation_prune_threshold
-                    && !self.is_pinned_node(node_id)
                 {
                     Some(*node_id)
                 } else {
@@ -1164,9 +1192,16 @@ where
             .collect();
 
         for node_id in non_participating_nodes {
-            debug!(?node_id, "removing non-participating peer");
-            self.participation_info.remove(&node_id);
-            self.routing_info.remove(&node_id);
+            if self.is_pinned_node(&node_id) {
+                debug!(?node_id, "clearing participation info for pinned node");
+                if let Some(info) = self.participation_info.get_mut(&node_id) {
+                    info.status = SecondaryRaptorcastConnectionStatus::None;
+                }
+            } else {
+                debug!(?node_id, "removing non-participating peer");
+                self.participation_info.remove(&node_id);
+                self.routing_info.remove(&node_id);
+            }
         }
 
         // if number of peers above max number of peers, randomly choose a few full nodes and prune them from routing_info
@@ -1406,11 +1441,21 @@ where
 
     fn update_pinned_nodes(
         &mut self,
-        pinned_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
+        dedicated_full_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
+        prioritized_full_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
-        debug!(?pinned_nodes, "updating pinned nodes");
+        debug!(
+            ?dedicated_full_nodes,
+            ?prioritized_full_nodes,
+            "updating pinned nodes"
+        );
 
-        self.pinned_full_nodes = pinned_nodes;
+        self.pinned_full_nodes = dedicated_full_nodes
+            .iter()
+            .chain(prioritized_full_nodes.iter())
+            .cloned()
+            .collect();
+        self.prioritized_full_nodes = prioritized_full_nodes;
 
         Vec::new()
     }
@@ -1565,6 +1610,7 @@ mod tests {
             epoch_validators: BTreeMap::new(),
             initial_bootstrap_peers: routing_info.keys().cloned().collect(),
             pinned_full_nodes: BTreeSet::new(),
+            prioritized_full_nodes: BTreeSet::new(),
             routing_info,
             participation_info,
             pending_queue: BTreeMap::new(),
@@ -1576,6 +1622,7 @@ mod tests {
             last_participation_prune_threshold: Round(5000),
             min_num_peers: 5,
             max_num_peers: 50,
+            max_group_size: 50,
             enable_publisher: false,
             enable_client: false,
             rng: ChaCha8Rng::seed_from_u64(123456),
@@ -2234,12 +2281,16 @@ mod tests {
 
     #[test]
     fn test_publisher_participation_info() {
-        let keys = create_keys::<SignatureType>(2);
+        let keys = create_keys::<SignatureType>(4);
         let peer0 = &keys[0];
         let peer1 = &keys[1];
+        let peer2 = &keys[2];
+        let peer3 = &keys[3];
         let peer1_pubkey = NodeId::new(peer1.pubkey());
+        let peer2_pubkey = NodeId::new(peer2.pubkey());
+        let peer3_pubkey = NodeId::new(peer3.pubkey());
 
-        let mut state = generate_test_state(peer0, vec![peer1]);
+        let mut state = generate_test_state(peer0, vec![peer1, peer2, peer3]);
 
         // do not respond to full node raptorcast request if self is not a validator publisher
         state.self_role = PeerDiscoveryRole::ValidatorNone;
@@ -2262,6 +2313,52 @@ mod tests {
             message: PeerDiscoveryMessage::FullNodeRaptorcastResponse
         }));
         assert_eq!(state.get_secondary_fullnodes(), Vec::from([peer1_pubkey]));
+
+        // do not respond to full node raptorcast request if already exceeding max group size
+        state.max_group_size = 1;
+        let cmds = state.handle_full_node_raptorcast_request(peer2_pubkey);
+        assert_eq!(
+            state.participation_info.get(&peer2_pubkey).unwrap().status,
+            SecondaryRaptorcastConnectionStatus::None
+        );
+        assert_eq!(cmds.len(), 0);
+        assert_eq!(state.get_secondary_fullnodes(), Vec::from([peer1_pubkey]));
+
+        // prioritized full nodes are reserved a slot even if unconnected
+        state.prioritized_full_nodes.insert(peer3_pubkey);
+        state.max_group_size = 2;
+        let cmds = state.handle_full_node_raptorcast_request(peer2_pubkey);
+        // peer1 (connected) and peer3 (prioritized) took up the slots
+        // peer2 is still rejected
+        assert_eq!(
+            state.participation_info.get(&peer1_pubkey).unwrap().status,
+            SecondaryRaptorcastConnectionStatus::Connected
+        );
+        assert_eq!(
+            state.participation_info.get(&peer2_pubkey).unwrap().status,
+            SecondaryRaptorcastConnectionStatus::None
+        );
+        assert_eq!(
+            state.participation_info.get(&peer3_pubkey).unwrap().status,
+            SecondaryRaptorcastConnectionStatus::None
+        );
+        assert_eq!(cmds.len(), 0);
+        assert_eq!(state.get_secondary_fullnodes(), Vec::from([peer1_pubkey]));
+
+        // a connected prioritized full node is only counted once towards max_group_size
+        state.handle_full_node_raptorcast_request(peer3_pubkey);
+        assert_eq!(
+            state.participation_info.get(&peer3_pubkey).unwrap().status,
+            SecondaryRaptorcastConnectionStatus::Connected
+        );
+        state.max_group_size = 3;
+        let cmds = state.handle_full_node_raptorcast_request(peer2_pubkey);
+        // now peer2 is accepted as there are only 2 connections
+        assert_eq!(
+            state.participation_info.get(&peer2_pubkey).unwrap().status,
+            SecondaryRaptorcastConnectionStatus::Connected
+        );
+        assert_eq!(cmds.len(), 1);
     }
 
     #[test]
