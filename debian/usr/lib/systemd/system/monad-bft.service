@@ -16,7 +16,7 @@ ExecStart=/usr/local/bin/monad-node \
     --ledger-path /home/monad/monad-bft/ledger \
     --triedb-path /dev/triedb \
     --otel-endpoint "http://0.0.0.0:4317" \
-    --statesync-sq-thread-cpu 1 \
+    --statesync-sq-thread-cpu 8 \
     --record-metrics-interval-seconds 1 \
     --validators-path /home/monad/monad-bft/config/validators/validators.toml \
     --keystore-password "${KEYSTORE_PASSWORD}"
@@ -25,7 +25,8 @@ Environment="RUST_LOG=debug,h2=warn,tower=warn,opentelemetry_sdk=warn,openteleme
 Restart=no
 User=monad
 Group=monad
-AllowedCPUs=1-4
+AllowedCPUs=8-11
+CPUAffinity=8,9,10,11
 DeviceAllow=/dev/triedb rw
 LimitNOFILE=1048576
 # Hugemem configs below
