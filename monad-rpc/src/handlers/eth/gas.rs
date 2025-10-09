@@ -257,14 +257,8 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
         ));
     }
 
-    let block_key = get_block_key_from_tag(triedb_env, params.block);
-    let version_exist = triedb_env
-        .get_state_availability(block_key)
-        .await
-        .map_err(JsonRpcError::internal_error)?;
-    if !version_exist {
-        return Err(JsonRpcError::block_not_found());
-    }
+    let block_key =
+        get_block_key_from_tag(triedb_env, params.block).ok_or(JsonRpcError::block_not_found())?;
 
     let mut header = match triedb_env
         .get_block_header(block_key)
@@ -272,11 +266,7 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
         .map_err(JsonRpcError::internal_error)?
     {
         Some(header) => header,
-        None => {
-            return Err(JsonRpcError::internal_error(
-                "error getting block header".into(),
-            ))
-        }
+        None => return Err(JsonRpcError::block_not_found()),
     };
 
     let gas_specified = params.tx.gas.is_some();

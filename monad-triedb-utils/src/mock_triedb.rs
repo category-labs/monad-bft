@@ -61,8 +61,8 @@ impl Triedb for MockTriedb {
     fn get_latest_voted_block_key(&self) -> BlockKey {
         BlockKey::Finalized(self.get_latest_finalized_block_key())
     }
-    fn get_block_key(&self, block_num: SeqNum) -> BlockKey {
-        BlockKey::Finalized(FinalizedBlockKey(block_num))
+    fn get_block_key(&self, block_num: SeqNum) -> Option<BlockKey> {
+        Some(BlockKey::Finalized(FinalizedBlockKey(block_num)))
     }
 
     fn get_state_availability(

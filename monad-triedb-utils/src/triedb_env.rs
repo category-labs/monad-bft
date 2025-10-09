@@ -470,7 +470,16 @@ pub trait Triedb: Debug {
     fn get_latest_finalized_block_key(&self) -> FinalizedBlockKey;
     /// returns a FinalizedBlockKey if latest_voted doesn't exist
     fn get_latest_voted_block_key(&self) -> BlockKey;
-    fn get_block_key(&self, block_num: SeqNum) -> BlockKey;
+    /// returns None if block number was never known to be valid
+    /// a known-to-be-finalized BlockKey will never return None
+    ///
+    /// the following sequence is safe:
+    /// 1. get_block_key(block_num)
+    ///    - if None, return Err
+    /// 2. get_account(block_num)
+    /// 3. get_state_availability(block_num)
+    ///    - if None, return Err early
+    fn get_block_key(&self, block_num: SeqNum) -> Option<BlockKey>;
     /// returns whether block number is available in triedb
     fn get_state_availability(
         &self,
@@ -911,17 +920,23 @@ impl Triedb for TriedbEnv {
             None => BlockKey::Finalized(meta.latest_finalized),
         }
     }
-    fn get_block_key(&self, seq_num: SeqNum) -> BlockKey {
+    fn get_block_key(&self, seq_num: SeqNum) -> Option<BlockKey> {
         let meta = self.meta.lock().expect("mutex poisoned");
         if seq_num > meta.latest_safe_voted() {
-            // this block is not voted on yet, but it's safe to default to finalized
-            BlockKey::Finalized(FinalizedBlockKey(seq_num))
+            None
         } else if let Some(&voted_block_id) = meta.voted_proposals.get(&seq_num) {
             // there's an unfinalized, voted proposal with this seq_num
-            BlockKey::Proposed(ProposedBlockKey(seq_num, voted_block_id))
-        } else {
+            Some(BlockKey::Proposed(ProposedBlockKey(
+                seq_num,
+                voted_block_id,
+            )))
+        } else if seq_num <= meta.latest_finalized.0 {
             // this seq_num is finalized
-            BlockKey::Finalized(FinalizedBlockKey(seq_num))
+            Some(BlockKey::Finalized(FinalizedBlockKey(seq_num)))
+        } else {
+            // get_block_key must return a state that was valid at some point
+            // thus, it's not safe to default to finalized
+            None
         }
     }
 

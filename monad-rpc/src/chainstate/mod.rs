@@ -41,7 +41,7 @@ use crate::{
     chainstate::buffer::{block_height_from_tag, ChainStateBuffer},
     eth_json_types::{BlockTagOrHash, BlockTags, FixedData, MonadLog, Quantity},
     handlers::eth::{
-        block::block_receipts,
+        block::{block_receipts, get_block_key_from_tag_or_hash},
         txn::{parse_tx_receipt, FilterError},
     },
     jsonrpc::{ArchiveErrorExt, JsonRpcError, JsonRpcResult},
@@ -71,12 +71,19 @@ impl From<monad_archive::prelude::Report> for ChainStateError {
     }
 }
 
-pub fn get_block_key_from_tag<T: Triedb>(triedb_env: &T, tag: BlockTags) -> BlockKey {
+// BlockTags::Latest
+pub fn get_latest_block_key(triedb_env: &impl Triedb) -> BlockKey {
+    triedb_env.get_latest_voted_block_key()
+}
+
+pub fn get_block_key_from_tag(triedb_env: &impl Triedb, tag: BlockTags) -> Option<BlockKey> {
     match tag {
         BlockTags::Number(n) => triedb_env.get_block_key(SeqNum(n.0)),
-        BlockTags::Latest => triedb_env.get_latest_voted_block_key(),
-        BlockTags::Safe => triedb_env.get_latest_voted_block_key(),
-        BlockTags::Finalized => BlockKey::Finalized(triedb_env.get_latest_finalized_block_key()),
+        BlockTags::Latest => Some(get_latest_block_key(triedb_env)),
+        BlockTags::Safe => Some(triedb_env.get_latest_voted_block_key()),
+        BlockTags::Finalized => Some(BlockKey::Finalized(
+            triedb_env.get_latest_finalized_block_key(),
+        )),
     }
 }
 
@@ -105,7 +112,7 @@ impl<T: Triedb> ChainState<T> {
         &self,
         hash: [u8; 32],
     ) -> Result<TransactionReceipt, ChainStateError> {
-        let latest_block_key = get_block_key_from_tag(&self.triedb_env, BlockTags::Latest);
+        let latest_block_key = get_latest_block_key(&self.triedb_env);
         if let Some(TransactionLocation {
             tx_index,
             block_num,
@@ -115,7 +122,10 @@ impl<T: Triedb> ChainState<T> {
             .await
             .map_err(ChainStateError::Triedb)?
         {
-            let block_key = self.triedb_env.get_block_key(SeqNum(block_num));
+            let block_key = self
+                .triedb_env
+                .get_block_key(SeqNum(block_num))
+                .ok_or(ChainStateError::ResourceNotFound)?;
             if let Some(receipt) =
                 get_receipt_from_triedb(&self.triedb_env, block_key, tx_index).await?
             {
@@ -158,7 +168,8 @@ impl<T: Triedb> ChainState<T> {
                     }
                 }
 
-                let block_key = get_block_key_from_tag(&self.triedb_env, block);
+                let block_key = get_block_key_from_tag(&self.triedb_env, block)
+                    .ok_or(ChainStateError::ResourceNotFound)?;
                 if let Some(tx) =
                     get_transaction_from_triedb(&self.triedb_env, block_key, index).await?
                 {
@@ -194,14 +205,17 @@ impl<T: Triedb> ChainState<T> {
                     }
                 }
 
-                let latest_block_key = get_block_key_from_tag(&self.triedb_env, BlockTags::Latest);
+                let latest_block_key = get_latest_block_key(&self.triedb_env);
                 if let Some(block_num) = self
                     .triedb_env
                     .get_block_number_by_hash(latest_block_key, hash.0)
                     .await
                     .map_err(ChainStateError::Triedb)?
                 {
-                    let block_key = self.triedb_env.get_block_key(SeqNum(block_num));
+                    let block_key = self
+                        .triedb_env
+                        .get_block_key(SeqNum(block_num))
+                        .ok_or(ChainStateError::ResourceNotFound)?;
                     if let Some(tx) =
                         get_transaction_from_triedb(&self.triedb_env, block_key, index).await?
                     {
@@ -238,7 +252,7 @@ impl<T: Triedb> ChainState<T> {
             }
         }
 
-        let latest_block_key = get_block_key_from_tag(&self.triedb_env, BlockTags::Latest);
+        let latest_block_key = get_latest_block_key(&self.triedb_env);
         if let Some(TransactionLocation {
             tx_index,
             block_num,
@@ -248,7 +262,10 @@ impl<T: Triedb> ChainState<T> {
             .await
             .map_err(ChainStateError::Triedb)?
         {
-            let block_key = self.triedb_env.get_block_key(SeqNum(block_num));
+            let block_key = self
+                .triedb_env
+                .get_block_key(SeqNum(block_num))
+                .ok_or(ChainStateError::ResourceNotFound)?;
             if let Some(tx) =
                 get_transaction_from_triedb(&self.triedb_env, block_key, tx_index).await?
             {
@@ -295,17 +312,24 @@ impl<T: Triedb> ChainState<T> {
         };
 
         let block_key = match &block {
-            BlockTagOrHash::BlockTags(tag) => {
-                Some(get_block_key_from_tag(&self.triedb_env, tag.clone()))
-            }
+            BlockTagOrHash::BlockTags(tag) => get_block_key_from_tag(&self.triedb_env, tag.clone()),
             BlockTagOrHash::Hash(hash) => {
-                let latest_block_key = get_block_key_from_tag(&self.triedb_env, BlockTags::Latest);
+                let latest_block_key = get_latest_block_key(&self.triedb_env);
 
-                self.triedb_env
+                if let Some(block_num) = self
+                    .triedb_env
                     .get_block_number_by_hash(latest_block_key, hash.0)
                     .await
                     .map_err(ChainStateError::Triedb)?
-                    .map(|block_num| self.triedb_env.get_block_key(SeqNum(block_num)))
+                {
+                    Some(
+                        self.triedb_env
+                            .get_block_key(SeqNum(block_num))
+                            .ok_or(ChainStateError::ResourceNotFound)?,
+                    )
+                } else {
+                    None
+                }
             }
         };
 
@@ -370,17 +394,24 @@ impl<T: Triedb> ChainState<T> {
         }
 
         let block_key = match &block {
-            BlockTagOrHash::BlockTags(tag) => {
-                Some(get_block_key_from_tag(&self.triedb_env, tag.clone()))
-            }
+            BlockTagOrHash::BlockTags(tag) => get_block_key_from_tag(&self.triedb_env, tag.clone()),
             BlockTagOrHash::Hash(hash) => {
-                let latest_block_key = get_block_key_from_tag(&self.triedb_env, BlockTags::Latest);
+                let latest_block_key = get_latest_block_key(&self.triedb_env);
 
-                self.triedb_env
+                if let Some(block_num) = self
+                    .triedb_env
                     .get_block_number_by_hash(latest_block_key, hash.0)
                     .await
                     .map_err(ChainStateError::Triedb)?
-                    .map(|block_num| self.triedb_env.get_block_key(SeqNum(block_num)))
+                {
+                    Some(
+                        self.triedb_env
+                            .get_block_key(SeqNum(block_num))
+                            .ok_or(ChainStateError::ResourceNotFound)?,
+                    )
+                } else {
+                    None
+                }
             }
         };
 
@@ -439,7 +470,8 @@ impl<T: Triedb> ChainState<T> {
         &self,
         block: BlockTags,
     ) -> Result<Vec<alloy_consensus::ReceiptEnvelope>, ChainStateError> {
-        let block_key = get_block_key_from_tag(&self.triedb_env, block);
+        let block_key = get_block_key_from_tag(&self.triedb_env, block)
+            .ok_or(ChainStateError::ResourceNotFound)?;
         if let Ok(receipts) = self.triedb_env.get_receipts(block_key).await {
             let receipts: Vec<alloy_consensus::ReceiptEnvelope> = receipts
                 .into_iter()
@@ -468,11 +500,7 @@ impl<T: Triedb> ChainState<T> {
         &self,
         block: BlockTagOrHash,
     ) -> Result<Vec<crate::eth_json_types::MonadTransactionReceipt>, ChainStateError> {
-        if let Ok(block_key) = crate::handlers::eth::block::get_block_key_from_tag_or_hash(
-            &self.triedb_env,
-            block.clone(),
-        )
-        .await
+        if let Ok(block_key) = get_block_key_from_tag_or_hash(&self.triedb_env, block.clone()).await
         {
             if let Some(header) = self
                 .triedb_env
@@ -500,7 +528,9 @@ impl<T: Triedb> ChainState<T> {
         if let Some(archive_reader) = &self.archive_reader {
             let block = match block {
                 BlockTagOrHash::BlockTags(tag) => {
-                    match get_block_key_from_tag(&self.triedb_env, tag) {
+                    match get_block_key_from_tag(&self.triedb_env, tag)
+                        .ok_or(ChainStateError::ResourceNotFound)?
+                    {
                         BlockKey::Finalized(FinalizedBlockKey(block_num)) => {
                             archive_reader.try_get_block_by_number(block_num.0).await?
                         }
@@ -559,16 +589,20 @@ impl<T: Triedb> ChainState<T> {
                 let from_block_tag = into_block_tag(from_block);
                 let to_block_tag = into_block_tag(to_block);
 
-                let from_block = get_block_key_from_tag(&self.triedb_env, from_block_tag);
-                let to_block = get_block_key_from_tag(&self.triedb_env, to_block_tag);
+                let from_block = get_block_key_from_tag(&self.triedb_env, from_block_tag)
+                    .ok_or(JsonRpcError::block_not_found())?
+                    .seq_num()
+                    .0;
+                let to_block = get_block_key_from_tag(&self.triedb_env, to_block_tag)
+                    .map(|key| key.seq_num().0)
+                    // to_block should be floored to latest_block
+                    .unwrap_or(latest_block_number)
+                    .min(latest_block_number);
 
-                (
-                    from_block.seq_num().0,
-                    std::cmp::min(to_block.seq_num().0, latest_block_number),
-                )
+                (from_block, to_block)
             }
             FilterBlockOption::AtBlockHash(block_hash) => {
-                let latest_block_key = get_block_key_from_tag(&self.triedb_env, BlockTags::Latest);
+                let latest_block_key = get_latest_block_key(&self.triedb_env);
 
                 let block = self
                     .triedb_env
@@ -652,9 +686,10 @@ impl<T: Triedb> ChainState<T> {
 
         let triedb_stream = stream::iter(block_range)
             .map(|block_num| {
-                let block_key = self.triedb_env.get_block_key(SeqNum(block_num));
-
                 async move {
+                    let block_key = self.triedb_env.get_block_key(SeqNum(block_num)).ok_or(
+                        JsonRpcError::internal_error("missing block in db in range".to_owned()),
+                    )?;
                     if let Some(header) = self
                         .triedb_env
                         .get_block_header(block_key)

@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{error, trace};
 
 use crate::{
-    chainstate::{get_block_key_from_tag, ChainState},
+    chainstate::{get_block_key_from_tag, get_latest_block_key, ChainState},
     eth_json_types::{
         BlockTagOrHash, BlockTags, EthAddress, EthHash, FixedData, MonadU256, Quantity,
         UnformattedData,
@@ -409,13 +409,15 @@ pub async fn monad_debug_traceBlockByHash<T: Triedb>(
 ) -> JsonRpcResult<Vec<MonadDebugTraceBlockResult>> {
     trace!("monad_debugTraceBlockByHash: {params:?}");
 
-    let latest_block_key = get_block_key_from_tag(triedb_env, BlockTags::Latest);
+    let latest_block_key = get_latest_block_key(triedb_env);
     if let Some(block_num) = triedb_env
         .get_block_number_by_hash(latest_block_key, params.block_hash.0)
         .await
         .map_err(JsonRpcError::internal_error)?
     {
-        let block_key = triedb_env.get_block_key(SeqNum(block_num));
+        let block_key = triedb_env
+            .get_block_key(SeqNum(block_num))
+            .ok_or(JsonRpcError::block_not_found())?;
         if let Ok(result) = get_call_frames_from_triedb(triedb_env, block_key, &params.tracer).await
         {
             return Ok(result);
@@ -485,7 +487,8 @@ pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
 ) -> JsonRpcResult<Vec<MonadDebugTraceBlockResult>> {
     trace!("monad_debugTraceBlockByNumber: {params:?}");
 
-    let block_key = get_block_key_from_tag(triedb_env, params.block_number);
+    let block_key = get_block_key_from_tag(triedb_env, params.block_number)
+        .ok_or(JsonRpcError::block_not_found())?;
     if let Ok(result) = get_call_frames_from_triedb(triedb_env, block_key, &params.tracer).await {
         return Ok(result);
     }
@@ -519,7 +522,7 @@ pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
         }
     }
 
-    Err(JsonRpcError::internal_error("block not found".into()))
+    Err(JsonRpcError::block_not_found())
 }
 
 #[rpc(method = "debug_traceTransaction")]
@@ -532,13 +535,15 @@ pub async fn monad_debug_traceTransaction<T: Triedb>(
 ) -> JsonRpcResult<Option<MonadCallFrame>> {
     trace!("monad_eth_debugTraceTransaction: {params:?}");
 
-    let latest_block_key = get_block_key_from_tag(triedb_env, BlockTags::Latest);
+    let latest_block_key = get_latest_block_key(triedb_env);
     if let Some(tx_loc) = triedb_env
         .get_transaction_location_by_hash(latest_block_key, params.tx_hash.0)
         .await
         .map_err(JsonRpcError::internal_error)?
     {
-        let block_key = triedb_env.get_block_key(SeqNum(tx_loc.block_num));
+        let block_key = triedb_env
+            .get_block_key(SeqNum(tx_loc.block_num))
+            .ok_or(JsonRpcError::block_not_found())?;
         if let Some(rlp_call_frame) = triedb_env
             .get_call_frame(block_key, tx_loc.tx_index)
             .await
