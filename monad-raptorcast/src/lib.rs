@@ -630,7 +630,8 @@ where
                 }
                 RouterCommand::UpdatePeers {
                     peer_entries,
-                    pinned_nodes,
+                    dedicated_full_nodes,
+                    prioritized_full_nodes,
                 } => {
                     self.peer_discovery_driver.lock().unwrap().update(
                         PeerDiscoveryEvent::UpdatePeers {
@@ -639,7 +640,8 @@ where
                     );
                     self.peer_discovery_driver.lock().unwrap().update(
                         PeerDiscoveryEvent::UpdatePinnedNodes {
-                            pinned_full_nodes: pinned_nodes.into_iter().collect(),
+                            dedicated_full_nodes: dedicated_full_nodes.into_iter().collect(),
+                            prioritized_full_nodes: prioritized_full_nodes.into_iter().collect(),
                         },
                     );
                 }
