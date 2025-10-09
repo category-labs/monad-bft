@@ -69,10 +69,10 @@ ENV TRIEDB_TARGET=triedb_driver
 # Builder
 COPY . .
 RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell -fno-omit-frame-pointer" CXXFLAGS="-march=haswell -fno-omit-frame-pointer -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" \
-    RUSTFLAGS="-C force-frame-pointers=yes" CC=gcc-15 CXX=g++-15 cargo build --release --bin monad-rpc && \
-    mv target/release/monad-rpc rpc && \
-    cp `ls -Lt $(find target/release | grep -e "libtriedb_driver.so")` . && \
-    ldd $(ls -Lt $(find target/release | grep -e "libtriedb_driver.so")) | docker/filter-dependent-shared-objects.py | xargs -I {} cp {} .
+  RUSTFLAGS="-C force-frame-pointers=yes" CC=gcc-15 CXX=g++-15 cargo build --release --config profile.release.debug=true --bin monad-rpc && \
+  mv target/release/monad-rpc rpc && \
+  cp `ls -Lt $(find target/release | grep -e "libtriedb_driver.so")` . && \
+  ldd $(ls -Lt $(find target/release | grep -e "libtriedb_driver.so")) | docker/filter-dependent-shared-objects.py | xargs -I {} cp {} .
 
 # Debug runner
 FROM base AS runner-debug
@@ -88,8 +88,3 @@ COPY --from=builder /usr/src/monad-bft/*.so.* /usr/local/lib
 
 # Runner
 FROM runner-debug AS runner
-
-RUN strip \
-    /usr/local/bin/monad-rpc \
-    /usr/local/lib/*.so \
-    /usr/local/lib/*.so.*
