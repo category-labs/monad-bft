@@ -13,7 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    marker::PhantomData,
+    time::Duration,
+};
 
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::{
@@ -33,7 +37,7 @@ use monad_validator::{
     validator_mapping::ValidatorMapping,
     validator_set::ValidatorSetType,
 };
-use tracing::debug;
+use tracing::{debug, info, warn};
 
 use crate::{messages::message::TimeoutMessage, validation::safety::Safety};
 
@@ -71,6 +75,7 @@ where
     /// carry a QC which will be processed and advance the node to the
     /// highest known round
     pending_timeouts: BTreeMap<NodeId<SCT::NodeIdPubKey>, TimeoutMessage<ST, SCT, EPT>>,
+    invalid_timeout_senders: BTreeSet<NodeId<SCT::NodeIdPubKey>>,
 
     /// States for TimeoutMessage handling, ensures we only broadcast
     /// one message at each phase of handling
@@ -145,6 +150,7 @@ where
                 .expect("init round must exist in epoch manager"),
             high_certificate,
             pending_timeouts: BTreeMap::new(),
+            invalid_timeout_senders: BTreeSet::new(),
 
             phase: PhaseHonest::Zero,
             _phantom: Default::default(),
@@ -209,6 +215,7 @@ where
 
         self.phase = PhaseHonest::Zero;
         self.pending_timeouts.clear();
+        self.invalid_timeout_senders.clear();
 
         vec![
             PacemakerCommand::EnterRound(
@@ -318,6 +325,10 @@ where
         // this invariant
         assert_eq!(tm_info.round, self.get_current_round());
 
+        if self.invalid_timeout_senders.contains(&author) {
+            debug!(sender = ?author, "Ignoring timeout from invalid voter");
+            return ret_commands;
+        }
         // it's fine to overwrite if already exists
         self.pending_timeouts.insert(author, timeout_msg.clone());
 
@@ -389,6 +400,8 @@ where
         invalid_timeouts: Vec<(NodeId<SCT::NodeIdPubKey>, SCT::SignatureType)>,
     ) -> Vec<PacemakerCommand<ST, SCT, EPT>> {
         for (node_id, timeout_signature) in invalid_timeouts {
+            info!(sender = ?node_id, "Invalid timeout signature");
+            self.invalid_timeout_senders.insert(node_id);
             let removed = self.pending_timeouts.remove(&node_id);
             debug_assert_eq!(
                 removed.expect("Timeout removed").as_ref().timeout_signature,
@@ -894,5 +907,134 @@ mod test {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn reject_invalid_timeout_sender() {
+        let epoch_manager = EpochManager::new(SeqNum(5), Round(5), &[(Epoch(1), Round(0))]);
+        let mut metrics = Metrics::default();
+        let mut pacemaker = Pacemaker::<
+            SignatureType,
+            SignatureCollectionType,
+            ExecutionProtocolType,
+            ChainConfigType,
+            ChainRevisionType,
+        >::new(
+            Duration::from_secs(1),
+            MockChainConfig::new(&CHAIN_PARAMS),
+            Duration::from_secs(0),
+            &epoch_manager,
+            RoundCertificate::Qc(QuorumCertificate::genesis_qc()),
+        );
+        let mut safety = Safety::default();
+
+        let (keys, certkeys, valset, vmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(4, ValidatorSetFactory::default());
+        let timeout_epoch = Epoch(1);
+        let timeout_round = Round(1);
+        let high_qc = get_high_qc(
+            Epoch(1),
+            Round(0),
+            keys.iter()
+                .map(CertificateKeyPair::pubkey)
+                .collect::<Vec<_>>()
+                .as_slice(),
+            certkeys.as_slice(),
+            &vmap,
+        );
+
+        let tm0 = create_timeout_message(
+            &certkeys[0],
+            timeout_epoch,
+            timeout_round,
+            high_qc.clone(),
+            true,
+        );
+        let tm1 = create_timeout_message(
+            &certkeys[1],
+            timeout_epoch,
+            timeout_round,
+            high_qc.clone(),
+            true,
+        );
+        let tm2_invalid = create_timeout_message(
+            &certkeys[2],
+            timeout_epoch,
+            timeout_round,
+            high_qc.clone(),
+            false,
+        );
+        let tm2_valid = create_timeout_message(
+            &certkeys[2],
+            timeout_epoch,
+            timeout_round,
+            high_qc.clone(),
+            true,
+        );
+        let tm3 = create_timeout_message(&certkeys[3], timeout_epoch, timeout_round, high_qc, true);
+
+        let _ = pacemaker.process_remote_timeout(
+            &mut metrics,
+            &epoch_manager,
+            &valset,
+            &vmap,
+            &mut safety,
+            NodeId::new(keys[0].pubkey()),
+            tm0,
+        );
+        let _ = pacemaker.process_remote_timeout(
+            &mut metrics,
+            &epoch_manager,
+            &valset,
+            &vmap,
+            &mut safety,
+            NodeId::new(keys[1].pubkey()),
+            tm1,
+        );
+
+        // record v2 as invalid timeout sender after signature verification
+        // failure
+        let cmds = pacemaker.process_remote_timeout(
+            &mut metrics,
+            &epoch_manager,
+            &valset,
+            &vmap,
+            &mut safety,
+            NodeId::new(keys[2].pubkey()),
+            tm2_invalid,
+        );
+        assert!(cmds.is_empty());
+        assert!(pacemaker
+            .invalid_timeout_senders
+            .contains(&NodeId::new(keys[2].pubkey())));
+
+        // valid timeout from v2 is ignored
+        let cmds = pacemaker.process_remote_timeout(
+            &mut metrics,
+            &epoch_manager,
+            &valset,
+            &vmap,
+            &mut safety,
+            NodeId::new(keys[2].pubkey()),
+            tm2_valid,
+        );
+        assert!(cmds.is_empty());
+        assert_eq!(pacemaker.get_current_round(), Round(1));
+
+        let _ = pacemaker.process_remote_timeout(
+            &mut metrics,
+            &epoch_manager,
+            &valset,
+            &vmap,
+            &mut safety,
+            NodeId::new(keys[3].pubkey()),
+            tm3,
+        );
+        assert_eq!(pacemaker.get_current_round(), Round(2));
+        // invalid sender is cleared after round change
+        assert!(pacemaker.invalid_timeout_senders.is_empty());
     }
 }

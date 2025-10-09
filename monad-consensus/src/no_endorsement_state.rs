@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use monad_consensus_types::no_endorsement::NoEndorsementCertificate;
 use monad_crypto::signing_domain;
@@ -42,6 +42,7 @@ struct RoundNoEndorsementState<SCT: SignatureCollection> {
     qc_round_no_endorsements:
         HashMap<Round, BTreeMap<NodeId<SCT::NodeIdPubKey>, SCT::SignatureType>>,
     node_no_endorsements: HashMap<NodeId<SCT::NodeIdPubKey>, HashSet<SCT::SignatureType>>,
+    invalid_no_endorsement_senders: BTreeSet<NodeId<SCT::NodeIdPubKey>>,
     certificate: Option<NoEndorsementCertificate<SCT>>,
 }
 
@@ -50,6 +51,7 @@ impl<SCT: SignatureCollection> Default for RoundNoEndorsementState<SCT> {
         Self {
             qc_round_no_endorsements: HashMap::new(),
             node_no_endorsements: HashMap::new(),
+            invalid_no_endorsement_senders: BTreeSet::new(),
             certificate: None,
         }
     }
@@ -115,6 +117,14 @@ where
             .qc_round_no_endorsements
             .entry(no_endorsement.tip_qc_round)
             .or_default();
+        if round_state.invalid_no_endorsement_senders.contains(author) {
+            debug!(
+                ?round,
+                ?author,
+                "Ignoring no-endorsement from invalid sender"
+            );
+            return (None, ret_commands);
+        }
         round_pending_no_endorsements.insert(*author, no_endorsement_msg.signature);
 
         debug!(
@@ -160,6 +170,7 @@ where
                     // remove invalid signatures from round_pending_no_endorsements, and populate commands
                     let cmds = Self::handle_invalid_no_endorsement(
                         round_pending_no_endorsements,
+                        &mut round_state.invalid_no_endorsement_senders,
                         invalid_sigs,
                     );
 
@@ -183,13 +194,16 @@ where
     #[must_use]
     fn handle_invalid_no_endorsement(
         pending_entry: &mut BTreeMap<NodeId<SCT::NodeIdPubKey>, SCT::SignatureType>,
+        invalid_senders: &mut BTreeSet<NodeId<SCT::NodeIdPubKey>>,
         invalid_no_endorsements: Vec<(NodeId<SCT::NodeIdPubKey>, SCT::SignatureType)>,
     ) -> Vec<NoEndorsementStateCommand> {
-        let invalid_no_endorsement_set = invalid_no_endorsements
-            .into_iter()
-            .map(|(a, _)| a)
-            .collect::<HashSet<_>>();
-        pending_entry.retain(|node_id, _| !invalid_no_endorsement_set.contains(node_id));
+        for (node_id, _) in &invalid_no_endorsements {
+            info!(sender = ?node_id, "Invalid no-endorsement signature");
+            invalid_senders.insert(*node_id);
+        }
+
+        pending_entry.retain(|node_id, _| !invalid_senders.contains(node_id));
+
         // TODO: evidence
         vec![]
     }
@@ -202,5 +216,199 @@ where
     pub fn get_nec(&self, round: &Round) -> Option<&NoEndorsementCertificate<SCT>> {
         let state = self.pending_no_endorsements.get(round)?;
         state.certificate.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use monad_consensus_types::no_endorsement::NoEndorsement;
+    use monad_crypto::{
+        certificate_signature::{CertificateKeyPair, CertificateSignature},
+        NopSignature,
+    };
+    use monad_multi_sig::MultiSig;
+    use monad_testutil::validators::create_keys_w_validators;
+    use monad_types::Epoch;
+    use monad_validator::{
+        signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+        validator_set::ValidatorSetFactory,
+    };
+
+    use super::*;
+
+    type SigningDomainType = signing_domain::NoEndorsement;
+    type SignatureType = NopSignature;
+    type SignatureCollectionType = MultiSig<SignatureType>;
+
+    fn create_no_endorsement_message<SCT: SignatureCollection>(
+        cert_keypair: &SignatureCollectionKeyPairType<SCT>,
+        ne_round: Round,
+        tip_qc_round: Round,
+        valid: bool,
+    ) -> NoEndorsementMessage<SCT> {
+        let ne = NoEndorsement {
+            epoch: Epoch(1),
+            round: ne_round,
+            tip_qc_round,
+        };
+        let mut ne_msg = NoEndorsementMessage::new(ne, cert_keypair);
+        if !valid {
+            let garbage = b"garbage";
+            ne_msg.signature = <SCT::SignatureType as CertificateSignature>::sign::<
+                SigningDomainType,
+            >(garbage, cert_keypair);
+        }
+        ne_msg
+    }
+
+    #[test]
+    fn repeat_invalid_no_endorsement() {
+        let mut ne_state = NoEndorsementState::<SignatureCollectionType>::new(Round(1));
+
+        let (keys, certkeys, valset, vmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(4, ValidatorSetFactory::default());
+        let ne_round = Round(1);
+        let tip_qc_round = Round(0);
+
+        let ne0_valid = create_no_endorsement_message(&certkeys[0], ne_round, tip_qc_round, true);
+        let ne1_valid = create_no_endorsement_message(&certkeys[1], ne_round, tip_qc_round, true);
+        let ne2_invalid =
+            create_no_endorsement_message(&certkeys[2], ne_round, tip_qc_round, false);
+        let ne2_valid = create_no_endorsement_message(&certkeys[2], ne_round, tip_qc_round, true);
+
+        let (nec, _cmds) = ne_state.process_no_endorsement(
+            &NodeId::new(keys[0].pubkey()),
+            &ne0_valid,
+            &valset,
+            &vmap,
+        );
+        assert!(nec.is_none());
+        assert!(
+            ne_state
+                .pending_no_endorsements
+                .get(&ne_round)
+                .unwrap()
+                .qc_round_no_endorsements
+                .get(&tip_qc_round)
+                .unwrap()
+                .len()
+                == 1
+        );
+
+        let (nec, _cmds) = ne_state.process_no_endorsement(
+            &NodeId::new(keys[1].pubkey()),
+            &ne1_valid,
+            &valset,
+            &vmap,
+        );
+        assert!(nec.is_none());
+        assert!(
+            ne_state
+                .pending_no_endorsements
+                .get(&ne_round)
+                .unwrap()
+                .qc_round_no_endorsements
+                .get(&tip_qc_round)
+                .unwrap()
+                .len()
+                == 2
+        );
+
+        // an NE crossing supermajority invokes signature collection creation,
+        // which identifies the invalid signature
+        let (nec, _cmds) = ne_state.process_no_endorsement(
+            &NodeId::new(keys[2].pubkey()),
+            &ne2_invalid,
+            &valset,
+            &vmap,
+        );
+        assert!(nec.is_none());
+        assert!(
+            ne_state
+                .pending_no_endorsements
+                .get(&ne_round)
+                .unwrap()
+                .qc_round_no_endorsements
+                .get(&tip_qc_round)
+                .unwrap()
+                .len()
+                == 2
+        );
+        assert!(
+            ne_state
+                .pending_no_endorsements
+                .get(&ne_round)
+                .unwrap()
+                .invalid_no_endorsement_senders
+                .len()
+                == 1
+        );
+        assert!(ne_state
+            .pending_no_endorsements
+            .get(&ne_round)
+            .unwrap()
+            .invalid_no_endorsement_senders
+            .contains(&NodeId::new(keys[2].pubkey())));
+
+        // valid NE message from v2 is rejected in the same round
+        let (nec, _cmds) = ne_state.process_no_endorsement(
+            &NodeId::new(keys[2].pubkey()),
+            &ne2_valid,
+            &valset,
+            &vmap,
+        );
+        assert!(nec.is_none());
+        assert!(
+            ne_state
+                .pending_no_endorsements
+                .get(&ne_round)
+                .unwrap()
+                .qc_round_no_endorsements
+                .get(&tip_qc_round)
+                .unwrap()
+                .len()
+                == 2
+        );
+
+        // new round accepts NE from v2
+        ne_state.start_new_round(Round(2));
+        let ne_round = Round(2);
+        let ne0_valid = create_no_endorsement_message(&certkeys[0], ne_round, tip_qc_round, true);
+        let ne1_valid = create_no_endorsement_message(&certkeys[1], ne_round, tip_qc_round, true);
+        let ne2_valid = create_no_endorsement_message(&certkeys[2], ne_round, tip_qc_round, true);
+
+        let (_nec, _cmds) = ne_state.process_no_endorsement(
+            &NodeId::new(keys[0].pubkey()),
+            &ne0_valid,
+            &valset,
+            &vmap,
+        );
+        let (_nec, _cmds) = ne_state.process_no_endorsement(
+            &NodeId::new(keys[1].pubkey()),
+            &ne1_valid,
+            &valset,
+            &vmap,
+        );
+        let (nec, _cmds) = ne_state.process_no_endorsement(
+            &NodeId::new(keys[2].pubkey()),
+            &ne2_valid,
+            &valset,
+            &vmap,
+        );
+        assert!(nec.is_some());
+        assert!(
+            ne_state
+                .pending_no_endorsements
+                .get(&ne_round)
+                .unwrap()
+                .qc_round_no_endorsements
+                .get(&tip_qc_round)
+                .unwrap()
+                .len()
+                == 3
+        );
     }
 }

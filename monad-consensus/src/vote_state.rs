@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use monad_consensus_types::{quorum_certificate::QuorumCertificate, voting::Vote};
 use monad_crypto::{
@@ -52,6 +52,9 @@ struct RoundVoteState<PT: PubKey, ST: CertificateSignature> {
     // All vote hashes each node has voted on; multiple vote hashes for a given node implies
     // they're malicious
     node_votes: HashMap<NodeId<PT>, HashSet<ST>>,
+    // Validators sending invalid signatures are rejected from sending more
+    // votes in the same round
+    invalid_voters: BTreeSet<NodeId<PT>>,
 }
 
 impl<PT: PubKey, ST: CertificateSignature> Default for RoundVoteState<PT, ST> {
@@ -59,6 +62,7 @@ impl<PT: PubKey, ST: CertificateSignature> Default for RoundVoteState<PT, ST> {
         RoundVoteState {
             pending_votes: HashMap::new(),
             node_votes: HashMap::new(),
+            invalid_voters: BTreeSet::new(),
         }
     }
 }
@@ -117,6 +121,12 @@ where
 
         // pending votes for a given round + vote hash
         let round_pending_votes = round_state.pending_votes.entry(vote).or_default();
+        if round_state.invalid_voters.contains(author) {
+            // ignore votes from voters that have sent an invalid vote in same
+            // round
+            debug!(?round, ?author, "Ignoring vote from invalid voter");
+            return (None, ret_commands);
+        }
         round_pending_votes.insert(*author, vote_msg.sig);
 
         debug!(
@@ -156,7 +166,11 @@ where
                 }
                 Err(SignatureCollectionError::InvalidSignaturesCreate(invalid_sigs)) => {
                     // remove invalid signatures from round_pending_votes, and populate commands
-                    let cmds = Self::handle_invalid_vote(round_pending_votes, invalid_sigs);
+                    let cmds = Self::handle_invalid_vote(
+                        round_pending_votes,
+                        &mut round_state.invalid_voters,
+                        invalid_sigs,
+                    );
 
                     warn!(
                         round = ?vote.round,
@@ -182,13 +196,15 @@ where
     #[must_use]
     fn handle_invalid_vote(
         pending_entry: &mut BTreeMap<NodeId<SCT::NodeIdPubKey>, SCT::SignatureType>,
+        invalid_voters: &mut BTreeSet<NodeId<SCT::NodeIdPubKey>>,
         invalid_votes: Vec<(NodeId<SCT::NodeIdPubKey>, SCT::SignatureType)>,
     ) -> Vec<VoteStateCommand> {
-        let invalid_vote_set = invalid_votes
-            .into_iter()
-            .map(|(a, _)| a)
-            .collect::<HashSet<_>>();
-        pending_entry.retain(|node_id, _| !invalid_vote_set.contains(node_id));
+        for (voter, _invalid_vote) in invalid_votes {
+            info!(?voter, "Invalid vote signature");
+            invalid_voters.insert(voter);
+        }
+
+        pending_entry.retain(|node_id, _| !invalid_voters.contains(node_id));
         // TODO: evidence
         vec![]
     }
@@ -516,6 +532,121 @@ mod test {
                 .unwrap()
                 .len()
                 == 2
+        );
+    }
+
+    #[test]
+    fn reject_invalid_voter() {
+        let mut votestate = VoteState::<SignatureCollectionType>::new(Round(0));
+        let (keys, certkeys, valset, vmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(4, ValidatorSetFactory::default());
+        let vote_round = Round(0);
+
+        let v0_valid = create_vote_message(&certkeys[0], vote_round, true);
+        let v1_valid = create_vote_message(&certkeys[1], vote_round, true);
+        let v2_invalid = create_vote_message(&certkeys[2], vote_round, false);
+        let v2_valid = create_vote_message(&certkeys[2], vote_round, true);
+
+        let vote = v0_valid.vote;
+
+        let (qc, _) =
+            votestate.process_vote(&NodeId::new(keys[0].pubkey()), &v0_valid, &valset, &vmap);
+        assert!(qc.is_none());
+        assert!(
+            votestate
+                .pending_votes
+                .get(&vote_round)
+                .unwrap()
+                .pending_votes
+                .get(&vote)
+                .unwrap()
+                .len()
+                == 1
+        );
+
+        let (qc, _) =
+            votestate.process_vote(&NodeId::new(keys[1].pubkey()), &v1_valid, &valset, &vmap);
+        assert!(qc.is_none());
+        assert!(
+            votestate
+                .pending_votes
+                .get(&vote_round)
+                .unwrap()
+                .pending_votes
+                .get(&vote)
+                .unwrap()
+                .len()
+                == 2
+        );
+
+        // VoteState attempts to create a QC, but failed because one of the sigs
+        // is invalid doesn't have supermajority after removing the invalid
+        let (qc, _) =
+            votestate.process_vote(&NodeId::new(keys[2].pubkey()), &v2_invalid, &valset, &vmap);
+        assert!(qc.is_none());
+        assert!(
+            votestate
+                .pending_votes
+                .get(&vote_round)
+                .unwrap()
+                .pending_votes
+                .get(&vote)
+                .unwrap()
+                .len()
+                == 2
+        );
+        assert!(votestate
+            .pending_votes
+            .get(&vote_round)
+            .unwrap()
+            .invalid_voters
+            .contains(&NodeId::new(keys[2].pubkey())));
+
+        // voter previously sending invalid vote is rejected in the same round
+        let (qc, _) =
+            votestate.process_vote(&NodeId::new(keys[2].pubkey()), &v2_valid, &valset, &vmap);
+        assert!(qc.is_none());
+        assert!(
+            votestate
+                .pending_votes
+                .get(&vote_round)
+                .unwrap()
+                .pending_votes
+                .get(&vote)
+                .unwrap()
+                .len()
+                == 2
+        );
+
+        // v2 votes can get accepted in new round
+        votestate.start_new_round(Round(1));
+        let vote_round = Round(1);
+        let v0_valid = create_vote_message(&certkeys[0], vote_round, true);
+        let v1_valid = create_vote_message(&certkeys[1], vote_round, true);
+        let v2_valid = create_vote_message(&certkeys[2], vote_round, true);
+        let vote = v0_valid.vote;
+
+        let (_qc, _) =
+            votestate.process_vote(&NodeId::new(keys[0].pubkey()), &v0_valid, &valset, &vmap);
+        let (_qc, _) =
+            votestate.process_vote(&NodeId::new(keys[1].pubkey()), &v1_valid, &valset, &vmap);
+        let (qc, _) =
+            votestate.process_vote(&NodeId::new(keys[2].pubkey()), &v2_valid, &valset, &vmap);
+        assert!(qc.is_some());
+        // all three votes are recorded
+        assert!(
+            votestate
+                .pending_votes
+                .get(&vote_round)
+                .unwrap()
+                .pending_votes
+                .get(&vote)
+                .unwrap()
+                .len()
+                == 3
         );
     }
 }
