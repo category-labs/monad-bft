@@ -9,8 +9,8 @@ ExecStart=/usr/local/bin/monad \
     --db /dev/triedb \
     --block_db /home/monad/monad-bft/ledger \
     --nblocks 0 \
-    --ro_sq_thread_cpu 5 \
-    --sq_thread_cpu 6 \
+    --ro_sq_thread_cpu 1 \
+    --sq_thread_cpu 2 \
     --log_level INFO
 EnvironmentFile=-/home/monad/.env
 User=monad
@@ -18,7 +18,8 @@ Restart=no
 Group=monad
 DeviceAllow=/dev/triedb rw
 LimitNOFILE=1048576
-AllowedCPUs=4-11
+AllowedCPUs=1-7
+CPUAffinity=1,2,3,4,5,6,7
 # Hugemem configs below
 LimitMEMLOCK=infinity
 MemoryDenyWriteExecute=false
