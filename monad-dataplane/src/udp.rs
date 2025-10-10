@@ -26,13 +26,54 @@ use monoio::{net::udp::UdpSocket, spawn, time};
 use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
 
-use super::{RecvUdpMsg, UdpMsg};
+use super::{RecvUdpMsg, UdpMsg, UdpPriority};
 use crate::buffer_ext::SocketBufferExt;
 
 #[derive(Debug, Clone)]
 pub(crate) enum UdpMessageType {
     Broadcast,
     Direct,
+}
+
+impl From<usize> for UdpPriority {
+    fn from(value: usize) -> Self {
+        match value {
+            0 => UdpPriority::High,
+            _ => UdpPriority::Regular,
+        }
+    }
+}
+
+struct PriorityQueues {
+    queues: [VecDeque<(SocketAddr, Bytes, u16, UdpMessageType)>; 2],
+}
+
+impl PriorityQueues {
+    fn new() -> Self {
+        Self {
+            queues: [VecDeque::new(), VecDeque::new()],
+        }
+    }
+
+    fn push(&mut self, priority: UdpPriority, item: (SocketAddr, Bytes, u16, UdpMessageType)) {
+        self.queues[priority as usize].push_back(item);
+    }
+
+    fn pop_highest_priority(
+        &mut self,
+    ) -> Option<(UdpPriority, SocketAddr, Bytes, u16, UdpMessageType)> {
+        for (idx, queue) in self.queues.iter_mut().enumerate() {
+            if let Some(item) = queue.pop_front() {
+                let priority = UdpPriority::from(idx);
+                return Some((priority, item.0, item.1, item.2, item.3));
+            }
+        }
+        None
+    }
+
+    fn is_empty(&self) -> bool {
+        self.queues.iter().all(|q| q.is_empty())
+    }
 }
 
 // When running in docker with vpnkit, the maximum safe MTU is 1480, as per:
@@ -204,18 +245,29 @@ async fn tx(
 
     let mut next_transmit = Instant::now();
 
-    let mut messages_to_send: VecDeque<(SocketAddr, Bytes, u16, UdpMessageType)> = VecDeque::new();
+    let mut priority_queues = PriorityQueues::new();
 
     loop {
-        while messages_to_send.is_empty() || !udp_egress_rx.is_empty() {
-            let Some((addr, udp_msg)) = udp_egress_rx.recv().await else {
-                return;
-            };
+        let now = Instant::now();
+        if next_transmit > now {
+            time::sleep(next_transmit - now).await;
+        } else {
+            let late = now - next_transmit;
 
-            messages_to_send.push_back((addr, udp_msg.payload, udp_msg.stride, udp_msg.msg_type));
+            if late > PACING_SLEEP_OVERSHOOT_DETECTION_WINDOW {
+                next_transmit = now;
+            }
         }
 
-        let (addr, mut payload, stride, msg_type) = messages_to_send.pop_front().unwrap();
+        if fill_message_queues(&mut udp_egress_rx, &mut priority_queues)
+            .await
+            .is_err()
+        {
+            return;
+        }
+
+        let (priority, addr, mut payload, stride, msg_type) =
+            priority_queues.pop_highest_priority().unwrap();
 
         if udp_segment_size != stride {
             udp_segment_size = stride;
@@ -226,18 +278,6 @@ async fn tx(
         // Transmit the first max_chunk bytes of this (addr, payload) pair.
         let chunk = payload.split_to(payload.len().min(max_chunk.into()));
         let chunk_len = chunk.len();
-
-        let now = Instant::now();
-
-        if next_transmit > now {
-            time::sleep(next_transmit - now).await;
-        } else {
-            let late = now - next_transmit;
-
-            if late > PACING_SLEEP_OVERSHOOT_DETECTION_WINDOW {
-                next_transmit = now;
-            }
-        }
 
         let socket = match (&msg_type, &direct_socket_tx) {
             (UdpMessageType::Direct, Some(direct_socket)) => direct_socket,
@@ -302,10 +342,28 @@ async fn tx(
 
             // Re-queue (addr, payload) at the end of the list if there are bytes left to transmit.
             if !payload.is_empty() {
-                messages_to_send.push_back((addr, payload, stride, msg_type));
+                priority_queues.push(priority, (addr, payload, stride, msg_type.clone()));
             }
         }
     }
+}
+
+async fn fill_message_queues(
+    udp_egress_rx: &mut mpsc::Receiver<(SocketAddr, UdpMsg)>,
+    priority_queues: &mut PriorityQueues,
+) -> Result<(), ()> {
+    while priority_queues.is_empty() || !udp_egress_rx.is_empty() {
+        match udp_egress_rx.recv().await {
+            Some((addr, udp_msg)) => {
+                priority_queues.push(
+                    udp_msg.priority,
+                    (addr, udp_msg.payload, udp_msg.stride, udp_msg.msg_type),
+                );
+            }
+            None => return Err(()),
+        }
+    }
+    Ok(())
 }
 
 fn set_udp_segment_size(socket: &UdpSocket, udp_segment_size: u16) {
