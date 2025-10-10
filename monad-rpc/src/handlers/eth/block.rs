@@ -54,7 +54,7 @@ pub async fn get_block_key_from_tag_or_hash<T: Triedb>(
 
 #[rpc(method = "eth_blockNumber")]
 #[allow(non_snake_case)]
-#[tracing::instrument(level = "debug", skip_all)]
+#[tracing::instrument(level = "debug", skip_all, fields(chainstate.source))]
 /// Returns the number of most recent block.
 pub async fn monad_eth_blockNumber<T: Triedb>(
     chain_state: &ChainState<T>,
