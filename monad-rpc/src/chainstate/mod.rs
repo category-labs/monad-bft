@@ -101,11 +101,11 @@ impl<T: Triedb> ChainState<T> {
     }
 
     pub fn get_latest_block_number(&self) -> u64 {
-        if let Some(buffer) = &self.buffer {
-            buffer.get_latest_safe_voted_block_num()
-        } else {
-            self.triedb_env.get_latest_voted_block_key().seq_num().0
-        }
+        // Return triedb's latest block number.
+        // There is a race condition between buffer and triedb for common wallet workflows.
+        // For example, a wallet might call `eth_getBalance` after calling `eth_getBlockByNumber`
+        // and the balance might not be updated in triedb yet.
+        self.triedb_env.get_latest_voted_block_key().seq_num().0
     }
 
     pub async fn get_transaction_receipt(
