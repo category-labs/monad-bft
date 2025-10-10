@@ -270,12 +270,12 @@ async fn main() -> std::io::Result<()> {
     };
 
     let eth_call_executor = args.triedb_path.clone().as_deref().map(|path| {
-        Arc::new(tokio::sync::Mutex::new(EthCallExecutor::new(
+        Arc::new(EthCallExecutor::new(
             low_pool_config,
             high_pool_config,
             args.eth_call_executor_node_lru_max_mem,
             path,
-        )))
+        ))
     });
 
     let meter_provider: Option<opentelemetry_sdk::metrics::SdkMeterProvider> =

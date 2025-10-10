@@ -32,7 +32,6 @@ use monad_chain_config::{
     MONAD_TESTNET2_CHAIN_ID, MONAD_TESTNET_CHAIN_ID,
 };
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 #[allow(dead_code, non_camel_case_types, non_upper_case_globals)]
@@ -191,7 +190,7 @@ pub async fn eth_call(
     sender: Address,
     block_number: u64,
     block_id: Option<[u8; 32]>,
-    eth_call_executor: Arc<Mutex<EthCallExecutor>>,
+    eth_call_executor: Arc<EthCallExecutor>,
     state_override_set: &StateOverrideSet,
     tracer: MonadTracer,
     gas_specified: bool,
@@ -308,15 +307,11 @@ pub async fn eth_call(
     let (send, recv) = channel();
     let sender_ctx = Box::new(SenderContext { sender: send });
 
-    // hold lock on executor while submitting the task
-    let executor_lock = eth_call_executor.lock().await;
-    let eth_call_executor = executor_lock.eth_call_executor;
-
     unsafe {
         let sender_ctx_ptr = Box::into_raw(sender_ctx);
 
         bindings::monad_eth_call_executor_submit(
-            eth_call_executor,
+            eth_call_executor.eth_call_executor,
             chain_config,
             rlp_encoded_tx.as_ptr(),
             rlp_encoded_tx.len(),
@@ -334,9 +329,6 @@ pub async fn eth_call(
             gas_specified,
         )
     };
-
-    // lock is dropped after the task has been submitted
-    drop(executor_lock);
 
     let result = match recv.await {
         Ok(r) => r,
