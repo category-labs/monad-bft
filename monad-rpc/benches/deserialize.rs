@@ -33,8 +33,8 @@ where
 
     match request {
         RequestWrapper::Single(json_request) => {
-            let request = serde_json::from_str::<Request>(json_request.get())
-                .map_err(|_| JsonRpcError::parse_error())?;
+            let request =
+                Request::from_raw_value(json_request).map_err(|_| JsonRpcError::parse_error())?;
 
             let parsed_params: T = serde_json::from_str(request.params.get()).invalid_params()?;
 
@@ -51,7 +51,7 @@ where
             json_batch_request
                 .into_iter()
                 .map(|json_request| {
-                    let request = serde_json::from_str::<Request>(json_request.get()).unwrap();
+                    let request = Request::from_raw_value(json_request).unwrap();
 
                     black_box(request);
                 })
