@@ -40,6 +40,7 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 monad-testutil = { workspace = true }
+alloy-primitives = { workspace = true }
 
 clap = { workspace = true, features = ["derive"] }
 rstest = { workspace = true }
@@ -51,6 +52,10 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [[bench]]
 name = "raptor_bench"
+harness = false
+
+[[bench]]
+name = "encode_bench"
 harness = false
 
 [[example]]
