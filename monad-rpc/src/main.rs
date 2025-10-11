@@ -28,8 +28,9 @@ use monad_rpc::{
     comparator::RpcComparator,
     event::EventServer,
     handlers::{
+        enable_group,
         resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
-        rpc_handler,
+        rpc_handler, MethodGroup,
     },
     metrics,
     timing::TimingMiddleware,
@@ -338,6 +339,10 @@ async fn main() -> std::io::Result<()> {
         .rpc_comparison_endpoint
         .as_ref()
         .map(|endpoint| RpcComparator::new(endpoint.to_string(), node_config.node_name));
+
+    for grp in args.rpc_namespaces.into_iter() {
+        enable_group(grp);
+    }
 
     let app_state = MonadRpcResources::new(
         txpool_bridge_client,
