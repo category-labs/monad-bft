@@ -23,13 +23,13 @@ use crate::chainstate::ChainStateError;
 
 pub const JSONRPC_VERSION: &str = "2.0";
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Request {
     #[serde(deserialize_with = "deserialize_jsonrpc")]
     pub jsonrpc: String,
     pub method: String,
     #[serde(default)]
-    pub params: Value,
+    pub params: Box<RawValue>,
     #[serde(deserialize_with = "deserialize_id")]
     pub id: RequestId,
 }
@@ -132,7 +132,7 @@ pub enum RequestWrapper<T> {
 
 impl Request {
     #[allow(dead_code)]
-    pub fn new(method: String, params: Value, id: i64) -> Self {
+    pub fn new(method: String, params: Box<RawValue>, id: i64) -> Self {
         Self {
             jsonrpc: JSONRPC_VERSION.into(),
             method,
@@ -442,77 +442,77 @@ impl From<monad_archive::prelude::Report> for JsonRpcError {
         Self::internal_error(format!("Archive error: {}", e.to_string()))
     }
 }
-
 #[cfg(test)]
 mod test {
-    use serde_json::Value;
-
     use super::Request;
     use crate::jsonrpc::RequestId;
 
     #[test]
     fn test_request() {
-        let s = r#"
+        for (s, expected_request_id) in [
+            (
+                r#"
                 {
                     "jsonrpc": "2.0",
                     "method": "foobar",
                     "params": [42, 43],
                     "id": 1
                 }
-                "#;
-        let req: Result<Request, serde_json::Error> = serde_json::from_str(s);
-        assert_eq!(
-            Request {
-                jsonrpc: "2.0".into(),
-                method: "foobar".into(),
-                params: Value::Array(vec![Value::Number(42.into()), Value::Number(43.into())]),
-                id: RequestId::Number(1),
-            },
-            req.unwrap()
-        );
-
-        let req: Result<Request, serde_json::Error> = serde_json::from_slice(s.as_bytes());
-        assert_eq!(
-            Request {
-                jsonrpc: "2.0".into(),
-                method: "foobar".into(),
-                params: Value::Array(vec![Value::Number(42.into()), Value::Number(43.into())]),
-                id: RequestId::Number(1),
-            },
-            req.unwrap()
-        );
-    }
-
-    #[test]
-    fn test_str_request() {
-        let s = r#"
+                "#,
+                RequestId::Number(1),
+            ),
+            (
+                r#"
                 {
                     "jsonrpc": "2.0",
                     "method": "foobar",
                     "params": [42, 43],
                     "id": "string-id"
                 }
-                "#;
-        let req: Result<Request, serde_json::Error> = serde_json::from_str(s);
-        assert_eq!(
-            Request {
-                jsonrpc: "2.0".into(),
-                method: "foobar".into(),
-                params: Value::Array(vec![Value::Number(42.into()), Value::Number(43.into())]),
-                id: RequestId::String("string-id".into()),
-            },
-            req.unwrap()
-        );
+                "#,
+                RequestId::String("string-id".to_string()),
+            ),
+            (
+                r#"
+                {
+                    "jsonrpc": "2.0",
+                    "method": "foobar",
+                    "params": [42, 43],
+                    "id": null
+                }
+                "#,
+                RequestId::Null,
+            ),
+        ] {
+            for request in [
+                serde_json::from_str(s).unwrap(),
+                serde_json::from_slice(s.as_bytes()).unwrap(),
+            ] {
+                let Request {
+                    jsonrpc,
+                    method,
+                    id,
+                    params,
+                } = request;
 
-        let req: Result<Request, serde_json::Error> = serde_json::from_slice(s.as_bytes());
-        assert_eq!(
-            Request {
-                jsonrpc: "2.0".into(),
-                method: "foobar".into(),
-                params: Value::Array(vec![Value::Number(42.into()), Value::Number(43.into())]),
-                id: RequestId::String("string-id".into()),
-            },
-            req.unwrap()
-        );
+                assert_eq!(jsonrpc, "2.0");
+                assert_eq!(method, "foobar");
+                assert_eq!(params.get(), "[42, 43]");
+                assert_eq!(id, expected_request_id);
+            }
+        }
+    }
+
+    #[test]
+    fn test_request_without_id() {
+        let s = r#"
+                {
+                    "jsonrpc": "2.0",
+                    "method": "foobar",
+                    "params": [42, 43]
+                }
+                "#;
+
+        assert!(serde_json::from_str::<Request>(s).is_err());
     }
 }

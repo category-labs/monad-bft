@@ -399,7 +399,7 @@ async fn handle_request(
 ) -> Result<(), CloseReason> {
     match request.method.as_str() {
         "eth_subscribe" => {
-            let Ok(req) = serde_json::from_value::<EthSubscribeRequest>(request.params) else {
+            let Ok(req) = serde_json::from_str::<EthSubscribeRequest>(request.params.get()) else {
                 if let Err(err) = ctx
                     .text(to_response(&crate::jsonrpc::Response::new(
                         None,
@@ -509,7 +509,8 @@ async fn handle_request(
             }
         }
         "eth_unsubscribe" => {
-            let Ok(req) = serde_json::from_value::<EthUnsubscribeRequest>(request.params) else {
+            let Ok(req) = serde_json::from_str::<EthUnsubscribeRequest>(request.params.get())
+            else {
                 if let Err(err) = ctx
                     .text(to_response(&crate::jsonrpc::Response::new(
                         None,
