@@ -29,20 +29,21 @@ fn deserialize<T>(body: &Bytes) -> Result<ResponseWrapper<()>, JsonRpcError>
 where
     T: DeserializeOwned,
 {
-    let request: RequestWrapper<Value> = serde_json::from_slice(body).unwrap();
+    let request = RequestWrapper::from_body_bytes(body).unwrap();
 
     match request {
         RequestWrapper::Single(json_request) => {
-            let request = serde_json::from_value::<Request>(json_request.clone())
+            let request = serde_json::from_str::<Request>(json_request.get())
                 .map_err(|_| JsonRpcError::parse_error())?;
 
-            let params = request.params.clone();
+            let parsed_params: T = serde_json::from_str(request.params.get()).invalid_params()?;
 
-            let parsed_params: T = serde_json::from_value(params).invalid_params()?;
+            let id = request.id.clone();
 
             black_box(request);
             black_box(json_request);
             black_box(parsed_params);
+            black_box(id);
 
             Ok(ResponseWrapper::Single(()))
         }
@@ -50,7 +51,7 @@ where
             json_batch_request
                 .into_iter()
                 .map(|json_request| {
-                    let request = serde_json::from_value::<Request>(json_request).unwrap();
+                    let request = serde_json::from_str::<Request>(json_request.get()).unwrap();
 
                     black_box(request);
                 })

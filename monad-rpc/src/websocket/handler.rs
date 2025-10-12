@@ -29,7 +29,7 @@ use itertools::Either;
 use monad_exec_events::BlockCommitState;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use serde_json::{value::RawValue, Value};
+use serde_json::value::RawValue;
 use tokio::sync::{broadcast, Semaphore, TryAcquireError};
 use tracing::{debug, error, warn};
 
@@ -188,7 +188,7 @@ async fn handler(
                     Some(Ok(AggregatedMessage::Text(body))) => {
                         last_heartbeat = Instant::now();
 
-                        let request = to_request::<Request>(&body);
+                        let request = to_request::<Request<'_>>(body.as_bytes());
 
                         match request {
                             Ok(req) => {
@@ -209,7 +209,7 @@ async fn handler(
                     Some(Ok(AggregatedMessage::Binary(body))) => {
                         last_heartbeat = Instant::now();
 
-                        let request = to_request::<Request>(&body);
+                        let request = to_request::<Request<'_>>(&body);
 
                         match request {
                             Ok(req) => {
@@ -395,11 +395,11 @@ async fn handle_request(
     subscriptions: &mut HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<Filter>)>>,
     subscription_limit: u16,
     app_state: &MonadRpcResources,
-    request: Request,
+    request: Request<'_>,
 ) -> Result<(), CloseReason> {
     match request.method.as_str() {
         "eth_subscribe" => {
-            let Ok(req) = serde_json::from_value::<EthSubscribeRequest>(request.params) else {
+            let Ok(req) = serde_json::from_str::<EthSubscribeRequest>(request.params.get()) else {
                 if let Err(err) = ctx
                     .text(to_response(&crate::jsonrpc::Response::new(
                         None,
@@ -509,7 +509,8 @@ async fn handle_request(
             }
         }
         "eth_unsubscribe" => {
-            let Ok(req) = serde_json::from_value::<EthUnsubscribeRequest>(request.params) else {
+            let Ok(req) = serde_json::from_str::<EthUnsubscribeRequest>(request.params.get())
+            else {
                 if let Err(err) = ctx
                     .text(to_response(&crate::jsonrpc::Response::new(
                         None,
@@ -621,15 +622,15 @@ fn to_response<S: Serialize + std::fmt::Debug>(resp: &S) -> String {
     }
 }
 
-fn to_request<T: serde::de::DeserializeOwned>(
-    body: impl AsRef<[u8]>,
-) -> Result<Request, JsonRpcError> {
-    let request: RequestWrapper<Value> =
-        serde_json::from_slice(body.as_ref()).map_err(|_| JsonRpcError::invalid_params())?;
+fn to_request<'p, T: serde::de::Deserialize<'p>>(
+    body: &'p bytes::Bytes,
+) -> Result<Request<'p>, JsonRpcError> {
+    let request =
+        RequestWrapper::from_body_bytes(body).map_err(|_| JsonRpcError::invalid_params())?;
 
     let request = match request {
         RequestWrapper::Single(req) => {
-            serde_json::from_value::<Request>(req).map_err(|_| JsonRpcError::invalid_params())
+            serde_json::from_str::<Request>(req.get()).map_err(|_| JsonRpcError::invalid_params())
         }
         _ => Err(JsonRpcError::invalid_params()), // TODO: handle batch requests
     }?;

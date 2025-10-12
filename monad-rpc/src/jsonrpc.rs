@@ -23,13 +23,13 @@ use crate::chainstate::ChainStateError;
 
 pub const JSONRPC_VERSION: &str = "2.0";
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Request {
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Request<'p> {
     #[serde(deserialize_with = "deserialize_jsonrpc")]
     pub jsonrpc: String,
     pub method: String,
-    #[serde(default)]
-    pub params: Value,
+    #[serde(borrow)]
+    pub params: &'p RawValue,
     #[serde(deserialize_with = "deserialize_id")]
     pub id: RequestId,
 }
@@ -46,7 +46,7 @@ where
     }
 }
 
-#[derive(Debug, Serialize, PartialEq, Eq, Clone)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum RequestId {
     Number(i64),
@@ -102,37 +102,25 @@ impl<T> Notification<T> {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug, PartialEq, Eq)]
+#[derive(Debug, Serialize)]
 #[serde(untagged)]
-pub enum RequestWrapper<T> {
-    /// To be JSON-RPC spec-compliant, `Batch(Vec<T>)` needs to be the first variant in this enum.
-    /// To see why, refer to these examples from https://www.jsonrpc.org/specification
-    ///
-    /// ```text
-    /// rpc call with an invalid Batch (but not empty):
-    /// --> [1]
-    /// <-- [
-    ///   {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": null}
-    /// ]
-    /// rpc call with invalid Batch:
-    ///
-    /// --> [1,2,3]
-    /// <-- [
-    ///   {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": null},
-    ///   {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": null},
-    ///   {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": null}
-    /// ]
-    /// ```
-    ///
-    /// If `Batch(Vec<T>)` is not the first variant, we will fail to return a batched JSON array of
-    /// the individual failure responses and instead return a single JSON object as a failure response.
-    Batch(Vec<T>),
-    Single(T),
+pub enum RequestWrapper<'p> {
+    Single(&'p RawValue),
+    Batch(Vec<&'p RawValue>),
 }
 
-impl Request {
-    #[allow(dead_code)]
-    pub fn new(method: String, params: Value, id: i64) -> Self {
+impl<'p> RequestWrapper<'p> {
+    pub fn from_body_bytes(body: &'p bytes::Bytes) -> serde_json::Result<Self> {
+        if let Ok(batch) = serde_json::from_slice(body.as_ref()) {
+            return Ok(Self::Batch(batch));
+        }
+
+        serde_json::from_slice(body.as_ref()).map(Self::Single)
+    }
+}
+
+impl<'p> Request<'p> {
+    pub fn new(method: String, params: &'p RawValue, id: i64) -> Self {
         Self {
             jsonrpc: JSONRPC_VERSION.into(),
             method,
@@ -445,13 +433,11 @@ impl From<monad_archive::prelude::Report> for JsonRpcError {
 
 #[cfg(test)]
 mod test {
-    use serde_json::Value;
-
     use super::Request;
     use crate::jsonrpc::RequestId;
 
     #[test]
-    fn test_request() {
+    fn test_request_id_number() {
         let s = r#"
                 {
                     "jsonrpc": "2.0",
@@ -460,31 +446,27 @@ mod test {
                     "id": 1
                 }
                 "#;
-        let req: Result<Request, serde_json::Error> = serde_json::from_str(s);
-        assert_eq!(
-            Request {
-                jsonrpc: "2.0".into(),
-                method: "foobar".into(),
-                params: Value::Array(vec![Value::Number(42.into()), Value::Number(43.into())]),
-                id: RequestId::Number(1),
-            },
-            req.unwrap()
-        );
 
-        let req: Result<Request, serde_json::Error> = serde_json::from_slice(s.as_bytes());
-        assert_eq!(
-            Request {
-                jsonrpc: "2.0".into(),
-                method: "foobar".into(),
-                params: Value::Array(vec![Value::Number(42.into()), Value::Number(43.into())]),
-                id: RequestId::Number(1),
-            },
-            req.unwrap()
-        );
+        for result in [
+            serde_json::from_str(s),
+            serde_json::from_slice(s.as_bytes()),
+        ] {
+            let Request {
+                jsonrpc,
+                method,
+                params,
+                id,
+            } = result.unwrap();
+
+            assert_eq!(jsonrpc, "2.0");
+            assert_eq!(method, "foobar");
+            assert_eq!(params.get(), "[42, 43]");
+            assert_eq!(id, RequestId::Number(1));
+        }
     }
 
     #[test]
-    fn test_str_request() {
+    fn test_request_id_str() {
         let s = r#"
                 {
                     "jsonrpc": "2.0",
@@ -493,26 +475,22 @@ mod test {
                     "id": "string-id"
                 }
                 "#;
-        let req: Result<Request, serde_json::Error> = serde_json::from_str(s);
-        assert_eq!(
-            Request {
-                jsonrpc: "2.0".into(),
-                method: "foobar".into(),
-                params: Value::Array(vec![Value::Number(42.into()), Value::Number(43.into())]),
-                id: RequestId::String("string-id".into()),
-            },
-            req.unwrap()
-        );
 
-        let req: Result<Request, serde_json::Error> = serde_json::from_slice(s.as_bytes());
-        assert_eq!(
-            Request {
-                jsonrpc: "2.0".into(),
-                method: "foobar".into(),
-                params: Value::Array(vec![Value::Number(42.into()), Value::Number(43.into())]),
-                id: RequestId::String("string-id".into()),
-            },
-            req.unwrap()
-        );
+        for result in [
+            serde_json::from_str(s),
+            serde_json::from_slice(s.as_bytes()),
+        ] {
+            let Request {
+                jsonrpc,
+                method,
+                params,
+                id,
+            } = result.unwrap();
+
+            assert_eq!(jsonrpc, "2.0");
+            assert_eq!(method, "foobar");
+            assert_eq!(params.get(), "[42, 43]");
+            assert_eq!(id, RequestId::String("string-id".into()));
+        }
     }
 }
