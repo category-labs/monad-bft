@@ -88,10 +88,10 @@ pub struct EthCallStatsTracker {
 }
 
 impl EthCallStatsTracker {
-    pub async fn record_request_start(&self, request_id: &RequestId) {
+    pub async fn record_request_start(&self, request_id: RequestId) {
         let mut requests = self.active_requests.lock().await;
         requests.insert(
-            request_id.clone(),
+            request_id,
             EthCallRequestStats {
                 entry_time: Instant::now(),
             },

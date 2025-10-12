@@ -31,23 +31,23 @@ fn deserialize<const DESERIALIZE_TO_T: bool, T>(
 where
     T: DeserializeOwned,
 {
-    let request: RequestWrapper<Value> = serde_json::from_slice(body).unwrap();
+    let request = RequestWrapper::from_body_bytes(body).unwrap();
 
     match request {
         RequestWrapper::Single(json_request) => {
-            let request = serde_json::from_value::<Request>(json_request.clone())
+            let request = serde_json::from_str::<Request>(json_request.get())
                 .map_err(|_| JsonRpcError::parse_error())?;
 
-            let params = request.params.clone();
+            let id = request.id.clone();
 
             if DESERIALIZE_TO_T {
-                let parsed_params: T = serde_json::from_value(params).invalid_params()?;
+                let parsed_params: T =
+                    serde_json::from_str(request.params.get()).invalid_params()?;
 
                 black_box(parsed_params);
-            } else {
-                black_box(params);
             }
 
+            black_box(id);
             black_box(request);
             black_box(json_request);
 
@@ -57,7 +57,7 @@ where
             json_batch_request
                 .into_iter()
                 .map(|json_request| {
-                    let request = serde_json::from_value::<Request>(json_request).unwrap();
+                    let request = serde_json::from_str::<Request>(json_request.get()).unwrap();
 
                     black_box(request);
                 })

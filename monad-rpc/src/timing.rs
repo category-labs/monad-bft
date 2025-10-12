@@ -46,7 +46,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct RequestId {
     id: u64,
 }
@@ -65,7 +65,7 @@ impl FromRequest for RequestId {
 
     fn from_request(req: &HttpRequest, _: &mut Payload) -> Self::Future {
         match req.extensions().get::<RequestId>() {
-            Some(request_id) => ready(Ok(request_id.clone())),
+            Some(request_id) => ready(Ok(*request_id)),
             None => ready(Ok(RequestId::random())),
         }
     }
