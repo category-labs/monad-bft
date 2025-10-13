@@ -58,7 +58,7 @@ use monad_types::{DropTimer, Epoch, ExecutionProtocol, NodeId, Round, RouterTarg
 use monad_validator::signature_collection::SignatureCollection;
 use raptorcast_secondary::{group_message::FullNodesGroupMessage, SecondaryRaptorCastModeConfig};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tracing::{debug, debug_span, error, warn};
+use tracing::{debug, debug_span, error, trace, warn};
 use util::{
     unix_ts_ms_now, BuildTarget, EpochValidators, FullNodes, Group, ReBroadcastGroupMap, Redundancy,
 };
@@ -143,7 +143,7 @@ where
         }
         let self_id = NodeId::new(config.shared_key.pubkey());
         let is_dynamic_fullnode = matches!(secondary_mode, SecondaryRaptorCastModeConfig::Client);
-        tracing::debug!(
+        debug!(
             ?is_dynamic_fullnode, ?self_id, ?config.mtu, "RaptorCast::new",
         );
         Self {
@@ -358,7 +358,7 @@ where
             match command {
                 RouterCommand::UpdateCurrentRound(epoch, round) => {
                     if self.current_epoch < epoch {
-                        tracing::trace!(?epoch, ?round, "RaptorCast UpdateCurrentRound");
+                        trace!(?epoch, ?round, "RaptorCast UpdateCurrentRound");
 
                         {
                             let pd_driver = self.peer_discovery_driver.lock().unwrap();
@@ -397,7 +397,7 @@ where
                     epoch,
                     validator_set,
                 } => {
-                    tracing::trace!(?epoch, ?validator_set, "RaptorCast AddEpochValidatorSet");
+                    trace!(?epoch, ?validator_set, "RaptorCast AddEpochValidatorSet");
                     self.rebroadcast_map
                         .push_group_validator_set(validator_set.clone(), epoch);
                     if let Some(epoch_validators) = self.epoch_validators.get(&epoch) {
@@ -713,7 +713,7 @@ where
                 break;
             };
 
-            tracing::trace!(
+            trace!(
                 "RaptorCastPrimary rx message len {} from: {}",
                 message.payload.len(),
                 message.src_addr
@@ -750,7 +750,7 @@ where
                 )
             };
 
-            tracing::trace!(
+            trace!(
                 "RaptorCastPrimary rx decoded {} messages, sized: {:?}",
                 decoded_app_messages.len(),
                 decoded_app_messages
@@ -763,12 +763,12 @@ where
                 match InboundRouterMessage::<M, ST>::try_deserialize(&decoded) {
                     Ok(inbound) => match inbound {
                         InboundRouterMessage::AppMessage(app_message) => {
-                            tracing::trace!("RaptorCastPrimary rx deserialized AppMessage");
+                            trace!("RaptorCastPrimary rx deserialized AppMessage");
                             this.pending_events
                                 .push_back(RaptorCastEvent::Message(app_message.event(from)));
                         }
                         InboundRouterMessage::PeerDiscoveryMessage(peer_disc_message) => {
-                            tracing::trace!(
+                            trace!(
                                 "RaptorCastPrimary rx deserialized PeerDiscoveryMessage: {:?}",
                                 peer_disc_message
                             );
@@ -779,21 +779,33 @@ where
                                 .update(peer_disc_message.event(from));
                         }
                         InboundRouterMessage::FullNodesGroup(full_nodes_group_message) => {
-                            tracing::trace!(
+                            trace!(
                                 "RaptorCastPrimary rx deserialized {:?}",
                                 full_nodes_group_message
                             );
                             match &this.channel_to_secondary {
                                 Some(channel) => {
+                                    // drop full node group message with unauthorized sender
+                                    if !validate_group_message_sender(
+                                        &from,
+                                        &full_nodes_group_message,
+                                    ) {
+                                        warn!(
+                                            ?from,
+                                            "Received FullNodesGroup message from unauthorized sender"
+                                        );
+                                        continue;
+                                    }
+
                                     if channel.send(full_nodes_group_message).is_err() {
-                                        tracing::error!(
+                                        error!(
                                             "Could not send InboundRouterMessage to \
                                     secondary Raptorcast instance: channel closed",
                                         );
                                     }
                                 }
                                 None => {
-                                    tracing::debug!(
+                                    debug!(
                                         ?from,
                                         "Received FullNodesGroup message but the primary \
                                 Raptorcast instance is not setup to forward messages \
@@ -947,7 +959,7 @@ where
                         this.rebroadcast_map.push_group_fullnodes(group);
                     }
                     Poll::Ready(None) => {
-                        tracing::error!("RaptorCast secondary->primary channel disconnected.");
+                        error!("RaptorCast secondary->primary channel disconnected.");
                         break;
                     }
                     Poll::Pending => {
@@ -986,5 +998,19 @@ where
                 })
             }
         }
+    }
+}
+
+fn validate_group_message_sender<ST>(
+    sender: &NodeId<CertificateSignaturePubKey<ST>>,
+    group_message: &FullNodesGroupMessage<ST>,
+) -> bool
+where
+    ST: CertificateSignatureRecoverable,
+{
+    match group_message {
+        FullNodesGroupMessage::PrepareGroup(msg) => &msg.validator_id == sender,
+        FullNodesGroupMessage::PrepareGroupResponse(msg) => &msg.node_id == sender,
+        FullNodesGroupMessage::ConfirmGroup(msg) => &msg.prepare.validator_id == sender,
     }
 }
