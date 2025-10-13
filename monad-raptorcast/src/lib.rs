@@ -40,7 +40,7 @@ use monad_crypto::{
 use monad_dataplane::{
     udp::{segment_size_for_mtu, DEFAULT_MTU},
     BroadcastMsg, DataplaneBuilder, DataplaneReader, DataplaneWriter, RecvTcpMsg, TcpMsg,
-    UnicastMsg,
+    UdpSocketHandle, UnicastMsg,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
@@ -72,6 +72,8 @@ pub mod util;
 
 const SIGNATURE_SIZE: usize = 65;
 
+const RAPTORCAST_SOCKET: &str = "raptorcast";
+
 pub struct RaptorCast<ST, M, OM, SE, PD>
 where
     ST: CertificateSignatureRecoverable,
@@ -83,7 +85,6 @@ where
     redundancy: Redundancy,
     is_dynamic_fullnode: bool,
 
-    // Raptorcast group with stake information. For the send side (i.e., initiating proposals)
     epoch_validators: BTreeMap<Epoch, EpochValidators<ST>>,
     rebroadcast_map: ReBroadcastGroupMap<ST>,
 
@@ -97,6 +98,7 @@ where
 
     dataplane_reader: DataplaneReader,
     dataplane_writer: DataplaneWriter,
+    udp_socket: UdpSocketHandle,
     pending_events: VecDeque<RaptorCastEvent<M::Event, ST>>,
 
     channel_to_secondary: Option<UnboundedSender<FullNodesGroupMessage<ST>>>,
@@ -131,6 +133,7 @@ where
         secondary_mode: SecondaryRaptorCastModeConfig,
         dataplane_reader: DataplaneReader,
         dataplane_writer: DataplaneWriter,
+        udp_socket: UdpSocketHandle,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
         current_epoch: Epoch,
     ) -> Self {
@@ -166,6 +169,7 @@ where
 
             dataplane_reader,
             dataplane_writer,
+            udp_socket,
             pending_events: Default::default(),
             channel_to_secondary: None,
             channel_from_secondary: None,
@@ -305,8 +309,11 @@ where
         ..Default::default()
     };
     let up_bandwidth_mbps = 1_000;
-    let dp = DataplaneBuilder::new(&local_addr, up_bandwidth_mbps).build();
+    let mut dp = DataplaneBuilder::new(&local_addr, up_bandwidth_mbps).build();
     assert!(dp.block_until_ready(Duration::from_secs(1)));
+    let udp_socket = dp
+        .take_udp_socket_handle(RAPTORCAST_SOCKET)
+        .expect("raptorcast socket");
     let (dp_reader, dp_writer) = dp.split();
     let config = config::RaptorCastConfig {
         shared_key,
@@ -337,6 +344,7 @@ where
         SecondaryRaptorCastModeConfig::None,
         dp_reader,
         dp_writer,
+        udp_socket,
         shared_pd,
         Epoch(0),
     )
@@ -497,7 +505,7 @@ where
                                 self.redundancy,
                                 &known_addresses,
                             );
-                            self.dataplane_writer.udp_write_unicast(rc_chunks);
+                            self.udp_socket.write_unicast(rc_chunks);
                         }
 
                         RouterTarget::PointToPoint(to) => {
@@ -528,7 +536,7 @@ where
                                     self.redundancy,
                                     &known_addresses,
                                 );
-                                self.dataplane_writer.udp_write_unicast(rc_chunks);
+                                self.udp_socket.write_unicast(rc_chunks);
                             }
                         }
 
@@ -602,7 +610,7 @@ where
                             self.redundancy,
                             &node_addrs,
                         );
-                        self.dataplane_writer.udp_write_unicast(rc_chunks);
+                        self.udp_socket.write_unicast(rc_chunks);
                     }
                 }
                 RouterCommand::GetPeers => {
@@ -708,8 +716,7 @@ where
         }
 
         loop {
-            let dataplane = &mut this.dataplane_reader;
-            let Poll::Ready(message) = pin!(dataplane.udp_read()).poll_unpin(cx) else {
+            let Poll::Ready(message) = pin!(this.udp_socket.recv()).poll_unpin(cx) else {
                 break;
             };
 
@@ -740,7 +747,7 @@ where
                             })
                             .collect();
 
-                        this.dataplane_writer.udp_write_broadcast(BroadcastMsg {
+                        this.udp_socket.write_broadcast(BroadcastMsg {
                             targets: target_addrs,
                             payload,
                             stride: bcast_stride,
@@ -915,7 +922,7 @@ where
                     this.redundancy,
                     &known_addresses,
                 );
-                this.dataplane_writer.udp_write_unicast(unicast_msg);
+                this.udp_socket.write_unicast(unicast_msg);
             };
 
             while let Poll::Ready(Some(peer_disc_emit)) = pd_driver.poll_next_unpin(cx) {

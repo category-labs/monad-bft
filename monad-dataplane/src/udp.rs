@@ -102,37 +102,20 @@ fn set_mtu_discovery(socket: &UdpSocket) {
     }
 }
 
-pub(crate) fn spawn_tasks(
-    local_addr: SocketAddr,
-    direct_socket_port: Option<u16>,
-    udp_ingress_tx: mpsc::Sender<RecvUdpMsg>,
-    udp_direct_ingress_tx: mpsc::Sender<RecvUdpMsg>,
-    udp_egress_rx: mpsc::Receiver<(SocketAddr, UdpMsg)>,
+pub(crate) fn spawn_multi_socket_tasks(
+    socket_configs: Vec<(usize, SocketAddr, String, mpsc::Sender<RecvUdpMsg>)>,
+    udp_multi_egress_rx: mpsc::Receiver<(usize, SocketAddr, UdpMsg)>,
     up_bandwidth_mbps: u64,
     buffer_size: Option<usize>,
 ) {
-    let (udp_socket_rx, udp_socket_tx) = create_socket_pair(local_addr, buffer_size);
-    let (direct_socket_rx, direct_socket_tx) = direct_socket_port
-        .map(|port| {
-            let mut direct_addr = local_addr;
-            direct_addr.set_port(port);
-            let (rx, tx) = create_socket_pair(direct_addr, buffer_size);
-            (Some(rx), Some(tx))
-        })
-        .unwrap_or((None, None));
-
-    spawn(rx(
-        udp_socket_rx,
-        direct_socket_rx,
-        udp_ingress_tx,
-        udp_direct_ingress_tx,
-    ));
-    spawn(tx(
-        udp_socket_tx,
-        direct_socket_tx,
-        udp_egress_rx,
-        up_bandwidth_mbps,
-    ));
+    if !socket_configs.is_empty() {
+        spawn(multi_socket_task(
+            socket_configs,
+            udp_multi_egress_rx,
+            up_bandwidth_mbps,
+            buffer_size,
+        ));
+    }
 }
 
 fn create_socket_pair(addr: SocketAddr, buffer_size: Option<usize>) -> (UdpSocket, UdpSocket) {
@@ -308,11 +291,130 @@ fn max_write_size_for_segment_size(segment_size: u16) -> u16 {
     (MAX_AGGREGATED_WRITE_SIZE / segment_size).min(MAX_AGGREGATED_SEGMENTS) * segment_size
 }
 
-// This is very very ugly, but there is no other way to figure this out.
 fn is_eafnosupport(err: &Error) -> bool {
     const EAFNOSUPPORT: &str = "Address family not supported by protocol";
 
     let err = format!("{}", err);
 
     err.len() >= EAFNOSUPPORT.len() && &err[0..EAFNOSUPPORT.len()] == EAFNOSUPPORT
+}
+
+async fn multi_socket_task(
+    socket_configs: Vec<(usize, SocketAddr, String, mpsc::Sender<RecvUdpMsg>)>,
+    mut udp_multi_egress_rx: mpsc::Receiver<(usize, SocketAddr, UdpMsg)>,
+    up_bandwidth_mbps: u64,
+    buffer_size: Option<usize>,
+) {
+    let mut sockets_tx: Vec<Option<UdpSocket>> = socket_configs
+        .into_iter()
+        .map(|(socket_id, socket_addr, label, ingress_tx)| {
+            let (socket_rx, socket_tx) = create_socket_pair(socket_addr, buffer_size);
+            spawn(rx_single_socket(socket_rx, ingress_tx));
+            trace!(socket_id, label = %label, ?socket_addr, "created socket");
+            Some(socket_tx)
+        })
+        .collect();
+    sockets_tx.resize_with(sockets_tx.len(), || None);
+
+    let mut next_transmit = Instant::now();
+    let mut messages_to_send: VecDeque<(usize, SocketAddr, Bytes, u16)> = VecDeque::new();
+    let max_batch_bytes = max_write_size_for_segment_size(DEFAULT_SEGMENT_SIZE) as usize;
+    let mut send_futures = Vec::with_capacity(MAX_AGGREGATED_SEGMENTS as usize);
+
+    loop {
+        let now = Instant::now();
+        if next_transmit > now {
+            time::sleep(next_transmit - now).await;
+        } else {
+            let late = now - next_transmit;
+            if late > PACING_SLEEP_OVERSHOOT_DETECTION_WINDOW {
+                next_transmit = now;
+            }
+        }
+
+        while messages_to_send.is_empty() || !udp_multi_egress_rx.is_empty() {
+            let Some((socket_id, addr, udp_msg)) = udp_multi_egress_rx.recv().await else {
+                return;
+            };
+
+            messages_to_send.push_back((socket_id, addr, udp_msg.payload, udp_msg.stride));
+        }
+
+        let queue_len = messages_to_send.len();
+        let mut total_bytes = 0usize;
+        let mut batch_count = 0usize;
+        send_futures.clear();
+
+        while !messages_to_send.is_empty()
+            && total_bytes < max_batch_bytes
+            && batch_count < MAX_AGGREGATED_SEGMENTS as usize
+        {
+            let (socket_id, addr, mut payload, stride) = messages_to_send.pop_front().unwrap();
+            let chunk_size = payload.len().min(stride as usize).min(max_batch_bytes);
+
+            if chunk_size + total_bytes > max_batch_bytes {
+                messages_to_send.push_front((socket_id, addr, payload, stride));
+                break;
+            }
+
+            let chunk = payload.split_to(chunk_size);
+            total_bytes += chunk.len();
+
+            if let Some(Some(socket)) = sockets_tx.get(socket_id) {
+                if !payload.is_empty() {
+                    messages_to_send.push_front((socket_id, addr, payload, stride));
+                }
+
+                trace!(
+                    socket_id,
+                    dst_addr = ?addr,
+                    chunk_len = chunk.len(),
+                    "preparing udp send"
+                );
+
+                send_futures.push(socket.send_to(chunk, addr));
+                batch_count += 1;
+            } else {
+                warn!(socket_id, "invalid socket_id, dropping message");
+            }
+        }
+
+        if batch_count > 1 {
+            trace!(
+                batch_size = batch_count,
+                total_bytes,
+                queue_size = queue_len,
+                "sending udp batch"
+            );
+        }
+
+        for (ret, chunk) in join_all(send_futures.drain(..)).await {
+            if let Err(err) = &ret {
+                match err.kind() {
+                    ErrorKind::NetworkUnreachable => {
+                        debug!("send address family mismatch. message is dropped")
+                    }
+                    ErrorKind::InvalidInput => {
+                        warn!(len = chunk.len(), "got EINVAL on send. message is dropped")
+                    }
+                    _ => {
+                        if is_eafnosupport(err) {
+                            debug!("send address family mismatch. message is dropped");
+                        } else {
+                            error!(
+                                len = chunk.len(),
+                                ?err,
+                                "unexpected send error. message is dropped"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        if total_bytes > 0 {
+            next_transmit +=
+                Duration::from_nanos((total_bytes as u64) * 8 * 1000 / up_bandwidth_mbps);
+        }
+    }
 }
