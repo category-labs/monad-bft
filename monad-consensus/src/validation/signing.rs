@@ -22,7 +22,7 @@ use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use monad_consensus_types::{
     no_endorsement::{FreshProposalCertificate, NoEndorsementCertificate},
     quorum_certificate::QuorumCertificate,
-    timeout::{HighExtend, HighExtendVote, NoTipCertificate, TimeoutCertificate, TimeoutInfo},
+    timeout::{HighExtend, HighExtendRank, NoTipCertificate, TimeoutCertificate, TimeoutInfo},
     tip::ConsensusTip,
     validation::Error,
     RoundCertificate,
@@ -594,23 +594,8 @@ where
             },
             &timeout.high_extend.clone().into(),
         )?;
-        match &timeout.high_extend {
-            HighExtendVote::Qc(qc) => {
-                if timeout.tminfo.high_tip_round != GENESIS_ROUND {
-                    return Err(Error::NotWellFormed);
-                }
-                if timeout.tminfo.high_qc_round != qc.get_round() {
-                    return Err(Error::NotWellFormed);
-                }
-            }
-            HighExtendVote::Tip(tip, _) => {
-                if timeout.tminfo.high_tip_round != tip.block_header.block_round {
-                    return Err(Error::NotWellFormed);
-                }
-                if timeout.tminfo.high_qc_round >= tip.block_header.block_round {
-                    return Err(Error::NotWellFormed);
-                }
-            }
+        if timeout.high_extend.rank() != timeout.tminfo.rank() {
+            return Err(Error::NotWellFormed);
         }
 
         self.well_formed_timeout()?;
@@ -842,8 +827,9 @@ where
     let (validators, validator_mapping, _leader) = epoch_to_validators(tc.epoch, tc.round)?;
 
     let mut node_ids = Vec::new();
-    let mut highest_qc_round = GENESIS_ROUND;
-    let mut highest_tip_round = GENESIS_ROUND;
+    let mut highest_rank = HighExtendRank::Qc {
+        qc_round: GENESIS_ROUND,
+    };
     let mut seen_tip_rounds = HashSet::new();
     let mut seen_node_ids = HashSet::new();
     for t in tc.tip_rounds.iter() {
@@ -857,11 +843,8 @@ where
             return Err(Error::DuplicateTcTipRound);
         }
 
-        if t.high_qc_round > highest_qc_round {
-            highest_qc_round = t.high_qc_round;
-        }
-        if t.high_tip_round > highest_tip_round {
-            highest_tip_round = t.high_tip_round;
+        if t.rank() > highest_rank {
+            highest_rank = t.rank();
         }
 
         let td = TimeoutInfo {
@@ -895,25 +878,8 @@ where
     }?;
 
     verify_high_extend(cert_cache, epoch_to_validators, &tc.high_extend)?;
-    match &tc.high_extend {
-        HighExtend::Qc(qc) => {
-            if qc.get_round() != highest_qc_round {
-                return Err(Error::NotWellFormed);
-            }
-            if highest_tip_round > highest_qc_round {
-                // higher tip exists
-                return Err(Error::NotWellFormed);
-            }
-        }
-        HighExtend::Tip(tip) => {
-            if tip.block_header.block_round != highest_tip_round {
-                return Err(Error::NotWellFormed);
-            }
-            if highest_qc_round >= highest_tip_round {
-                // qc for same or higher round exists
-                return Err(Error::NotWellFormed);
-            }
-        }
+    if tc.high_extend.rank() != highest_rank {
+        return Err(Error::NotWellFormed);
     }
 
     cert_cache.cache_validated_tc(tc);

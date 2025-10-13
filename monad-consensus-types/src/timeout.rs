@@ -120,42 +120,9 @@ where
     EPT: ExecutionProtocol,
 {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        match (&self, other) {
-            (Self::Qc(qc_1), Self::Qc(qc_2)) => {
-                if qc_1.get_round() == qc_2.get_round() {
-                    None
-                } else {
-                    Some(qc_1.get_round().cmp(&qc_2.get_round()))
-                }
-            }
-            (Self::Tip(tip_1), Self::Tip(tip_2)) => {
-                if tip_1.block_header.block_round == tip_2.block_header.block_round {
-                    None
-                } else {
-                    Some(
-                        tip_1
-                            .block_header
-                            .block_round
-                            .cmp(&tip_2.block_header.block_round),
-                    )
-                }
-            }
-            (Self::Qc(qc_1), Self::Tip(tip_2)) => {
-                if qc_1.get_round() == tip_2.block_header.block_round {
-                    // QC takes precedence
-                    Some(std::cmp::Ordering::Greater)
-                } else {
-                    Some(qc_1.get_round().cmp(&tip_2.block_header.block_round))
-                }
-            }
-            (Self::Tip(tip_1), Self::Qc(qc_2)) => {
-                if tip_1.block_header.block_round == qc_2.get_round() {
-                    // QC takes precedence
-                    Some(std::cmp::Ordering::Less)
-                } else {
-                    Some(tip_1.block_header.block_round.cmp(&qc_2.get_round()))
-                }
-            }
+        match self.rank().cmp(&other.rank()) {
+            std::cmp::Ordering::Equal if self != other => None,
+            ord => Some(ord),
         }
     }
 }
@@ -166,6 +133,18 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
+    pub fn rank(&self) -> HighExtendRank {
+        match &self {
+            Self::Tip(tip) => HighExtendRank::Tip {
+                tip_round: tip.block_header.block_round,
+                qc_round: tip.block_header.qc.get_round(),
+            },
+            Self::Qc(qc) => HighExtendRank::Qc {
+                qc_round: qc.get_round(),
+            },
+        }
+    }
+
     pub fn qc(&self) -> &QuorumCertificate<SCT> {
         match &self {
             Self::Tip(tip) => &tip.block_header.qc,
@@ -238,6 +217,17 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
+    pub fn rank(&self) -> HighExtendRank {
+        match &self {
+            Self::Tip(tip, _) => HighExtendRank::Tip {
+                tip_round: tip.block_header.block_round,
+                qc_round: tip.block_header.qc.get_round(),
+            },
+            Self::Qc(qc) => HighExtendRank::Qc {
+                qc_round: qc.get_round(),
+            },
+        }
+    }
     pub fn qc(&self) -> &QuorumCertificate<SCT> {
         match &self {
             Self::Tip(tip, _) => &tip.block_header.qc,
@@ -315,6 +305,81 @@ where
     }
 }
 
+#[derive(PartialEq, Eq)]
+pub enum HighExtendRank {
+    Tip { tip_round: Round, qc_round: Round },
+    Qc { qc_round: Round },
+}
+
+impl PartialOrd for HighExtendRank {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for HighExtendRank {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match (&self, other) {
+            (
+                Self::Qc {
+                    qc_round: qc_round_1,
+                },
+                Self::Qc {
+                    qc_round: qc_round_2,
+                },
+            ) => qc_round_1.cmp(qc_round_2),
+            (
+                Self::Tip {
+                    qc_round: qc_round_1,
+                    tip_round: tip_round_1,
+                },
+                Self::Tip {
+                    qc_round: qc_round_2,
+                    tip_round: tip_round_2,
+                },
+            ) => {
+                if tip_round_1 != tip_round_2 {
+                    tip_round_1.cmp(tip_round_2)
+                } else {
+                    qc_round_1.cmp(qc_round_2)
+                }
+            }
+            (
+                Self::Qc {
+                    qc_round: qc_round_1,
+                },
+                Self::Tip {
+                    qc_round: _,
+                    tip_round: tip_round_2,
+                },
+            ) => {
+                if qc_round_1 == tip_round_2 {
+                    // QC takes precedence
+                    std::cmp::Ordering::Greater
+                } else {
+                    qc_round_1.cmp(tip_round_2)
+                }
+            }
+            (
+                Self::Tip {
+                    qc_round: _,
+                    tip_round: tip_round_1,
+                },
+                Self::Qc {
+                    qc_round: qc_round_2,
+                },
+            ) => {
+                if tip_round_1 == qc_round_2 {
+                    // QC takes precedence
+                    std::cmp::Ordering::Less
+                } else {
+                    tip_round_1.cmp(qc_round_2)
+                }
+            }
+        }
+    }
+}
+
 /// Data to include in a timeout
 #[derive(Clone, Debug, PartialEq, Eq, Hash, RlpEncodable, RlpDecodable, Serialize)]
 pub struct TimeoutInfo {
@@ -329,6 +394,21 @@ pub struct TimeoutInfo {
     pub high_tip_round: Round,
 }
 
+impl TimeoutInfo {
+    pub fn rank(&self) -> HighExtendRank {
+        if self.high_tip_round == GENESIS_ROUND {
+            HighExtendRank::Qc {
+                qc_round: self.high_qc_round,
+            }
+        } else {
+            HighExtendRank::Tip {
+                qc_round: self.high_qc_round,
+                tip_round: self.high_tip_round,
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize)]
 #[serde(bound(
     serialize = "SCT: SignatureCollection",
@@ -340,6 +420,21 @@ pub struct HighTipRoundSigColTuple<SCT> {
     #[serde(serialize_with = "serialize_signature_collection::<_, SCT>")]
     #[serde(deserialize_with = "deserialize_signature_collection::<_, SCT>")]
     pub sigs: SCT,
+}
+
+impl<SCT> HighTipRoundSigColTuple<SCT> {
+    pub fn rank(&self) -> HighExtendRank {
+        if self.high_tip_round == GENESIS_ROUND {
+            HighExtendRank::Qc {
+                qc_round: self.high_qc_round,
+            }
+        } else {
+            HighExtendRank::Tip {
+                qc_round: self.high_qc_round,
+                tip_round: self.high_tip_round,
+            }
+        }
+    }
 }
 
 /// TimeoutCertificate is used to advance rounds when a QC is unable to
@@ -426,4 +521,68 @@ where
     pub tip_rounds: Vec<HighTipRoundSigColTuple<SCT>>,
 
     pub high_qc: QuorumCertificate<SCT>,
+}
+
+#[cfg(test)]
+mod test {
+    use std::cmp::Ordering;
+
+    use monad_types::Round;
+    use test_case::test_case;
+
+    use crate::timeout::HighExtendRank;
+
+    #[test_case(
+        HighExtendRank::Qc { qc_round: Round(1) },
+        HighExtendRank::Qc { qc_round: Round(1) },
+        Ordering::Equal;
+        "qc equal"
+    )]
+    #[test_case(
+        HighExtendRank::Qc { qc_round: Round(1) },
+        HighExtendRank::Qc { qc_round: Round(2) },
+        Ordering::Less;
+        "qc not equal"
+    )]
+    #[test_case(
+        HighExtendRank::Tip { tip_round: Round(1), qc_round: Round(0) },
+        HighExtendRank::Tip { tip_round: Round(1), qc_round: Round(0) },
+        Ordering::Equal;
+        "tip equal"
+    )]
+    #[test_case(
+        HighExtendRank::Tip { tip_round: Round(1), qc_round: Round(0) },
+        HighExtendRank::Tip { tip_round: Round(2), qc_round: Round(0) },
+        Ordering::Less;
+        "tip not equal 1"
+    )]
+    #[test_case(
+        HighExtendRank::Tip { tip_round: Round(1), qc_round: Round(0) },
+        HighExtendRank::Tip { tip_round: Round(2), qc_round: Round(1) },
+        Ordering::Less;
+        "tip not equal 2"
+    )]
+    #[test_case(
+        HighExtendRank::Tip { tip_round: Round(1), qc_round: Round(0) },
+        HighExtendRank::Tip { tip_round: Round(1), qc_round: Round(1) },
+        Ordering::Less;
+        "tip rounds equal, qc rounds not equal"
+    )]
+    #[test_case(
+        HighExtendRank::Tip { tip_round: Round(1), qc_round: Round(0) },
+        HighExtendRank::Qc { qc_round: Round(1) },
+        Ordering::Less;
+        "tip round equals qc round"
+    )]
+    #[test_case(
+        HighExtendRank::Tip { tip_round: Round(2), qc_round: Round(0) },
+        HighExtendRank::Qc { qc_round: Round(1) },
+        Ordering::Greater;
+        "tip round greater than qc round"
+    )]
+    fn high_extend_rank(rank_1: HighExtendRank, rank_2: HighExtendRank, ord: Ordering) {
+        assert_eq!(rank_1.cmp(&rank_2), ord);
+        // test reverse
+        assert_eq!(rank_2.cmp(&rank_1), ord.reverse());
+    }
 }
