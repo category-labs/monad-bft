@@ -20,13 +20,10 @@ jobs:
       matrix:
         dockerfile:
           - { name: "monad-bft", file: "docker/devnet/Dockerfile" }
-          - { name: "monad-bft", file: "docker/devnet/Dockerfile", target_postfix: -debug }
           - { name: "monad-rpc", file: "docker/rpc/Dockerfile" }
-          - { name: "monad-rpc", file: "docker/rpc/Dockerfile", target_postfix: -debug }
           - { name: "monad-execution", file: "monad-cxx/monad-execution/docker/release.Dockerfile", context: "monad-cxx/monad-execution" }
           - { name: "monad-tx-gen", file: "docker/txgen/Dockerfile" }
           - { name: "monad-archive", file: "docker/archive/Dockerfile" }
-          - { name: "monad-archive", file: "docker/archive/Dockerfile", target_postfix: -debug }
           - { name: "rpc-request-generator", file: "docker/rpc-request-gen/Dockerfile" }
 
     permissions:
@@ -96,8 +93,8 @@ jobs:
           context: ${{ matrix.dockerfile.context || '.' }}
           push: true
           file: ${{ matrix.dockerfile.file }}
-          target: runner${{ matrix.dockerfile.target_postfix }}
-          tags: ${{ steps.meta.outputs.tags }}${{ matrix.dockerfile.target_postfix }}
+          target: runner
+          tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             GIT_COMMIT_HASH=${{ env.GIT_COMMIT_HASH }}

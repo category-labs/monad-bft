@@ -82,8 +82,8 @@ RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" 
     cp `ls -Lt $(find target/release | grep -e "libtriedb_driver.so")` . && \
     ldd $(ls -Lt $(find target/release | grep -e "libtriedb_driver.so")) | docker/filter-dependent-shared-objects.py | xargs -I {} cp {} .
 
-# Debug runner
-FROM base AS runner-debug
+# Runner
+FROM base AS runner
 
 WORKDIR /usr/src/monad-bft
 ENV LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
@@ -94,12 +94,3 @@ COPY --from=builder /usr/src/monad-bft/archiver /usr/local/bin/monad-archiver
 COPY --from=builder /usr/src/monad-bft/archive-checker /usr/local/bin/monad-archive-checker
 COPY --from=builder /usr/src/monad-bft/indexer /usr/local/bin/monad-indexer
 COPY --from=builder /usr/src/monad-bft/*.so /usr/local/lib
-
-# Runner
-FROM runner-debug AS runner
-
-RUN strip \
-    /usr/local/bin/monad-archiver \
-    /usr/local/bin/monad-archive-checker \
-    /usr/local/bin/monad-indexer \
-    /usr/local/lib/*.so

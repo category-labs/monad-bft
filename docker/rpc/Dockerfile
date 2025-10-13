@@ -80,8 +80,8 @@ RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell -fno-omit-frame-pointer" CX
     cp `ls -Lt $(find target/release | grep -e "libtriedb_driver.so")` . && \
     ldd $(ls -Lt $(find target/release | grep -e "libtriedb_driver.so")) | docker/filter-dependent-shared-objects.py | xargs -I {} cp {} .
 
-# Debug runner
-FROM base AS runner-debug
+# Runner
+FROM base AS runner
 
 WORKDIR /usr/src/monad-bft
 ENV LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
@@ -91,11 +91,3 @@ ENV RUST_BACKTRACE=1
 COPY --from=builder /usr/src/monad-bft/rpc /usr/local/bin/monad-rpc
 COPY --from=builder /usr/src/monad-bft/*.so /usr/local/lib
 COPY --from=builder /usr/src/monad-bft/*.so.* /usr/local/lib
-
-# Runner
-FROM runner-debug AS runner
-
-RUN strip \
-    /usr/local/bin/monad-rpc \
-    /usr/local/lib/*.so \
-    /usr/local/lib/*.so.*
