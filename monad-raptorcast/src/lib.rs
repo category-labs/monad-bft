@@ -40,6 +40,7 @@ use monad_crypto::{
 use monad_dataplane::{
     udp::{segment_size_for_mtu, DEFAULT_MTU},
     BroadcastMsg, DataplaneBuilder, DataplaneReader, DataplaneWriter, RecvTcpMsg, TcpMsg,
+    UdpSocketHandle, UnicastMsg,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
@@ -70,6 +71,8 @@ pub mod util;
 
 const SIGNATURE_SIZE: usize = 65;
 
+const RAPTORCAST_SOCKET: &str = "raptorcast";
+
 pub(crate) type OwnedMessageBuilder<ST, PD> =
     packet::MessageBuilder<'static, ST, Arc<Mutex<PeerDiscoveryDriver<PD>>>>;
 
@@ -83,7 +86,6 @@ where
     signing_key: Arc<ST::KeyPairType>,
     is_dynamic_fullnode: bool,
 
-    // Raptorcast group with stake information. For the send side (i.e., initiating proposals)
     epoch_validators: BTreeMap<Epoch, EpochValidators<ST>>,
     rebroadcast_map: ReBroadcastGroupMap<ST>,
 
@@ -97,6 +99,7 @@ where
 
     dataplane_reader: DataplaneReader,
     dataplane_writer: DataplaneWriter,
+    udp_socket: UdpSocketHandle,
     pending_events: VecDeque<RaptorCastEvent<M::Event, ST>>,
 
     channel_to_secondary: Option<UnboundedSender<FullNodesGroupMessage<ST>>>,
@@ -131,6 +134,7 @@ where
         secondary_mode: SecondaryRaptorCastModeConfig,
         dataplane_reader: DataplaneReader,
         dataplane_writer: DataplaneWriter,
+        udp_socket: UdpSocketHandle,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
         current_epoch: Epoch,
     ) -> Self {
@@ -173,6 +177,7 @@ where
 
             dataplane_reader,
             dataplane_writer,
+            udp_socket,
             pending_events: Default::default(),
             channel_to_secondary: None,
             channel_from_secondary: None,
@@ -326,8 +331,7 @@ where
                     .epoch_no(epoch)
                     .build_unicast_msg(&outbound_message, &build_target)
                 {
-                    self.dataplane_writer
-                        .udp_write_unicast_with_priority(rc_chunks, priority);
+                    self.udp_socket.write_unicast_with_priority(rc_chunks, priority);
                 }
             }
 
@@ -356,8 +360,7 @@ where
                         .message_builder
                         .build_unicast_msg(&outbound_message, &build_target)
                     {
-                        self.dataplane_writer
-                            .udp_write_unicast_with_priority(rc_chunks, priority);
+                        self.udp_socket.write_unicast_with_priority(rc_chunks, priority);
                     }
                 }
             }
@@ -399,9 +402,17 @@ where
         ..Default::default()
     };
     let up_bandwidth_mbps = 1_000;
-    let dp = DataplaneBuilder::new(&local_addr, up_bandwidth_mbps).build();
+    let mut dp = DataplaneBuilder::new(&local_addr, up_bandwidth_mbps)
+        .extend_udp_sockets(vec![monad_dataplane::UdpSocketConfig {
+            socket_addr: local_addr,
+            label: RAPTORCAST_SOCKET.to_string(),
+        }])
+        .build();
     assert!(dp.block_until_ready(Duration::from_secs(1)));
-    let (dp_reader, dp_writer) = dp.split();
+    let udp_socket = dp
+        .take_udp_socket_handle(RAPTORCAST_SOCKET)
+        .expect("raptorcast socket");
+    let (dp_reader, dp_writer, _udp_dataplane) = dp.split();
     let config = config::RaptorCastConfig {
         shared_key,
         mtu: DEFAULT_MTU,
@@ -431,6 +442,7 @@ where
         SecondaryRaptorCastModeConfig::None,
         dp_reader,
         dp_writer,
+        udp_socket,
         shared_pd,
         Epoch(0),
     )
@@ -576,7 +588,7 @@ where
                             .epoch_no(epoch)
                             .build_unicast_msg(&outbound_message, &build_target)
                         {
-                            self.dataplane_writer.udp_write_unicast(rc_chunks);
+                            self.udp_socket.write_unicast(rc_chunks);
                         };
                     }
                 }
@@ -685,8 +697,7 @@ where
         }
 
         loop {
-            let dataplane = &mut this.dataplane_reader;
-            let Poll::Ready(message) = pin!(dataplane.udp_read()).poll_unpin(cx) else {
+            let Poll::Ready(message) = pin!(this.udp_socket.recv()).poll_unpin(cx) else {
                 break;
             };
 
@@ -717,14 +728,11 @@ where
                             })
                             .collect();
 
-                        this.dataplane_writer.udp_write_broadcast_with_priority(
-                            BroadcastMsg {
-                                targets: target_addrs,
-                                payload,
-                                stride: bcast_stride,
-                            },
-                            UdpPriority::High,
-                        );
+                        this.udp_socket.write_broadcast(BroadcastMsg {
+                            targets: target_addrs,
+                            payload,
+                            stride: bcast_stride,
+                        });
                     },
                     message,
                 )
@@ -909,7 +917,7 @@ where
                 };
 
                 if let Some(rc_chunks) = rc_chunks {
-                    this.dataplane_writer.udp_write_unicast(rc_chunks);
+                    this.udp_socket.write_unicast(rc_chunks);
                 };
             };
 

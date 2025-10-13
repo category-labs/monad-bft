@@ -21,7 +21,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use futures::future::join_all;
 use monoio::{net::udp::UdpSocket, spawn, time};
 use tokio::sync::mpsc;
@@ -37,7 +37,7 @@ pub(crate) enum UdpMessageType {
 }
 
 struct PriorityQueues {
-    queues: [VecDeque<UdpMsg>; 2],
+    queues: [VecDeque<(usize, SocketAddr, UdpMsg)>; 2],
 }
 
 impl PriorityQueues {
@@ -47,14 +47,14 @@ impl PriorityQueues {
         }
     }
 
-    fn push(&mut self, msg: UdpMsg) {
-        self.queues[msg.priority as usize].push_back(msg);
+    fn push(&mut self, socket_id: usize, addr: SocketAddr, msg: UdpMsg) {
+        self.queues[msg.priority as usize].push_back((socket_id, addr, msg));
     }
 
-    fn pop_highest_priority(&mut self) -> Option<UdpMsg> {
+    fn pop_highest_priority(&mut self) -> Option<(usize, SocketAddr, UdpMsg)> {
         for queue in self.queues.iter_mut() {
-            if let Some(msg) = queue.pop_front() {
-                return Some(msg);
+            if let Some(item) = queue.pop_front() {
+                return Some(item);
             }
         }
         None
@@ -131,37 +131,20 @@ fn set_mtu_discovery(socket: &UdpSocket) {
     }
 }
 
-pub(crate) fn spawn_tasks(
-    local_addr: SocketAddr,
-    direct_socket_port: Option<u16>,
-    udp_ingress_tx: mpsc::Sender<RecvUdpMsg>,
-    udp_direct_ingress_tx: mpsc::Sender<RecvUdpMsg>,
-    udp_egress_rx: mpsc::Receiver<UdpMsg>,
+pub(crate) fn spawn_multi_socket_tasks(
+    socket_configs: Vec<(usize, SocketAddr, String, mpsc::Sender<RecvUdpMsg>)>,
+    udp_multi_egress_rx: mpsc::Receiver<(usize, SocketAddr, UdpMsg)>,
     up_bandwidth_mbps: u64,
     buffer_size: Option<usize>,
 ) {
-    let (udp_socket_rx, udp_socket_tx) = create_socket_pair(local_addr, buffer_size);
-    let (direct_socket_rx, direct_socket_tx) = direct_socket_port
-        .map(|port| {
-            let mut direct_addr = local_addr;
-            direct_addr.set_port(port);
-            let (rx, tx) = create_socket_pair(direct_addr, buffer_size);
-            (Some(rx), Some(tx))
-        })
-        .unwrap_or((None, None));
-
-    spawn(rx(
-        udp_socket_rx,
-        direct_socket_rx,
-        udp_ingress_tx,
-        udp_direct_ingress_tx,
-    ));
-    spawn(tx(
-        udp_socket_tx,
-        direct_socket_tx,
-        udp_egress_rx,
-        up_bandwidth_mbps,
-    ));
+    if !socket_configs.is_empty() {
+        spawn(multi_socket_task(
+            socket_configs,
+            udp_multi_egress_rx,
+            up_bandwidth_mbps,
+            buffer_size,
+        ));
+    }
 }
 
 fn create_socket_pair(addr: SocketAddr, buffer_size: Option<usize>) -> (UdpSocket, UdpSocket) {
@@ -170,23 +153,6 @@ fn create_socket_pair(addr: SocketAddr, buffer_size: Option<usize>) -> (UdpSocke
     let tx =
         UdpSocket::from_std(unsafe { std::net::UdpSocket::from_raw_fd(rx.as_raw_fd()) }).unwrap();
     (rx, tx)
-}
-
-async fn rx(
-    udp_socket_rx: UdpSocket,
-    direct_socket_rx: Option<UdpSocket>,
-    udp_ingress_tx: mpsc::Sender<RecvUdpMsg>,
-    udp_direct_ingress_tx: mpsc::Sender<RecvUdpMsg>,
-) {
-    match direct_socket_rx {
-        Some(direct_socket) => {
-            spawn(rx_single_socket(udp_socket_rx, udp_ingress_tx));
-            spawn(rx_single_socket(direct_socket, udp_direct_ingress_tx));
-        }
-        None => {
-            rx_single_socket(udp_socket_rx, udp_ingress_tx).await;
-        }
-    }
 }
 
 async fn rx_single_socket(socket: UdpSocket, udp_ingress_tx: mpsc::Sender<RecvUdpMsg>) {
@@ -217,18 +183,42 @@ async fn rx_single_socket(socket: UdpSocket, udp_ingress_tx: mpsc::Sender<RecvUd
 
 const PACING_SLEEP_OVERSHOOT_DETECTION_WINDOW: Duration = Duration::from_millis(100);
 
-async fn tx(
-    socket_tx: UdpSocket,
-    direct_socket_tx: Option<UdpSocket>,
-    mut udp_egress_rx: mpsc::Receiver<UdpMsg>,
+const MAX_AGGREGATED_WRITE_SIZE: u16 = 65535 - IPV4_HDR_SIZE - UDP_HDR_SIZE;
+const MAX_AGGREGATED_SEGMENTS: u16 = 128;
+
+fn max_write_size_for_segment_size(segment_size: u16) -> u16 {
+    (MAX_AGGREGATED_WRITE_SIZE / segment_size).min(MAX_AGGREGATED_SEGMENTS) * segment_size
+}
+
+fn is_eafnosupport(err: &Error) -> bool {
+    const EAFNOSUPPORT: &str = "Address family not supported by protocol";
+
+    let err = format!("{}", err);
+
+    err.len() >= EAFNOSUPPORT.len() && &err[0..EAFNOSUPPORT.len()] == EAFNOSUPPORT
+}
+
+async fn multi_socket_task(
+    socket_configs: Vec<(usize, SocketAddr, String, mpsc::Sender<RecvUdpMsg>)>,
+    mut udp_multi_egress_rx: mpsc::Receiver<(usize, SocketAddr, UdpMsg)>,
     up_bandwidth_mbps: u64,
+    buffer_size: Option<usize>,
 ) {
+    let mut sockets_tx: Vec<Option<UdpSocket>> = socket_configs
+        .into_iter()
+        .map(|(socket_id, socket_addr, label, ingress_tx)| {
+            let (socket_rx, socket_tx) = create_socket_pair(socket_addr, buffer_size);
+            spawn(rx_single_socket(socket_rx, ingress_tx));
+            trace!(socket_id, label = %label, ?socket_addr, "created socket");
+            Some(socket_tx)
+        })
+        .collect();
+    sockets_tx.resize_with(sockets_tx.len(), || None);
+
     let mut next_transmit = Instant::now();
-
     let mut priority_queues = PriorityQueues::new();
-
     let max_batch_bytes = max_write_size_for_segment_size(DEFAULT_SEGMENT_SIZE) as usize;
-    let mut send_futures = Vec::with_capacity(MAX_AGGREGATED_SEGMENTS as usize);
+    let mut send_futures = Vec::new();
 
     loop {
         let now = Instant::now();
@@ -236,17 +226,17 @@ async fn tx(
             time::sleep(next_transmit - now).await;
         } else {
             let late = now - next_transmit;
-
             if late > PACING_SLEEP_OVERSHOOT_DETECTION_WINDOW {
                 next_transmit = now;
             }
         }
 
-        if fill_message_queues(&mut udp_egress_rx, &mut priority_queues)
-            .await
-            .is_err()
-        {
-            return;
+        while priority_queues.is_empty() || !udp_multi_egress_rx.is_empty() {
+            let Some((socket_id, addr, udp_msg)) = udp_multi_egress_rx.recv().await else {
+                return;
+            };
+
+            priority_queues.push(socket_id, addr, udp_msg);
         }
 
         let queue_len = priority_queues
@@ -262,7 +252,7 @@ async fn tx(
             && total_bytes < max_batch_bytes
             && batch_count < MAX_AGGREGATED_SEGMENTS as usize
         {
-            let mut msg = priority_queues.pop_highest_priority().unwrap();
+            let (socket_id, addr, mut msg) = priority_queues.pop_highest_priority().unwrap();
             let chunk_size = msg
                 .payload
                 .len()
@@ -270,40 +260,36 @@ async fn tx(
                 .min(max_batch_bytes);
 
             if chunk_size + total_bytes > max_batch_bytes {
-                priority_queues.push(msg);
+                priority_queues.push(socket_id, addr, msg);
                 break;
             }
 
             let chunk = msg.payload.split_to(chunk_size);
             total_bytes += chunk.len();
 
-            let socket = match (&msg.msg_type, &direct_socket_tx) {
-                (UdpMessageType::Direct, Some(direct_socket)) => direct_socket,
-                _ => &socket_tx,
-            };
+            if let Some(Some(socket)) = sockets_tx.get(socket_id) {
+                if !msg.payload.is_empty() {
+                    priority_queues.push(socket_id, addr, msg);
+                }
 
-            let dst = msg.dst;
-            let msg_type = msg.msg_type;
+                trace!(
+                    socket_id,
+                    dst_addr = ?addr,
+                    chunk_len = chunk.len(),
+                    "preparing udp send"
+                );
 
-            if !msg.payload.is_empty() {
-                priority_queues.push(msg);
+                send_futures.push(socket.send_to(chunk, addr));
+                batch_count += 1;
+            } else {
+                warn!(socket_id, "invalid socket_id, dropping message");
             }
-
-            trace!(
-                dst_addr = ?dst,
-                chunk_len = chunk.len(),
-                msg_type = ?msg_type,
-                "preparing udp send"
-            );
-
-            send_futures.push(socket.send_to(chunk, dst));
-            batch_count += 1;
         }
 
         if batch_count > 1 {
             trace!(
                 batch_size = batch_count,
-                total_bytes = total_bytes,
+                total_bytes,
                 queue_size = queue_len,
                 "sending udp batch"
             );
@@ -338,35 +324,4 @@ async fn tx(
                 Duration::from_nanos((total_bytes as u64) * 8 * 1000 / up_bandwidth_mbps);
         }
     }
-}
-
-async fn fill_message_queues(
-    udp_egress_rx: &mut mpsc::Receiver<UdpMsg>,
-    priority_queues: &mut PriorityQueues,
-) -> Result<(), ()> {
-    while priority_queues.is_empty() || !udp_egress_rx.is_empty() {
-        match udp_egress_rx.recv().await {
-            Some(udp_msg) => {
-                priority_queues.push(udp_msg);
-            }
-            None => return Err(()),
-        }
-    }
-    Ok(())
-}
-
-const MAX_AGGREGATED_WRITE_SIZE: u16 = 65535 - IPV4_HDR_SIZE - UDP_HDR_SIZE;
-const MAX_AGGREGATED_SEGMENTS: u16 = 128;
-
-fn max_write_size_for_segment_size(segment_size: u16) -> u16 {
-    (MAX_AGGREGATED_WRITE_SIZE / segment_size).min(MAX_AGGREGATED_SEGMENTS) * segment_size
-}
-
-// This is very very ugly, but there is no other way to figure this out.
-fn is_eafnosupport(err: &Error) -> bool {
-    const EAFNOSUPPORT: &str = "Address family not supported by protocol";
-
-    let err = format!("{}", err);
-
-    err.len() >= EAFNOSUPPORT.len() && &err[0..EAFNOSUPPORT.len()] == EAFNOSUPPORT
 }
