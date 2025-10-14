@@ -52,7 +52,7 @@ pub fn static_validate_transaction(
     Ok(())
 }
 
-pub const TFM_MAX_GAS_LIMIT: u64 = 30_000_000;
+pub const TFM_MAX_GAS_LIMIT: u64 = 200_000_000;
 pub const EIP_7702_PER_EMPTY_ACCOUNT_COST: u64 = 25_000;
 
 struct TfmValidator;
