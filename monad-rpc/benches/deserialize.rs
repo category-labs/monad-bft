@@ -25,7 +25,9 @@ use monad_rpc::{
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-fn deserialize<T>(body: &Bytes) -> Result<ResponseWrapper<()>, JsonRpcError>
+fn deserialize<const DESERIALIZE_TO_T: bool, T>(
+    body: &Bytes,
+) -> Result<ResponseWrapper<()>, JsonRpcError>
 where
     T: DeserializeOwned,
 {
@@ -38,11 +40,16 @@ where
 
             let params = request.params.clone();
 
-            let parsed_params: T = serde_json::from_value(params).invalid_params()?;
+            if DESERIALIZE_TO_T {
+                let parsed_params: T = serde_json::from_value(params).invalid_params()?;
+
+                black_box(parsed_params);
+            } else {
+                black_box(params);
+            }
 
             black_box(request);
             black_box(json_request);
-            black_box(parsed_params);
 
             Ok(ResponseWrapper::Single(()))
         }
@@ -59,7 +66,7 @@ where
     }
 }
 
-fn bench_deserialize<T, M>(
+fn bench_deserialize<const DESERIALIZE_TO_T: bool, T, M>(
     g: &mut BenchmarkGroup<'_, M>,
     name: &'static str,
     body: &Bytes,
@@ -71,7 +78,7 @@ fn bench_deserialize<T, M>(
     g.throughput(Throughput::Bytes(body.len() as u64));
     g.bench_function(name, |b| {
         b.iter(|| {
-            let result = black_box(deserialize::<T>(black_box(body)));
+            let result = black_box(deserialize::<DESERIALIZE_TO_T, T>(black_box(body)));
 
             assert_eq!(result, expected);
         });
@@ -99,14 +106,14 @@ fn bench(c: &mut Criterion) {
         "id": 0
     });
 
-    bench_deserialize::<MonadEthCallParams, _>(
+    bench_deserialize::<true, MonadEthCallParams, _>(
         &mut g,
         "eth_call",
         &Bytes::from_owner(serde_json::to_string(&eth_call_request).unwrap()),
         Ok(ResponseWrapper::Single(())),
     );
 
-    bench_deserialize::<MonadEthCallParams, _>(
+    bench_deserialize::<true, MonadEthCallParams, _>(
         &mut g,
         "eth_call-batch",
         &Bytes::from_owner(
@@ -143,14 +150,14 @@ fn bench(c: &mut Criterion) {
     });
     assert!(attack_large_dict.is_object());
 
-    bench_deserialize::<MonadEthCallParams, _>(
+    bench_deserialize::<false, (), _>(
         &mut g,
         "attack_large_id_array",
         &Bytes::from_owner(
             serde_json::to_string(&serde_json::json!({
                 "jsonrpc": "2.0",
-                "method": "eth_call",
-                "params": eth_call_params,
+                "method": "some_method",
+                "params": [],
                 "id": attack_large_array
             }))
             .unwrap(),
@@ -158,14 +165,14 @@ fn bench(c: &mut Criterion) {
         Err(JsonRpcError::parse_error()),
     );
 
-    bench_deserialize::<MonadEthCallParams, _>(
+    bench_deserialize::<false, (), _>(
         &mut g,
         "attack_large_id_dict",
         &Bytes::from_owner(
             serde_json::to_string(&serde_json::json!({
                 "jsonrpc": "2.0",
-                "method": "eth_call",
-                "params": eth_call_params,
+                "method": "some_method",
+                "params": [],
                 "id": attack_large_dict
             }))
             .unwrap(),
@@ -173,41 +180,63 @@ fn bench(c: &mut Criterion) {
         Err(JsonRpcError::parse_error()),
     );
 
-    bench_deserialize::<MonadEthCallParams, _>(
+    bench_deserialize::<false, (), _>(
         &mut g,
-        "attack_large_payload_array",
+        "attack_large_payload_array_without_params",
         &Bytes::from_owner(
             serde_json::to_string(&serde_json::json!({
                 "jsonrpc": "2.0",
-                "method": "eth_call",
+                "method": "some_method_that_doesnt_parse_params",
                 "params": attack_large_array,
                 "id": 0
             }))
             .unwrap(),
         ),
-        Err(JsonRpcError {
-            code: -32602,
-            message: "Invalid params".to_string(),
-            data: None,
-        }),
+        Ok(ResponseWrapper::Single(())),
     );
-    bench_deserialize::<MonadEthCallParams, _>(
+
+    bench_deserialize::<false, (), _>(
         &mut g,
-        "attack_large_payload_dict",
+        "attack_large_payload_dict_without_params",
         &Bytes::from_owner(
             serde_json::to_string(&serde_json::json!({
                 "jsonrpc": "2.0",
-                "method": "eth_call",
+                "method": "some_method_that_doesnt_parse_params",
                 "params": attack_large_dict,
                 "id": 0
             }))
             .unwrap(),
         ),
-        Err(JsonRpcError {
-            code: -32602,
-            message: "Invalid params".to_string(),
-            data: None,
-        }),
+        Ok(ResponseWrapper::Single(())),
+    );
+
+    bench_deserialize::<true, (), _>(
+        &mut g,
+        "attack_large_payload_array_with_params",
+        &Bytes::from_owner(
+            serde_json::to_string(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "some_method_that_parses_params",
+                "params": attack_large_array,
+                "id": 0
+            }))
+            .unwrap(),
+        ),
+        Err(JsonRpcError::invalid_params()),
+    );
+    bench_deserialize::<true, (), _>(
+        &mut g,
+        "attack_large_payload_dict_with_params",
+        &Bytes::from_owner(
+            serde_json::to_string(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "some_method_that_parses_params",
+                "params": attack_large_dict,
+                "id": 0
+            }))
+            .unwrap(),
+        ),
+        Err(JsonRpcError::invalid_params()),
     );
 }
 
