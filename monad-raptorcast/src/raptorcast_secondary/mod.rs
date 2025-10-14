@@ -35,7 +35,7 @@ use group_message::FullNodesGroupMessage;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_dataplane::{udp::segment_size_for_mtu, DataplaneWriter, UnicastMsg};
+use monad_dataplane::{udp::segment_size_for_mtu, DataplaneWriter, UdpSocketHandle, UnicastMsg};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, PeerEntry, RouterCommand};
 use monad_peer_discovery::{driver::PeerDiscoveryDriver, PeerDiscoveryAlgo, PeerDiscoveryEvent};
@@ -89,6 +89,7 @@ where
 
     mtu: u16,
     dataplane_writer: DataplaneWriter,
+    udp_socket: UdpSocketHandle,
     peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
 
     channel_from_primary: UnboundedReceiver<FullNodesGroupMessage<ST>>,
@@ -107,6 +108,7 @@ where
         config: RaptorCastConfig<ST>,
         secondary_mode: SecondaryRaptorCastMode<ST>,
         dataplane_writer: DataplaneWriter,
+        udp_socket: UdpSocketHandle,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
         channel_from_primary: UnboundedReceiver<FullNodesGroupMessage<ST>>,
         channel_to_primary: UnboundedSender<Group<ST>>,
@@ -155,6 +157,7 @@ where
             curr_epoch: current_epoch,
             mtu: config.mtu,
             dataplane_writer,
+            udp_socket,
             peer_discovery_driver,
             channel_from_primary,
             metrics: Default::default(),
@@ -238,7 +241,7 @@ where
             self.raptor10_redundancy,
             known_addresses,
         );
-        self.dataplane_writer.udp_write_unicast(udp_messages);
+        self.udp_socket.write_unicast(udp_messages);
     }
 
     fn send_group_msg(
@@ -453,8 +456,7 @@ where
                         &known_addresses,
                     );
 
-                    // Send the raptorcast chunks via UDP to all peers in group
-                    self.dataplane_writer.udp_write_unicast(rc_chunks);
+                    self.udp_socket.write_unicast(rc_chunks);
                 }
             }
         }
