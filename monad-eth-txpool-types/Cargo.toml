@@ -9,5 +9,5 @@ edition = "2021"
 bench = false
 
 [dependencies]
-alloy-primitives = { workspace = true }
-serde = { workspace = true }
+alloy-primitives = { workspace = true, features = ["serde"] }
+serde = { workspace = true, features = ["derive"] }
