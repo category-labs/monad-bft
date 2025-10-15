@@ -42,6 +42,7 @@ use self::{list::TrackedTxList, sequencer::ProposalSequencer};
 use super::transaction::ValidEthTransaction;
 use crate::EthTxPoolEventTracker;
 
+mod limits;
 mod list;
 mod sequencer;
 

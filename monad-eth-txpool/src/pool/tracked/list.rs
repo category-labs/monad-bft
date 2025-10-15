@@ -75,6 +75,10 @@ impl TrackedTxList {
         self.txs.values_mut().map(|(tx, _)| tx)
     }
 
+    pub fn into_txs(self) -> impl Iterator<Item = ValidEthTransaction> {
+        self.txs.into_values().map(|(tx, _)| tx)
+    }
+
     pub fn num_txs(&self) -> usize {
         self.txs.len()
     }
