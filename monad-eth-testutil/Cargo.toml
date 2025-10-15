@@ -25,7 +25,9 @@ alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-signer = { workspace = true }
 alloy-signer-local = { workspace = true }
+blst = { workspace = true }
 rand = { workspace = true }
+secp256k1 = { workspace = true, features = ["global-context", "recovery"] }
 
 [dev-dependencies]
 alloy-json-rpc = { workspace = true }
