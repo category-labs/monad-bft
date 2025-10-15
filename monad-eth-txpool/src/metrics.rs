@@ -34,6 +34,7 @@ pub struct EthTxPoolMetrics {
     pub drop_pool_not_ready: AtomicU64,
     pub drop_internal_state_backend_error: AtomicU64,
     pub drop_internal_not_ready: AtomicU64,
+    pub drop_internal_limit_error: AtomicU64,
 
     pub create_proposal: AtomicU64,
     pub create_proposal_txs: AtomicU64,
@@ -72,6 +73,8 @@ impl EthTxPoolMetrics {
             .load(Ordering::SeqCst);
         metrics["monad.bft.txpool.pool.drop_internal_not_ready"] =
             self.drop_internal_not_ready.load(Ordering::SeqCst);
+        metrics["monad.bft.txpool.pool.drop_internal_limit_error"] =
+            self.drop_internal_limit_error.load(Ordering::SeqCst);
 
         metrics["monad.bft.txpool.pool.create_proposal"] =
             self.create_proposal.load(Ordering::SeqCst);

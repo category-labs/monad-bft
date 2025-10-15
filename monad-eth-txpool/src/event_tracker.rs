@@ -146,6 +146,11 @@ impl<'a> EthTxPoolEventTracker<'a> {
                     .drop_internal_not_ready
                     .fetch_add(1, Ordering::SeqCst);
             }
+            EthTxPoolDropReason::Internal(EthTxPoolInternalDropReason::LimitError) => {
+                self.metrics
+                    .drop_internal_limit_error
+                    .fetch_add(1, Ordering::SeqCst);
+            }
         }
 
         self.events

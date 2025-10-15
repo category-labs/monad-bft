@@ -396,6 +396,10 @@ fn run_custom_iter<const N: usize>(
             }
             TxPoolTestEvent::Block(f) => f(&mut pool),
         }
+
+        let num_txs = pool.num_txs();
+        pool.static_validate_all_txs(&mut event_tracker);
+        assert_eq!(pool.num_txs(), num_txs);
     }
 }
 
