@@ -444,7 +444,8 @@ where
                 }),
         );
 
-        self.tracked.reset(last_delay_committed_blocks);
+        self.tracked
+            .reset(event_tracker, last_delay_committed_blocks);
 
         if self.execution_revision != execution_revision {
             self.execution_revision = execution_revision;

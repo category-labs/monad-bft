@@ -26,6 +26,7 @@ use monad_eth_txpool_types::EthTxPoolDropReason;
 use monad_types::Nonce;
 use tracing::error;
 
+use super::limits::{TrackedTxLimitAddToken, TrackedTxLimits};
 use crate::{pool::transaction::ValidEthTransaction, EthTxPoolEventTracker};
 
 /// Stores byte-validated transactions alongside the an account_nonce to enforce at the type level
@@ -42,11 +43,11 @@ impl TrackedTxList {
     pub fn try_new(
         this_entry: VacantEntry<'_, Address, Self>,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
+        limits: &mut TrackedTxLimits,
         txs: Vec<ValidEthTransaction>,
         account_nonce: u64,
         on_insert: &mut impl FnMut(&ValidEthTransaction),
         last_commit_base_fee: u64,
-        tx_expiry: Duration,
     ) {
         let mut this = TrackedTxList {
             account_nonce,
@@ -54,10 +55,21 @@ impl TrackedTxList {
         };
 
         for tx in txs {
-            if let Some(tx) = this.try_insert_tx(event_tracker, tx, last_commit_base_fee, tx_expiry)
-            {
-                on_insert(tx);
-            }
+            let tx_token = if this.txs.is_empty() {
+                limits.prepare_add_tx_to_new_address(event_tracker, tx)
+            } else {
+                limits.prepare_add_tx_to_existing(event_tracker, tx)
+            };
+
+            let Some(tx_token) = tx_token else {
+                continue;
+            };
+
+            let Some(tx) = this.try_insert_tx(tx_token, last_commit_base_fee) else {
+                continue;
+            };
+
+            on_insert(tx);
         }
 
         if this.txs.is_empty() {
@@ -108,39 +120,28 @@ impl TrackedTxList {
 
     pub(crate) fn try_insert_tx(
         &mut self,
-        event_tracker: &mut EthTxPoolEventTracker<'_>,
-        tx: ValidEthTransaction,
+        tx_token: TrackedTxLimitAddToken,
         last_commit_base_fee: u64,
-        tx_expiry: Duration,
     ) -> Option<&ValidEthTransaction> {
-        if tx.nonce() < self.account_nonce {
-            event_tracker.drop(tx.hash(), EthTxPoolDropReason::NonceTooLow);
+        if tx_token.nonce() < self.account_nonce {
+            tx_token.cancel(EthTxPoolDropReason::NonceTooLow);
             return None;
         }
 
-        match self.txs.entry(tx.nonce()) {
-            btree_map::Entry::Vacant(v) => {
-                event_tracker.insert(tx.raw(), tx.is_owned());
-                Some(&v.insert((tx, event_tracker.now)).0)
-            }
-            btree_map::Entry::Occupied(mut entry) => {
-                let (existing_tx, existing_tx_insert_time) = entry.get();
+        match self.txs.entry(tx_token.nonce()) {
+            btree_map::Entry::Vacant(v) => Some(tx_token.insert_vacant(v)),
+            btree_map::Entry::Occupied(o) => {
+                let (existing_tx, existing_tx_insert_time) = o.get();
 
-                if tx_expired(existing_tx_insert_time, tx_expiry, &event_tracker.now)
-                    || tx.has_higher_priority(existing_tx, last_commit_base_fee)
+                if tx_expired(
+                    existing_tx_insert_time,
+                    tx_token.limits().tx_expiry_during_insert(),
+                    tx_token.now(),
+                ) || tx_token.has_higher_priority(existing_tx, last_commit_base_fee)
                 {
-                    event_tracker.replace(
-                        tx.signer_ref(),
-                        existing_tx.hash(),
-                        tx.hash(),
-                        tx.is_owned(),
-                    );
-                    entry.insert((tx, event_tracker.now));
-
-                    Some(&entry.into_mut().0)
+                    Some(tx_token.replace_existing(o))
                 } else {
-                    event_tracker.drop(tx.hash(), EthTxPoolDropReason::ExistingHigherPriority);
-
+                    tx_token.cancel(EthTxPoolDropReason::ExistingHigherPriority);
                     None
                 }
             }
@@ -149,6 +150,7 @@ impl TrackedTxList {
 
     pub fn update_committed_nonce_usage(
         event_tracker: &mut EthTxPoolEventTracker<'_>,
+        limits: &mut TrackedTxLimits,
         mut this: indexmap::map::OccupiedEntry<'_, Address, Self>,
         nonce_usage: NonceUsage,
     ) {
@@ -166,55 +168,63 @@ impl TrackedTxList {
             return;
         }
 
-        let txs = this.get_mut().txs.split_off(&account_nonce);
+        let removed_txs = {
+            let remaining_txs = this.get_mut().txs.split_off(&account_nonce);
 
-        event_tracker.tracked_commit(
-            txs.is_empty(),
-            this.get().txs.values().map(|(tx, _)| tx.hash()),
+            std::mem::replace(&mut this.get_mut().txs, remaining_txs)
+        };
+
+        let removed_address = this.get().txs.is_empty();
+
+        limits.remove_committed_txs(
+            event_tracker,
+            removed_txs.into_values().map(|(tx, _)| tx),
+            removed_address,
         );
 
-        if txs.is_empty() {
+        if removed_address {
             this.swap_remove();
-            return;
         }
-
-        this.get_mut().txs = txs;
     }
 
     // Produces true when the entry was removed and false otherwise
     pub fn evict_expired_txs(
         event_tracker: &mut EthTxPoolEventTracker<'_>,
+        limits: &mut TrackedTxLimits,
         mut this: indexmap::map::IndexedEntry<'_, Address, Self>,
-        tx_expiry: Duration,
     ) -> bool {
         let now = Instant::now();
 
         let txs = &mut this.get_mut().txs;
 
-        let mut removed_hashes = Vec::default();
+        let mut removed_txs = Vec::default();
 
         txs.retain(|_, (tx, tx_insert)| {
-            if !tx_expired(tx_insert, tx_expiry, &now) {
+            if !tx_expired(tx_insert, limits.tx_expiry_during_evict(), &now) {
                 return true;
             }
 
-            removed_hashes.push(tx.hash());
+            removed_txs.push(tx.clone());
+
             false
         });
 
-        event_tracker.tracked_evict_expired(txs.is_empty(), removed_hashes.into_iter());
+        let removed_address = txs.is_empty();
 
-        if txs.is_empty() {
+        limits.remove_expired_txs(event_tracker, removed_txs.into_iter(), removed_address);
+
+        if removed_address {
             this.swap_remove();
-            true
-        } else {
-            false
         }
+
+        removed_address
     }
 
+    // Produces true when the entry was removed and false otherwise
     pub fn static_validate_all_txs<CRT>(
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
+        limits: &mut TrackedTxLimits,
         chain_id: u64,
         chain_revision: &CRT,
         execution_revision: &MonadExecutionRevision,
@@ -222,6 +232,8 @@ impl TrackedTxList {
     where
         CRT: ChainRevision,
     {
+        let mut removed_txs = Vec::default();
+
         self.txs.retain(|_, (tx, _)| {
             let Err(error) = tx.static_validate(
                 chain_id,
@@ -231,12 +243,16 @@ impl TrackedTxList {
                 return true;
             };
 
-            event_tracker.drop(tx.hash(), EthTxPoolDropReason::NotWellFormed(error));
+            removed_txs.push(tx.clone());
 
             false
         });
 
-        !self.txs.is_empty()
+        let removed_address = self.txs.is_empty();
+
+        limits.remove_expired_txs(event_tracker, removed_txs.into_iter(), removed_address);
+
+        removed_address
     }
 }
 
