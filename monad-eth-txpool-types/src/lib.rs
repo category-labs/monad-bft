@@ -24,7 +24,7 @@ pub struct EthTxPoolEvent {
     pub action: EthTxPoolEventType,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EthTxPoolEventType {
     /// The tx was inserted into the txpool.
     Insert { address: Address, owned: bool },
@@ -71,6 +71,7 @@ pub enum EthTxPoolDropReason {
 pub enum EthTxPoolInternalDropReason {
     StateBackendError,
     NotReady,
+    LimitError,
 }
 
 impl EthTxPoolDropReason {
