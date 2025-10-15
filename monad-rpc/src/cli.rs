@@ -170,6 +170,11 @@ pub struct Cli {
     #[arg(long, default_value_t = 3)]
     pub max_voted_block_cache_len: u64,
 
+    /// Set the path where consensus blocks will be stored
+    // Used exclusively for eth_feeHistory to get the next block base fee
+    #[arg(long, default_value = "/monad/ledger")]
+    pub ledger_path: PathBuf,
+
     /* Archive Options */
     /// Set the s3 bucket name to read archive data from
     #[arg(long)]
