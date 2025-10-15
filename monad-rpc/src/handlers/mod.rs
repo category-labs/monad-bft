@@ -711,7 +711,7 @@ async fn eth_feeHistory(
 ) -> Result<Box<RawValue>, JsonRpcError> {
     if let Some(chain_state) = &app_state.chain_state {
         let params = serde_json::from_value(params).invalid_params()?;
-        monad_eth_feeHistory(chain_state, params)
+        monad_eth_feeHistory(chain_state, app_state.bft_ledger_path.as_path(), params)
             .await
             .map(serialize_result)?
     } else {
