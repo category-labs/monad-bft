@@ -782,4 +782,5 @@ async fn test_priority_messages() {
             "Regular priority messages should be received after high priority"
         );
     }
+    assert!(false);
 }
