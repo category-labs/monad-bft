@@ -22,7 +22,7 @@ jobs:
         dockerfile:
           - { name: "monad-bft", file: "docker/devnet/Dockerfile" }
           - { name: "monad-rpc", file: "docker/rpc/Dockerfile" }
-          - { name: "monad-execution", file: "monad-cxx/monad-execution/docker/release.Dockerfile", context: "monad-cxx/monad-execution" }
+          - { name: "monad-execution", file: "monad-cxx/monad-execution/docker/Dockerfile", context: "monad-cxx/monad-execution" }
           - { name: "monad-tx-gen", file: "docker/txgen/Dockerfile" }
           - { name: "monad-archive", file: "docker/archive/Dockerfile" }
           - { name: "rpc-request-generator", file: "docker/rpc-request-gen/Dockerfile" }
@@ -100,5 +100,8 @@ jobs:
           build-args: |
             GIT_COMMIT_HASH=${{ env.GIT_COMMIT_HASH }}
             GIT_TAG_VERSION=${{ env.GIT_TAG_VERSION }}
+            CC=gcc-15
+            CXX=g++-15
+            CMAKE_BUILD_TYPE=RelWithDebInfo
           builder: ${{ steps.setup-buildx.outputs.name }}
           allow: security.insecure
