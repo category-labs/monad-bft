@@ -362,13 +362,12 @@ where
                             .peer_discovery_driver
                             .lock()
                             .unwrap()
-                            .get_secondary_fullnode_addrs();
-                        let full_nodes_vec: Vec<_> = full_nodes.keys().copied().collect();
+                            .get_secondary_fullnodes();
                         trace!(
                             "RaptorCastSecondary updating {} full nodes from PeerDiscovery",
-                            full_nodes_vec.len()
+                            full_nodes.len()
                         );
-                        publisher.upsert_peer_disc_full_nodes(FullNodes::new(full_nodes_vec));
+                        publisher.upsert_peer_disc_full_nodes(FullNodes::new(full_nodes));
 
                         if let Some((group_msg, full_nodes_set)) =
                             publisher.enter_round_and_step_until(round)
@@ -387,7 +386,12 @@ where
                                 );
                             }
 
-                            self.send_group_msg(group_msg, full_nodes_set, &full_nodes);
+                            let known_addresses = self
+                                .peer_discovery_driver
+                                .lock()
+                                .unwrap()
+                                .get_known_addresses();
+                            self.send_group_msg(group_msg, full_nodes_set, &known_addresses);
                         }
                     }
                 },

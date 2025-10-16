@@ -291,14 +291,10 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
             .collect()
     }
 
-    pub fn get_secondary_fullnode_addrs(
+    pub fn get_secondary_fullnodes(
         &self,
-    ) -> HashMap<NodeId<CertificateSignaturePubKey<PD::SignatureType>>, SocketAddr> {
-        self.pd
-            .get_secondary_fullnode_addrs()
-            .into_iter()
-            .map(|(k, v)| (k, SocketAddr::V4(v)))
-            .collect()
+    ) -> Vec<NodeId<CertificateSignaturePubKey<PD::SignatureType>>> {
+        self.pd.get_secondary_fullnodes()
     }
 
     pub fn get_name_records(

@@ -1471,17 +1471,15 @@ where
             .collect()
     }
 
-    fn get_secondary_fullnode_addrs(
-        &self,
-    ) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4> {
+    fn get_secondary_fullnodes(&self) -> Vec<NodeId<CertificateSignaturePubKey<ST>>> {
         self.routing_info
-            .iter()
-            .filter(|(id, _)| {
+            .keys()
+            .filter(|id| {
                 self.participation_info
                     .get(id)
                     .is_some_and(|p| p.status == SecondaryRaptorcastConnectionStatus::Connected)
             })
-            .map(|(id, name_record)| (*id, name_record.address()))
+            .copied()
             .collect()
     }
 
@@ -2247,7 +2245,7 @@ mod tests {
         state.self_role = PeerDiscoveryRole::ValidatorNone;
         let cmds = state.handle_full_node_raptorcast_request(peer1_pubkey);
         assert_eq!(cmds.len(), 0);
-        assert_eq!(state.get_secondary_fullnode_addrs(), HashMap::new());
+        assert_eq!(state.get_secondary_fullnodes(), Vec::new());
 
         // after receiving a full node raptorcast request from peer1,
         // it should mark it as connected
@@ -2263,10 +2261,7 @@ mod tests {
             target: _,
             message: PeerDiscoveryMessage::FullNodeRaptorcastResponse
         }));
-        assert_eq!(
-            state.get_secondary_fullnode_addrs(),
-            HashMap::from([(peer1_pubkey, generate_name_record(peer1, 0).address())])
-        );
+        assert_eq!(state.get_secondary_fullnodes(), Vec::from([peer1_pubkey]));
     }
 
     #[test]

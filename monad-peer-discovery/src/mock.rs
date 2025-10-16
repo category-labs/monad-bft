@@ -265,10 +265,8 @@ where
         self.known_addresses.clone()
     }
 
-    fn get_secondary_fullnode_addrs(
-        &self,
-    ) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4> {
-        HashMap::new()
+    fn get_secondary_fullnodes(&self) -> Vec<NodeId<CertificateSignaturePubKey<ST>>> {
+        Vec::new()
     }
 
     fn get_name_records(
