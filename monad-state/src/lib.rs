@@ -20,7 +20,7 @@ use std::{
     ops::Deref,
 };
 
-use alloy_primitives::U256;
+use alloy_primitives::{keccak256, U256};
 use alloy_rlp::{encode_list, Decodable, Encodable, Header};
 use bytes::{Bytes, BytesMut};
 use itertools::Itertools;
@@ -51,7 +51,7 @@ use monad_consensus_types::{
     RoundCertificate,
 };
 use monad_crypto::certificate_signature::{
-    CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
+    CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_executor_glue::{
     BlockSyncEvent, ClearMetrics, Command, ConfigEvent, ConfigReloadCommand, ConsensusEvent,
@@ -842,6 +842,18 @@ where
             self.consensus_config.timestamp_latency_estimate_ns,
         );
         let statesync_to_live_threshold = self.consensus_config.statesync_to_live_threshold;
+
+        let beneficiary = if self.beneficiary == [0_u8; 20] {
+            panic!("beneficiary address configured is for the burn address");
+            let pubkey_bytes = nodeid.pubkey().bytes();
+            assert_eq!(pubkey_bytes.len(), 65);
+            let hash = keccak256(&pubkey_bytes[1..]);
+            let x: [u8; 20] = hash.0[12..].try_into().unwrap();
+            x
+        } else {
+            self.beneficiary
+        };
+
         let mut monad_state = MonadState {
             keypair: self.key,
             cert_keypair: self.certkey,
@@ -868,7 +880,7 @@ where
             block_validator: self.block_validator,
             block_policy: self.block_policy,
             state_backend: self.state_backend,
-            beneficiary: self.beneficiary,
+            beneficiary,
 
             metrics: Metrics::default(),
             version: MonadVersion::version(),
