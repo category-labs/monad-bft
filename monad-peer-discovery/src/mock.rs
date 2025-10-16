@@ -229,9 +229,14 @@ where
 
     fn update_pinned_nodes(
         &mut self,
-        pinned_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
+        dedicated_full_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
+        prioritized_full_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
-        debug!(?pinned_nodes, "updating pinned nodes");
+        debug!(
+            ?dedicated_full_nodes,
+            ?prioritized_full_nodes,
+            "updating pinned nodes"
+        );
 
         Vec::new()
     }

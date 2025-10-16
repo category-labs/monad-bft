@@ -78,7 +78,8 @@ pub enum RouterCommand<ST: CertificateSignatureRecoverable, OM> {
     GetPeers,
     UpdatePeers {
         peer_entries: Vec<PeerEntry<ST>>,
-        pinned_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+        dedicated_full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+        prioritized_full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
     },
     GetFullNodes,
     UpdateFullNodes {
@@ -122,11 +123,13 @@ impl<ST: CertificateSignatureRecoverable, OM> Debug for RouterCommand<ST, OM> {
             Self::GetPeers => write!(f, "GetPeers"),
             Self::UpdatePeers {
                 peer_entries,
-                pinned_nodes,
+                dedicated_full_nodes,
+                prioritized_full_nodes,
             } => f
                 .debug_struct("UpdatePeers")
                 .field("peer_entries", peer_entries)
-                .field("pinned_nodes", pinned_nodes)
+                .field("dedicated_full_nodes", dedicated_full_nodes)
+                .field("prioritized_full_nodes", prioritized_full_nodes)
                 .finish(),
             Self::GetFullNodes => write!(f, "GetFullNodes"),
             Self::UpdateFullNodes {
@@ -1926,7 +1929,8 @@ where
     ST: CertificateSignatureRecoverable,
 {
     pub known_peers: Vec<PeerEntry<ST>>,
-    pub pinned_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+    pub dedicated_full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+    pub prioritized_full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
