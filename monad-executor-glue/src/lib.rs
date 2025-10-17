@@ -46,8 +46,8 @@ use monad_crypto::certificate_signature::{
 };
 use monad_state_backend::StateBackend;
 use monad_types::{
-    deserialize_pubkey, serialize_pubkey, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget,
-    SeqNum, Stake,
+    deserialize_pubkey, serialize_pubkey, Epoch, ExecutionProtocol, NodeId, Round, RoundSpan,
+    RouterTarget, SeqNum, Stake,
 };
 use monad_validator::signature_collection::SignatureCollection;
 use serde::{Deserialize, Serialize};
@@ -884,6 +884,7 @@ where
     },
     /// Events for secondary raptorcast updates
     SecondaryRaptorcastPeersUpdate {
+        round_span: RoundSpan,
         confirm_group_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
     },
 }
@@ -927,9 +928,11 @@ where
                 .field("response", response)
                 .finish(),
             Self::SecondaryRaptorcastPeersUpdate {
+                round_span,
                 confirm_group_peers,
             } => f
                 .debug_struct("BlockSyncSecondaryRaptorcastEvent")
+                .field("round_span", round_span)
                 .field("confirm_group_peers", confirm_group_peers)
                 .finish(),
             Self::Timeout(request) => f.debug_struct("Timeout").field("request", request).finish(),
@@ -976,9 +979,10 @@ where
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
             Self::SecondaryRaptorcastPeersUpdate {
+                round_span,
                 confirm_group_peers,
             } => {
-                let enc: [&dyn Encodable; 2] = [&7u8, &confirm_group_peers];
+                let enc: [&dyn Encodable; 3] = [&7u8, &round_span, &confirm_group_peers];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
         }
@@ -1028,8 +1032,10 @@ where
                 Ok(Self::SelfResponse { response })
             }
             7 => {
+                let round_span = RoundSpan::decode(&mut payload)?;
                 let confirm_group_peers = Vec::<NodeId<SCT::NodeIdPubKey>>::decode(&mut payload)?;
                 Ok(Self::SecondaryRaptorcastPeersUpdate {
+                    round_span,
                     confirm_group_peers,
                 })
             }
