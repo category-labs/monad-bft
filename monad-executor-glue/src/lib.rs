@@ -869,6 +869,7 @@ where
     },
     /// Events for secondary raptorcast updates
     SecondaryRaptorcastPeersUpdate {
+        expiry_round: Round,
         confirm_group_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
     },
 }
@@ -912,9 +913,11 @@ where
                 .field("response", response)
                 .finish(),
             Self::SecondaryRaptorcastPeersUpdate {
+                expiry_round,
                 confirm_group_peers,
             } => f
                 .debug_struct("BlockSyncSecondaryRaptorcastEvent")
+                .field("expiry_round", expiry_round)
                 .field("confirm_group_peers", confirm_group_peers)
                 .finish(),
             Self::Timeout(request) => f.debug_struct("Timeout").field("request", request).finish(),
@@ -961,9 +964,10 @@ where
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
             Self::SecondaryRaptorcastPeersUpdate {
+                expiry_round,
                 confirm_group_peers,
             } => {
-                let enc: [&dyn Encodable; 2] = [&7u8, &confirm_group_peers];
+                let enc: [&dyn Encodable; 3] = [&7u8, &expiry_round, &confirm_group_peers];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
         }
@@ -1013,8 +1017,10 @@ where
                 Ok(Self::SelfResponse { response })
             }
             7 => {
+                let expiry_round = Round::decode(&mut payload)?;
                 let confirm_group_peers = Vec::<NodeId<SCT::NodeIdPubKey>>::decode(&mut payload)?;
                 Ok(Self::SecondaryRaptorcastPeersUpdate {
+                    expiry_round,
                     confirm_group_peers,
                 })
             }
