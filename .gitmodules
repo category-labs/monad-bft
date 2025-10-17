@@ -1,3 +1,4 @@
 [submodule "monad-cxx/monad-execution"]
 	path = monad-cxx/monad-execution
-	url = https://github.com/category-labs/monad.git
+	url = https://github.com/category-labs/monad
+	branch = dhil/replay-txs

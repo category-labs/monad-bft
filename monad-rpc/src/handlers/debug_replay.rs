@@ -15,7 +15,7 @@
 
 use std::sync::Arc;
 
-use monad_ethcall::{eth_call, CallResult, EthCallExecutor, MonadTracer, StateOverrideSet};
+use monad_ethcall::{eth_trace_transaction, eth_trace_block, CallResult, EthCallExecutor, MonadTracer};
 use monad_triedb_utils::triedb_env::Triedb;
 use monad_types::SeqNum;
 use serde_json::value::RawValue;
@@ -47,8 +47,8 @@ pub trait DebugTraceParams {
     fn requires_replay(&self) -> bool;
     /// Returns the hash or tag parameter payload associated with the trace request.
     fn block_tag_or_hash(&self) -> BlockTagOrHash;
-    /// Returns whether the trace request is a single operation or bulk operation (e.g. traceTransaction vs traceBlockByNumber).
-    fn execution_mode(&self) -> ExecutionMode;
+    /// Returns whether the trace request is for a single transaction or an entire block (e.g. traceTransaction vs traceBlockByNumber).
+    fn trace_target(&self) -> TraceTarget;
     /// Returns the tracer configuration associated with the trace request.
     fn tracer(&self) -> TracerObject;
 }
@@ -60,8 +60,8 @@ impl DebugTraceParams for MonadDebugTraceTransactionParams {
     fn block_tag_or_hash(&self) -> BlockTagOrHash {
         BlockTagOrHash::Hash(self.tx_hash)
     }
-    fn execution_mode(&self) -> ExecutionMode {
-        ExecutionMode::Single
+    fn trace_target(&self) -> TraceTarget {
+        TraceTarget::Transaction
     }
     fn tracer(&self) -> TracerObject {
         self.tracer
@@ -75,8 +75,8 @@ impl DebugTraceParams for MonadDebugTraceBlockByNumberParams {
     fn block_tag_or_hash(&self) -> BlockTagOrHash {
         BlockTagOrHash::BlockTags(self.block_number)
     }
-    fn execution_mode(&self) -> ExecutionMode {
-        ExecutionMode::Bulk
+    fn trace_target(&self) -> TraceTarget {
+        TraceTarget::Block
     }
     fn tracer(&self) -> TracerObject {
         self.tracer
@@ -90,8 +90,8 @@ impl DebugTraceParams for MonadDebugTraceBlockByHashParams {
     fn block_tag_or_hash(&self) -> BlockTagOrHash {
         BlockTagOrHash::Hash(self.block_hash)
     }
-    fn execution_mode(&self) -> ExecutionMode {
-        ExecutionMode::Bulk
+    fn trace_target(&self) -> TraceTarget {
+        TraceTarget::Block
     }
     fn tracer(&self) -> TracerObject {
         self.tracer
@@ -99,9 +99,9 @@ impl DebugTraceParams for MonadDebugTraceBlockByHashParams {
 }
 
 /// Indicates whether the trace request is for a single transaction or for all transactions in a block.
-pub enum ExecutionMode {
-    Single,
-    Bulk,
+pub enum TraceTarget {
+    Block,
+    Transaction,
 }
 
 /// Projects the block tag, treating any hash as 'latest'. Useful for block key retrieval.
@@ -133,7 +133,6 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
     chain_id: u64,
     params: &impl DebugTraceParams,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let state_overrides = StateOverrideSet::default();
     let block_key = get_block_key_from_tag(triedb_env, params.into()).unwrap();
     let header = triedb_env
         .get_block_header(block_key)
@@ -143,8 +142,8 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
             JsonRpcError::internal_error("error getting block header: found none".into())
         })?;
     let tracer: MonadTracer = params.tracer().into();
-    match params.execution_mode() {
-        ExecutionMode::Single => {
+    let call_result = match params.trace_target() {
+        TraceTarget::Transaction => {
             let tx_hash: EthHash = params.block_tag_or_hash().try_into()?;
             let tx_loc = triedb_env
                 .get_transaction_location_by_hash(block_key, tx_hash.0)
@@ -154,43 +153,21 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
                     JsonRpcError::internal_error(format!("transaction not found: {:?}", tx_hash))
                 })?;
             let block_key = triedb_env.get_block_key(SeqNum(tx_loc.block_num)).unwrap();
-            let txn = triedb_env
-                .get_transaction(block_key, tx_loc.tx_index)
-                .await
-                .map_err(|e| {
-                    JsonRpcError::internal_error(format!("error getting transaction: {}", e))
-                })?
-                .ok_or_else(|| JsonRpcError::internal_error("no transaction data".into()))?;
+            let parent_key = triedb_env.get_block_key(SeqNum(tx_loc.block_num - 1)).unwrap();
             let (seq_number, block_id) = block_key.seq_num_block_id();
-            let raw_payload = match eth_call(
+            let (_, parent_id) = parent_key.seq_num_block_id();
+            eth_trace_transaction(
                 chain_id,
-                txn.tx,
                 header.header,
-                txn.sender,
                 seq_number.0,
                 block_id.map(|id| id.0 .0),
+                parent_id.map(|id| id.0 .0),
+                tx_loc.tx_index,
                 eth_call_executor,
-                &state_overrides,
                 tracer,
-                false,
-            )
-            .await
-            {
-                CallResult::Success(monad_ethcall::SuccessCallResult { output_data, .. }) => {
-                    output_data
-                }
-                CallResult::Failure(error) => {
-                    return Err(JsonRpcError::eth_call_error(error.message, error.data))
-                }
-                CallResult::Revert(result) => result.trace,
-            };
-            let v: serde_cbor::Value = serde_cbor::from_slice(&raw_payload)
-                .map_err(|e| JsonRpcError::internal_error(format!("cbor decode error: {}", e)))?;
-            serde_json::value::to_raw_value(&v).map_err(|e| {
-                JsonRpcError::internal_error(format!("json serialization error: {}", e))
-            })
-        }
-        ExecutionMode::Bulk => {
+            ).await
+        },
+        TraceTarget::Block => {
             let block_key = match params.block_tag_or_hash() {
                 BlockTagOrHash::Hash(block_hash) => {
                     if let Some(block_num) = triedb_env
@@ -208,55 +185,32 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
                 }
                 BlockTagOrHash::BlockTags(_) => block_key,
             };
-            let txns = triedb_env.get_transactions(block_key).await.map_err(|e| {
-                JsonRpcError::internal_error(format!("error getting transactions: {}", e))
-            })?;
             let (seq_number, block_id) = block_key.seq_num_block_id();
-            let mut results: Vec<serde_cbor::Value> = Vec::with_capacity(txns.len());
-            for txn in txns {
-                // TODO(dhil): May skew the eth_call statistics tracker.
-                let raw_payload = match eth_call(
-                    chain_id,
-                    txn.tx.clone(),
-                    header.header.clone(),
-                    txn.sender,
-                    seq_number.0,
-                    block_id.map(|id| id.0 .0),
-                    eth_call_executor.clone(),
-                    &state_overrides,
-                    tracer,
-                    false,
-                )
-                .await
-                {
-                    CallResult::Success(monad_ethcall::SuccessCallResult {
-                        output_data, ..
-                    }) => output_data,
-                    CallResult::Failure(error) => {
-                        return Err(JsonRpcError::eth_call_error(error.message, error.data))
-                    }
-                    CallResult::Revert(result) => result.trace,
-                };
-
-                let trace: serde_cbor::Value =
-                    serde_cbor::from_slice(&raw_payload).map_err(|e| {
-                        JsonRpcError::internal_error(format!("cbor decode error: {}", e))
-                    })?;
-
-                // Create BTreeMap for CBOR Map
-                let mut result_obj = std::collections::BTreeMap::new();
-                result_obj.insert(
-                    serde_cbor::Value::Text("txHash".to_string()),
-                    serde_cbor::Value::Text(format!("{}", txn.tx.tx_hash())),
-                );
-                result_obj.insert(serde_cbor::Value::Text("result".to_string()), trace);
-                let result = serde_cbor::Value::Map(result_obj);
-
-                results.push(result);
-            }
-            serde_json::value::to_raw_value(&results).map_err(|e| {
-                JsonRpcError::internal_error(format!("json serialization error: {}", e))
-            })
+            let parent_key = triedb_env.get_block_key(SeqNum(seq_number.0 - 1)).unwrap();
+            let (_, parent_id) = parent_key.seq_num_block_id();
+            eth_trace_block(
+                chain_id,
+                header.header,
+                seq_number.0,
+                block_id.map(|id| id.0 .0),
+                parent_id.map(|id| id.0 .0),
+                eth_call_executor,
+                tracer,
+            ).await
         }
-    }
+    };
+    let raw_payload = match call_result{
+        CallResult::Success(monad_ethcall::SuccessCallResult { output_data, .. }) => {
+            output_data
+        }
+        CallResult::Failure(error) => {
+            return Err(JsonRpcError::eth_call_error(error.message, error.data))
+        }
+        CallResult::Revert(result) => result.trace,
+    };
+    let v: serde_cbor::Value = serde_cbor::from_slice(&raw_payload)
+        .map_err(|e| JsonRpcError::internal_error(format!("cbor decode error: {}", e)))?;
+    serde_json::value::to_raw_value(&v).map_err(|e| {
+        JsonRpcError::internal_error(format!("json serialization error: {}", e))
+    })
 }
