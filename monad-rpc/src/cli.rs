@@ -16,6 +16,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
+use monad_rpc::handlers::MethodGroup;
 
 #[derive(Debug, Parser)]
 #[command(name = "monad-node", about, long_about = None)]
@@ -39,6 +40,10 @@ pub struct Cli {
     /// Set the node config path
     #[arg(long)]
     pub node_config: PathBuf,
+
+    /// Enable namespace for rpc (admin, debug)
+    #[arg(long, value_enum, value_delimiter = ',')]
+    pub rpc_namespaces: Vec<MethodGroup>,
 
     /// Enable the WebSocket server
     #[arg(long, default_value_t = false)]
