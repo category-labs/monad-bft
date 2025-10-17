@@ -246,8 +246,11 @@ impl BlsAggregatePubKey {
     }
 
     /// Aggregate a Pubkey to self
-    pub fn add_assign(&mut self, other: &BlsPubKey) -> Result<(), BlsError> {
-        self.0.add_public_key(&other.0, false).map_err(BlsError)
+    pub fn add_assign(&mut self, other: &BlsPubKey) {
+        self.0
+            .add_public_key(&other.0, false)
+            // Passing `pk_validate = false` makes this method never produce an error.
+            .expect("pubkey aggregation always succeeds")
     }
 
     /// Aggregate a AggregatePubKey to self
@@ -706,9 +709,9 @@ mod test {
         let mut aggpks = Vec::new();
         while let Some(pk0) = iter.next() {
             let mut aggpk = BlsAggregatePubKey::infinity();
-            aggpk.add_assign(pk0).unwrap();
+            aggpk.add_assign(pk0);
             if let Some(pk1) = iter.next() {
-                aggpk.add_assign(pk1).unwrap();
+                aggpk.add_assign(pk1);
             }
             aggpks.push(aggpk);
         }
@@ -1021,12 +1024,12 @@ mod test {
         let pks: Vec<_> = keypairs.into_iter().map(|kp| kp.pubkey()).collect();
         let mut agg1 = BlsAggregatePubKey::infinity();
         for pk in pks.iter() {
-            agg1.add_assign(pk).unwrap();
+            agg1.add_assign(pk);
         }
 
         let mut agg2 = BlsAggregatePubKey::infinity();
         for pk in pks.iter().rev() {
-            agg2.add_assign(pk).unwrap();
+            agg2.add_assign(pk);
         }
 
         assert_eq!(agg1, agg2)
@@ -1067,7 +1070,7 @@ mod test {
         // add_assign
         let mut pk_add_assign = BlsAggregatePubKey::infinity();
         for pk in pks_ref.iter() {
-            pk_add_assign.add_assign(pk).unwrap();
+            pk_add_assign.add_assign(pk);
         }
 
         // add_assign_aggregate
