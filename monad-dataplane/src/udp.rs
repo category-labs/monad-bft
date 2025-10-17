@@ -76,7 +76,7 @@ pub const fn segment_size_for_mtu(mtu: u16) -> u16 {
 pub const DEFAULT_SEGMENT_SIZE: u16 = segment_size_for_mtu(DEFAULT_MTU);
 
 const ETHERNET_MTU: u16 = 1500;
-const ETHERNET_SEGMENT_SIZE: u16 = segment_size_for_mtu(ETHERNET_MTU);
+pub const ETHERNET_SEGMENT_SIZE: u16 = segment_size_for_mtu(ETHERNET_MTU);
 
 fn configure_socket(socket: &UdpSocket, buffer_size: Option<usize>) {
     if let Some(size) = buffer_size {

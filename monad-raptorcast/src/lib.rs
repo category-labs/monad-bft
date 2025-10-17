@@ -40,7 +40,6 @@ use monad_crypto::{
 use monad_dataplane::{
     udp::{segment_size_for_mtu, DEFAULT_MTU},
     BroadcastMsg, DataplaneBuilder, DataplaneReader, DataplaneWriter, RecvTcpMsg, TcpMsg,
-    UnicastMsg,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
@@ -59,9 +58,7 @@ use monad_validator::signature_collection::SignatureCollection;
 use raptorcast_secondary::{group_message::FullNodesGroupMessage, SecondaryRaptorCastModeConfig};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, debug_span, error, trace, warn};
-use util::{
-    unix_ts_ms_now, BuildTarget, EpochValidators, FullNodes, Group, ReBroadcastGroupMap, Redundancy,
-};
+use util::{BuildTarget, EpochValidators, FullNodes, Group, ReBroadcastGroupMap, Redundancy};
 
 pub mod config;
 pub mod decoding;
@@ -73,6 +70,9 @@ pub mod util;
 
 const SIGNATURE_SIZE: usize = 65;
 
+pub(crate) type OwnedMessageBuilder<ST, PD> =
+    packet::MessageBuilder<'static, ST, Arc<Mutex<PeerDiscoveryDriver<PD>>>>;
+
 pub struct RaptorCast<ST, M, OM, SE, PD>
 where
     ST: CertificateSignatureRecoverable,
@@ -81,7 +81,6 @@ where
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
 {
     signing_key: Arc<ST::KeyPairType>,
-    redundancy: Redundancy,
     is_dynamic_fullnode: bool,
 
     // Raptorcast group with stake information. For the send side (i.e., initiating proposals)
@@ -94,7 +93,7 @@ where
     current_epoch: Epoch,
 
     udp_state: udp::UdpState<ST>,
-    mtu: u16,
+    message_builder: OwnedMessageBuilder<ST, PD>,
 
     dataplane_reader: DataplaneReader,
     dataplane_writer: DataplaneWriter,
@@ -147,6 +146,15 @@ where
         debug!(
             ?is_dynamic_fullnode, ?self_id, ?config.mtu, "RaptorCast::new",
         );
+
+        let redundancy = Redundancy::from_f32(config.primary_instance.raptor10_redundancy)
+            .expect("primary raptor10_redundancy doesn't fit");
+        let message_builder =
+            OwnedMessageBuilder::new(config.shared_key.clone(), peer_discovery_driver.clone())
+                .segment_size(segment_size_for_mtu(config.mtu))
+                .epoch_no(current_epoch)
+                .redundancy(redundancy);
+
         Self {
             is_dynamic_fullnode,
             epoch_validators: Default::default(),
@@ -157,13 +165,11 @@ where
             peer_discovery_driver,
 
             signing_key: config.shared_key.clone(),
-            redundancy: Redundancy::from_f32(config.primary_instance.raptor10_redundancy)
-                .expect("primary raptor10_redundancy doesn't fit"),
+            message_builder,
 
             current_epoch,
 
             udp_state: udp::UdpState::new(self_id, config.udp_message_max_age_ms),
-            mtu: config.mtu,
 
             dataplane_reader,
             dataplane_writer,
@@ -258,38 +264,6 @@ where
         };
     }
 
-    // Prepares an app message (e.g. proposal) to be sent out via UDP, by signing
-    // it and then splitting into raptorcast chunks fitting MTU (depending on build_target)
-    fn udp_build(
-        epoch: &Epoch,
-        build_target: BuildTarget<ST>,
-        outbound_message: Bytes,
-        mtu: u16,
-        signing_key: &Arc<ST::KeyPairType>,
-        redundancy: Redundancy,
-        known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
-    ) -> UnicastMsg {
-        let segment_size = segment_size_for_mtu(mtu);
-
-        let unix_ts_ms = unix_ts_ms_now();
-
-        let messages = udp::build_messages::<ST>(
-            signing_key,
-            segment_size,
-            outbound_message,
-            redundancy,
-            epoch.0,
-            unix_ts_ms,
-            build_target,
-            known_addresses,
-        );
-
-        UnicastMsg {
-            msgs: messages,
-            stride: segment_size,
-        }
-    }
-
     fn handle_publish(
         &mut self,
         target: RouterTarget<CertificateSignaturePubKey<ST>>,
@@ -301,12 +275,6 @@ where
         let _timer = DropTimer::start(Duration::from_millis(20), |elapsed| {
             warn!(?elapsed, "long time to publish message")
         });
-
-        let known_addresses = self
-            .peer_discovery_driver
-            .lock()
-            .unwrap()
-            .get_known_addresses();
 
         match target {
             RouterTarget::Broadcast(epoch) | RouterTarget::Raptorcast(epoch) => {
@@ -352,17 +320,15 @@ where
                             return;
                         }
                     };
-                let rc_chunks: UnicastMsg = Self::udp_build(
-                    &epoch,
-                    build_target,
-                    outbound_message,
-                    self.mtu,
-                    &self.signing_key,
-                    self.redundancy,
-                    &known_addresses,
-                );
-                self.dataplane_writer
-                    .udp_write_unicast_with_priority(rc_chunks, priority);
+                if let Some(rc_chunks) = self
+                    .message_builder
+                    .prepare()
+                    .epoch_no(epoch)
+                    .build_unicast_msg(&outbound_message, &build_target)
+                {
+                    self.dataplane_writer
+                        .udp_write_unicast_with_priority(rc_chunks, priority);
+                }
             }
 
             RouterTarget::PointToPoint(to) => {
@@ -385,17 +351,14 @@ where
                             return;
                         }
                     };
-                    let rc_chunks: UnicastMsg = Self::udp_build(
-                        &self.current_epoch,
-                        BuildTarget::<ST>::PointToPoint(&to),
-                        outbound_message,
-                        self.mtu,
-                        &self.signing_key,
-                        self.redundancy,
-                        &known_addresses,
-                    );
-                    self.dataplane_writer
-                        .udp_write_unicast_with_priority(rc_chunks, priority);
+                    let build_target = BuildTarget::<ST>::PointToPoint(&to);
+                    if let Some(rc_chunks) = self
+                        .message_builder
+                        .build_unicast_msg(&outbound_message, &build_target)
+                    {
+                        self.dataplane_writer
+                            .udp_write_unicast_with_priority(rc_chunks, priority);
+                    }
                 }
             }
 
@@ -510,6 +473,8 @@ where
                         }
 
                         self.current_epoch = epoch;
+                        self.message_builder.set_epoch_no(epoch);
+
                         while let Some(entry) = self.epoch_validators.first_entry() {
                             if *entry.key() + Epoch(1) < self.current_epoch {
                                 entry.remove();
@@ -605,16 +570,14 @@ where
                         // TODO: optimize the build of copies of the
                         // same message to multiple recipients.
                         let build_target = BuildTarget::PointToPoint(node);
-                        let rc_chunks: UnicastMsg = Self::udp_build(
-                            &epoch,
-                            build_target,
-                            outbound_message.clone(),
-                            self.mtu,
-                            &self.signing_key,
-                            self.redundancy,
-                            &node_addrs,
-                        );
-                        self.dataplane_writer.udp_write_unicast(rc_chunks);
+                        if let Some(rc_chunks) = self
+                            .message_builder
+                            .prepare_with_peer_lookup(&node_addrs)
+                            .epoch_no(epoch)
+                            .build_unicast_msg(&outbound_message, &build_target)
+                        {
+                            self.dataplane_writer.udp_write_unicast(rc_chunks);
+                        };
                     }
                 }
                 RouterCommand::GetPeers => {
@@ -917,13 +880,11 @@ where
         }
 
         {
-            let mut pd_driver = this.peer_discovery_driver.lock().unwrap();
-
-            let send_peer_disc_msg = |target: NodeId<CertificateSignaturePubKey<ST>>,
+            let send_peer_disc_msg = |this: &RaptorCast<ST, M, OM, E, PD>,
+                                      target: NodeId<CertificateSignaturePubKey<ST>>,
                                       message: PeerDiscoveryMessage<ST>,
-                                      known_addresses: HashMap<
-                NodeId<CertificateSignaturePubKey<ST>>,
-                SocketAddr,
+                                      custom_known_addrs: Option<
+                HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
             >| {
                 let _span = debug_span!("publish discovery").entered();
                 let Ok(router_message) =
@@ -933,22 +894,34 @@ where
                     return;
                 };
 
-                let unicast_msg = Self::udp_build(
-                    &this.current_epoch,
-                    BuildTarget::<ST>::PointToPoint(&target),
-                    router_message,
-                    this.mtu,
-                    &this.signing_key,
-                    this.redundancy,
-                    &known_addresses,
-                );
-                this.dataplane_writer.udp_write_unicast(unicast_msg);
+                let build_target = BuildTarget::<ST>::PointToPoint(&target);
+
+                let rc_chunks = match custom_known_addrs {
+                    Some(addrs) => this
+                        .message_builder
+                        .prepare_with_peer_lookup(&addrs)
+                        .build_unicast_msg(&router_message, &build_target),
+                    None => this
+                        .message_builder
+                        .build_unicast_msg(&router_message, &build_target),
+                };
+
+                if let Some(rc_chunks) = rc_chunks {
+                    this.dataplane_writer.udp_write_unicast(rc_chunks);
+                };
             };
 
-            while let Poll::Ready(Some(peer_disc_emit)) = pd_driver.poll_next_unpin(cx) {
+            loop {
+                let mut pd_driver = this.peer_discovery_driver.lock().unwrap();
+                let Poll::Ready(Some(peer_disc_emit)) = pd_driver.poll_next_unpin(cx) else {
+                    break;
+                };
+                // unlock pd driver so it can be used for lookup peers in `send_peer_disc_msg`.
+                drop(pd_driver);
+
                 match peer_disc_emit {
                     PeerDiscoveryEmit::RouterCommand { target, message } => {
-                        send_peer_disc_msg(target, message, pd_driver.get_known_addresses());
+                        send_peer_disc_msg(this, target, message, None);
                     }
                     PeerDiscoveryEmit::PingPongCommand {
                         target,
@@ -956,7 +929,7 @@ where
                         message,
                     } => {
                         let addrs = HashMap::from_iter([(target, SocketAddr::V4(socket_address))]);
-                        send_peer_disc_msg(target, message, addrs);
+                        send_peer_disc_msg(this, target, message, Some(addrs));
                     }
                     PeerDiscoveryEmit::MetricsCommand(executor_metrics) => {
                         this.peer_discovery_metrics = executor_metrics;

@@ -15,7 +15,7 @@
 
 // Tests the managed Raptor decoder.
 
-use monad_raptor::{Encoder, ManagedDecoder};
+use monad_raptor::{Encoder, ManagedDecoder, SOURCE_SYMBOLS_MAX};
 use rand::{prelude::SliceRandom, thread_rng, Rng, RngCore};
 
 const SYMBOL_LEN: usize = 4;
@@ -87,4 +87,11 @@ fn test_invalid_symbol_len() {
     let buf = vec![0; SYMBOL_LEN + 1];
 
     decoder.received_encoded_symbol(buf.as_slice(), 0);
+}
+
+#[test]
+fn test_oversized_symbol() {
+    let num_symbols = SOURCE_SYMBOLS_MAX + 1;
+    let decoder = ManagedDecoder::new(num_symbols, num_symbols * 2, SYMBOL_LEN);
+    assert!(decoder.is_err());
 }

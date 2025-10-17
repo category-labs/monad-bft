@@ -23,8 +23,8 @@ use monad_crypto::hasher::{Hasher, HasherType};
 use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_raptor::ManagedDecoder;
 use monad_raptorcast::{
-    packet,
-    udp::{build_messages, parse_message, MAX_REDUNDANCY, SIGNATURE_CACHE_SIZE},
+    packet::build_messages,
+    udp::{parse_message, MAX_REDUNDANCY, SIGNATURE_CACHE_SIZE},
     util::{BuildTarget, EpochValidators, Redundancy},
 };
 use monad_secp::{KeyPair, SecpSignature};
@@ -75,49 +75,6 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 0, // unix_ts_ms
                 BuildTarget::Raptorcast(epoch_validators),
                 &known_addresses,
-            );
-        });
-    });
-
-    group.bench_function("Encoding (new)", |b| {
-        let keys = (0_u8..100_u8)
-            .map(|n| {
-                let mut hasher = HasherType::new();
-                hasher.update(n.to_le_bytes());
-                let mut hash = hasher.hash();
-                KeyPair::from_bytes(&mut hash.0).unwrap()
-            })
-            .collect_vec();
-
-        let validators = EpochValidators {
-            validators: keys
-                .iter()
-                .map(|key| (NodeId::new(key.pubkey()), Stake::ONE))
-                .collect(),
-        };
-
-        let known_addresses = keys
-            .iter()
-            .map(|key| {
-                (
-                    NodeId::new(key.pubkey()),
-                    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
-                )
-            })
-            .collect();
-
-        b.iter(|| {
-            let epoch_validators = validators.view_without(vec![&NodeId::new(keys[0].pubkey())]);
-            let _ = packet::build_messages::<SecpSignature>(
-                &keys[0],
-                DEFAULT_SEGMENT_SIZE, // segment_size
-                message.clone(),
-                Redundancy::from_u8(2),
-                0, // epoch_no
-                0, // unix_ts_ms
-                BuildTarget::Raptorcast(epoch_validators),
-                &known_addresses,
-                &mut rand::thread_rng(),
             );
         });
     });

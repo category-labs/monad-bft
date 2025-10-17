@@ -13,37 +13,33 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{
-    collections::{BTreeMap, HashMap},
-    net::SocketAddr,
-    num::NonZero,
-    ops::Range,
-};
+use std::{collections::BTreeMap, num::NonZero};
 
-use bytes::{Bytes, BytesMut};
-use itertools::Itertools;
+use bytes::Bytes;
 use lru::LruCache;
 use monad_crypto::{
     certificate_signature::{
-        CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
-        CertificateSignatureRecoverable, PubKey,
+        CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
     },
     hasher::{Hasher, HasherType},
     signing_domain,
 };
-use monad_dataplane::RecvUdpMsg;
-use monad_merkle::{MerkleHash, MerkleProof, MerkleTree};
-use monad_raptor::SOURCE_SYMBOLS_MIN;
-use monad_types::{Epoch, NodeId, Stake};
-use rand::seq::SliceRandom;
+use monad_dataplane::{
+    udp::{segment_size_for_mtu, ETHERNET_SEGMENT_SIZE},
+    RecvUdpMsg,
+};
+use monad_merkle::{MerkleHash, MerkleProof};
+use monad_types::{Epoch, NodeId};
 use tracing::{debug, warn};
 
+pub use crate::packet::build_messages;
 use crate::{
     decoding::{DecoderCache, DecodingContext, TryDecodeError, TryDecodeStatus},
     message::MAX_MESSAGE_SIZE,
+    packet::{assembler::HEADER_LEN, PacketLayout},
     util::{
-        compute_hash, unix_ts_ms_now, AppMessageHash, BroadcastMode, BuildTarget, EpochValidators,
-        HexBytes, NodeIdHash, ReBroadcastGroupMap, Redundancy,
+        compute_hash, unix_ts_ms_now, AppMessageHash, BroadcastMode, EpochValidators, HexBytes,
+        NodeIdHash, ReBroadcastGroupMap, Redundancy,
     },
     SIGNATURE_SIZE,
 };
@@ -81,8 +77,23 @@ pub const MAX_REDUNDANCY: Redundancy = Redundancy::from_u8(7);
 //
 // For a tree depth of 9, the index of the rightmost Merkle tree leaf will be 0xff, and the
 // Merkle leaf index field is 8 bits wide.
-const MIN_MERKLE_TREE_DEPTH: u8 = 1;
-const MAX_MERKLE_TREE_DEPTH: u8 = 9;
+pub const MIN_MERKLE_TREE_DEPTH: u8 = 1;
+pub const MAX_MERKLE_TREE_DEPTH: u8 = 9;
+
+/// The min segment length should be large enough to hold at least
+/// MAX_CHUNK_LENGTH of payload plus all headers with the smallest
+/// merkle tree depth.
+pub const MIN_SEGMENT_LENGTH: usize =
+    PacketLayout::calc_segment_len(MIN_CHUNK_LENGTH, MAX_MERKLE_TREE_DEPTH);
+
+const _: () = assert!(
+    MIN_SEGMENT_LENGTH == segment_size_for_mtu(1280) as usize,
+    "MIN_SEGMENT_LENGTH should be the segment size for the IPv6 minimum MTU of 1280 bytes"
+);
+
+/// The max segment length should not exceed the standard MTU for
+/// Ethernet to avoid fragmentation when routed across the internet.
+pub const MAX_SEGMENT_LENGTH: usize = ETHERNET_SEGMENT_SIZE as usize;
 
 pub(crate) struct UdpState<ST: CertificateSignatureRecoverable> {
     self_id: NodeId<CertificateSignaturePubKey<ST>>,
@@ -94,8 +105,7 @@ pub(crate) struct UdpState<ST: CertificateSignatureRecoverable> {
     // generate a bunch of linearly dependent chunks and cause unbounded memory usage.
     decoder_cache: DecoderCache<CertificateSignaturePubKey<ST>>,
 
-    signature_cache:
-        LruCache<[u8; HEADER_LEN as usize + 20], NodeId<CertificateSignaturePubKey<ST>>>,
+    signature_cache: LruCache<[u8; HEADER_LEN + 20], NodeId<CertificateSignaturePubKey<ST>>>,
 }
 
 impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
@@ -301,559 +311,6 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
     }
 }
 
-/// Stuff to include:
-/// - 65 bytes => Signature of sender over hash(rest of message up to merkle proof, concatenated with merkle root)
-/// - 2 bytes => Version: bumped on protocol updates
-/// - 1 bit => broadcast or not
-/// - 1 bit => secondary broadcast or not (full-node raptorcast)
-/// - 2 bits => unused
-/// - 4 bits => Merkle tree depth
-/// - 8 bytes (u64) => Epoch #
-/// - 8 bytes (u64) => Unix timestamp in milliseconds
-/// - 20 bytes => first 20 bytes of hash of AppMessage
-///   - this isn't technically necessary if payload_len is small enough to fit in 1 chunk, but keep
-///     for simplicity
-/// - 4 bytes (u32) => Serialized AppMessage length (bytes)
-/// - 20 bytes * (merkle_tree_depth - 1) => merkle proof (leaves include everything that follows,
-///   eg hash(chunk_recipient + chunk_byte_offset + chunk_len + payload))
-///
-/// - 20 bytes => first 20 bytes of hash of chunk's first hop recipient
-///   - we set this even if broadcast bit is not set so that it's known if a message was intended
-///     to be sent to self
-/// - 1 byte => Chunk's merkle leaf idx
-/// - 1 byte => reserved
-/// - 2 bytes (u16) => This chunk's id
-/// - rest => data
-///
-//
-//
-//
-// pub struct M {
-//     signature: [u8; 65],
-//     version: u16,
-//     broadcast: bool,
-//     secondary_broadcast: bool,
-//     merkle_tree_depth: u8,
-//     epoch: u64,
-//     unix_ts_ms: u64,
-//     app_message_id: [u8; 20],
-//     app_message_len: u32,
-//
-//     merkle_proof: Vec<[u8; 20]>,
-//
-//     chunk_recipient: [u8; 20],
-//     chunk_merkle_leaf_idx: u8,
-//     reserved: u8,
-//     chunk_id: u16,
-//
-//     data: Bytes,
-// }
-pub const HEADER_LEN: u16 = SIGNATURE_SIZE as u16 // Sender signature (65 bytes)
-            + 2  // Version
-            + 1  // Broadcast bit, Secondary Broadcast bit, 2 unused bits, 4 bits for Merkle Tree Depth
-            + 8  // Epoch #
-            + 8  // Unix timestamp
-            + 20 // AppMessage hash
-            + 4; // AppMessage length
-const CHUNK_HEADER_LEN: u16 = 20 // Chunk recipient hash
-            + 1  // Chunk's merkle leaf idx
-            + 1  // reserved
-            + 2; // Chunk idx
-
-#[expect(clippy::too_many_arguments)]
-pub fn build_messages<ST>(
-    key: &ST::KeyPairType,
-    segment_size: u16, // Each chunk in the returned Vec (Bytes element of the tuple) will be limited to this size
-    app_message: Bytes, // This is the actual message that gets raptor-10 encoded and split into UDP chunks
-    redundancy: Redundancy,
-    epoch_no: u64,
-    unix_ts_ms: u64,
-    build_target: BuildTarget<ST>,
-    known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
-) -> Vec<(SocketAddr, Bytes)>
-where
-    ST: CertificateSignatureRecoverable,
-{
-    let app_message_len: u32 = app_message.len().try_into().expect("message too big");
-
-    build_messages_with_length(
-        key,
-        segment_size,
-        app_message,
-        app_message_len,
-        redundancy,
-        epoch_no,
-        unix_ts_ms,
-        build_target,
-        known_addresses,
-        &mut rand::thread_rng(),
-    )
-}
-
-// Used for testing. Uses an externally passed RNG for deterministic
-// behavior, otherwise identical to `build_message`.
-#[cfg(test)]
-#[expect(clippy::too_many_arguments)]
-pub fn build_messages_with_rng<ST>(
-    key: &ST::KeyPairType,
-    segment_size: u16, // Each chunk in the returned Vec (Bytes element of the tuple) will be limited to this size
-    app_message: Bytes, // This is the actual message that gets raptor-10 encoded and split into UDP chunks
-    redundancy: Redundancy,
-    epoch_no: u64,
-    unix_ts_ms: u64,
-    build_target: BuildTarget<ST>,
-    known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
-    rng: &mut impl rand::Rng,
-) -> Vec<(SocketAddr, Bytes)>
-where
-    ST: CertificateSignatureRecoverable,
-{
-    let app_message_len: u32 = app_message.len().try_into().expect("message too big");
-
-    build_messages_with_length(
-        key,
-        segment_size,
-        app_message,
-        app_message_len,
-        redundancy,
-        epoch_no,
-        unix_ts_ms,
-        build_target,
-        known_addresses,
-        rng,
-    )
-}
-
-// This should be called with app_message.len() == app_message_len, but we allow the caller
-// to specify a different app_message_len to allow one of the unit tests to build an invalid
-// (oversized) message that build_messages() would normally not allow you to build, in order
-// to verify that the RaptorCast receive path doesn't crash when it receives such a message,
-// as previous versions of the RaptorCast receive path would indeed crash when receiving
-// such a message.
-#[expect(clippy::too_many_arguments)]
-pub fn build_messages_with_length<ST>(
-    key: &ST::KeyPairType,
-    segment_size: u16,
-    app_message: Bytes,
-    app_message_len: u32,
-    redundancy: Redundancy,
-    epoch_no: u64,
-    unix_ts_ms: u64,
-    build_target: BuildTarget<ST>,
-    known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
-    rng: &mut impl rand::Rng,
-) -> Vec<(SocketAddr, Bytes)>
-where
-    ST: CertificateSignatureRecoverable,
-{
-    if app_message_len == 0 {
-        tracing::warn!("build_messages_with_length() called with app_message_len = 0");
-        return Vec::new();
-    }
-
-    if redundancy == Redundancy::ZERO {
-        tracing::error!("build_messages_with_length() called with redundancy = 0");
-        return Vec::new();
-    }
-
-    // body_size is the amount of space available for payload+proof in a single
-    // UDP datagram. Our raptorcast encoding needs around 108 + 24 = 132 bytes
-    // in each datagram. Typically:
-    //      body_size = 1452 - (108 + 24) = 1320
-    let body_size = segment_size
-        .checked_sub(HEADER_LEN + CHUNK_HEADER_LEN)
-        .expect("segment_size too small");
-
-    let is_broadcast = matches!(
-        build_target,
-        BuildTarget::Broadcast(_) | BuildTarget::Raptorcast(_) | BuildTarget::FullNodeRaptorCast(_)
-    );
-
-    let self_id = NodeId::new(key.pubkey());
-
-    // TODO make this more sophisticated
-    let tree_depth: u8 = 6; // corresponds to 32 chunks (2^(h-1))
-    assert!(tree_depth >= MIN_MERKLE_TREE_DEPTH);
-    assert!(tree_depth <= MAX_MERKLE_TREE_DEPTH);
-
-    let chunks_per_merkle_batch: usize = 2_usize // = 32
-        .checked_pow(u32::from(tree_depth) - 1)
-        .expect("tree depth too big");
-    let proof_size: u16 = 20 * (u16::from(tree_depth) - 1); // = 100
-
-    // data_size is the amount of space available for raw payload (app_message)
-    // in a single UDP datagram. Typically:
-    //      data_size = 1452 - (108 + 24) - 100 = 1220
-    let data_size = body_size.checked_sub(proof_size).expect("proof too big");
-    let is_raptor_broadcast = matches!(build_target, BuildTarget::Raptorcast(_));
-    let is_secondary_raptor_broadcast = matches!(build_target, BuildTarget::FullNodeRaptorCast(_));
-
-    // Determine how many UDP datagrams (packets) we need to send out. Each
-    // datagram can only effectively transport `data_size` (~1220) bytes out of
-    // a total of `app_message_len` bytes (~18% total overhead).
-    let num_packets: usize = {
-        let mut num_packets: usize = (app_message_len as usize)
-            .div_ceil(usize::from(data_size))
-            .max(SOURCE_SYMBOLS_MIN);
-        // amplify by redundancy factor
-        num_packets = redundancy
-            .scale(num_packets)
-            .expect("redundancy-scaled num_packets doesn't fit in usize");
-
-        if let BuildTarget::Broadcast(nodes) = &build_target {
-            num_packets = num_packets
-                .checked_mul(nodes.len())
-                .expect("num_packets doesn't fit in usize")
-        }
-
-        if num_packets > MAX_NUM_PACKETS {
-            tracing::warn!(
-                ?build_target,
-                ?known_addresses,
-                num_packets,
-                MAX_NUM_PACKETS,
-                "exceeded maximum number of packets in a message, dropping message",
-            );
-            return Vec::new();
-        }
-
-        num_packets
-    };
-
-    // Create a long flat message, concatenating the (future) UDP bodies of all
-    // datagrams. This includes everything except Ethernet, IP and UDP headers.
-    let mut message = BytesMut::zeroed(segment_size as usize * num_packets);
-    let app_message_hash: AppMessageHash = HexBytes({
-        let mut hasher = HasherType::new();
-        hasher.update(&app_message);
-        hasher.hash().0[..20].try_into().unwrap()
-    });
-
-    // Each chunk_data[0..num_packets-1] is a reference to a slice of bytes
-    // from the long flat `message` above. Each slice excludes the UDP buffer
-    // span where we'd write the raptorcast header and proof.
-    // Each chunk_data[ii] is a tuple (chunk_index, slice), where the first 20
-    // bytes of the slice contains the hash of the chunk's destination node id.
-    //                  chunk_datas[0]                  chunk_datas[1]                  chunk_datas[2]
-    // | HEADER, proof, _______________| HEADER, proof, _______________| HEADER, proof, _______________|
-    // |...........................................message.............................................|
-    // |.........MTU UDP DATAGRAM......|
-    let mut chunk_datas = message
-        .chunks_mut(segment_size.into())
-        .map(|chunk| (None, &mut chunk[(HEADER_LEN + proof_size).into()..]))
-        .collect_vec();
-    assert_eq!(chunk_datas.len(), num_packets);
-
-    // the GSO-aware indices into `message`
-    let mut outbound_gso_idx: Vec<(SocketAddr, Range<usize>)> = Vec::new();
-
-    // populate chunk_recipient and outbound_gso_idx
-    match build_target {
-        BuildTarget::PointToPoint(to) => {
-            let Some(addr) = known_addresses.get(to) else {
-                tracing::warn!(
-                    ?to,
-                    "RaptorCast build_message PointToPoint not sending message, address unknown"
-                );
-                return Vec::new();
-            };
-
-            outbound_gso_idx.push((*addr, 0..segment_size as usize * num_packets));
-            let node_hash = compute_hash(to);
-            for (chunk_idx, (chunk_symbol_id, chunk_data)) in chunk_datas.iter_mut().enumerate() {
-                // populate chunk_recipient
-                chunk_data[0..20].copy_from_slice(node_hash.as_slice());
-                *chunk_symbol_id = Some(chunk_idx as u16);
-            }
-        }
-        BuildTarget::Broadcast(nodes) => {
-            assert!(is_broadcast && !is_raptor_broadcast && !is_secondary_raptor_broadcast);
-            let total_validators = nodes.len();
-            let mut running_validator_count = 0;
-            tracing::debug!(
-                ?self_id,
-                unix_ts_ms,
-                app_message_len,
-                ?redundancy,
-                data_size,
-                num_packets,
-                ?app_message_hash,
-                "RaptorCast Broadcast v2v message"
-            );
-            for node_id in nodes.iter() {
-                let start_idx: usize = num_packets * running_validator_count / total_validators;
-                running_validator_count += 1;
-                let end_idx: usize = num_packets * running_validator_count / total_validators;
-
-                if start_idx == end_idx {
-                    continue;
-                }
-                if let Some(addr) = known_addresses.get(node_id) {
-                    outbound_gso_idx.push((
-                        *addr,
-                        start_idx * segment_size as usize..end_idx * segment_size as usize,
-                    ));
-                } else {
-                    tracing::warn!(
-                        ?node_id,
-                        "RaptorCast build_message Broadcast not sending message, address unknown"
-                    )
-                }
-                let node_hash = compute_hash(node_id);
-                for (chunk_idx, (chunk_symbol_id, chunk_data)) in
-                    chunk_datas[start_idx..end_idx].iter_mut().enumerate()
-                {
-                    // populate chunk_recipient
-                    chunk_data[0..20].copy_from_slice(node_hash.as_slice());
-                    *chunk_symbol_id = Some(chunk_idx as u16);
-                }
-            }
-        }
-        BuildTarget::Raptorcast(epoch_validators) => {
-            assert!(is_broadcast && is_raptor_broadcast && !is_secondary_raptor_broadcast);
-
-            tracing::trace!(
-                ?self_id,
-                unix_ts_ms,
-                app_message_len,
-                ?redundancy,
-                data_size,
-                num_packets,
-                ?app_message_hash,
-                "RaptorCast v2v message"
-            );
-
-            if epoch_validators.is_empty() {
-                tracing::warn!(
-                    ?self_id,
-                    "RaptorCast build_message got empty epoch_validators, not sending message"
-                );
-                return Vec::new();
-            }
-            assert!(!epoch_validators.is_empty());
-
-            // generate chunks if epoch validators is not empty
-            // FIXME should self be included in total_stake?
-            let total_stake: Stake = epoch_validators.total_stake();
-
-            if total_stake == Stake::ZERO {
-                tracing::warn!(
-                    ?self_id,
-                    "RaptorCast build_message got zero total stake, not sending message"
-                );
-                return Vec::new();
-            }
-
-            let mut running_stake = Stake::ZERO;
-            let mut chunk_idx = 0_u16;
-            let mut validator_set: Vec<_> = epoch_validators.iter().collect();
-            // Group shuffling so chunks for small proposals aren't always assigned
-            // to the same nodes, until researchers come up with something better.
-            validator_set.shuffle(rng);
-            for (node_id, stake) in validator_set {
-                let start_idx: usize =
-                    (num_packets as f64 * (running_stake / total_stake)) as usize;
-                running_stake += stake;
-                let end_idx: usize = (num_packets as f64 * (running_stake / total_stake)) as usize;
-
-                if start_idx == end_idx {
-                    continue;
-                }
-                if let Some(addr) = known_addresses.get(node_id) {
-                    outbound_gso_idx.push((
-                        *addr,
-                        start_idx * segment_size as usize..end_idx * segment_size as usize,
-                    ));
-                } else {
-                    tracing::warn!(
-                        ?node_id,
-                        "RaptorCast build_message Raptorcast not sending message, address unknown"
-                    )
-                }
-
-                let node_hash = compute_hash(node_id);
-                for (chunk_symbol_id, chunk_data) in chunk_datas[start_idx..end_idx].iter_mut() {
-                    // populate chunk_recipient
-                    chunk_data[0..20].copy_from_slice(node_hash.as_slice());
-                    *chunk_symbol_id = Some(chunk_idx);
-                    chunk_idx += 1;
-                }
-            }
-        }
-        BuildTarget::FullNodeRaptorCast(group) => {
-            assert!(is_broadcast && !is_raptor_broadcast && is_secondary_raptor_broadcast);
-
-            tracing::trace!(
-                ?self_id,
-                unix_ts_ms,
-                app_message_len,
-                ?redundancy,
-                data_size,
-                num_packets,
-                ?app_message_hash,
-                "RaptorCast v2fn message"
-            );
-
-            let total_peers = group.size_excl_self();
-            let mut pp = 0;
-            let mut chunk_idx = 0_u16;
-            // Group shuffling so chunks for small proposals aren't always assigned
-            // to the same nodes, until researchers come up with something better.
-            for node_id in group.iter_skip_self_and_author(&self_id, rng.gen::<usize>()) {
-                let start_idx: usize = num_packets * pp / total_peers;
-                pp += 1;
-                let end_idx: usize = num_packets * pp / total_peers;
-
-                if start_idx == end_idx {
-                    continue;
-                }
-                if let Some(addr) = known_addresses.get(node_id) {
-                    outbound_gso_idx.push((
-                        *addr,
-                        start_idx * segment_size as usize..end_idx * segment_size as usize,
-                    ));
-                } else {
-                    tracing::warn!(?node_id, "not sending v2fn message, address unknown")
-                }
-                let node_hash = compute_hash(node_id);
-                for (chunk_symbol_id, chunk_data) in chunk_datas[start_idx..end_idx].iter_mut() {
-                    // populate chunk_recipient
-                    chunk_data[0..20].copy_from_slice(node_hash.as_slice());
-                    *chunk_symbol_id = Some(chunk_idx);
-                    chunk_idx += 1;
-                }
-            }
-        }
-    };
-
-    // In practice, a "symbol" is a UDP datagram payload of some 1220 bytes
-    let encoder = match monad_raptor::Encoder::new(&app_message, usize::from(data_size)) {
-        Ok(encoder) => encoder,
-        Err(err) => {
-            // TODO: signal this error to the caller
-            tracing::warn!(?err, "unable to create Encoder, dropping message");
-            return Vec::new();
-        }
-    };
-
-    // populates the following chunk-specific stuff
-    // - chunk_id: u16
-    // - chunk_payload
-    for (maybe_chunk_id, chunk_data) in chunk_datas.iter_mut() {
-        let chunk_id = maybe_chunk_id.expect("generated chunk was not assigned an id");
-        let chunk_len: u16 = data_size;
-
-        let cursor = chunk_data;
-        let (_cursor_chunk_recipient, cursor) = cursor.split_at_mut(20);
-        let (_cursor_chunk_merkle_leaf_idx, cursor) = cursor.split_at_mut(1);
-        let (_cursor_chunk_reserved, cursor) = cursor.split_at_mut(1);
-        let (cursor_chunk_id, cursor) = cursor.split_at_mut(2);
-        cursor_chunk_id.copy_from_slice(&chunk_id.to_le_bytes());
-        let (cursor_chunk_payload, _cursor) = cursor.split_at_mut(chunk_len.into());
-
-        // for BuildTarget::Broadcast, we will be encoding each chunk_id once per recipient
-        //
-        // we could cache these as an optimization, but probably doesn't make a big difference in
-        // practice, because we're generally using BuildTarget::Broadcast for small messages.
-        //
-        // can revisit this later
-        encoder.encode_symbol(
-            &mut cursor_chunk_payload[..chunk_len.into()],
-            chunk_id.into(),
-        );
-    }
-
-    // At this point, everything BELOW chunk_merkle_leaf_idx is populated
-    // populate merkle trees/roots/leaf_idx + signatures (cached)
-    let version: u16 = 0;
-    let epoch_no: u64 = epoch_no;
-    let unix_ts_ms: u64 = unix_ts_ms;
-    message
-        // .par_chunks_mut(segment_size as usize * chunks_per_merkle_batch)
-        .chunks_mut(segment_size as usize * chunks_per_merkle_batch)
-        .for_each(|merkle_batch| {
-            let mut merkle_batch = merkle_batch.chunks_mut(segment_size as usize).collect_vec();
-            let merkle_leaves = merkle_batch
-                .iter_mut()
-                .enumerate()
-                .map(|(chunk_idx, chunk)| {
-                    let chunk_payload = &mut chunk[(HEADER_LEN + proof_size).into()..];
-                    assert_eq!(
-                        chunk_payload.len(),
-                        CHUNK_HEADER_LEN as usize + data_size as usize
-                    );
-                    // populate merkle_leaf_idx
-                    chunk_payload[20] = chunk_idx.try_into().expect("chunk idx doesn't fit in u8");
-
-                    let mut hasher = HasherType::new();
-                    hasher.update(chunk_payload);
-                    hasher.hash()
-                })
-                .collect_vec();
-            let merkle_tree = MerkleTree::new_with_depth(&merkle_leaves, tree_depth);
-            let mut header_with_root = {
-                let mut data = [0_u8; HEADER_LEN as usize + 20];
-                let cursor = &mut data;
-                let (_cursor_signature, cursor) = cursor.split_at_mut(SIGNATURE_SIZE);
-                let (cursor_version, cursor) = cursor.split_at_mut(2);
-                cursor_version.copy_from_slice(&version.to_le_bytes());
-                let (cursor_broadcast_merkle_depth, cursor) = cursor.split_at_mut(1);
-                cursor_broadcast_merkle_depth[0] = ((is_raptor_broadcast as u8) << 7)
-                    | ((is_secondary_raptor_broadcast as u8) << 6)
-                    | (tree_depth & 0b0000_1111); // tree_depth max 4 bits
-                let (cursor_epoch_no, cursor) = cursor.split_at_mut(8);
-                cursor_epoch_no.copy_from_slice(&epoch_no.to_le_bytes());
-                let (cursor_unix_ts_ms, cursor) = cursor.split_at_mut(8);
-                cursor_unix_ts_ms.copy_from_slice(&unix_ts_ms.to_le_bytes());
-                let (cursor_app_message_hash, cursor) = cursor.split_at_mut(20);
-                cursor_app_message_hash.copy_from_slice(&app_message_hash.0);
-                let (cursor_app_message_len, cursor) = cursor.split_at_mut(4);
-                cursor_app_message_len.copy_from_slice(&app_message_len.to_le_bytes());
-
-                cursor.copy_from_slice(merkle_tree.root());
-                // 65 // Sender signature
-                // 2  // Version
-                // 1  // Broadcast bit, Secondary broadcast bit, 2 unused bits, 4 bits for Merkle Tree Depth
-                // 8  // Epoch #
-                // 8  // Unix timestamp
-                // 20 // AppMessage hash
-                // 4  // AppMessage length
-                // --
-                // 20 // Merkle root
-
-                data
-            };
-            let signature = <ST as CertificateSignature>::serialize(&ST::sign::<
-                signing_domain::RaptorcastChunk,
-            >(
-                &header_with_root[SIGNATURE_SIZE..],
-                key,
-            ));
-            assert_eq!(signature.len(), SIGNATURE_SIZE);
-            header_with_root[..SIGNATURE_SIZE].copy_from_slice(&signature);
-            let header = &header_with_root[..HEADER_LEN as usize];
-            for (leaf_idx, chunk) in merkle_batch.into_iter().enumerate() {
-                chunk[..HEADER_LEN as usize].copy_from_slice(header);
-                for (proof_idx, proof) in merkle_tree
-                    .proof(leaf_idx as u8)
-                    .siblings()
-                    .iter()
-                    .enumerate()
-                {
-                    let offset = HEADER_LEN as usize + 20 * proof_idx;
-                    chunk[offset..offset + 20].copy_from_slice(proof);
-                }
-            }
-        });
-
-    let message = message.freeze();
-
-    outbound_gso_idx
-        .into_iter()
-        .map(|(addr, range)| (addr, message.slice(range)))
-        .collect()
-}
-
 #[derive(Clone, Debug)]
 pub struct ValidatedMessage<PT>
 where
@@ -915,10 +372,7 @@ pub enum MessageValidationError {
 /// - 2 bytes (u16) => This chunk's id
 /// - rest => data
 pub fn parse_message<ST>(
-    signature_cache: &mut LruCache<
-        [u8; HEADER_LEN as usize + 20],
-        NodeId<CertificateSignaturePubKey<ST>>,
-    >,
+    signature_cache: &mut LruCache<[u8; HEADER_LEN + 20], NodeId<CertificateSignaturePubKey<ST>>>,
     message: Bytes,
     max_age_ms: u64,
 ) -> Result<ValidatedMessage<CertificateSignaturePubKey<ST>>, MessageValidationError>
@@ -1021,7 +475,7 @@ where
     let leaf_hash = {
         let mut hasher = HasherType::new();
         hasher.update(
-            &message[HEADER_LEN as usize + proof_size as usize..
+            &message[HEADER_LEN + proof_size as usize..
                 // HEADER_LEN as usize
                 //     + proof_size as usize
                 //     + CHUNK_HEADER_LEN as usize
@@ -1033,10 +487,10 @@ where
     let root = merkle_proof
         .compute_root(&leaf_hash)
         .ok_or(MessageValidationError::InvalidMerkleProof)?;
-    let mut signed_over = [0_u8; HEADER_LEN as usize + 20];
+    let mut signed_over = [0_u8; HEADER_LEN + 20];
     // TODO can avoid this copy if necessary
-    signed_over[..HEADER_LEN as usize].copy_from_slice(&message[..HEADER_LEN as usize]);
-    signed_over[HEADER_LEN as usize..].copy_from_slice(&root);
+    signed_over[..HEADER_LEN].copy_from_slice(&message[..HEADER_LEN]);
+    signed_over[HEADER_LEN..].copy_from_slice(&root);
 
     let author = *signature_cache.try_get_or_insert(signed_over, || {
         let author = signature
@@ -1214,7 +668,7 @@ mod tests {
     };
 
     use bytes::{Bytes, BytesMut};
-    use itertools::Itertools;
+    use itertools::Itertools as _;
     use lru::LruCache;
     use monad_crypto::{
         certificate_signature::CertificateSignaturePubKey,
