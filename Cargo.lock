@@ -5331,6 +5331,7 @@ dependencies = [
  "serde_json",
  "strum",
  "tracing",
+ "zstd",
 ]
 
 [[package]]
