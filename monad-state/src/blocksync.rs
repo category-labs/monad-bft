@@ -136,10 +136,14 @@ where
             }
             BlockSyncEvent::Timeout(request) => block_sync_wrapper.handle_timeout(request),
             BlockSyncEvent::SecondaryRaptorcastPeersUpdate {
+                expiry_round,
                 confirm_group_peers,
             } => {
-                self.block_sync
-                    .set_secondary_raptorcast_peers(confirm_group_peers);
+                self.block_sync.set_secondary_raptorcast_peers(
+                    confirm_group_peers,
+                    expiry_round,
+                    self.consensus.current_round(),
+                );
                 Vec::new()
             }
         };
