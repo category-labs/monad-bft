@@ -78,6 +78,14 @@ This will start a single node with chain ID of `20143` and RPC at `localhost:808
 > single-node$ nets/run.sh --cached-build [...]/monad-bft/docker/single-node/logs/20250929_082118-2d71738c8dfba6d2
 > ```
 
+#### Using Pre-built Images
+
+To use existing images instead of building from source, edit `docker/single-node/nets/compose.prebuilt.yaml` to reference your images. Then run with the `--use-prebuilt` flag:
+
+```bash
+nets/run.sh --use-prebuilt
+```
+
 To test the RPC connection, try the following query:
 
 ```bash

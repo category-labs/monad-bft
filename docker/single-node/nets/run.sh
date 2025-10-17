@@ -4,11 +4,13 @@ set -ex
 
 # --- Default variables ---
 CACHED_VOL_ROOT=""
+USE_PREBUILT=false
 
 # --- Function Definitions ---
 usage() {
-    echo "Usage: $0 [--cached-build /path/to/vol_root]"
+    echo "Usage: $0 [--cached-build /path/to/vol_root] [--use-prebuilt]"
     echo "  --cached-build: Skips all build steps and runs docker-compose from an existing volume root."
+    echo "  --use-prebuilt: Uses pre-built images (via compose.override.yaml) instead of building from source."
     exit 1
 }
 
@@ -22,6 +24,9 @@ while [[ "$#" -gt 0 ]]; do
             fi
             CACHED_VOL_ROOT="$2"
             shift
+            ;;
+        --use-prebuilt)
+            USE_PREBUILT=true
             ;;
         *)
             echo "Unknown parameter passed: $1"
@@ -83,22 +88,29 @@ if [ -z "$CACHED_VOL_ROOT" ]; then
     mkdir -p "$vol_root/node/triedb"
     truncate -s 4GB "$vol_root/node/triedb/test.db"
 
-    # Build monad execution (needs buildkit so unable to build in docker compose)
-    set +e
-    docker buildx inspect insecure &>/dev/null
-    insecure_builder_no_exist=$?
-    set -e
-    if [ $insecure_builder_no_exist -ne 0 ]; then
-        docker buildx create --buildkitd-flags '--allow-insecure-entitlement security.insecure' --name insecure
-    fi
-    docker build --builder insecure --allow security.insecure \
-        -f "$MONAD_EXECUTION_ROOT/docker/release.Dockerfile" \
-        --load -t monad-execution-builder:latest "$MONAD_EXECUTION_ROOT" \
-        --build-arg GIT_COMMIT_HASH=$(git -C "$MONAD_EXECUTION_ROOT" rev-parse HEAD)
-
     cd "$vol_root"
-    # Run one-off build services and start node services, forcing a build of all images
-    docker compose up build_triedb build_genesis monad_execution monad_node monad_rpc --build
+
+    if [ "$USE_PREBUILT" = true ]; then
+        # Skip building, use pre-built images
+        echo "Using pre-built images..."
+        docker compose -f compose.yaml -f compose.prebuilt.yaml up build_triedb build_genesis monad_execution monad_node monad_rpc
+    else
+        # Build monad execution (needs buildkit so unable to build in docker compose)
+        set +e
+        docker buildx inspect insecure &>/dev/null
+        insecure_builder_no_exist=$?
+        set -e
+        if [ $insecure_builder_no_exist -ne 0 ]; then
+            docker buildx create --buildkitd-flags '--allow-insecure-entitlement security.insecure' --name insecure
+        fi
+        docker build --builder insecure --allow security.insecure \
+            -f "$MONAD_EXECUTION_ROOT/docker/release.Dockerfile" \
+            --load -t monad-execution-builder:latest "$MONAD_EXECUTION_ROOT" \
+            --build-arg GIT_COMMIT_HASH=$(git -C "$MONAD_EXECUTION_ROOT" rev-parse HEAD)
+
+        # Run one-off build services and start node services, forcing a build of all images
+        docker compose up build_triedb build_genesis monad_execution monad_node monad_rpc --build
+    fi
 
 else
     # === CACHED RUN ===

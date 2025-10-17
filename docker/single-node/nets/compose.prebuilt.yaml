@@ -1,0 +1,11 @@
+services:
+  build_triedb:
+    image: categoryxyz/monad-execution:latest
+  build_genesis:
+    image: categoryxyz/monad-execution:latest
+  monad_execution:
+    image: categoryxyz/monad-execution:latest
+  monad_node:
+    image: categoryxyz/monad-bft:latest
+  monad_rpc:
+    image: categoryxyz/monad-rpc:latest
