@@ -498,6 +498,10 @@ where
     ) -> NodeId<CertificateSignaturePubKey<ST>> {
         if !override_peers.is_empty() {
             // override peers is set
+            debug!(
+                "blocksync: pick_peer among {} overrides",
+                override_peers.len()
+            );
             return *override_peers.choose(rng).expect("non empty");
         }
 
@@ -514,6 +518,10 @@ where
                 !candidate_peers.is_empty(),
                 "no secondary raptorcast peers to blocksync from"
             );
+            debug!(
+                "blocksync: pick_peer among {} secondary raptorcast peers",
+                candidate_peers.len()
+            );
             **candidate_peers.choose(rng).expect("non empty")
         } else {
             // stake-weighted choose from validators
@@ -521,6 +529,7 @@ where
                 .iter()
                 .filter(|(peer, _)| peer != &self_node_id)
                 .collect_vec();
+            debug!("blocksync: pick_peer among {} validator", members.len());
             assert!(!members.is_empty(), "no nodes to blocksync from");
             Self::choose_weighted(members, rng)
         }
@@ -671,7 +680,7 @@ where
                     debug!(
                         ?sender,
                         ?block_range,
-                        "blocksync: headers response verifcation passed"
+                        "blocksync: headers response verification passed"
                     );
 
                     // valid headers, remove entry and reset timeout
@@ -719,7 +728,7 @@ where
                     debug!(
                         ?sender,
                         ?block_range,
-                        "blocksync: headers response verifcation failed"
+                        "blocksync: headers response verification failed"
                     );
 
                     // response from ledger shouldn't fail headers verification
