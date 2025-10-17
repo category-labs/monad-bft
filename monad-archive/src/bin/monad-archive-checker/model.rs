@@ -101,6 +101,7 @@ impl CheckerModel {
 
         // Get the list of replicas from S3
         let mut replica_args = Self::get_replica_args(s3).await?;
+        info!("Loaded replicas from s3: {:?}", replica_args);
 
         // Initialize replica args bucket
         // Handle errors cases

@@ -26,6 +26,11 @@ use serde::{Deserialize, Serialize};
 use crate::{kvstore::mongo::MongoDbStorage, prelude::*};
 
 const DEFAULT_BUCKET_TIMEOUT: u64 = 10;
+const DEFAULT_CONCURRENCY: usize = 50;
+
+pub fn get_default_bucket_timeout() -> u64 {
+    DEFAULT_BUCKET_TIMEOUT
+}
 
 pub fn set_source_and_sink_metrics(
     sink: &ArchiveArgs,
@@ -282,8 +287,11 @@ pub struct AwsCliArgs {
     // TODO: remove me, concurrency should be handled elsewhere
     pub concurrency: usize,
     // If these are not provided, uses timeout_secs for all
+    #[serde(default = "get_default_bucket_timeout")]
     pub operation_timeout_secs: u64,
+    #[serde(default = "get_default_bucket_timeout")]
     pub operation_attempt_timeout_secs: u64,
+    #[serde(default = "get_default_bucket_timeout")]
     pub read_timeout_secs: u64,
 }
 
@@ -315,7 +323,7 @@ impl AwsCliArgs {
                 .remove("concurrency")
                 .and_then(|s| usize::from_str(&s).ok())
                 // TODO: remove me, concurrency should be handled elsewhere
-                .unwrap_or(200),
+                .unwrap_or(DEFAULT_CONCURRENCY),
             // If these are not provided, uses timeout_secs for all
             operation_timeout_secs: get_u64(&kv, "operation-timeout-secs", timeout_secs),
             operation_attempt_timeout_secs: get_u64(
@@ -519,7 +527,7 @@ mod tests {
         match a {
             BlockDataReaderArgs::Aws(args) => {
                 assert_eq!(args.bucket, "my-bucket");
-                assert_eq!(args.concurrency, 200); // default
+                assert_eq!(args.concurrency, DEFAULT_CONCURRENCY); // default
                 assert_eq!(args.region, None);
             }
             _ => panic!("expected Aws variant"),
@@ -543,7 +551,7 @@ mod tests {
         match a {
             BlockDataReaderArgs::Aws(args) => {
                 assert_eq!(args.bucket, "my-bucket");
-                assert_eq!(args.concurrency, 200);
+                assert_eq!(args.concurrency, DEFAULT_CONCURRENCY);
                 assert_eq!(args.region.as_deref(), None);
             }
             _ => panic!("expected Aws variant"),
