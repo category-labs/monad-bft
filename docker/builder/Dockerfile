@@ -1,4 +1,3 @@
-# Builder image used in Rust build pipelines
 FROM ubuntu:25.04 AS base
 
 RUN apt update && apt install -y \
@@ -64,13 +63,14 @@ RUN apt update && apt install -y \
   ninja-build \
   python3-pytest
 
+WORKDIR /app
 
+# Install Rust system-wide
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
 
-USER ubuntu
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    bash -s -- -y --default-toolchain none --profile minimal
 
-WORKDIR /usr/src/monad-bft
-
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
-ENV PATH="/home/ubuntu/.cargo/bin:${PATH}"
-RUN rustup toolchain install 1.87.0-x86_64-unknown-linux-gnu
-ARG TRIEDB_TARGET=triedb_driver
+RUN chmod -R a+rwX $RUSTUP_HOME $CARGO_HOME
