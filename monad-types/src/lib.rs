@@ -115,7 +115,7 @@ impl Debug for Round {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug, RlpEncodable, RlpDecodable, Serialize)]
 pub struct RoundSpan {
     pub start: Round, // inclusive
     pub end: Round,   // exclusive

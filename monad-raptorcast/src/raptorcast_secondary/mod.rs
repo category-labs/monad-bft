@@ -39,7 +39,7 @@ use monad_dataplane::{udp::segment_size_for_mtu, DataplaneWriter, UnicastMsg};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, PeerEntry, RouterCommand};
 use monad_peer_discovery::{driver::PeerDiscoveryDriver, PeerDiscoveryAlgo, PeerDiscoveryEvent};
-use monad_types::{DropTimer, Epoch, NodeId};
+use monad_types::{DropTimer, Epoch, NodeId, RoundSpan};
 use publisher::Publisher;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
@@ -546,8 +546,14 @@ where
                             },
                         );
 
+                        let round_span = RoundSpan {
+                            start: confirm_msg.prepare.start_round,
+                            end: confirm_msg.prepare.end_round,
+                        };
+
                         ret = Poll::Ready(Some(
                             RaptorCastEvent::SecondaryRaptorcastPeersUpdate(
+                                round_span,
                                 participated_nodes.into_iter().collect(),
                             )
                             .into(),

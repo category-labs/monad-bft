@@ -54,7 +54,9 @@ use monad_peer_discovery::{
     mock::{NopDiscovery, NopDiscoveryBuilder},
     PeerDiscoveryAlgo, PeerDiscoveryEvent,
 };
-use monad_types::{DropTimer, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, UdpPriority};
+use monad_types::{
+    DropTimer, Epoch, ExecutionProtocol, NodeId, Round, RoundSpan, RouterTarget, UdpPriority,
+};
 use monad_validator::signature_collection::SignatureCollection;
 use raptorcast_secondary::{group_message::FullNodesGroupMessage, SecondaryRaptorCastModeConfig};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -117,7 +119,7 @@ pub enum PeerManagerResponse<ST: CertificateSignatureRecoverable> {
 pub enum RaptorCastEvent<E, ST: CertificateSignatureRecoverable> {
     Message(E),
     PeerManagerResponse(PeerManagerResponse<ST>),
-    SecondaryRaptorcastPeersUpdate(Vec<NodeId<CertificateSignaturePubKey<ST>>>),
+    SecondaryRaptorcastPeersUpdate(RoundSpan, Vec<NodeId<CertificateSignaturePubKey<ST>>>),
 }
 
 impl<ST, M, OM, SE, PD> RaptorCast<ST, M, OM, SE, PD>
@@ -1007,8 +1009,9 @@ where
                     ),
                 }
             }
-            RaptorCastEvent::SecondaryRaptorcastPeersUpdate(confirm_group_peers) => {
+            RaptorCastEvent::SecondaryRaptorcastPeersUpdate(round_span, confirm_group_peers) => {
                 MonadEvent::BlockSyncEvent(BlockSyncEvent::SecondaryRaptorcastPeersUpdate {
+                    round_span,
                     confirm_group_peers,
                 })
             }
