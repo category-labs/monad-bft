@@ -91,9 +91,6 @@ where
 
     fn exec(&mut self, cmds: Vec<Self::Command>) {
         for cmd in cmds {
-            if let Some(waker) = self.waker.take() {
-                waker.wake();
-            }
             match cmd {
                 StateSyncCommand::StartExecution => {
                     assert!(!self.started_execution);
@@ -186,6 +183,12 @@ where
                 },
             }
         }
+
+        if self.ready() {
+            if let Some(waker) = self.waker.take() {
+                waker.wake();
+            }
+        }
     }
 
     fn metrics(&self) -> ExecutorMetricsChain {
@@ -250,7 +253,13 @@ where
         if let Some(event) = self.events.pop_front() {
             return Poll::Ready(Some(event));
         }
-        self.waker = Some(cx.waker().clone());
+
+        if let Some(waker) = self.waker.as_mut() {
+            waker.clone_from(cx.waker());
+        } else {
+            self.waker = Some(cx.waker().clone());
+        }
+
         Poll::Pending
     }
 }
