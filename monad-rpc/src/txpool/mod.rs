@@ -100,7 +100,7 @@ impl EthTxPoolBridge {
 
         cleanup_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-        let err = loop {
+        let error = loop {
             tokio::select! {
                 result = tx_receiver.recv_async() => {
                     let tx_pair = match result {
@@ -135,7 +135,7 @@ impl EthTxPoolBridge {
             }
         };
 
-        warn!(?err, "TxPoolBridge shutting down")
+        warn!(?error, "EthTxPoolBridge shutting down")
     }
 }
 
