@@ -52,7 +52,7 @@ pub mod buffer;
 #[derive(Clone)]
 pub struct ChainState<T> {
     buffer: Option<Arc<ChainStateBuffer>>,
-    triedb_env: T,
+    pub triedb_env: T,
     archive_reader: Option<ArchiveReader>,
 }
 

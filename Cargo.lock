@@ -5730,6 +5730,7 @@ dependencies = [
  "futures-util",
  "itertools 0.10.5",
  "monad-archive",
+ "monad-block-persist",
  "monad-chain-config",
  "monad-eth-testutil",
  "monad-eth-txpool-ipc",
