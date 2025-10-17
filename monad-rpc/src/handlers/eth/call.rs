@@ -28,7 +28,9 @@ use alloy_eips::eip7702::SignedAuthorization;
 use alloy_primitives::{Address, PrimitiveSignature, TxKind, Uint, U256, U64, U8};
 use alloy_rpc_types::AccessList;
 use monad_chain_config::execution_revision::MonadExecutionRevision;
-use monad_ethcall::{eth_call, CallResult, EthCallExecutor, MonadTracer, StateOverrideSet};
+use monad_ethcall::{
+    eth_call, CallResult, EthCallExecutor, ExecutorState, MonadTracer, StateOverrideSet,
+};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{
     BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb, TriedbPath,
@@ -107,12 +109,6 @@ impl EthCallStatsTracker {
         if is_error {
             self.stats.total_errors.fetch_add(1, Ordering::Relaxed);
         }
-    }
-
-    pub async fn record_queue_rejection(&self) {
-        self.stats.queue_rejections.fetch_add(1, Ordering::Relaxed);
-        self.stats.total_requests.fetch_add(1, Ordering::Relaxed);
-        self.stats.total_errors.fetch_add(1, Ordering::Relaxed);
     }
 
     async fn get_stats(&self) -> (Option<Duration>, Option<Duration>, CumulativeStats) {
@@ -828,13 +824,16 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct EthCallCapacityStats {
-    pub inactive_executors: usize,
-    pub queued_requests: usize,
+    pub inactive_executors: u32,
+    pub queued_requests: u32,
+    pub inactive_executors_high: u32,
+    pub queued_requests_high: u32,
     pub oldest_request_age_ms: u64,
     pub average_request_age_ms: u64,
     pub total_requests: u64,
     pub total_errors: u64,
     pub queue_rejections: u64,
+    pub queue_rejections_high: u64,
 }
 
 /// Returns statistics about eth_call capacity including inactive executors and queued requests
@@ -842,26 +841,31 @@ pub struct EthCallCapacityStats {
 #[tracing::instrument(level = "debug")]
 #[monad_rpc_docs::rpc(method = "admin_ethCallStatistics")]
 pub async fn monad_admin_ethCallStatistics(
-    eth_call_executor_fibers: usize,
-    total_permits: usize,
-    available_permits: usize,
+    executor_state: &ExecutorState,
     stats_tracker: &EthCallStatsTracker,
 ) -> JsonRpcResult<EthCallCapacityStats> {
-    let active_requests = total_permits - available_permits;
+    let inactive_executors = executor_state.low_gas_pool_state.num_fibers
+        - executor_state.low_gas_pool_state.executing_count;
+    let inactive_executors_high = executor_state.high_gas_pool_state.num_fibers
+        - executor_state.high_gas_pool_state.executing_count;
 
-    let inactive_executors = eth_call_executor_fibers.saturating_sub(active_requests);
-
-    let queued_requests = active_requests.saturating_sub(eth_call_executor_fibers);
+    let queued_requests = executor_state.low_gas_pool_state.queued_count;
+    let queued_requests_high = executor_state.high_gas_pool_state.queued_count;
+    let queue_rejections = executor_state.low_gas_pool_state.queue_full_count;
+    let queue_rejections_high = executor_state.high_gas_pool_state.queue_full_count;
     let (max_age, avg_age, cumulative_stats) = stats_tracker.get_stats().await;
 
     Ok(EthCallCapacityStats {
         inactive_executors,
+        inactive_executors_high,
         queued_requests,
+        queued_requests_high,
         oldest_request_age_ms: max_age.map(|d| d.as_millis() as u64).unwrap_or(0),
         average_request_age_ms: avg_age.map(|d| d.as_millis() as u64).unwrap_or(0),
         total_requests: cumulative_stats.total_requests.load(Ordering::Relaxed),
         total_errors: cumulative_stats.total_errors.load(Ordering::Relaxed),
-        queue_rejections: cumulative_stats.queue_rejections.load(Ordering::Relaxed),
+        queue_rejections,
+        queue_rejections_high,
     })
 }
 
