@@ -223,8 +223,7 @@ pub struct MonadEthEstimateGasParams {
 
 #[rpc(
     method = "eth_estimateGas",
-    ignore = "chain_id",
-    ignore = "eth_call_executor"
+    ignore = "chain_id,provider_gas_limit,eth_call_executor"
 )]
 #[allow(non_snake_case)]
 /// Generates and returns an estimate of how much gas is necessary to allow the transaction to complete.
