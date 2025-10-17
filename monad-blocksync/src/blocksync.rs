@@ -29,7 +29,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_state_backend::StateBackend;
-use monad_types::{Epoch, ExecutionProtocol, NodeId, SeqNum, Stake};
+use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, SeqNum, Stake};
 use monad_validator::{
     epoch_manager::EpochManager,
     signature_collection::SignatureCollection,
@@ -167,7 +167,8 @@ where
     override_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
 
     /// Excludes self node id
-    secondary_raptorcast_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+    /// Expiry NodeId -> round
+    secondary_raptorcast_peers: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Round>,
 
     self_node_id: NodeId<CertificateSignaturePubKey<ST>>,
 
@@ -232,12 +233,25 @@ where
     pub fn set_secondary_raptorcast_peers(
         &mut self,
         secondary_raptorcast_peers_inc_self: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+        end_round: Round,
+        current_round: Round,
     ) {
         let peers_excl_self: Vec<_> = secondary_raptorcast_peers_inc_self
             .into_iter()
             .filter(|peer| peer != &self.self_node_id)
             .collect();
-        self.secondary_raptorcast_peers = peers_excl_self;
+
+        // Trim peers that have expired
+        self.secondary_raptorcast_peers
+            .retain(|_, expiry_round| *expiry_round > current_round);
+
+        // Push back existing peer's expiry round, or insert new if not found
+        for peer in peers_excl_self {
+            self.secondary_raptorcast_peers
+                .entry(peer)
+                .and_modify(|expiry| *expiry = (*expiry).max(end_round))
+                .or_insert(end_round);
+        }
     }
 
     fn clear_self_requests(&mut self) {
@@ -479,11 +493,15 @@ where
         current_epoch: Epoch,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         override_peers: &[NodeId<CertificateSignaturePubKey<ST>>],
-        secondary_raptorcast_peers: &[NodeId<CertificateSignaturePubKey<ST>>],
+        secondary_raptorcast_peers: &BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Round>,
         rng: &mut ChaCha8Rng,
     ) -> NodeId<CertificateSignaturePubKey<ST>> {
         if !override_peers.is_empty() {
             // override peers is set
+            debug!(
+                "blocksync: pick_peer among {} overrides",
+                override_peers.len()
+            );
             return *override_peers.choose(rng).expect("non empty");
         }
 
@@ -494,14 +512,24 @@ where
         let self_is_validator = validators.keys().contains(self_node_id);
 
         if !secondary_raptorcast_peers.is_empty() && !self_is_validator {
-            // secondary peers is set and self is a full node
-            *secondary_raptorcast_peers.choose(rng).expect("non empty")
+            // Choose a random peer from secondary_raptorcast_peers
+            let candidate_peers: Vec<_> = secondary_raptorcast_peers.keys().collect();
+            assert!(
+                !candidate_peers.is_empty(),
+                "no secondary raptorcast peers to blocksync from"
+            );
+            debug!(
+                "blocksync: pick_peer among {} secondary raptorcast peers",
+                candidate_peers.len()
+            );
+            **candidate_peers.choose(rng).expect("non empty")
         } else {
             // stake-weighted choose from validators
             let members = validators
                 .iter()
                 .filter(|(peer, _)| peer != &self_node_id)
                 .collect_vec();
+            debug!("blocksync: pick_peer among {} validator", members.len());
             assert!(!members.is_empty(), "no nodes to blocksync from");
             Self::choose_weighted(members, rng)
         }
@@ -652,7 +680,7 @@ where
                     debug!(
                         ?sender,
                         ?block_range,
-                        "blocksync: headers response verifcation passed"
+                        "blocksync: headers response verification passed"
                     );
 
                     // valid headers, remove entry and reset timeout
@@ -700,7 +728,7 @@ where
                     debug!(
                         ?sender,
                         ?block_range,
-                        "blocksync: headers response verifcation failed"
+                        "blocksync: headers response verification failed"
                     );
 
                     // response from ledger shouldn't fail headers verification
@@ -1114,7 +1142,7 @@ mod test {
     use std::collections::BTreeMap;
 
     use bytes::Bytes;
-    use itertools::Itertools;
+    use itertools::{sorted, Itertools};
     use monad_blocktree::blocktree::BlockTree;
     use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
     use monad_consensus_types::{
@@ -1140,7 +1168,7 @@ mod test {
     };
     use monad_multi_sig::MultiSig;
     use monad_state_backend::{InMemoryState, StateBackend};
-    use monad_testutil::validators::create_keys_w_validators;
+    use monad_testutil::{signing::create_keys, validators::create_keys_w_validators};
     use monad_types::{
         BlockId, Epoch, ExecutionProtocol, Hash, NodeId, Round, SeqNum, GENESIS_BLOCK_ID,
         GENESIS_SEQ_NUM,
@@ -1158,6 +1186,7 @@ mod test {
 
     use super::{
         BlockCache, BlockSync, BlockSyncCommand, BlockSyncSelfRequester, BlockSyncWrapper,
+        ChaCha8Rng, SeedableRng,
     };
     use crate::{
         blocksync::BLOCKSYNC_MAX_PAYLOAD_REQUESTS,
@@ -1429,8 +1458,26 @@ mod test {
 
             QuorumCertificate::new(vote, sigcol)
         }
+
+        fn set_override_peers(&mut self, override_peers_inc_self: Vec<NodeId<NopPubKey>>) {
+            self.block_sync.set_override_peers(override_peers_inc_self);
+        }
+
+        fn set_secondary_raptorcast_peers(
+            &mut self,
+            secondary_raptorcast_peers_inc_self: Vec<NodeId<NopPubKey>>,
+            expiry_round: Round,
+            current_round: Round,
+        ) {
+            self.block_sync.set_secondary_raptorcast_peers(
+                secondary_raptorcast_peers_inc_self,
+                expiry_round,
+                current_round,
+            );
+        }
     }
 
+    // This sets up 2 validators from 2 keys, where self is key[0] and peer is key[2]
     fn setup() -> BlockSyncContext<
         SignatureType,
         SignatureCollectionType,
@@ -1472,6 +1519,67 @@ mod test {
         });
 
         let self_node_id = NodeId::new(keys[0].pubkey());
+        let peer_id = NodeId::new(keys[1].pubkey());
+
+        BlockSyncContext {
+            block_sync: BlockSync::new(Default::default(), self_node_id),
+            blocktree,
+            metrics: Metrics::default(),
+            self_node_id,
+            peer_id,
+            current_epoch: Epoch(1),
+            epoch_manager,
+            val_epoch_map,
+
+            keys,
+            cert_keys,
+            election: SimpleRoundRobin::default(),
+        }
+    }
+
+    // This generates 3 keys: 2 validators + self (as a full-node)
+    fn setup_fullnode() -> BlockSyncContext<
+        SignatureType,
+        SignatureCollectionType,
+        ExecutionProtocolType,
+        BlockPolicyType,
+        StateBackendType,
+        ValidatorSetFactory<PubKeyType>,
+        LeaderElectionType,
+    > {
+        let (keys, cert_keys, valset, _valmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(2, ValidatorSetFactory::default());
+        let val_stakes = Vec::from_iter(valset.get_members().clone());
+        let val_cert_pubkeys = keys
+            .iter()
+            .map(|k| NodeId::new(k.pubkey()))
+            .zip(cert_keys.iter().map(|k| k.pubkey()))
+            .collect::<Vec<_>>();
+        let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+        val_epoch_map.insert(
+            Epoch(1),
+            val_stakes.clone(),
+            ValidatorMapping::new(val_cert_pubkeys.clone()),
+        );
+        val_epoch_map.insert(
+            Epoch(2),
+            val_stakes,
+            ValidatorMapping::new(val_cert_pubkeys),
+        );
+        let epoch_manager = EpochManager::new(SeqNum(100), Round(20), &[(Epoch(1), Round(0))]);
+        let blocktree = BlockTree::new(RootInfo {
+            block_id: GENESIS_BLOCK_ID,
+            round: Round(0),
+            seq_num: GENESIS_SEQ_NUM,
+            epoch: Epoch(1),
+            timestamp_ns: GENESIS_TIMESTAMP,
+        });
+
+        let all_keys = create_keys::<SignatureType>(3);
+        let self_node_id = NodeId::new(all_keys[2].pubkey());
         let peer_id = NodeId::new(keys[1].pubkey());
 
         BlockSyncContext {
@@ -2420,5 +2528,470 @@ mod test {
 
         assert!(cmds.is_empty());
         context.assert_empty_block_sync_state();
+    }
+
+    type TestBlockSyncWrap<'a> = BlockSyncWrapper<
+        'a,
+        SignatureType,
+        SignatureCollectionType,
+        ExecutionProtocolType,
+        BlockPolicyType,
+        StateBackendType,
+        ValidatorSetFactory<PubKeyType>,
+        ChainConfigType,
+        ChainRevisionType,
+    >;
+
+    #[test]
+    fn set_override_peers_filtering() {
+        let mut ctx = setup();
+        let self_node_id = ctx.block_sync.self_node_id;
+
+        let keys = create_keys::<SignatureType>(5);
+        let op1 = NodeId::new(keys[2].pubkey());
+        let op2 = NodeId::new(keys[3].pubkey());
+        let op3 = NodeId::new(keys[4].pubkey());
+        assert_eq!(ctx.block_sync.override_peers.len(), 0);
+
+        // should exclude self
+        ctx.set_override_peers(vec![self_node_id, op1, op2]);
+        assert_eq!(ctx.block_sync.override_peers, vec![op1, op2]);
+
+        // should exclude self
+        ctx.set_override_peers(vec![self_node_id]);
+        assert_eq!(ctx.block_sync.override_peers.len(), 0);
+
+        // should not exclude any
+        ctx.set_override_peers(vec![op1, op2, op3]);
+        assert_eq!(ctx.block_sync.override_peers, vec![op1, op2, op3]);
+
+        // should not exclude any
+        ctx.set_override_peers(vec![]);
+        assert_eq!(ctx.block_sync.override_peers.len(), 0);
+    }
+
+    /// pick_peer() rules:
+    /// 1. If `override_peers` is set, randomly select from one of the override peers.
+    /// 2. Otherwise if self is a full node and `secondary_raptorcast_peers` is not empty,
+    ///    randomly select from `secondary_raptorcast_peers`
+    /// 3. Otherwise, randomly select from validators based on stake weight
+    #[test]
+    fn pick_peer_rule_1_as_validator() {
+        let mut ctx = setup();
+        let mut rng = ChaCha8Rng::seed_from_u64(123456);
+        let self_node_id = ctx.block_sync.self_node_id;
+
+        let keys = create_keys::<SignatureType>(8);
+        let op1 = NodeId::new(keys[2].pubkey());
+        let op2 = NodeId::new(keys[3].pubkey());
+        let op3 = NodeId::new(keys[4].pubkey());
+        let op4 = NodeId::new(keys[5].pubkey());
+        let sr1 = NodeId::new(keys[6].pubkey());
+        let sr2 = NodeId::new(keys[7].pubkey());
+
+        ctx.set_override_peers(vec![self_node_id, op1, op2, op3, op4]);
+        let override_peers = ctx.block_sync.override_peers.clone();
+
+        ctx.set_secondary_raptorcast_peers(vec![sr1, sr2], Round(4), Round(2));
+        let ws = ctx.wrapped_state();
+
+        let current_epoch = ws.current_epoch;
+        let val_epoch_map = ws.val_epoch_map;
+        let secondary_raptorcast_peers = ws.block_sync.secondary_raptorcast_peers.clone();
+
+        let mut pickings = BTreeMap::<NodeId<PubKeyType>, usize>::new();
+
+        // Pick a blocksync peer while we have specific overrides.
+        // Should be a random one among {op1, op2}
+        for _ in 0..100 {
+            let pick_nodeid = TestBlockSyncWrap::pick_peer(
+                &self_node_id,
+                current_epoch,
+                val_epoch_map,
+                &override_peers,
+                &secondary_raptorcast_peers,
+                &mut rng,
+            );
+            *pickings.entry(pick_nodeid).or_insert(0) += 1;
+        }
+        // Make sure only op1..op4 were picked, and at least 10 times each
+        assert_eq!(pickings.len(), 4);
+        assert!(pickings.contains_key(&op1));
+        assert!(pickings.contains_key(&op2));
+        assert!(pickings.contains_key(&op3));
+        assert!(pickings.contains_key(&op4));
+        assert!(*pickings.get(&op1).unwrap() > 10);
+        assert!(*pickings.get(&op2).unwrap() > 10);
+        assert!(*pickings.get(&op3).unwrap() > 10);
+        assert!(*pickings.get(&op4).unwrap() > 10);
+    }
+
+    #[test]
+    fn pick_peer_rule_1_as_fullnode() {
+        let mut ctx = setup_fullnode();
+        let mut rng = ChaCha8Rng::seed_from_u64(123456);
+        let self_node_id = ctx.block_sync.self_node_id;
+
+        let keys = create_keys::<SignatureType>(9);
+        let k2 = NodeId::new(keys[2].pubkey());
+        let op1 = NodeId::new(keys[3].pubkey());
+        let op2 = NodeId::new(keys[4].pubkey());
+        let op3 = NodeId::new(keys[5].pubkey());
+        let op4 = NodeId::new(keys[6].pubkey());
+        let sr1 = NodeId::new(keys[7].pubkey());
+        let sr2 = NodeId::new(keys[8].pubkey());
+        assert_eq!(self_node_id, k2);
+
+        ctx.set_override_peers(vec![self_node_id, op1, op2, op3, op4]);
+        let override_peers = ctx.block_sync.override_peers.clone();
+
+        ctx.set_secondary_raptorcast_peers(vec![sr1, sr2], Round(4), Round(2));
+        let ws = ctx.wrapped_state();
+
+        let current_epoch = ws.current_epoch;
+        let val_epoch_map = ws.val_epoch_map;
+        let secondary_raptorcast_peers = ws.block_sync.secondary_raptorcast_peers.clone();
+
+        let mut pickings = BTreeMap::<NodeId<PubKeyType>, usize>::new();
+
+        // Pick a blocksync peer while we have specific overrides.
+        // Should be a random one among {op1, op2}
+        for _ in 0..100 {
+            let pick_nodeid = TestBlockSyncWrap::pick_peer(
+                &self_node_id,
+                current_epoch,
+                val_epoch_map,
+                &override_peers,
+                &secondary_raptorcast_peers,
+                &mut rng,
+            );
+            *pickings.entry(pick_nodeid).or_insert(0) += 1;
+        }
+        // Make sure only op1..op4 were picked, and at least 10 times each
+        assert_eq!(pickings.len(), 4);
+        assert!(pickings.contains_key(&op1));
+        assert!(pickings.contains_key(&op2));
+        assert!(pickings.contains_key(&op3));
+        assert!(pickings.contains_key(&op4));
+        assert!(*pickings.get(&op1).unwrap() > 10);
+        assert!(*pickings.get(&op2).unwrap() > 10);
+        assert!(*pickings.get(&op3).unwrap() > 10);
+        assert!(*pickings.get(&op4).unwrap() > 10);
+    }
+
+    /// Rule 2. Otherwise if self is a full node and `secondary_raptorcast_peers` is not empty,
+    ///         randomly select from `secondary_raptorcast_peers`
+    #[test]
+    fn pick_peer_rule_2_as_fullnode_simple_set() {
+        let mut ctx = setup_fullnode(); // Sets up keys[0,1] are validators, self is a fullnode with keys[2]
+        let mut rng = ChaCha8Rng::seed_from_u64(123456);
+        let self_node_id = ctx.block_sync.self_node_id;
+        let validator_2_stake: BTreeMap<_, _> = ctx
+            .val_epoch_map
+            .get_val_set(&ctx.current_epoch)
+            .unwrap()
+            .get_members()
+            .clone();
+
+        let keys = create_keys::<SignatureType>(6);
+        let v1 = NodeId::new(keys[0].pubkey());
+        let v2 = NodeId::new(keys[1].pubkey());
+        let k2 = NodeId::new(keys[2].pubkey());
+        let sr1 = NodeId::new(keys[3].pubkey());
+        let sr2 = NodeId::new(keys[4].pubkey());
+        let sr3 = NodeId::new(keys[5].pubkey());
+        assert_eq!(self_node_id, k2);
+        assert_ne!(self_node_id, v1);
+        assert_ne!(self_node_id, v2);
+
+        assert!(validator_2_stake.contains_key(&v1));
+        assert!(validator_2_stake.contains_key(&v2));
+        assert!(!validator_2_stake.contains_key(&sr1));
+        assert!(!validator_2_stake.contains_key(&sr2));
+        assert!(!validator_2_stake.contains_key(&sr3));
+        assert!(!validator_2_stake.contains_key(&self_node_id));
+
+        ctx.set_override_peers(vec![]);
+        let override_peers = ctx.block_sync.override_peers.clone();
+
+        ctx.set_secondary_raptorcast_peers(vec![sr1, sr2, sr3], Round(4), Round(2));
+        let ws = ctx.wrapped_state();
+
+        let current_epoch = ws.current_epoch;
+        let val_epoch_map = ws.val_epoch_map;
+        let secondary_raptorcast_peers = ws.block_sync.secondary_raptorcast_peers.clone();
+
+        let mut pickings = BTreeMap::<NodeId<PubKeyType>, usize>::new();
+
+        for _ in 0..100 {
+            let pick_nodeid = TestBlockSyncWrap::pick_peer(
+                &self_node_id,
+                current_epoch,
+                val_epoch_map,
+                &override_peers,
+                &secondary_raptorcast_peers,
+                &mut rng,
+            );
+            *pickings.entry(pick_nodeid).or_insert(0) += 1;
+        }
+        // Make sure only sr1..sr3 were picked, and not too poorly distributed
+        assert!(somewhat_evenly_distributed(&pickings, &vec![sr1, sr2, sr3]));
+    }
+
+    /// Rule 3. Otherwise, randomly select from validators based on stake weight
+    #[test]
+    fn pick_peer_rule_3_as_validator() {
+        let mut ctx = setup(); // Sets up keys[0,1] are validators, self is a validator with keys[0]
+        let mut rng = ChaCha8Rng::seed_from_u64(123456);
+        let self_node_id = ctx.block_sync.self_node_id;
+
+        let keys = create_keys::<SignatureType>(2);
+        let v1 = NodeId::new(keys[0].pubkey());
+        let v2 = NodeId::new(keys[1].pubkey());
+        assert_eq!(self_node_id, v1);
+
+        ctx.set_override_peers(vec![]);
+        let override_peers = ctx.block_sync.override_peers.clone();
+
+        let ws = ctx.wrapped_state();
+
+        let current_epoch = ws.current_epoch;
+        let val_epoch_map = ws.val_epoch_map;
+        let secondary_raptorcast_peers = ws.block_sync.secondary_raptorcast_peers.clone();
+
+        // Pick a blocksync peer while we have specific overrides.
+        // Should only ever pick v2, because self is v1
+        for _ in 0..10 {
+            let pick_nodeid = TestBlockSyncWrap::pick_peer(
+                &self_node_id,
+                current_epoch,
+                val_epoch_map,
+                &override_peers,
+                &secondary_raptorcast_peers,
+                &mut rng,
+            );
+            assert_eq!(pick_nodeid, v2);
+        }
+    }
+
+    /// Rule 3. Otherwise, randomly select from validators based on stake weight
+    #[test]
+    fn pick_peer_rule_3_as_fullnode() {
+        let mut ctx = setup_fullnode(); // Sets up keys[0,1] are validators, self is a fullnode with keys[2]
+        let mut rng = ChaCha8Rng::seed_from_u64(123456);
+        let self_node_id = ctx.block_sync.self_node_id;
+
+        let keys = create_keys::<SignatureType>(3);
+        let v1 = NodeId::new(keys[0].pubkey());
+        let v2 = NodeId::new(keys[1].pubkey());
+        let k2 = NodeId::new(keys[2].pubkey());
+        assert_eq!(self_node_id, k2);
+
+        ctx.set_override_peers(vec![]);
+        let override_peers = ctx.block_sync.override_peers.clone();
+
+        let ws = ctx.wrapped_state();
+
+        let current_epoch = ws.current_epoch;
+        let val_epoch_map = ws.val_epoch_map;
+        let secondary_raptorcast_peers = ws.block_sync.secondary_raptorcast_peers.clone();
+
+        // Pick a blocksync peer while we have specific overrides.
+        // Should only ever pick v1 or v2
+        let mut pickings = BTreeMap::<NodeId<PubKeyType>, usize>::new();
+        for _ in 0..100 {
+            let pick_nodeid = TestBlockSyncWrap::pick_peer(
+                &self_node_id,
+                current_epoch,
+                val_epoch_map,
+                &override_peers,
+                &secondary_raptorcast_peers,
+                &mut rng,
+            );
+            *pickings.entry(pick_nodeid).or_insert(0) += 1;
+        }
+        // Make sure only validators are picked
+        assert_eq!(pickings.len(), 2);
+        assert!(pickings.contains_key(&v1));
+        assert!(pickings.contains_key(&v2));
+        assert!(*pickings.get(&v1).unwrap() > 30);
+        assert!(*pickings.get(&v2).unwrap() > 30);
+    }
+
+    fn somewhat_evenly_distributed(
+        pickings: &BTreeMap<NodeId<PubKeyType>, usize>,
+        expected: &Vec<NodeId<PubKeyType>>,
+    ) -> bool {
+        let keys = pickings.keys().collect_vec();
+        let klen = keys.len();
+        assert_eq!(sorted(keys).collect_vec(), sorted(expected).collect_vec());
+        let sum: usize = pickings.values().sum();
+        let pop_min = sum / klen / 2;
+        let pop_max = sum / klen * 2;
+        pickings
+            .values()
+            .all(|val| val >= &pop_min && val <= &pop_max)
+    }
+
+    /// Rule 2. Otherwise if self is a full node and `secondary_raptorcast_peers` is not empty,
+    ///         randomly select from `secondary_raptorcast_peers`
+    #[test]
+    fn pick_peer_rule_2_as_fullnode_dynamic_set() {
+        let mut ctx = setup_fullnode();
+        let mut rng = ChaCha8Rng::seed_from_u64(123456);
+        let self_node_id = ctx.block_sync.self_node_id;
+        let validators: BTreeMap<_, _> = ctx
+            .val_epoch_map
+            .get_val_set(&ctx.current_epoch)
+            .unwrap()
+            .get_members()
+            .clone();
+
+        let keys = create_keys::<SignatureType>(8);
+        let k2 = NodeId::new(keys[2].pubkey());
+        let p1 = NodeId::new(keys[3].pubkey());
+        let p2 = NodeId::new(keys[4].pubkey());
+        let p3 = NodeId::new(keys[5].pubkey());
+        let p4 = NodeId::new(keys[6].pubkey());
+        let p5 = NodeId::new(keys[7].pubkey());
+        assert_eq!(k2, self_node_id);
+
+        ctx.set_override_peers(vec![]);
+        let override_peers = ctx.block_sync.override_peers.clone();
+        assert_eq!(override_peers.len(), 0);
+
+        let ws = ctx.wrapped_state();
+        let current_epoch = ws.current_epoch;
+        let val_epoch_map = ws.val_epoch_map;
+
+        //=============================================
+        // Round inserts:
+        // Round 2
+        //      p1 -> [2, 12)
+        //      p2 -> [2, 12)
+        //
+        // Round 3
+        //      p2 -> [3, 13)
+        //      p3 -> [3, 13)
+        //
+        // Round 10
+        //      p4 -> [10, 17)
+        //
+        // Round 15
+        //      p1 -> [15, 22)
+        //      p5 -> [15, 22)
+        //
+        // Round picks:
+        //      1  -> {} (picks a random validator)
+        //      2  -> {p1, p2}
+        //      3  -> {p1, p2, p3}
+        //      ...
+        //      10 -> {p1, p2, p3, p4}
+        //      11 -> {p1, p2, p3, p4}
+        //      12 ->     {p2, p3, p4}
+        //      13 ->         {p3, p4}
+        //      14 ->         {p3, p4}
+        //      15 -> {p1          p4, p5}
+        //      16 -> {p1          p4, p5}
+        //      17 -> {p1              p5}
+        //      18 -> {p1              p5}
+        //      ...
+        //      22 -> {p1              p5}
+        //      23 -> {} (picks a random validator)
+        //=============================================
+
+        // Round 1
+        let pick = TestBlockSyncWrap::pick_peer(
+            &self_node_id,
+            current_epoch,
+            val_epoch_map,
+            &override_peers,
+            &ws.block_sync.secondary_raptorcast_peers,
+            &mut rng,
+        );
+        assert!(validators.contains_key(&pick));
+
+        // Round 2
+        {
+            ws.block_sync
+                .set_secondary_raptorcast_peers(vec![p1, p2], Round(12), Round(2));
+
+            let mut pickings = BTreeMap::<NodeId<PubKeyType>, usize>::new();
+            for _ in 0..100 {
+                let pick_nodeid = TestBlockSyncWrap::pick_peer(
+                    &self_node_id,
+                    current_epoch,
+                    val_epoch_map,
+                    &override_peers,
+                    &ws.block_sync.secondary_raptorcast_peers,
+                    &mut rng,
+                );
+                *pickings.entry(pick_nodeid).or_insert(0) += 1;
+            }
+            assert!(somewhat_evenly_distributed(&pickings, &vec![p1, p2]));
+        }
+
+        // Round 3
+        {
+            ws.block_sync
+                .set_secondary_raptorcast_peers(vec![p2, p3], Round(13), Round(3));
+
+            let mut pickings = BTreeMap::<NodeId<PubKeyType>, usize>::new();
+            for _ in 0..100 {
+                let pick_nodeid = TestBlockSyncWrap::pick_peer(
+                    &self_node_id,
+                    current_epoch,
+                    val_epoch_map,
+                    &override_peers,
+                    &ws.block_sync.secondary_raptorcast_peers,
+                    &mut rng,
+                );
+                *pickings.entry(pick_nodeid).or_insert(0) += 1;
+            }
+            assert!(somewhat_evenly_distributed(&pickings, &vec![p1, p2, p3]));
+        }
+
+        // Round 10
+        {
+            ws.block_sync
+                .set_secondary_raptorcast_peers(vec![p4], Round(17), Round(10));
+
+            let mut pickings = BTreeMap::<NodeId<PubKeyType>, usize>::new();
+            for _ in 0..100 {
+                let pick_nodeid = TestBlockSyncWrap::pick_peer(
+                    &self_node_id,
+                    current_epoch,
+                    val_epoch_map,
+                    &override_peers,
+                    &ws.block_sync.secondary_raptorcast_peers,
+                    &mut rng,
+                );
+                *pickings.entry(pick_nodeid).or_insert(0) += 1;
+            }
+            assert!(somewhat_evenly_distributed(
+                &pickings,
+                &vec![p1, p2, p3, p4]
+            ));
+        }
+
+        // Round 15
+        {
+            ws.block_sync
+                .set_secondary_raptorcast_peers(vec![p1, p5], Round(22), Round(15));
+
+            let mut pickings = BTreeMap::<NodeId<PubKeyType>, usize>::new();
+            for _ in 0..100 {
+                let pick_nodeid = TestBlockSyncWrap::pick_peer(
+                    &self_node_id,
+                    current_epoch,
+                    val_epoch_map,
+                    &override_peers,
+                    &ws.block_sync.secondary_raptorcast_peers,
+                    &mut rng,
+                );
+                *pickings.entry(pick_nodeid).or_insert(0) += 1;
+            }
+            assert!(somewhat_evenly_distributed(&pickings, &vec![p1, p4, p5]));
+        }
     }
 }

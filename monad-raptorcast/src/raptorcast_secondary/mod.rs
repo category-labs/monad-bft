@@ -486,6 +486,7 @@ where
 
                         ret = Poll::Ready(Some(
                             RaptorCastEvent::SecondaryRaptorcastPeersUpdate(
+                                confirm_msg.prepare.end_round,
                                 participated_nodes.into_iter().collect(),
                             )
                             .into(),

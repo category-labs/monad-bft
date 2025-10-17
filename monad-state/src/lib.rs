@@ -361,6 +361,15 @@ where
             ConsensusMode::Live(consensus) => consensus.get_current_epoch(),
         }
     }
+
+    fn current_round(&self) -> Round {
+        match self {
+            ConsensusMode::Sync {
+                high_certificate, ..
+            } => high_certificate.round() + Round(1),
+            ConsensusMode::Live(consensus) => consensus.get_current_round(),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]

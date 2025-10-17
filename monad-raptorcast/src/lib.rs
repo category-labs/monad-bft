@@ -116,7 +116,7 @@ pub enum PeerManagerResponse<ST: CertificateSignatureRecoverable> {
 pub enum RaptorCastEvent<E, ST: CertificateSignatureRecoverable> {
     Message(E),
     PeerManagerResponse(PeerManagerResponse<ST>),
-    SecondaryRaptorcastPeersUpdate(Vec<NodeId<CertificateSignaturePubKey<ST>>>),
+    SecondaryRaptorcastPeersUpdate(Round, Vec<NodeId<CertificateSignaturePubKey<ST>>>),
 }
 
 impl<ST, M, OM, SE, PD> RaptorCast<ST, M, OM, SE, PD>
@@ -982,8 +982,9 @@ where
                     ),
                 }
             }
-            RaptorCastEvent::SecondaryRaptorcastPeersUpdate(confirm_group_peers) => {
+            RaptorCastEvent::SecondaryRaptorcastPeersUpdate(expiry_round, confirm_group_peers) => {
                 MonadEvent::BlockSyncEvent(BlockSyncEvent::SecondaryRaptorcastPeersUpdate {
+                    expiry_round,
                     confirm_group_peers,
                 })
             }
