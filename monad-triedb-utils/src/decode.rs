@@ -13,10 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_primitives::{B256, U256};
+use alloy_primitives::{keccak256, B256, U256};
 use alloy_rlp::Decodable;
 use monad_eth_types::EthAccount;
-use tracing::warn;
+use tracing::{warn, debug};
 
 pub fn rlp_decode_account(account_rlp: Vec<u8>) -> Option<EthAccount> {
     let mut buf = account_rlp.as_slice();
@@ -49,12 +49,40 @@ pub fn rlp_decode_account(account_rlp: Vec<u8>) -> Option<EthAccount> {
 
     let is_delegated = false;
     let code_hash = if buf.is_empty() {
+        debug!("code_hash buf is empty");
         None
-    } else {
+    } else if buf.len() == 33 {
         match <[u8; 32]>::decode(&mut buf) {
-            Ok(x) => Some(x),
+            Ok(x) => {
+                debug!("code_hash buf decoded {:?}", x);
+                Some(x)
+            },
             Err(e) => {
                 warn!("rlp code_hash decode failed: {:?}", e);
+                return None;
+            }
+        }
+    } else if buf.len() != 24 {
+        warn!(
+            "The stored code_hash length is not expected {:?}",
+            buf.len()
+        );
+        return None;
+    } else {
+        match <[u8; 23]>::decode(&mut buf) {
+            Ok(x) => {
+                is_delegated = true;
+                debug!("delegated code_hash buf decoded {:?}", x);
+                match keccak256(x).as_slice().try_into() {
+                    Ok(hash) => Some(hash),
+                    Err(e) => {
+                        warn!("error extracting code_hash {:?}", e);
+                        return None;
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("rlp delegated code_hash decode failed: {:?}", e);
                 return None;
             }
         }
