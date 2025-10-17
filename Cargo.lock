@@ -5574,6 +5574,7 @@ dependencies = [
  "clap 4.5.47",
  "futures",
  "hex",
+ "insta",
  "monad-crypto",
  "monad-executor",
  "monad-executor-glue",

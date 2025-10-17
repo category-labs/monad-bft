@@ -523,7 +523,7 @@ where
                             let rec = &confirm_msg.name_records[ii];
                             let peer_entry = PeerEntry {
                                 pubkey: confirm_msg.peers[ii].pubkey(),
-                                addr: rec.name_record.address,
+                                addr: rec.address(),
                                 signature: rec.signature,
                                 record_seq_num: rec.name_record.seq,
                             };

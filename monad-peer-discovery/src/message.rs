@@ -162,7 +162,10 @@ mod test {
             id: 257,
             local_name_record: MonadNameRecord::<SignatureType>::new(
                 NameRecord {
-                    address: SocketAddrV4::from_str("127.0.0.1:8000").unwrap(),
+                    ip: *SocketAddrV4::from_str("127.0.0.1:8000").unwrap().ip(),
+                    tcp_port: 8000,
+                    udp_port: 8000,
+                    capabilities: 0,
                     seq: 2,
                 },
                 &key,

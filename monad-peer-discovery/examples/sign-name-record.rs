@@ -70,7 +70,10 @@ fn main() {
     };
     let self_address = args.address;
     let name_record = NameRecord {
-        address: self_address,
+        ip: *self_address.ip(),
+        tcp_port: self_address.port(),
+        udp_port: self_address.port(),
+        capabilities: 0,
         seq: self_record_seq_num,
     };
     let signed_name_record: MonadNameRecord<SecpSignature> =
