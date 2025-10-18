@@ -21,7 +21,7 @@ use itertools::Itertools as _;
 use monad_crypto::certificate_signature::{CertificateSignature, CertificateSignaturePubKey};
 use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_raptorcast::{
-    packet, udp,
+    packet,
     util::{BuildTarget, EpochValidators, Redundancy},
 };
 use monad_secp::SecpSignature;
@@ -56,21 +56,6 @@ pub fn bench_build_messages(c: &mut Criterion, name: &str, message_size: usize, 
         _ => panic!("unsupported target"),
     };
 
-    group.bench_function("udp::build_messages", |b| {
-        b.iter(|| {
-            let _ = udp::build_messages(
-                &author,
-                DEFAULT_SEGMENT_SIZE, // segment_size
-                message.clone(),
-                Redundancy::from_u8(2),
-                0, // epoch_no
-                0, // unix_ts_ms
-                build_target.clone(),
-                &known_addrs,
-            );
-        });
-    });
-
     group.bench_function("packet::build_messages", |b| {
         b.iter(|| {
             let _ = packet::build_messages(
@@ -82,7 +67,6 @@ pub fn bench_build_messages(c: &mut Criterion, name: &str, message_size: usize, 
                 0, // unix_ts_ms
                 build_target.clone(),
                 &known_addrs,
-                &mut rand::thread_rng(),
             );
         });
     });

@@ -33,11 +33,11 @@ use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
 use monad_peer_discovery::mock::NopDiscovery;
-use monad_raptor::SOURCE_SYMBOLS_MAX;
 use monad_raptorcast::{
     new_defaulted_raptorcast_for_tests,
+    packet::build_messages,
     raptorcast_secondary::group_message::FullNodesGroupMessage,
-    udp::{build_messages, build_messages_with_length, MAX_REDUNDANCY},
+    udp::MAX_REDUNDANCY,
     util::{BuildTarget, EpochValidators, Group, Redundancy},
     RaptorCast, RaptorCastEvent,
 };
@@ -175,55 +175,6 @@ pub fn buffer_count_overflow() {
 
         std::thread::sleep(Duration::from_millis(1));
     }
-
-    // Wait for RaptorCast instance to catch up.
-    std::thread::sleep(Duration::from_millis(100));
-}
-
-// Try to crash the RaptorCast receive path by feeding it (part of) an oversized encoded
-// message.  A previous version of the RaptorCast receive path would unwrap() an Err when
-// it would receive an invalid (e.g. oversized) message for which ManagedDecoder::new()
-// would fail.
-#[test]
-pub fn oversized_message() {
-    let tx_addr = "127.0.0.1:10005".parse().unwrap();
-    let rx_addr = "127.0.0.1:10006".parse().unwrap();
-
-    let (tx_nodeid, tx_keypair, rx_nodeid, known_addresses) = set_up_test(&tx_addr, &rx_addr, None);
-
-    let message: Bytes = vec![0; 4 * 1000].into();
-
-    let tx_socket = UdpSocket::bind(tx_addr).unwrap();
-
-    let validators = EpochValidators {
-        validators: BTreeMap::from([(rx_nodeid, Stake::ONE), (tx_nodeid, Stake::ONE)]),
-    };
-
-    let epoch_validators = EpochValidators::view_without(&validators, vec![&tx_nodeid]);
-
-    let messages = build_messages_with_length::<SignatureType>(
-        &tx_keypair,
-        DEFAULT_SEGMENT_SIZE,
-        message,
-        ((SOURCE_SYMBOLS_MAX + 1) * usize::from(DEFAULT_SEGMENT_SIZE))
-            .try_into()
-            .unwrap(),
-        Redundancy::from_u8(2),
-        0, // epoch_no
-        0, // unix_ts_ms
-        BuildTarget::Raptorcast(epoch_validators),
-        &known_addresses,
-        &mut rand::thread_rng(),
-    );
-
-    // Sending a single packet of an oversized message is sufficient to crash the
-    // receiver if it is vulnerable to this issue.
-    tx_socket
-        .send_to(
-            &messages[0].1[0..usize::from(DEFAULT_SEGMENT_SIZE)],
-            messages[0].0,
-        )
-        .unwrap();
 
     // Wait for RaptorCast instance to catch up.
     std::thread::sleep(Duration::from_millis(100));

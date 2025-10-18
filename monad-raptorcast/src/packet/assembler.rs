@@ -27,14 +27,10 @@ use monad_raptor::Encoder;
 use monad_types::NodeId;
 
 use super::{
-    assigner::ChunkOrder, BuildError, ChunkAssigner, Collector, PeerAddrLookup, Result, UdpMessage,
+    assigner::{ChunkAssignment, ChunkOrder},
+    BuildError, Collector, PeerAddrLookup, Result, UdpMessage,
 };
-use crate::{
-    message::MAX_MESSAGE_SIZE,
-    udp::{MAX_NUM_PACKETS, MAX_REDUNDANCY, MIN_CHUNK_LENGTH},
-    util::Redundancy,
-    SIGNATURE_SIZE,
-};
+use crate::{util::Redundancy, SIGNATURE_SIZE};
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub enum AssembleMode {
@@ -44,114 +40,58 @@ pub enum AssembleMode {
     GsoFull,
 
     // Gso concatenated chunks only within a merkle batch.
+    #[expect(unused)]
     GsoBestEffort,
 
     // Each recipient gets its own packet in round-robin order.
+    #[expect(unused)]
     RoundRobin,
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn assemble<ST, CA, PL>(
+pub(crate) fn assemble<ST, PL>(
     key: &ST::KeyPairType,
-    // the size of each udp packet
-    segment_len: usize,
-    app_message: Bytes,
-    redundancy: Redundancy,
-    epoch: u64,
-    unix_ts_ms: u64,
-    broadcast_type: BroadcastType,
+    layout: PacketLayout,
+    app_message: &[u8],
+    header_buf: &[u8],
+    assignment: ChunkAssignment<CertificateSignaturePubKey<ST>>,
     mode: AssembleMode,
     peer_lookup: &PL,
-    assigner: &CA,
     collector: &mut impl Collector<UdpMessage>,
 ) -> Result<()>
 where
     ST: CertificateSignature,
-    // ?Sized to allow for passing trait objects
-    CA: ChunkAssigner<CertificateSignaturePubKey<ST>> + ?Sized,
-    PL: PeerAddrLookup<CertificateSignaturePubKey<ST>>,
+    PL: PeerAddrLookup<CertificateSignaturePubKey<ST>> + ?Sized,
 {
-    let merkle_tree_depth = 6; // TODO: calculate the actual merkle tree depth
-
-    debug_assert!(segment_len > MIN_CHUNK_LENGTH);
-    debug_assert!(merkle_tree_depth > 0 && merkle_tree_depth <= 15);
-
-    // run sanity checks
-    match () {
-        _ if app_message.is_empty() => {
-            tracing::warn!("empty application message");
-            return Ok(());
-        }
-        _ if app_message.len() > MAX_MESSAGE_SIZE => {
-            return Err(BuildError::AppMessageTooLarge);
-        }
-        _ if redundancy > MAX_REDUNDANCY => {
-            return Err(BuildError::RedundancyTooHigh);
-        }
-        _ => { /* ok */ }
-    }
-
-    // step 1. calculate chunk layout
-    let layout = PacketLayout::new(segment_len, merkle_tree_depth);
-    let num_symbols = layout
-        .calc_num_symbols(app_message.len(), redundancy)
-        .ok_or(BuildError::TooManyChunks)?;
-
-    // step 2. generate chunks
-    let order = mode.expected_chunk_order();
-    let mut assignment = assigner.assign_chunks(num_symbols, order)?;
-    assignment.ensure_order(order);
-
-    match () {
-        _ if assignment.is_empty() => {
-            tracing::warn!(app_msg_len = ?app_message.len(), "no chunk generated");
-            return Ok(());
-        }
-        _ if assignment.total_chunks() > MAX_NUM_PACKETS => {
-            return Err(BuildError::TooManyChunks);
-        }
-        _ => { /* ok */ }
-    }
-
+    // step 1. generate the chunks
     let mut chunks = assignment.generate(layout);
 
-    // step 3. encode and write raptor symbols to each chunk
+    // step 2. encode and write raptor symbols to each chunk
     if assignment.unique_chunk_id() {
-        encode_unique_symbols(&app_message, &mut chunks, layout)?;
+        encode_unique_symbols(app_message, &mut chunks, layout)?;
     } else {
-        encode_symbols(&app_message, &mut chunks, layout)?;
+        encode_symbols(app_message, &mut chunks, layout)?;
     }
 
-    // step 4. build header (sans signature)
-    let header_buf = build_header(
-        0, // fixed version
-        broadcast_type,
-        merkle_tree_depth,
-        epoch,
-        unix_ts_ms,
-        &app_message,
-    )?;
-    debug_assert_eq!(header_buf.len(), layout.header_sans_signature_range().len());
-
-    // step 5. lookup recipient addresses
+    // step 3. lookup recipient addresses
     lookup_recipient_addrs(&chunks, peer_lookup);
 
     if mode.stream_mode() {
         for mut batch in owned_merkle_batches(chunks, layout) {
-            // step 6. sign and write headers for this merkle batch
+            // step 4. sign and write headers for this merkle batch
             let merkle_batch = MerkleBatch::from(&mut batch[..]);
-            merkle_batch.write_header::<ST>(layout, key, &header_buf)?;
+            merkle_batch.write_header::<ST>(layout, key, header_buf)?;
 
-            // step 7. assemble udp messages
+            // step 5. assemble udp messages
             mode.assemble_udp_messages_into(collector, batch, layout);
         }
     } else {
-        // step 6. sign and write headers for this merkle batch
+        // step 4. sign and write headers for this merkle batch
         for batch in merkle_batches(&mut chunks, layout) {
-            batch.write_header::<ST>(layout, key, &header_buf)?;
+            batch.write_header::<ST>(layout, key, header_buf)?;
         }
 
-        // step 7. assemble udp messages
+        // step 5. assemble udp messages
         mode.assemble_udp_messages_into(collector, chunks, layout);
     }
 
@@ -235,7 +175,7 @@ impl<PT: PubKey> Recipient<PT> {
         *self.0.addr.get().expect("get addr called before lookup")
     }
 
-    fn lookup(&self, handle: &impl PeerAddrLookup<PT>) -> &Option<SocketAddr> {
+    fn lookup(&self, handle: &(impl PeerAddrLookup<PT> + ?Sized)) -> &Option<SocketAddr> {
         self.0.addr.get_or_init(|| {
             let addr = handle.lookup(&self.0.node_id);
             if addr.is_none() {
@@ -246,6 +186,51 @@ impl<PT: PubKey> Recipient<PT> {
     }
 }
 
+/// Stuff to include:
+///
+/// - 65 bytes => Signature of sender over hash(rest of message up to merkle proof, concatenated with merkle root)
+/// - 2 bytes => Version: bumped on protocol updates
+/// - 1 bit => broadcast or not
+/// - 1 bit => secondary broadcast or not (full-node raptorcast)
+/// - 2 bits => unused
+/// - 4 bits => Merkle tree depth
+/// - 8 bytes (u64) => Epoch #
+/// - 8 bytes (u64) => Unix timestamp in milliseconds
+/// - 20 bytes => first 20 bytes of hash of AppMessage
+///   - this isn't technically necessary if payload_len is small enough to fit in 1 chunk, but keep
+///     for simplicity
+/// - 4 bytes (u32) => Serialized AppMessage length (bytes)
+/// - 20 bytes * (merkle_tree_depth - 1) => merkle proof (leaves include everything that follows,
+///   eg hash(chunk_recipient + chunk_byte_offset + chunk_len + payload))
+///
+/// - 20 bytes => first 20 bytes of hash of chunk's first hop recipient
+///   - we set this even if broadcast bit is not set so that it's known if a message was intended
+///     to be sent to self
+/// - 1 byte => Chunk's merkle leaf idx
+/// - 1 byte => reserved
+/// - 2 bytes (u16) => This chunk's id
+/// - rest => data
+//
+// pub struct M {
+//     signature: [u8; 65],
+//     version: u16,
+//     broadcast: bool,
+//     secondary_broadcast: bool,
+//     merkle_tree_depth: u8,
+//     epoch: u64,
+//     unix_ts_ms: u64,
+//     app_message_id: [u8; 20],
+//     app_message_len: u32,
+//
+//     merkle_proof: Vec<[u8; 20]>,
+//
+//     chunk_recipient: [u8; 20],
+//     chunk_merkle_leaf_idx: u8,
+//     reserved: u8,
+//     chunk_id: u16,
+//
+//     data: Bytes,
+// }
 pub const HEADER_LEN: usize = 0
     + SIGNATURE_SIZE // Sender signature (65 bytes)
     + 2  // Version
@@ -272,14 +257,23 @@ pub(crate) struct PacketLayout {
 
 impl PacketLayout {
     pub const fn new(segment_len: usize, merkle_tree_depth: u8) -> Self {
-        let merkle_hash_count = merkle_tree_depth as usize - 1;
-        let merkle_proof_len = merkle_hash_count * MERKLE_HASH_LEN;
+        let merkle_proof_len = Self::calc_merkle_proof_len(merkle_tree_depth);
         let chunk_header_start = HEADER_LEN + merkle_proof_len;
 
         Self {
             chunk_header_start,
             segment_len,
         }
+    }
+
+    pub const fn calc_segment_len(chunk_len: usize, merkle_tree_depth: u8) -> usize {
+        let merkle_proof_len = Self::calc_merkle_proof_len(merkle_tree_depth);
+        HEADER_LEN + merkle_proof_len + CHUNK_HEADER_LEN + chunk_len
+    }
+
+    pub const fn calc_merkle_proof_len(merkle_tree_depth: u8) -> usize {
+        let merkle_hash_count = merkle_tree_depth as usize - 1;
+        merkle_hash_count * MERKLE_HASH_LEN
     }
 
     pub const fn calc_num_symbols(
@@ -395,7 +389,7 @@ impl<PT: PubKey> Chunk<PT> {
         &mut self,
         layout: PacketLayout,
         signature: &[u8; SIGNATURE_SIZE],
-        header: &Bytes,
+        header: &[u8],
     ) {
         self.payload[layout.signature_range()].copy_from_slice(signature);
         self.payload[layout.header_sans_signature_range()].copy_from_slice(header);
@@ -453,7 +447,7 @@ impl<'a, PT: PubKey> MerkleBatch<'a, PT> {
         mut self,
         layout: PacketLayout,
         key: &ST::KeyPairType,
-        header: &Bytes,
+        header: &[u8],
     ) -> Result<()>
     where
         ST: CertificateSignature,
@@ -481,7 +475,7 @@ impl<'a, PT: PubKey> MerkleBatch<'a, PT> {
         debug_assert!(self.chunks.len() <= 2usize.pow((depth - 1) as u32));
 
         for (leaf_index, chunk) in self.chunks.iter_mut().enumerate() {
-            let leaf_index = u8::try_from(leaf_index).map_err(|_| BuildError::MerkleTreeTooDeep)?;
+            let leaf_index = leaf_index as u8;
             chunk.write_chunk_header(layout, leaf_index)?;
             hashes.push(chunk.chunk_hash(layout));
         }
@@ -492,7 +486,7 @@ impl<'a, PT: PubKey> MerkleBatch<'a, PT> {
     fn sign<ST>(
         &self,
         key: &ST::KeyPairType,
-        header: &Bytes,
+        header: &[u8],
         merkle_root: &[u8; MERKLE_HASH_LEN],
     ) -> [u8; SIGNATURE_SIZE]
     where
@@ -579,7 +573,7 @@ pub(crate) enum BroadcastType {
 }
 
 // return the shared header for all chunks sans the signature.
-fn build_header(
+pub(crate) fn build_header(
     version: u16,
     broadcast_type: BroadcastType,
     merkle_tree_depth: u8,
@@ -641,10 +635,11 @@ fn build_header(
     Ok(buffer.freeze())
 }
 
-fn lookup_recipient_addrs<PT: PubKey, PL: PeerAddrLookup<PT>>(
-    chunks: &Vec<Chunk<PT>>,
-    handle: &PL,
-) {
+fn lookup_recipient_addrs<PT, PL>(chunks: &Vec<Chunk<PT>>, handle: &PL)
+where
+    PT: PubKey,
+    PL: PeerAddrLookup<PT> + ?Sized,
+{
     for chunk in chunks {
         chunk.recipient.lookup(handle);
     }
@@ -657,7 +652,7 @@ fn calc_full_hash(bytes: &[u8]) -> Hash {
 }
 
 impl AssembleMode {
-    fn expected_chunk_order(self) -> Option<ChunkOrder> {
+    pub fn expected_chunk_order(self) -> Option<ChunkOrder> {
         match self {
             AssembleMode::GsoFull => Some(ChunkOrder::GsoFriendly),
             AssembleMode::GsoBestEffort => None,
