@@ -15,9 +15,16 @@
 
 use std::collections::HashSet;
 
-use alloy_primitives::{Address, TxHash};
+use alloy_primitives::{Address, TxHash, U256};
 use monad_eth_block_policy::validation::StaticValidationError;
 use serde::{Deserialize, Serialize};
+
+pub const DEFAULT_TX_PRIORITY: U256 = U256::from_limbs([0xFFFFu64, 0, 0, 0]);
+
+#[test]
+fn test_default_tx_priority() {
+    assert_eq!(DEFAULT_TX_PRIORITY, U256::from(0xFFFFu64));
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EthTxPoolEvent {
