@@ -129,7 +129,7 @@ impl TryFrom<BlockTagOrHash> for EthHash {
 /// A generic handler for debug trace requests that requires transaction replay (e.g., PreStateTracer).
 pub async fn monad_debug_trace_replay<T: Triedb>(
     triedb_env: &T,
-    eth_call_executor: Arc<Mutex<EthCallExecutor>>,
+    eth_call_executor: Arc<EthCallExecutor>,
     chain_id: u64,
     params: &impl DebugTraceParams,
 ) -> Result<Box<RawValue>, JsonRpcError> {
