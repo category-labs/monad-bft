@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     future::Future,
     io,
     pin::Pin,
@@ -23,9 +23,9 @@ use std::{
 };
 
 use alloy_consensus::TxEnvelope;
-use alloy_primitives::TxHash;
+use alloy_primitives::{TxHash, U256};
 use futures::StreamExt;
-use monad_eth_txpool_ipc::EthTxPoolIpcStream;
+use monad_eth_txpool_ipc::{EthTxPoolIpcStream, EthTxPoolIpcTx};
 use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolEventType, EthTxPoolSnapshot};
 use pin_project::pin_project;
 use tokio::{
@@ -48,9 +48,10 @@ pub struct EthTxPoolIpcServer {
 
     connections: Vec<EthTxPoolIpcStream>,
 
-    batch: Vec<TxEnvelope>,
+    queue: BTreeMap<U256, VecDeque<TxEnvelope>>,
+    queue_len: usize,
     #[pin]
-    batch_timer: Sleep,
+    queue_timer: Sleep,
 }
 
 impl EthTxPoolIpcServer {
@@ -71,8 +72,9 @@ impl EthTxPoolIpcServer {
 
             connections: Vec::default(),
 
-            batch: Vec::default(),
-            batch_timer: time::sleep(Duration::ZERO),
+            queue: BTreeMap::default(),
+            queue_len: 0,
+            queue_timer: time::sleep(Duration::ZERO),
         })
     }
 
@@ -111,8 +113,9 @@ impl EthTxPoolIpcServer {
 
             connections,
 
-            batch,
-            mut batch_timer,
+            queue,
+            queue_len,
+            mut queue_timer,
         } = self.project();
 
         while let Poll::Ready(result) = listener.poll_accept(cx) {
@@ -127,11 +130,11 @@ impl EthTxPoolIpcServer {
             }
         }
 
-        let batch_was_empty = batch.is_empty();
+        let queue_was_empty = *queue_len == 0;
 
         connections.retain_mut(|stream| {
             loop {
-                if batch.len() >= MAX_BATCH_LEN {
+                if *queue_len >= MAX_BATCH_LEN {
                     break;
                 }
 
@@ -139,28 +142,50 @@ impl EthTxPoolIpcServer {
                     break;
                 };
 
-                let Some(tx) = result else {
+                let Some(EthTxPoolIpcTx { tx, priority }) = result else {
                     return false;
                 };
 
-                batch.push(tx);
+                queue.entry(priority).or_default().push_back(tx);
+                *queue_len += 1;
             }
 
             true
         });
 
-        if batch.is_empty() {
+        if *queue_len == 0 {
             return Poll::Pending;
         }
 
-        if batch_was_empty {
-            batch_timer.set(time::sleep(Duration::from_millis(BATCH_TIMER_INTERVAL_MS)));
+        if queue_was_empty {
+            queue_timer.set(time::sleep(Duration::from_millis(BATCH_TIMER_INTERVAL_MS)));
         }
 
-        if batch.len() >= MAX_BATCH_LEN || batch_timer.as_mut().poll(cx).is_ready() {
-            return Poll::Ready(std::mem::take(batch));
+        if *queue_len < MAX_BATCH_LEN && queue_timer.as_mut().poll(cx).is_pending() {
+            return Poll::Pending;
         }
 
-        Poll::Pending
+        let mut batch = Vec::default();
+
+        while let Some(batch_remaining_capacity) = MAX_BATCH_LEN.checked_sub(batch.len()) {
+            if batch_remaining_capacity == 0 {
+                break;
+            }
+
+            let Some(top_priority) = queue.last_entry() else {
+                break;
+            };
+
+            if batch_remaining_capacity < top_priority.get().len() {
+                batch.extend(top_priority.into_mut().drain(0..batch_remaining_capacity));
+                break;
+            } else {
+                batch.extend(top_priority.remove());
+            }
+        }
+
+        *queue_len -= batch.len();
+
+        Poll::Ready(batch)
     }
 }
