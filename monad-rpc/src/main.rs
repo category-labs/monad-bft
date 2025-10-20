@@ -345,7 +345,6 @@ async fn main() -> std::io::Result<()> {
         eth_call_executor,
         args.eth_call_executor_fibers as usize,
         archive_reader,
-        args.ledger_path,
         node_config.chain_id,
         chain_state,
         args.batch_request_limit,
@@ -442,7 +441,6 @@ async fn main() -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
 
     use actix_http::{Request, StatusCode};
     use actix_web::{
@@ -469,7 +467,6 @@ mod tests {
             eth_call_executor: None,
             eth_call_executor_fibers: 64,
             eth_call_stats_tracker: Some(Arc::new(EthCallStatsTracker::default())),
-            bft_ledger_path: PathBuf::from("/monad/ledger"),
             archive_reader: None,
             chain_id: 1337,
             chain_state: None,
