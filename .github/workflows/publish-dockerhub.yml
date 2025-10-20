@@ -1,0 +1,75 @@
+name: Publish to DockerHub
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  publish-dockerhub:
+    runs-on: ubuntu-24.04-32
+
+    strategy:
+      matrix:
+        dockerfile:
+          - { name: "monad-bft", file: "docker/devnet/Dockerfile" }
+          - { name: "monad-rpc", file: "docker/rpc/Dockerfile" }
+          - { name: "monad-execution", file: "monad-cxx/monad-execution/docker/release.Dockerfile", context: "monad-cxx/monad-execution" }
+
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Generate a token
+        id: generate_token
+        uses: tibdex/github-app-token@v2
+        with:
+          app_id: ${{ secrets.REPO_READONLY_GITHUB_APP_ID }}
+          private_key: ${{ secrets.REPO_READONLY_GITHUB_APP_KEY }}
+          permissions: >-
+            {"contents": "read"}
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ steps.generate_token.outputs.token }}
+
+      - name: Log in to DockerHub
+        uses: docker/login-action@v3.1.1
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Setup Docker Buildx
+        id: setup-buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          buildkitd-flags: |
+            --allow-insecure-entitlement security.insecure
+
+      - run: cat /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages
+      - run: cat /sys/devices/system/node/node0/hugepages/hugepages-1048576kB/nr_hugepages
+      - run: sudo bash -c "echo 2048 > /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages"
+      - run: sudo bash -c "echo 8 > /sys/devices/system/node/node0/hugepages/hugepages-1048576kB/nr_hugepages"
+      - run: cat /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages
+      - run: cat /sys/devices/system/node/node0/hugepages/hugepages-1048576kB/nr_hugepages
+
+      - name: Get Execution Commit Hash
+        if: ${{ matrix.dockerfile.name == 'monad-execution' }}
+        run: echo "GIT_COMMIT_HASH=$(git -C monad-cxx/monad-execution rev-parse HEAD)" >> $GITHUB_ENV
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.dockerfile.context || '.' }}
+          push: true
+          file: ${{ matrix.dockerfile.file }}
+          target: runner
+          tags: categoryxyz/${{ matrix.dockerfile.name }}:latest
+          build-args: |
+            GIT_COMMIT_HASH=${{ env.GIT_COMMIT_HASH }}
+          builder: ${{ steps.setup-buildx.outputs.name }}
+          allow: security.insecure
