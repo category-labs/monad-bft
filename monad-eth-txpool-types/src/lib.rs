@@ -18,6 +18,8 @@ use std::collections::HashSet;
 use alloy_primitives::{Address, TxHash};
 use serde::{Deserialize, Serialize};
 
+pub const DEFAULT_TX_PRIORITY: u64 = 0x1000;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EthTxPoolEvent {
     pub tx_hash: TxHash,
