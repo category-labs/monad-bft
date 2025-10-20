@@ -22,7 +22,7 @@ use monad_crypto::certificate_signature::{
 use monad_executor::ExecutorMetrics;
 use monad_types::{NodeId, Round, RoundSpan, GENESIS_ROUND};
 use tokio::sync::mpsc::UnboundedSender;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use super::{
     super::{config::RaptorCastConfigSecondaryClient, util::Group},
@@ -46,9 +46,9 @@ where
 {
     client_node_id: NodeId<CertificateSignaturePubKey<ST>>, // Our (full-node) node_id as an invitee
 
-    // Full nodes may choose to reject a request if it doesn’t have enough
+    // Full nodes may choose to reject a request if it doesn't have enough
     // upload bandwidth to broadcast chunk to a large group.
-    config: RaptorCastConfigSecondaryClient,
+    config: RaptorCastConfigSecondaryClient<ST>,
 
     // [start_round, end_round) -> GroupAsClient
     // Represents all raptorcast groups that we have accepted and haven't expired
@@ -83,7 +83,7 @@ where
     pub fn new(
         client_node_id: NodeId<CertificateSignaturePubKey<ST>>,
         group_sink_channel: UnboundedSender<GroupAsClient<ST>>,
-        config: RaptorCastConfigSecondaryClient,
+        config: RaptorCastConfigSecondaryClient<ST>,
     ) -> Self {
         assert!(
             config.max_num_group > 0,
@@ -196,58 +196,66 @@ where
             return false;
         }
 
-        let log_exceed_max_num_group = || {
-            debug!(
-                "RaptorCastSecondary rejected invite for rounds \
-                        [{:?}, {:?}) from validator {:?} due to exceeding number of active groups",
-                invite_msg.start_round, invite_msg.end_round, invite_msg.validator_id
-            );
-        };
-        let mut num_current_groups = 0;
-
-        // Check confirmed groups
-        for group in self
-            .confirmed_groups
-            .values(invite_msg.start_round..invite_msg.end_round)
+        // If validator is not in prioritized upstream, check that we won't
+        // exceed max_num_group limit in the entire service span
+        if !self
+            .config
+            .prioritized_upstream
+            .contains(&invite_msg.validator_id)
         {
-            // Check if we already have an overlapping invite from same
-            // validator, e.g. [30, 40)->validator3 but we already
-            // have [25, 35)->validator3
-            // Note that we accept overlaps across different validators,
-            // e.g. [30, 40)->validator3 + [25, 35)->validator4
-            if group.get_validator_id() == &invite_msg.validator_id {
-                warn!(
-                    "RaptorCastSecondary received self-overlapping \
-                            invite for rounds [{:?}, {:?}) from validator {:?}",
+            let log_exceed_max_num_group = || {
+                debug!(
+                    "RaptorCastSecondary rejected invite for rounds \
+                            [{:?}, {:?}) from validator {:?} due to exceeding number of active groups",
                     invite_msg.start_round, invite_msg.end_round, invite_msg.validator_id
                 );
-                return false;
-            }
+            };
+            let mut num_current_groups = 0;
 
-            // Check that it doesn't exceed max number of groups during round span
-            num_current_groups += 1;
-            if num_current_groups + 1 > self.config.max_num_group {
-                log_exceed_max_num_group();
-                return false;
-            }
-        }
-
-        // Check groups we were invited to but are still unconfirmed
-        for (&key, other_invites) in self.pending_confirms.iter() {
-            if key >= invite_msg.end_round {
-                // Remaining keys are outside the invite range
-                break;
-            }
-
-            for other in other_invites.values() {
-                if !Self::overlaps(other.start_round, other.end_round, invite_msg) {
-                    continue;
+            // Check confirmed groups
+            for group in self
+                .confirmed_groups
+                .values(invite_msg.start_round..invite_msg.end_round)
+            {
+                // Check if we already have an overlapping invite from same
+                // validator, e.g. [30, 40)->validator3 but we already
+                // have [25, 35)->validator3
+                // Note that we accept overlaps across different validators,
+                // e.g. [30, 40)->validator3 + [25, 35)->validator4
+                if group.get_validator_id() == &invite_msg.validator_id {
+                    warn!(
+                        "RaptorCastSecondary received self-overlapping \
+                                invite for rounds [{:?}, {:?}) from validator {:?}",
+                        invite_msg.start_round, invite_msg.end_round, invite_msg.validator_id
+                    );
+                    return false;
                 }
 
+                // Check that it doesn't exceed max number of groups during round span
                 num_current_groups += 1;
                 if num_current_groups + 1 > self.config.max_num_group {
                     log_exceed_max_num_group();
                     return false;
+                }
+            }
+
+            // Check groups we were invited to but are still unconfirmed
+            for (&key, other_invites) in self.pending_confirms.iter() {
+                if key >= invite_msg.end_round {
+                    // Remaining keys are outside the invite range
+                    break;
+                }
+
+                for other in other_invites.values() {
+                    if !Self::overlaps(other.start_round, other.end_round, invite_msg) {
+                        continue;
+                    }
+
+                    num_current_groups += 1;
+                    if num_current_groups + 1 > self.config.max_num_group {
+                        log_exceed_max_num_group();
+                        return false;
+                    }
                 }
             }
         }
@@ -433,6 +441,18 @@ where
         }
     }
 
+    pub fn update_prioritized_upstream(
+        &mut self,
+        prioritized_upstream: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+    ) {
+        info!(
+            old_prioritized_upstream = ?self.config.prioritized_upstream,
+            new_prioritized_upstream = ?prioritized_upstream,
+            "RaptorCastSecondary Client updating prioritized_upstreams",
+        );
+        self.config.prioritized_upstream = prioritized_upstream;
+    }
+
     fn overlaps(begin: Round, end: Round, group: &PrepareGroup<ST>) -> bool {
         assert!(begin <= end);
         assert!(group.start_round <= group.end_round);
@@ -492,6 +512,7 @@ mod tests {
                 invite_future_dist_min: Round(1),
                 invite_future_dist_max: Round(100),
                 invite_accept_heartbeat: Duration::from_secs(10),
+                prioritized_upstream: vec![],
             },
         );
 
@@ -542,6 +563,7 @@ mod tests {
                 invite_future_dist_min: Round(1),
                 invite_future_dist_max: Round(100),
                 invite_accept_heartbeat: Duration::from_secs(10),
+                prioritized_upstream: vec![],
             },
         );
 
@@ -579,6 +601,60 @@ mod tests {
     }
 
     #[test]
+    fn test_prioritized_upstream_overrides_max_num_group() {
+        let (clt_tx, _clt_rx): RcToRcChannelGrp<ST> = unbounded_channel();
+        let self_id = nid(1);
+        let mut clt = Client::<ST>::new(
+            self_id,
+            clt_tx,
+            RaptorCastConfigSecondaryClient {
+                max_num_group: 1,
+                max_group_size: 50,
+                invite_future_dist_min: Round(1),
+                invite_future_dist_max: Round(100),
+                invite_accept_heartbeat: Duration::from_secs(10),
+                prioritized_upstream: vec![nid(4)],
+            },
+        );
+
+        // PrepareGroup is accepted when client has slots
+        let response = clt.handle_prepare_group_message(PrepareGroup {
+            validator_id: nid(2),
+            max_group_size: 50,
+            start_round: Round(1),
+            end_round: Round(5),
+        });
+        assert!(response.accept);
+
+        // PrepareGroup is rejected because it exceeds max_num_group
+        let response = clt.handle_prepare_group_message(PrepareGroup {
+            validator_id: nid(3),
+            max_group_size: 50,
+            start_round: Round(4),
+            end_round: Round(8),
+        });
+        assert!(!response.accept);
+
+        // same PrepareGroup from prioritized upstream is accepted
+        let response = clt.handle_prepare_group_message(PrepareGroup {
+            validator_id: nid(4),
+            max_group_size: 50,
+            start_round: Round(4),
+            end_round: Round(8),
+        });
+        assert!(response.accept);
+
+        // prioritized PrepareGroup occupies slots. Regular PrepareGroup is rejected
+        let response = clt.handle_prepare_group_message(PrepareGroup {
+            validator_id: nid(3),
+            max_group_size: 50,
+            start_round: Round(7),
+            end_round: Round(10),
+        });
+        assert!(!response.accept);
+    }
+
+    #[test]
     fn test_get_current_group_count() {
         let (clt_tx, _clt_rx): RcToRcChannelGrp<ST> = unbounded_channel();
         let self_id = nid(1);
@@ -591,6 +667,7 @@ mod tests {
                 invite_future_dist_min: Round(1),
                 invite_future_dist_max: Round(100),
                 invite_accept_heartbeat: Duration::from_secs(10),
+                prioritized_upstream: vec![],
             },
         );
 

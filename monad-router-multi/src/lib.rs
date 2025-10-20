@@ -207,6 +207,7 @@ where
                         invite_accept_heartbeat: Duration::from_millis(
                             cfg.secondary_instance.invite_accept_heartbeat_ms,
                         ),
+                        prioritized_upstream: cfg.secondary_instance.prioritized_upstream.clone(),
                     }),
                 }
             }
@@ -331,6 +332,14 @@ where
                         prioritized_full_nodes: prioritized_full_nodes.clone(),
                     };
                     validator_cmds.push(cmd_cpy);
+                    fullnodes_cmds.push(cmd);
+                }
+                RouterCommand::UpdateUpstreamValidators {
+                    ref prioritized_upstream,
+                } => {
+                    // This command is only relevant for full-nodes
+                    self.rc_config.secondary_instance.prioritized_upstream =
+                        prioritized_upstream.clone();
                     fullnodes_cmds.push(cmd);
                 }
                 RouterCommand::UpdateCurrentRound(epoch, round) => {

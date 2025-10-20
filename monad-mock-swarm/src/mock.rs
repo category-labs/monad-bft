@@ -397,6 +397,9 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
                 RouterCommand::UpdateFullNodes { .. } => {
                     // TODO
                 }
+                RouterCommand::UpdateUpstreamValidators { .. } => {
+                    // TODO
+                }
                 RouterCommand::PublishToFullNodes { .. } => {
                     // TODO
                 }
