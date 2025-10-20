@@ -293,6 +293,22 @@ where
                         publisher.update_always_ask_full_nodes(prioritized_full_nodes);
                     }
                 },
+                Self::Command::UpdateUpstreamValidators {
+                    prioritized_upstream,
+                } => match &mut self.role {
+                    Role::Client(client) => {
+                        debug!(
+                            ?prioritized_upstream,
+                            "RaptorCastSecondary Client updating prioritized_upstream validators"
+                        );
+                        client.update_prioritized_upstream(prioritized_upstream);
+                    }
+                    Role::Publisher(_) => {
+                        debug!(
+                            "RaptorCastSecondary Publisher ignoring UpdateUpstreamValidators command"
+                        );
+                    }
+                },
 
                 Self::Command::UpdateCurrentRound(epoch, round) => match &mut self.role {
                     Role::Client(client) => {

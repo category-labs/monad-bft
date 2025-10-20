@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use monad_crypto::certificate_signature::PubKey;
-use monad_types::Round;
+use monad_types::{NodeId, Round};
 use serde::{Deserialize, Serialize};
 
 use super::fullnode::FullNodeConfig;
@@ -44,4 +44,7 @@ pub struct FullNodeRaptorCastConfig<P: PubKey> {
     pub invite_future_dist_min: Round,
     pub invite_future_dist_max: Round,
     pub invite_accept_heartbeat_ms: u64,
+
+    #[serde(bound = "P:PubKey", default = "Vec::new")]
+    pub prioritized_upstream: Vec<NodeId<P>>,
 }

@@ -86,6 +86,9 @@ pub enum RouterCommand<ST: CertificateSignatureRecoverable, OM> {
         dedicated_full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
         prioritized_full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
     },
+    UpdateUpstreamValidators {
+        prioritized_upstream: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+    },
 }
 
 impl<ST: CertificateSignatureRecoverable, OM> Debug for RouterCommand<ST, OM> {
@@ -139,6 +142,12 @@ impl<ST: CertificateSignatureRecoverable, OM> Debug for RouterCommand<ST, OM> {
                 .debug_struct("UpdateFullNodes")
                 .field("dedicated_full_nodes", dedicated_full_nodes)
                 .field("prioritized_full_nodes", prioritized_full_nodes)
+                .finish(),
+            Self::UpdateUpstreamValidators {
+                prioritized_upstream,
+            } => f
+                .debug_struct("UpdateUpstreamValidators")
+                .field("prioritized_upstream", prioritized_upstream)
                 .finish(),
         }
     }
@@ -1926,6 +1935,7 @@ where
 {
     pub dedicated_full_nodes: Vec<NodeId<SCT::NodeIdPubKey>>,
     pub prioritized_full_nodes: Vec<NodeId<SCT::NodeIdPubKey>>,
+    pub prioritized_upstream: Vec<NodeId<SCT::NodeIdPubKey>>,
     pub blocksync_override_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
 }
 
