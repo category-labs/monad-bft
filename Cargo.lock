@@ -5683,6 +5683,7 @@ dependencies = [
  "monad-dataplane",
  "monad-executor",
  "monad-executor-glue",
+ "monad-node-config",
  "monad-peer-discovery",
  "monad-raptorcast",
  "monad-types",

@@ -30,6 +30,7 @@ use monad_crypto::certificate_signature::{
 use monad_dataplane::{DataplaneBuilder, DataplaneWriter};
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{Message, RouterCommand};
+use monad_node_config::{FullNodeConfig, FullNodeIdentityConfig};
 use monad_peer_discovery::{
     driver::PeerDiscoveryDriver, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder,
 };
@@ -327,6 +328,16 @@ where
                     ref dedicated_full_nodes,
                     ref prioritized_full_nodes,
                 } => {
+                    self.rc_config.primary_instance.fullnode_dedicated =
+                        dedicated_full_nodes.clone();
+                    self.rc_config.secondary_instance.full_nodes_prioritized = FullNodeConfig {
+                        identities: prioritized_full_nodes
+                            .iter()
+                            .map(|id| FullNodeIdentityConfig {
+                                secp256k1_pubkey: id.pubkey(),
+                            })
+                            .collect(),
+                    };
                     let cmd_cpy = RouterCommand::UpdateFullNodes {
                         dedicated_full_nodes: dedicated_full_nodes.clone(),
                         prioritized_full_nodes: prioritized_full_nodes.clone(),
