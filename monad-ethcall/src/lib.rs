@@ -465,7 +465,7 @@ pub async fn eth_trace_block(
     block_number: u64,
     block_id: Option<[u8; 32]>,
     parent_id: Option<[u8; 32]>,
-    eth_call_executor: Arc<Mutex<EthCallExecutor>>,
+    eth_call_executor: Arc<EthCallExecutor>,
     tracer: MonadTracer,
 ) -> CallResult {
     let chain_config = match chain_id {
@@ -493,15 +493,11 @@ pub async fn eth_trace_block(
     let (send, recv) = channel();
     let sender_ctx = Box::new(SenderContext { sender: send });
 
-    // hold lock on executor while submitting the task
-    let executor_lock = eth_call_executor.lock().await;
-    let eth_call_executor = executor_lock.eth_call_executor;
-
     unsafe {
         let sender_ctx_ptr = Box::into_raw(sender_ctx);
 
         bindings::monad_eth_trace_block_executor_submit(
-            eth_call_executor,
+            eth_call_executor.eth_call_executor,
             chain_config,
             rlp_encoded_block_header.as_ptr(),
             rlp_encoded_block_header.len(),
@@ -515,9 +511,6 @@ pub async fn eth_trace_block(
             tracer.into(),
         )
     };
-
-    // lock is dropped after the task has been submitted
-    drop(executor_lock);
 
     let result = match recv.await {
         Ok(r) => r,
@@ -583,7 +576,7 @@ pub async fn eth_trace_transaction(
     block_id: Option<[u8; 32]>,
     parent_id: Option<[u8; 32]>,
     transaction_index: u64,
-    eth_call_executor: Arc<Mutex<EthCallExecutor>>,
+    eth_call_executor: Arc<EthCallExecutor>,
     tracer: MonadTracer,
 ) -> CallResult {
     let chain_config = match chain_id {
@@ -611,15 +604,11 @@ pub async fn eth_trace_transaction(
     let (send, recv) = channel();
     let sender_ctx = Box::new(SenderContext { sender: send });
 
-    // hold lock on executor while submitting the task
-    let executor_lock = eth_call_executor.lock().await;
-    let eth_call_executor = executor_lock.eth_call_executor;
-
     unsafe {
         let sender_ctx_ptr = Box::into_raw(sender_ctx);
 
         bindings::monad_eth_trace_transaction_executor_submit(
-            eth_call_executor,
+            eth_call_executor.eth_call_executor,
             chain_config,
             rlp_encoded_block_header.as_ptr(),
             rlp_encoded_block_header.len(),
@@ -634,9 +623,6 @@ pub async fn eth_trace_transaction(
             tracer.into(),
         )
     };
-
-    // lock is dropped after the task has been submitted
-    drop(executor_lock);
 
     let result = match recv.await {
         Ok(r) => r,
