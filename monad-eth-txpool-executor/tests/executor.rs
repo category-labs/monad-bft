@@ -29,7 +29,7 @@ use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, secret_to_eth_
 use monad_eth_txpool_executor::{
     forward::egress_max_size_bytes, EthTxPoolExecutor, EthTxPoolExecutorClient, EthTxPoolIpcConfig,
 };
-use monad_eth_txpool_ipc::EthTxPoolIpcClient;
+use monad_eth_txpool_ipc::{EthTxPoolIpcClient, EthTxPoolIpcTx};
 use monad_eth_txpool_types::EthTxPoolSnapshot;
 use monad_executor::Executor;
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
@@ -110,7 +110,7 @@ async fn test_ipc_tx_forwarding_pacing() {
 
     for nonce in 0..NUM_TXS {
         ipc_client
-            .feed(&make_legacy_tx(
+            .feed(EthTxPoolIpcTx::new_with_default_priority(make_legacy_tx(
                 S1,
                 MIN_BASE_FEE.into(),
                 30_000_000,
@@ -121,7 +121,7 @@ async fn test_ipc_tx_forwarding_pacing() {
                         .execution_chain_params(),
                 ) / 2
                     - 256,
-            ))
+            )))
             .await
             .unwrap();
     }
