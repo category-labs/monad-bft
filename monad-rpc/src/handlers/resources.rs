@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
 use actix::{Actor, Context};
 use actix_web::{
@@ -40,7 +40,6 @@ pub struct MonadRpcResources {
     pub eth_call_executor_fibers: usize,
     pub eth_call_stats_tracker: Option<Arc<EthCallStatsTracker>>,
     pub archive_reader: Option<ArchiveReader>,
-    pub bft_ledger_path: PathBuf,
     pub chain_id: u64,
     pub chain_state: Option<ChainState<TriedbEnv>>,
     pub batch_request_limit: u16,
@@ -66,7 +65,6 @@ impl MonadRpcResources {
         eth_call_executor: Option<Arc<EthCallExecutor>>,
         eth_call_executor_fibers: usize,
         archive_reader: Option<ArchiveReader>,
-        bft_ledger_path: PathBuf,
         chain_id: u64,
         chain_state: Option<ChainState<TriedbEnv>>,
         batch_request_limit: u16,
@@ -95,7 +93,6 @@ impl MonadRpcResources {
                 None
             },
             archive_reader,
-            bft_ledger_path,
             chain_id,
             chain_state,
             batch_request_limit,
