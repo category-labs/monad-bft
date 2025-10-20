@@ -24,7 +24,7 @@ use std::{
 use alloy_consensus::TxEnvelope;
 use flume::Receiver;
 use futures::{ready, Future, Sink, SinkExt, Stream, StreamExt};
-use monad_eth_txpool_ipc::EthTxPoolIpcClient;
+use monad_eth_txpool_ipc::{EthTxPoolIpcClient, EthTxPoolIpcTx};
 use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolSnapshot};
 use pin_project::pin_project;
 use state::TxStatusSender;
@@ -111,7 +111,7 @@ impl EthTxPoolBridge {
                     for (tx, tx_status_send) in std::iter::once(tx_pair).chain(tx_receiver.drain()) {
                         self.state.add_tx(&mut self.eviction_queue, &tx, tx_status_send);
 
-                        if let Err(e) = self.feed(&tx).await {
+                        if let Err(e) = self.feed(tx).await {
                             warn!("IPC feed failed, monad-bft likely crashed: {}", e);
                         }
                     }
@@ -139,7 +139,7 @@ impl EthTxPoolBridge {
     }
 }
 
-impl<'a> Sink<&'a TxEnvelope> for EthTxPoolBridge {
+impl Sink<TxEnvelope> for EthTxPoolBridge {
     type Error = io::Error;
 
     fn poll_ready(
@@ -149,11 +149,9 @@ impl<'a> Sink<&'a TxEnvelope> for EthTxPoolBridge {
         self.ipc_client.poll_ready_unpin(cx)
     }
 
-    fn start_send(
-        mut self: std::pin::Pin<&mut Self>,
-        tx: &'a TxEnvelope,
-    ) -> Result<(), Self::Error> {
-        self.ipc_client.start_send_unpin(tx)
+    fn start_send(mut self: std::pin::Pin<&mut Self>, tx: TxEnvelope) -> Result<(), Self::Error> {
+        self.ipc_client
+            .start_send_unpin(EthTxPoolIpcTx::new_with_rpc_priority(tx))
     }
 
     fn poll_flush(
