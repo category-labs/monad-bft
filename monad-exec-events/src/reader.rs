@@ -17,9 +17,9 @@ use monad_event_ring::{EventDescriptor, EventReader};
 
 use crate::{
     ffi::{
-        monad_c_bytes32, monad_exec_iter_block_id_prev, monad_exec_iter_block_number_prev,
-        monad_exec_iter_consensus_prev, monad_exec_ring_block_id_matches,
-        monad_exec_ring_get_block_number, MONAD_EXEC_NONE,
+        monad_c_bytes32, monad_event_ring_get_block_id, monad_event_ring_get_block_number,
+        monad_event_ring_iter_block_id_prev, monad_event_ring_iter_block_number_prev,
+        monad_event_ring_iter_consensus_prev, MONAD_EXEC_NONE,
     },
     ExecEventDecoder, ExecEventType,
 };
@@ -30,17 +30,17 @@ pub trait ExecEventDescriptorExt {
     fn get_block_number(&self) -> Option<u64>;
 
     /// Checks whether the current [`EventDescriptor`] is associated with the provided `block_id`.
-    fn block_id_matches(&self, block_id: &monad_c_bytes32) -> bool;
+    fn get_block_id(&self) -> Option<monad_c_bytes32>;
 }
 
 impl<'ring> ExecEventDescriptorExt for EventDescriptor<'ring, ExecEventDecoder> {
     fn get_block_number(&self) -> Option<u64> {
-        self.with_raw(monad_exec_ring_get_block_number)
+        self.with_raw(monad_event_ring_get_block_number)
     }
 
-    fn block_id_matches(&self, block_id: &monad_c_bytes32) -> bool {
+    fn get_block_id(&self) -> Option<monad_c_bytes32> {
         self.with_raw(|c_event_ring, c_event_descriptor| {
-            monad_exec_ring_block_id_matches(c_event_ring, c_event_descriptor, block_id)
+            monad_event_ring_get_block_id(c_event_ring, c_event_descriptor)
         })
     }
 }
@@ -85,8 +85,8 @@ impl<'ring> ExecEventReaderExt<'ring> for EventReader<'ring, ExecEventDecoder> {
         &mut self,
         filter: Option<ExecEventType>,
     ) -> Option<EventDescriptor<'ring, ExecEventDecoder>> {
-        self.with_raw(|_, c_event_iterator| {
-            monad_exec_iter_consensus_prev(
+        self.with_raw(|c_event_iterator| {
+            monad_event_ring_iter_consensus_prev(
                 c_event_iterator,
                 filter.map_or(MONAD_EXEC_NONE, ExecEventType::as_c_event_type),
             )
@@ -98,10 +98,9 @@ impl<'ring> ExecEventReaderExt<'ring> for EventReader<'ring, ExecEventDecoder> {
         block_number: u64,
         filter: Option<ExecEventType>,
     ) -> Option<EventDescriptor<'ring, ExecEventDecoder>> {
-        self.with_raw(|c_event_ring, c_event_iterator| {
-            monad_exec_iter_block_number_prev(
+        self.with_raw(|c_event_iterator| {
+            monad_event_ring_iter_block_number_prev(
                 c_event_iterator,
-                c_event_ring,
                 block_number,
                 filter.map_or(MONAD_EXEC_NONE, ExecEventType::as_c_event_type),
             )
@@ -113,10 +112,9 @@ impl<'ring> ExecEventReaderExt<'ring> for EventReader<'ring, ExecEventDecoder> {
         block_id: &monad_c_bytes32,
         filter: Option<ExecEventType>,
     ) -> Option<EventDescriptor<'ring, ExecEventDecoder>> {
-        self.with_raw(|c_event_ring, c_event_iterator| {
-            monad_exec_iter_block_id_prev(
+        self.with_raw(|c_event_iterator| {
+            monad_event_ring_iter_block_id_prev(
                 c_event_iterator,
-                c_event_ring,
                 block_id,
                 filter.map_or(MONAD_EXEC_NONE, ExecEventType::as_c_event_type),
             )

@@ -18,11 +18,17 @@ use std::path::PathBuf;
 const INCLUDES: [(&str, &[&str]); 1] = [(
     "../monad-cxx/monad-execution/",
     &[
-        "category/core/event/event_iterator_inline.h",
-        "category/core/event/event_iterator.h",
+        "category/core/event/evcap_file.h",
+        "category/core/event/evcap_reader_inline.h",
+        "category/core/event/evcap_reader.h",
+        "category/core/event/event_def.h",
         "category/core/event/event_metadata.h",
+        "category/core/event/event_ring_inline.h",
+        "category/core/event/event_ring_iter.h",
         "category/core/event/event_ring_util.h",
         "category/core/event/event_ring.h",
+        "category/core/event/event_source_inline.h",
+        "category/core/event/event_source.h",
     ],
 )];
 

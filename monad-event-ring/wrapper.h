@@ -13,7 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-#include <category/core/event/event_iterator.h>
+#include <category/core/event/evcap_file.h>
+#include <category/core/event/evcap_reader.h>
+#include <category/core/event/event_def.h>
 #include <category/core/event/event_metadata.h>
+#include <category/core/event/event_ring_iter.h>
 #include <category/core/event/event_ring_util.h>
 #include <category/core/event/event_ring.h>
+#include <category/core/event/event_source.h>
