@@ -29,7 +29,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{
-    nonce_usage::{NonceUsage, NonceUsageRetrievable},
+    nonce_usage::{NonceUsage, NonceUsageMap},
     EthBlockPolicy, EthBlockPolicyBlockValidator, EthValidatedBlock,
 };
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason};
@@ -70,15 +70,14 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend<ST, SCT>,
 {
-    last_commit: Option<ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>>,
-    soft_tx_expiry: Duration,
-    hard_tx_expiry: Duration,
-
     // By using IndexMap, we can iterate through the map with Vec-like performance and are able to
     // evict expired txs through the entry API.
     txs: IndexMap<Address, TrackedTxList>,
 
-    _phantom: PhantomData<(SBT, CCT, CRT)>,
+    soft_tx_expiry: Duration,
+    hard_tx_expiry: Duration,
+
+    _phantom: PhantomData<(ST, SCT, SBT, CCT, CRT)>,
 }
 
 impl<ST, SCT, SBT, CCT, CRT> TrackedTxMap<ST, SCT, SBT, CCT, CRT>
@@ -91,18 +90,13 @@ where
 {
     pub fn new(soft_tx_expiry: Duration, hard_tx_expiry: Duration) -> Self {
         Self {
-            last_commit: None,
+            txs: IndexMap::with_capacity(MAX_ADDRESSES),
+
             soft_tx_expiry,
             hard_tx_expiry,
 
-            txs: IndexMap::with_capacity(MAX_ADDRESSES),
-
             _phantom: PhantomData,
         }
-    }
-
-    pub fn last_commit(&self) -> Option<&ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>> {
-        self.last_commit.as_ref()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -131,12 +125,9 @@ where
     pub fn try_insert_tx(
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
+        last_commit: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
         tx: ValidEthTransaction,
     ) -> Result<Option<&ValidEthTransaction>, ValidEthTransaction> {
-        let Some(last_commit) = self.last_commit.as_ref() else {
-            return Err(tx);
-        };
-
         let Some(tx_list) = self.txs.get_mut(tx.signer_ref()) else {
             return Err(tx);
         };
@@ -165,26 +156,6 @@ where
         chain_revision: &CRT,
         execution_revision: &MonadExecutionRevision,
     ) -> Result<Vec<Recovered<TxEnvelope>>, BlockPolicyError> {
-        let Some(last_commit) = &self.last_commit else {
-            return Ok(Vec::new());
-        };
-        let last_commit_seq_num = last_commit.seq_num;
-
-        assert!(
-            block_policy.get_last_commit().ge(&last_commit_seq_num),
-            "txpool received block policy with lower committed seq num"
-        );
-
-        if last_commit_seq_num != block_policy.get_last_commit() {
-            error!(
-                block_policy_last_commit = block_policy.get_last_commit().0,
-                txpool_last_commit = last_commit_seq_num.0,
-                "last commit update does not match block policy last commit"
-            );
-
-            return Ok(Vec::new());
-        }
-
         let _timer = DropTimer::start(Duration::ZERO, |elapsed| {
             debug!(?elapsed, "txpool create_proposal");
         });
@@ -196,7 +167,7 @@ where
         let sequencer = ProposalSequencer::new(&self.txs, &extending_blocks, base_fee, tx_limit);
         let sequencer_len = sequencer.len();
 
-        let (mut account_balances, state_backend_lookups) = {
+        let (account_balances, state_backend_lookups) = {
             let _timer = DropTimer::start(Duration::ZERO, |elapsed| {
                 debug!(
                     ?elapsed,
@@ -267,6 +238,7 @@ where
     pub fn try_promote_pending(
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
+        last_commit: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
         block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
         state_backend: &SBT,
         pending: &mut PendingTxMap,
@@ -293,18 +265,6 @@ where
             return true;
         }
 
-        let Some(last_commit) = &self.last_commit else {
-            warn!("txpool attempted to promote pending before first committed block");
-            event_tracker.drop_all(
-                to_insert
-                    .into_values()
-                    .map(PendingTxList::into_map)
-                    .flat_map(BTreeMap::into_values)
-                    .map(ValidEthTransaction::into_raw),
-                EthTxPoolDropReason::Internal(EthTxPoolInternalDropReason::NotReady),
-            );
-            return false;
-        };
         let last_commit_seq_num = last_commit.seq_num;
 
         let addresses = to_insert.len();
@@ -373,29 +333,15 @@ where
         true
     }
 
-    pub fn update_committed_block(
+    pub fn update_committed_nonce_usages(
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
-        committed_block: EthValidatedBlock<ST, SCT>,
+        nonce_usages: NonceUsageMap,
         pending: &mut PendingTxMap,
     ) {
-        {
-            let seqnum = committed_block.get_seq_num();
-            debug!(?seqnum, "txpool updating committed block");
-        }
-
-        if let Some(last_commit) = &self.last_commit {
-            assert_eq!(
-                committed_block.get_seq_num(),
-                last_commit.seq_num + SeqNum(1),
-                "txpool received out of order committed block"
-            );
-        }
-        self.last_commit = Some(committed_block.header().clone());
-
         let mut insertable = MAX_ADDRESSES.saturating_sub(self.txs.len());
 
-        for (address, nonce_usage) in committed_block.get_nonce_usages().into_map() {
+        for (address, nonce_usage) in nonce_usages.into_map() {
             match self.txs.entry(address) {
                 IndexMapEntry::Occupied(tx_list) => {
                     TrackedTxList::update_committed_nonce_usage(event_tracker, tx_list, nonce_usage)
@@ -461,11 +407,8 @@ where
         }
     }
 
-    pub fn reset(&mut self, last_delay_committed_blocks: Vec<EthValidatedBlock<ST, SCT>>) {
+    pub fn reset(&mut self) {
         self.txs.clear();
-        self.last_commit = last_delay_committed_blocks
-            .last()
-            .map(|block| block.header().clone())
     }
 
     pub fn static_validate_all_txs(

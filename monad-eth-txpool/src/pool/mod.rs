@@ -27,7 +27,7 @@ use monad_chain_config::{
     ChainConfig, MockChainConfig,
 };
 use monad_consensus_types::{
-    block::{BlockPolicyError, ProposedExecutionInputs},
+    block::{BlockPolicyError, ConsensusBlockHeader, ProposedExecutionInputs},
     payload::RoundSignature,
 };
 use monad_crypto::certificate_signature::{
@@ -41,7 +41,7 @@ use monad_system_calls::{SystemTransactionGenerator, SYSTEM_SENDER_ETH_ADDRESS};
 use monad_types::{Epoch, NodeId, Round, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub use self::transaction::max_eip2718_encoded_length;
 use self::{pending::PendingTxMap, tracked::TrackedTxMap, transaction::ValidEthTransaction};
@@ -70,6 +70,8 @@ where
     pending: PendingTxMap,
     tracked: TrackedTxMap<ST, SCT, SBT, CCT, CRT>,
 
+    last_commit: Option<ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>>,
+
     chain_id: u64,
     chain_revision: CRT,
     execution_revision: MonadExecutionRevision,
@@ -97,6 +99,8 @@ where
         Self {
             pending: PendingTxMap::default(),
             tracked: TrackedTxMap::new(soft_tx_expiry, hard_tx_expiry),
+
+            last_commit: None,
 
             chain_id,
             chain_revision,
@@ -136,7 +140,7 @@ where
             return;
         }
 
-        let Some(last_commit) = self.tracked.last_commit() else {
+        let Some(last_commit) = self.last_commit.as_ref() else {
             event_tracker.drop_all(txs.into_iter(), EthTxPoolDropReason::PoolNotReady);
             return;
         };
@@ -202,7 +206,7 @@ where
 
             let Some(tx) = self
                 .tracked
-                .try_insert_tx(event_tracker, tx)
+                .try_insert_tx(event_tracker, last_commit, tx)
                 .unwrap_or_else(|tx| {
                     self.pending
                         .try_insert_tx(event_tracker, tx, last_commit_base_fee)
@@ -216,6 +220,7 @@ where
 
         if !self.tracked.try_promote_pending(
             event_tracker,
+            last_commit,
             block_policy,
             state_backend,
             &mut self.pending,
@@ -235,8 +240,14 @@ where
         block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
         state_backend: &SBT,
     ) {
+        let Some(last_commit) = self.last_commit.as_ref() else {
+            warn!("txpool promote_pending called before last committed block set");
+            return;
+        };
+
         if !self.tracked.try_promote_pending(
             event_tracker,
+            last_commit,
             block_policy,
             state_backend,
             &mut self.pending,
@@ -323,21 +334,42 @@ where
             .map(|tx| tx.length() as u64)
             .sum();
 
-        let user_transactions = self.tracked.create_proposal(
-            event_tracker,
-            self.chain_id,
-            proposed_seq_num,
-            base_fee,
-            tx_limit - system_transactions.len(),
-            proposal_gas_limit,
-            proposal_byte_limit - system_txs_size,
-            block_policy,
-            extending_blocks.iter().collect(),
-            state_backend,
-            chain_config,
-            &self.chain_revision,
-            &self.execution_revision,
-        )?;
+        let user_transactions = if let Some(last_commit) = self.last_commit.as_ref() {
+            let last_commit_seq_num = last_commit.seq_num;
+
+            assert!(
+                block_policy.get_last_commit().ge(&last_commit_seq_num),
+                "txpool received block policy with lower committed seq num"
+            );
+
+            if last_commit_seq_num == block_policy.get_last_commit() {
+                self.tracked.create_proposal(
+                    event_tracker,
+                    self.chain_id,
+                    proposed_seq_num,
+                    base_fee,
+                    tx_limit - system_transactions.len(),
+                    proposal_gas_limit,
+                    proposal_byte_limit - system_txs_size,
+                    block_policy,
+                    extending_blocks.iter().collect(),
+                    state_backend,
+                    chain_config,
+                    &self.chain_revision,
+                    &self.execution_revision,
+                )?
+            } else {
+                error!(
+                    block_policy_last_commit = block_policy.get_last_commit().0,
+                    txpool_last_commit = last_commit_seq_num.0,
+                    "last commit update does not match block policy last commit"
+                );
+                Vec::default()
+            }
+        } else {
+            error!("txpool create_proposal called before last committed block set");
+            Vec::default()
+        };
 
         let body = EthBlockBody {
             transactions: system_transactions
@@ -423,13 +455,22 @@ where
         chain_config: &impl ChainConfig<CRT>,
         committed_block: EthValidatedBlock<ST, SCT>,
     ) {
+        {
+            let seqnum = committed_block.get_seq_num();
+            debug!(?seqnum, "txpool updating committed block");
+        }
+
+        if let Some(last_commit) = self.last_commit.as_ref() {
+            assert_eq!(
+                committed_block.get_seq_num(),
+                last_commit.seq_num + SeqNum(1),
+                "txpool received out of order committed block"
+            );
+        }
+        self.last_commit = Some(committed_block.header().clone());
+
         let execution_revision = chain_config
             .get_execution_chain_revision(committed_block.header().execution_inputs.timestamp);
-
-        self.tracked
-            .update_committed_block(event_tracker, committed_block, &mut self.pending);
-
-        self.tracked.evict_expired_txs(event_tracker);
 
         if self.execution_revision != execution_revision {
             self.execution_revision = execution_revision;
@@ -437,6 +478,14 @@ where
 
             self.static_validate_all_txs(event_tracker);
         }
+
+        self.tracked.update_committed_nonce_usages(
+            event_tracker,
+            committed_block.nonce_usages,
+            &mut self.pending,
+        );
+
+        self.tracked.evict_expired_txs(event_tracker);
 
         self.update_aggregate_metrics(event_tracker);
     }
@@ -447,6 +496,10 @@ where
         chain_config: &impl ChainConfig<CRT>,
         last_delay_committed_blocks: Vec<EthValidatedBlock<ST, SCT>>,
     ) {
+        self.last_commit = last_delay_committed_blocks
+            .last()
+            .map(|block| block.header().clone());
+
         let execution_revision = chain_config.get_execution_chain_revision(
             last_delay_committed_blocks
                 .last()
@@ -455,14 +508,14 @@ where
                 }),
         );
 
-        self.tracked.reset(last_delay_committed_blocks);
-
         if self.execution_revision != execution_revision {
             self.execution_revision = execution_revision;
             info!(execution_revision =? self.execution_revision, "updating execution revision");
 
             self.static_validate_all_txs(event_tracker);
         }
+
+        self.tracked.reset();
 
         self.update_aggregate_metrics(event_tracker);
     }
@@ -485,7 +538,7 @@ where
     pub fn get_forwardable_txs<const MIN_SEQNUM_DIFF: u64, const MAX_RETRIES: usize>(
         &mut self,
     ) -> Option<impl Iterator<Item = &TxEnvelope>> {
-        let last_commit = self.tracked.last_commit()?;
+        let last_commit = self.last_commit.as_ref()?;
 
         let last_commit_seq_num = last_commit.seq_num;
         let last_commit_base_fee = last_commit.execution_inputs.base_fee_per_gas;
