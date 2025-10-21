@@ -262,7 +262,7 @@ impl<'de, const N: usize> Deserialize<'de> for FixedData<N> {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BlockTags {
     Number(Quantity), // voted or finalized
     #[default]
