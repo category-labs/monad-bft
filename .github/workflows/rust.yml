@@ -37,7 +37,7 @@ jobs:
 
     container:
       image: peach10.devcore4.com/category-labs/builder
-      options: --privileged
+      options: --privileged -u 1000:1000
 
     steps:
       - name: Generate a token
