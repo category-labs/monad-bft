@@ -626,7 +626,7 @@ async fn eth_syncing(
     _app_state: &MonadRpcResources,
     _params: Value,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    serialize_result(monad_eth_syncing().await)
+    monad_eth_syncing().await.map(serialize_result)?
 }
 
 #[allow(non_snake_case)]
