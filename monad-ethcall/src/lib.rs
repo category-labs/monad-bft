@@ -39,7 +39,30 @@ pub mod bindings {
     include!(concat!(env!("OUT_DIR"), "/ethcall.rs"));
 }
 
-pub use bindings::monad_eth_call_pool_config as PoolConfig;
+pub use bindings::{
+    monad_eth_call_executor_state as ExecutorState, monad_eth_call_pool_config as PoolConfig,
+};
+
+impl Default for bindings::monad_eth_call_pool_state {
+    fn default() -> Self {
+        Self {
+            queued_count: 0,
+            num_fibers: 0,
+            queue_limit: 0,
+            executing_count: 0,
+            queue_full_count: 0,
+        }
+    }
+}
+
+impl Default for ExecutorState {
+    fn default() -> Self {
+        Self {
+            low_gas_pool_state: Default::default(),
+            high_gas_pool_state: Default::default(),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct EthCallExecutor {
@@ -71,6 +94,10 @@ impl EthCallExecutor {
         };
 
         Self { eth_call_executor }
+    }
+
+    pub fn get_state(&self) -> ExecutorState {
+        unsafe { bindings::monad_eth_call_executor_get_state(self.eth_call_executor) }
     }
 }
 
