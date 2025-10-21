@@ -536,8 +536,7 @@ pub async fn eth_trace_block(
 
                 let output_data_len = (*result).encoded_trace_len;
                 let output_data = if output_data_len != 0 {
-                    std::slice::from_raw_parts((*result).encoded_trace, output_data_len)
-                        .to_vec()
+                    std::slice::from_raw_parts((*result).encoded_trace, output_data_len).to_vec()
                 } else {
                     vec![]
                 };
@@ -549,19 +548,19 @@ pub async fn eth_trace_block(
                 })
             }
             _ => {
-                    let cstr_msg = CStr::from_ptr((*result).message.cast());
-                    let message = match cstr_msg.to_str() {
-                        Ok(str) => String::from(str),
-                        Err(_) => String::from("execution error eth_trace_block message invalid utf-8"),
-                    };
+                let cstr_msg = CStr::from_ptr((*result).message.cast());
+                let message = match cstr_msg.to_str() {
+                    Ok(str) => String::from(str),
+                    Err(_) => String::from("execution error eth_trace_block message invalid utf-8"),
+                };
 
-                    CallResult::Failure(FailureCallResult {
-                        error_code: EthCallResult::OtherError,
-                        message,
-                        data: None,
-                    })
-                }
-            };
+                CallResult::Failure(FailureCallResult {
+                    error_code: EthCallResult::OtherError,
+                    message,
+                    data: None,
+                })
+            }
+        };
 
         bindings::monad_eth_call_result_release(result);
 
@@ -627,7 +626,10 @@ pub async fn eth_trace_transaction(
     let result = match recv.await {
         Ok(r) => r,
         Err(e) => {
-            warn!("callback from eth_trace_transaction_executor failed: {:?}", e);
+            warn!(
+                "callback from eth_trace_transaction_executor failed: {:?}",
+                e
+            );
 
             return CallResult::Failure(FailureCallResult {
                 error_code: EthCallResult::OtherError,
@@ -648,8 +650,7 @@ pub async fn eth_trace_transaction(
 
                 let output_data_len = (*result).encoded_trace_len;
                 let output_data = if output_data_len != 0 {
-                    std::slice::from_raw_parts((*result).encoded_trace, output_data_len)
-                        .to_vec()
+                    std::slice::from_raw_parts((*result).encoded_trace, output_data_len).to_vec()
                 } else {
                     vec![]
                 };
@@ -661,19 +662,21 @@ pub async fn eth_trace_transaction(
                 })
             }
             _ => {
-                    let cstr_msg = CStr::from_ptr((*result).message.cast());
-                    let message = match cstr_msg.to_str() {
-                        Ok(str) => String::from(str),
-                        Err(_) => String::from("execution error eth_trace_transaction message invalid utf-8"),
-                    };
+                let cstr_msg = CStr::from_ptr((*result).message.cast());
+                let message = match cstr_msg.to_str() {
+                    Ok(str) => String::from(str),
+                    Err(_) => {
+                        String::from("execution error eth_trace_transaction message invalid utf-8")
+                    }
+                };
 
-                    CallResult::Failure(FailureCallResult {
-                        error_code: EthCallResult::OtherError,
-                        message,
-                        data: None,
-                    })
-                }
-            };
+                CallResult::Failure(FailureCallResult {
+                    error_code: EthCallResult::OtherError,
+                    message,
+                    data: None,
+                })
+            }
+        };
 
         bindings::monad_eth_call_result_release(result);
 

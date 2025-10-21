@@ -15,11 +15,12 @@
 
 use std::sync::Arc;
 
-use monad_ethcall::{eth_trace_transaction, eth_trace_block, CallResult, EthCallExecutor, MonadTracer};
+use monad_ethcall::{
+    eth_trace_block, eth_trace_transaction, CallResult, EthCallExecutor, MonadTracer,
+};
 use monad_triedb_utils::triedb_env::Triedb;
 use monad_types::SeqNum;
 use serde_json::value::RawValue;
-use tokio::sync::Mutex;
 
 use crate::{
     chainstate::get_block_key_from_tag,
@@ -28,7 +29,7 @@ use crate::{
         MonadDebugTraceBlockByHashParams, MonadDebugTraceBlockByNumberParams,
         MonadDebugTraceTransactionParams, Tracer, TracerObject,
     },
-    jsonrpc::JsonRpcError,
+    jsonrpc::{JsonRpcError, JsonRpcResult},
 };
 
 impl From<TracerObject> for MonadTracer {
@@ -132,8 +133,10 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
     eth_call_executor: Arc<EthCallExecutor>,
     chain_id: u64,
     params: &impl DebugTraceParams,
-) -> Result<Box<RawValue>, JsonRpcError> {
-    let block_key = get_block_key_from_tag(triedb_env, params.into()).unwrap();
+) -> JsonRpcResult<Box<RawValue>> {
+    let block_key = get_block_key_from_tag(triedb_env, params.into()).ok_or_else(|| {
+        JsonRpcError::internal_error("error getting block key from tag: found none".into())
+    })?;
     let header = triedb_env
         .get_block_header(block_key)
         .await
@@ -152,8 +155,20 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
                 .ok_or_else(|| {
                     JsonRpcError::internal_error(format!("transaction not found: {:?}", tx_hash))
                 })?;
-            let block_key = triedb_env.get_block_key(SeqNum(tx_loc.block_num)).unwrap();
-            let parent_key = triedb_env.get_block_key(SeqNum(tx_loc.block_num - 1)).unwrap();
+            let block_key = triedb_env
+                .get_block_key(SeqNum(tx_loc.block_num))
+                .ok_or_else(|| {
+                    JsonRpcError::internal_error(
+                        "error getting block key from block number: found none".into(),
+                    )
+                })?;
+            let parent_key = triedb_env
+                .get_block_key(SeqNum(tx_loc.block_num - 1))
+                .ok_or_else(|| {
+                    JsonRpcError::internal_error(
+                        "error getting parent block key from block number: found none".into(),
+                    )
+                })?;
             let (seq_number, block_id) = block_key.seq_num_block_id();
             let (_, parent_id) = parent_key.seq_num_block_id();
             eth_trace_transaction(
@@ -165,8 +180,9 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
                 tx_loc.tx_index,
                 eth_call_executor,
                 tracer,
-            ).await
-        },
+            )
+            .await
+        }
         TraceTarget::Block => {
             let block_key = match params.block_tag_or_hash() {
                 BlockTagOrHash::Hash(block_hash) => {
@@ -175,7 +191,11 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
                         .await
                         .map_err(JsonRpcError::internal_error)?
                     {
-                        triedb_env.get_block_key(SeqNum(block_num)).unwrap()
+                        triedb_env.get_block_key(SeqNum(block_num)).ok_or_else(|| {
+                            JsonRpcError::internal_error(
+                                "error getting block key from block number: found none".into(),
+                            )
+                        })?
                     } else {
                         return Err(JsonRpcError::internal_error(format!(
                             "block not found: {:?}",
@@ -186,7 +206,13 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
                 BlockTagOrHash::BlockTags(_) => block_key,
             };
             let (seq_number, block_id) = block_key.seq_num_block_id();
-            let parent_key = triedb_env.get_block_key(SeqNum(seq_number.0 - 1)).unwrap();
+            let parent_key = triedb_env
+                .get_block_key(SeqNum(seq_number.0 - 1))
+                .ok_or_else(|| {
+                    JsonRpcError::internal_error(
+                        "error getting parent block key from block number: found none".into(),
+                    )
+                })?;
             let (_, parent_id) = parent_key.seq_num_block_id();
             eth_trace_block(
                 chain_id,
@@ -196,13 +222,12 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
                 parent_id.map(|id| id.0 .0),
                 eth_call_executor,
                 tracer,
-            ).await
+            )
+            .await
         }
     };
-    let raw_payload = match call_result{
-        CallResult::Success(monad_ethcall::SuccessCallResult { output_data, .. }) => {
-            output_data
-        }
+    let raw_payload = match call_result {
+        CallResult::Success(monad_ethcall::SuccessCallResult { output_data, .. }) => output_data,
         CallResult::Failure(error) => {
             return Err(JsonRpcError::eth_call_error(error.message, error.data))
         }
@@ -210,7 +235,6 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
     };
     let v: serde_cbor::Value = serde_cbor::from_slice(&raw_payload)
         .map_err(|e| JsonRpcError::internal_error(format!("cbor decode error: {}", e)))?;
-    serde_json::value::to_raw_value(&v).map_err(|e| {
-        JsonRpcError::internal_error(format!("json serialization error: {}", e))
-    })
+    serde_json::value::to_raw_value(&v)
+        .map_err(|e| JsonRpcError::internal_error(format!("json serialization error: {}", e)))
 }
