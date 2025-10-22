@@ -18,12 +18,9 @@ use monad_event_ring::{DecodedEventRing, EventNextResult, SnapshotEventRing};
 use monad_exec_events::ExecEventDecoder;
 
 fn bench_snapshot(c: &mut Criterion) {
-    // TODO(andr-dev): Re-enable benchmark once test data updated.
-    return;
-
     const SNAPSHOT_NAME: &str = "ETHEREUM_MAINNET_30B_15M";
     const SNAPSHOT_ZSTD_BYTES: &[u8] =
-        include_bytes!("../../monad-exec-events/test/data/exec-events-emn-30b-15m/snapshot.zst");
+        include_bytes!("../../monad-event/test/data/exec-events-emn-30b-15m/snapshot.zst");
 
     let mut g = c.benchmark_group("snapshot_exec");
 

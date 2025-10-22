@@ -15,10 +15,12 @@
 
 use std::marker::PhantomData;
 
+use monad_event::{ffi::monad_event_descriptor, EventDecoder, EventDescriptor, RawEventDescriptor};
+
 pub(crate) use self::raw::RawEventReader;
 use crate::{
-    ffi::{monad_event_descriptor, monad_event_ring_iter, monad_event_ring_iter_reset},
-    EventDecoder, EventDescriptor, EventNextResult, RawEventDescriptor,
+    ffi::{monad_event_ring_iter, monad_event_ring_iter_reset},
+    EventNextResult, EventRing,
 };
 
 mod raw;
@@ -44,7 +46,7 @@ where
     }
 
     pub(crate) fn new_snapshot(mut raw: RawEventReader<'ring>) -> Self {
-        raw.inner.cur_seqno = 0;
+        raw.inner.cur_seqno = 1;
 
         Self {
             raw,
@@ -53,7 +55,7 @@ where
     }
 
     /// Produces the next event in the ring.
-    pub fn next_descriptor(&mut self) -> EventNextResult<EventDescriptor<'ring, D>> {
+    pub fn next_descriptor(&mut self) -> EventNextResult<EventDescriptor<&'ring EventRing<D>, D>> {
         self.raw.next_descriptor().map(EventDescriptor::new)
     }
 
@@ -66,10 +68,10 @@ where
     pub fn with_raw(
         &mut self,
         f: impl FnOnce(&mut monad_event_ring_iter) -> Option<monad_event_descriptor>,
-    ) -> Option<EventDescriptor<'ring, D>> {
+    ) -> Option<EventDescriptor<&'ring EventRing<D>, D>> {
         let c_event_descriptor = f(&mut self.raw.inner)?;
 
-        let raw_event_descriptor = RawEventDescriptor::new(self.raw.event_ring, c_event_descriptor);
+        let raw_event_descriptor = RawEventDescriptor::new(c_event_descriptor, self.raw.event_ring);
 
         Some(EventDescriptor::new(raw_event_descriptor))
     }

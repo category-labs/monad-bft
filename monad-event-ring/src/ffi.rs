@@ -22,22 +22,23 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub use self::bindings::{monad_event_record_error, monad_event_ring, monad_event_ring_iter};
 pub(crate) use self::bindings::{
-    g_monad_event_content_type_names, monad_event_ring_result, MONAD_EVENT_CONTENT_TYPE_COUNT,
-    MONAD_EVENT_CONTENT_TYPE_NONE, MONAD_EVENT_RING_GAP, MONAD_EVENT_RING_NOT_READY,
+    monad_event_ring_result, MONAD_EVENT_RING_GAP, MONAD_EVENT_RING_NOT_READY,
     MONAD_EVENT_RING_SUCCESS,
-};
-pub use self::bindings::{
-    monad_event_content_type, monad_event_descriptor, monad_event_record_error, monad_event_ring,
-    monad_event_ring_iter, MONAD_EVENT_CONTENT_TYPE_EXEC, MONAD_EVENT_CONTENT_TYPE_TEST,
 };
 
 #[allow(dead_code, missing_docs, non_camel_case_types, non_upper_case_globals)]
 mod bindings {
+    use ::monad_event::ffi::{
+        monad_event_content_type as monad_event_content_type_t, monad_event_descriptor,
+    };
     use libc::{off_t, pid_t};
 
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
+
+use ::monad_event::ffi::{monad_event_content_type, monad_event_descriptor};
 
 #[inline]
 fn get_last_ring_library_error(r: libc::c_int) -> Result<(), String> {

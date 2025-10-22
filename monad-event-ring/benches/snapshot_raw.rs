@@ -14,14 +14,13 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
-use monad_event_ring::{
-    BytesDecoder, DecodedEventRing, EventNextResult, EventPayloadResult, SnapshotEventRing,
-};
+use monad_event::BytesDecoder;
+use monad_event_ring::{DecodedEventRing, EventNextResult, EventPayloadResult, SnapshotEventRing};
 
 fn bench_snapshot(c: &mut Criterion) {
     const SNAPSHOT_NAME: &str = "ETHEREUM_MAINNET_30B_15M";
     const SNAPSHOT_ZSTD_BYTES: &[u8] =
-        include_bytes!("../../monad-exec-events/test/data/exec-events-emn-30b-15m/snapshot.zst");
+        include_bytes!("../../monad-event/test/data/exec-events-emn-30b-15m/snapshot.zst");
 
     let mut g = c.benchmark_group("snapshot_raw");
 

@@ -5389,6 +5389,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-event"
+version = "0.1.0"
+dependencies = [
+ "bindgen 0.71.1",
+ "libc",
+]
+
+[[package]]
 name = "monad-event-ring"
 version = "0.1.0"
 dependencies = [
@@ -5399,6 +5407,7 @@ dependencies = [
  "criterion",
  "itertools 0.10.5",
  "libc",
+ "monad-event",
 ]
 
 [[package]]
@@ -5417,6 +5426,7 @@ dependencies = [
  "hex",
  "itertools 0.10.5",
  "lazy_static",
+ "monad-event",
  "monad-event-ring",
  "ratatui",
  "serde",

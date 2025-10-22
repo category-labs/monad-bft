@@ -26,7 +26,6 @@ const INCLUDES: &[(&str, &[&str])] = &[
             "category/execution/ethereum/core/base_ctypes.h",
             "category/execution/ethereum/core/eth_ctypes.h",
             "category/execution/ethereum/event/exec_event_ctypes.h",
-            "category/execution/ethereum/event/exec_iter_help_inline.h",
             "category/execution/ethereum/event/exec_iter_help.h",
             "category/execution/monad/core/monad_ctypes.h",
         ],
@@ -65,10 +64,6 @@ fn main() {
             builder = builder.allowlist_file(format!("{lib_path}{lib_file}"));
         }
     }
-
-    builder = builder
-        .blocklist_type("monad_exec_record_error")
-        .blocklist_type("monad_event_record_error");
 
     let bindings = builder.generate().expect("Unable to generate bindings");
 

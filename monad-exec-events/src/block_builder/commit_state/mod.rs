@@ -18,11 +18,10 @@ use std::{
     sync::Arc,
 };
 
-use monad_event_ring::{EventDescriptor, EventPayloadResult};
+use monad_event::{EventDescriptor, EventDescriptorRead};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error};
 
-use super::BlockBuilderError;
 use crate::{
     block_builder::{BlockBuilderResult, ExecutedBlockBuilder},
     ffi::monad_c_bytes32,
@@ -78,28 +77,33 @@ impl CommitStateBlockBuilder {
     }
 
     /// Processes the execution event in the provided event descriptor.
-    pub fn process_event_descriptor(
+    pub fn process_event_descriptor<R>(
         &mut self,
-        event_descriptor: &EventDescriptor<'_, ExecEventDecoder>,
-    ) -> Option<BlockBuilderResult<CommitStateBlockUpdate>> {
-        match event_descriptor.try_filter_map(Self::select_commit_state_event_refs) {
-            EventPayloadResult::Ready(Some(exec_event)) => {
-                self.process_commit_state_event(exec_event).map(Ok)
-            }
-            EventPayloadResult::Ready(None) => {
+        event_descriptor: &EventDescriptor<R, ExecEventDecoder>,
+    ) -> R::Result<Option<BlockBuilderResult<CommitStateBlockUpdate>>>
+    where
+        R: EventDescriptorRead,
+    {
+        let result: R::Result<Option<ExecEvent>> =
+            event_descriptor.try_filter_map(Self::select_commit_state_event_refs);
+
+        R::result_and_then(result, |exec_event| {
+            if let Some(exec_event) = exec_event {
+                R::result_ok(
+                    self.process_commit_state_event(exec_event)
+                        .map(BlockBuilderResult::Ok),
+                )
+            } else {
                 // CommitStateBlockBuilder and ExecutedBlockBuilder select mutually exlcusive
                 // events. If the event in the event descriptor does not correspond to the
                 // CommitStateBlockBuilder, we allow the ExecutedBlockBuilder to process it.
-                self.block_builder
-                    .process_event_descriptor(event_descriptor)
-                    .map(|result| self.process_block_builder_result(result))
+                R::result_map(
+                    self.block_builder
+                        .process_event_descriptor(event_descriptor),
+                    |result| result.map(|result| self.process_block_builder_result(result)),
+                )
             }
-            EventPayloadResult::Expired => {
-                self.reset();
-
-                Some(Err(BlockBuilderError::PayloadExpired))
-            }
-        }
+        })
     }
 
     fn process_block_builder_result(
@@ -287,9 +291,10 @@ impl CommitStateBlockBuilder {
     }
 }
 
+#[cfg(feature = "event-ring")]
 #[cfg(test)]
 mod test {
-    use monad_event_ring::{DecodedEventRing, EventNextResult};
+    use monad_event_ring::{DecodedEventRing, EventNextResult, EventPayloadResult};
 
     use super::CommitStateBlockBuilder;
     use crate::{
@@ -315,8 +320,10 @@ mod test {
                 EventNextResult::Ready(event_descriptor) => event_descriptor,
             };
 
-            let Some(result) = block_builder.process_event_descriptor(&event_descriptor) else {
-                continue;
+            let result = match block_builder.process_event_descriptor(&event_descriptor) {
+                EventPayloadResult::Ready(Some(result)) => result,
+                EventPayloadResult::Ready(None) => continue,
+                EventPayloadResult::Expired => panic!("snapshot cannot expire"),
             };
 
             match result {
@@ -349,8 +356,9 @@ mod test {
     #[test]
     fn basic_test_ethereum_mainnet() {
         const SNAPSHOT_NAME: &str = "ETHEREUM_MAINNET_30B_15M";
-        const SNAPSHOT_ZSTD_BYTES: &[u8] =
-            include_bytes!("../../../test/data/exec-events-emn-30b-15m/snapshot.zst");
+        const SNAPSHOT_ZSTD_BYTES: &[u8] = include_bytes!(
+            "../../../../monad-event/test/data/exec-events-emn-30b-15m/snapshot.zst"
+        );
 
         run_commit_state_block_builder(SNAPSHOT_NAME, SNAPSHOT_ZSTD_BYTES);
     }
@@ -359,8 +367,9 @@ mod test {
     #[test]
     fn basic_test_monad_testnet() {
         const SNAPSHOT_NAME: &str = "MONAD_DEVNET_500B_GENESIS";
-        const SNAPSHOT_ZSTD_BYTES: &[u8] =
-            include_bytes!("../../../test/data/exec-events-mdn-500b-genesis/snapshot.zst");
+        const SNAPSHOT_ZSTD_BYTES: &[u8] = include_bytes!(
+            "../../../../monad-event/test/data/exec-events-mdn-500b-genesis/snapshot.zst"
+        );
 
         run_commit_state_block_builder(SNAPSHOT_NAME, SNAPSHOT_ZSTD_BYTES);
     }

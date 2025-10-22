@@ -1,0 +1,11 @@
+[package]
+name = "monad-event"
+description = "Rust API for monad events"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libc = { workspace = true }
+
+[build-dependencies]
+bindgen = { workspace = true }

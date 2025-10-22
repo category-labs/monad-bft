@@ -17,12 +17,13 @@ use std::{path::PathBuf, time::Duration};
 
 use clap::Parser;
 use itertools::Itertools;
+use monad_event::BytesDecoder;
 use monad_event_ring::{
-    BytesDecoder, DecodedEventRing, EventNextResult, EventPayloadResult, EventRing, EventRingPath,
+    DecodedEventRing, EventNextResult, EventPayloadResult, EventRing, EventRingPath,
 };
 
 #[derive(Debug, Parser)]
-#[command(name = "monad-exec-events-hexdump", about, long_about = None)]
+#[command(name = "monad-event-ring-hexdump", about, long_about = None)]
 pub struct Cli {
     #[arg(long)]
     event_ring_path: PathBuf,

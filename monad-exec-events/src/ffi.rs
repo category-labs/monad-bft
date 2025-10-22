@@ -22,10 +22,10 @@ pub use self::bindings::{
     monad_exec_account_access_context, monad_exec_account_access_list_header, monad_exec_block_end,
     monad_exec_block_finalized, monad_exec_block_qc, monad_exec_block_reject,
     monad_exec_block_start, monad_exec_block_tag, monad_exec_block_verified, monad_exec_evm_error,
-    monad_exec_storage_access, monad_exec_txn_access_list_entry, monad_exec_txn_auth_list_entry,
-    monad_exec_txn_call_frame, monad_exec_txn_evm_output, monad_exec_txn_header_start,
-    monad_exec_txn_log, monad_exec_txn_reject, MONAD_EXEC_EVENT_COUNT, MONAD_TXN_EIP1559,
-    MONAD_TXN_EIP2930, MONAD_TXN_EIP4844, MONAD_TXN_EIP7702, MONAD_TXN_LEGACY,
+    monad_exec_record_error, monad_exec_storage_access, monad_exec_txn_access_list_entry,
+    monad_exec_txn_auth_list_entry, monad_exec_txn_call_frame, monad_exec_txn_evm_output,
+    monad_exec_txn_header_start, monad_exec_txn_log, monad_exec_txn_reject, MONAD_EXEC_EVENT_COUNT,
+    MONAD_TXN_EIP1559, MONAD_TXN_EIP2930, MONAD_TXN_EIP4844, MONAD_TXN_EIP7702, MONAD_TXN_LEGACY,
 };
 pub(crate) use self::bindings::{
     g_monad_exec_event_schema_hash, monad_exec_event_type, MONAD_ACCT_ACCESS_BLOCK_EPILOGUE,
@@ -49,15 +49,33 @@ pub(crate) use self::bindings::{
     rustdoc::broken_intra_doc_links
 )]
 mod bindings {
+    use ::monad_event::ffi::monad_event_descriptor;
+    #[cfg(feature = "event-ring")]
     use ::monad_event_ring::ffi::{
-        monad_event_descriptor, monad_event_ring, monad_event_ring_iter,
+        monad_event_record_error, monad_event_ring, monad_event_ring_iter,
     };
+
+    #[cfg(not(feature = "event-ring"))]
+    type monad_event_record_error = ();
+    #[cfg(not(feature = "event-ring"))]
+    type monad_event_ring = ();
+    #[cfg(not(feature = "event-ring"))]
+    type monad_event_ring_iter = ();
+
+    type monad_evcap_event_iter = ();
+    type monad_evcap_event_section = ();
+    type monad_evsrc_any = ();
+    type monad_evsrc_any_iter = ();
 
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
 
-use ::monad_event_ring::ffi::{monad_event_descriptor, monad_event_ring, monad_event_ring_iter};
+#[cfg(feature = "event-ring")]
+use ::monad_event::ffi::monad_event_descriptor;
+#[cfg(feature = "event-ring")]
+use ::monad_event_ring::ffi::{monad_event_ring, monad_event_ring_iter};
 
+#[cfg(feature = "event-ring")]
 pub(crate) fn monad_event_ring_get_block_number(
     c_event_ring: &monad_event_ring,
     c_event_descriptor: &monad_event_descriptor,
@@ -76,6 +94,7 @@ pub(crate) fn monad_event_ring_get_block_number(
     success.then_some(block_number)
 }
 
+#[cfg(feature = "event-ring")]
 pub(crate) fn monad_event_ring_get_block_id(
     c_event_ring: &monad_event_ring,
     c_event_descriptor: &monad_event_descriptor,
@@ -94,6 +113,7 @@ pub(crate) fn monad_event_ring_get_block_id(
     success.then_some(block_id)
 }
 
+#[cfg(feature = "event-ring")]
 pub(crate) fn monad_event_ring_iter_consensus_prev(
     c_event_iterator: &mut monad_event_ring_iter,
     c_exec_event_filter: monad_exec_event_type,
@@ -112,6 +132,7 @@ pub(crate) fn monad_event_ring_iter_consensus_prev(
     success.then_some(c_event_descriptor)
 }
 
+#[cfg(feature = "event-ring")]
 pub(crate) fn monad_event_ring_iter_block_number_prev(
     c_event_iterator: &mut monad_event_ring_iter,
     block_number: u64,
@@ -132,6 +153,7 @@ pub(crate) fn monad_event_ring_iter_block_number_prev(
     success.then_some(c_event_descriptor)
 }
 
+#[cfg(feature = "event-ring")]
 pub(crate) fn monad_event_ring_iter_block_id_prev(
     c_event_iterator: &mut monad_event_ring_iter,
     block_id: &monad_c_bytes32,
@@ -151,6 +173,8 @@ pub(crate) fn monad_event_ring_iter_block_id_prev(
 
     success.then_some(c_event_descriptor)
 }
+
+#[cfg(feature = "event-ring")]
 #[allow(missing_docs)]
 pub const DEFAULT_FILE_NAME: &str = unsafe {
     std::str::from_utf8_unchecked(

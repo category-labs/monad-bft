@@ -47,6 +47,7 @@ monad-eth-txpool-ipc = { path = "./monad-eth-txpool-ipc" }
 monad-eth-txpool-types = { path = "./monad-eth-txpool-types" }
 monad-eth-types = { path = "./monad-eth-types" }
 monad-ethcall = { path = "./monad-ethcall" }
+monad-event = { path = "./monad-event" }
 monad-event-ring = { path = "./monad-event-ring" }
 monad-exec-events = { path = "./monad-exec-events" }
 monad-executor = { path = "./monad-executor" }

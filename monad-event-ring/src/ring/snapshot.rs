@@ -13,8 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use monad_event::EventDecoder;
+
 use super::{raw::RawEventRing, DecodedEventRing, EventRing, RawEventReader};
-use crate::{ffi, EventDecoder, EventReader, EventRingPath};
+use crate::{ffi, EventReader, EventRingPath};
 
 /// A special kind of event ring mapped to a static file for replaying events.
 ///

@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use itertools::Itertools;
-use monad_event_ring::{EventDescriptor, EventPayloadResult};
+use monad_event::{EventDescriptor, EventDescriptorRead};
 use state::AccountAccessReassemblyState;
 
 use self::state::{BlockReassemblyState, TxnOutputReassemblyState, TxnReassemblyState};
@@ -53,10 +53,13 @@ impl ExecutedBlockBuilder {
     }
 
     /// Processes the execution event in the provided event descriptor.
-    pub fn process_event_descriptor<'ring>(
+    pub fn process_event_descriptor<R>(
         &mut self,
-        event_descriptor: &EventDescriptor<'ring, ExecEventDecoder>,
-    ) -> Option<BlockBuilderResult<ExecutedBlock>> {
+        event_descriptor: &EventDescriptor<R, ExecEventDecoder>,
+    ) -> R::Result<Option<BlockBuilderResult<ExecutedBlock>>>
+    where
+        R: EventDescriptorRead,
+    {
         let filter_fn = match (self.include_call_frames, self.include_accesses) {
             (true, true) => Self::select_block_event_refs::<true, true>,
             (true, false) => Self::select_block_event_refs::<true, false>,
@@ -64,15 +67,11 @@ impl ExecutedBlockBuilder {
             (false, false) => Self::select_block_event_refs::<false, false>,
         };
 
-        match event_descriptor.try_filter_map(filter_fn) {
-            EventPayloadResult::Ready(Some(exec_event)) => self.process_exec_event(exec_event),
-            EventPayloadResult::Ready(None) => None,
-            EventPayloadResult::Expired => {
-                self.reset();
+        let result: R::Result<Option<ExecEvent>> = event_descriptor.try_filter_map(filter_fn);
 
-                Some(Err(BlockBuilderError::PayloadExpired))
-            }
-        }
+        R::result_map(result, |exec_event| {
+            exec_event.and_then(|exec_event| self.process_exec_event(exec_event))
+        })
     }
 
     /// Resets the state of the block builder.
@@ -163,12 +162,12 @@ impl ExecutedBlockBuilder {
                 self.state = Some(BlockReassemblyState {
                     start: block_header,
                     txns: txns.into_boxed_slice(),
-                    account_accesses: self.include_accesses.then(|| {
+                    account_accesses: self.include_accesses.then_some(
                         BlockAccountAccessesReassemblyState {
                             prologue: None,
                             epilogue: None,
-                        }
-                    }),
+                        },
+                    ),
                 });
 
                 None
@@ -802,9 +801,10 @@ impl ExecutedBlockBuilder {
     }
 }
 
+#[cfg(feature = "event-ring")]
 #[cfg(test)]
 mod test {
-    use monad_event_ring::{DecodedEventRing, EventNextResult};
+    use monad_event_ring::{DecodedEventRing, EventNextResult, EventPayloadResult};
 
     use crate::{block_builder::ExecutedBlockBuilder, BlockBuilderError, ExecSnapshotEventRing};
 
@@ -824,21 +824,21 @@ mod test {
                 EventNextResult::Ready(event_descriptor) => event_descriptor,
             };
 
-            let Some(result) = block_builder.process_event_descriptor(&event_descriptor) else {
-                continue;
-            };
-
-            match result {
-                Ok(executed_block) => {
-                    eprintln!("{executed_block:#?}");
-                }
-                Err(BlockBuilderError::Rejected) => {
-                    panic!("snapshot does not contain blocks that are rejected")
-                }
-                Err(BlockBuilderError::PayloadExpired) => panic!("payload expired on snapshot"),
-                Err(BlockBuilderError::ImplicitDrop { .. }) => {
-                    unreachable!()
-                }
+            match block_builder.process_event_descriptor(&event_descriptor) {
+                EventPayloadResult::Expired => panic!("snapshot event descriptor cannot expire"),
+                EventPayloadResult::Ready(None) => continue,
+                EventPayloadResult::Ready(Some(result)) => match result {
+                    Ok(executed_block) => {
+                        eprintln!("{executed_block:#?}");
+                    }
+                    Err(BlockBuilderError::Rejected) => {
+                        panic!("snapshot does not contain blocks that are rejected")
+                    }
+                    Err(BlockBuilderError::PayloadExpired) => panic!("payload expired on snapshot"),
+                    Err(BlockBuilderError::ImplicitDrop { .. }) => {
+                        unreachable!()
+                    }
+                },
             }
         }
     }
@@ -846,8 +846,9 @@ mod test {
     #[test]
     fn basic_test_ethereum_mainnet() {
         const SNAPSHOT_NAME: &str = "ETHEREUM_MAINNET_30B_15M";
-        const SNAPSHOT_ZSTD_BYTES: &[u8] =
-            include_bytes!("../../../test/data/exec-events-emn-30b-15m/snapshot.zst");
+        const SNAPSHOT_ZSTD_BYTES: &[u8] = include_bytes!(
+            "../../../../monad-event/test/data/exec-events-emn-30b-15m/snapshot.zst"
+        );
 
         run_block_builder(SNAPSHOT_NAME, SNAPSHOT_ZSTD_BYTES);
     }
@@ -856,8 +857,9 @@ mod test {
     #[test]
     fn basic_test_monad_testnet() {
         const SNAPSHOT_NAME: &str = "MONAD_DEVNET_500B_GENESIS";
-        const SNAPSHOT_ZSTD_BYTES: &[u8] =
-            include_bytes!("../../../test/data/exec-events-mdn-500b-genesis/snapshot.zst");
+        const SNAPSHOT_ZSTD_BYTES: &[u8] = include_bytes!(
+            "../../../../monad-event/test/data/exec-events-mdn-500b-genesis/snapshot.zst"
+        );
 
         run_block_builder(SNAPSHOT_NAME, SNAPSHOT_ZSTD_BYTES);
     }

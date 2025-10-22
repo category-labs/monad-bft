@@ -18,14 +18,12 @@ use std::{ffi::CStr, path::PathBuf, time::Duration};
 use chrono::{DateTime, Local, TimeZone};
 use clap::Parser;
 use lazy_static::lazy_static;
-use monad_event_ring::{
-    DecodedEventRing, EventDescriptor, EventDescriptorInfo, EventNextResult, EventPayloadResult,
-    EventRingPath,
-};
+use monad_event::EventDescriptorInfo;
+use monad_event_ring::{DecodedEventRing, EventNextResult, EventPayloadResult, EventRingPath};
 use monad_exec_events::{
     ffi::{g_monad_exec_event_metadata, DEFAULT_FILE_NAME, MONAD_EXEC_EVENT_COUNT},
-    ExecEventDecoder, ExecEventDescriptorExt, ExecEventReaderExt, ExecEventRing, ExecEventType,
-    ExecSnapshotEventRing,
+    ExecEventDescriptorExt, ExecEventReaderExt, ExecEventRing, ExecEventRingDescriptor,
+    ExecEventType, ExecSnapshotEventRing,
 };
 
 lazy_static! {
@@ -50,7 +48,7 @@ pub struct Cli {
 /// Print a summary line of this event
 /// <YYYY-MM-DDTHH:MM::SS.nanos-TZ> <event-c-name> [<event-type> <event-type-hex>]
 ///     SEQ: <sequence-no>
-fn print_event(event: &EventDescriptor<ExecEventDecoder>, dump_payload: bool) -> bool {
+fn print_event(event: &ExecEventRingDescriptor, dump_payload: bool) -> bool {
     let EventDescriptorInfo {
         seqno,
         event_type,

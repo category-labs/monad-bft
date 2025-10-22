@@ -5,7 +5,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-monad-event-ring = { workspace = true }
+monad-event = { workspace = true }
+monad-event-ring = { workspace = true, optional = true }
 
 alloy-consensus = { workspace = true, optional = true }
 alloy-eips = { workspace = true, optional = true }
@@ -21,6 +22,8 @@ bindgen = { workspace = true }
 cc = { workspace = true }
 
 [dev-dependencies]
+monad-event-ring = { workspace = true }
+
 alloy-primitives = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
@@ -34,7 +37,25 @@ strum = { workspace = true }
 [features]
 default = []
 alloy = ["dep:alloy-consensus", "dep:alloy-eips", "dep:alloy-primitives", "dep:alloy-rpc-types"]
+event-ring = ["dep:monad-event-ring"]
 
 [[bench]]
 name = "snapshot_exec"
 harness = false
+required-features = ["event-ring"]
+
+[[example]]
+name = "blockdump_simple"
+required-features = ["event-ring"]
+
+[[example]]
+name = "blockdump"
+required-features = ["event-ring"]
+
+[[example]]
+name = "eventwatch"
+required-features = ["event-ring"]
+
+[[example]]
+name = "explorer"
+required-features = ["event-ring"]

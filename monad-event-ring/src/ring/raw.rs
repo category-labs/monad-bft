@@ -13,13 +13,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use crate::{
-    ffi::{monad_event_ring, monad_event_ring_mmap, monad_event_ring_unmap},
-    EventDecoder,
+use monad_event::EventDecoder;
+
+use crate::ffi::{
+    monad_event_ring, monad_event_ring_check_content_type, monad_event_ring_mmap,
+    monad_event_ring_unmap,
 };
 
+/// TODO: docs
 #[derive(Debug)]
-pub(crate) struct RawEventRing {
+pub struct RawEventRing {
     pub(crate) inner: monad_event_ring,
 }
 
@@ -45,7 +48,19 @@ impl RawEventRing {
     where
         D: EventDecoder,
     {
-        D::check_ring_content_type(&self.inner)
+        let expected_content_type = D::content_type();
+        let expected_schema_hash = D::schema_hash();
+
+        monad_event_ring_check_content_type(
+            &self.inner,
+            expected_content_type,
+            expected_schema_hash,
+        )
+    }
+
+    /// TODO: docs
+    pub fn with_inner<T>(&self, f: impl FnOnce(&monad_event_ring) -> T) -> T {
+        f(&self.inner)
     }
 }
 

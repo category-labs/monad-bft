@@ -16,7 +16,7 @@
 use std::{sync::Arc, time::Duration};
 
 use itertools::Itertools;
-use monad_event_ring::{DecodedEventRing, EventNextResult, SnapshotEventRing};
+use monad_event_ring::{DecodedEventRing, EventNextResult, EventPayloadResult, SnapshotEventRing};
 use monad_exec_events::{
     BlockBuilderError, BlockCommitState, CommitStateBlockBuilder, CommitStateBlockUpdate,
     ExecEventDecoder, ExecEventRing, ExecutedBlock, ExecutedBlockBuilder,
@@ -43,7 +43,7 @@ impl EventServer<ExecEventRing> {
 
         let this = Self {
             event_ring,
-            block_builder: CommitStateBlockBuilder::new(ExecutedBlockBuilder::new(false)),
+            block_builder: CommitStateBlockBuilder::new(ExecutedBlockBuilder::new(false, false)),
             broadcast_tx: broadcast_tx.clone(),
         };
 
@@ -78,8 +78,12 @@ impl EventServer<ExecEventRing> {
                 EventNextResult::Ready(event_descriptor) => event_descriptor,
             };
 
-            let Some(result) = block_builder.process_event_descriptor(&event_descriptor) else {
-                continue;
+            let result = match block_builder.process_event_descriptor(&event_descriptor) {
+                EventPayloadResult::Ready(Some(result)) => result,
+                EventPayloadResult::Ready(None) => continue,
+                EventPayloadResult::Expired => {
+                    panic!("EventServer block_builder process_event_descriptor expired")
+                }
             };
 
             match result {
@@ -125,7 +129,7 @@ impl EventServer<SnapshotEventRing<ExecEventDecoder>> {
 
         let this = Self {
             event_ring: snapshot_event_ring,
-            block_builder: CommitStateBlockBuilder::new(ExecutedBlockBuilder::new(false)),
+            block_builder: CommitStateBlockBuilder::new(ExecutedBlockBuilder::new(false, false)),
             broadcast_tx: broadcast_tx.clone(),
         };
 
@@ -154,8 +158,12 @@ impl EventServer<SnapshotEventRing<ExecEventDecoder>> {
                 }
             };
 
-            let Some(result) = block_builder.process_event_descriptor(&event_descriptor) else {
-                continue;
+            let result = match block_builder.process_event_descriptor(&event_descriptor) {
+                EventPayloadResult::Ready(Some(result)) => result,
+                EventPayloadResult::Ready(None) => continue,
+                EventPayloadResult::Expired => {
+                    unreachable!("SnapshotEventDescriptor block_builder process_event_descriptor cannot expire")
+                }
             };
 
             match result {
@@ -291,9 +299,7 @@ mod test {
     async fn testing_server() {
         let snapshot_event_ring = SnapshotEventRing::new_from_zstd_bytes(
             "TEST",
-            include_bytes!(
-                "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/snapshot.zst"
-            ),
+            include_bytes!("../../../monad-event/test/data/exec-events-emn-30b-15m/snapshot.zst"),
             None,
         )
         .unwrap();
@@ -319,9 +325,7 @@ mod test {
     async fn json() {
         let snapshot_event_ring = SnapshotEventRing::new_from_zstd_bytes(
             "TEST",
-            include_bytes!(
-                "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/snapshot.zst"
-            ),
+            include_bytes!("../../../monad-event/test/data/exec-events-emn-30b-15m/snapshot.zst"),
             None,
         )
         .unwrap();
@@ -349,29 +353,25 @@ mod test {
         assert_json::<_, MonadNotification<alloy_rpc_types::Header>>(
             &[&monad_header],
             include_str!(
-                "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/0.monad-header.json"
+                "../../../monad-event/test/data/exec-events-emn-30b-15m/0.monad-header.json"
             ),
         );
 
         assert_json::<_, alloy_rpc_types::Header>(
             &[&monad_header.data, &monad_block.data.header],
-            include_str!(
-                "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/0.header.json"
-            ),
+            include_str!("../../../monad-event/test/data/exec-events-emn-30b-15m/0.header.json"),
         );
 
         assert_json::<_, MonadNotification<alloy_rpc_types::Block>>(
             &[&monad_block],
             include_str!(
-                "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/0.monad-block.json"
+                "../../../monad-event/test/data/exec-events-emn-30b-15m/0.monad-block.json"
             ),
         );
 
         assert_json::<_, alloy_rpc_types::Block>(
             &[&monad_block.data],
-            include_str!(
-                "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/0.block.json"
-            ),
+            include_str!("../../../monad-event/test/data/exec-events-emn-30b-15m/0.block.json"),
         );
 
         let monad_log = monad_logs.first().unwrap().clone();
@@ -379,15 +379,13 @@ mod test {
         assert_json::<_, MonadNotification<alloy_rpc_types::Log>>(
             &[&monad_log],
             include_str!(
-                "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/0.monad-log.0.json"
+                "../../../monad-event/test/data/exec-events-emn-30b-15m/0.monad-log.0.json"
             ),
         );
 
         assert_json::<_, alloy_rpc_types::Log>(
             &[&monad_log.data],
-            include_str!(
-                "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/0.log.0.json"
-            ),
+            include_str!("../../../monad-event/test/data/exec-events-emn-30b-15m/0.log.0.json"),
         );
     }
 

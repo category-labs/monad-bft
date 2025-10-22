@@ -13,8 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use monad_event_ring::{
-    ffi::{monad_event_content_type, monad_event_record_error, MONAD_EVENT_CONTENT_TYPE_EXEC},
+use monad_event::{
+    ffi::{monad_event_content_type, MONAD_EVENT_CONTENT_TYPE_EXEC},
     EventDecoder, EventDescriptorInfo,
 };
 
@@ -24,9 +24,9 @@ use crate::ffi::{
     monad_exec_account_access_list_header, monad_exec_block_end, monad_exec_block_finalized,
     monad_exec_block_qc, monad_exec_block_reject, monad_exec_block_start,
     monad_exec_block_verified, monad_exec_event_type, monad_exec_evm_error,
-    monad_exec_storage_access, monad_exec_txn_access_list_entry, monad_exec_txn_auth_list_entry,
-    monad_exec_txn_call_frame, monad_exec_txn_evm_output, monad_exec_txn_header_start,
-    monad_exec_txn_log, monad_exec_txn_reject,
+    monad_exec_record_error, monad_exec_storage_access, monad_exec_txn_access_list_entry,
+    monad_exec_txn_auth_list_entry, monad_exec_txn_call_frame, monad_exec_txn_evm_output,
+    monad_exec_txn_header_start, monad_exec_txn_log, monad_exec_txn_reject,
 };
 
 mod bytes;
@@ -45,7 +45,7 @@ pub struct ExecEventDecoder;
 #[derive(Clone, Debug, strum::EnumDiscriminants)]
 #[strum_discriminants(name(ExecEventType), allow(missing_docs))]
 pub enum ExecEvent {
-    RecordError(monad_event_record_error),
+    RecordError(monad_exec_record_error),
     BlockStart(monad_exec_block_start),
     BlockReject(monad_exec_block_reject),
     BlockPerfEvmEnter,
@@ -118,7 +118,7 @@ pub enum ExecEvent {
 #[allow(missing_docs)]
 #[derive(Copy, Clone, Debug)]
 pub enum ExecEventRef<'ring> {
-    RecordError(&'ring monad_event_record_error),
+    RecordError(&'ring monad_exec_record_error),
     BlockStart(&'ring monad_exec_block_start),
     BlockReject(&'ring monad_exec_block_reject),
     BlockPerfEvmEnter,
@@ -324,11 +324,11 @@ pub struct ExecEventRingFlowInfo {
 }
 
 impl EventDecoder for ExecEventDecoder {
-    fn ring_content_ctype() -> monad_event_content_type {
+    fn content_type() -> monad_event_content_type {
         MONAD_EVENT_CONTENT_TYPE_EXEC
     }
 
-    fn ring_schema_hash() -> &'static [u8; 32] {
+    fn schema_hash() -> &'static [u8; 32] {
         unsafe { &g_monad_exec_event_schema_hash }
     }
 
@@ -546,6 +546,7 @@ impl EventDecoder for ExecEventDecoder {
     }
 }
 
+#[cfg(feature = "event-ring")]
 #[cfg(test)]
 mod test {
     use monad_event_ring::{DecodedEventRing, EventNextResult, SnapshotEventRing};
@@ -556,7 +557,7 @@ mod test {
     fn basic_test() {
         const SNAPSHOT_NAME: &str = "ETHEREUM_MAINNET_30B_15M";
         const SNAPSHOT_ZSTD_BYTES: &[u8] =
-            include_bytes!("../../test/data/exec-events-emn-30b-15m/snapshot.zst");
+            include_bytes!("../../../monad-event/test/data/exec-events-emn-30b-15m/snapshot.zst");
 
         let snapshot = SnapshotEventRing::<ExecEventDecoder>::new_from_zstd_bytes(
             SNAPSHOT_NAME,

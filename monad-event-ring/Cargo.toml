@@ -5,6 +5,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+monad-event = { workspace = true }
+
 libc = { workspace = true }
 
 [dev-dependencies]

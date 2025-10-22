@@ -16,7 +16,7 @@
 use std::{path::PathBuf, time::Duration};
 
 use clap::Parser;
-use monad_event_ring::{DecodedEventRing, EventNextResult, EventRingPath};
+use monad_event_ring::{DecodedEventRing, EventNextResult, EventPayloadResult, EventRingPath};
 use monad_exec_events::{BlockBuilderError, ExecEventRing, ExecutedBlockBuilder};
 
 #[derive(Debug, Parser)]
@@ -38,7 +38,7 @@ fn main() {
     let mut block_builder = ExecutedBlockBuilder::new(true, true);
 
     loop {
-        let event = match event_reader.next_descriptor() {
+        let event_descriptor = match event_reader.next_descriptor() {
             EventNextResult::Gap => panic!("event ring gapped"),
             EventNextResult::NotReady => {
                 std::thread::sleep(Duration::from_millis(1));
@@ -47,8 +47,10 @@ fn main() {
             EventNextResult::Ready(event) => event,
         };
 
-        let Some(result) = block_builder.process_event_descriptor(&event) else {
-            continue;
+        let result = match block_builder.process_event_descriptor(&event_descriptor) {
+            EventPayloadResult::Expired => panic!("event ring descriptor expired"),
+            EventPayloadResult::Ready(None) => continue,
+            EventPayloadResult::Ready(Some(result)) => result,
         };
 
         match result {

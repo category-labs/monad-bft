@@ -24,7 +24,7 @@ use alloy_primitives::{Address, U256};
 use chrono::DateTime;
 use clap::Parser;
 use itertools::Itertools;
-use monad_event_ring::{DecodedEventRing, EventNextResult, EventRingPath};
+use monad_event_ring::{DecodedEventRing, EventNextResult, EventPayloadResult, EventRingPath};
 use monad_exec_events::{
     ffi::{monad_exec_block_end, monad_exec_block_start, monad_exec_block_tag},
     BlockBuilderError, BlockBuilderResult, BlockCommitState, CommitStateBlockBuilder,
@@ -280,8 +280,10 @@ impl App {
                     EventNextResult::Ready(event) => event,
                 };
 
-                let Some(result) = block_builder.process_event_descriptor(&event_descriptor) else {
-                    continue;
+                let result = match block_builder.process_event_descriptor(&event_descriptor) {
+                    EventPayloadResult::Expired => panic!("event ring descriptor expired"),
+                    EventPayloadResult::Ready(None) => continue,
+                    EventPayloadResult::Ready(Some(result)) => result,
                 };
 
                 if let Some(frozen_buffer) = self.overview_frozen_buffer.as_mut() {

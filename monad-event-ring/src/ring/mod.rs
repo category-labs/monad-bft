@@ -15,9 +15,13 @@
 
 use std::marker::PhantomData;
 
-pub(crate) use self::raw::RawEventRing;
-pub use self::snapshot::SnapshotEventRing;
-use crate::{EventDecoder, EventReader, EventRingPath, RawEventReader};
+use monad_event::{EventDecoder, EventDescriptorRead, RawEventDescriptor, RawEventDescriptorInfo};
+
+pub use self::{raw::RawEventRing, snapshot::SnapshotEventRing};
+use crate::{
+    ffi::{monad_event_ring_payload_check, monad_event_ring_payload_peek},
+    EventPayloadResult, EventReader, EventRingPath, RawEventReader,
+};
 
 mod raw;
 mod snapshot;
@@ -47,7 +51,7 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EventRing")
             .field("raw", &self.raw)
-            .field("type", &D::ring_content_ctype())
+            .field("type", &D::content_type())
             .finish()
     }
 }
@@ -77,12 +81,60 @@ where
     }
 
     pub(crate) fn new_from_raw(raw: RawEventRing) -> Result<Self, String> {
-        raw.check_type::<D>()?;
+        raw.check_type::<D>()
+            .map(|()| Self::new_from_raw_unchecked(raw))
+    }
 
-        Ok(Self {
+    pub(crate) fn new_from_raw_unchecked(raw: RawEventRing) -> Self {
+        Self {
             raw,
             _phantom: PhantomData,
-        })
+        }
+    }
+}
+
+impl<'buf, D> EventDescriptorRead for &'buf EventRing<D>
+where
+    D: EventDecoder,
+{
+    type Raw = &'buf RawEventRing;
+
+    type Result<T> = EventPayloadResult<T>;
+
+    fn try_filter_map<T>(
+        this: &RawEventDescriptor<Self::Raw>,
+        f: impl FnOnce(RawEventDescriptorInfo, &[u8]) -> T,
+    ) -> Self::Result<T> {
+        let info = this.info();
+
+        let (c_event_descriptor, buffer) = this.with_inner();
+
+        let Some(bytes) = monad_event_ring_payload_peek(&buffer.inner, c_event_descriptor) else {
+            return EventPayloadResult::Expired;
+        };
+
+        let value = f(info, bytes);
+
+        if monad_event_ring_payload_check(&buffer.inner, c_event_descriptor) {
+            EventPayloadResult::Ready(value)
+        } else {
+            EventPayloadResult::Expired
+        }
+    }
+
+    fn result_ok<T>(value: T) -> Self::Result<T> {
+        EventPayloadResult::Ready(value)
+    }
+
+    fn result_map<T, U>(result: Self::Result<T>, f: impl FnOnce(T) -> U) -> Self::Result<U> {
+        result.map(f)
+    }
+
+    fn result_and_then<T, U>(
+        result: Self::Result<T>,
+        f: impl FnOnce(T) -> Self::Result<U>,
+    ) -> Self::Result<U> {
+        result.and_then(f)
     }
 }
 

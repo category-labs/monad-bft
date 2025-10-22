@@ -13,10 +13,15 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use monad_event::{ffi::monad_event_descriptor, RawEventDescriptor};
+
 use crate::{
-    ffi::{monad_event_ring_iter, monad_event_ring_iterator_init},
+    ffi::{
+        self, monad_event_ring_iter, monad_event_ring_iter_try_next,
+        monad_event_ring_iterator_init, monad_event_ring_result,
+    },
     ring::RawEventRing,
-    EventNextResult, RawEventDescriptor,
+    EventNextResult,
 };
 
 #[derive(Debug)]
@@ -32,8 +37,25 @@ impl<'ring> RawEventReader<'ring> {
         Ok(Self { inner, event_ring })
     }
 
-    pub(crate) fn next_descriptor(&mut self) -> EventNextResult<RawEventDescriptor<'ring>> {
-        EventNextResult::new_from_raw(self)
+    pub(crate) fn next_descriptor(
+        &mut self,
+    ) -> EventNextResult<RawEventDescriptor<&'ring RawEventRing>> {
+        let (c_event_iter_result, c_event_descriptor): (
+            monad_event_ring_result,
+            monad_event_descriptor,
+        ) = monad_event_ring_iter_try_next(&mut self.inner);
+
+        match c_event_iter_result {
+            // TODO: SUCCESS should come from monad_event, NOT_READY and GAP from ffi but called MONAD_EVENT_RING_XYZ
+            ffi::MONAD_EVENT_RING_SUCCESS => {
+                EventNextResult::Ready(RawEventDescriptor::new(c_event_descriptor, self.event_ring))
+            }
+            ffi::MONAD_EVENT_RING_NOT_READY => EventNextResult::NotReady,
+            ffi::MONAD_EVENT_RING_GAP => EventNextResult::Gap,
+            _ => panic!(
+                "RawEventReader encountered unknown try_next result status {c_event_iter_result}"
+            ),
+        }
     }
 }
 
