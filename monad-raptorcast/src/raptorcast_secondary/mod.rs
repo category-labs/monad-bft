@@ -44,13 +44,13 @@ use rand_chacha::ChaCha8Rng;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, error, trace, warn};
 
-use super::{
+use crate::{
     config::{RaptorCastConfig, SecondaryRaptorCastMode},
     message::OutboundRouterMessage,
+    packet::{RetrofitResult as _, UdpMessageBatcher},
     util::{BuildTarget, FullNodes, Group, Redundancy},
-    RaptorCastEvent,
+    OwnedMessageBuilder, RaptorCastEvent, UNICAST_MSG_BATCH_SIZE,
 };
-use crate::OwnedMessageBuilder;
 
 #[derive(Debug, Clone, Copy)]
 pub enum SecondaryRaptorCastModeConfig {
@@ -184,13 +184,20 @@ where
             }
         };
 
+        let _timer = DropTimer::start(Duration::from_millis(10), |elapsed| {
+            warn!(
+                ?elapsed,
+                app_msg_len = msg_bytes.len(),
+                "long time to build message"
+            )
+        });
+        let mut sink = UdpMessageBatcher::new(UNICAST_MSG_BATCH_SIZE, |rc_chunks| {
+            self.dataplane_writer.udp_write_unicast(rc_chunks)
+        });
         let build_target = BuildTarget::<ST>::PointToPoint(dest_node);
-        if let Some(rc_chunks) = self
-            .message_builder
-            .build_unicast_msg(&msg_bytes, &build_target)
-        {
-            self.dataplane_writer.udp_write_unicast(rc_chunks);
-        }
+        self.message_builder
+            .build_into(&msg_bytes, &build_target, &mut sink)
+            .unwrap_log_on_error(&msg_bytes, &build_target);
     }
 
     fn send_group_msg(
@@ -389,17 +396,25 @@ where
                         }
                     };
 
+                    let _timer = DropTimer::start(Duration::from_millis(10), |elapsed| {
+                        warn!(
+                            ?elapsed,
+                            app_msg_len = outbound_message.len(),
+                            "long time to build message"
+                        )
+                    });
+                    let mut sink = UdpMessageBatcher::new(UNICAST_MSG_BATCH_SIZE, |rc_chunks| {
+                        // Send the raptorcast chunks via UDP to all peers in group
+                        self.dataplane_writer.udp_write_unicast(rc_chunks)
+                    });
+
                     // Split outbound_message into raptorcast chunks that we can
                     // send to full nodes.
-                    if let Some(rc_chunks) = self
-                        .message_builder
+                    self.message_builder
                         .prepare()
                         .epoch_no(epoch)
-                        .build_unicast_msg(&outbound_message, &build_target)
-                    {
-                        // Send the raptorcast chunks via UDP to all peers in group
-                        self.dataplane_writer.udp_write_unicast(rc_chunks);
-                    }
+                        .build_into(&outbound_message, &build_target, &mut sink)
+                        .unwrap_log_on_error(&outbound_message, &build_target);
                 }
             }
         }

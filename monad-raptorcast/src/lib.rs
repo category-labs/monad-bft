@@ -55,10 +55,14 @@ use monad_peer_discovery::{
 };
 use monad_types::{DropTimer, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, UdpPriority};
 use monad_validator::signature_collection::SignatureCollection;
-use raptorcast_secondary::{group_message::FullNodesGroupMessage, SecondaryRaptorCastModeConfig};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, debug_span, error, trace, warn};
 use util::{BuildTarget, EpochValidators, FullNodes, Group, ReBroadcastGroupMap, Redundancy};
+
+use crate::{
+    packet::{RetrofitResult as _, UdpMessageBatcher},
+    raptorcast_secondary::{group_message::FullNodesGroupMessage, SecondaryRaptorCastModeConfig},
+};
 
 pub mod config;
 pub mod decoding;
@@ -69,6 +73,10 @@ pub mod udp;
 pub mod util;
 
 const SIGNATURE_SIZE: usize = 65;
+
+// Number of chunks to aggregate into udp messages before sending to
+// the dataplane.
+pub const UNICAST_MSG_BATCH_SIZE: usize = 32;
 
 pub(crate) type OwnedMessageBuilder<ST, PD> =
     packet::MessageBuilder<'static, ST, Arc<Mutex<PeerDiscoveryDriver<PD>>>>;
@@ -272,7 +280,7 @@ where
         self_id: NodeId<CertificateSignaturePubKey<ST>>,
     ) {
         let _span = debug_span!("router publish").entered();
-        let _timer = DropTimer::start(Duration::from_millis(20), |elapsed| {
+        let _timer = DropTimer::start(Duration::from_millis(10), |elapsed| {
             warn!(?elapsed, "long time to publish message")
         });
 
@@ -320,15 +328,24 @@ where
                             return;
                         }
                     };
-                if let Some(rc_chunks) = self
-                    .message_builder
-                    .prepare()
-                    .epoch_no(epoch)
-                    .build_unicast_msg(&outbound_message, &build_target)
-                {
+
+                let _timer = DropTimer::start(Duration::from_millis(10), |elapsed| {
+                    warn!(
+                        ?elapsed,
+                        app_msg_len = outbound_message.len(),
+                        "long time to build raptorcast/broadcast message"
+                    )
+                });
+                let mut sink = UdpMessageBatcher::new(UNICAST_MSG_BATCH_SIZE, |rc_chunks| {
                     self.dataplane_writer
                         .udp_write_unicast_with_priority(rc_chunks, priority);
-                }
+                });
+
+                self.message_builder
+                    .prepare()
+                    .epoch_no(epoch)
+                    .build_into(&outbound_message, &build_target, &mut sink)
+                    .unwrap_log_on_error(&outbound_message, &build_target);
             }
 
             RouterTarget::PointToPoint(to) => {
@@ -352,13 +369,22 @@ where
                         }
                     };
                     let build_target = BuildTarget::<ST>::PointToPoint(&to);
-                    if let Some(rc_chunks) = self
-                        .message_builder
-                        .build_unicast_msg(&outbound_message, &build_target)
-                    {
+
+                    let _timer = DropTimer::start(Duration::from_millis(10), |elapsed| {
+                        warn!(
+                            ?elapsed,
+                            app_msg_len = outbound_message.len(),
+                            "long time to build point-to-point message"
+                        )
+                    });
+                    let mut sink = UdpMessageBatcher::new(UNICAST_MSG_BATCH_SIZE, |rc_chunks| {
                         self.dataplane_writer
                             .udp_write_unicast_with_priority(rc_chunks, priority);
-                    }
+                    });
+
+                    self.message_builder
+                        .build_into(&outbound_message, &build_target, &mut sink)
+                        .unwrap_log_on_error(&outbound_message, &build_target);
                 }
             }
 
@@ -562,6 +588,18 @@ where
                         .lock()
                         .unwrap()
                         .get_known_addresses();
+
+                    let _timer = DropTimer::start(Duration::from_millis(20), |elapsed| {
+                        warn!(
+                            ?elapsed,
+                            app_msg_len = outbound_message.len(),
+                            "long time to build message"
+                        )
+                    });
+                    let mut sink = UdpMessageBatcher::new(UNICAST_MSG_BATCH_SIZE, |rc_chunks| {
+                        self.dataplane_writer.udp_write_unicast(rc_chunks);
+                    });
+
                     for node in full_nodes_view.iter() {
                         if !node_addrs.contains_key(node) {
                             continue;
@@ -570,14 +608,11 @@ where
                         // TODO: optimize the build of copies of the
                         // same message to multiple recipients.
                         let build_target = BuildTarget::PointToPoint(node);
-                        if let Some(rc_chunks) = self
-                            .message_builder
+                        self.message_builder
                             .prepare_with_peer_lookup(&node_addrs)
                             .epoch_no(epoch)
-                            .build_unicast_msg(&outbound_message, &build_target)
-                        {
-                            self.dataplane_writer.udp_write_unicast(rc_chunks);
-                        };
+                            .build_into(&outbound_message, &build_target, &mut sink)
+                            .unwrap_log_on_error(&outbound_message, &build_target);
                     }
                 }
                 RouterCommand::GetPeers => {
@@ -896,20 +931,29 @@ where
                     return;
                 };
 
-                let build_target = BuildTarget::<ST>::PointToPoint(&target);
+                let target = BuildTarget::<ST>::PointToPoint(&target);
 
-                let rc_chunks = match custom_known_addrs {
+                let _timer = DropTimer::start(Duration::from_millis(10), |elapsed| {
+                    warn!(
+                        ?elapsed,
+                        app_msg_len = router_message.len(),
+                        "long time to build discovery message"
+                    )
+                });
+                let mut sink = UdpMessageBatcher::new(UNICAST_MSG_BATCH_SIZE, |rc_chunks| {
+                    this.dataplane_writer.udp_write_unicast(rc_chunks);
+                });
+
+                match custom_known_addrs {
                     Some(addrs) => this
                         .message_builder
                         .prepare_with_peer_lookup(&addrs)
-                        .build_unicast_msg(&router_message, &build_target),
+                        .build_into(&router_message, &target, &mut sink)
+                        .unwrap_log_on_error(&router_message, &target),
                     None => this
                         .message_builder
-                        .build_unicast_msg(&router_message, &build_target),
-                };
-
-                if let Some(rc_chunks) = rc_chunks {
-                    this.dataplane_writer.udp_write_unicast(rc_chunks);
+                        .build_into(&router_message, &target, &mut sink)
+                        .unwrap_log_on_error(&router_message, &target),
                 };
             };
 
