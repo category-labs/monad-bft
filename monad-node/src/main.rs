@@ -612,10 +612,11 @@ where
         );
 
     let self_id = NodeId::new(identity.pubkey());
-    let self_record = NameRecord {
-        address: name_record_address,
-        seq: peer_discovery_config.self_record_seq_num,
-    };
+    let self_record = NameRecord::new(
+        *name_record_address.ip(),
+        name_record_address.port(),
+        peer_discovery_config.self_record_seq_num,
+    );
     let self_record = MonadNameRecord::new(self_record, &identity);
     assert!(
         self_record.signature == peer_discovery_config.self_name_record_sig,
@@ -638,10 +639,7 @@ where
                     return None;
                 }
             };
-            let name_record = NameRecord {
-                address,
-                seq: peer.record_seq_num,
-            };
+            let name_record = NameRecord::new(*address.ip(), address.port(), peer.record_seq_num);
 
             // verify signature of name record
             let mut encoded = Vec::new();

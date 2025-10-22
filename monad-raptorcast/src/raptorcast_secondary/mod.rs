@@ -236,7 +236,7 @@ where
             filled_confirm_msg.name_records = Vec::default();
             for node_id in &dest_node_ids.list {
                 if let Some(name_record) = name_records.get(node_id) {
-                    filled_confirm_msg.name_records.push(*name_record);
+                    filled_confirm_msg.name_records.push(name_record.clone());
                 } else {
                     // Maybe can happen if peer discovery gets pruned just
                     // before sending a ConfirmGroup message.
@@ -476,9 +476,9 @@ where
                             let rec = &confirm_msg.name_records[ii];
                             let peer_entry = PeerEntry {
                                 pubkey: confirm_msg.peers[ii].pubkey(),
-                                addr: rec.name_record.address,
+                                addr: rec.udp_address(),
                                 signature: rec.signature,
-                                record_seq_num: rec.name_record.seq,
+                                record_seq_num: rec.name_record.seq(),
                             };
                             peers.push(peer_entry);
                         }

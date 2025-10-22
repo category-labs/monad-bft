@@ -114,7 +114,7 @@ impl<ST: CertificateSignatureRecoverable> Decodable for PeerDiscoveryMessage<ST>
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, RlpDecodable, RlpEncodable)]
+#[derive(Debug, Clone, PartialEq, RlpDecodable, RlpEncodable)]
 #[rlp(trailing)]
 pub struct Ping<ST: CertificateSignatureRecoverable> {
     pub id: u32,
@@ -161,10 +161,11 @@ mod test {
         let ping = Ping {
             id: 257,
             local_name_record: MonadNameRecord::<SignatureType>::new(
-                NameRecord {
-                    address: SocketAddrV4::from_str("127.0.0.1:8000").unwrap(),
-                    seq: 2,
-                },
+                NameRecord::new(
+                    *SocketAddrV4::from_str("127.0.0.1:8000").unwrap().ip(),
+                    8000,
+                    2,
+                ),
                 &key,
             ),
         };
@@ -182,10 +183,11 @@ mod test {
         let ping = Ping {
             id: 257,
             local_name_record: MonadNameRecord::<SignatureType>::new(
-                NameRecord {
-                    address: SocketAddrV4::from_str("127.0.0.1:8000").unwrap(),
-                    seq: 2,
-                },
+                NameRecord::new(
+                    *SocketAddrV4::from_str("127.0.0.1:8000").unwrap().ip(),
+                    8000,
+                    2,
+                ),
                 &key,
             ),
         };
@@ -237,24 +239,27 @@ mod test {
             target: NodeId::new(target_key.pubkey()),
             name_records: vec![
                 MonadNameRecord::<SignatureType>::new(
-                    NameRecord {
-                        address: SocketAddrV4::from_str("192.168.1.1:8000").unwrap(),
-                        seq: 1,
-                    },
+                    NameRecord::new(
+                        *SocketAddrV4::from_str("192.168.1.1:8000").unwrap().ip(),
+                        8000,
+                        1,
+                    ),
                     &key1,
                 ),
                 MonadNameRecord::<SignatureType>::new(
-                    NameRecord {
-                        address: SocketAddrV4::from_str("192.168.1.2:8001").unwrap(),
-                        seq: 2,
-                    },
+                    NameRecord::new(
+                        *SocketAddrV4::from_str("192.168.1.2:8001").unwrap().ip(),
+                        8001,
+                        2,
+                    ),
                     &key2,
                 ),
                 MonadNameRecord::<SignatureType>::new(
-                    NameRecord {
-                        address: SocketAddrV4::from_str("192.168.1.3:8002").unwrap(),
-                        seq: 3,
-                    },
+                    NameRecord::new(
+                        *SocketAddrV4::from_str("192.168.1.3:8002").unwrap().ip(),
+                        8002,
+                        3,
+                    ),
                     &key3,
                 ),
             ],

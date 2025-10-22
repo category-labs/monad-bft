@@ -397,10 +397,8 @@ fn setup_node(
         let participant_pubkey = participant_keypair.pubkey();
         let node_id = NodeId::new(participant_pubkey);
 
-        let name_record = NameRecord {
-            address: participant.udp_addr,
-            seq: 0,
-        };
+        let name_record =
+            NameRecord::new(*participant.udp_addr.ip(), participant.udp_addr.port(), 0);
         let monad_name_record =
             MonadNameRecord::<SignatureType>::new(name_record, &participant_keypair);
 
@@ -417,7 +415,7 @@ fn setup_node(
 
     let mut known_addresses = std::collections::HashMap::new();
     for (node_id, record) in &routing_info {
-        known_addresses.insert(*node_id, record.name_record.address);
+        known_addresses.insert(*node_id, record.name_record.udp_socket());
     }
 
     let noop_builder = NopDiscoveryBuilder {
