@@ -142,7 +142,12 @@ impl EthTxPoolIpcServer {
                     break;
                 };
 
-                let Some(EthTxPoolIpcTx { tx, priority }) = result else {
+                let Some(EthTxPoolIpcTx {
+                    tx,
+                    priority,
+                    extra_data: _,
+                }) = result
+                else {
                     return false;
                 };
 
