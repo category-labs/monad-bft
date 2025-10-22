@@ -69,10 +69,7 @@ fn main() {
             .unwrap_or_else(|| panic!("Either node_config or self_record_seq_num must be provided"))
     };
     let self_address = args.address;
-    let name_record = NameRecord {
-        address: self_address,
-        seq: self_record_seq_num,
-    };
+    let name_record = NameRecord::new(*self_address.ip(), self_address.port(), self_record_seq_num);
     let signed_name_record: MonadNameRecord<SecpSignature> =
         MonadNameRecord::new(name_record, &keypair);
 

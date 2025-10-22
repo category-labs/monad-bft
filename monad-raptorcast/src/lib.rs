@@ -615,7 +615,7 @@ where
                         .iter()
                         .map(|(node_id, name_record)| PeerEntry {
                             pubkey: node_id.pubkey(),
-                            addr: name_record.address(),
+                            addr: name_record.udp_address(),
                             signature: name_record.signature,
                             record_seq_num: name_record.seq(),
                         })
