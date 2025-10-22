@@ -92,13 +92,13 @@ int triedb_read(
     triedb *db, bytes key, uint8_t key_len_nibbles, bytes *value,
     uint64_t block_id)
 {
-    auto result =
-        db->db_.get(monad::mpt::NibblesView{0, key_len_nibbles, key}, block_id);
+    auto result = db->db_.find(
+        monad::mpt::NibblesView{0, key_len_nibbles, key}, block_id);
     if (!result.has_value()) {
         return -1;
     }
 
-    auto const &value_view = result.value();
+    auto const &value_view = result.value().node->value();
     if ((value_view.size() >> std::numeric_limits<int>::digits) != 0) {
         // value length doesn't fit in return type
         return -2;
@@ -437,18 +437,21 @@ uint64_t triedb_earliest_finalized_block(triedb *db)
     return earliest_finalized_block;
 }
 
-validator_set* alloc_valset(uint64_t length)
+validator_set *alloc_valset(uint64_t length)
 {
     auto *validators = new validator_data[length];
     return new validator_set{.validators = validators, .length = length};
 }
 
-void free_valset(validator_set* valset) {
+void free_valset(validator_set *valset)
+{
     delete[] valset->validators;
     delete valset;
 }
 
-validator_set* read_valset(triedb *db, size_t block_num, uint64_t requested_epoch) {
+validator_set *
+read_valset(triedb *db, size_t block_num, uint64_t requested_epoch)
+{
     auto ret = monad::staking::read_valset(db->db_, block_num, requested_epoch);
     if (!ret.has_value()) {
         return nullptr;
@@ -457,9 +460,12 @@ validator_set* read_valset(triedb *db, size_t block_num, uint64_t requested_epoc
     uint64_t length = ret.value().size();
     auto valset = alloc_valset(length);
     for (uint64_t i = 0; i < length; i++) {
-        std::memcpy(valset->validators[i].secp_pubkey, ret.value()[i].secp_pubkey, 33);
-        std::memcpy(valset->validators[i].bls_pubkey, ret.value()[i].bls_pubkey, 48);
-        std::memcpy(valset->validators[i].stake, ret.value()[i].stake.bytes, 32);
+        std::memcpy(
+            valset->validators[i].secp_pubkey, ret.value()[i].secp_pubkey, 33);
+        std::memcpy(
+            valset->validators[i].bls_pubkey, ret.value()[i].bls_pubkey, 48);
+        std::memcpy(
+            valset->validators[i].stake, ret.value()[i].stake.bytes, 32);
     }
 
     return valset;
