@@ -53,9 +53,12 @@ use self::{
 };
 use crate::{
     eth_json_types::serialize_result,
-    handlers::debug::{
-        MonadDebugTraceBlockByHashParams, MonadDebugTraceBlockByNumberParams,
-        MonadDebugTraceTransactionParams,
+    handlers::{
+        debug::{
+            MonadDebugTraceBlockByHashParams, MonadDebugTraceBlockByNumberParams,
+            MonadDebugTraceTransactionParams,
+        },
+        eth::call::monad_createAccessList,
     },
     jsonrpc::{
         JsonRpcError, JsonRpcResultExt, Request, RequestParams, RequestWrapper, Response,
@@ -413,6 +416,34 @@ async fn eth_sendRawTransaction(
         params,
         app_state.chain_id,
         app_state.allow_unprotected_txs,
+    )
+    .await
+    .map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn eth_createAccessList(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    params: RequestParams<'_>,
+) -> Result<Box<RawValue>, JsonRpcError> {
+    let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+    let Some(ref eth_call_executor) = app_state.eth_call_executor else {
+        return Err(JsonRpcError::method_not_supported());
+    };
+    // acquire the concurrent requests permit
+    let _permit = &app_state
+        .rate_limiter
+        .try_acquire()
+        .map_err(|_| JsonRpcError::internal_error("eth_call concurrent requests limit".into()))?;
+
+    let params = serde_json::from_str(params.get()).invalid_params()?;
+    monad_createAccessList(
+        triedb_env,
+        eth_call_executor.clone(),
+        app_state.chain_id,
+        app_state.eth_call_provider_gas_limit,
+        params,
     )
     .await
     .map(serialize_result)?
@@ -875,6 +906,7 @@ enabled_methods!(
     debug_traceTransaction,
     eth_call,
     eth_sendRawTransaction,
+    eth_createAccessList,
     eth_getLogs,
     eth_getTransactionByHash,
     eth_getBlockByHash,

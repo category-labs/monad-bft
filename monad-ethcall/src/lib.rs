@@ -114,6 +114,7 @@ pub enum MonadTracer {
     CallTracer,
     PreStateTracer,
     StateDiffTracer,
+    AccessListTracer,
 }
 
 impl From<MonadTracer> for u32 {
@@ -123,6 +124,7 @@ impl From<MonadTracer> for u32 {
             MonadTracer::CallTracer => 1,
             MonadTracer::PreStateTracer => 2,
             MonadTracer::StateDiffTracer => 3,
+            MonadTracer::AccessListTracer => 4,
         }
     }
 }
