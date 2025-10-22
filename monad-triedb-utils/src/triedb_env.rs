@@ -32,7 +32,7 @@ use futures::{channel::oneshot, FutureExt};
 use monad_triedb::{TraverseEntry, TriedbHandle};
 use monad_types::{BlockId, Hash, SeqNum};
 use serde::{Deserialize, Serialize};
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 use crate::{
     decode::{
@@ -96,6 +96,7 @@ pub struct Account {
     pub nonce: u64,
     pub balance: U256,
     pub code_hash: [u8; 32],
+    pub inline_code: Option<FixedBytes<23>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -497,7 +498,7 @@ pub trait Triedb: Debug {
         addr: EthAddress,
         at: EthStorageKey,
     ) -> impl std::future::Future<Output = Result<String, String>> + Send;
-    fn get_code(
+    fn get_code_db(
         &self,
         key: BlockKey,
         code_hash: EthCodeHash,
@@ -958,11 +959,15 @@ impl Triedb for TriedbEnv {
             })
             .await?
         {
-            Some(account) => Ok(Account {
-                nonce: account.nonce,
-                balance: account.balance,
-                code_hash: account.code_hash.map_or([0u8; 32], |bytes| bytes.0),
-            }),
+            Some(account) => {
+                debug!(?addr, "code_hash decoded account");
+                Ok(Account {
+                    nonce: account.nonce,
+                    balance: account.balance,
+                    code_hash: account.code_hash.map_or([0u8; 32], |bytes| bytes.0),
+                    inline_code: account.inline_code,
+                })
+            }
             None => Ok(Account::default()),
         }
     }
@@ -989,7 +994,7 @@ impl Triedb for TriedbEnv {
     }
 
     #[tracing::instrument(level = "debug")]
-    async fn get_code(
+    async fn get_code_db(
         &self,
         block_key: BlockKey,
         code_hash: EthCodeHash,

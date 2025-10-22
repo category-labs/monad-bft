@@ -18,7 +18,7 @@ use std::{fmt::Debug, ops::Deref};
 use ::serde::Serialize;
 use alloy_consensus::{transaction::Recovered, Header, TxEnvelope};
 use alloy_eips::eip7702::RecoveredAuthorization;
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{Address, FixedBytes, B256};
 use alloy_rlp::{
     Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper,
 };
@@ -44,6 +44,7 @@ pub struct EthAccount {
     pub nonce: Nonce,
     pub balance: Balance,
     pub code_hash: Option<B256>,
+    pub inline_code: Option<FixedBytes<23>>,
     pub is_delegated: bool,
 }
 
