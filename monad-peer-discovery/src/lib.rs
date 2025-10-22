@@ -218,7 +218,7 @@ pub struct NameRecord {
 
 impl NameRecord {
     pub fn new(ip: Ipv4Addr, port: u16, seq: u64) -> Self {
-        Self::new_v1(ip, port, seq)
+        Self::new_v2(ip, port, port, 0, seq)
     }
 
     pub(crate) fn new_v1(ip: Ipv4Addr, port: u16, seq: u64) -> Self {
