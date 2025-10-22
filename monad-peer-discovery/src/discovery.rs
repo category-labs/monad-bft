@@ -87,7 +87,7 @@ pub enum PeerDiscoveryRole {
     FullNodeClient,     // full node set as Client in secondary raptorcast
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionInfo<ST: CertificateSignatureRecoverable> {
     pub last_ping: Ping<ST>,
     pub unresponsive_pings: u32,
@@ -413,12 +413,12 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
         // insert into pending queue and send ping
         let ping_msg = Ping {
             id: self.rng.next_u32(),
-            local_name_record: self.self_record,
+            local_name_record: self.self_record.clone(),
         };
         self.pending_queue.insert(peer_id, ConnectionInfo {
-            last_ping: ping_msg,
+            last_ping: ping_msg.clone(),
             unresponsive_pings: 0,
-            name_record,
+            name_record: name_record.clone(),
         });
         self.metrics[GAUGE_PEER_DISC_NUM_PENDING_PEERS] = self.pending_queue.len() as u64;
 
@@ -530,7 +530,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
                     target: *validator,
                     message: PeerDiscoveryMessage::Ping(Ping {
                         id: self.rng.next_u32(),
-                        local_name_record: self.self_record,
+                        local_name_record: self.self_record.clone(),
                     }),
                 });
                 cmds.extend(self.send_full_node_raptorcast_request(*validator));
@@ -663,7 +663,7 @@ where
         }
 
         if !peer_list_full {
-            let peer_name_record = ping_msg.local_name_record;
+            let peer_name_record = ping_msg.local_name_record.clone();
             if self
                 .routing_info
                 .get(&from)
@@ -706,7 +706,7 @@ where
         // respond to ping
         let pong_msg = Pong {
             ping_id: ping_msg.id,
-            local_record_seq: self.self_record.name_record.seq,
+            local_record_seq: self.self_record.seq(),
         };
         cmds.push(PeerDiscoveryCommand::PingPongCommand {
             target: from,
@@ -732,7 +732,7 @@ where
             if info.last_ping.id == pong_msg.ping_id {
                 // if ping id matches, promote peer to routing_info
                 debug!(?from, ?info.name_record, "promoting peer to routing info");
-                cmds.extend(self.promote_peer_to_routing_info(from, info.name_record));
+                cmds.extend(self.promote_peer_to_routing_info(from, info.name_record.clone()));
             } else {
                 debug!(?from, "dropping pong, ping id does not match");
                 self.metrics[GAUGE_PEER_DISC_DROP_PONG] += 1;
@@ -782,9 +782,9 @@ where
                 let socket_address = info.name_record.address();
                 let ping = Ping {
                     id: self.rng.next_u32(),
-                    local_name_record: self.self_record,
+                    local_name_record: self.self_record.clone(),
                 };
-                info.last_ping = ping;
+                info.last_ping = ping.clone();
                 cmds.extend(self.send_ping(to, socket_address, ping));
             }
         }
@@ -844,10 +844,10 @@ where
         let target = request.target;
 
         let mut name_records = if target == self.self_id {
-            vec![self.self_record]
+            vec![self.self_record.clone()]
         } else {
             match self.routing_info.get(&target) {
-                Some(name_record) => vec![*name_record],
+                Some(name_record) => vec![name_record.clone()],
                 None => vec![],
             }
         };
@@ -869,7 +869,7 @@ where
                         MAX_PEER_IN_RESPONSE.saturating_sub(name_records.len()),
                     )
                     .into_iter()
-                    .map(|(_, name_record)| *name_record),
+                    .map(|(_, name_record)| (*name_record).clone()),
             );
         } else {
             self.metrics[GAUGE_PEER_DISC_RECV_TARGETED_LOOKUP_REQUEST] += 1;
@@ -1379,7 +1379,7 @@ where
                             target: validator,
                             message: PeerDiscoveryMessage::Ping(Ping {
                                 id: self.rng.next_u32(),
-                                local_name_record: self.self_record,
+                                local_name_record: self.self_record.clone(),
                             }),
                         });
                     }
@@ -1417,10 +1417,11 @@ where
 
             // verify signature of name record
             let name_record = MonadNameRecord {
-                name_record: NameRecord {
-                    address: peer.addr,
-                    seq: peer.record_seq_num,
-                },
+                name_record: NameRecord::new(
+                    *peer.addr.ip(),
+                    peer.addr.port(),
+                    peer.record_seq_num,
+                ),
                 signature: peer.signature,
             };
             let verified = name_record
@@ -1533,7 +1534,7 @@ where
     ) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<ST>> {
         self.routing_info
             .iter()
-            .map(|(id, name_record)| (*id, *name_record))
+            .map(|(id, name_record)| (*id, name_record.clone()))
             .collect()
     }
 }
@@ -1562,10 +1563,7 @@ mod tests {
     const DUMMY_ADDR: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(1, 1, 1, 1), 8000);
 
     fn generate_name_record(keypair: &KeyPairType, seq_num: u64) -> MonadNameRecord<SignatureType> {
-        let name_record = NameRecord {
-            address: DUMMY_ADDR,
-            seq: seq_num,
-        };
+        let name_record = NameRecord::new(*DUMMY_ADDR.ip(), DUMMY_ADDR.port(), seq_num);
         let mut encoded = Vec::new();
         name_record.encode(&mut encoded);
         let signature = SignatureType::sign::<signing_domain::NameRecord>(&encoded, keypair);
@@ -1700,7 +1698,7 @@ mod tests {
         // send ping to peer1
         let ping = Ping {
             id: 12345,
-            local_name_record: state.self_record,
+            local_name_record: state.self_record.clone(),
         };
         let cmds = state.send_ping(peer1_pubkey, DUMMY_ADDR, ping);
 
@@ -1733,7 +1731,7 @@ mod tests {
             local_name_record: generate_name_record(peer0, 0),
         };
         state.pending_queue.insert(peer1_pubkey, ConnectionInfo {
-            last_ping,
+            last_ping: last_ping.clone(),
             unresponsive_pings: 3,
             name_record: generate_name_record(peer1, 0),
         });
@@ -1760,7 +1758,7 @@ mod tests {
         let name_record = generate_name_record(peer1, 0);
         let ping = Ping {
             id: 12345,
-            local_name_record: name_record,
+            local_name_record: name_record.clone(),
         };
         let cmds = state.handle_ping(peer1_pubkey, ping);
 
@@ -1775,7 +1773,7 @@ mod tests {
         let pong = extract_pong(cmds);
         assert_eq!(pong.len(), 1);
         assert_eq!(pong[0].ping_id, 12345);
-        assert_eq!(pong[0].local_record_seq, state.self_record.name_record.seq);
+        assert_eq!(pong[0].local_record_seq, state.self_record.seq());
 
         // added to pending queue but not yet to routing_info
         assert!(state.pending_queue.contains_key(&peer1_pubkey));
@@ -1856,7 +1854,7 @@ mod tests {
         let cmds = state.handle_peer_lookup_response(peer1_pubkey, PeerLookupResponse {
             lookup_id: requests[0].lookup_id,
             target: peer2_pubkey,
-            name_records: vec![record],
+            name_records: vec![record.clone()],
         });
 
         // peer2 should be added to pending queue and outstanding requests should be cleared
@@ -1942,7 +1940,9 @@ mod tests {
 
         // should add to pending queue and send ping if record has higher sequence number (seq num incremented to 2)
         let record = generate_name_record(peer1, 2);
-        let cmds = state.insert_peer_to_pending(peer1_pubkey, record).unwrap();
+        let cmds = state
+            .insert_peer_to_pending(peer1_pubkey, record.clone())
+            .unwrap();
         let pings = extract_ping(cmds);
         assert_eq!(pings.len(), 1);
         assert_eq!(pings[0].0, peer1_pubkey);
@@ -1950,9 +1950,9 @@ mod tests {
         assert_eq!(
             state.pending_queue.get(&peer1_pubkey).unwrap(),
             &ConnectionInfo {
-                last_ping: pings[0].1,
+                last_ping: pings[0].1.clone(),
                 unresponsive_pings: 0,
-                name_record: record,
+                name_record: record.clone(),
             }
         );
         assert_eq!(state.routing_info.get(&peer1_pubkey).unwrap().seq(), 0);
@@ -1960,7 +1960,7 @@ mod tests {
         // should not replace existing entry in pending queue if record has lower sequence number (seq num decremented to 1)
         let invalid_record = generate_name_record(peer1, 1);
         let cmds = state
-            .insert_peer_to_pending(peer1_pubkey, invalid_record)
+            .insert_peer_to_pending(peer1_pubkey, invalid_record.clone())
             .unwrap();
         assert!(cmds.is_empty());
 
@@ -2044,7 +2044,7 @@ mod tests {
         let pending_queue = BTreeMap::from([(peer1_pubkey, ConnectionInfo {
             last_ping: Ping {
                 id: ping_id,
-                local_name_record: state.self_record,
+                local_name_record: state.self_record.clone(),
             },
             unresponsive_pings: 5,
             name_record: generate_name_record(peer1, 0),
@@ -2225,11 +2225,15 @@ mod tests {
     const OLD_ADDR: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(7, 7, 7, 7), 8000);
     const NEW_ADDR: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(8, 8, 8, 8), 8000);
 
-    #[test_case(None, NameRecord { address: NEW_ADDR, seq: 1 }, true, NameRecord { address: NEW_ADDR, seq: 1 }, true; "first record")]
-    #[test_case(Some(NameRecord { address: OLD_ADDR, seq: 1 }), NameRecord { address: NEW_ADDR, seq: 2 }, true, NameRecord { address: NEW_ADDR, seq: 2 }, true; "newer record")]
-    #[test_case(Some(NameRecord { address: OLD_ADDR, seq: 1 }), NameRecord { address: OLD_ADDR, seq: 1 }, true, NameRecord { address: OLD_ADDR, seq: 1 }, false; "same record")]
-    #[test_case(Some(NameRecord { address: NEW_ADDR, seq: 2 }), NameRecord { address: OLD_ADDR, seq: 1 }, false, NameRecord { address: NEW_ADDR, seq: 2 }, false; "older record")]
-    #[test_case(Some(NameRecord { address: OLD_ADDR, seq: 1 }), NameRecord { address: NEW_ADDR, seq: 1 }, false, NameRecord { address: OLD_ADDR, seq: 1 }, false; "conflicting record")]
+    fn make_name_record(addr: SocketAddrV4, seq: u64) -> NameRecord {
+        NameRecord::new(*addr.ip(), addr.port(), seq)
+    }
+
+    #[test_case(None, make_name_record(NEW_ADDR, 1), true, make_name_record(NEW_ADDR, 1), true; "first record")]
+    #[test_case(Some(make_name_record(OLD_ADDR, 1)), make_name_record(NEW_ADDR, 2), true, make_name_record(NEW_ADDR, 2), true; "newer record")]
+    #[test_case(Some(make_name_record(OLD_ADDR, 1)), make_name_record(OLD_ADDR, 1), true, make_name_record(OLD_ADDR, 1), false; "same record")]
+    #[test_case(Some(make_name_record(NEW_ADDR, 2)), make_name_record(OLD_ADDR, 1), false, make_name_record(NEW_ADDR, 2), false; "older record")]
+    #[test_case(Some(make_name_record(OLD_ADDR, 1)), make_name_record(NEW_ADDR, 1), false, make_name_record(OLD_ADDR, 1), false; "conflicting record")]
     fn test_ping_record(
         known_record: Option<NameRecord>,
         incoming_record: NameRecord,
@@ -2261,7 +2265,12 @@ mod tests {
                 // 1 PingTimeout timer cmd, 1 SendPing cmd, 1 Pong cmd
                 assert_eq!(cmds.len(), 3);
 
-                let node1_record = state.pending_queue.get(&peer1_pubkey).unwrap().name_record;
+                let node1_record = state
+                    .pending_queue
+                    .get(&peer1_pubkey)
+                    .unwrap()
+                    .name_record
+                    .clone();
                 assert_eq!(expected_record, node1_record.name_record);
             } else {
                 // 1 Pong cmd

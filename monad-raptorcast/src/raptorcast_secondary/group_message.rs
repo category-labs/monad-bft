@@ -99,8 +99,6 @@ impl<ST: CertificateSignatureRecoverable> Decodable for FullNodesGroupMessage<ST
 
 #[cfg(test)]
 mod tests {
-    use std::{net::SocketAddrV4, str::FromStr};
-
     use monad_crypto::certificate_signature::CertificateSignaturePubKey;
     use monad_peer_discovery::NameRecord;
     use monad_secp::SecpSignature;
@@ -137,20 +135,15 @@ mod tests {
     }
 
     fn make_name_records(seed: u32, count: usize) -> Vec<MonadNameRecord<ST>> {
-        let mut res = Vec::new();
-        for _ in 0..count {
-            let key = get_key::<ST>(seed as u64 + 42);
-            let rec_str = format!("{}.0.0.1:{}", seed as u8, (seed + 16) as u16);
-            let rec = MonadNameRecord::<ST>::new(
-                NameRecord {
-                    address: SocketAddrV4::from_str(&rec_str).unwrap(),
-                    seq: (seed + 200) as u64,
-                },
-                &key,
-            );
-            res.push(rec);
-        }
-        res
+        (0..count)
+            .map(|_| {
+                let key = get_key::<ST>(seed as u64 + 42);
+                let ip = std::net::Ipv4Addr::new(seed as u8, 0, 0, 1);
+                let port = (seed + 16) as u16;
+
+                MonadNameRecord::<ST>::new(NameRecord::new(ip, port, (seed + 200) as u64), &key)
+            })
+            .collect()
     }
 
     #[test]
