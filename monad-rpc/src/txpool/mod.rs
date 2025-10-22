@@ -151,7 +151,7 @@ impl Sink<TxEnvelope> for EthTxPoolBridge {
 
     fn start_send(mut self: std::pin::Pin<&mut Self>, tx: TxEnvelope) -> Result<(), Self::Error> {
         self.ipc_client
-            .start_send_unpin(EthTxPoolIpcTx::new_with_rpc_priority(tx))
+            .start_send_unpin(EthTxPoolIpcTx::new_with_rpc_priority(tx, Vec::default()))
     }
 
     fn poll_flush(

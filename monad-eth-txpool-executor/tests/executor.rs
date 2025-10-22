@@ -121,18 +121,21 @@ async fn test_ipc_tx_forwarding_pacing() {
 
     for nonce in 0..NUM_TXS {
         ipc_client
-            .feed(EthTxPoolIpcTx::new_with_rpc_priority(make_legacy_tx(
-                S1,
-                MIN_BASE_FEE.into(),
-                30_000_000,
-                nonce as u64,
-                egress_max_size_bytes(
-                    MockChainConfig::DEFAULT
-                        .get_execution_chain_revision(0)
-                        .execution_chain_params(),
-                ) / 2
-                    - 256,
-            )))
+            .feed(EthTxPoolIpcTx::new_with_rpc_priority(
+                make_legacy_tx(
+                    S1,
+                    MIN_BASE_FEE.into(),
+                    30_000_000,
+                    nonce as u64,
+                    egress_max_size_bytes(
+                        MockChainConfig::DEFAULT
+                            .get_execution_chain_revision(0)
+                            .execution_chain_params(),
+                    ) / 2
+                        - 256,
+                ),
+                Vec::default(),
+            ))
             .await
             .unwrap();
     }
