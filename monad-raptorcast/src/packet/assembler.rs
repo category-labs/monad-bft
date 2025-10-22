@@ -36,7 +36,7 @@ use crate::{util::Redundancy, SIGNATURE_SIZE};
 pub enum AssembleMode {
     // Compatible with existing build_messages logic, does not support
     // streaming per merkle batch
-    #[default]
+    #[expect(unused)]
     GsoFull,
 
     // Gso concatenated chunks only within a merkle batch.
@@ -44,7 +44,7 @@ pub enum AssembleMode {
     GsoBestEffort,
 
     // Each recipient gets its own packet in round-robin order.
-    #[expect(unused)]
+    #[default]
     RoundRobin,
 }
 

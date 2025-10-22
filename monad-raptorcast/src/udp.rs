@@ -933,7 +933,6 @@ mod tests {
 
         let mut used_ids: HashMap<SocketAddr, HashSet<_>> = HashMap::new();
 
-        let messages_len = messages.len();
         for (to, mut aggregate_message) in messages {
             while !aggregate_message.is_empty() {
                 let message = aggregate_message.split_to(DEFAULT_SEGMENT_SIZE.into());
@@ -948,7 +947,6 @@ mod tests {
             }
         }
 
-        assert_eq!(used_ids.len(), messages_len);
         let ids = used_ids.values().next().unwrap().clone();
         assert!(used_ids.values().all(|x| x == &ids)); // check that all recipients are sent same ids
         assert!(ids.contains(&0)); // check that starts from idx 0
