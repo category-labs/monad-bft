@@ -20,7 +20,6 @@ use std::{
 
 use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
 use alloy_primitives::Address;
-use indexmap::IndexMap;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::block::{AccountBalanceState, BlockPolicyBlockValidator};
 use monad_crypto::certificate_signature::{
@@ -34,8 +33,10 @@ use monad_validator::signature_collection::SignatureCollection;
 use rand::seq::SliceRandom;
 use tracing::{debug, error, trace, warn};
 
-use super::list::TrackedTxList;
-use crate::pool::transaction::{ValidEthRecoveredAuthorization, ValidEthTransaction};
+use crate::pool::{
+    tracked::TrackedTxList,
+    transaction::{ValidEthRecoveredAuthorization, ValidEthTransaction},
+};
 
 #[derive(Debug, PartialEq, Eq)]
 struct OrderedTx<'a> {
@@ -96,7 +97,7 @@ pub struct ProposalSequencer<'a> {
 
 impl<'a> ProposalSequencer<'a> {
     pub fn new<ST, SCT>(
-        tracked_txs: &'a IndexMap<Address, TrackedTxList>,
+        tracked_txs: impl Iterator<Item = (&'a Address, &'a TrackedTxList)>,
         extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
         base_fee: u64,
         tx_limit: usize,
@@ -107,7 +108,7 @@ impl<'a> ProposalSequencer<'a> {
     {
         let mut pending_nonce_usages = extending_blocks.get_nonce_usages().into_map();
 
-        let mut heap_vec = Vec::with_capacity(tracked_txs.len());
+        let mut heap_vec = Vec::default();
         let mut virtual_time = 0;
 
         for (address, tx_list) in tracked_txs {
@@ -139,6 +140,10 @@ impl<'a> ProposalSequencer<'a> {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.heap.is_empty()
+    }
+
     pub fn len(&self) -> usize {
         self.heap.len()
     }
@@ -156,7 +161,6 @@ impl<'a> ProposalSequencer<'a> {
 
     pub fn build_proposal<CCT, CRT>(
         mut self,
-        chain_id: u64,
         tx_limit: usize,
         proposal_gas_limit: u64,
         proposal_byte_limit: u64,

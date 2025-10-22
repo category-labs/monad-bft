@@ -15,22 +15,19 @@
 
 use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
 
-use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use alloy_primitives::Address;
 use indexmap::{map::Entry as IndexMapEntry, IndexMap};
 use itertools::Itertools;
 use monad_chain_config::{
     execution_revision::MonadExecutionRevision, revision::ChainRevision, ChainConfig,
 };
-use monad_consensus_types::block::{
-    BlockPolicyBlockValidator, BlockPolicyError, ConsensusBlockHeader,
-};
+use monad_consensus_types::block::ConsensusBlockHeader;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{
     nonce_usage::{NonceUsage, NonceUsageMap},
-    EthBlockPolicy, EthBlockPolicyBlockValidator, EthValidatedBlock,
+    EthBlockPolicy,
 };
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason};
 use monad_eth_types::EthExecutionProtocol;
@@ -39,7 +36,7 @@ use monad_types::{DropTimer, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::{debug, error, info, warn};
 
-use self::{list::TrackedTxList, sequencer::ProposalSequencer};
+pub(super) use self::list::TrackedTxList;
 use super::{
     pending::{PendingTxList, PendingTxMap},
     transaction::ValidEthTransaction,
@@ -47,7 +44,6 @@ use super::{
 use crate::EthTxPoolEventTracker;
 
 mod list;
-mod sequencer;
 
 // To produce 5k tx blocks, we need the tracked tx map to hold at least 15k addresses so that, after
 // pruning the txpool of up to 5k unique addresses in the last committed block update and up to 5k
@@ -111,6 +107,10 @@ where
         self.txs.values().map(TrackedTxList::num_txs).sum()
     }
 
+    pub fn iter(&self) -> impl Iterator<Item = (&Address, &TrackedTxList)> {
+        self.txs.iter()
+    }
+
     pub fn iter_txs(&self) -> impl Iterator<Item = &ValidEthTransaction> {
         self.txs.values().flat_map(TrackedTxList::iter)
     }
@@ -138,101 +138,6 @@ where
             last_commit.execution_inputs.base_fee_per_gas,
             self.hard_tx_expiry,
         ))
-    }
-
-    pub fn create_proposal(
-        &mut self,
-        event_tracker: &mut EthTxPoolEventTracker<'_>,
-        chain_id: u64,
-        proposed_seq_num: SeqNum,
-        base_fee: u64,
-        tx_limit: usize,
-        proposal_gas_limit: u64,
-        proposal_byte_limit: u64,
-        block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
-        extending_blocks: Vec<&EthValidatedBlock<ST, SCT>>,
-        state_backend: &SBT,
-        chain_config: &CCT,
-        chain_revision: &CRT,
-        execution_revision: &MonadExecutionRevision,
-    ) -> Result<Vec<Recovered<TxEnvelope>>, BlockPolicyError> {
-        let _timer = DropTimer::start(Duration::ZERO, |elapsed| {
-            debug!(?elapsed, "txpool create_proposal");
-        });
-
-        if self.txs.is_empty() || tx_limit == 0 {
-            return Ok(Vec::new());
-        }
-
-        let sequencer = ProposalSequencer::new(&self.txs, &extending_blocks, base_fee, tx_limit);
-        let sequencer_len = sequencer.len();
-
-        let (account_balances, state_backend_lookups) = {
-            let _timer = DropTimer::start(Duration::ZERO, |elapsed| {
-                debug!(
-                    ?elapsed,
-                    "txpool create_proposal compute account base balances"
-                );
-            });
-
-            let total_db_lookups_before = state_backend.total_db_lookups();
-
-            (
-                block_policy.compute_account_base_balances(
-                    proposed_seq_num,
-                    state_backend,
-                    chain_config,
-                    Some(&extending_blocks),
-                    sequencer.addresses(),
-                )?,
-                state_backend.total_db_lookups() - total_db_lookups_before,
-            )
-        };
-
-        info!(
-            addresses = self.txs.len(),
-            num_txs = self.num_txs(),
-            sequencer_len,
-            account_balances = account_balances.len(),
-            ?state_backend_lookups,
-            "txpool sequencing transactions"
-        );
-
-        let validator = EthBlockPolicyBlockValidator::new(
-            proposed_seq_num,
-            block_policy.get_execution_delay(),
-            base_fee,
-            chain_revision,
-            execution_revision,
-        )?;
-
-        let proposal = sequencer.build_proposal(
-            chain_id,
-            tx_limit,
-            proposal_gas_limit,
-            proposal_byte_limit,
-            chain_config,
-            account_balances,
-            validator,
-        );
-
-        let proposal_num_txs = proposal.txs.len();
-
-        event_tracker.record_create_proposal(
-            self.num_addresses(),
-            sequencer_len,
-            state_backend_lookups,
-            proposal_num_txs,
-        );
-
-        info!(
-            ?proposed_seq_num,
-            ?proposal_num_txs,
-            proposal_total_gas = proposal.total_gas,
-            "created proposal"
-        );
-
-        Ok(proposal.txs)
     }
 
     pub fn try_promote_pending(
