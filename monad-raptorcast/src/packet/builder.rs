@@ -26,7 +26,7 @@ use rand::{seq::SliceRandom as _, Rng};
 use super::{
     assembler::{self, build_header, AssembleMode, BroadcastType, PacketLayout},
     assigner::{self, ChunkAssignment},
-    BuildError, ChunkAssigner, PeerAddrLookup, RetrofitResult as _, UdpMessage,
+    BuildError, ChunkAssigner, PeerAddrLookup, UdpMessage,
 };
 use crate::{
     message::MAX_MESSAGE_SIZE,
@@ -215,7 +215,6 @@ where
     }
 
     // ----- Delegated build methods -----
-    #[expect(unused)]
     pub fn build_into<C>(
         &self,
         app_message: &[u8],
@@ -235,14 +234,6 @@ where
         build_target: &BuildTarget<ST>,
     ) -> Result<Vec<UdpMessage>> {
         self.prepare().build_vec(app_message, build_target)
-    }
-
-    pub fn build_unicast_msg(
-        &self,
-        app_message: &[u8],
-        build_target: &BuildTarget<ST>,
-    ) -> Option<monad_dataplane::UnicastMsg> {
-        self.prepare().build_unicast_msg(app_message, build_target)
     }
 }
 
@@ -481,33 +472,6 @@ where
         let mut packets = Vec::new();
         self.build_into(app_message, build_target, &mut packets)?;
         Ok(packets)
-    }
-
-    pub fn build_unicast_msg(
-        &self,
-        app_message: &[u8],
-        build_target: &BuildTarget<ST>,
-    ) -> Option<monad_dataplane::UnicastMsg> {
-        use std::time::Duration;
-
-        use monad_types::DropTimer;
-
-        let _timer = DropTimer::start(Duration::from_millis(10), |elapsed| {
-            tracing::warn!(
-                ?elapsed,
-                app_message_len = app_message.len(),
-                "long time to build_unicast_msg"
-            )
-        });
-
-        let messages = self
-            .build_vec(app_message, build_target)
-            .unwrap_log_on_error(app_message, build_target);
-
-        let stride = messages.first()?.stride as u16;
-        let msgs = messages.into_iter().map(|m| (m.dest, m.payload)).collect();
-
-        Some(monad_dataplane::UnicastMsg { msgs, stride })
     }
 }
 
