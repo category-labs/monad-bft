@@ -25,27 +25,18 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::nonce_usage::NonceUsageMap;
+use monad_eth_txpool_types::EthTxPoolDropReason;
 use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
 use monad_state_backend::StateBackend;
 use monad_validator::signature_collection::SignatureCollection;
-use tracing::info;
 
+use self::limits::TrackedTxLimits;
 pub(super) use self::list::TrackedTxList;
 use super::transaction::ValidEthTransaction;
-use crate::EthTxPoolEventTracker;
+use crate::{pool::tracked::limits::TrackedTxLimitsConfig, EthTxPoolEventTracker};
 
+mod limits;
 mod list;
-
-// To produce 5k tx blocks, we need the tracked tx map to hold at least 15k addresses so that, after
-// pruning the txpool of up to 5k unique addresses in the last committed block update and up to 5k
-// unique addresses in the pending blocktree, the tracked tx map will still have at least 5k other
-// addresses with at least one tx each to use when creating the next block.
-const MAX_ADDRESSES: usize = 16 * 1024;
-
-// Tx batches from rpc can contain up to roughly 500 transactions. Since we don't evict based on how
-// many txs are in the pool, we need to ensure that after eviction there is always space for all 500
-// txs.
-const SOFT_EVICT_ADDRESSES_WATERMARK: usize = MAX_ADDRESSES - 512;
 
 /// Stores transactions using a "snapshot" system by which each address has an associated
 /// account_nonce stored in the TrackedTxList which is guaranteed to be the correct
@@ -60,9 +51,7 @@ where
     // By using IndexMap, we can iterate through the map with Vec-like performance and are able to
     // evict expired txs through the entry API.
     txs: IndexMap<Address, TrackedTxList>,
-
-    soft_tx_expiry: Duration,
-    hard_tx_expiry: Duration,
+    limits: TrackedTxLimits,
 
     _phantom: PhantomData<(ST, SCT, SBT, CCT, CRT)>,
 }
@@ -77,11 +66,13 @@ where
     CRT: ChainRevision,
 {
     pub fn new(soft_tx_expiry: Duration, hard_tx_expiry: Duration) -> Self {
-        Self {
-            txs: IndexMap::with_capacity(MAX_ADDRESSES),
+        let limits_config = TrackedTxLimitsConfig::new(soft_tx_expiry, hard_tx_expiry);
 
-            soft_tx_expiry,
-            hard_tx_expiry,
+        let limits = TrackedTxLimits::new(limits_config);
+
+        Self {
+            txs: limits.build_txs_map(),
+            limits,
 
             _phantom: PhantomData,
         }
@@ -120,6 +111,8 @@ where
         account_nonce: u64,
         on_insert: &mut impl FnMut(&ValidEthTransaction),
     ) {
+        let txs_len = self.txs.len();
+
         match self.txs.entry(address) {
             IndexMapEntry::Occupied(o) => {
                 let tx_list = o.into_mut();
@@ -127,23 +120,31 @@ where
                 for tx in txs {
                     if let Some(tx) = tx_list.try_insert_tx(
                         event_tracker,
+                        &mut self.limits,
                         tx,
                         last_commit.execution_inputs.base_fee_per_gas,
-                        self.hard_tx_expiry,
                     ) {
                         on_insert(tx);
                     }
                 }
             }
             IndexMapEntry::Vacant(v) => {
+                if !self.limits.can_add_address(txs_len) {
+                    event_tracker.drop_all(
+                        txs.into_iter().map(ValidEthTransaction::into_raw),
+                        EthTxPoolDropReason::PoolFull,
+                    );
+                    return;
+                }
+
                 TrackedTxList::try_new(
                     v,
                     event_tracker,
+                    &mut self.limits,
                     txs,
                     account_nonce,
                     on_insert,
                     last_commit.execution_inputs.base_fee_per_gas,
-                    self.hard_tx_expiry,
                 );
             }
         }
@@ -156,23 +157,19 @@ where
     ) {
         for (address, nonce_usage) in nonce_usages.into_map() {
             match self.txs.entry(address) {
-                IndexMapEntry::Occupied(tx_list) => {
-                    TrackedTxList::update_committed_nonce_usage(event_tracker, tx_list, nonce_usage)
-                }
+                IndexMapEntry::Occupied(tx_list) => TrackedTxList::update_committed_nonce_usage(
+                    event_tracker,
+                    &mut self.limits,
+                    tx_list,
+                    nonce_usage,
+                ),
                 IndexMapEntry::Vacant(_) => {}
             }
         }
     }
 
     pub fn evict_expired_txs(&mut self, event_tracker: &mut EthTxPoolEventTracker<'_>) {
-        let num_txs = self.num_txs();
-
-        let tx_expiry = if num_txs < SOFT_EVICT_ADDRESSES_WATERMARK {
-            self.hard_tx_expiry
-        } else {
-            info!(?num_txs, "txpool hit soft evict addresses watermark");
-            self.soft_tx_expiry
-        };
+        let tx_expiry = self.limits.expiry_duration_during_evict();
 
         let mut idx = 0;
 
@@ -185,7 +182,7 @@ where
                 break;
             };
 
-            if TrackedTxList::evict_expired_txs(event_tracker, entry, tx_expiry) {
+            if TrackedTxList::evict_expired_txs(event_tracker, &mut self.limits, entry, tx_expiry) {
                 continue;
             }
 
@@ -207,6 +204,7 @@ where
         self.txs.retain(|_, tx_list| {
             tx_list.static_validate_all_txs(
                 event_tracker,
+                &mut self.limits,
                 chain_id,
                 chain_revision,
                 execution_revision,
