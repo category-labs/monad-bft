@@ -997,10 +997,49 @@ where
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         debug!(?author, ?advance_round_msg, "advance round message");
         self.metrics.consensus_events.handle_advance_round += 1;
-        match &advance_round_msg.last_round_certificate {
-            RoundCertificate::Tc(tc) => self.process_tc(tc),
-            RoundCertificate::Qc(qc) => self.process_qc(qc),
+
+        let mut cmds = Vec::new();
+
+        match advance_round_msg.last_round_certificate {
+            RoundCertificate::Tc(tc) => cmds.extend(self.process_tc(&tc)),
+            RoundCertificate::Qc(qc) => {
+                // this check is duplicated from process_qc
+                // we do this here because we also forward the AdvanceRound to the next leader
+                // this effectively deduplicates any AdvanceRound forwarding within a round
+                if qc.info.round < self.consensus.pacemaker.get_current_round() {
+                    self.metrics.consensus_events.process_old_qc += 1;
+                } else {
+                    cmds.extend(self.process_qc(&qc));
+
+                    let leader = {
+                        let current_round = self.consensus.pacemaker.get_current_round();
+                        // TODO this grouping should be enforced by epoch_manager/val_epoch_map to be less
+                        // error-prone
+                        let epoch = self
+                            .epoch_manager
+                            .get_epoch(current_round)
+                            .expect("looked up leader for invalid round");
+                        let validator_set = self
+                            .val_epoch_map
+                            .get_val_set(&epoch)
+                            .expect("looked up leader for invalid round");
+                        self.election
+                            .get_leader(current_round, epoch, validator_set.get_members())
+                    };
+                    cmds.push(ConsensusCommand::Publish {
+                        target: RouterTarget::PointToPoint(leader),
+                        message: ConsensusMessage {
+                            message: ProtocolMessage::AdvanceRound(AdvanceRoundMessage {
+                                last_round_certificate: RoundCertificate::Qc(qc),
+                            }),
+                            version: self.version,
+                        }
+                        .sign(self.keypair),
+                    });
+                }
+            }
         }
+        cmds
     }
 
     /// invariant: handle_block_sync must only be passed blocks that were previously requested
