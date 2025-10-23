@@ -147,16 +147,11 @@ where
         block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
         state_backend: &SBT,
         pending: &mut PendingTxMap,
-        min_promotable: usize,
         max_promotable: usize,
     ) -> bool {
         let Some(insertable) = MAX_ADDRESSES.checked_sub(self.txs.len()) else {
             return false;
         };
-
-        if insertable < min_promotable {
-            return true;
-        }
 
         let insertable = insertable.min(max_promotable);
 

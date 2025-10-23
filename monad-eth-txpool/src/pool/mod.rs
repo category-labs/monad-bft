@@ -232,7 +232,6 @@ where
             block_policy,
             state_backend,
             &mut self.pending,
-            0,
             INSERT_TXS_MAX_PROMOTE,
         ) && self.pending.is_at_promote_txs_watermark()
         {
@@ -259,7 +258,6 @@ where
             block_policy,
             state_backend,
             &mut self.pending,
-            0,
             PENDING_MAX_PROMOTE,
         ) {
             warn!("txpool failed to promote during promote_pending call");
