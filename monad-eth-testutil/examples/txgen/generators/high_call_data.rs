@@ -18,7 +18,7 @@ use crate::{prelude::*, shared::erc20::ERC20};
 pub struct HighCallDataTxGenerator {
     pub(crate) recipient_keys: KeyPool,
     pub(crate) tx_per_sender: usize,
-    pub(crate) gas_limit: u64,
+    pub erc20: Option<ERC20>,
 }
 
 impl Generator for HighCallDataTxGenerator {
@@ -33,15 +33,13 @@ impl Generator for HighCallDataTxGenerator {
             for _ in 0..self.tx_per_sender {
                 let to = self.recipient_keys.next_addr();
 
-                let tx = ERC20::deploy_tx_with_gas_limit_and_priority(
-                    sender.nonce,
-                    &sender.key,
-                    ctx.base_fee * 2,
-                    ctx.chain_id,
-                    ctx.set_tx_gas_limit.unwrap_or(self.gas_limit), // use CLI override or generator default
-                    ctx.priority_fee.unwrap_or(10), // 10 default, override with --priority-fee
+                let tx = high_calldata_erc20_call(
+                    sender,
+                    self.erc20
+                        .as_ref()
+                        .expect("No ERC20 contract found, but tx_type is erc20"),
+                    ctx,
                 );
-                sender.nonce += 1;
 
                 txs.push((tx, to));
             }
@@ -49,4 +47,32 @@ impl Generator for HighCallDataTxGenerator {
 
         txs
     }
+}
+
+pub fn high_calldata_erc20_call(
+    from: &mut SimpleAccount,
+    erc20: &ERC20,
+    ctx: &GenCtx,
+) -> TxEnvelope {
+    let max_fee_per_gas = ctx.base_fee * 2;
+    let input = vec![0u8; 1 << 15];
+    let tx = crate::shared::erc20::make_tx(
+        from.nonce,
+        &from.key,
+        erc20.addr,
+        U256::ZERO,
+        input,
+        max_fee_per_gas,
+        ctx.chain_id,
+        ctx.set_tx_gas_limit,
+        ctx.priority_fee,
+    );
+
+    // update from
+    from.nonce += 1;
+    from.native_bal = from
+        .native_bal
+        .checked_sub(U256::from(400_000 * max_fee_per_gas))
+        .unwrap_or(U256::ZERO); // todo: wire gas correctly, see above comment
+    tx
 }
