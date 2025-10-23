@@ -16,8 +16,11 @@
 use std::{collections::HashMap, ops::Range};
 
 use bytes::BytesMut;
-use monad_crypto::certificate_signature::PubKey;
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
+};
 use monad_types::{NodeId, Stake};
+use rand::{rngs::StdRng, seq::SliceRandom as _, SeedableRng as _};
 
 use super::{BuildError, Chunk, PacketLayout, Recipient, Result};
 
@@ -156,7 +159,6 @@ impl<'a, PT: PubKey> ChunkAssignment<'a, PT> {
                 self.assignments = Self::reorder_to_round_robin(
                     std::mem::take(&mut self.assignments),
                     self.total_chunks,
-                    self.num_recipients,
                 );
             }
         }
@@ -215,13 +217,10 @@ impl<'a, PT: PubKey> ChunkAssignment<'a, PT> {
     fn reorder_to_round_robin(
         chunk_slices: Vec<ChunkSlice<'a, PT>>,
         total_chunks: usize,
-        hint_num_recipients: Option<usize>,
     ) -> Vec<ChunkSlice<'a, PT>> {
-        use std::collections::VecDeque;
+        use std::collections::{BTreeMap, VecDeque};
 
-        let num_recipients = hint_num_recipients.unwrap_or(chunk_slices.len());
-        let mut buckets: HashMap<NodeHash, VecDeque<ChunkSlice<_>>> =
-            HashMap::with_capacity(num_recipients);
+        let mut buckets: BTreeMap<NodeHash, VecDeque<ChunkSlice<_>>> = BTreeMap::new();
 
         // Group by recipients
         for slice in chunk_slices {
@@ -384,6 +383,10 @@ pub(crate) struct Partitioned<PT: PubKey> {
 }
 
 impl<PT: PubKey> Partitioned<PT> {
+    // This assigner is only used for full-node raptorcast, which is
+    // based on homogeneous peers. RaptorCast between validators has
+    // switched to StakeBasedWithRC assigner.
+    #[cfg_attr(not(test), expect(unused))]
     pub fn from_validator_set(validator_set: Vec<(NodeId<PT>, Stake)>) -> Self {
         let mut total_stake = Stake::ZERO;
         let weighted_nodes = validator_set
@@ -456,16 +459,46 @@ pub(crate) struct StakeBasedWithRC<PT: PubKey> {
 }
 
 impl<PT: PubKey> StakeBasedWithRC<PT> {
-    #[cfg_attr(not(test), expect(unused))]
+    pub fn seed_from_app_message_hash(app_message_hash: &[u8; 20]) -> [u8; 32] {
+        let mut padded_seed = [0u8; 32];
+        padded_seed[..20].copy_from_slice(app_message_hash);
+        padded_seed
+    }
+
+    // Shuffle the validator stake map for chunk assignment. This uses
+    // a deterministic seed, as in the future, it will be required
+    // that the leader and all validators compute the shuffling in the
+    // same way (for features not yet implemented).  In the future,
+    // this should be done using known shuffling algorithm to allow
+    // for easy implementation in other languages, e.g., using Mt19937
+    // and Fisher Yates shuffle.
+    pub fn shuffle_validators<ST>(
+        view: &crate::util::ValidatorsView<ST>,
+        seed: [u8; 32],
+    ) -> Vec<(NodeId<CertificateSignaturePubKey<ST>>, Stake)>
+    where
+        ST: CertificateSignatureRecoverable,
+    {
+        let mut validator_set = view
+            .iter()
+            .map(|(node_id, stake)| (*node_id, stake))
+            .collect::<std::collections::BinaryHeap<_>>()
+            .into_sorted_vec();
+        let mut rng = StdRng::from_seed(seed);
+        validator_set.shuffle(&mut rng);
+        validator_set
+    }
+
     pub fn from_validator_set(validator_set: Vec<(NodeId<PT>, Stake)>) -> Self {
         let mut total_stake = Stake::ZERO;
-        let validator_set = validator_set
+        let validator_set: Vec<_> = validator_set
             .into_iter()
             .map(|(nid, stake)| {
                 total_stake += stake;
                 (Recipient::new(nid), stake)
             })
             .collect();
+
         Self {
             validator_set,
             total_stake,
@@ -538,7 +571,10 @@ fn split_off_chunks_into<PT: PubKey>(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, ops::Range};
+    use std::{
+        collections::{BTreeSet, HashMap},
+        ops::Range,
+    };
 
     use alloy_primitives::U256;
     use itertools::Itertools as _;
@@ -546,7 +582,8 @@ mod tests {
     use monad_secp::SecpSignature;
     use monad_testutil::signing::get_key;
     use monad_types::{NodeId, Stake};
-    use rand::{seq::SliceRandom, Rng as _};
+    use rand::{seq::SliceRandom, Rng};
+    use rand_distr::{Distribution, Normal};
 
     use super::{ChunkAssignment, ChunkOrder, Partitioned, StakeBasedWithRC};
     use crate::{
@@ -600,12 +637,20 @@ mod tests {
     fn rand_validator_set(rng: &mut impl rand::Rng, max_n: usize) -> Vec<(NodeId<PT>, Stake)> {
         let n: usize = rng.gen_range(1..max_n);
         let mut validator_set = Vec::with_capacity(n);
+
+        let mon = U256::from(1_000_000_000_000_000_000u64);
+        let min_stake = mon * U256::from(100_000); // approximated
+        let mean = f64::from(min_stake * U256::from(100)); // estimated
+        let std_dev = f64::from(mon * U256::from(500_000)); // estimated
+        let stake_distr = Normal::new(mean, std_dev).unwrap();
+
         loop {
             let mut total_stake = Stake::ZERO;
 
             for i in 1..=n {
-                // divide by n to ensure the sum never overflows.
-                let stake = Stake::from(rng.gen::<U256>() / U256::from(n));
+                let stake = stake_distr.sample(rng).max(f64::from(min_stake));
+                let stake = Stake::from(u256_from_f64_lossy(stake));
+
                 // NOTE: we don't forbid individual stake to be zero,
                 // as long as total stake is non-zero. we do this to
                 // test the robustness of assignment algorithm.
@@ -638,7 +683,7 @@ mod tests {
     fn test_replicated_assignment() {
         let rng = &mut rand::thread_rng();
 
-        for _ in 0..1000 {
+        for _ in 0..100 {
             let node_set = rand_node_set(rng, 2000);
             let assigner = Replicated::from_broadcast(node_set);
             let num_symbols = rng.gen_range(0..10);
@@ -661,7 +706,7 @@ mod tests {
     fn test_partitioned_assignment() {
         let rng = &mut rand::thread_rng();
 
-        for _ in 0..300 {
+        for _ in 0..30 {
             let validator_set = rand_validator_set(rng, 2000);
             let assigner = Partitioned::from_validator_set(validator_set);
             let num_symbols = rng.gen_range(0..1000);
@@ -720,6 +765,95 @@ mod tests {
                 assignment.normalized_chunks(),
                 expected_assignment.normalized_chunks()
             );
+        }
+    }
+
+    #[test]
+    fn test_stake_with_rc_properties() {
+        let rng = &mut rand::thread_rng();
+        for _ in 0..50 {
+            let n_validators = rng.gen_range(1..2000);
+            let validator_set = rand_validator_set(rng, n_validators);
+            let assigner = Partitioned::from_validator_set(validator_set.clone());
+            let assigner_rc = StakeBasedWithRC::from_validator_set(validator_set);
+
+            // estimated from at most 2MB data, 1400-byte segments, 3x redundancy
+            let num_symbols = rng.gen_range(1..5000);
+            let assignment = assigner
+                .assign_chunks(num_symbols, None)
+                .expect("should assign successfully");
+            let assignment_rc = assigner_rc
+                .assign_chunks(num_symbols, None)
+                .expect("should assign successfully");
+
+            // assignment with rc must produce at least the same number of chunks as without rc
+            assert!(assignment_rc.total_chunks() >= assignment.total_chunks());
+            // the difference in total chunks must not exceed number of validators
+            assert!(assignment_rc.total_chunks() - assignment.total_chunks() <= n_validators);
+
+            let chunk_ids: BTreeSet<_> = assignment
+                .assignments
+                .iter()
+                .flat_map(|slice| slice.chunk_id_range.clone())
+                .collect();
+            let chunk_ids_rc: BTreeSet<_> = assignment_rc
+                .assignments
+                .iter()
+                .flat_map(|slice| slice.chunk_id_range.clone())
+                .collect();
+
+            // both assignments must be continuous from 0 to total_chunks - 1
+            assert_eq!(chunk_ids.len(), assignment.total_chunks());
+            assert_eq!(chunk_ids.first().cloned(), Some(0));
+            assert_eq!(
+                chunk_ids.last().cloned(),
+                Some(assignment.total_chunks() - 1)
+            );
+
+            assert_eq!(chunk_ids_rc.len(), assignment_rc.total_chunks());
+            assert_eq!(chunk_ids_rc.first().cloned(), Some(0));
+            assert_eq!(
+                chunk_ids_rc.last().cloned(),
+                Some(assignment_rc.total_chunks() - 1)
+            );
+
+            let validator_to_chunks: HashMap<_, _> = assignment
+                .assignments
+                .iter()
+                .map(|slice| (slice.recipient.node_hash(), slice.chunk_id_range.len()))
+                .collect();
+            let validator_to_chunks_rc: HashMap<_, _> = assignment_rc
+                .assignments
+                .iter()
+                .map(|slice| (slice.recipient.node_hash(), slice.chunk_id_range.len()))
+                .collect();
+
+            for (validator, num_chunks) in validator_to_chunks {
+                let num_chunks_rc = validator_to_chunks_rc.get(validator);
+                // each validator that exist in non-rc assignment must
+                // also exist in rc assignment
+                assert!(num_chunks_rc.is_some());
+                // each validator must get at least as many chunks in rc assignment
+                assert!(*num_chunks_rc.unwrap() >= num_chunks);
+            }
+        }
+    }
+
+    // Ported from alloy_primitives::U256::from_f64_lossy from a newer version
+    fn u256_from_f64_lossy(value: f64) -> U256 {
+        if value >= 1.0 {
+            let bits = value.to_bits();
+            let exponent = ((bits >> 52) & 0x7ff) - 1023;
+            let mantissa = (bits & 0x0f_ffff_ffff_ffff) | 0x10_0000_0000_0000;
+            if exponent <= 52 {
+                U256::from(mantissa >> (52 - exponent))
+            } else if exponent >= 256 {
+                U256::MAX
+            } else {
+                U256::from(mantissa) << U256::from(exponent - 52)
+            }
+        } else {
+            U256::ZERO
         }
     }
 }

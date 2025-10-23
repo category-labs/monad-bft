@@ -42,19 +42,20 @@ tokio = { workspace = true }
 monad-testutil = { workspace = true }
 alloy-primitives = { workspace = true }
 
-clap = { workspace = true, features = ["derive"] }
-rstest = { workspace = true }
-criterion = { workspace = true }
-futures-util = { workspace = true }
-insta = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
-tikv-jemallocator = { workspace = true }
-toml = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
-humantime = { workspace = true }
 byte-unit = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+criterion = { workspace = true }
 eyre = { workspace = true }
+futures-util = { workspace = true }
+humantime = { workspace = true }
+insta = { workspace = true }
+rand_distr = { workspace = true }
+rstest = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+tikv-jemallocator = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
+toml = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [[bench]]
 name = "raptor_bench"

@@ -230,9 +230,19 @@ pub fn compute_hash<PT>(id: &NodeId<PT>) -> NodeIdHash
 where
     PT: PubKey,
 {
+    let full_hash = compute_full_hash(&id.pubkey().bytes());
+    HexBytes(full_hash.0[..20].try_into().expect("20 bytes"))
+}
+
+pub fn compute_app_message_hash(app_msg: &[u8]) -> AppMessageHash {
+    let full_hash = compute_full_hash(app_msg);
+    HexBytes(full_hash.0[..20].try_into().expect("20 bytes"))
+}
+
+pub fn compute_full_hash(bytes: &[u8]) -> monad_crypto::hasher::Hash {
     let mut hasher = HasherType::new();
-    hasher.update(id.pubkey().bytes());
-    HexBytes(hasher.hash().0[..20].try_into().expect("20 bytes"))
+    hasher.update(bytes);
+    hasher.hash()
 }
 
 #[derive(Copy, Clone, Hash, Eq, Ord, PartialEq, PartialOrd)]
