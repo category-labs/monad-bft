@@ -21,7 +21,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_types::NodeId;
-use rand::{seq::SliceRandom as _, Rng};
+use rand::Rng;
 
 use super::{
     assembler::{self, build_header, AssembleMode, BroadcastType, PacketLayout},
@@ -34,7 +34,7 @@ use crate::{
         MAX_MERKLE_TREE_DEPTH, MAX_NUM_PACKETS, MAX_REDUNDANCY, MAX_SEGMENT_LENGTH,
         MIN_CHUNK_LENGTH, MIN_MERKLE_TREE_DEPTH,
     },
-    util::{self, BuildTarget, Redundancy},
+    util::{unix_ts_ms_now, BuildTarget, Redundancy},
 };
 
 pub const DEFAULT_MERKLE_TREE_DEPTH: u8 = 6;
@@ -285,7 +285,7 @@ where
     fn unwrap_unix_ts_ms(&self) -> Result<u64> {
         let unix_ts_ms = match self.base.unix_ts_ms {
             TimestampMode::Fixed(ts) => ts,
-            TimestampMode::RealTime => util::unix_ts_ms_now(),
+            TimestampMode::RealTime => unix_ts_ms_now(),
         };
         Ok(unix_ts_ms)
     }
@@ -383,26 +383,33 @@ where
         Ok(header_buf)
     }
 
-    fn choose_assigner(
+    fn make_assigner(
         build_target: &BuildTarget<ST>,
         self_node_id: &NodeId<CertificateSignaturePubKey<ST>>,
+        app_message: &[u8],
         rng: &mut impl Rng,
     ) -> Box<dyn ChunkAssigner<CertificateSignaturePubKey<ST>>>
     where
         ST: CertificateSignatureRecoverable,
     {
+        use assigner::{Partitioned, Replicated, StakeBasedWithRC};
         match build_target {
-            BuildTarget::PointToPoint(to) => Box::new(assigner::Replicated::from_unicast(**to)),
-            BuildTarget::Broadcast(nodes) => Box::new(assigner::Replicated::from_broadcast(
-                nodes.iter().copied().collect(),
-            )),
+            BuildTarget::PointToPoint(to) => Box::new(Replicated::from_unicast(**to)),
+            BuildTarget::Broadcast(nodes) => {
+                let assigner = Replicated::from_broadcast(nodes.iter().copied().collect());
+                Box::new(assigner)
+            }
             BuildTarget::Raptorcast(validators) => {
-                let mut validator_set: Vec<_> = validators
-                    .iter()
-                    .map(|(node_id, stake)| (*node_id, stake))
-                    .collect();
-                validator_set.shuffle(rng);
-                Box::new(assigner::Partitioned::from_validator_set(validator_set))
+                let seed =
+                    StakeBasedWithRC::<CertificateSignaturePubKey<ST>>::seed_from_app_message(
+                        app_message,
+                    );
+                let sorted_validators =
+                    StakeBasedWithRC::<CertificateSignaturePubKey<ST>>::shuffle_validators::<ST>(
+                        validators, seed,
+                    );
+                let assigner = StakeBasedWithRC::from_validator_set(sorted_validators);
+                Box::new(assigner)
             }
             BuildTarget::FullNodeRaptorCast(group) => {
                 let seed = rng.gen::<usize>();
@@ -410,7 +417,7 @@ where
                     .iter_skip_self_and_author(self_node_id, seed)
                     .copied()
                     .collect();
-                Box::new(assigner::Partitioned::from_homogeneous_peers(nodes))
+                Box::new(Partitioned::from_homogeneous_peers(nodes))
             }
         }
     }
@@ -433,7 +440,7 @@ where
         // select chunk assignment algorithm based on build target
         let rng = &mut rand::thread_rng();
         let self_node_id = NodeId::new(self.base.key.as_ref().pubkey());
-        let assigner = Self::choose_assigner(build_target, &self_node_id, rng);
+        let assigner = Self::make_assigner(build_target, &self_node_id, app_message, rng);
 
         // calculate the number of symbols needed for assignment
         let app_message_len = self.checked_message_len(app_message.len())?;

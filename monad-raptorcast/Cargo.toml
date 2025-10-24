@@ -49,6 +49,7 @@ futures-util = { workspace = true }
 insta = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+rand_distr = { workspace = true }
 
 [[bench]]
 name = "raptor_bench"
