@@ -55,6 +55,8 @@ services:
     build:
       context: ${MONAD_BFT_ROOT}
       dockerfile: ${DEVNET_DIR}/Dockerfile
+      args:
+        GIT_TAG_VERSION: ${GIT_TAG_VERSION}
     image: monad-node:latest
     depends_on:
       - build_triedb
@@ -87,6 +89,8 @@ services:
     build:
       context: ${MONAD_BFT_ROOT}
       dockerfile: ${RPC_DIR}/Dockerfile
+      args:
+        GIT_TAG_VERSION: ${GIT_TAG_VERSION}
     image: monad-rpc:latest
     depends_on:
       - build_triedb

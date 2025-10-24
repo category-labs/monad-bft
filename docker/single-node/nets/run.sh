@@ -63,6 +63,9 @@ export DEVNET_DIR=$(realpath "$devnet_dir")
 export RPC_DIR=$(realpath "$rpc_dir")
 export MONAD_EXECUTION_ROOT="${MONAD_BFT_ROOT}/monad-cxx/monad-execution"
 
+# Get git describe tag for versioning
+export GIT_TAG_VERSION=$(git -C "$MONAD_BFT_ROOT" describe --always)
+
 # --- Main Logic: Choose between Fresh Build or Cached Run ---
 
 if [ -z "$CACHED_VOL_ROOT" ]; then
@@ -104,9 +107,12 @@ if [ -z "$CACHED_VOL_ROOT" ]; then
             docker buildx create --buildkitd-flags '--allow-insecure-entitlement security.insecure' --name insecure
         fi
         docker build --builder insecure --allow security.insecure \
-            -f "$MONAD_EXECUTION_ROOT/docker/release.Dockerfile" \
+            -f "$MONAD_EXECUTION_ROOT/docker/Dockerfile" \
             --load -t monad-execution-builder:latest "$MONAD_EXECUTION_ROOT" \
-            --build-arg GIT_COMMIT_HASH=$(git -C "$MONAD_EXECUTION_ROOT" rev-parse HEAD)
+            --build-arg GIT_COMMIT_HASH=$(git -C "$MONAD_EXECUTION_ROOT" rev-parse HEAD) \
+            --build-arg CC=gcc-15 \
+            --build-arg CXX=g++-15 \
+            --build-arg CMAKE_BUILD_TYPE=RelWithDebInfo
 
         # Run one-off build services and start node services, forcing a build of all images
         docker compose up build_triedb build_genesis monad_execution monad_node monad_rpc --build
