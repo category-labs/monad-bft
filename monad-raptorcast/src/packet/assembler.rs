@@ -655,7 +655,7 @@ impl AssembleMode {
     pub fn expected_chunk_order(self) -> Option<ChunkOrder> {
         match self {
             AssembleMode::GsoFull => Some(ChunkOrder::GsoFriendly),
-            AssembleMode::GsoBestEffort => None,
+            AssembleMode::GsoBestEffort => Some(ChunkOrder::GsoFriendly),
             AssembleMode::RoundRobin => Some(ChunkOrder::RoundRobin),
         }
     }
