@@ -157,6 +157,7 @@ impl TriedbReader {
         let completed_counter = Arc::new(AtomicUsize::new(0));
         let mut num_accounts = 0;
         let eth_account_receivers = eth_addresses.map(|eth_address| {
+            trace!(?eth_address, block_id = ?seq_num.0, "reading account code_hash");
             num_accounts += 1;
             let (triedb_key, key_len_nibbles) =
                 create_triedb_key(version, KeyInput::Address(eth_address.as_ref()));
@@ -177,29 +178,34 @@ impl TriedbReader {
                 match res {
                     Some(mut eth_account) => {
                         trace!(?eth_account, block_id = ?seq_num.0, "account code_hash");
-                        match eth_account.code_hash {
-                            Some(code_hash) => {
-                                // Request code
-                                let (triedb_key, key_len_nibbles) =
-                                    create_triedb_key(version, KeyInput::CodeHash(&code_hash));
-                                let res = self.handle.read(&triedb_key, key_len_nibbles, seq_num.0);
-                                trace!(?res, block_id = ?seq_num.0, ?eth_account, "account code_data");
-                                match res {
-                                    Some(data) => {
-                                        if data.len() >= 3 {
-                                            let delegation_code = &data[0..3];
-                                            eth_account.is_delegated =
-                                                delegation_code == [0xef, 0x01, 0x00];
-                                            if eth_account.is_delegated {
-                                                trace!(?eth_account, block_id = ?seq_num.0, "is_delegated == true");
+                        if eth_account.inline_code.is_none() { // legacy accounts have hash_code set but no inline_code.
+                            match eth_account.code_hash {
+                                Some(code_hash) => {
+                                    // Request code
+                                    let (triedb_key, key_len_nibbles) =
+                                        create_triedb_key(version, KeyInput::CodeHash(&code_hash));
+                                    let res = self.handle.read(&triedb_key, key_len_nibbles, seq_num.0);
+                                    trace!(?res, block_id = ?seq_num.0, ?eth_account, "account code_data");
+                                    match res {
+                                        Some(data) => {
+                                            if data.len() >= 3 {
+                                                let delegation_code = &data[0..3];
+                                                eth_account.is_delegated =
+                                                    delegation_code == [0xef, 0x01, 0x00];
+                                                if eth_account.is_delegated {
+                                                    trace!(?eth_account, block_id = ?seq_num.0, "is_delegated == true");
+                                                }
                                             }
+                                            Some(eth_account)
                                         }
-                                        Some(eth_account)
+                                        None => Some(eth_account),
                                     }
-                                    None => Some(eth_account),
                                 }
+                                None => Some(eth_account),
                             }
-                            None => Some(eth_account),
+                        }
+                        else {
+                            Some(eth_account)
                         }
                     }
                     None => None,
