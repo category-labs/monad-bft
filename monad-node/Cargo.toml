@@ -51,6 +51,7 @@ opentelemetry-otlp = { workspace = true, features = ["metrics", "grpc-tonic"] }
 opentelemetry-semantic-conventions = { workspace = true }
 rand_chacha = { workspace = true }
 rayon = { workspace = true }
+reqwest = { workspace = true, features = ["blocking"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 toml = { workspace = true }
