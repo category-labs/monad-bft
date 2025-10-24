@@ -29,7 +29,7 @@ use monad_dataplane::{
     RecvUdpMsg,
 };
 use monad_merkle::{MerkleHash, MerkleProof};
-use monad_types::{Epoch, NodeId};
+use monad_types::{Epoch, NodeId, Round};
 use tracing::warn;
 
 pub use crate::packet::build_messages;
@@ -123,7 +123,6 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
     #[tracing::instrument(level = "debug", name = "udp_handle_message", skip_all)]
     pub fn handle_message(
         &mut self,
-        current_epoch: Epoch,
         group_map: &ReBroadcastGroupMap<ST>,
         epoch_validators: &BTreeMap<Epoch, EpochValidators<ST>>,
         rebroadcast: impl FnMut(Vec<NodeId<CertificateSignaturePubKey<ST>>>, Bytes, u16),
@@ -186,11 +185,11 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             // Note: The check that parsed_message.author is valid is already
             // done in iterate_rebroadcast_peers(), but we want to drop invalid
             // chunks ASAP, before changing `recently_decoded_state`.
-            if let Some(broadcast_mode) = parsed_message.maybe_broadcast_mode {
+            if parsed_message.maybe_broadcast_mode.is_some() {
                 if !group_map.check_source(
-                    Epoch(parsed_message.epoch),
+                    parsed_message.group_id,
                     &parsed_message.author,
-                    broadcast_mode,
+                    &message.src_addr,
                 ) {
                     continue;
                 }
@@ -216,32 +215,30 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             );
 
             let mut try_rebroadcast_symbol = || {
-                // rebroadcast raptorcast chunks if necessary
-                if let Some(broadcast_mode) = parsed_message.maybe_broadcast_mode {
-                    if self_hash == parsed_message.recipient_hash {
-                        let maybe_targets = group_map.iterate_rebroadcast_peers(
-                            Epoch(parsed_message.epoch),
+                // rebroadcast raptorcast chunks if broadcast mode is set and
+                // we're the assigned rebroadcaster
+                if parsed_message.maybe_broadcast_mode.is_some()
+                    && self_hash == parsed_message.recipient_hash
+                {
+                    let maybe_targets = group_map
+                        .iterate_rebroadcast_peers(parsed_message.group_id, &parsed_message.author);
+                    if let Some(targets) = maybe_targets {
+                        batch_guard.queue_broadcast(
+                            payload_start_idx,
+                            payload_end_idx,
                             &parsed_message.author,
-                            broadcast_mode,
-                        );
-                        if let Some(targets) = maybe_targets {
-                            batch_guard.queue_broadcast(
-                                payload_start_idx,
-                                payload_end_idx,
-                                &parsed_message.author,
-                                || targets.cloned().collect(),
-                            )
-                        }
+                            || targets.cloned().collect(),
+                        )
                     }
                 }
             };
 
-            let validator_set = epoch_validators
-                .get(&Epoch(parsed_message.epoch))
-                .map(|ev| &ev.validators);
+            let validator_set = match parsed_message.group_id {
+                GroupId::Primary(epoch) => epoch_validators.get(&epoch).map(|ev| &ev.validators),
+                GroupId::Secondary(_round) => None,
+            };
 
-            let decoding_context =
-                DecodingContext::new(validator_set, unix_ts_ms_now(), current_epoch);
+            let decoding_context = DecodingContext::new(validator_set, unix_ts_ms_now());
 
             match self
                 .decoder_cache
@@ -294,6 +291,21 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum GroupId {
+    Primary(Epoch),
+    Secondary(Round),
+}
+
+impl From<GroupId> for u64 {
+    fn from(group_id: GroupId) -> Self {
+        match group_id {
+            GroupId::Primary(epoch) => epoch.0,
+            GroupId::Secondary(round) => round.0,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ValidatedMessage<PT>
 where
@@ -306,7 +318,10 @@ where
     // This applies to both validator-to-validator and validator-to-full-node
     // raptorcasting.
     pub author: NodeId<PT>,
-    pub epoch: u64,
+    // group_id is set to
+    // - epoch number for validator-to-validator raptorcast
+    // - round number for validator-to-fullnode raptorcast
+    pub group_id: GroupId,
     pub unix_ts_ms: u64,
     pub app_message_hash: AppMessageHash,
     pub app_message_len: u32,
@@ -398,8 +413,12 @@ where
         return Err(MessageValidationError::InvalidTreeDepth);
     }
 
-    let cursor_epoch = split_off(8)?;
-    let epoch = u64::from_le_bytes(cursor_epoch.as_ref().try_into().expect("u64 is 8 bytes"));
+    let cursor_group_id = split_off(8)?;
+    let group_id = u64::from_le_bytes(cursor_group_id.as_ref().try_into().expect("u64 is 8 bytes"));
+    let group_id = match maybe_broadcast_mode {
+        Some(BroadcastMode::Primary) | None => GroupId::Primary(Epoch(group_id)),
+        Some(BroadcastMode::Secondary) => GroupId::Secondary(Round(group_id)),
+    };
 
     let cursor_unix_ts_ms = split_off(8)?;
     let unix_ts_ms = u64::from_le_bytes(
@@ -494,7 +513,7 @@ where
     Ok(ValidatedMessage {
         message,
         author,
-        epoch,
+        group_id,
         unix_ts_ms,
         app_message_hash,
         app_message_len,
@@ -670,7 +689,7 @@ mod tests {
     use monad_types::{Epoch, NodeId, Round, RoundSpan, Stake};
     use rstest::*;
 
-    use super::{MessageValidationError, UdpState};
+    use super::{GroupId, MessageValidationError, UdpState};
     use crate::{
         udp::{build_messages, parse_message, SIGNATURE_CACHE_SIZE},
         util::{
@@ -718,7 +737,7 @@ mod tests {
         (keys.pop().unwrap(), validators, known_addresses)
     }
 
-    const EPOCH: u64 = 5;
+    const EPOCH: Epoch = Epoch(5);
     const UNIX_TS_MS: u64 = 5;
 
     #[test]
@@ -738,7 +757,7 @@ mod tests {
             DEFAULT_SEGMENT_SIZE, // segment_size
             app_message.clone(),
             Redundancy::from_u8(2),
-            EPOCH, // epoch_no
+            GroupId::Primary(EPOCH), // epoch_no
             UNIX_TS_MS,
             BuildTarget::Raptorcast(epoch_validators),
             &known_addresses,
@@ -777,7 +796,7 @@ mod tests {
             DEFAULT_SEGMENT_SIZE, // segment_size
             app_message,
             Redundancy::from_u8(2),
-            EPOCH, // epoch_no
+            GroupId::Primary(EPOCH), // epoch_no
             UNIX_TS_MS,
             BuildTarget::Raptorcast(epoch_validators),
             &known_addresses,
@@ -827,7 +846,7 @@ mod tests {
             DEFAULT_SEGMENT_SIZE, // segment_size
             app_message,
             Redundancy::from_u8(2),
-            EPOCH, // epoch_no
+            GroupId::Primary(EPOCH), // epoch_no
             UNIX_TS_MS,
             BuildTarget::Raptorcast(epoch_validators),
             &known_addresses,
@@ -873,7 +892,7 @@ mod tests {
                 DEFAULT_SEGMENT_SIZE, // segment_size
                 app_message.clone(),
                 Redundancy::from_u8(2),
-                EPOCH, // epoch_no
+                GroupId::Primary(EPOCH), // epoch_no
                 UNIX_TS_MS,
                 build_target.clone(),
                 &known_addresses,
@@ -923,7 +942,7 @@ mod tests {
             DEFAULT_SEGMENT_SIZE, // segment_size
             app_message,
             Redundancy::from_u8(2),
-            EPOCH, // epoch_no
+            GroupId::Primary(EPOCH), // epoch_no
             UNIX_TS_MS,
             BuildTarget::Broadcast(epoch_validators.into()),
             &known_addresses,
@@ -976,7 +995,6 @@ mod tests {
         };
 
         udp_state.handle_message(
-            Epoch(1),
             &group_map,
             &validator_set,
             |_targets, _payload, _stride| {},
@@ -1013,7 +1031,7 @@ mod tests {
             DEFAULT_SEGMENT_SIZE,
             app_message,
             Redundancy::from_u8(1),
-            0,
+            GroupId::Primary(EPOCH),
             test_timestamp,
             BuildTarget::Broadcast(epoch_validators.into()),
             &known_addresses,

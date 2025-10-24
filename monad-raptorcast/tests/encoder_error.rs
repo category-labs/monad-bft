@@ -21,11 +21,11 @@ use monad_crypto::hasher::{Hasher, HasherType};
 use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_raptor::SOURCE_SYMBOLS_MAX;
 use monad_raptorcast::{
-    udp::build_messages,
+    udp::{build_messages, GroupId},
     util::{BuildTarget, EpochValidators, Redundancy},
 };
 use monad_secp::{KeyPair, SecpSignature};
-use monad_types::{NodeId, Stake};
+use monad_types::{Epoch, NodeId, Stake};
 use tracing_subscriber::fmt::format::FmtSpan;
 
 // Try to encode a message that is too large to be encoded, to verify that the encoder
@@ -74,8 +74,8 @@ pub fn encoder_error() {
         DEFAULT_SEGMENT_SIZE,
         message,
         Redundancy::from_u8(1),
-        0, // epoch_no
-        0, // unix_ts_ms
+        GroupId::Primary(Epoch(0)), // epoch_no
+        0,                          // unix_ts_ms
         BuildTarget::Raptorcast(epoch_validators),
         &known_addresses,
     );

@@ -32,7 +32,7 @@ use monad_crypto::{
     hasher::{Hasher as _, HasherType},
 };
 use monad_raptor::{ManagedDecoder, SOURCE_SYMBOLS_MIN};
-use monad_types::{Epoch, NodeId, Stake};
+use monad_types::{NodeId, Stake};
 use rand::Rng as _;
 
 use crate::{
@@ -336,7 +336,6 @@ where
         let prune_config = PruneConfig {
             // TODO: sync with config.udp_message_max_age_ms
             max_unix_ts_ms_delta: Some(10 * 1000), // 10 seconds
-            max_epoch_delta: Some(2),              // 2 epochs
             pruning_min_ratio: 0.1,                // prune at least 10% of cache or enter cooldown
             pruning_cooldown: Duration::from_secs(10), // 10 seconds cooldown
         };
@@ -421,7 +420,6 @@ trait QuotaPolicy<PT: PubKey>: Send + Sync {
 #[derive(Clone, Copy)]
 pub struct PruneConfig {
     max_unix_ts_ms_delta: Option<u64>,
-    max_epoch_delta: Option<usize>,
 
     // if a full pruning sweep only reclaims less than this
     // fraction of the cache, we throttle further pruning for a
@@ -436,19 +434,13 @@ pub struct PruneConfig {
 pub struct DecodingContext<'a, PT: PubKey> {
     validator_set: Option<&'a ValidatorSet<PT>>,
     unix_ts_now: UnixTimestamp,
-    current_epoch: Epoch,
 }
 
 impl<'a, PT: PubKey> DecodingContext<'a, PT> {
-    pub fn new(
-        validator_set: Option<&'a ValidatorSet<PT>>,
-        unix_ts_now: UnixTimestamp,
-        current_epoch: Epoch,
-    ) -> Self {
+    pub fn new(validator_set: Option<&'a ValidatorSet<PT>>, unix_ts_now: UnixTimestamp) -> Self {
         Self {
             validator_set,
             unix_ts_now,
-            current_epoch,
         }
     }
 }
@@ -762,12 +754,7 @@ impl<PT: PubKey> AuthorIndex<PT> {
 
         let message_size = message.app_message_len as MessageSize;
 
-        index.insert(
-            cache_key.clone(),
-            message.unix_ts_ms,
-            Epoch(message.epoch),
-            message_size,
-        );
+        index.insert(cache_key.clone(), message.unix_ts_ms, message_size);
         self.used_size += message_size;
 
         if index.is_overquota() {
@@ -811,15 +798,11 @@ impl<PT: PubKey> AuthorIndex<PT> {
             .prune_config
             .max_unix_ts_ms_delta
             .and_then(|delta| context.unix_ts_now.checked_sub(delta));
-        let epoch_threshold: Option<Epoch> = self
-            .prune_config
-            .max_epoch_delta
-            .and_then(|delta| context.current_epoch.checked_sub(delta));
 
         let mut evicted_keys = PrunedKeys::empty();
 
         // we first try only pruning expired keys
-        let expired_keys = author_index.prune_expired(unix_ts_threshold, epoch_threshold);
+        let expired_keys = author_index.prune_expired(unix_ts_threshold);
         evicted_keys.extend(expired_keys);
 
         // if still over quota, compact the cache to fit under quota
@@ -852,10 +835,6 @@ impl<PT: PubKey> AuthorIndex<PT> {
             .prune_config
             .max_unix_ts_ms_delta
             .and_then(|delta| context.unix_ts_now.checked_sub(delta));
-        let epoch_threshold: Option<Epoch> = self
-            .prune_config
-            .max_epoch_delta
-            .and_then(|delta| context.current_epoch.checked_sub(delta));
 
         let mut authors_to_drop = vec![];
         let mut total_slots = 0;
@@ -863,7 +842,7 @@ impl<PT: PubKey> AuthorIndex<PT> {
         let mut pruned_keys = PrunedKeys::empty();
         for (author, author_index) in &mut self.per_author_index {
             total_slots += author_index.len();
-            pruned_keys.extend(author_index.prune_expired(unix_ts_threshold, epoch_threshold));
+            pruned_keys.extend(author_index.prune_expired(unix_ts_threshold));
 
             if author_index.is_empty() {
                 authors_to_drop.push(*author);
@@ -1000,8 +979,7 @@ struct PerAuthorIndex {
     quota: Quota,
     used_size: MessageSize,
     time_index: BTreeSet<(UnixTimestamp, CacheKey)>,
-    epoch_index: BTreeSet<(Epoch, CacheKey)>,
-    reverse_index: HashMap<CacheKey, (UnixTimestamp, Epoch, MessageSize)>,
+    reverse_index: HashMap<CacheKey, (UnixTimestamp, MessageSize)>,
 }
 
 impl PerAuthorIndex {
@@ -1010,7 +988,6 @@ impl PerAuthorIndex {
             quota,
             used_size: 0,
             time_index: BTreeSet::new(),
-            epoch_index: BTreeSet::new(),
             reverse_index: HashMap::new(),
         }
     }
@@ -1028,12 +1005,11 @@ impl PerAuthorIndex {
     }
 
     pub fn remove(&mut self, key: &CacheKey) -> PrunedKeys {
-        let Some((unix_ts_ms, epoch, size)) = self.reverse_index.remove(key) else {
+        let Some((unix_ts_ms, size)) = self.reverse_index.remove(key) else {
             return PrunedKeys::empty();
         };
 
         self.time_index.remove(&(unix_ts_ms, key.clone()));
-        self.epoch_index.remove(&(epoch, key.clone()));
         self.used_size -= size;
         PrunedKeys::singleton(key.clone(), size)
     }
@@ -1054,33 +1030,18 @@ impl PerAuthorIndex {
             .collect()
     }
 
-    pub fn insert(
-        &mut self,
-        cache_key: CacheKey,
-        unix_ts_ms: UnixTimestamp,
-        epoch: Epoch,
-        size: MessageSize,
-    ) {
+    pub fn insert(&mut self, cache_key: CacheKey, unix_ts_ms: UnixTimestamp, size: MessageSize) {
         self.time_index.insert((unix_ts_ms, cache_key.clone()));
-        self.epoch_index.insert((epoch, cache_key.clone()));
-        self.reverse_index
-            .insert(cache_key, (unix_ts_ms, epoch, size));
+        self.reverse_index.insert(cache_key, (unix_ts_ms, size));
         self.used_size += size;
     }
 
     // Remove expired entries.
-    pub fn prune_expired(
-        &mut self,
-        unix_ts_threshold: Option<UnixTimestamp>,
-        epoch_threshold: Option<Epoch>,
-    ) -> PrunedKeys {
+    pub fn prune_expired(&mut self, unix_ts_threshold: Option<UnixTimestamp>) -> PrunedKeys {
         let mut evicted_keys = PrunedKeys::empty();
         // first, we prune all expired keys
         if let Some(threshold) = unix_ts_threshold {
             evicted_keys.extend(self.prune_by_time(threshold));
-        }
-        if let Some(threshold) = epoch_threshold {
-            evicted_keys.extend(self.prune_by_epoch(threshold));
         }
         evicted_keys
     }
@@ -1115,17 +1076,6 @@ impl PerAuthorIndex {
         self.remove_many(&to_prune_keys)
     }
 
-    fn prune_by_epoch(&mut self, epoch_threshold: Epoch) -> PrunedKeys {
-        let mut to_prune_keys = vec![];
-        for (epoch, key) in &self.epoch_index {
-            if *epoch >= epoch_threshold {
-                break;
-            }
-            to_prune_keys.push(key.clone());
-        }
-        self.remove_many(&to_prune_keys)
-    }
-
     fn prune_by_slots(&mut self, target_len: usize) -> PrunedKeys {
         let slots_to_free_up = self.len().saturating_sub(target_len);
         if slots_to_free_up == 0 {
@@ -1150,20 +1100,14 @@ impl PerAuthorIndex {
     #[cfg(test)]
     fn consistency_breaches(&self, prefix: &str) -> Vec<String> {
         let mut breaches = vec![];
-        if self.epoch_index.len() != self.reverse_index.len() {
-            breaches.push(format!("{prefix}.epoch-index-size-mismatch"));
-        }
         if self.time_index.len() != self.reverse_index.len() {
             breaches.push(format!("{prefix}.time-index-size-mismatch"));
         }
 
         let mut used_size = self.used_size;
-        for (key, (unix_ts, epoch, _size)) in &self.reverse_index {
+        for (key, (unix_ts, _size)) in &self.reverse_index {
             if !self.time_index.contains(&(*unix_ts, key.clone())) {
                 breaches.push(format!("{prefix}.time-index-missing-key"));
-            }
-            if !self.epoch_index.contains(&(*epoch, key.clone())) {
-                breaches.push(format!("{prefix}.epoch-index-missing-key"));
             }
             used_size -= *_size;
         }
@@ -1587,7 +1531,7 @@ mod test {
     use rand::seq::SliceRandom as _;
 
     use super::*;
-    use crate::util::BroadcastMode;
+    use crate::{udp::GroupId, util::BroadcastMode};
     type PT = monad_crypto::NopPubKey;
 
     const EPOCH: Epoch = Epoch(1);
@@ -1656,7 +1600,7 @@ mod test {
                 // these fields are never touched in this module
                 recipient_hash: HexBytes([0; 20]),
                 message: Bytes::new(),
-                epoch: EPOCH.0,
+                group_id: GroupId::Primary(EPOCH),
                 unix_ts_ms,
             };
             messages.push(message);
@@ -1669,7 +1613,7 @@ mod test {
         let app_message = Bytes::from(vec![1u8; APP_MESSAGE_LEN]);
         let author = node_id(0);
         let symbols = make_symbols(&app_message, author, UNIX_TS_MS);
-        let context = DecodingContext::new(None, UNIX_TS_MS, EPOCH);
+        let context = DecodingContext::new(None, UNIX_TS_MS);
 
         for n in 0..MIN_DECODABLE_SYMBOLS {
             let mut cache = make_cache(10, 10, 10);
@@ -1746,7 +1690,7 @@ mod test {
         // single slot per tier is enough
         let mut cache = make_cache(1, 1, 1);
 
-        let context = DecodingContext::new(Some(&validator_set), UNIX_TS_MS, EPOCH);
+        let context = DecodingContext::new(Some(&validator_set), UNIX_TS_MS);
         let res = try_decode_all(&mut cache, &context, all_symbols.iter())
             .expect("Decoding should succeed");
 
@@ -1759,7 +1703,7 @@ mod test {
         let app_message = Bytes::from(vec![1u8; APP_MESSAGE_LEN]);
         let author = node_id(0);
         let symbols = make_symbols(&app_message, author, UNIX_TS_MS);
-        let context = DecodingContext::new(None, UNIX_TS_MS, EPOCH);
+        let context = DecodingContext::new(None, UNIX_TS_MS);
         let mut cache = make_cache(10, 10, 10);
 
         // Decode a message completely.
@@ -1782,7 +1726,7 @@ mod test {
         let app_message = Bytes::from(vec![1u8; APP_MESSAGE_LEN]);
         let author = node_id(0);
         let symbols = make_symbols(&app_message, author, old_ts);
-        let context = DecodingContext::new(None, old_ts, EPOCH);
+        let context = DecodingContext::new(None, old_ts);
 
         // Insert an old message.
         let _ = cache.try_decode(&symbols[0], &context);
@@ -1793,7 +1737,7 @@ mod test {
             let new_app_message = Bytes::from(vec![2u8; APP_MESSAGE_LEN]);
             let new_author = node_id(i);
             let new_symbols = make_symbols(&new_app_message, new_author, UNIX_TS_MS);
-            let new_context = DecodingContext::new(None, UNIX_TS_MS, EPOCH);
+            let new_context = DecodingContext::new(None, UNIX_TS_MS);
             let _ = cache.try_decode(&new_symbols[0], &new_context);
             assert!(cache.consistency_breaches().is_empty());
         }
@@ -1837,7 +1781,7 @@ mod test {
         config.validator_tier.min_slots_per_validator = Some(2);
 
         let mut cache = DecoderCache::new(config);
-        let context = DecodingContext::new(Some(&validator_set), UNIX_TS_MS, EPOCH);
+        let context = DecodingContext::new(Some(&validator_set), UNIX_TS_MS);
         let res = try_decode_all(&mut cache, &context, all_symbols_part_1.iter())
             .expect("Decoding should succeed");
         assert!(cache.consistency_breaches().is_empty());
@@ -1919,7 +1863,7 @@ mod test {
         }
 
         let mut cache = DecoderCache::new(config);
-        let context = DecodingContext::new(Some(&validator_set), UNIX_TS_MS, EPOCH);
+        let context = DecodingContext::new(Some(&validator_set), UNIX_TS_MS);
         let res = try_decode_all(&mut cache, &context, all_symbols_part_1.iter())
             .expect("Decoding should succeed");
         assert!(cache.consistency_breaches().is_empty());
@@ -1966,7 +1910,7 @@ mod test {
         config.p2p_tier.min_slots_per_author = 2; // each author gets at least 2 slots
 
         let mut cache = DecoderCache::new(config);
-        let context = DecodingContext::new(None, UNIX_TS_MS, EPOCH);
+        let context = DecodingContext::new(None, UNIX_TS_MS);
         let res = try_decode_all(&mut cache, &context, all_symbols_part_1.iter())
             .expect("Decoding should succeed");
         assert!(cache.consistency_breaches().is_empty());
@@ -2032,7 +1976,7 @@ mod test {
         }
 
         let mut cache = DecoderCache::new(config);
-        let context = DecodingContext::new(None, UNIX_TS_MS, EPOCH);
+        let context = DecodingContext::new(None, UNIX_TS_MS);
         let res = try_decode_all(&mut cache, &context, all_symbols_part_1.iter())
             .expect("Decoding should succeed");
         assert!(cache.consistency_breaches().is_empty());
@@ -2058,7 +2002,7 @@ mod test {
         let app_message = Bytes::from(vec![1u8; APP_MESSAGE_LEN]);
         let author = node_id(0);
         let symbols = make_symbols(&app_message, author, UNIX_TS_MS);
-        let context = DecodingContext::new(None, UNIX_TS_MS, EPOCH);
+        let context = DecodingContext::new(None, UNIX_TS_MS);
 
         // Insert a valid symbol first.
         let _ = cache.try_decode(&symbols[0], &context);
@@ -2092,7 +2036,7 @@ mod test {
         config.p2p_tier.min_slots_per_author = 2;
 
         let mut cache = DecoderCache::new(config);
-        let context = DecodingContext::new(None, UNIX_TS_MS, EPOCH);
+        let context = DecodingContext::new(None, UNIX_TS_MS);
 
         // Fill the cache.
         let app_message0 = Bytes::from(vec![0u8; APP_MESSAGE_LEN]);
@@ -2131,7 +2075,7 @@ mod test {
         config.p2p_tier.min_slots_per_author = 5;
 
         let mut cache = DecoderCache::new(config);
-        let context = DecodingContext::new(None, UNIX_TS_MS, EPOCH);
+        let context = DecodingContext::new(None, UNIX_TS_MS);
 
         // take a single symbol for a given message
         let partial_symbol = |msg: u8, ts: UnixTimestamp| {

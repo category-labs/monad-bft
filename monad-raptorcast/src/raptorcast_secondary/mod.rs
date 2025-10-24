@@ -50,7 +50,7 @@ use super::{
     util::{BuildTarget, FullNodes, Group, Redundancy},
     RaptorCastEvent,
 };
-use crate::OwnedMessageBuilder;
+use crate::{udp::GroupId, OwnedMessageBuilder};
 
 #[derive(Debug, Clone, Copy)]
 pub enum SecondaryRaptorCastModeConfig {
@@ -149,7 +149,7 @@ where
         let message_builder =
             OwnedMessageBuilder::new(config.shared_key, peer_discovery_driver.clone())
                 .segment_size(segment_size_for_mtu(config.mtu))
-                .epoch_no(current_epoch)
+                .group_id(GroupId::Primary(current_epoch))
                 .redundancy(redundancy);
 
         Self {
@@ -310,7 +310,7 @@ where
                             "RaptorCastSecondary UpdateCurrentRound (Publisher)"
                         );
                         self.curr_epoch = epoch;
-                        self.message_builder.set_epoch_no(epoch);
+                        self.message_builder.set_group_id(GroupId::Primary(epoch));
                         // The publisher needs to be periodically informed about new nodes out there,
                         // so that it can randomize when creating new groups.
                         let full_nodes = self
@@ -346,7 +346,11 @@ where
                     }
                 },
 
-                Self::Command::PublishToFullNodes { epoch, message } => {
+                Self::Command::PublishToFullNodes {
+                    epoch: _,
+                    round,
+                    message,
+                } => {
                     let _timer = DropTimer::start(Duration::from_millis(20), |elapsed| {
                         warn!(?elapsed, "long time to publish message")
                     });
@@ -394,7 +398,7 @@ where
                     if let Some(rc_chunks) = self
                         .message_builder
                         .prepare()
-                        .epoch_no(epoch)
+                        .group_id(GroupId::Secondary(round))
                         .build_unicast_msg(&outbound_message, &build_target)
                     {
                         // Send the raptorcast chunks via UDP to all peers in group

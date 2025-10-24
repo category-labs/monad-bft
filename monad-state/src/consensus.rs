@@ -233,6 +233,7 @@ where
                         match protocol_message {
                             ProtocolMessage::Proposal(msg) => {
                                 let proposal_epoch = msg.proposal_epoch;
+                                let proposal_round = msg.proposal_round;
                                 let mut proposal_cmds =
                                     consensus.handle_proposal_message(author, msg);
                                 // TODO:Maybe we could skip the below command if we could somehow determine that
@@ -241,6 +242,7 @@ where
                                 // send verified_message carrying author signature
                                 proposal_cmds.push(ConsensusCommand::PublishToFullNodes {
                                     epoch: proposal_epoch,
+                                    round: proposal_round,
                                     message: verified_message,
                                 });
                                 proposal_cmds
@@ -662,12 +664,15 @@ where
                     priority: monad_types::UdpPriority::High,
                 }))
             }
-            ConsensusCommand::PublishToFullNodes { epoch, message } => {
-                parent_cmds.push(Command::RouterCommand(RouterCommand::PublishToFullNodes {
-                    epoch,
-                    message: VerifiedMonadMessage::Consensus(message),
-                }))
-            }
+            ConsensusCommand::PublishToFullNodes {
+                epoch,
+                round,
+                message,
+            } => parent_cmds.push(Command::RouterCommand(RouterCommand::PublishToFullNodes {
+                epoch,
+                round,
+                message: VerifiedMonadMessage::Consensus(message),
+            })),
             ConsensusCommand::Schedule { round, duration } => {
                 parent_cmds.push(Command::TimerCommand(TimerCommand::Schedule {
                     duration,

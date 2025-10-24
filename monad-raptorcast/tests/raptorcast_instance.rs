@@ -37,7 +37,7 @@ use monad_raptorcast::{
     new_defaulted_raptorcast_for_tests,
     packet::build_messages,
     raptorcast_secondary::group_message::FullNodesGroupMessage,
-    udp::MAX_REDUNDANCY,
+    udp::{GroupId, MAX_REDUNDANCY},
     util::{BuildTarget, EpochValidators, Group, Redundancy},
     RaptorCast, RaptorCastEvent,
 };
@@ -95,8 +95,8 @@ pub fn different_symbol_sizes() {
             segment_size,
             message.clone(),
             Redundancy::from_u8(2),
-            0, // epoch_no
-            0, // unix_ts_ms
+            GroupId::Primary(Epoch(0)), // epoch_no
+            0,                          // unix_ts_ms
             BuildTarget::Raptorcast(epoch_validators),
             &known_addresses,
         );
@@ -155,8 +155,8 @@ pub fn buffer_count_overflow() {
         DEFAULT_SEGMENT_SIZE,
         message,
         Redundancy::from_u8(2),
-        0, // epoch_no
-        0, // unix_ts_ms
+        GroupId::Primary(Epoch(0)), // epoch_no
+        0,                          // unix_ts_ms
         BuildTarget::Raptorcast(epoch_validators),
         &known_addresses,
     );
@@ -234,9 +234,9 @@ pub fn valid_rebroadcast() {
         &tx_keypair,
         DEFAULT_SEGMENT_SIZE,
         message,
-        MAX_REDUNDANCY, // redundancy,
-        0,              // epoch_no
-        0,              // unix_ts_ms
+        MAX_REDUNDANCY,             // redundancy,
+        GroupId::Primary(Epoch(0)), // epoch_no
+        0,                          // unix_ts_ms
         BuildTarget::Raptorcast(epoch_validators),
         &known_addresses,
     );
@@ -550,6 +550,7 @@ async fn publish_to_full_nodes() {
     let message = MockMessage::new(42, 10000);
     let command = RouterCommand::PublishToFullNodes {
         epoch: Epoch(0),
+        round: Round(0),
         message,
     };
     validator_rc.exec(vec![command]);

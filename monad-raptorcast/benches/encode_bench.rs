@@ -22,11 +22,12 @@ use monad_crypto::certificate_signature::{CertificateSignature, CertificateSigna
 use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_raptorcast::{
     packet,
+    udp::GroupId,
     util::{BuildTarget, EpochValidators, Redundancy},
 };
 use monad_secp::SecpSignature;
 use monad_testutil::signing::get_key;
-use monad_types::{NodeId, Stake};
+use monad_types::{Epoch, NodeId, Stake};
 
 const NUM_NODES: usize = 100;
 
@@ -63,8 +64,8 @@ pub fn bench_build_messages(c: &mut Criterion, name: &str, message_size: usize, 
                 DEFAULT_SEGMENT_SIZE, // segment_size
                 message.clone(),
                 Redundancy::from_u8(2),
-                0, // epoch_no
-                0, // unix_ts_ms
+                GroupId::Primary(Epoch(0)), // epoch_no
+                0,                          // unix_ts_ms
                 build_target.clone(),
                 &known_addrs,
             );
