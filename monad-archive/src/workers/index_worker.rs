@@ -193,37 +193,42 @@ async fn handle_block(
     }
 
     // Check 1 key
-    if let Some(tx) = first {
-        let tx = tx.tx;
-        let key = tx.tx_hash();
-        match tx_index_archiver.get_tx_indexed_data(key).await {
-            Ok(Some(resp)) => {
-                if resp.header_subset.block_number != block_num
-                    || Some(&resp.receipt) != first_rx.as_ref()
-                    || Some(&resp.trace) != first_trace.as_ref()
-                {
-                    warn!(
+    tokio::spawn({
+        let tx_index_archiver = tx_index_archiver.clone();
+        async move {
+            if let Some(tx) = first {
+                let tx = tx.tx;
+                let key = tx.tx_hash();
+                match tx_index_archiver.get_tx_indexed_data(key).await {
+                    Ok(Some(resp)) => {
+                        if resp.header_subset.block_number != block_num
+                            || Some(&resp.receipt) != first_rx.as_ref()
+                            || Some(&resp.trace) != first_trace.as_ref()
+                        {
+                            warn!(
+                                key = key.encode_hex(),
+                                block_num,
+                                ?resp,
+                                "Returned index not as expected"
+                            );
+                        } else {
+                            info!(
+                                key = key.encode_hex(),
+                                block_num, "Index spot-check successful"
+                            );
+                        }
+                    }
+                    Ok(None) => {
+                        warn!(key = key.encode_hex(), block_num, "No index found");
+                    }
+                    Err(e) => warn!(
                         key = key.encode_hex(),
-                        block_num,
-                        ?resp,
-                        "Returned index not as expected"
-                    );
-                } else {
-                    info!(
-                        key = key.encode_hex(),
-                        block_num, "Index spot-check successful"
-                    );
-                }
+                        block_num, "Error while checking: {e:?}"
+                    ),
+                };
             }
-            Ok(None) => {
-                warn!(key = key.encode_hex(), block_num, "No index found");
-            }
-            Err(e) => warn!(
-                key = key.encode_hex(),
-                block_num, "Error while checking: {e}"
-            ),
-        };
-    }
+        }
+    });
 
     Ok(num_txs)
 }
