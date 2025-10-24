@@ -123,7 +123,7 @@ pub async fn monad_debug_getRawReceipts<T: Triedb>(
             .into_iter()
             .map(|r| {
                 let mut res = Vec::new();
-                r.encode(&mut res);
+                r.encode_2718(&mut res);
                 hex::encode(&res)
             })
             .collect();
@@ -736,9 +736,11 @@ async fn build_call_tree(
 
 #[cfg(test)]
 mod tests {
+    use alloy_consensus::ReceiptWithBloom;
+    use alloy_primitives::Bloom;
     use monad_triedb_utils::{
         mock_triedb,
-        triedb_env::{EthTxHash, TransactionLocation},
+        triedb_env::{EthTxHash, ReceiptWithLogIndex, TransactionLocation},
     };
 
     use super::*;
@@ -1066,5 +1068,39 @@ mod tests {
         assert_eq!(resp.input.0, *hex::decode("0xaabbccddee01").unwrap());
         assert_eq!(resp.output.0, *hex::decode("0x0102").unwrap());
         assert_eq!(resp.depth, 2);
+    }
+
+    #[tokio::test]
+    async fn debug_raw_receipts() {
+        let mut mock_triedb = mock_triedb::MockTriedb::default();
+        mock_triedb.set_latest_block(1);
+
+        let receipt = ReceiptWithBloom {
+            receipt: alloy_consensus::Receipt {
+                status: alloy_consensus::Eip658Value::Eip658(true),
+                cumulative_gas_used: 21000,
+                logs: vec![],
+            },
+            logs_bloom: Bloom::default(),
+        };
+
+        mock_triedb.set_receipts(vec![ReceiptWithLogIndex {
+            receipt: ReceiptEnvelope::Eip1559(receipt),
+            starting_log_index: 0,
+        }]);
+
+        let chain_state = ChainState::new(None, mock_triedb, None);
+        let result = monad_debug_getRawReceipts(
+            &chain_state,
+            DebugBlockParams {
+                block: BlockTags::Number(Quantity(1)),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.receipts.len(), 1);
+        let expected_receipt = "0x02f9010801825208b9010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000c0";
+        assert_eq!(result.receipts[0], expected_receipt);
     }
 }
