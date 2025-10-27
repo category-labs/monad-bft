@@ -111,6 +111,7 @@ where
         round: Round,
         execution_timestamp_s: u64,
         do_local_insert: bool,
+        txpool_allow_insufficient_transfer_balance_tx: bool,
     ) -> io::Result<
         TokioTaskUpdater<
             TxPoolCommand<
@@ -151,6 +152,7 @@ where
                         chain_config.get_chain_revision(round),
                         chain_config.get_execution_chain_revision(execution_timestamp_s),
                         do_local_insert,
+                        txpool_allow_insufficient_transfer_balance_tx,
                     );
 
                     Self {

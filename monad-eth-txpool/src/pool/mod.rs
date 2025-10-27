@@ -42,7 +42,7 @@ use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason, E
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ExtractEthAddress, ProposedEthHeader};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_system_calls::{SystemTransactionGenerator, SYSTEM_SENDER_ETH_ADDRESS};
-use monad_types::{DropTimer, Epoch, NodeId, Round, SeqNum};
+use monad_types::{Balance, DropTimer, Epoch, NodeId, Round, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing::{debug, error, info, warn};
@@ -85,6 +85,7 @@ where
     execution_revision: MonadExecutionRevision,
 
     do_local_insert: bool,
+    txpool_allow_insufficient_transfer_balance_tx: bool,
 }
 
 impl<ST, SCT, SBT, CCT, CRT> EthTxPool<ST, SCT, SBT, CCT, CRT>
@@ -103,6 +104,7 @@ where
         chain_revision: CRT,
         execution_revision: MonadExecutionRevision,
         do_local_insert: bool,
+        txpool_allow_insufficient_transfer_balance_tx: bool,
     ) -> Self {
         Self {
             pending: PendingTxMap::default(),
@@ -115,6 +117,7 @@ where
             execution_revision,
 
             do_local_insert,
+            txpool_allow_insufficient_transfer_balance_tx,
         }
     }
 
@@ -204,8 +207,11 @@ where
             if account_balances
                 .get(tx.signer_ref())
                 .is_none_or(|account_balance_state| {
-                    account_balance_state.balance
-                        < last_commit_base_fee.saturating_mul(tx.gas_limit())
+                    !self.sender_balance_is_sufficient(
+                        &tx,
+                        account_balance_state.balance,
+                        last_commit_base_fee,
+                    )
                 })
             {
                 event_tracker.drop(tx.hash(), EthTxPoolDropReason::InsufficientBalance);
@@ -735,6 +741,27 @@ where
 
         Ok(proposal.txs)
     }
+
+    /// Checks whether the sender has sufficient balance for the transaction.
+    /// If `txpool_allow_insufficient_transfer_balance_tx` is true, only the gas cost is checked.
+    /// Otherwise, both the gas cost and the value transfer are checked.
+    fn sender_balance_is_sufficient(
+        &self,
+        tx: &ValidEthTransaction,
+        sender_balance: Balance,
+        last_commit_base_fee: u64,
+    ) -> bool {
+        // Reserve balance allows consensus to include a transaction that will revert due to insufficient transfer balance
+        // as long as the sender has enough balance to cover the gas cost.
+        if self.txpool_allow_insufficient_transfer_balance_tx {
+            sender_balance >= last_commit_base_fee.saturating_mul(tx.gas_limit())
+        } else {
+            sender_balance
+                >= Balance::from(last_commit_base_fee)
+                    .saturating_mul(Balance::from(tx.gas_limit()))
+                    .saturating_add(tx.value())
+        }
+    }
 }
 
 impl<ST, SCT, SBT> EthTxPool<ST, SCT, SBT, MockChainConfig, MockChainRevision>
@@ -751,6 +778,7 @@ where
             MockChainConfig::DEFAULT.chain_id(),
             MockChainRevision::DEFAULT,
             MonadExecutionRevision::LATEST,
+            true,
             true,
         )
     }

@@ -220,6 +220,10 @@ impl ValidEthTransaction {
         self.tx.gas_limit()
     }
 
+    pub fn value(&self) -> Balance {
+        self.tx.value()
+    }
+
     pub fn size(&self) -> u64 {
         self.tx.length() as u64
     }

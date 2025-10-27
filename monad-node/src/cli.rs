@@ -86,6 +86,10 @@ pub struct Cli {
     #[arg(long, requires = "otel_endpoint")]
     pub record_metrics_interval_seconds: Option<u64>,
 
+    /// Set txpool to allow transactions from sender with insufficient transfer balance
+    #[arg(long, default_value_t = false)]
+    pub txpool_allow_insufficient_transfer_balance_tx: bool,
+
     #[arg(
         long,
         help = "listen address for pprof server. pprof server won't be enabled if address is empty",
