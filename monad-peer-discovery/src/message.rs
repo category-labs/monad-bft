@@ -175,4 +175,112 @@ mod test {
         let decoded = Ping::<SignatureType>::decode(&mut encoded.as_slice()).unwrap();
         assert_eq!(ping, decoded);
     }
+
+    #[test]
+    fn test_peer_discovery_message_ping_encoding() {
+        let key = get_key::<SignatureType>(37);
+        let ping = Ping {
+            id: 257,
+            local_name_record: MonadNameRecord::<SignatureType>::new(
+                NameRecord {
+                    address: SocketAddrV4::from_str("127.0.0.1:8000").unwrap(),
+                    seq: 2,
+                },
+                &key,
+            ),
+        };
+        let message = PeerDiscoveryMessage::Ping(ping);
+
+        let mut encoded = Vec::new();
+        message.encode(&mut encoded);
+        insta::assert_debug_snapshot!(hex::encode(encoded));
+    }
+
+    #[test]
+    fn test_peer_discovery_message_pong_encoding() {
+        let pong = Pong {
+            ping_id: 123,
+            local_record_seq: 456,
+        };
+        let message = PeerDiscoveryMessage::<SignatureType>::Pong(pong);
+
+        let mut encoded = Vec::new();
+        message.encode(&mut encoded);
+        insta::assert_debug_snapshot!(hex::encode(encoded));
+    }
+
+    #[test]
+    fn test_peer_discovery_message_peer_lookup_request_encoding() {
+        let key = get_key::<SignatureType>(42);
+        let request = PeerLookupRequest::<SignatureType> {
+            lookup_id: 789,
+            target: NodeId::new(key.pubkey()),
+            open_discovery: true,
+        };
+        let message = PeerDiscoveryMessage::PeerLookupRequest(request);
+
+        let mut encoded = Vec::new();
+        message.encode(&mut encoded);
+        insta::assert_debug_snapshot!(hex::encode(encoded));
+    }
+
+    #[test]
+    fn test_peer_discovery_message_peer_lookup_response_encoding() {
+        let key1 = get_key::<SignatureType>(37);
+        let key2 = get_key::<SignatureType>(42);
+        let key3 = get_key::<SignatureType>(55);
+
+        let target_key = get_key::<SignatureType>(100);
+
+        let response = PeerLookupResponse {
+            lookup_id: 999,
+            target: NodeId::new(target_key.pubkey()),
+            name_records: vec![
+                MonadNameRecord::<SignatureType>::new(
+                    NameRecord {
+                        address: SocketAddrV4::from_str("192.168.1.1:8000").unwrap(),
+                        seq: 1,
+                    },
+                    &key1,
+                ),
+                MonadNameRecord::<SignatureType>::new(
+                    NameRecord {
+                        address: SocketAddrV4::from_str("192.168.1.2:8001").unwrap(),
+                        seq: 2,
+                    },
+                    &key2,
+                ),
+                MonadNameRecord::<SignatureType>::new(
+                    NameRecord {
+                        address: SocketAddrV4::from_str("192.168.1.3:8002").unwrap(),
+                        seq: 3,
+                    },
+                    &key3,
+                ),
+            ],
+        };
+        let message = PeerDiscoveryMessage::PeerLookupResponse(response);
+
+        let mut encoded = Vec::new();
+        message.encode(&mut encoded);
+        insta::assert_debug_snapshot!(hex::encode(encoded));
+    }
+
+    #[test]
+    fn test_peer_discovery_message_full_node_raptorcast_request_encoding() {
+        let message = PeerDiscoveryMessage::<SignatureType>::FullNodeRaptorcastRequest;
+
+        let mut encoded = Vec::new();
+        message.encode(&mut encoded);
+        insta::assert_debug_snapshot!(hex::encode(encoded));
+    }
+
+    #[test]
+    fn test_peer_discovery_message_full_node_raptorcast_response_encoding() {
+        let message = PeerDiscoveryMessage::<SignatureType>::FullNodeRaptorcastResponse;
+
+        let mut encoded = Vec::new();
+        message.encode(&mut encoded);
+        insta::assert_debug_snapshot!(hex::encode(encoded));
+    }
 }
