@@ -120,12 +120,6 @@ impl ValidEthTransaction {
                 match signed_authorizations
                     .iter()
                     .filter_map(|signed_authorization| {
-                        if signed_authorization.chain_id != 0
-                            && signed_authorization.chain_id != chain_id
-                        {
-                            return None;
-                        }
-
                         let Ok(authority) = signed_authorization.recover_authority() else {
                             return None;
                         };
@@ -133,6 +127,12 @@ impl ValidEthTransaction {
                         // system account cannot be used to sign authorizations
                         if authority == SYSTEM_SENDER_ETH_ADDRESS {
                             return Some(Err(EthTxPoolDropReason::InvalidSignature));
+                        }
+
+                        if signed_authorization.chain_id != 0
+                            && signed_authorization.chain_id != chain_id
+                        {
+                            return None;
                         }
 
                         Some(Ok(ValidEthRecoveredAuthorization {
