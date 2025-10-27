@@ -64,7 +64,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 &block_policy,
                 state_backend,
                 &MockChainConfig::DEFAULT,
-                txs.to_owned(),
+                txs.iter().map(|tx| (tx.clone(), false)).collect(),
                 true,
                 |_| {},
             );

@@ -48,7 +48,7 @@ pub struct EthTxPoolIpcServer {
 
     connections: Vec<EthTxPoolIpcStream>,
 
-    batch: Vec<TxEnvelope>,
+    batch: Vec<(TxEnvelope, bool)>,
     #[pin]
     batch_timer: Sleep,
 }
@@ -105,7 +105,7 @@ impl EthTxPoolIpcServer {
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         generate_snapshot: impl Fn() -> EthTxPoolSnapshot,
-    ) -> Poll<Vec<TxEnvelope>> {
+    ) -> Poll<Vec<(TxEnvelope, bool)>> {
         let EthTxPoolIpcServerProjected {
             listener,
 
@@ -139,11 +139,11 @@ impl EthTxPoolIpcServer {
                     break;
                 };
 
-                let Some(tx) = result else {
+                let Some(tx_with_flag) = result else {
                     return false;
                 };
 
-                batch.push(tx);
+                batch.push(tx_with_flag);
             }
 
             true

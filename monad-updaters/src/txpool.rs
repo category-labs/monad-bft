@@ -433,7 +433,7 @@ where
                             .filter_map(|raw_tx| {
                                 let tx = TxEnvelope::decode(&mut raw_tx.as_ref()).ok()?;
                                 let signer = tx.recover_signer().ok()?;
-                                Some(Recovered::new_unchecked(tx, signer))
+                                Some((Recovered::new_unchecked(tx, signer), false))
                             })
                             .collect(),
                         false,
@@ -576,7 +576,7 @@ where
             block_policy,
             state_backend,
             &MockChainConfig::DEFAULT,
-            vec![tx],
+            vec![(tx, false)],
             true,
             |tx| {
                 self.events.push_back(MempoolEvent::ForwardTxs(vec![

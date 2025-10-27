@@ -43,6 +43,7 @@ pub const fn max_eip2718_encoded_length(execution_params: &ExecutionChainParams)
 pub struct ValidEthTransaction {
     tx: Recovered<TxEnvelope>,
     owned: bool,
+    bypass_transfer_balance_check: bool,
     forward_last_seqnum: SeqNum,
     forward_retries: usize,
     max_value: Balance,
@@ -64,6 +65,7 @@ impl ValidEthTransaction {
         execution_params: &ExecutionChainParams,
         tx: Recovered<TxEnvelope>,
         owned: bool,
+        bypass_transfer_balance_check: bool,
     ) -> Result<Self, (Recovered<TxEnvelope>, EthTxPoolDropReason)>
     where
         ST: CertificateSignatureRecoverable,
@@ -154,6 +156,7 @@ impl ValidEthTransaction {
         Ok(Self {
             tx,
             owned,
+            bypass_transfer_balance_check,
             forward_last_seqnum: last_commit.seq_num,
             forward_retries: 0,
             max_value,
@@ -220,6 +223,10 @@ impl ValidEthTransaction {
         self.tx.gas_limit()
     }
 
+    pub fn value(&self) -> Balance {
+        self.tx.value()
+    }
+
     pub fn size(&self) -> u64 {
         self.tx.length() as u64
     }
@@ -234,6 +241,10 @@ impl ValidEthTransaction {
 
     pub(crate) fn is_owned(&self) -> bool {
         self.owned
+    }
+
+    pub fn bypass_transfer_balance_check(&self) -> bool {
+        self.bypass_transfer_balance_check
     }
 
     pub fn has_higher_priority(&self, other: &Self, _base_fee: u64) -> bool {
