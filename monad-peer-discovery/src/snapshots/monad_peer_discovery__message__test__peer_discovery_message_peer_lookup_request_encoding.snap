@@ -1,0 +1,5 @@
+---
+source: monad-peer-discovery/src/message.rs
+expression: "hex::encode(encoded)"
+---
+"e90103e6820315a1026ab176c613cb3b1e0bacc5347fbf7b1967d6207ca5201cb8d72c1b655e2ffe6501"
