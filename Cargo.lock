@@ -6222,7 +6222,6 @@ dependencies = [
 name = "monad-wal"
 version = "0.1.0"
 dependencies = [
- "auto_impl",
  "bytes",
  "clap 4.5.47",
  "criterion",
@@ -6232,6 +6231,7 @@ dependencies = [
  "monad-executor-glue",
  "monad-secp",
  "monad-types",
+ "rayon",
  "serde_json",
  "tempfile",
 ]

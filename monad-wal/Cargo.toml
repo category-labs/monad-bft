@@ -11,7 +11,6 @@ bench = false
 [dependencies]
 monad-types = { workspace = true }
 
-auto_impl = { workspace = true }
 bytes = { workspace = true }
 
 [dev-dependencies]
@@ -24,6 +23,7 @@ monad-types = { workspace = true }
 
 clap = { workspace = true, features = ["derive"] }
 criterion = { workspace = true }
+rayon = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 

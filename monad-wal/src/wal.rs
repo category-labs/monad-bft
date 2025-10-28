@@ -13,19 +13,25 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{fmt::Debug, io, marker::PhantomData, path::PathBuf};
+use std::{
+    fmt::Debug,
+    fs::{File, OpenOptions},
+    io::Write,
+    marker::PhantomData,
+    path::PathBuf,
+};
 
 use bytes::Bytes;
-use monad_types::{Deserializable, Serializable};
+use monad_types::Serializable;
 
-use crate::{aof::AppendOnlyFile, PersistenceLogger, PersistenceLoggerBuilder, WALError};
+use crate::WALError;
 
 /// Header prepended to each event in the log
-type EventHeaderType = u32;
-const EVENT_HEADER_LEN: usize = std::mem::size_of::<EventHeaderType>();
+pub(crate) type EventHeaderType = u32;
+pub(crate) const EVENT_HEADER_LEN: usize = std::mem::size_of::<EventHeaderType>();
 
 /// Maximum file size. 1GB.
-const MAX_FILE_SIZE: usize = 1024 * 1024 * 1024;
+pub(crate) const MAX_FILE_SIZE: usize = 1024 * 1024 * 1024;
 
 /// Config for a write-ahead-log
 #[derive(Clone)]
@@ -41,7 +47,7 @@ pub struct WALoggerConfig<M> {
 
 impl<M> WALoggerConfig<M>
 where
-    M: Serializable<Bytes> + Deserializable<[u8]> + Debug,
+    M: Serializable<Bytes> + Debug,
 {
     pub fn new(file_path: PathBuf, sync: bool) -> Self {
         Self {
@@ -51,47 +57,22 @@ where
         }
     }
 
-    // an iterator to the events in "self.file_path"
-    // TODO self.file_path includes the file index if used for events()
-    pub fn events(self) -> impl Iterator<Item = M> {
-        let curr_file_handle =
-            AppendOnlyFile::read_only(self.file_path.clone()).expect("failed to read file");
-        let mut logger = WALogger {
-            _marker: PhantomData,
-            file_path: self.file_path,
-
-            curr_file_index: 0,
-            curr_file_handle,
-            curr_file_offset: 0,
-            sync: self.sync,
-        };
-
-        std::iter::repeat(()).map_while(move |()| match logger.load_one() {
-            Ok(msg) => Some(msg),
-            Err(WALError::IOError(err)) if err.kind() == io::ErrorKind::UnexpectedEof => None,
-            Err(err) => panic!("error reading WAL: {:?}", err),
-        })
-    }
-}
-
-impl<M> PersistenceLoggerBuilder for WALoggerConfig<M>
-where
-    M: Serializable<Bytes> + Deserializable<[u8]> + Debug,
-{
-    type PersistenceLogger = WALogger<M>;
-
     // this definition of the build function means that we can only have one type of message in this WAL
     // should enforce this in `push`/have WALogger parametrized by the message type
-    fn build(self) -> Result<Self::PersistenceLogger, WALError> {
+    pub fn build(self) -> Result<WALogger<M>, WALError> {
         let curr_file_index = 0;
 
         let mut new_file_path = self.file_path.clone().into_os_string();
         new_file_path.push(".");
         new_file_path.push(curr_file_index.to_string());
 
-        let curr_file_handle = AppendOnlyFile::new(new_file_path.into())?;
+        let curr_file_handle = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .create(true)
+            .open(new_file_path)?;
 
-        Ok(Self::PersistenceLogger {
+        Ok(WALogger {
             _marker: PhantomData,
             file_path: self.file_path,
             curr_file_index,
@@ -102,30 +83,22 @@ where
     }
 }
 
-/// Write-ahead-logger that Serializes/Deserializes Events to an append-only-file
+/// Write-ahead-logger that Serializes Events to an append-only-file
 #[derive(Debug)]
 pub struct WALogger<M> {
     _marker: PhantomData<M>,
     file_path: PathBuf,
 
     curr_file_index: u64,
-    curr_file_handle: AppendOnlyFile,
+    curr_file_handle: File,
     curr_file_offset: u64,
 
     sync: bool,
 }
 
-impl<M: Serializable<Bytes> + Deserializable<[u8]> + Debug> PersistenceLogger for WALogger<M> {
-    type Event = M;
-
-    fn push(&mut self, message: &Self::Event) -> Result<(), WALError> {
-        self.push(message)
-    }
-}
-
 impl<M> WALogger<M>
 where
-    M: Serializable<Bytes> + Deserializable<[u8]> + Debug,
+    M: Serializable<Bytes> + Debug,
 {
     pub fn push(&mut self, message: &M) -> Result<(), WALError> {
         let msg_buf = message.serialize();
@@ -146,7 +119,11 @@ where
             new_file_path.push(".");
             new_file_path.push(self.curr_file_index.to_string());
 
-            self.curr_file_handle = AppendOnlyFile::new(new_file_path.into())?;
+            self.curr_file_handle = OpenOptions::new()
+                .read(true)
+                .append(true)
+                .create(true)
+                .open(new_file_path)?;
             self.curr_file_offset = 0;
         }
 
@@ -159,18 +136,6 @@ where
         }
         Ok(())
     }
-
-    fn load_one(&mut self) -> Result<M, WALError> {
-        let mut len_buf = [0u8; EVENT_HEADER_LEN];
-        self.curr_file_handle.read_exact(&mut len_buf)?;
-        let len = EventHeaderType::from_le_bytes(len_buf);
-        let mut buf = vec![0u8; len as usize];
-        self.curr_file_handle.read_exact(&mut buf)?;
-        let offset = (len_buf.len() + buf.len()) as u64;
-        self.curr_file_offset += offset;
-        let msg = M::deserialize(&buf).map_err(|e| WALError::DeserError(Box::new(e)))?;
-        Ok(msg)
-    }
 }
 
 #[cfg(test)]
@@ -181,8 +146,8 @@ mod test {
     use monad_types::{Deserializable, Serializable};
 
     use crate::{
+        reader::{WALReader, WALReaderConfig},
         wal::{WALogger, WALoggerConfig, EVENT_HEADER_LEN, MAX_FILE_SIZE},
-        PersistenceLoggerBuilder,
     };
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -252,12 +217,10 @@ mod test {
         // read events from the wal, assert equal
         let mut log2_path = log1_path.into_os_string();
         log2_path.push(".0");
-        let logger2_config = WALoggerConfig::new(
-            log2_path.into(),
-            false, // sync
-        );
+        let logger2_config = WALReaderConfig::new(log2_path.into());
+        let mut logger2: WALReader<TestEvent> = logger2_config.build().unwrap();
         let mut state2 = VecState::default();
-        for event in logger2_config.events() {
+        while let Ok(event) = logger2.load_one() {
             state2.update(event);
         }
         assert_eq!(state1, state2);

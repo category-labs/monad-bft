@@ -73,7 +73,7 @@ use monad_validator::{
     signature_collection::SignatureCollection, validator_set::ValidatorSetFactory,
     weighted_round_robin::WeightedRoundRobin,
 };
-use monad_wal::{wal::WALoggerConfig, PersistenceLoggerBuilder};
+use monad_wal::wal::WALoggerConfig;
 use opentelemetry::metrics::MeterProvider;
 use opentelemetry_otlp::{MetricExporter, WithExportConfig};
 use rand_chacha::{rand_core::SeedableRng, ChaCha8Rng};

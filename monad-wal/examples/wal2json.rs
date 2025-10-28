@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::path::PathBuf;
+use std::{io::Write, path::PathBuf};
 
 use clap::Parser;
 use monad_bls::BlsSignatureCollection;
@@ -21,12 +21,20 @@ use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_eth_types::EthExecutionProtocol;
 use monad_executor_glue::LogFriendlyMonadEvent;
 use monad_secp::SecpSignature;
-use monad_wal::wal::WALoggerConfig;
+use monad_types::Deserializable;
+use monad_wal::{
+    reader::{WALReader, WALReaderConfig},
+    WALError,
+};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 #[derive(Parser, Debug)]
 struct Args {
     #[arg(long)]
     wal_path: PathBuf,
+
+    #[arg(short, default_value_t = 1)]
+    jobs: usize,
 }
 
 type SigType = SecpSignature;
@@ -37,9 +45,45 @@ type WrappedEvent = LogFriendlyMonadEvent<SigType, SigColType, ExecutionProtocol
 fn main() {
     let args = Args::parse();
 
-    let logger_config: WALoggerConfig<WrappedEvent> = WALoggerConfig::new(args.wal_path, false);
-    logger_config.events().for_each(|event| {
-        let event_json = serde_json::to_string(&event).expect("failed to serialize event");
-        println!("{}", event_json);
-    })
+    let start = std::time::Instant::now();
+
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(args.jobs)
+        .build_global()
+        .unwrap();
+
+    let config = WALReaderConfig::new(args.wal_path);
+    let mut reader: WALReader<WrappedEvent> = config.build().unwrap();
+
+    // this loads everything into memory at once
+    // this is not ideal, but each file is capped at 1GB currently anyways
+    let raw_events: Vec<_> = std::iter::repeat(())
+        .map_while(move |()| match reader.load_one_raw() {
+            Ok(raw) => Some(raw),
+            Err(WALError::IOError(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => None,
+            Err(err) => panic!("error reading WAL: {:?}", err),
+        })
+        .collect();
+
+    eprintln!("done read from disk in {:?}", start.elapsed());
+
+    // build output strings in memory
+    let events = raw_events
+        .into_par_iter()
+        .map(|raw| {
+            let event = WrappedEvent::deserialize(&raw).expect("failed to deserialize WAL event");
+            serde_json::to_string(&event).unwrap()
+        })
+        .collect_vec_list();
+
+    eprintln!("done serializing events in {:?}", start.elapsed());
+
+    let mut stdout = std::io::stdout().lock();
+    let mut buffered_stdout = std::io::BufWriter::new(&mut stdout);
+    for event in events.iter().flatten() {
+        writeln!(buffered_stdout, "{}", event).unwrap();
+    }
+    buffered_stdout.flush().unwrap();
+
+    eprintln!("done flushing in {:?}", start.elapsed());
 }
