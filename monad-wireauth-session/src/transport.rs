@@ -10,27 +10,27 @@ use monad_wireauth_protocol::{
 use tracing::debug;
 
 use crate::{
-    common::{CommonSessionData, Config, MessageEvent, RekeyEvent, SessionError, TerminatedEvent},
+    common::{Config, MessageEvent, RekeyEvent, SessionError, SessionState, TerminatedEvent},
     replay_filter::ReplayFilter,
 };
 
-pub struct Transport {
+pub struct TransportState {
     pub remote_index: SessionIndex,
     pub send_key: CipherKey,
     pub send_nonce: u64,
     pub recv_key: CipherKey,
     pub replay_filter: ReplayFilter,
-    pub common: CommonSessionData,
+    pub common: SessionState,
 }
 
-impl Transport {
+impl TransportState {
     pub fn new(
         remote_index: SessionIndex,
         send_key: CipherKey,
         recv_key: CipherKey,
-        common: CommonSessionData,
+        common: SessionState,
     ) -> Self {
-        Transport {
+        TransportState {
             remote_index,
             send_key,
             send_nonce: 0,
@@ -101,15 +101,12 @@ impl Transport {
         &mut self,
         config: &Config,
         duration_since_start: Duration,
-    ) -> Result<
-        (
-            Option<Duration>,
-            Option<MessageEvent>,
-            Option<RekeyEvent>,
-            Option<TerminatedEvent>,
-        ),
-        SessionError,
-    > {
+    ) -> (
+        Option<Duration>,
+        Option<MessageEvent>,
+        Option<RekeyEvent>,
+        Option<TerminatedEvent>,
+    ) {
         let mut message = None;
         let mut rekey = None;
         let mut terminated = None;
@@ -142,8 +139,12 @@ impl Transport {
                 remote_addr = ?self.common.remote_addr,
                 "rekey timer expired"
             );
-            let rekey_event = self.common.handle_rekey_timer();
-            rekey = Some(rekey_event);
+            rekey = Some(RekeyEvent {
+                remote_public_key: self.common.remote_public_key.clone(),
+                remote_addr: self.common.remote_addr,
+                retry_attempts: self.common.retry_attempts,
+                stored_cookie: self.common.stored_cookie,
+            });
         }
 
         let session_timeout_expired = self
@@ -158,7 +159,7 @@ impl Transport {
                 "session timeout expired"
             );
 
-            let (terminated_event, rekey_event) = self.common.handle_session_timeout()?;
+            let (terminated_event, rekey_event) = self.common.handle_session_timeout();
             terminated = Some(terminated_event);
             rekey = rekey.or(rekey_event);
         }
@@ -175,13 +176,13 @@ impl Transport {
                 "max session duration expired"
             );
 
-            let (terminated_event, _) = self.common.handle_session_timeout()?;
+            let (terminated_event, _) = self.common.handle_session_timeout();
             terminated = Some(terminated_event);
             rekey = None;
         }
 
         let next_timer = self.common.get_next_deadline();
-        Ok((next_timer, message, rekey, terminated))
+        (next_timer, message, rekey, terminated)
     }
 
     #[cfg(any(test, feature = "bench"))]
@@ -190,15 +191,15 @@ impl Transport {
     }
 }
 
-impl Deref for Transport {
-    type Target = CommonSessionData;
+impl Deref for TransportState {
+    type Target = SessionState;
 
     fn deref(&self) -> &Self::Target {
         &self.common
     }
 }
 
-impl DerefMut for Transport {
+impl DerefMut for TransportState {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.common
     }

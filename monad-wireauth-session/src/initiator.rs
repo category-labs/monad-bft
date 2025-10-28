@@ -11,8 +11,8 @@ use monad_wireauth_protocol::{
 };
 
 use crate::{
-    common::{add_jitter, CommonSessionData, Config, SessionError, SessionTimeoutResult},
-    transport::Transport,
+    common::{add_jitter, Config, SessionError, SessionState, SessionTimeoutResult},
+    transport::TransportState,
 };
 
 pub struct ValidatedHandshakeResponse {
@@ -20,12 +20,12 @@ pub struct ValidatedHandshakeResponse {
     remote_index: SessionIndex,
 }
 
-pub struct Initiator {
+pub struct InitiatorState {
     handshake_state: handshake::HandshakeState,
-    common: CommonSessionData,
+    common: SessionState,
 }
 
-impl Initiator {
+impl InitiatorState {
     #[allow(clippy::too_many_arguments)]
     pub fn new<R: secp256k1::rand::Rng + secp256k1::rand::CryptoRng>(
         rng: &mut R,
@@ -52,7 +52,7 @@ impl Initiator {
         .map_err(SessionError::InvalidHandshake)?;
 
         let mac1 = init_msg.mac1.0;
-        let mut common = CommonSessionData::new(
+        let mut common = SessionState::new(
             remote_addr,
             remote_static_key,
             local_session_index,
@@ -64,7 +64,7 @@ impl Initiator {
         common.stored_cookie = cookie_secret;
         common.last_handshake_mac1 = Some(mac1);
 
-        let mut session = Initiator {
+        let mut session = InitiatorState {
             handshake_state,
             common,
         };
@@ -112,7 +112,7 @@ impl Initiator {
         duration_since_start: Duration,
         validated_response: ValidatedHandshakeResponse,
         _remote_addr: SocketAddr,
-    ) -> (Transport, Duration, DataPacketHeader) {
+    ) -> (TransportState, Duration, DataPacketHeader) {
         self.common.reset_session_timeout(
             duration_since_start,
             add_jitter(rng, config.session_timeout, config.session_timeout_jitter),
@@ -124,7 +124,7 @@ impl Initiator {
         self.common
             .set_max_session_duration(duration_since_start, config.max_session_duration);
 
-        let mut transport = Transport::new(
+        let mut transport = TransportState::new(
             validated_response.remote_index,
             validated_response.transport_keys.send_key,
             validated_response.transport_keys.recv_key,
@@ -141,32 +141,32 @@ impl Initiator {
     pub fn tick(
         &mut self,
         duration_since_start: Duration,
-    ) -> Result<Option<(Option<Duration>, SessionTimeoutResult)>, SessionError> {
+    ) -> Option<(Option<Duration>, SessionTimeoutResult)> {
         let session_timeout_expired = self
             .common
             .session_timeout_deadline
             .is_some_and(|deadline| deadline <= duration_since_start);
 
         if !session_timeout_expired {
-            return Ok(None);
+            return None;
         }
 
         self.common.clear_session_timeout();
-        let (terminated, rekey) = self.handle_session_timeout()?;
+        let (terminated, rekey) = self.handle_session_timeout();
         let timer = self.common.get_next_deadline();
-        Ok(Some((timer, SessionTimeoutResult { terminated, rekey })))
+        Some((timer, SessionTimeoutResult { terminated, rekey }))
     }
 }
 
-impl Deref for Initiator {
-    type Target = CommonSessionData;
+impl Deref for InitiatorState {
+    type Target = SessionState;
 
     fn deref(&self) -> &Self::Target {
         &self.common
     }
 }
 
-impl DerefMut for Initiator {
+impl DerefMut for InitiatorState {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.common
     }

@@ -11,8 +11,8 @@ use monad_wireauth_protocol::{
 };
 
 use crate::{
-    common::{add_jitter, CommonSessionData, Config, SessionError, SessionTimeoutResult},
-    transport::Transport,
+    common::{add_jitter, Config, SessionError, SessionState, SessionTimeoutResult},
+    transport::TransportState,
 };
 
 pub struct ValidatedHandshakeInit {
@@ -22,25 +22,25 @@ pub struct ValidatedHandshakeInit {
     pub remote_index: SessionIndex,
 }
 
-pub struct Responder {
-    transport: Transport,
+pub struct ResponderState {
+    transport: TransportState,
 }
 
-impl Deref for Responder {
-    type Target = CommonSessionData;
+impl Deref for ResponderState {
+    type Target = SessionState;
 
     fn deref(&self) -> &Self::Target {
         &self.transport
     }
 }
 
-impl DerefMut for Responder {
+impl DerefMut for ResponderState {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.transport
     }
 }
 
-impl Responder {
+impl ResponderState {
     pub fn validate_init(
         local_static_key: &PrivateKey,
         local_static_public: &PublicKey,
@@ -80,7 +80,7 @@ impl Responder {
         stored_cookie: Option<&[u8; 16]>,
         validated_init: ValidatedHandshakeInit,
         remote_addr: SocketAddr,
-    ) -> Result<(Responder, Duration, HandshakeResponse), SessionError> {
+    ) -> Result<(ResponderState, Duration, HandshakeResponse), SessionError> {
         let mut handshake_state = validated_init.handshake_state;
         let (response_msg, transport_keys) = handshake::send_handshake_response(
             rng,
@@ -93,7 +93,7 @@ impl Responder {
 
         let response_mac1 = response_msg.mac1.0;
 
-        let mut common = CommonSessionData::new(
+        let mut common = SessionState::new(
             remote_addr,
             validated_init.remote_public_key,
             local_session_index,
@@ -112,13 +112,13 @@ impl Responder {
             .get_next_deadline()
             .expect("expected at least one timer to be set");
 
-        let transport = Transport::new(
+        let transport = TransportState::new(
             handshake_state.receiver_index.into(),
             transport_keys.send_key,
             transport_keys.recv_key,
             common,
         );
-        Ok((Responder { transport }, timer, response_msg))
+        Ok((ResponderState { transport }, timer, response_msg))
     }
 
     pub fn decrypt(
@@ -136,7 +136,7 @@ impl Responder {
         rng: &mut R,
         config: &Config,
         duration_since_start: Duration,
-    ) -> (Transport, Duration) {
+    ) -> (TransportState, Duration) {
         self.transport
             .common
             .reset_session_timeout(duration_since_start, config.session_timeout);
@@ -160,19 +160,19 @@ impl Responder {
     pub fn tick(
         &mut self,
         duration_since_start: Duration,
-    ) -> Result<Option<(Option<Duration>, SessionTimeoutResult)>, SessionError> {
+    ) -> Option<(Option<Duration>, SessionTimeoutResult)> {
         let session_timeout_expired = self
             .session_timeout_deadline
             .is_some_and(|deadline| deadline <= duration_since_start);
 
         if !session_timeout_expired {
-            return Ok(None);
+            return None;
         }
 
         self.clear_session_timeout();
-        let (terminated, rekey) = self.handle_session_timeout()?;
+        let (terminated, rekey) = self.handle_session_timeout();
         let timer = self.get_next_deadline();
-        Ok(Some((timer, SessionTimeoutResult { terminated, rekey })))
+        Some((timer, SessionTimeoutResult { terminated, rekey }))
     }
 
     pub fn handle_cookie(

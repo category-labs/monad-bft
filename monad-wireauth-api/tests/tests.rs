@@ -20,25 +20,7 @@ fn create_manager() -> (API<TestContext>, PublicKey, TestContext, Config) {
     let mut rng = rng();
     let (public_key, private_key) =
         monad_wireauth_protocol::crypto::generate_keypair(&mut rng).unwrap();
-    let config = Config {
-        session_timeout: Duration::from_secs(10),
-        session_timeout_jitter: Duration::from_secs(1),
-        keepalive_jitter: Duration::from_secs(1),
-        keepalive_interval: Duration::from_secs(5),
-        rekey_jitter: Duration::from_secs(10),
-        rekey_interval: Duration::from_secs(120),
-        max_session_duration: Duration::from_secs(150),
-        handshake_rate_limit: 50,
-        handshake_rate_reset_interval: Duration::from_secs(1),
-        cookie_refresh_duration: Duration::from_secs(120),
-        low_watermark_sessions: 100,
-        high_watermark_sessions: 500,
-        max_sessions_per_ip: 10,
-        ip_rate_limit_window: Duration::from_secs(60),
-        max_requests_per_ip: 10,
-        ip_history_capacity: 100_000,
-        psk: [0u8; 32],
-    };
+    let config = Config::default();
     let context = TestContext::new();
     let context_clone = context.clone();
     let manager = API::new(config.clone(), private_key, public_key.clone(), context);
@@ -367,23 +349,9 @@ fn test_encrypt_by_pubkey_and_socket() {
 fn test_cookie_reply_on_init() {
     init_tracing();
     let config = Config {
-        session_timeout: Duration::from_secs(10),
-        session_timeout_jitter: Duration::ZERO,
-        keepalive_jitter: Duration::ZERO,
-        keepalive_interval: Duration::from_secs(5),
-        rekey_jitter: Duration::ZERO,
-        rekey_interval: Duration::from_secs(120),
-        max_session_duration: Duration::from_secs(150),
         handshake_rate_limit: 10,
-        handshake_rate_reset_interval: Duration::from_secs(1),
-        cookie_refresh_duration: Duration::from_secs(120),
         low_watermark_sessions: 1,
-        high_watermark_sessions: 500,
-        max_sessions_per_ip: 10,
-        ip_rate_limit_window: Duration::from_secs(60),
-        max_requests_per_ip: 10,
-        psk: [0u8; 32],
-        ip_history_capacity: 100_000,
+        ..Config::default()
     };
 
     let mut rng = rng();
@@ -489,25 +457,7 @@ fn test_timestamp_replay() {
 #[test]
 fn test_too_many_accepted_sessions() {
     init_tracing();
-    let config = Config {
-        session_timeout: Duration::from_secs(10),
-        session_timeout_jitter: Duration::from_secs(1),
-        keepalive_jitter: Duration::from_secs(1),
-        keepalive_interval: Duration::from_secs(5),
-        rekey_jitter: Duration::from_secs(10),
-        rekey_interval: Duration::from_secs(120),
-        max_session_duration: Duration::from_secs(150),
-        handshake_rate_limit: 50,
-        handshake_rate_reset_interval: Duration::from_secs(1),
-        cookie_refresh_duration: Duration::from_secs(120),
-        low_watermark_sessions: 100,
-        high_watermark_sessions: 500,
-        max_sessions_per_ip: 10,
-        ip_rate_limit_window: Duration::from_secs(60),
-        max_requests_per_ip: 50,
-        psk: [0u8; 32],
-        ip_history_capacity: 100_000,
-    };
+    let config = Config::default();
 
     let mut rng = rng();
     let (responder_public, responder_private) =
@@ -570,23 +520,8 @@ fn test_random_packet_error() {
 fn test_filter_drop_rate_limit() {
     init_tracing();
     let config = Config {
-        session_timeout: Duration::from_secs(10),
-        session_timeout_jitter: Duration::from_secs(1),
-        keepalive_jitter: Duration::from_secs(1),
-        keepalive_interval: Duration::from_secs(5),
-        rekey_jitter: Duration::from_secs(10),
-        rekey_interval: Duration::from_secs(120),
-        max_session_duration: Duration::from_secs(150),
         handshake_rate_limit: 2,
-        handshake_rate_reset_interval: Duration::from_secs(1),
-        cookie_refresh_duration: Duration::from_secs(120),
-        low_watermark_sessions: 100,
-        high_watermark_sessions: 500,
-        max_sessions_per_ip: 10,
-        ip_rate_limit_window: Duration::from_secs(60),
-        max_requests_per_ip: 10,
-        psk: [0u8; 32],
-        ip_history_capacity: 100_000,
+        ..Config::default()
     };
 
     let mut rng = rng();
@@ -676,25 +611,7 @@ fn test_next_timer() {
 #[test]
 fn test_responder_timeout() {
     init_tracing();
-    let config = Config {
-        session_timeout: Duration::from_secs(10),
-        session_timeout_jitter: Duration::ZERO,
-        keepalive_jitter: Duration::ZERO,
-        keepalive_interval: Duration::from_secs(5),
-        rekey_jitter: Duration::ZERO,
-        rekey_interval: Duration::from_secs(120),
-        max_session_duration: Duration::from_secs(150),
-        handshake_rate_limit: 50,
-        handshake_rate_reset_interval: Duration::from_secs(1),
-        cookie_refresh_duration: Duration::from_secs(120),
-        low_watermark_sessions: 100,
-        high_watermark_sessions: 500,
-        max_sessions_per_ip: 10,
-        ip_rate_limit_window: Duration::from_secs(60),
-        max_requests_per_ip: 10,
-        psk: [0u8; 32],
-        ip_history_capacity: 100_000,
-    };
+    let config = Config::default();
 
     let mut rng = rng();
     let (peer1_public, peer1_private) =
@@ -737,23 +654,8 @@ fn test_next_timer_includes_filter_reset() {
     init_tracing();
     let mut rng = rng();
     let config = Config {
-        session_timeout: Duration::from_secs(10),
-        session_timeout_jitter: Duration::from_secs(1),
-        keepalive_jitter: Duration::from_secs(1),
-        keepalive_interval: Duration::from_secs(100),
-        rekey_jitter: Duration::from_secs(10),
-        rekey_interval: Duration::from_secs(200),
-        max_session_duration: Duration::from_secs(300),
-        handshake_rate_limit: 50,
         handshake_rate_reset_interval: Duration::from_secs(5),
-        cookie_refresh_duration: Duration::from_secs(120),
-        low_watermark_sessions: 100,
-        high_watermark_sessions: 500,
-        max_sessions_per_ip: 10,
-        ip_rate_limit_window: Duration::from_secs(60),
-        max_requests_per_ip: 10,
-        ip_history_capacity: 100_000,
-        psk: [0u8; 32],
+        ..Config::default()
     };
 
     let (peer_public, peer_private) =
@@ -770,25 +672,7 @@ fn test_next_timer_includes_filter_reset() {
 fn test_next_timer_returns_minimum_of_session_and_filter() {
     init_tracing();
     let mut rng = rng();
-    let config = Config {
-        session_timeout: Duration::from_secs(10),
-        session_timeout_jitter: Duration::from_secs(1),
-        keepalive_jitter: Duration::from_secs(1),
-        keepalive_interval: Duration::from_secs(3),
-        rekey_jitter: Duration::from_secs(10),
-        rekey_interval: Duration::from_secs(200),
-        max_session_duration: Duration::from_secs(300),
-        handshake_rate_limit: 50,
-        handshake_rate_reset_interval: Duration::from_secs(60),
-        cookie_refresh_duration: Duration::from_secs(120),
-        low_watermark_sessions: 100,
-        high_watermark_sessions: 500,
-        max_sessions_per_ip: 10,
-        ip_rate_limit_window: Duration::from_secs(60),
-        max_requests_per_ip: 10,
-        ip_history_capacity: 100_000,
-        psk: [0u8; 32],
-    };
+    let config = Config::default();
 
     let (peer1_public, peer1_private) =
         monad_wireauth_protocol::crypto::generate_keypair(&mut rng).unwrap();

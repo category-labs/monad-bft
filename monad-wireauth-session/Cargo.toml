@@ -10,6 +10,7 @@ rand.workspace = true
 thiserror.workspace = true
 secp256k1 = { workspace = true, features = ["global-context"] }
 zerocopy.workspace = true
+zeroize.workspace = true
 tracing.workspace = true
 hex.workspace = true
 

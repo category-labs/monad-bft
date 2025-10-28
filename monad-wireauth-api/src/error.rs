@@ -91,6 +91,9 @@ pub enum Error {
     #[error("session not found")]
     SessionNotFound,
 
+    #[error("session index exhausted")]
+    SessionIndexExhausted,
+
     #[error("session not established for address {addr}")]
     SessionNotEstablishedForAddress { addr: SocketAddr },
 

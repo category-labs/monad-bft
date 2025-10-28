@@ -1,7 +1,7 @@
 use std::{future::pending, net::SocketAddr, rc::Rc, time::Duration};
 
-use monad_wireauth_api::{Config, StdContext, API, RETRY_ALWAYS};
 use clap::Parser;
+use monad_wireauth_api::{Config, StdContext, API, RETRY_ALWAYS};
 use monad_wireauth_protocol::{common::PublicKey, crypto};
 use monoio::net::udp::UdpSocket;
 use secp256k1::rand::{rngs::StdRng, SeedableRng};

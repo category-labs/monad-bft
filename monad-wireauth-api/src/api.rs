@@ -22,7 +22,7 @@ use crate::{
     error::{Error, ProtocolErrorContext, Result, SessionErrorContext},
     filter::{Filter, FilterAction},
     state::State,
-    Initiator, Responder, Transport,
+    InitiatorState, ResponderState, TransportState,
 };
 
 pub struct API<C: Context> {
@@ -125,24 +125,16 @@ impl<C: Context> API<C> {
         for (_, session_id) in expired_sessions {
             let tick_result = if self.state.get_initiator(&session_id).is_some() {
                 self.state.get_initiator_mut(&session_id).and_then(|s| {
-                    match s.tick(duration_since_start) {
-                        Ok(result) => {
-                            result.map(|(timer, r)| (timer, None, r.rekey, Some(r.terminated)))
-                        }
-                        Err(_) => None,
-                    }
+                    s.tick(duration_since_start)
+                        .map(|(timer, r)| (timer, None, r.rekey, Some(r.terminated)))
                 })
             } else if self.state.get_responder(&session_id).is_some() {
                 self.state.get_responder_mut(&session_id).and_then(|s| {
-                    match s.tick(duration_since_start) {
-                        Ok(result) => {
-                            result.map(|(timer, r)| (timer, None, r.rekey, Some(r.terminated)))
-                        }
-                        Err(_) => None,
-                    }
+                    s.tick(duration_since_start)
+                        .map(|(timer, r)| (timer, None, r.rekey, Some(r.terminated)))
                 })
             } else if let Some(transport) = self.state.get_transport_mut(&session_id) {
-                transport.tick(&self.config, duration_since_start).ok()
+                Some(transport.tick(&self.config, duration_since_start))
             } else {
                 None
             };
@@ -206,19 +198,19 @@ impl<C: Context> API<C> {
         }
     }
 
-    fn handle_established(&mut self, session_id: SessionIndex, transport: Transport) {
+    fn handle_established(&mut self, session_id: SessionIndex, transport: TransportState) {
         debug!(local_session_id=?session_id, "handling established session");
-        let terminated_sessions =
-            self.state
-                .handle_established(session_id, transport, &self.config);
+        let replaced_sessions = self
+            .state
+            .handle_established(session_id, transport, &self.config);
 
-        for terminated_session_id in terminated_sessions {
+        for replaced_session_id in replaced_sessions {
             let session = self
                 .state
-                .get_transport(&terminated_session_id)
+                .get_transport(&replaced_session_id)
                 .expect("session must exist");
             self.handle_terminate_event(
-                terminated_session_id,
+                replaced_session_id,
                 session.remote_public_key.clone(),
                 session.remote_addr,
             );
@@ -253,11 +245,15 @@ impl<C: Context> API<C> {
         cookie: Option<[u8; 16]>,
         retry_attempts: u64,
     ) -> Result<(SessionIndex, Duration, HandshakeInitiation)> {
-        let local_index = self.state.allocate_session_index();
+        let reservation = self
+            .state
+            .reserve_session_index()
+            .ok_or(Error::SessionIndexExhausted)?;
+        let local_index = reservation.index();
         debug!(local_session_id=?local_index, "allocating session index for new connection");
         let system_time = self.context.system_time();
         let duration_since_start = self.context.duration_since_start();
-        let (session, (timer, message)) = Initiator::new(
+        let (session, (timer, message)) = InitiatorState::new(
             self.context.rng(),
             system_time,
             duration_since_start,
@@ -271,6 +267,8 @@ impl<C: Context> API<C> {
             retry_attempts,
         )
         .map_err(|e| e.with_addr(remote_addr))?;
+
+        reservation.commit();
 
         self.state
             .insert_initiator(local_index, session, (&remote_static_key).into());
@@ -342,9 +340,8 @@ impl<C: Context> API<C> {
         }
 
         let duration_since_start = self.context.duration_since_start();
-        let local_index = self.state.allocate_session_index();
 
-        let validated_init = Responder::validate_init(
+        let validated_init = ResponderState::validate_init(
             &self.local_static_key,
             &self.local_static_public,
             handshake_packet,
@@ -363,7 +360,13 @@ impl<C: Context> API<C> {
 
         let stored_cookie = self.state.lookup_cookie_from_accepted_sessions(remote_key);
 
-        let (session, timer, message) = Responder::new(
+        let reservation = self
+            .state
+            .reserve_session_index()
+            .ok_or(Error::SessionIndexExhausted)?;
+        let local_index = reservation.index();
+
+        let (session, timer, message) = ResponderState::new(
             self.context.rng(),
             duration_since_start,
             &self.config,
@@ -373,6 +376,8 @@ impl<C: Context> API<C> {
             remote_addr,
         )
         .map_err(|e| e.with_addr(remote_addr))?;
+
+        reservation.commit();
 
         self.state
             .insert_responder(local_index, session, remote_key);
@@ -448,6 +453,12 @@ impl<C: Context> API<C> {
         response: &mut HandshakeResponse,
         remote_addr: SocketAddr,
     ) -> Result<()> {
+        monad_wireauth_protocol::crypto::verify_mac1(response, &(&self.local_static_public).into())
+            .map_err(|source| Error::Mac1VerificationFailed {
+                addr: remote_addr,
+                source,
+            })?;
+
         if !self.check_under_load(remote_addr, response.sender_index.get(), response)? {
             debug!(?remote_addr, "handshake response dropped under load");
             return Ok(());
@@ -455,11 +466,11 @@ impl<C: Context> API<C> {
 
         let receiver_session_index = response.receiver_index.into();
 
-        let mut initiator = self
+        let initiator = self
             .state
-            .remove_initiator(&response.receiver_index.get().into())
+            .get_initiator_mut(&receiver_session_index)
             .ok_or(Error::InvalidReceiverIndex {
-                index: response.receiver_index.get().into(),
+                index: receiver_session_index,
                 addr: remote_addr,
             })?;
 
@@ -471,6 +482,11 @@ impl<C: Context> API<C> {
                 response,
             )
             .map_err(|e| e.with_addr(remote_addr))?;
+
+        let initiator = self
+            .state
+            .remove_initiator(&receiver_session_index)
+            .unwrap();
 
         let duration_since_start = self.context.duration_since_start();
         debug!(local_session_id=?receiver_session_index, "initiator session established");
