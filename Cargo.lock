@@ -5250,6 +5250,7 @@ dependencies = [
  "alloy-consensus",
  "alloy-rlp",
  "bincode",
+ "bytes",
  "futures",
  "monad-eth-txpool-types",
  "tokio",

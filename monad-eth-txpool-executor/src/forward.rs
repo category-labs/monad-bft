@@ -217,7 +217,7 @@ impl EthTxPoolForwardingManagerProjected<'_> {
                 let tx_bytes = alloy_rlp::encode(tx);
                 let bool_byte = 0x01u8;
 
-                // Manually encode as RLP list: [tx_bytes, bool_byte]
+                // Encode as RLP list: [tx_bytes, bool_byte]
                 let mut out = Vec::new();
                 let payload_length = tx_bytes.length() + bool_byte.length();
                 alloy_rlp::Header {
