@@ -111,7 +111,6 @@ where
         round: Round,
         execution_timestamp_s: u64,
         do_local_insert: bool,
-        txpool_allow_insufficient_transfer_balance_tx: bool,
     ) -> io::Result<
         TokioTaskUpdater<
             TxPoolCommand<
@@ -152,7 +151,6 @@ where
                         chain_config.get_chain_revision(round),
                         chain_config.get_execution_chain_revision(execution_timestamp_s),
                         do_local_insert,
-                        txpool_allow_insufficient_transfer_balance_tx,
                     );
 
                     Self {
@@ -385,11 +383,12 @@ where
 
                     let mut num_invalid_bytes = 0;
 
-                    let txs = txs
+                    // Validate that raw transactions can be decoded, but keep them as Bytes
+                    let validated_txs = txs
                         .into_iter()
                         .filter_map(|raw_tx| {
-                            if let Ok(tx) = TxEnvelope::decode(&mut raw_tx.as_ref()) {
-                                Some(tx)
+                            if TxEnvelope::decode(&mut raw_tx.as_ref()).is_ok() {
+                                Some(raw_tx)
                             } else {
                                 num_invalid_bytes += 1;
                                 None
@@ -408,7 +407,7 @@ where
                     self.forwarding_manager
                         .as_mut()
                         .project()
-                        .add_ingress_txs(txs);
+                        .add_ingress_txs(validated_txs);
                 }
                 TxPoolCommand::EnterRound {
                     epoch: _,
@@ -519,39 +518,43 @@ where
 
             let mut ipc_events = BTreeMap::default();
 
-            let recovered_txs = {
-                let (recovered_txs, dropped_txs): (Vec<_>, BTreeMap<_, _>) =
-                    unvalidated_txs.into_par_iter().partition_map(|tx| {
-                        let _span = trace_span!("txpool: ipc tx recover signer").entered();
-                        match tx.secp256k1_recover() {
-                            Ok(signer) => {
-                                rayon::iter::Either::Left(Recovered::new_unchecked(tx, signer))
+            let recovered_txs_with_flags = {
+                let (recovered_txs_with_flags, dropped_txs): (Vec<_>, BTreeMap<_, _>) =
+                    unvalidated_txs
+                        .into_par_iter()
+                        .partition_map(|(tx, bypass_flag)| {
+                            let _span = trace_span!("txpool: ipc tx recover signer").entered();
+                            match tx.secp256k1_recover() {
+                                Ok(signer) => rayon::iter::Either::Left((
+                                    Recovered::new_unchecked(tx, signer),
+                                    bypass_flag,
+                                )),
+                                Err(_) => rayon::iter::Either::Right((
+                                    *tx.tx_hash(),
+                                    EthTxPoolEventType::Drop {
+                                        reason: EthTxPoolDropReason::InvalidSignature,
+                                    },
+                                )),
                             }
-                            Err(_) => rayon::iter::Either::Right((
-                                *tx.tx_hash(),
-                                EthTxPoolEventType::Drop {
-                                    reason: EthTxPoolDropReason::InvalidSignature,
-                                },
-                            )),
-                        }
-                    });
+                        });
                 ipc_events.extend(dropped_txs);
-                recovered_txs
+                recovered_txs_with_flags
             };
 
             let mut inserted_addresses = HashSet::<Address>::default();
-            let mut inserted_txs = Vec::default();
+            let mut inserted_txs_with_flags = Vec::default();
 
             pool.insert_txs(
                 &mut EthTxPoolEventTracker::new(&metrics.pool, &mut ipc_events),
                 block_policy,
                 state_backend,
                 chain_config,
-                recovered_txs,
+                recovered_txs_with_flags,
                 true,
                 |tx| {
                     inserted_addresses.insert(tx.signer());
-                    inserted_txs.push(tx.raw().tx().clone());
+                    inserted_txs_with_flags
+                        .push((tx.raw().tx().clone(), tx.bypass_transfer_balance_check()));
                 },
             );
 
@@ -560,7 +563,7 @@ where
             forwarding_manager
                 .as_mut()
                 .project()
-                .add_egress_txs(inserted_txs.iter());
+                .add_egress_txs(inserted_txs_with_flags.iter().map(|(tx, flag)| (tx, *flag)));
 
             metrics.update(executor_metrics);
             ipc.as_mut().broadcast_tx_events(ipc_events);
@@ -579,27 +582,37 @@ where
 
         let mut ipc_events = BTreeMap::default();
 
-        while let Poll::Ready(forwarded_txs) = forwarding_manager.as_mut().poll_ingress(cx) {
-            let _span = debug_span!("forwarded txs", len = forwarded_txs.len()).entered();
+        while let Poll::Ready(forwarded_txs_with_flags) =
+            forwarding_manager.as_mut().poll_ingress(cx)
+        {
+            let _span =
+                debug_span!("forwarded txs", len = forwarded_txs_with_flags.len()).entered();
 
-            let recovered_txs = {
-                let (recovered_txs, dropped_txs): (Vec<_>, Vec<_>) =
-                    forwarded_txs.into_par_iter().partition_map(|tx| {
-                        let _span = trace_span!("txpool: forwarded tx recover signer").entered();
-                        match tx.secp256k1_recover() {
-                            Ok(signer) => {
-                                rayon::iter::Either::Left(Recovered::new_unchecked(tx, signer))
+            let recovered_txs_with_flags = {
+                let (recovered_txs_with_flags, dropped_txs): (Vec<_>, Vec<_>) =
+                    forwarded_txs_with_flags
+                        .into_par_iter()
+                        .partition_map(|(tx, bypass_flag)| {
+                            let _span =
+                                trace_span!("txpool: forwarded tx recover signer").entered();
+                            match tx.secp256k1_recover() {
+                                Ok(signer) => {
+                                    // Preserve the bypass flag from forwarded transaction
+                                    rayon::iter::Either::Left((
+                                        Recovered::new_unchecked(tx, signer),
+                                        bypass_flag,
+                                    ))
+                                }
+                                Err(_) => rayon::iter::Either::Right((
+                                    *tx.tx_hash(),
+                                    EthTxPoolEventType::Drop {
+                                        reason: EthTxPoolDropReason::InvalidSignature,
+                                    },
+                                )),
                             }
-                            Err(_) => rayon::iter::Either::Right((
-                                *tx.tx_hash(),
-                                EthTxPoolEventType::Drop {
-                                    reason: EthTxPoolDropReason::InvalidSignature,
-                                },
-                            )),
-                        }
-                    });
+                        });
                 ipc_events.extend(dropped_txs);
-                recovered_txs
+                recovered_txs_with_flags
             };
 
             let mut inserted_addresses = HashSet::<Address>::default();
@@ -609,7 +622,7 @@ where
                 block_policy,
                 state_backend,
                 chain_config,
-                recovered_txs,
+                recovered_txs_with_flags,
                 false,
                 |tx| {
                     inserted_addresses.insert(tx.signer());

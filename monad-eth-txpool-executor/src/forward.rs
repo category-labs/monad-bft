@@ -21,6 +21,7 @@ use std::{
 };
 
 use alloy_consensus::TxEnvelope;
+use alloy_rlp::Decodable;
 use bytes::Bytes;
 use monad_chain_config::{
     execution_revision::ExecutionChainParams, revision::ChainRevision, ChainConfig,
@@ -48,7 +49,7 @@ pub fn egress_max_size_bytes(execution_params: &ExecutionChainParams) -> usize {
 
 #[pin_project(project = EthTxPoolForwardingManagerProjected)]
 pub struct EthTxPoolForwardingManager {
-    ingress: VecDeque<TxEnvelope>,
+    ingress: VecDeque<(TxEnvelope, bool)>,
     #[pin]
     ingress_timer: tokio::time::Interval,
     ingress_waker: Option<Waker>,
@@ -76,7 +77,10 @@ impl Default for EthTxPoolForwardingManager {
 }
 
 impl EthTxPoolForwardingManager {
-    pub fn poll_ingress(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Vec<TxEnvelope>> {
+    pub fn poll_ingress(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Vec<(TxEnvelope, bool)>> {
         let EthTxPoolForwardingManagerProjected {
             ingress,
             mut ingress_timer,
@@ -166,7 +170,7 @@ impl EthTxPoolForwardingManager {
 }
 
 impl EthTxPoolForwardingManagerProjected<'_> {
-    pub fn add_ingress_txs(&mut self, txs: Vec<TxEnvelope>) {
+    pub fn add_ingress_txs(&mut self, txs: Vec<Bytes>) {
         let Self {
             ingress,
             ingress_waker,
@@ -175,7 +179,43 @@ impl EthTxPoolForwardingManagerProjected<'_> {
 
         let capacity_remaining = INGRESS_MAX_SIZE.saturating_sub(ingress.len());
 
-        let dropped = txs.len().saturating_sub(capacity_remaining);
+        // Decode forwarded transactions with backward-compatible format
+        let decoded_txs: Vec<(TxEnvelope, bool)> = txs
+            .into_iter()
+            .filter_map(|bytes| {
+                // Try to decode entire message as TxEnvelope (old format, backward compatible)
+                match TxEnvelope::decode(&mut &bytes[..]) {
+                    Ok(tx) => {
+                        // Old format: just RLP-encoded transaction, flag defaults to false
+                        Some((tx, false))
+                    }
+                    Err(_) => {
+                        // New format: RLP + marker byte
+                        if bytes.len() < 2 {
+                            debug!("received invalid forwarded tx: too short");
+                            return None;
+                        }
+
+                        let tx_bytes = &bytes[..bytes.len() - 1];
+                        let flag_byte = bytes[bytes.len() - 1];
+
+                        match TxEnvelope::decode(&mut &tx_bytes[..]) {
+                            Ok(tx) => {
+                                // flag_byte == 0x01 means bypass_transfer_balance_check = true
+                                let bypass_flag = flag_byte == 0x01;
+                                Some((tx, bypass_flag))
+                            }
+                            Err(_) => {
+                                debug!("received invalid forwarded tx: failed to decode");
+                                None
+                            }
+                        }
+                    }
+                }
+            })
+            .collect();
+
+        let dropped = decoded_txs.len().saturating_sub(capacity_remaining);
 
         if dropped > 0 {
             debug!(
@@ -186,7 +226,7 @@ impl EthTxPoolForwardingManagerProjected<'_> {
             )
         }
 
-        ingress.extend(txs.into_iter().take(capacity_remaining));
+        ingress.extend(decoded_txs.into_iter().take(capacity_remaining));
 
         if ingress.is_empty() {
             return;
@@ -197,14 +237,24 @@ impl EthTxPoolForwardingManagerProjected<'_> {
         }
     }
 
-    pub fn add_egress_txs<'a>(&mut self, txs: impl Iterator<Item = &'a TxEnvelope>) {
+    pub fn add_egress_txs<'a>(&mut self, txs: impl Iterator<Item = (&'a TxEnvelope, bool)>) {
         let Self {
             egress,
             egress_waker,
             ..
         } = self;
 
-        egress.extend(txs.map(alloy_rlp::encode).map(Into::into));
+        // Backward-compatible encoding for forwarding:
+        // - If bypass flag is false (default): encode only RLP bytes (old format)
+        // - If bypass flag is true: encode RLP bytes + 0x01 marker byte (new format)
+        egress.extend(txs.map(|(tx, bypass_flag)| {
+            let mut bytes = alloy_rlp::encode(tx);
+            if bypass_flag {
+                // Only append marker byte if flag is true (non-default)
+                bytes.push(0x01);
+            }
+            Bytes::from(bytes)
+        }));
 
         if egress.is_empty() {
             return;
@@ -247,7 +297,6 @@ mod test {
     use alloy_consensus::{Transaction, TxEnvelope};
     use bytes::Bytes;
     use futures::task::noop_waker_ref;
-    use itertools::Itertools;
     use monad_chain_config::execution_revision::MonadExecutionRevision;
     use monad_eth_testutil::{make_eip1559_tx, make_eip7702_tx, make_legacy_tx, S1};
 
@@ -321,16 +370,17 @@ mod test {
                 );
             }
 
-            let txs = vec![generate_tx(0)];
+            let tx = generate_tx(0);
+            let encoded_txs = vec![Bytes::from(alloy_rlp::encode(tx.clone()))];
 
             forwarding_manager
                 .as_mut()
                 .project()
-                .add_ingress_txs(txs.clone());
+                .add_ingress_txs(encoded_txs);
 
             assert_eq!(
                 forwarding_manager.as_mut().poll_ingress(&mut cx),
-                Poll::Ready(txs.clone())
+                Poll::Ready(vec![(tx, false)])
             );
 
             assert_pending_now_and_forever(forwarding_manager, cx).await;
@@ -347,16 +397,17 @@ mod test {
             Poll::Pending
         );
 
-        let txs = vec![generate_tx(0)];
+        let tx = generate_tx(0);
+        let encoded_tx = Bytes::from(alloy_rlp::encode(tx.clone()));
 
         forwarding_manager
             .as_mut()
             .project()
-            .add_ingress_txs(txs.clone());
+            .add_ingress_txs(vec![encoded_tx.clone()]);
 
         assert_eq!(
             forwarding_manager.as_mut().poll_ingress(&mut cx),
-            Poll::Ready(txs.clone())
+            Poll::Ready(vec![(tx.clone(), false)])
         );
         assert_eq!(
             forwarding_manager.as_mut().poll_ingress(&mut cx),
@@ -366,7 +417,7 @@ mod test {
         forwarding_manager
             .as_mut()
             .project()
-            .add_ingress_txs(txs.clone());
+            .add_ingress_txs(vec![encoded_tx]);
 
         // Since time is frozen and we just polled, the forwarding manager should wait its interval
         // even though it should be "empty"
@@ -389,7 +440,7 @@ mod test {
         tokio::time::advance(Duration::from_nanos(1)).await;
         assert_eq!(
             forwarding_manager.as_mut().poll_ingress(&mut cx),
-            Poll::Ready(txs.clone())
+            Poll::Ready(vec![(tx, false)])
         );
 
         assert_pending_now_and_forever(forwarding_manager, cx).await;
@@ -410,36 +461,46 @@ mod test {
         // We insert the last tx below to test adding to an existing chunk
         const NUM_TXS: usize = INGRESS_CHUNK_MAX_SIZE * NUM_CHUNKS - 1;
 
+        let encoded_txs: Vec<Bytes> = (0..NUM_TXS as u64)
+            .map(|nonce| Bytes::from(alloy_rlp::encode(generate_tx(nonce))))
+            .collect();
+
         forwarding_manager
             .as_mut()
             .project()
-            .add_ingress_txs((0..NUM_TXS as u64).map(generate_tx).collect_vec());
+            .add_ingress_txs(encoded_txs);
 
         for chunk_num in 0..NUM_CHUNKS {
             tokio::time::advance(Duration::from_millis(INGRESS_CHUNK_INTERVAL_MS)).await;
 
             if chunk_num + 1 == NUM_CHUNKS {
+                let last_tx = generate_tx(0);
                 forwarding_manager
                     .as_mut()
                     .project()
-                    .add_ingress_txs(vec![generate_tx(0)]);
+                    .add_ingress_txs(vec![Bytes::from(alloy_rlp::encode(last_tx))]);
             }
 
-            let Poll::Ready(txs) = forwarding_manager.as_mut().poll_ingress(&mut cx) else {
+            let Poll::Ready(txs_with_flags) = forwarding_manager.as_mut().poll_ingress(&mut cx)
+            else {
                 panic!("forwarding manager should be ready after each iteration");
             };
 
-            assert_eq!(txs.len(), INGRESS_CHUNK_MAX_SIZE);
+            assert_eq!(txs_with_flags.len(), INGRESS_CHUNK_MAX_SIZE);
 
             // Check that txs are produced in the same order they are inserted
-            txs.into_iter().enumerate().for_each(|(idx, tx)| {
-                // By using % NUM_TXS, we can check that the last tx is the 0 nonce added above when
-                // we're at the last chunk
-                assert_eq!(
-                    tx.nonce(),
-                    ((idx + chunk_num * INGRESS_CHUNK_MAX_SIZE) as u64) % (NUM_TXS as u64)
-                );
-            });
+            txs_with_flags
+                .into_iter()
+                .enumerate()
+                .for_each(|(idx, (tx, bypass_flag))| {
+                    assert!(!bypass_flag, "default bypass flag should be false");
+                    // By using % NUM_TXS, we can check that the last tx is the 0 nonce added above when
+                    // we're at the last chunk
+                    assert_eq!(
+                        tx.nonce(),
+                        ((idx + chunk_num * INGRESS_CHUNK_MAX_SIZE) as u64) % (NUM_TXS as u64)
+                    );
+                });
 
             assert_eq!(
                 forwarding_manager.as_mut().poll_ingress(&mut cx),
@@ -460,16 +521,19 @@ mod test {
             Poll::Pending
         );
 
-        forwarding_manager.as_mut().project().add_ingress_txs(
-            (0..2 * INGRESS_CHUNK_MAX_SIZE as u64)
-                .map(generate_tx)
-                .collect_vec(),
-        );
+        let encoded_txs: Vec<Bytes> = (0..2 * INGRESS_CHUNK_MAX_SIZE as u64)
+            .map(|nonce| Bytes::from(alloy_rlp::encode(generate_tx(nonce))))
+            .collect();
 
-        let Poll::Ready(txs) = forwarding_manager.as_mut().poll_ingress(&mut cx) else {
+        forwarding_manager
+            .as_mut()
+            .project()
+            .add_ingress_txs(encoded_txs);
+
+        let Poll::Ready(txs_with_flags) = forwarding_manager.as_mut().poll_ingress(&mut cx) else {
             panic!("forwarding manager should be ready");
         };
-        assert_eq!(txs.len(), INGRESS_CHUNK_MAX_SIZE);
+        assert_eq!(txs_with_flags.len(), INGRESS_CHUNK_MAX_SIZE);
 
         tokio::time::advance(Duration::from_millis(1)).await;
 
@@ -491,10 +555,10 @@ mod test {
 
         tokio::time::advance(Duration::from_millis(1)).await;
 
-        let Poll::Ready(txs) = forwarding_manager.as_mut().poll_ingress(&mut cx) else {
+        let Poll::Ready(txs_with_flags) = forwarding_manager.as_mut().poll_ingress(&mut cx) else {
             panic!("forwarding manager should be ready");
         };
-        assert_eq!(txs.len(), INGRESS_CHUNK_MAX_SIZE);
+        assert_eq!(txs_with_flags.len(), INGRESS_CHUNK_MAX_SIZE);
 
         assert_pending_now_and_forever(forwarding_manager, cx).await;
     }
@@ -525,7 +589,7 @@ mod test {
         forwarding_manager
             .as_mut()
             .project()
-            .add_egress_txs(egress_txs.iter());
+            .add_egress_txs(egress_txs.iter().map(|tx| (tx, false)));
 
         let Poll::Ready(first_batch) = forwarding_manager
             .as_mut()
@@ -612,7 +676,7 @@ mod test {
             forwarding_manager
                 .as_mut()
                 .project()
-                .add_egress_txs([&tx1, &tx2, &tx3].into_iter());
+                .add_egress_txs([(&tx1, false), (&tx2, false), (&tx3, false)].into_iter());
 
             let Poll::Ready(first_batch) = forwarding_manager
                 .as_mut()

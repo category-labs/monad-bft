@@ -85,7 +85,6 @@ where
     execution_revision: MonadExecutionRevision,
 
     do_local_insert: bool,
-    txpool_allow_insufficient_transfer_balance_tx: bool,
 }
 
 impl<ST, SCT, SBT, CCT, CRT> EthTxPool<ST, SCT, SBT, CCT, CRT>
@@ -104,7 +103,6 @@ where
         chain_revision: CRT,
         execution_revision: MonadExecutionRevision,
         do_local_insert: bool,
-        txpool_allow_insufficient_transfer_balance_tx: bool,
     ) -> Self {
         Self {
             pending: PendingTxMap::default(),
@@ -117,7 +115,6 @@ where
             execution_revision,
 
             do_local_insert,
-            txpool_allow_insufficient_transfer_balance_tx,
         }
     }
 
@@ -142,34 +139,42 @@ where
         block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
         state_backend: &SBT,
         chain_config: &CCT,
-        txs: Vec<Recovered<TxEnvelope>>,
+        txs: Vec<(Recovered<TxEnvelope>, bool)>,
         owned: bool,
         mut on_insert: impl FnMut(&ValidEthTransaction),
     ) {
         if !self.do_local_insert {
-            event_tracker.drop_all(txs.into_iter(), EthTxPoolDropReason::PoolNotReady);
+            event_tracker.drop_all(
+                txs.into_iter().map(|(tx, _)| tx),
+                EthTxPoolDropReason::PoolNotReady,
+            );
             return;
         }
 
         let Some(last_commit) = self.last_commit.as_ref() else {
-            event_tracker.drop_all(txs.into_iter(), EthTxPoolDropReason::PoolNotReady);
+            event_tracker.drop_all(
+                txs.into_iter().map(|(tx, _)| tx),
+                EthTxPoolDropReason::PoolNotReady,
+            );
             return;
         };
 
         let chain_params = self.chain_revision.chain_params();
         let execution_params = self.execution_revision.execution_chain_params();
 
-        let (txs, invalid_txs): (Vec<_>, Vec<_>) = txs.into_par_iter().partition_map(|tx| {
-            Either::from(ValidEthTransaction::validate(
-                last_commit,
-                self.chain_id,
-                chain_params,
-                execution_params,
-                tx,
-                owned,
-            ))
-            .flip()
-        });
+        let (txs, invalid_txs): (Vec<_>, Vec<_>) =
+            txs.into_par_iter().partition_map(|(tx, bypass_flag)| {
+                Either::from(ValidEthTransaction::validate(
+                    last_commit,
+                    self.chain_id,
+                    chain_params,
+                    execution_params,
+                    tx,
+                    owned,
+                    bypass_flag,
+                ))
+                .flip()
+            });
 
         for (tx, drop_reason) in invalid_txs {
             event_tracker.drop(*tx.tx_hash(), drop_reason);
@@ -525,17 +530,20 @@ where
 
     pub fn get_forwardable_txs<const MIN_SEQNUM_DIFF: u64, const MAX_RETRIES: usize>(
         &mut self,
-    ) -> Option<impl Iterator<Item = &TxEnvelope>> {
+    ) -> Option<impl Iterator<Item = (&TxEnvelope, bool)>> {
         let last_commit = self.last_commit.as_ref()?;
 
         let last_commit_seq_num = last_commit.seq_num;
         let last_commit_base_fee = last_commit.execution_inputs.base_fee_per_gas;
 
         Some(self.tracked.iter_mut_txs().filter_map(move |tx| {
+            // Get bypass flag before calling get_if_forwardable (which takes mutable borrow)
+            let bypass_flag = tx.bypass_transfer_balance_check();
             tx.get_if_forwardable::<MIN_SEQNUM_DIFF, MAX_RETRIES>(
                 last_commit_seq_num,
                 last_commit_base_fee,
             )
+            .map(|tx_envelope| (tx_envelope, bypass_flag))
         }))
     }
 
@@ -743,7 +751,7 @@ where
     }
 
     /// Checks whether the sender has sufficient balance for the transaction.
-    /// If `txpool_allow_insufficient_transfer_balance_tx` is true, only the gas cost is checked.
+    /// If the transaction's `bypass_transfer_balance_check` flag is true, only the gas cost is checked.
     /// Otherwise, both the gas cost and the value transfer are checked.
     fn sender_balance_is_sufficient(
         &self,
@@ -751,9 +759,10 @@ where
         sender_balance: Balance,
         last_commit_base_fee: u64,
     ) -> bool {
-        // Reserve balance allows consensus to include a transaction that will revert due to insufficient transfer balance
-        // as long as the sender has enough balance to cover the gas cost.
-        if self.txpool_allow_insufficient_transfer_balance_tx {
+        // When bypass_transfer_balance_check is true, allows consensus to include a transaction
+        // that will revert due to insufficient transfer balance as long as the sender has enough
+        // balance to cover the gas cost.
+        if tx.bypass_transfer_balance_check() {
             sender_balance >= last_commit_base_fee.saturating_mul(tx.gas_limit())
         } else {
             sender_balance
@@ -778,7 +787,6 @@ where
             MockChainConfig::DEFAULT.chain_id(),
             MockChainRevision::DEFAULT,
             MonadExecutionRevision::LATEST,
-            true,
             true,
         )
     }

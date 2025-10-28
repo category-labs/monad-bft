@@ -35,7 +35,7 @@ pub struct EthTxPoolIpcStream {
     // TODO(andr-dev): Remove tokio_util and write a custom sync framer/codec
     // implementation simlar to LengthDelimnitedCodec
     tx: mpsc::Sender<Vec<EthTxPoolEvent>>,
-    rx: ReceiverStream<TxEnvelope>,
+    rx: ReceiverStream<(TxEnvelope, bool)>,
 
     handle: tokio::task::JoinHandle<io::Result<()>>,
 }
@@ -56,7 +56,7 @@ impl EthTxPoolIpcStream {
     async fn run(
         stream: UnixStream,
         snapshot: EthTxPoolSnapshot,
-        tx_sender: mpsc::Sender<TxEnvelope>,
+        tx_sender: mpsc::Sender<(TxEnvelope, bool)>,
         mut event_rx: mpsc::Receiver<Vec<EthTxPoolEvent>>,
     ) -> io::Result<()> {
         let mut stream = Framed::new(stream, LengthDelimitedCodec::default());
@@ -72,14 +72,48 @@ impl EthTxPoolIpcStream {
                         break;
                     };
 
-                    let Ok(tx) = alloy_rlp::decode_exact::<TxEnvelope>(result?.as_ref()) else {
+                    let bytes = result?;
+                    if bytes.is_empty() {
                         return Err(io::Error::new(
                             ErrorKind::InvalidData,
-                            "EthTxPoolIpcStream received invalid tx serialized bytes!"
+                            "EthTxPoolIpcStream received empty data!"
                         ));
+                    }
+
+                    // Backward compatible decoding:
+                    // Try to decode entire message as TxEnvelope (old format)
+                    let (tx, bypass_transfer_balance_check) = match alloy_rlp::decode_exact::<TxEnvelope>(&bytes) {
+                        Ok(tx) => {
+                            // Old format: just RLP-encoded transaction, flag defaults to false
+                            (tx, false)
+                        }
+                        Err(_) => {
+                            // New format: RLP + marker byte
+                            // Try decoding all bytes except the last one
+                            if bytes.len() < 2 {
+                                return Err(io::Error::new(
+                                    ErrorKind::InvalidData,
+                                    "EthTxPoolIpcStream received invalid tx serialized bytes!"
+                                ));
+                            }
+
+                            let tx_bytes = &bytes[..bytes.len() - 1];
+                            let flag_byte = bytes[bytes.len() - 1];
+
+                            let tx = alloy_rlp::decode_exact::<TxEnvelope>(tx_bytes).map_err(|_| {
+                                io::Error::new(
+                                    ErrorKind::InvalidData,
+                                    "EthTxPoolIpcStream received invalid tx serialized bytes!"
+                                )
+                            })?;
+
+                            // flag_byte == 0x01 means bypass_transfer_balance_check = true
+                            let bypass_flag = flag_byte == 0x01;
+                            (tx, bypass_flag)
+                        }
                     };
 
-                    let Err(error) = tx_sender.try_send(tx) else {
+                    let Err(error) = tx_sender.try_send((tx, bypass_transfer_balance_check)) else {
                         continue;
                     };
 
@@ -121,7 +155,7 @@ impl EthTxPoolIpcStream {
 }
 
 impl Stream for EthTxPoolIpcStream {
-    type Item = TxEnvelope;
+    type Item = (TxEnvelope, bool);
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if let Poll::Ready(result) = self.handle.poll_unpin(cx) {
@@ -169,15 +203,25 @@ impl EthTxPoolIpcClient {
     }
 }
 
-impl<'a> Sink<&'a TxEnvelope> for EthTxPoolIpcClient {
+impl<'a> Sink<&'a (TxEnvelope, bool)> for EthTxPoolIpcClient {
     type Error = io::Error;
 
     fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.stream.poll_ready_unpin(cx)
     }
 
-    fn start_send(mut self: Pin<&mut Self>, tx: &'a TxEnvelope) -> Result<(), Self::Error> {
-        let bytes = alloy_rlp::encode(tx);
+    fn start_send(
+        mut self: Pin<&mut Self>,
+        tx_with_flag: &'a (TxEnvelope, bool),
+    ) -> Result<(), Self::Error> {
+        // Backward compatible encoding:
+        // - If bypass_transfer_balance_check is false (default): send only RLP bytes (old format)
+        // - If bypass_transfer_balance_check is true: send RLP bytes + 0x01 marker (new format)
+        let mut bytes = alloy_rlp::encode(&tx_with_flag.0);
+        if tx_with_flag.1 {
+            // Only append marker byte if flag is true (non-default)
+            bytes.push(0x01);
+        }
         self.stream.start_send_unpin(bytes.into())
     }
 

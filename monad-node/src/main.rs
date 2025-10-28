@@ -337,7 +337,6 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
             // TODO(andr-dev): Use timestamp from last commit in ledger
             0,
             true,
-            node_state.txpool_allow_insufficient_transfer_balance_tx,
         )
         .expect("txpool ipc succeeds"),
         control_panel: ControlPanelIpcReceiver::new(

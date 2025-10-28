@@ -49,7 +49,6 @@ pub struct NodeState {
     pub triedb_path: PathBuf,
 
     pub otel_endpoint_interval: Option<(String, Duration)>,
-    pub txpool_allow_insufficient_transfer_balance_tx: bool,
     pub pprof: String,
     pub manytrace_socket: Option<String>,
 }
@@ -73,7 +72,6 @@ impl NodeState {
             keystore_password,
             otel_endpoint,
             record_metrics_interval_seconds,
-            txpool_allow_insufficient_transfer_balance_tx,
             pprof,
             manytrace_socket,
         } = Cli::from_arg_matches_mut(&mut cmd.get_matches_mut())?;
@@ -160,7 +158,6 @@ impl NodeState {
             statesync_sq_thread_cpu,
 
             otel_endpoint_interval,
-            txpool_allow_insufficient_transfer_balance_tx,
             pprof,
             manytrace_socket,
         })
