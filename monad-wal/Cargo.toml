@@ -23,9 +23,12 @@ monad-types = { workspace = true }
 
 clap = { workspace = true, features = ["derive"] }
 criterion = { workspace = true }
+dateparser = { workspace = true }
+itertools = { workspace = true }
 rayon = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
+test-case = { workspace = true }
 
 [[bench]]
 name = "raw_bench"

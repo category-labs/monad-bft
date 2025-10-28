@@ -135,6 +135,7 @@ cmake = "0.1"
 codespan-reporting = "0.11.1"
 console_error_panic_hook = "0.1"
 criterion = { version = "0.4", features = ["html_reports"] }
+dateparser = "0.2"
 insta = "1.42"
 ctr = "0.9.2"
 dashmap = "6.1.0"

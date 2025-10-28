@@ -2239,6 +2239,24 @@ where
     pub event: MonadEvent<ST, SCT, EPT>,
 }
 
+impl<ST, SCT, EPT> LogFriendlyMonadEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    pub fn deserialize_timestamp(data: &[u8]) -> DateTime<Utc> {
+        // TODO consolidate with the similar code in deserialize impl
+        let mut offset = 0;
+        let header: [u8; 4] = data[0..EVENT_HEADER_LEN].try_into().unwrap();
+        let ts_size = EventHeaderType::from_le_bytes(header) as usize;
+        offset += EVENT_HEADER_LEN;
+
+        let ts: DateTime<Utc> = bincode::deserialize(&data[offset..offset + ts_size]).unwrap();
+        ts
+    }
+}
+
 type EventHeaderType = u32;
 const EVENT_HEADER_LEN: usize = std::mem::size_of::<EventHeaderType>();
 
