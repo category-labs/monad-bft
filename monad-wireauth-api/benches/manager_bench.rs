@@ -1,7 +1,7 @@
-use std::{net::SocketAddr, time::Duration};
+use std::net::SocketAddr;
 
-use monad_wireauth_api::{Config, TestContext, API};
 use divan::Bencher;
+use monad_wireauth_api::{Config, TestContext, API};
 use monad_wireauth_protocol::{common::PublicKey, messages::DataPacketHeader};
 use secp256k1::rand::rng;
 use zerocopy::{FromBytes, IntoBytes};
@@ -14,26 +14,7 @@ fn create_test_manager() -> (API<TestContext>, PublicKey, TestContext) {
     let mut rng = rng();
     let (public_key, private_key) =
         monad_wireauth_protocol::crypto::generate_keypair(&mut rng).unwrap();
-    let psk = [0u8; 32];
-    let config = Config {
-        session_timeout: Duration::from_secs(10),
-        session_timeout_jitter: Duration::from_secs(1),
-        keepalive_interval: Duration::from_secs(5),
-        keepalive_jitter: Duration::from_secs(1),
-        rekey_interval: Duration::from_secs(120),
-        rekey_jitter: Duration::from_secs(10),
-        max_session_duration: Duration::from_secs(150),
-        handshake_rate_limit: 50,
-        handshake_rate_reset_interval: Duration::from_secs(1),
-        cookie_refresh_duration: Duration::from_secs(120),
-        low_watermark_sessions: 100,
-        high_watermark_sessions: 500,
-        max_sessions_per_ip: 10,
-        ip_rate_limit_window: Duration::from_secs(60),
-        max_requests_per_ip: 10,
-        ip_history_capacity: 100_000,
-        psk,
-    };
+    let config = Config::default();
     let context = TestContext::new();
     let context_clone = context.clone();
 

@@ -5,6 +5,7 @@ use std::{
 
 use monad_wireauth_protocol::{common::*, cookies};
 use tracing::debug;
+use zeroize::Zeroizing;
 
 pub const RETRY_ALWAYS: u64 = u64::MAX;
 pub const DEFAULT_RETRY_ATTEMPTS: u64 = 3;
@@ -69,7 +70,7 @@ pub struct Config {
     pub ip_rate_limit_window: Duration,
     pub max_requests_per_ip: usize,
     pub ip_history_capacity: usize,
-    pub psk: [u8; 32],
+    pub psk: Zeroizing<[u8; 32]>,
 }
 
 impl Default for Config {
@@ -91,7 +92,7 @@ impl Default for Config {
             ip_rate_limit_window: Duration::from_secs(10),
             max_requests_per_ip: 10,
             ip_history_capacity: 1_000_000,
-            psk: [0u8; 32],
+            psk: Zeroizing::new([0u8; 32]),
         }
     }
 }
@@ -118,7 +119,7 @@ pub enum SessionError {
     SessionTimeout,
 }
 
-pub struct CommonSessionData {
+pub struct SessionState {
     pub keepalive_deadline: Option<Duration>,
     pub rekey_deadline: Option<Duration>,
     pub session_timeout_deadline: Option<Duration>,
@@ -134,7 +135,7 @@ pub struct CommonSessionData {
     pub is_initiator: bool,
 }
 
-impl CommonSessionData {
+impl SessionState {
     pub fn new(
         remote_addr: SocketAddr,
         remote_public_key: PublicKey,
@@ -254,9 +255,7 @@ impl CommonSessionData {
         Ok(())
     }
 
-    pub fn handle_session_timeout(
-        &mut self,
-    ) -> Result<(TerminatedEvent, Option<RekeyEvent>), SessionError> {
+    pub fn handle_session_timeout(&mut self) -> (TerminatedEvent, Option<RekeyEvent>) {
         debug!(
             retry_attempts = self.retry_attempts,
             remote_addr = ?self.remote_addr,
@@ -270,7 +269,7 @@ impl CommonSessionData {
         };
 
         if !self.is_initiator {
-            return Ok((terminated, None));
+            return (terminated, None);
         }
 
         let should_retry = self.retry_attempts > 0 || self.retry_attempts == RETRY_ALWAYS;
@@ -285,16 +284,7 @@ impl CommonSessionData {
             stored_cookie: self.stored_cookie,
         });
 
-        Ok((terminated, rekey))
-    }
-
-    pub fn handle_rekey_timer(&mut self) -> RekeyEvent {
-        RekeyEvent {
-            remote_public_key: self.remote_public_key.clone(),
-            remote_addr: self.remote_addr,
-            retry_attempts: self.retry_attempts,
-            stored_cookie: self.stored_cookie,
-        }
+        (terminated, rekey)
     }
 }
 

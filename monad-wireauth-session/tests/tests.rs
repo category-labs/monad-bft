@@ -78,7 +78,7 @@ fn test_handshake_and_data_exchange() {
     let alice = Peer::new(8001, 1);
     let bob = Peer::new(8002, 2);
 
-    let (mut initiator, (_timer, mut init_msg)) = Initiator::new(
+    let (mut initiator, (_timer, mut init_msg)) = InitiatorState::new(
         &mut env.rng,
         env.system_time,
         env.time,
@@ -94,9 +94,9 @@ fn test_handshake_and_data_exchange() {
     .unwrap();
 
     let validated_init =
-        Responder::validate_init(&bob.static_key, &bob.static_public, &mut init_msg).unwrap();
+        ResponderState::validate_init(&bob.static_key, &bob.static_public, &mut init_msg).unwrap();
 
-    let (responder, _timer, mut resp_msg) = Responder::new(
+    let (responder, _timer, mut resp_msg) = ResponderState::new(
         &mut env.rng,
         env.time,
         &env.config,
@@ -155,7 +155,7 @@ fn test_keepalive_sends_twice() {
     let alice = Peer::new(8001, 1);
     let bob = Peer::new(8002, 2);
 
-    let (mut initiator, (_timer, mut init_msg)) = Initiator::new(
+    let (mut initiator, (_timer, mut init_msg)) = InitiatorState::new(
         &mut env.rng,
         env.system_time,
         env.time,
@@ -171,9 +171,9 @@ fn test_keepalive_sends_twice() {
     .unwrap();
 
     let validated_init =
-        Responder::validate_init(&bob.static_key, &bob.static_public, &mut init_msg).unwrap();
+        ResponderState::validate_init(&bob.static_key, &bob.static_public, &mut init_msg).unwrap();
 
-    let (responder, _timer, mut resp_msg) = Responder::new(
+    let (responder, _timer, mut resp_msg) = ResponderState::new(
         &mut env.rng,
         env.time,
         &env.config,
@@ -206,14 +206,14 @@ fn test_keepalive_sends_twice() {
 
     env.advance(env.config.keepalive_interval);
 
-    let result = responder_transport.tick(&env.config, env.time).unwrap();
+    let result = responder_transport.tick(&env.config, env.time);
     assert!(result.1.is_some());
     let message_event = result.1.unwrap();
     assert_eq!(message_event.remote_addr, alice.addr);
 
     env.advance(env.config.keepalive_interval);
 
-    let result = responder_transport.tick(&env.config, env.time).unwrap();
+    let result = responder_transport.tick(&env.config, env.time);
     assert!(result.1.is_some());
     let message_event = result.1.unwrap();
     assert_eq!(message_event.remote_addr, alice.addr);
@@ -233,7 +233,7 @@ fn test_session_timeout_triggers_rekey_after_keepalive() {
     let alice = Peer::new(8001, 1);
     let bob = Peer::new(8002, 2);
 
-    let (mut initiator, (_timer, mut init_msg)) = Initiator::new(
+    let (mut initiator, (_timer, mut init_msg)) = InitiatorState::new(
         &mut env.rng,
         env.system_time,
         env.time,
@@ -249,9 +249,9 @@ fn test_session_timeout_triggers_rekey_after_keepalive() {
     .unwrap();
 
     let validated_init =
-        Responder::validate_init(&bob.static_key, &bob.static_public, &mut init_msg).unwrap();
+        ResponderState::validate_init(&bob.static_key, &bob.static_public, &mut init_msg).unwrap();
 
-    let (responder, _timer, mut resp_msg) = Responder::new(
+    let (responder, _timer, mut resp_msg) = ResponderState::new(
         &mut env.rng,
         env.time,
         &env.config,
@@ -284,12 +284,12 @@ fn test_session_timeout_triggers_rekey_after_keepalive() {
 
     env.advance(env.config.keepalive_interval);
 
-    let result = responder_transport.tick(&env.config, env.time).unwrap();
+    let result = responder_transport.tick(&env.config, env.time);
     assert!(result.1.is_some());
 
     env.advance(env.config.session_timeout);
 
-    let result = initiator_transport.tick(&env.config, env.time).unwrap();
+    let result = initiator_transport.tick(&env.config, env.time);
     assert!(result.2.is_some());
     let rekey_event = result.2.unwrap();
     assert_eq!(rekey_event.remote_addr, bob.addr);
@@ -303,7 +303,7 @@ fn test_initiator_timeout_triggers_rekey() {
     let alice = Peer::new(8001, 1);
     let bob = Peer::new(8002, 2);
 
-    let (mut initiator, (_timer, _init_msg)) = Initiator::new(
+    let (mut initiator, (_timer, _init_msg)) = InitiatorState::new(
         &mut env.rng,
         env.system_time,
         env.time,
@@ -320,7 +320,7 @@ fn test_initiator_timeout_triggers_rekey() {
 
     env.advance(env.config.session_timeout);
 
-    let result = initiator.tick(env.time).unwrap().unwrap();
+    let result = initiator.tick(env.time).unwrap();
     assert!(result.1.rekey.is_some());
     let rekey_event = result.1.rekey.unwrap();
     assert_eq!(rekey_event.remote_addr, bob.addr);
@@ -336,7 +336,7 @@ fn test_responder_timeout_terminates_session() {
     let alice = Peer::new(8001, 1);
     let bob = Peer::new(8002, 2);
 
-    let (_initiator, (_timer, mut init_msg)) = Initiator::new(
+    let (_initiator, (_timer, mut init_msg)) = InitiatorState::new(
         &mut env.rng,
         env.system_time,
         env.time,
@@ -352,9 +352,9 @@ fn test_responder_timeout_terminates_session() {
     .unwrap();
 
     let validated_init =
-        Responder::validate_init(&bob.static_key, &bob.static_public, &mut init_msg).unwrap();
+        ResponderState::validate_init(&bob.static_key, &bob.static_public, &mut init_msg).unwrap();
 
-    let (mut responder, _timer, _resp_msg) = Responder::new(
+    let (mut responder, _timer, _resp_msg) = ResponderState::new(
         &mut env.rng,
         env.time,
         &env.config,
@@ -367,7 +367,7 @@ fn test_responder_timeout_terminates_session() {
 
     env.advance(env.config.session_timeout);
 
-    let result = responder.tick(env.time).unwrap().unwrap();
+    let result = responder.tick(env.time).unwrap();
     assert!(result.1.rekey.is_none());
     assert_eq!(result.1.terminated.remote_addr, alice.addr);
 }
@@ -384,7 +384,7 @@ fn test_cookie_stored_and_reused_after_timeout() {
     let alice = Peer::new(8001, 1);
     let bob = Peer::new(8002, 2);
 
-    let (mut initiator, (_timer, init_msg)) = Initiator::new(
+    let (mut initiator, (_timer, init_msg)) = InitiatorState::new(
         &mut env.rng,
         env.system_time,
         env.time,
@@ -421,12 +421,12 @@ fn test_cookie_stored_and_reused_after_timeout() {
 
     env.advance(env.config.session_timeout);
 
-    let result = initiator.tick(env.time).unwrap().unwrap();
+    let result = initiator.tick(env.time).unwrap();
     assert!(result.1.rekey.is_some());
     let rekey_event = result.1.rekey.unwrap();
     assert_eq!(rekey_event.stored_cookie, Some(stored_cookie));
 
-    let (mut initiator2, (_timer, mut init_msg2)) = Initiator::new(
+    let (mut initiator2, (_timer, mut init_msg2)) = InitiatorState::new(
         &mut env.rng,
         env.system_time,
         env.time,
@@ -442,9 +442,9 @@ fn test_cookie_stored_and_reused_after_timeout() {
     .unwrap();
 
     let validated_init =
-        Responder::validate_init(&bob.static_key, &bob.static_public, &mut init_msg2).unwrap();
+        ResponderState::validate_init(&bob.static_key, &bob.static_public, &mut init_msg2).unwrap();
 
-    let (_responder, _timer, mut resp_msg) = Responder::new(
+    let (_responder, _timer, mut resp_msg) = ResponderState::new(
         &mut env.rng,
         env.time,
         &env.config,
@@ -486,7 +486,7 @@ fn test_rekey_without_cookie_receives_cookie_reply() {
     let nonce = 0u64;
     let cookie = cookies::generate_cookie(&cookie_secret, nonce, &alice.addr);
 
-    let (_initiator, (_timer, mut init_msg)) = Initiator::new(
+    let (_initiator, (_timer, mut init_msg)) = InitiatorState::new(
         &mut env.rng,
         env.system_time,
         env.time,
@@ -502,9 +502,9 @@ fn test_rekey_without_cookie_receives_cookie_reply() {
     .unwrap();
 
     let validated_init =
-        Responder::validate_init(&bob.static_key, &bob.static_public, &mut init_msg).unwrap();
+        ResponderState::validate_init(&bob.static_key, &bob.static_public, &mut init_msg).unwrap();
 
-    let (_responder, _timer, resp_msg) = Responder::new(
+    let (_responder, _timer, resp_msg) = ResponderState::new(
         &mut env.rng,
         env.time,
         &env.config,
@@ -530,7 +530,7 @@ fn test_rekey_interval_with_zero_retries() {
     let alice = Peer::new(8001, 1);
     let bob = Peer::new(8002, 2);
 
-    let (mut initiator, (_timer, mut init_msg)) = Initiator::new(
+    let (mut initiator, (_timer, mut init_msg)) = InitiatorState::new(
         &mut env.rng,
         env.system_time,
         env.time,
@@ -546,9 +546,9 @@ fn test_rekey_interval_with_zero_retries() {
     .unwrap();
 
     let validated_init =
-        Responder::validate_init(&bob.static_key, &bob.static_public, &mut init_msg).unwrap();
+        ResponderState::validate_init(&bob.static_key, &bob.static_public, &mut init_msg).unwrap();
 
-    let (responder, _timer, mut resp_msg) = Responder::new(
+    let (responder, _timer, mut resp_msg) = ResponderState::new(
         &mut env.rng,
         env.time,
         &env.config,
@@ -583,7 +583,7 @@ fn test_rekey_interval_with_zero_retries() {
         (env.config.rekey_interval.as_secs() / env.config.keepalive_interval.as_secs()) as usize;
     for _ in 0..keepalive_count {
         env.advance(env.config.keepalive_interval);
-        let result = responder_transport.tick(&env.config, env.time).unwrap();
+        let result = responder_transport.tick(&env.config, env.time);
         assert!(result.1.is_some());
         let message_event = result.1.unwrap();
         let mut plaintext = vec![];
@@ -596,7 +596,7 @@ fn test_rekey_interval_with_zero_retries() {
             .unwrap();
     }
 
-    let result = initiator_transport.tick(&env.config, env.time).unwrap();
+    let result = initiator_transport.tick(&env.config, env.time);
     assert!(result.2.is_some());
     assert!(result.3.is_none());
     let rekey_event = result.2.unwrap();
@@ -617,7 +617,7 @@ fn test_max_session_duration_terminates_after_rekey() {
     let alice = Peer::new(8001, 1);
     let bob = Peer::new(8002, 2);
 
-    let (mut initiator, (_timer, mut init_msg)) = Initiator::new(
+    let (mut initiator, (_timer, mut init_msg)) = InitiatorState::new(
         &mut env.rng,
         env.system_time,
         env.time,
@@ -633,9 +633,9 @@ fn test_max_session_duration_terminates_after_rekey() {
     .unwrap();
 
     let validated_init =
-        Responder::validate_init(&bob.static_key, &bob.static_public, &mut init_msg).unwrap();
+        ResponderState::validate_init(&bob.static_key, &bob.static_public, &mut init_msg).unwrap();
 
-    let (responder, _timer, mut resp_msg) = Responder::new(
+    let (responder, _timer, mut resp_msg) = ResponderState::new(
         &mut env.rng,
         env.time,
         &env.config,
@@ -668,7 +668,7 @@ fn test_max_session_duration_terminates_after_rekey() {
 
     env.advance(env.config.rekey_interval);
 
-    let result = initiator_transport.tick(&env.config, env.time).unwrap();
+    let result = initiator_transport.tick(&env.config, env.time);
     assert!(result.2.is_some());
 
     let remaining_time = env.config.max_session_duration - env.config.rekey_interval;
@@ -676,7 +676,7 @@ fn test_max_session_duration_terminates_after_rekey() {
 
     for _ in 0..keepalive_count {
         env.advance(env.config.keepalive_interval);
-        let result = responder_transport.tick(&env.config, env.time).unwrap();
+        let result = responder_transport.tick(&env.config, env.time);
         assert!(result.1.is_some());
         let message_event = result.1.unwrap();
         let mut plaintext = vec![];
@@ -691,7 +691,7 @@ fn test_max_session_duration_terminates_after_rekey() {
 
     env.advance(Duration::from_secs(1));
 
-    let result = initiator_transport.tick(&env.config, env.time).unwrap();
+    let result = initiator_transport.tick(&env.config, env.time);
     assert!(result.2.is_none());
     assert!(result.3.is_some());
     let terminated_event = result.3.unwrap();

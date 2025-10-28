@@ -7,15 +7,58 @@ use std::{
 use monad_wireauth_protocol::common::SerializedPublicKey;
 use monad_wireauth_session::{Config, SessionIndex};
 
-use crate::{Initiator, Responder, Transport};
+use crate::{InitiatorState, ResponderState, TransportState};
+
+#[derive(Default)]
+struct EstablishedSessions {
+    initiator: Option<(SessionIndex, Duration)>,
+    responder: Option<(SessionIndex, Duration)>,
+}
+
+impl EstablishedSessions {
+    fn get_latest(&self) -> Option<SessionIndex> {
+        match (&self.initiator, &self.responder) {
+            (Some((id0, ts0)), Some((id1, ts1))) => {
+                if ts0 >= ts1 {
+                    Some(*id0)
+                } else {
+                    Some(*id1)
+                }
+            }
+            (Some((id, _)), None) => Some(*id),
+            (None, Some((id, _))) => Some(*id),
+            (None, None) => None,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.initiator.is_none() && self.responder.is_none()
+    }
+}
+
+pub(crate) struct SessionIndexReservation<'a> {
+    state: &'a mut State,
+    index: SessionIndex,
+}
+
+impl<'a> SessionIndexReservation<'a> {
+    pub(crate) fn index(&self) -> SessionIndex {
+        self.index
+    }
+
+    pub(crate) fn commit(self) {
+        self.state.next_session_index = self.index;
+        self.state.next_session_index.increment();
+        self.state.allocated_indices.insert(self.index);
+    }
+}
 
 pub struct State {
-    initiating_sessions: HashMap<SessionIndex, Initiator>,
-    responding_sessions: HashMap<SessionIndex, Responder>,
-    transport_sessions: HashMap<SessionIndex, Transport>,
-    last_open_session_by_public_key:
-        HashMap<SerializedPublicKey, [Option<(SessionIndex, Duration)>; 2]>,
-    last_established_by_socket: HashMap<SocketAddr, [Option<(SessionIndex, Duration)>; 2]>,
+    initiating_sessions: HashMap<SessionIndex, InitiatorState>,
+    responding_sessions: HashMap<SessionIndex, ResponderState>,
+    transport_sessions: HashMap<SessionIndex, TransportState>,
+    last_established_session_by_public_key: HashMap<SerializedPublicKey, EstablishedSessions>,
+    last_established_session_by_socket: HashMap<SocketAddr, EstablishedSessions>,
     allocated_indices: HashSet<SessionIndex>,
     next_session_index: SessionIndex,
     initiated_session_by_peer: HashMap<SerializedPublicKey, SessionIndex>,
@@ -28,8 +71,8 @@ impl State {
             initiating_sessions: HashMap::new(),
             responding_sessions: HashMap::new(),
             transport_sessions: HashMap::new(),
-            last_open_session_by_public_key: HashMap::new(),
-            last_established_by_socket: HashMap::new(),
+            last_established_session_by_public_key: HashMap::new(),
+            last_established_session_by_socket: HashMap::new(),
             allocated_indices: HashSet::new(),
             next_session_index: SessionIndex::new(0),
             initiated_session_by_peer: HashMap::new(),
@@ -37,11 +80,14 @@ impl State {
         }
     }
 
-    pub fn get_transport(&self, session_index: &SessionIndex) -> Option<&Transport> {
+    pub fn get_transport(&self, session_index: &SessionIndex) -> Option<&TransportState> {
         self.transport_sessions.get(session_index)
     }
 
-    pub fn get_transport_mut(&mut self, session_index: &SessionIndex) -> Option<&mut Transport> {
+    pub fn get_transport_mut(
+        &mut self,
+        session_index: &SessionIndex,
+    ) -> Option<&mut TransportState> {
         self.transport_sessions.get_mut(session_index)
     }
 
@@ -49,46 +95,32 @@ impl State {
         &self,
         public_key: &SerializedPublicKey,
     ) -> Option<SessionIndex> {
-        self.last_open_session_by_public_key
+        self.last_established_session_by_public_key
             .get(public_key)
-            .and_then(|arr| match (arr[0], arr[1]) {
-                (Some((id0, ts0)), Some((id1, ts1))) => {
-                    if ts0 >= ts1 {
-                        Some(id0)
-                    } else {
-                        Some(id1)
-                    }
-                }
-                (Some((id, _)), None) => Some(id),
-                (None, Some((id, _))) => Some(id),
-                (None, None) => None,
-            })
+            .and_then(|sessions| sessions.get_latest())
     }
 
     pub fn get_session_id_by_socket(&self, socket_addr: &SocketAddr) -> Option<SessionIndex> {
-        self.last_established_by_socket
+        self.last_established_session_by_socket
             .get(socket_addr)
-            .and_then(|arr| match (arr[0], arr[1]) {
-                (Some((id0, ts0)), Some((id1, ts1))) => {
-                    if ts0 >= ts1 {
-                        Some(id0)
-                    } else {
-                        Some(id1)
-                    }
-                }
-                (Some((id, _)), None) => Some(id),
-                (None, Some((id, _))) => Some(id),
-                (None, None) => None,
-            })
+            .and_then(|sessions| sessions.get_latest())
     }
 
-    pub fn allocate_session_index(&mut self) -> SessionIndex {
+    pub(crate) fn reserve_session_index(&mut self) -> Option<SessionIndexReservation<'_>> {
+        let start_index = self.next_session_index;
+        let mut candidate = self.next_session_index;
+
         loop {
-            let index = self.next_session_index;
-            self.next_session_index.increment();
-            if !self.allocated_indices.contains(&index) {
-                self.allocated_indices.insert(index);
-                return index;
+            if !self.allocated_indices.contains(&candidate) {
+                return Some(SessionIndexReservation {
+                    state: self,
+                    index: candidate,
+                });
+            }
+
+            candidate.increment();
+            if candidate == start_index {
+                return None;
             }
         }
     }
@@ -96,7 +128,7 @@ impl State {
     pub fn handle_established(
         &mut self,
         session_id: SessionIndex,
-        transport: Transport,
+        transport: TransportState,
         _config: &Config,
     ) -> Vec<SessionIndex> {
         let remote_public_key = &transport.remote_public_key;
@@ -106,37 +138,49 @@ impl State {
 
         let key_bytes = SerializedPublicKey::from(remote_public_key);
 
-        let mut terminated_sessions = Vec::new();
+        let mut replaced_sessions = Vec::new();
 
-        let slot_index = if is_initiator { 0 } else { 1 };
-
-        let arr = self
-            .last_open_session_by_public_key
+        let sessions = self
+            .last_established_session_by_public_key
             .entry(key_bytes)
-            .or_insert([None, None]);
+            .or_default();
 
-        if let Some((existing_id, _)) = arr[slot_index] {
-            terminated_sessions.push(existing_id);
-        }
-
-        arr[slot_index] = Some((session_id, created));
-
-        let arr = self
-            .last_established_by_socket
-            .entry(remote_addr)
-            .or_insert([None, None]);
-
-        if let Some((existing_id, _)) = arr[slot_index] {
-            if !terminated_sessions.contains(&existing_id) {
-                terminated_sessions.push(existing_id);
+        if is_initiator {
+            if let Some((existing_id, _)) = sessions.initiator {
+                replaced_sessions.push(existing_id);
             }
+            sessions.initiator = Some((session_id, created));
+        } else {
+            if let Some((existing_id, _)) = sessions.responder {
+                replaced_sessions.push(existing_id);
+            }
+            sessions.responder = Some((session_id, created));
         }
 
-        arr[slot_index] = Some((session_id, created));
+        let sessions = self
+            .last_established_session_by_socket
+            .entry(remote_addr)
+            .or_default();
+
+        if is_initiator {
+            if let Some((existing_id, _)) = sessions.initiator {
+                if !replaced_sessions.contains(&existing_id) {
+                    replaced_sessions.push(existing_id);
+                }
+            }
+            sessions.initiator = Some((session_id, created));
+        } else {
+            if let Some((existing_id, _)) = sessions.responder {
+                if !replaced_sessions.contains(&existing_id) {
+                    replaced_sessions.push(existing_id);
+                }
+            }
+            sessions.responder = Some((session_id, created));
+        }
 
         self.transport_sessions.insert(session_id, transport);
 
-        terminated_sessions
+        replaced_sessions
     }
 
     pub fn handle_terminate(
@@ -151,27 +195,38 @@ impl State {
         self.allocated_indices.remove(&session_id);
 
         if let Some(transport) = transport {
-            let slot_index = if transport.is_initiator { 0 } else { 1 };
-
-            if let Some(arr) = self.last_established_by_socket.get_mut(&remote_addr) {
-                if arr[slot_index].map(|(id, _)| id) == Some(session_id) {
-                    arr[slot_index] = None;
-                    if arr[0].is_none() && arr[1].is_none() {
-                        self.last_established_by_socket.remove(&remote_addr);
+            if let Some(sessions) = self
+                .last_established_session_by_socket
+                .get_mut(&remote_addr)
+            {
+                if transport.is_initiator {
+                    if sessions.initiator.map(|(id, _)| id) == Some(session_id) {
+                        sessions.initiator = None;
                     }
+                } else if sessions.responder.map(|(id, _)| id) == Some(session_id) {
+                    sessions.responder = None;
+                }
+
+                if sessions.is_empty() {
+                    self.last_established_session_by_socket.remove(&remote_addr);
                 }
             }
 
-            if let Some(arr) = self
-                .last_open_session_by_public_key
+            if let Some(sessions) = self
+                .last_established_session_by_public_key
                 .get_mut(remote_public_key)
             {
-                if arr[slot_index].map(|(id, _)| id) == Some(session_id) {
-                    arr[slot_index] = None;
-                    if arr[0].is_none() && arr[1].is_none() {
-                        self.last_open_session_by_public_key
-                            .remove(remote_public_key);
+                if transport.is_initiator {
+                    if sessions.initiator.map(|(id, _)| id) == Some(session_id) {
+                        sessions.initiator = None;
                     }
+                } else if sessions.responder.map(|(id, _)| id) == Some(session_id) {
+                    sessions.responder = None;
+                }
+
+                if sessions.is_empty() {
+                    self.last_established_session_by_public_key
+                        .remove(remote_public_key);
                 }
             }
         }
@@ -186,34 +241,40 @@ impl State {
             .remove(&(*remote_public_key, session_id));
     }
 
-    pub fn get_initiator(&self, session_index: &SessionIndex) -> Option<&Initiator> {
+    pub fn get_initiator(&self, session_index: &SessionIndex) -> Option<&InitiatorState> {
         self.initiating_sessions.get(session_index)
     }
 
-    pub fn get_initiator_mut(&mut self, session_index: &SessionIndex) -> Option<&mut Initiator> {
+    pub fn get_initiator_mut(
+        &mut self,
+        session_index: &SessionIndex,
+    ) -> Option<&mut InitiatorState> {
         self.initiating_sessions.get_mut(session_index)
     }
 
-    pub fn get_responder(&self, session_index: &SessionIndex) -> Option<&Responder> {
+    pub fn get_responder(&self, session_index: &SessionIndex) -> Option<&ResponderState> {
         self.responding_sessions.get(session_index)
     }
 
-    pub fn get_responder_mut(&mut self, session_index: &SessionIndex) -> Option<&mut Responder> {
+    pub fn get_responder_mut(
+        &mut self,
+        session_index: &SessionIndex,
+    ) -> Option<&mut ResponderState> {
         self.responding_sessions.get_mut(session_index)
     }
 
-    pub fn remove_initiator(&mut self, session_index: &SessionIndex) -> Option<Initiator> {
+    pub fn remove_initiator(&mut self, session_index: &SessionIndex) -> Option<InitiatorState> {
         self.initiating_sessions.remove(session_index)
     }
 
-    pub fn remove_responder(&mut self, session_index: &SessionIndex) -> Option<Responder> {
+    pub fn remove_responder(&mut self, session_index: &SessionIndex) -> Option<ResponderState> {
         self.responding_sessions.remove(session_index)
     }
 
     pub fn insert_initiator(
         &mut self,
         session_index: SessionIndex,
-        session: Initiator,
+        session: InitiatorState,
         remote_key: SerializedPublicKey,
     ) {
         self.initiating_sessions.insert(session_index, session);
@@ -224,7 +285,7 @@ impl State {
     pub fn insert_responder(
         &mut self,
         session_index: SessionIndex,
-        session: Responder,
+        session: ResponderState,
         remote_key: SerializedPublicKey,
     ) {
         self.responding_sessions.insert(session_index, session);
@@ -267,9 +328,9 @@ impl State {
             .max();
 
         let open_max = self
-            .last_open_session_by_public_key
+            .last_established_session_by_public_key
             .get(remote_key)
-            .and_then(|arr| arr[1])
+            .and_then(|sessions| sessions.responder)
             .map(|(session_id, _)| session_id)
             .and_then(|session_id| self.transport_sessions.get(&session_id))
             .and_then(|s| s.initiator_system_time());
@@ -298,9 +359,12 @@ impl State {
             }
         }
 
-        if let Some(arr) = self.last_open_session_by_public_key.get(public_key) {
-            for (session_id, _) in arr.iter().flatten() {
-                session_ids.insert(*session_id);
+        if let Some(sessions) = self.last_established_session_by_public_key.get(public_key) {
+            if let Some((session_id, _)) = sessions.initiator {
+                session_ids.insert(session_id);
+            }
+            if let Some((session_id, _)) = sessions.responder {
+                session_ids.insert(session_id);
             }
         }
 
@@ -360,12 +424,12 @@ mod tests {
         remote_public_key: &PublicKey,
         remote_addr: SocketAddr,
         is_initiator: bool,
-    ) -> Transport {
+    ) -> TransportState {
         let hash1 = create_dummy_hash_output();
         let hash2 = create_dummy_hash_output();
         let send_key = monad_wireauth_protocol::common::CipherKey::from(&hash1);
         let recv_key = monad_wireauth_protocol::common::CipherKey::from(&hash2);
-        let common = monad_wireauth_session::CommonSessionData::new(
+        let common = monad_wireauth_session::SessionState::new(
             remote_addr,
             remote_public_key.clone(),
             session_index,
@@ -374,16 +438,16 @@ mod tests {
             None,
             is_initiator,
         );
-        Transport::new(session_index, send_key, recv_key, common)
+        TransportState::new(session_index, send_key, recv_key, common)
     }
 
-    fn create_test_initiator(remote_public_key: &PublicKey) -> Initiator {
+    fn create_test_initiator(remote_public_key: &PublicKey) -> InitiatorState {
         let mut rng = rng();
         let (public_key, private_key) = crypto::generate_keypair(&mut rng).unwrap();
         let config = Config::default();
         let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let local_index = SessionIndex::new(1);
-        Initiator::new(
+        InitiatorState::new(
             &mut rng,
             SystemTime::now(),
             Duration::ZERO,
@@ -403,7 +467,7 @@ mod tests {
     fn create_test_responder(
         remote_public_key: &PublicKey,
         _cookie: Option<[u8; 16]>,
-    ) -> Responder {
+    ) -> ResponderState {
         let mut rng = rng();
         let (_local_public_key, _local_private_key) = crypto::generate_keypair(&mut rng).unwrap();
 
@@ -436,7 +500,7 @@ mod tests {
         let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 51820);
         let local_index = SessionIndex::new(2);
 
-        Responder::new(
+        ResponderState::new(
             &mut rng,
             Duration::ZERO,
             &config,
@@ -462,9 +526,18 @@ mod tests {
     #[test]
     fn test_allocate_session_index() {
         let mut state = State::new();
-        let idx0 = state.allocate_session_index();
-        let idx1 = state.allocate_session_index();
-        let idx2 = state.allocate_session_index();
+
+        let reservation0 = state.reserve_session_index().unwrap();
+        let idx0 = reservation0.index();
+        reservation0.commit();
+
+        let reservation1 = state.reserve_session_index().unwrap();
+        let idx1 = reservation1.index();
+        reservation1.commit();
+
+        let reservation2 = state.reserve_session_index().unwrap();
+        let idx2 = reservation2.index();
+        reservation2.commit();
 
         assert_eq!(idx0, SessionIndex::new(0));
         assert_eq!(idx1, SessionIndex::new(1));
@@ -477,10 +550,18 @@ mod tests {
     #[test]
     fn test_allocate_session_index_skips_allocated() {
         let mut state = State::new();
-        let idx0 = state.allocate_session_index();
+
+        let reservation0 = state.reserve_session_index().unwrap();
+        let idx0 = reservation0.index();
+        reservation0.commit();
+
         state.allocated_indices.remove(&idx0);
         state.next_session_index = SessionIndex::new(0);
-        let idx1 = state.allocate_session_index();
+
+        let reservation1 = state.reserve_session_index().unwrap();
+        let idx1 = reservation1.index();
+        reservation1.commit();
+
         assert_eq!(idx1, SessionIndex::new(0));
     }
 
@@ -541,9 +622,13 @@ mod tests {
         let session_id = SessionIndex::new(1);
         let created = Duration::from_secs(100);
 
-        state
-            .last_open_session_by_public_key
-            .insert(key_bytes, [Some((session_id, created)), None]);
+        state.last_established_session_by_public_key.insert(
+            key_bytes,
+            EstablishedSessions {
+                initiator: Some((session_id, created)),
+                responder: None,
+            },
+        );
 
         assert_eq!(
             state.get_session_id_by_public_key(&key_bytes),
@@ -560,9 +645,13 @@ mod tests {
         let session_id = SessionIndex::new(2);
         let created = Duration::from_secs(100);
 
-        state
-            .last_open_session_by_public_key
-            .insert(key_bytes, [None, Some((session_id, created))]);
+        state.last_established_session_by_public_key.insert(
+            key_bytes,
+            EstablishedSessions {
+                initiator: None,
+                responder: Some((session_id, created)),
+            },
+        );
 
         assert_eq!(
             state.get_session_id_by_public_key(&key_bytes),
@@ -579,12 +668,12 @@ mod tests {
         let session_id_init = SessionIndex::new(1);
         let session_id_resp = SessionIndex::new(2);
 
-        state.last_open_session_by_public_key.insert(
+        state.last_established_session_by_public_key.insert(
             key_bytes,
-            [
-                Some((session_id_init, Duration::from_secs(200))),
-                Some((session_id_resp, Duration::from_secs(100))),
-            ],
+            EstablishedSessions {
+                initiator: Some((session_id_init, Duration::from_secs(200))),
+                responder: Some((session_id_resp, Duration::from_secs(100))),
+            },
         );
 
         assert_eq!(
@@ -602,12 +691,12 @@ mod tests {
         let session_id_init = SessionIndex::new(1);
         let session_id_resp = SessionIndex::new(2);
 
-        state.last_open_session_by_public_key.insert(
+        state.last_established_session_by_public_key.insert(
             key_bytes,
-            [
-                Some((session_id_init, Duration::from_secs(100))),
-                Some((session_id_resp, Duration::from_secs(200))),
-            ],
+            EstablishedSessions {
+                initiator: Some((session_id_init, Duration::from_secs(100))),
+                responder: Some((session_id_resp, Duration::from_secs(200))),
+            },
         );
 
         assert_eq!(
@@ -630,9 +719,13 @@ mod tests {
         let session_id = SessionIndex::new(5);
         let created = Duration::from_secs(100);
 
-        state
-            .last_established_by_socket
-            .insert(addr, [Some((session_id, created)), None]);
+        state.last_established_session_by_socket.insert(
+            addr,
+            EstablishedSessions {
+                initiator: Some((session_id, created)),
+                responder: None,
+            },
+        );
 
         assert_eq!(state.get_session_id_by_socket(&addr), Some(session_id));
     }
@@ -644,12 +737,12 @@ mod tests {
         let session_id_init = SessionIndex::new(3);
         let session_id_resp = SessionIndex::new(4);
 
-        state.last_established_by_socket.insert(
+        state.last_established_session_by_socket.insert(
             addr,
-            [
-                Some((session_id_init, Duration::from_secs(300))),
-                Some((session_id_resp, Duration::from_secs(100))),
-            ],
+            EstablishedSessions {
+                initiator: Some((session_id_init, Duration::from_secs(300))),
+                responder: Some((session_id_resp, Duration::from_secs(100))),
+            },
         );
 
         assert_eq!(state.get_session_id_by_socket(&addr), Some(session_id_init));
@@ -759,9 +852,11 @@ mod tests {
         assert!(state.get_transport(&session_id).is_some());
         let key_bytes = SerializedPublicKey::from(&public_key);
         assert!(state
-            .last_open_session_by_public_key
+            .last_established_session_by_public_key
             .contains_key(&key_bytes));
-        assert!(state.last_established_by_socket.contains_key(&remote_addr));
+        assert!(state
+            .last_established_session_by_socket
+            .contains_key(&remote_addr));
     }
 
     #[test]
@@ -823,12 +918,12 @@ mod tests {
         assert!(state.get_transport(&resp_session_id).is_some());
 
         let key_bytes = SerializedPublicKey::from(&public_key);
-        let arr = state
-            .last_open_session_by_public_key
+        let sessions = state
+            .last_established_session_by_public_key
             .get(&key_bytes)
             .unwrap();
-        assert!(arr[0].is_some());
-        assert!(arr[1].is_some());
+        assert!(sessions.initiator.is_some());
+        assert!(sessions.responder.is_some());
     }
 
     #[test]
@@ -843,7 +938,9 @@ mod tests {
 
         let transport = create_test_transport(session_id, &public_key, remote_addr, true);
         state.handle_established(session_id, transport, &config);
-        state.allocate_session_index();
+
+        let reservation = state.reserve_session_index().unwrap();
+        reservation.commit();
 
         state.handle_terminate(session_id, &key_bytes, remote_addr);
 
@@ -867,7 +964,7 @@ mod tests {
         state.handle_terminate(session_id, &key_bytes, remote_addr);
 
         assert!(!state
-            .last_open_session_by_public_key
+            .last_established_session_by_public_key
             .contains_key(&key_bytes));
     }
 
@@ -892,14 +989,14 @@ mod tests {
         state.handle_terminate(init_session_id, &key_bytes, remote_addr);
 
         assert!(state
-            .last_open_session_by_public_key
+            .last_established_session_by_public_key
             .contains_key(&key_bytes));
-        let arr = state
-            .last_open_session_by_public_key
+        let sessions = state
+            .last_established_session_by_public_key
             .get(&key_bytes)
             .unwrap();
-        assert!(arr[0].is_none());
-        assert!(arr[1].is_some());
+        assert!(sessions.initiator.is_none());
+        assert!(sessions.responder.is_some());
     }
 
     #[test]
@@ -917,7 +1014,9 @@ mod tests {
 
         state.handle_terminate(session_id, &key_bytes, remote_addr);
 
-        assert!(!state.last_established_by_socket.contains_key(&remote_addr));
+        assert!(!state
+            .last_established_session_by_socket
+            .contains_key(&remote_addr));
     }
 
     #[test]
@@ -1003,5 +1102,49 @@ mod tests {
         let (public_key, _) = crypto::generate_keypair(&mut rng).unwrap();
         let key_bytes = SerializedPublicKey::from(&public_key);
         assert!(state.get_max_timestamp(&key_bytes).is_none());
+    }
+
+    #[test]
+    fn test_reserve_success_and_commit() {
+        let mut state = State::new();
+
+        let index = {
+            let reservation = state.reserve_session_index().unwrap();
+            reservation.index()
+        };
+        assert_eq!(index, SessionIndex::new(0));
+        assert_eq!(state.next_session_index, SessionIndex::new(0));
+
+        let reservation = state.reserve_session_index().unwrap();
+        assert_eq!(reservation.index(), SessionIndex::new(0));
+        reservation.commit();
+        assert_eq!(state.next_session_index, SessionIndex::new(1));
+        assert!(state.allocated_indices.contains(&SessionIndex::new(0)));
+
+        let reservation2 = state.reserve_session_index().unwrap();
+        let index2 = reservation2.index();
+        assert_eq!(index2, SessionIndex::new(1));
+        reservation2.commit();
+        assert_eq!(state.next_session_index, SessionIndex::new(2));
+        assert!(state.allocated_indices.contains(&SessionIndex::new(1)));
+    }
+
+    #[test]
+    fn test_reserve_drop_without_commit() {
+        let mut state = State::new();
+
+        {
+            let _reservation = state.reserve_session_index().unwrap();
+            assert_eq!(state.next_session_index, SessionIndex::new(0));
+        }
+
+        assert_eq!(state.next_session_index, SessionIndex::new(0));
+
+        let reservation2 = state.reserve_session_index().unwrap();
+        let index2 = reservation2.index();
+        assert_eq!(index2, SessionIndex::new(0));
+        reservation2.commit();
+        assert_eq!(state.next_session_index, SessionIndex::new(1));
+        assert!(state.allocated_indices.contains(&SessionIndex::new(0)));
     }
 }
