@@ -6335,6 +6335,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "zerocopy",
+ "zeroize",
 ]
 
 [[package]]

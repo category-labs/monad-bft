@@ -41,6 +41,7 @@ pub fn send_cookie_reply(
     Ok(reply)
 }
 
+/// decrypts cookie in place and returns the decrypted cookie as a separate buffer for convenience
 pub fn accept_cookie_reply(
     responder_static_public: &SerializedPublicKey,
     reply: &mut CookieReply,
@@ -61,7 +62,7 @@ pub fn accept_cookie_reply(
 }
 
 pub fn generate_cookie(cookie_secret: &[u8; 32], nonce: u64, remote_addr: &SocketAddr) -> [u8; 16] {
-    let mut address_bytes = [0u8; 16];
+    let mut address_bytes = [0u8; 18];
     match remote_addr.ip() {
         std::net::IpAddr::V4(addr) => {
             address_bytes[..4].copy_from_slice(&addr.octets());
@@ -70,6 +71,7 @@ pub fn generate_cookie(cookie_secret: &[u8; 32], nonce: u64, remote_addr: &Socke
             address_bytes[..16].copy_from_slice(&addr.octets());
         }
     };
+    address_bytes[16..18].copy_from_slice(&remote_addr.port().to_le_bytes());
 
     let cookie_hash = keyed_hash!(cookie_secret, &nonce.to_le_bytes(), &address_bytes);
     let mut cookie = [0u8; 16];
