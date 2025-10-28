@@ -26,6 +26,7 @@ use std::{
 use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use alloy_primitives::Address;
 use alloy_rlp::Decodable;
+use bytes::Bytes;
 use futures::Stream;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::block::BlockPolicy;
@@ -61,6 +62,40 @@ mod preload;
 mod reset;
 
 const PROMOTE_PENDING_INTERVAL_MS: u64 = 2;
+
+/// Decode a forwarded transaction with backward-compatible RLP format.
+///
+/// - Old format (bypass=false): `RLP(TxEnvelope)` - standard transaction encoding
+/// - New format (bypass=true): `RLP([tx_bytes, bool_byte])` - 2-element RLP list wrapper
+///
+/// Returns `Ok((tx, bypass_flag))` on success, `Err(())` on failure.
+fn decode_forwarded_tx(raw_tx: &Bytes) -> Result<(TxEnvelope, bool), ()> {
+    let mut buf = raw_tx.as_ref();
+
+    // Try old format first: RLP(TxEnvelope)
+    if let Ok(tx) = TxEnvelope::decode(&mut buf) {
+        return Ok((tx, false));
+    }
+
+    // Try new format: RLP([tx_bytes, bool_byte])
+    let mut buf = raw_tx.as_ref();
+
+    // Decode RLP header to check if it's a list
+    let header = alloy_rlp::Header::decode(&mut buf).map_err(|_| ())?;
+    if !header.list {
+        return Err(());
+    }
+
+    // It's a list, decode as [tx_bytes, bool_byte]
+    let tx_bytes = Vec::<u8>::decode(&mut buf).map_err(|_| ())?;
+    let bool_byte = u8::decode(&mut buf).map_err(|_| ())?;
+    let tx = TxEnvelope::decode(&mut tx_bytes.as_slice()).map_err(|_| ())?;
+
+    // bool_byte == 0x01 means bypass_transfer_balance_check = true
+    let bypass_flag = bool_byte == 0x01;
+
+    Ok((tx, bypass_flag))
+}
 
 pub struct EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
 where
@@ -383,18 +418,17 @@ where
 
                     let mut num_invalid_bytes = 0;
 
-                    // Validate that raw transactions can be decoded, but keep them as Bytes
-                    let validated_txs = txs
+                    // Decode forwarded transactions with backward-compatible RLP format
+                    let decoded_txs: Vec<(TxEnvelope, bool)> = txs
                         .into_iter()
-                        .filter_map(|raw_tx| {
-                            if TxEnvelope::decode(&mut raw_tx.as_ref()).is_ok() {
-                                Some(raw_tx)
-                            } else {
+                        .filter_map(|raw_tx| match decode_forwarded_tx(&raw_tx) {
+                            Ok(tx_with_flag) => Some(tx_with_flag),
+                            Err(_) => {
                                 num_invalid_bytes += 1;
                                 None
                             }
                         })
-                        .collect::<Vec<_>>();
+                        .collect();
 
                     self.metrics
                         .reject_forwarded_invalid_bytes
@@ -407,7 +441,7 @@ where
                     self.forwarding_manager
                         .as_mut()
                         .project()
-                        .add_ingress_txs(validated_txs);
+                        .add_ingress_txs(decoded_txs);
                 }
                 TxPoolCommand::EnterRound {
                     epoch: _,
