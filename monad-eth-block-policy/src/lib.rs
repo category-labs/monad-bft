@@ -39,9 +39,11 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_types::{EthAccount, EthExecutionProtocol, EthHeader, ValidatedTx};
+use monad_eth_types::{
+    EthAccount, EthExecutionProtocol, EthHeader, ExtractEthAddress, ValidatedTx,
+};
 use monad_state_backend::{StateBackend, StateBackendError};
-use monad_system_calls::SystemTransaction;
+use monad_system_calls::validator::{SystemTransactionValidationError, SystemTransactionValidator};
 use monad_types::{
     Balance, BlockId, Epoch, Nonce, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM,
 };
@@ -109,7 +111,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     pub block: ConsensusFullBlock<ST, SCT, EthExecutionProtocol>,
-    pub system_txns: Vec<SystemTransaction>,
+    pub system_txns: Vec<ValidatedTx>,
     pub validated_txns: Vec<ValidatedTx>,
     pub nonce_usages: NonceUsageMap,
     pub txn_fees: TxnFees,
@@ -674,6 +676,7 @@ impl<ST, SCT, CCT, CRT> EthBlockPolicy<ST, SCT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -1113,9 +1116,32 @@ where
         self.execution_delay
     }
 
+    fn validate_system_transactions_input(
+        &self,
+        block: &EthValidatedBlock<ST, SCT>,
+        extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
+        chain_config: &CCT,
+    ) -> Result<(), SystemTransactionValidationError> {
+        let parent_block_epoch = {
+            if let Some(extending_block) = extending_blocks.last() {
+                extending_block.get_epoch()
+            } else {
+                assert_eq!(block.get_seq_num(), self.get_last_commit() + SeqNum(1));
+                self.get_last_commit_epoch()
+            }
+        };
+
+        SystemTransactionValidator::validate_system_transactions_input(
+            block.block.header(),
+            parent_block_epoch,
+            &block.system_txns,
+            chain_config,
+        )
+    }
+
     fn system_transaction_nonce_check(
         &self,
-        system_txns: &[SystemTransaction],
+        system_txns: &[ValidatedTx],
         account_nonces: &mut BTreeMap<&Address, u64>,
     ) -> Result<(), BlockPolicyError> {
         for sys_txn in system_txns.iter() {
@@ -1213,7 +1239,7 @@ where
     fn extract_signers(
         &self,
         validated_txns: &[ValidatedTx],
-        system_txns: &[SystemTransaction],
+        system_txns: &[ValidatedTx],
     ) -> Result<(HashSet<Address>, HashSet<Address>), BlockPolicyError> {
         // TODO fix this unnecessary copy into a new vec to generate an owned Address
         let mut tx_signers: HashSet<Address> =
@@ -1243,6 +1269,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend<ST, SCT>,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -1373,6 +1400,15 @@ where
             &chain_config.get_execution_chain_revision(timestamp_ns_to_secs(block.get_timestamp())),
         )?;
 
+        if let Err(system_txn_error) =
+            self.validate_system_transactions_input(block, &extending_blocks, chain_config)
+        {
+            debug!(
+                ?system_txn_error,
+                "block not coherent, system transaction error"
+            );
+            return Err(BlockPolicyError::SystemTransactionError);
+        }
         self.system_transaction_nonce_check(&block.system_txns, &mut account_nonces)?;
 
         for txn in block.validated_txns.iter() {

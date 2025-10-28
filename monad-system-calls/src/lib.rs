@@ -27,6 +27,7 @@ use alloy_rlp::Encodable;
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use monad_chain_config::{ChainConfig, revision::ChainRevision};
+use monad_eth_types::ValidatedTx;
 use monad_types::{Epoch, GENESIS_SEQ_NUM, SeqNum};
 use staking_contract::{StakingContractCall, StakingContractTransaction};
 use validator::SystemTransactionError;
@@ -51,6 +52,7 @@ fn sign_with_system_sender(transaction: TxLegacy) -> Recovered<TxEnvelope> {
     Recovered::new_unchecked(TxEnvelope::Legacy(signed), SYSTEM_SENDER_ETH_ADDRESS)
 }
 
+#[derive(Debug)]
 enum SystemCall {
     StakingContractCall(StakingContractCall),
 }
@@ -63,13 +65,13 @@ impl SystemCall {
 
     // Used to validate inputs of the expected system transactions
     pub fn validate_system_transaction_input(
-        self,
-        sys_txn: Recovered<TxEnvelope>,
-    ) -> Result<SystemTransaction, SystemTransactionError> {
+        &self,
+        sys_txn: &ValidatedTx,
+    ) -> Result<(), SystemTransactionError> {
         match self {
-            Self::StakingContractCall(staking_sys_call) => staking_sys_call
-                .validate_system_transaction_input(sys_txn)
-                .map(SystemTransaction::StakingContractTransaction),
+            Self::StakingContractCall(staking_sys_call) => {
+                staking_sys_call.validate_system_transaction_input(sys_txn)
+            }
         }
     }
 

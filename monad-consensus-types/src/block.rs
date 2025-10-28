@@ -311,6 +311,7 @@ pub enum BlockPolicyError {
     BaseFeeError,
     BlockPolicyBlockValidatorError(BlockPolicyBlockValidatorError),
     Eip7702Error,
+    SystemTransactionError,
 }
 
 impl From<StateBackendError> for BlockPolicyError {

@@ -51,15 +51,13 @@ use monad_eth_types::{
 };
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
-use monad_system_calls::{
-    validator::SystemTransactionValidator, SystemTransaction, SYSTEM_SENDER_ETH_ADDRESS,
-};
+use monad_system_calls::{validator::SystemTransactionValidator, SYSTEM_SENDER_ETH_ADDRESS};
 use monad_types::Balance;
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use tracing::{debug, trace, trace_span, warn};
 
-type SystemTransactions = Vec<SystemTransaction>;
+type SystemTransactions = Vec<ValidatedTx>;
 type ValidatedTxns = Vec<ValidatedTx>;
 
 /// Validates transactions as valid Ethereum transactions and also validates that
@@ -308,19 +306,20 @@ where
             .collect::<Result<_, monad_secp::Error>>()
             .map_err(|_err| BlockValidationError::TxnError)?;
 
-        let (system_txns, eth_txns) =
-            match SystemTransactionValidator::validate_and_extract_system_transactions(
-                header,
-                recovered_txns,
-                chain_config,
-            ) {
-                Ok((system_txns, eth_txns)) => (system_txns, eth_txns),
-                Err(err) => {
-                    debug!(?err, "system transaction validator error");
-
-                    return Err(BlockValidationError::SystemTxnError);
-                }
-            };
+        let (system_txns, eth_txns) = match SystemTransactionValidator::extract_system_transactions(
+            header,
+            recovered_txns,
+            chain_config,
+        ) {
+            Ok((system_txns, eth_txns)) => (system_txns, eth_txns),
+            Err(system_txn_error) => {
+                debug!(
+                    ?system_txn_error,
+                    "failed to extract system transactions from block"
+                );
+                return Err(BlockValidationError::SystemTxnError);
+            }
+        };
 
         // early return if proposal size exceed limit
         let system_txns_size: usize = system_txns.iter().map(|tx| tx.length()).sum();
@@ -339,7 +338,6 @@ where
 
         let mut nonce_usages = NonceUsageMap::default();
 
-        // duplicate check. this is also done in SystemTransactionValidator
         for sys_txn in &system_txns {
             let maybe_old_nonce_usage = nonce_usages.add_known(sys_txn.signer(), sys_txn.nonce());
             // A block is invalid if we see a smaller or equal nonce

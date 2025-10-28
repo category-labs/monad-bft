@@ -312,7 +312,8 @@ where
                     | BlockPolicyError::BlockNotCoherent
                     | BlockPolicyError::Eip7702Error
                     | BlockPolicyError::TimestampError
-                    | BlockPolicyError::StateBackendError(StateBackendError::NeverAvailable),
+                    | BlockPolicyError::StateBackendError(StateBackendError::NeverAvailable)
+                    | BlockPolicyError::SystemTransactionError,
                 ) => {
                     // TODO add metrics
                 }
