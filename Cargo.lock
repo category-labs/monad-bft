@@ -5544,6 +5544,7 @@ name = "monad-node"
 version = "0.1.0"
 dependencies = [
  "agent",
+ "alloy-primitives",
  "alloy-rlp",
  "chrono",
  "clap 4.5.47",
@@ -5562,6 +5563,7 @@ dependencies = [
  "monad-eth-block-policy",
  "monad-eth-block-validator",
  "monad-eth-txpool-executor",
+ "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
  "monad-keystore",
