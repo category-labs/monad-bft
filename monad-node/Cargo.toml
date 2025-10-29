@@ -18,6 +18,7 @@ monad-crypto = { workspace = true }
 monad-dataplane = { workspace = true }
 monad-eth-block-policy = { workspace = true }
 monad-eth-block-validator = { workspace = true }
+monad-eth-types = { workspace = true }
 monad-eth-txpool-executor = { workspace = true }
 monad-executor = { workspace = true }
 monad-executor-glue = { workspace = true }
@@ -40,6 +41,8 @@ monad-validator = { workspace = true }
 monad-wal = { workspace = true }
 
 agent = { workspace = true }
+alloy-consensus = { workspace = true }
+alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
@@ -51,6 +54,7 @@ opentelemetry-otlp = { workspace = true, features = ["metrics", "grpc-tonic"] }
 opentelemetry-semantic-conventions = { workspace = true }
 rand_chacha = { workspace = true }
 rayon = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 toml = { workspace = true }
