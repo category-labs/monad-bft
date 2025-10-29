@@ -94,7 +94,7 @@ fn with_txpool(
         &eth_block_policy,
         &state_backend,
         &MockChainConfig::DEFAULT,
-        vec![tx],
+        vec![(tx, false)],
         insert_tx_owned,
         |_| {},
     );

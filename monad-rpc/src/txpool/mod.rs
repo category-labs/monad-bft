@@ -95,7 +95,7 @@ impl EthTxPoolBridge {
         Ok((client, handle))
     }
 
-    async fn run(mut self, tx_receiver: Receiver<(TxEnvelope, TxStatusSender)>) {
+    async fn run(mut self, tx_receiver: Receiver<(TxEnvelope, TxStatusSender, bool)>) {
         let mut cleanup_timer = tokio::time::interval(Duration::from_secs(5));
 
         cleanup_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -103,15 +103,15 @@ impl EthTxPoolBridge {
         let err = loop {
             tokio::select! {
                 result = tx_receiver.recv_async() => {
-                    let tx_pair = match result {
-                        Ok(tx_pair) => tx_pair,
+                    let tx_triplet = match result {
+                        Ok(tx_triplet) => tx_triplet,
                         Err(e) => break e,
                     };
 
-                    for (tx, tx_status_send) in std::iter::once(tx_pair).chain(tx_receiver.drain()) {
+                    for (tx, tx_status_send, bypass_transfer_balance_check) in std::iter::once(tx_triplet).chain(tx_receiver.drain()) {
                         self.state.add_tx(&mut self.eviction_queue, &tx, tx_status_send);
 
-                        if let Err(e) = self.feed(&tx).await {
+                        if let Err(e) = self.feed(&(tx, bypass_transfer_balance_check)).await {
                             warn!("IPC feed failed, monad-bft likely crashed: {}", e);
                         }
                     }
@@ -139,7 +139,7 @@ impl EthTxPoolBridge {
     }
 }
 
-impl<'a> Sink<&'a TxEnvelope> for EthTxPoolBridge {
+impl<'a> Sink<&'a (TxEnvelope, bool)> for EthTxPoolBridge {
     type Error = io::Error;
 
     fn poll_ready(
@@ -151,9 +151,9 @@ impl<'a> Sink<&'a TxEnvelope> for EthTxPoolBridge {
 
     fn start_send(
         mut self: std::pin::Pin<&mut Self>,
-        tx: &'a TxEnvelope,
+        tx_with_flag: &'a (TxEnvelope, bool),
     ) -> Result<(), Self::Error> {
-        self.ipc_client.start_send_unpin(tx)
+        self.ipc_client.start_send_unpin(tx_with_flag)
     }
 
     fn poll_flush(

@@ -75,8 +75,14 @@ fn txpool_create_proposal_lookups_bound_by_tx_limit() {
             &state_backend,
             &MockChainConfig::DEFAULT,
             vec![
-                recover_tx(make_legacy_tx(S1, MIN_BASE_FEE.into(), 100_000, 0, 0)),
-                recover_tx(make_legacy_tx(S2, MIN_BASE_FEE.into(), 100_000, 0, 0)),
+                (
+                    recover_tx(make_legacy_tx(S1, MIN_BASE_FEE.into(), 100_000, 0, 0)),
+                    false,
+                ),
+                (
+                    recover_tx(make_legacy_tx(S2, MIN_BASE_FEE.into(), 100_000, 0, 0)),
+                    false,
+                ),
             ],
             true,
             |_| {},
@@ -152,15 +158,18 @@ fn txpool_create_proposal_no_lookup_for_unknown_authorizations() {
             &eth_block_policy,
             &state_backend,
             &MockChainConfig::DEFAULT,
-            vec![recover_tx(make_eip7702_tx(
-                S1,
-                MIN_BASE_FEE.into(),
-                0,
-                1_000_000,
-                0,
-                vec![make_signed_authorization(S2, authorization_address, 0)],
-                0,
-            ))],
+            vec![(
+                recover_tx(make_eip7702_tx(
+                    S1,
+                    MIN_BASE_FEE.into(),
+                    0,
+                    1_000_000,
+                    0,
+                    vec![make_signed_authorization(S2, authorization_address, 0)],
+                    0,
+                )),
+                false,
+            )],
             true,
             |_| {},
         );

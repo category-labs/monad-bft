@@ -120,21 +120,19 @@ async fn test_ipc_tx_forwarding_pacing() {
     const NUM_TXS: usize = 1024;
 
     for nonce in 0..NUM_TXS {
-        ipc_client
-            .feed(&make_legacy_tx(
-                S1,
-                MIN_BASE_FEE.into(),
-                30_000_000,
-                nonce as u64,
-                egress_max_size_bytes(
-                    MockChainConfig::DEFAULT
-                        .get_execution_chain_revision(0)
-                        .execution_chain_params(),
-                ) / 2
-                    - 256,
-            ))
-            .await
-            .unwrap();
+        let tx = make_legacy_tx(
+            S1,
+            MIN_BASE_FEE.into(),
+            30_000_000,
+            nonce as u64,
+            egress_max_size_bytes(
+                MockChainConfig::DEFAULT
+                    .get_execution_chain_revision(0)
+                    .execution_chain_params(),
+            ) / 2
+                - 256,
+        );
+        ipc_client.feed(&(tx, false)).await.unwrap();
     }
 
     ipc_client.flush().await.unwrap();

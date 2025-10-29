@@ -194,7 +194,7 @@ fn run_custom_iter<const N: usize>(
                         &eth_block_policy,
                         &state_backend,
                         &MockChainConfig::DEFAULT,
-                        vec![tx.clone()],
+                        vec![(tx.clone(), false)],
                         owned,
                         |inserted_tx| {
                             assert_eq!(&tx, inserted_tx.raw());
@@ -233,6 +233,7 @@ fn run_custom_iter<const N: usize>(
                     txs.into_iter()
                         .map(ToOwned::to_owned)
                         .map(recover_tx)
+                        .map(|tx| (tx, false))
                         .collect(),
                     owned,
                     |_| {

@@ -26,7 +26,7 @@ use super::{
 
 #[derive(Clone)]
 pub struct EthTxPoolBridgeClient {
-    tx_sender: Sender<(TxEnvelope, TxStatusSender)>,
+    tx_sender: Sender<(TxEnvelope, TxStatusSender, bool)>,
     tx_inflight: Arc<()>,
 
     state: EthTxPoolBridgeStateView,
@@ -34,7 +34,7 @@ pub struct EthTxPoolBridgeClient {
 
 impl EthTxPoolBridgeClient {
     pub(super) fn new(
-        tx_sender: Sender<(TxEnvelope, TxStatusSender)>,
+        tx_sender: Sender<(TxEnvelope, TxStatusSender, bool)>,
         state: EthTxPoolBridgeStateView,
     ) -> Self {
         Self {
@@ -53,8 +53,10 @@ impl EthTxPoolBridgeClient {
         &self,
         tx: TxEnvelope,
         tx_status_send: TxStatusSender,
-    ) -> Result<(), TrySendError<(TxEnvelope, TxStatusSender)>> {
-        self.tx_sender.try_send((tx, tx_status_send))
+        bypass_transfer_balance_check: bool,
+    ) -> Result<(), TrySendError<(TxEnvelope, TxStatusSender, bool)>> {
+        self.tx_sender
+            .try_send((tx, tx_status_send, bypass_transfer_balance_check))
     }
 
     pub fn get_status_by_hash(&self, hash: &TxHash) -> Option<TxStatus> {

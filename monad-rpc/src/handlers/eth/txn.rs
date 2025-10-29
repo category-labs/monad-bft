@@ -186,6 +186,10 @@ pub async fn monad_eth_getLogs<T: Triedb>(
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthSendRawTransactionParams {
     hex_tx: UnformattedData,
+    /// Optional flag to bypass transfer balance check (only check gas cost).
+    /// Default is false (i.e., check both gas cost and transfer balance).
+    #[serde(default)]
+    bypass_transfer_balance_check: bool,
 }
 
 const MAX_CONCURRENT_SEND_RAW_TX: usize = 1_000;
@@ -235,7 +239,11 @@ pub async fn monad_eth_sendRawTransaction(
 
             let (tx_status_send, tx_status_recv) = tokio::sync::oneshot::channel::<TxStatus>();
 
-            if let Err(err) = txpool_bridge_client.try_send(tx, tx_status_send) {
+            if let Err(err) = txpool_bridge_client.try_send(
+                tx,
+                tx_status_send,
+                params.bypass_transfer_balance_check,
+            ) {
                 warn!(?err, "mempool ipc send error");
                 return Err(JsonRpcError::internal_error(
                     "unable to send to validator".into(),
@@ -426,18 +434,23 @@ mod tests {
         let expected_failures = [
             MonadEthSendRawTransactionParams {
                 hex_tx: serialize_tx(make_tx(sender, 1000, 1000, 21_000, 11, 1337)), // invaid chain id
+                bypass_transfer_balance_check: false,
             },
             MonadEthSendRawTransactionParams {
                 hex_tx: serialize_tx(make_tx(sender, 1000, 1000, 1_000, 11, 1)), // intrinsic gas too low
+                bypass_transfer_balance_check: false,
             },
             MonadEthSendRawTransactionParams {
                 hex_tx: serialize_tx(make_tx(sender, 1000, 1000, 400_000_000_000, 11, 1)), // gas too high
+                bypass_transfer_balance_check: false,
             },
             MonadEthSendRawTransactionParams {
                 hex_tx: serialize_tx(make_tx(sender, 1000, 1000, 21_000, 1, 1)), // nonce too low
+                bypass_transfer_balance_check: false,
             },
             MonadEthSendRawTransactionParams {
                 hex_tx: serialize_tx(make_tx(sender, 1000, 12000, 21_000, 11, 1)), // max priority fee too high
+                bypass_transfer_balance_check: false,
             },
         ];
 
