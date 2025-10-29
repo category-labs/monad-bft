@@ -78,7 +78,7 @@ fn parse<T>(path: PathBuf, contents: String) -> T
 where
     T: DeserializeOwned,
 {
-    parse_with(path, contents, toml::from_str)
+    parse_with(path, contents, |s| toml::from_str(s))
 }
 
 fn parse_with<T>(

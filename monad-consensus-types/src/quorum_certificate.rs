@@ -20,10 +20,7 @@ use monad_crypto::{
 };
 use monad_types::*;
 use monad_validator::{
-    signature_collection::{
-        deserialize_signature_collection, serialize_signature_collection, SignatureCollection,
-    },
-    validator_mapping::ValidatorMapping,
+    signature_collection::SignatureCollection, validator_mapping::ValidatorMapping,
 };
 use serde::{Deserialize, Serialize};
 
@@ -38,8 +35,6 @@ use crate::{block::ConsensusBlockHeader, voting::Vote};
 ))]
 pub struct QuorumCertificate<SCT> {
     pub info: Vote,
-    #[serde(serialize_with = "serialize_signature_collection::<_, SCT>")]
-    #[serde(deserialize_with = "deserialize_signature_collection::<_, SCT>")]
     pub signatures: SCT,
 }
 
