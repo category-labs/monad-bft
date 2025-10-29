@@ -39,7 +39,8 @@ use monad_crypto::{
 };
 use monad_dataplane::{
     udp::{segment_size_for_mtu, DEFAULT_MTU},
-    BroadcastMsg, DataplaneBuilder, DataplaneReader, DataplaneWriter, RecvTcpMsg, TcpMsg,
+    BroadcastMsg, DataplaneBuilder, DataplaneControl, RecvTcpMsg, TcpMsg, TcpSocketReader,
+    TcpSocketWriter, UdpSocketHandle,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
@@ -74,9 +75,8 @@ pub mod util;
 
 const SIGNATURE_SIZE: usize = 65;
 
-// Number of chunks to aggregate into udp messages before sending to
-// the dataplane.
 pub const UNICAST_MSG_BATCH_SIZE: usize = 32;
+pub const RAPTORCAST_SOCKET: &str = "raptorcast";
 
 pub(crate) type OwnedMessageBuilder<ST, PD> =
     packet::MessageBuilder<'static, ST, Arc<Mutex<PeerDiscoveryDriver<PD>>>>;
@@ -91,7 +91,6 @@ where
     signing_key: Arc<ST::KeyPairType>,
     is_dynamic_fullnode: bool,
 
-    // Raptorcast group with stake information. For the send side (i.e., initiating proposals)
     epoch_validators: BTreeMap<Epoch, EpochValidators<ST>>,
     rebroadcast_map: ReBroadcastGroupMap<ST>,
 
@@ -103,8 +102,10 @@ where
     udp_state: udp::UdpState<ST>,
     message_builder: OwnedMessageBuilder<ST, PD>,
 
-    dataplane_reader: DataplaneReader,
-    dataplane_writer: DataplaneWriter,
+    tcp_reader: TcpSocketReader,
+    tcp_writer: TcpSocketWriter,
+    udp_socket: UdpSocketHandle,
+    dataplane_control: DataplaneControl,
     pending_events: VecDeque<RaptorCastEvent<M::Event, ST>>,
 
     channel_to_secondary: Option<UnboundedSender<FullNodesGroupMessage<ST>>>,
@@ -137,8 +138,10 @@ where
     pub fn new(
         config: config::RaptorCastConfig<ST>,
         secondary_mode: SecondaryRaptorCastModeConfig,
-        dataplane_reader: DataplaneReader,
-        dataplane_writer: DataplaneWriter,
+        tcp_reader: TcpSocketReader,
+        tcp_writer: TcpSocketWriter,
+        udp_socket: UdpSocketHandle,
+        control: DataplaneControl,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
         current_epoch: Epoch,
     ) -> Self {
@@ -179,8 +182,10 @@ where
 
             udp_state: udp::UdpState::new(self_id, config.udp_message_max_age_ms),
 
-            dataplane_reader,
-            dataplane_writer,
+            tcp_reader,
+            tcp_writer,
+            udp_socket,
+            dataplane_control: control,
             pending_events: Default::default(),
             channel_to_secondary: None,
             channel_from_secondary: None,
@@ -261,7 +266,7 @@ where
                 assert_eq!(signature.len(), SIGNATURE_SIZE);
                 signed_message[..SIGNATURE_SIZE].copy_from_slice(&signature);
                 signed_message[SIGNATURE_SIZE..].copy_from_slice(&app_message);
-                self.dataplane_writer.tcp_write(
+                self.tcp_writer.write(
                     address,
                     TcpMsg {
                         msg: signed_message.freeze(),
@@ -337,8 +342,8 @@ where
                     )
                 });
                 let mut sink = UdpMessageBatcher::new(UNICAST_MSG_BATCH_SIZE, |rc_chunks| {
-                    self.dataplane_writer
-                        .udp_write_unicast_with_priority(rc_chunks, priority);
+                    self.udp_socket
+                        .write_unicast_with_priority(rc_chunks, priority);
                 });
 
                 self.message_builder
@@ -378,8 +383,8 @@ where
                         )
                     });
                     let mut sink = UdpMessageBatcher::new(UNICAST_MSG_BATCH_SIZE, |rc_chunks| {
-                        self.dataplane_writer
-                            .udp_write_unicast_with_priority(rc_chunks, priority);
+                        self.udp_socket
+                            .write_unicast_with_priority(rc_chunks, priority);
                     });
 
                     self.message_builder
@@ -425,9 +430,18 @@ where
         ..Default::default()
     };
     let up_bandwidth_mbps = 1_000;
-    let dp = DataplaneBuilder::new(&local_addr, up_bandwidth_mbps).build();
+    let dp = DataplaneBuilder::new(&local_addr, up_bandwidth_mbps)
+        .extend_udp_sockets(vec![monad_dataplane::UdpSocketConfig {
+            socket_addr: local_addr,
+            label: RAPTORCAST_SOCKET.to_string(),
+        }])
+        .build();
     assert!(dp.block_until_ready(Duration::from_secs(1)));
-    let (dp_reader, dp_writer) = dp.split();
+    let (tcp_socket, mut udp_dataplane, control) = dp.split();
+    let udp_socket = udp_dataplane
+        .take_socket(RAPTORCAST_SOCKET)
+        .expect("raptorcast socket");
+    let (tcp_reader, tcp_writer) = tcp_socket.split();
     let config = config::RaptorCastConfig {
         shared_key,
         mtu: DEFAULT_MTU,
@@ -455,8 +469,10 @@ where
     RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>>::new(
         config,
         SecondaryRaptorCastModeConfig::None,
-        dp_reader,
-        dp_writer,
+        tcp_reader,
+        tcp_writer,
+        udp_socket,
+        control,
         shared_pd,
         Epoch(0),
     )
@@ -495,7 +511,7 @@ where
                                 .flat_map(|val| iter_ips(val, &*pd_driver))
                                 .collect();
                             drop(pd_driver);
-                            self.dataplane_writer.update_trusted(added, removed);
+                            self.dataplane_control.update_trusted(added, removed);
                         }
 
                         self.current_epoch = epoch;
@@ -597,7 +613,7 @@ where
                         )
                     });
                     let mut sink = UdpMessageBatcher::new(UNICAST_MSG_BATCH_SIZE, |rc_chunks| {
-                        self.dataplane_writer.udp_write_unicast(rc_chunks);
+                        self.udp_socket.write_unicast(rc_chunks);
                     });
 
                     for node in full_nodes_view.iter() {
@@ -605,8 +621,6 @@ where
                             continue;
                         }
 
-                        // TODO: optimize the build of copies of the
-                        // same message to multiple recipients.
                         let build_target = BuildTarget::PointToPoint(node);
                         self.message_builder
                             .prepare_with_peer_lookup(&node_addrs)
@@ -720,8 +734,7 @@ where
         }
 
         loop {
-            let dataplane = &mut this.dataplane_reader;
-            let Poll::Ready(message) = pin!(dataplane.udp_read()).poll_unpin(cx) else {
+            let Poll::Ready(message) = pin!(this.udp_socket.recv()).poll_unpin(cx) else {
                 break;
             };
 
@@ -752,14 +765,11 @@ where
                             })
                             .collect();
 
-                        this.dataplane_writer.udp_write_broadcast_with_priority(
-                            BroadcastMsg {
-                                targets: target_addrs,
-                                payload,
-                                stride: bcast_stride,
-                            },
-                            UdpPriority::High,
-                        );
+                        this.udp_socket.write_broadcast(BroadcastMsg {
+                            targets: target_addrs,
+                            payload,
+                            stride: bcast_stride,
+                        });
                     },
                     message,
                 )
@@ -847,8 +857,7 @@ where
         }
 
         loop {
-            let dataplane = &mut this.dataplane_reader;
-            let Poll::Ready(msg) = pin!(dataplane.tcp_read()).poll_unpin(cx) else {
+            let Poll::Ready(msg) = pin!(this.tcp_reader.recv()).poll_unpin(cx) else {
                 break;
             };
             let RecvTcpMsg { payload, src_addr } = msg;
@@ -858,7 +867,7 @@ where
                     ?src_addr,
                     "invalid message, message length less than signature size"
                 );
-                this.dataplane_writer.disconnect(src_addr);
+                this.dataplane_control.disconnect(src_addr);
                 continue;
             }
             let signature_bytes = &payload[..SIGNATURE_SIZE];
@@ -866,7 +875,7 @@ where
                 Ok(signature) => signature,
                 Err(err) => {
                     warn!(?err, ?src_addr, "invalid signature");
-                    this.dataplane_writer.disconnect(src_addr);
+                    this.dataplane_control.disconnect(src_addr);
                     continue;
                 }
             };
@@ -876,7 +885,7 @@ where
                     Ok(message) => message,
                     Err(err) => {
                         warn!(?err, ?src_addr, "failed to deserialize message");
-                        this.dataplane_writer.disconnect(src_addr);
+                        this.dataplane_control.disconnect(src_addr);
                         continue;
                     }
                 };
@@ -886,7 +895,7 @@ where
                 Ok(from) => from,
                 Err(err) => {
                     warn!(?err, ?src_addr, "failed to recover pubkey");
-                    this.dataplane_writer.disconnect(src_addr);
+                    this.dataplane_control.disconnect(src_addr);
                     continue;
                 }
             };
@@ -904,13 +913,12 @@ where
                         ?message,
                         "dropping peer discovery message, should come through udp channel"
                     );
-                    this.dataplane_writer.disconnect(src_addr);
+                    this.dataplane_control.disconnect(src_addr);
                     continue;
                 }
                 InboundRouterMessage::FullNodesGroup(_group_message) => {
-                    // pass TCP message to MultiRouter
                     warn!("FullNodesGroup protocol via TCP not implemented");
-                    this.dataplane_writer.disconnect(src_addr);
+                    this.dataplane_control.disconnect(src_addr);
                     continue;
                 }
             }
@@ -941,7 +949,7 @@ where
                     )
                 });
                 let mut sink = UdpMessageBatcher::new(UNICAST_MSG_BATCH_SIZE, |rc_chunks| {
-                    this.dataplane_writer.udp_write_unicast(rc_chunks);
+                    this.udp_socket.write_unicast(rc_chunks);
                 });
 
                 match custom_known_addrs {
