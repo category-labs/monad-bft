@@ -27,7 +27,7 @@ use futures::{ready, Future, Sink, SinkExt, Stream, StreamExt};
 use monad_eth_txpool_ipc::EthTxPoolIpcClient;
 use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolSnapshot};
 use pin_project::pin_project;
-use state::TxStatusSender;
+use state::TxStatusReceiverSender;
 use tokio::pin;
 use tracing::warn;
 
@@ -97,7 +97,7 @@ impl EthTxPoolBridge {
         Ok((client, handle))
     }
 
-    async fn run(mut self, tx_receiver: Receiver<(TxEnvelope, TxStatusSender)>) {
+    async fn run(mut self, tx_receiver: Receiver<(TxEnvelope, TxStatusReceiverSender)>) {
         let mut cleanup_timer = tokio::time::interval(Duration::from_secs(5));
 
         cleanup_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -110,8 +110,10 @@ impl EthTxPoolBridge {
                         Err(e) => break e,
                     };
 
-                    for (tx, tx_status_send) in std::iter::once(tx_pair).chain(tx_receiver.drain()) {
-                        self.state.add_tx(&mut self.eviction_queue, &tx, tx_status_send);
+                    for (tx, tx_status_recv_send) in std::iter::once(tx_pair).chain(tx_receiver.drain()) {
+                        if !self.state.add_tx(&mut self.eviction_queue, &tx, tx_status_recv_send) {
+                            continue;
+                        }
 
                         if let Err(e) = self.feed(&tx).await {
                             warn!("IPC feed failed, monad-bft likely crashed: {}", e);

@@ -20,13 +20,13 @@ use alloy_primitives::{Address, TxHash};
 use flume::{Sender, TrySendError};
 
 use super::{
-    state::{EthTxPoolBridgeStateView, TxStatusSender},
+    state::{EthTxPoolBridgeStateView, TxStatusReceiverSender},
     TxStatus,
 };
 
 #[derive(Clone)]
 pub struct EthTxPoolBridgeClient {
-    tx_sender: Sender<(TxEnvelope, TxStatusSender)>,
+    tx_sender: Sender<(TxEnvelope, TxStatusReceiverSender)>,
     tx_sender_capacity: usize,
 
     tx_inflight: Arc<()>,
@@ -36,7 +36,7 @@ pub struct EthTxPoolBridgeClient {
 
 impl EthTxPoolBridgeClient {
     pub(super) fn new(
-        tx_sender: Sender<(TxEnvelope, TxStatusSender)>,
+        tx_sender: Sender<(TxEnvelope, TxStatusReceiverSender)>,
         state: EthTxPoolBridgeStateView,
     ) -> Self {
         let tx_sender_capacity = tx_sender
@@ -66,9 +66,9 @@ impl EthTxPoolBridgeClient {
     pub fn try_send(
         &self,
         tx: TxEnvelope,
-        tx_status_send: TxStatusSender,
-    ) -> Result<(), TrySendError<(TxEnvelope, TxStatusSender)>> {
-        self.tx_sender.try_send((tx, tx_status_send))
+        tx_status_recv_send: TxStatusReceiverSender,
+    ) -> Result<(), TrySendError<(TxEnvelope, TxStatusReceiverSender)>> {
+        self.tx_sender.try_send((tx, tx_status_recv_send))
     }
 
     pub fn get_status_by_hash(&self, hash: &TxHash) -> Option<TxStatus> {
