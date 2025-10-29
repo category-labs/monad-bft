@@ -292,3 +292,80 @@ fn test_base_fee() {
         }
     });
 }
+
+#[test]
+fn test_partial_iterator_consumption() {
+    let tx1 = recover_tx(make_legacy_tx(S1, BASE_FEE.into(), 100_000, 0, 10));
+    let tx2 = recover_tx(make_legacy_tx(S1, BASE_FEE.into(), 100_000, 1, 10));
+
+    let eth_block_policy = EthBlockPolicy::<
+        SignatureType,
+        SignatureCollectionType,
+        MockChainConfig,
+        MockChainRevision,
+    >::new(GENESIS_SEQ_NUM, 4);
+    let state_backend = InMemoryStateInner::new(
+        Balance::MAX,
+        SeqNum(4),
+        InMemoryBlockState::genesis(BTreeMap::from_iter(vec![(tx1.signer(), 0u64)])),
+    );
+
+    let mut pool = EthTxPool::default_testing();
+
+    let metrics = EthTxPoolMetrics::default();
+    let mut ipc_events = BTreeMap::default();
+    let mut event_tracker = EthTxPoolEventTracker::new(&metrics, &mut ipc_events);
+
+    pool.update_committed_block(
+        &mut event_tracker,
+        &MockChainConfig::DEFAULT,
+        generate_block_with_txs(
+            Round(0),
+            SeqNum(0),
+            BASE_FEE,
+            &MockChainConfig::DEFAULT,
+            Vec::default(),
+        ),
+    );
+
+    pool.insert_txs(
+        &mut event_tracker,
+        &eth_block_policy,
+        &state_backend,
+        &MockChainConfig::DEFAULT,
+        vec![tx1, tx2],
+        true,
+        |_| {},
+    );
+
+    assert_eq!(pool.num_txs(), 2);
+
+    for i in 0..FORWARD_MIN_SEQ_NUM_DIFF {
+        pool.update_committed_block(
+            &mut event_tracker,
+            &MockChainConfig::DEFAULT,
+            generate_block_with_txs(
+                Round(1 + i),
+                SeqNum(1 + i),
+                BASE_FEE,
+                &MockChainConfig::DEFAULT,
+                Vec::default(),
+            ),
+        );
+    }
+
+    let mut forwardable_iter = pool
+        .get_forwardable_txs::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
+        .unwrap();
+
+    let first_tx = forwardable_iter.next();
+    assert!(first_tx.is_some());
+
+    drop(forwardable_iter);
+
+    let second_call_count = pool
+        .get_forwardable_txs::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
+        .unwrap()
+        .count();
+    assert_eq!(second_call_count, 1);
+}
