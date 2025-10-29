@@ -1,0 +1,24 @@
+[package]
+name = "monad-event-capture"
+description = "Rust API for monad event captures"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+monad-event = { workspace = true }
+
+libc = { workspace = true }
+
+[dev-dependencies]
+clap = { workspace = true, features = ["derive"] }
+criterion = { workspace = true }
+itertools = { workspace = true }
+
+[build-dependencies]
+bindgen = { workspace = true }
+cc = { workspace = true }
+cmake = { workspace = true }
+
+[[bench]]
+name = "capture_raw"
+harness = false
