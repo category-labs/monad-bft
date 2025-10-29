@@ -161,20 +161,20 @@ impl ChainConfig<MonadChainRevision> for MonadChainConfig {
 
 const MONAD_DEVNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     chain_id: MONAD_DEVNET_CHAIN_ID,
-    epoch_length: SeqNum(50_000),
-    epoch_start_delay: Round(5_000),
+    epoch_length: SeqNum(5_000),
+    epoch_start_delay: Round(500),
 
     v_0_7_0_activation: Round::MIN,
     v_0_8_0_activation: Round::MIN,
     v_0_10_0_activation: Round::MIN,
-    v_0_11_0_activation: Round::MIN,
+    v_0_11_0_activation: Round(FORK_ROUND),
 
-    staking_activation: Epoch::MAX,
+    staking_activation: Epoch(FORK_EPOCH_STAKING),
     staking_rewards_activation: Epoch::MAX,
 
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
-    execution_v_four_activation: 0,
+    execution_v_four_activation: FORK_UNIX_TS_S,
 };
 
 const MONAD_TESTNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
