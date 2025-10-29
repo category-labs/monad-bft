@@ -34,7 +34,7 @@ use monad_types::{
     GENESIS_SEQ_NUM,
 };
 use monad_validator::signature_collection::SignatureCollection;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     block_validator::BlockValidationError,
@@ -60,7 +60,8 @@ pub struct BlockRange {
 /// We do not derive RlpEncodable/RlpDecodable with #[rlp(trailing)] because
 /// decoding of 0x80 in trailing fields is ambiguous. Both None and Some(0_u64)
 /// encode to 0x80. It decodes 0x80 to None only
-#[derive(Clone, PartialEq, Eq, Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(bound(serialize = "", deserialize = ""))]
 pub struct ConsensusBlockHeader<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -78,6 +79,7 @@ where
     pub author: NodeId<CertificateSignaturePubKey<ST>>,
 
     pub seq_num: SeqNum,
+    #[serde(with = "u128_serde")]
     pub timestamp_ns: u128,
     // This is SCT::SignatureType because SCT signatures are guaranteed to be deterministic
     pub round_signature: RoundSignature<SCT::SignatureType>,
@@ -92,6 +94,25 @@ where
     pub base_fee: Option<u64>,
     pub base_fee_trend: Option<u64>,
     pub base_fee_moment: Option<u64>,
+}
+
+mod u128_serde {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(num: &u128, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(num.to_string().as_str())
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<u128, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let str = String::deserialize(deserializer)?;
+        str.parse().map_err(<D::Error as serde::de::Error>::custom)
+    }
 }
 
 /// Encodable and Decodable impls follow https://github.com/alloy-rs/alloy/blob/b0e06a09e9b18d13f9a5c0e0951a00a88545bc8f/crates/consensus/src/block/header.rs
@@ -652,14 +673,18 @@ impl ExecutionProtocol for MockExecutionProtocol {
     type FinalizedHeader = MockExecutionFinalizedHeader;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Default)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize, Default,
+)]
 pub struct MockExecutionProposedHeader {}
 
-#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Default)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize, Default,
+)]
 pub struct MockExecutionBody {
     pub data: Bytes,
 }
-#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize)]
 pub struct MockExecutionFinalizedHeader {
     number: SeqNum,
 }
@@ -884,6 +909,43 @@ mod test {
         > = alloy_rlp::decode_exact(&encoded).unwrap();
 
         let re_encoded = alloy_rlp::encode(&decoded);
+        assert_eq!(re_encoded, encoded);
+        assert_eq!(decoded, header);
+    }
+
+    #[test]
+    fn test_header_toml_roundtrip_u128_max() {
+        let key = get_key::<SignatureType>(1246);
+        let cert_key = get_certificate_key::<SignatureCollectionType>(22354);
+
+        let header = ConsensusBlockHeader::<
+            SignatureType,
+            SignatureCollectionType,
+            ExecutionProtocolType,
+        >::new(
+            NodeId::new(key.pubkey()),
+            Epoch::MAX,
+            Round::MAX,
+            Vec::new(),
+            MockExecutionProposedHeader {},
+            ConsensusBlockBodyId(monad_crypto::hasher::Hash::default()),
+            QuorumCertificate::genesis_qc(),
+            SeqNum::MAX,
+            u128::MAX,
+            RoundSignature::new(Round::MAX, &cert_key),
+            Some(u64::MAX),
+            Some(u64::MAX),
+            Some(u64::MAX),
+        );
+
+        let encoded = toml::to_string_pretty(&header).unwrap();
+        let decoded: ConsensusBlockHeader<
+            SignatureType,
+            SignatureCollectionType,
+            ExecutionProtocolType,
+        > = toml::from_str(&encoded).unwrap();
+
+        let re_encoded = toml::to_string_pretty(&decoded).unwrap();
         assert_eq!(re_encoded, encoded);
         assert_eq!(decoded, header);
     }

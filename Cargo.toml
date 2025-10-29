@@ -208,7 +208,7 @@ tokio = { version = "1.39", features = ["sync"] }
 tokio-retry = "0.3.0"
 tokio-stream = "0.1.17"
 tokio-util = "0.7"
-toml = "0.7"
+toml = "0.9"
 tracing = "0.1"
 tracing-actix-web = "0.7"
 tracing-manytrace = { git = "https://github.com/category-labs/manytrace.git", tag = "v0.1.1" }

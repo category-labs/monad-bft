@@ -15,7 +15,7 @@
 
 use std::{fmt::Debug, ops::Deref};
 
-use ::serde::Serialize;
+use ::serde::{Deserialize, Serialize};
 use alloy_consensus::{transaction::Recovered, Header, TxEnvelope};
 use alloy_eips::eip7702::RecoveredAuthorization;
 use alloy_primitives::{Address, B256};
@@ -47,26 +47,67 @@ pub struct EthAccount {
     pub is_delegated: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ProposedEthHeader {
+    #[serde(with = "hex_wrapper")]
     pub ommers_hash: [u8; 32],
     pub beneficiary: Address,
+    #[serde(with = "hex_wrapper")]
     pub transactions_root: [u8; 32],
     pub difficulty: u64,
     pub number: u64,
     pub gas_limit: u64,
     pub timestamp: u64,
+    #[serde(with = "hex_wrapper")]
     pub extra_data: [u8; 32],
+    #[serde(with = "hex_wrapper")]
     pub mix_hash: [u8; 32],
+    #[serde(with = "hex_wrapper")]
     pub nonce: [u8; 8],
     pub base_fee_per_gas: u64,
+    #[serde(with = "hex_wrapper")]
     pub withdrawals_root: [u8; 32],
     // cancun
     pub blob_gas_used: u64,
     pub excess_blob_gas: u64,
+    #[serde(with = "hex_wrapper")]
     pub parent_beacon_block_root: [u8; 32],
     // eip-7685
+    // TODO switch this to [u8; 32] once everything is on prague
+    // TODO add #[serde(with = "hex_wrapper")] after this
     pub requests_hash: Option<[u8; 32]>,
+}
+
+mod hex_wrapper {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S, const N: usize>(bytes: &[u8; N], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let hex_str = "0x".to_string() + &hex::encode(bytes);
+        serializer.serialize_str(&hex_str)
+    }
+
+    pub fn deserialize<'de, D, const N: usize>(deserializer: D) -> Result<[u8; N], D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let buf = <String as Deserialize>::deserialize(deserializer)?;
+
+        let hex_str = match buf.strip_prefix("0x") {
+            Some(hex_str) => hex_str,
+            None => &buf,
+        };
+
+        let bytes = hex::decode(hex_str).map_err(<D::Error as serde::de::Error>::custom)?;
+        bytes.try_into().map_err(|err| {
+            <D::Error as serde::de::Error>::custom(format!(
+                "failed to deserialize bytes: {:?}",
+                err
+            ))
+        })
+    }
 }
 
 impl ProposedEthHeader {
@@ -174,7 +215,9 @@ impl Decodable for ProposedEthHeader {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, RlpEncodableWrapper, RlpDecodableWrapper, Serialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, RlpEncodableWrapper, RlpDecodableWrapper, Serialize, Deserialize,
+)]
 pub struct EthHeader(pub Header);
 
 impl FinalizedHeader for EthHeader {
@@ -183,7 +226,7 @@ impl FinalizedHeader for EthHeader {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Default)]
+#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize, Default)]
 pub struct EthBlockBody {
     // TODO consider storing recovered txs inline here
     pub transactions: Vec<TxEnvelope>,
@@ -191,9 +234,9 @@ pub struct EthBlockBody {
     pub withdrawals: Vec<Withdrawal>,
 }
 
-#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
+#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize)]
 pub struct Ommer {}
-#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
+#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize)]
 pub struct Withdrawal {}
 
 impl Debug for EthBlockBody {
