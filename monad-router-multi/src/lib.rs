@@ -27,7 +27,7 @@ use futures::{Stream, StreamExt};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_dataplane::{DataplaneBuilder, DataplaneWriter};
+use monad_dataplane::{DataplaneBuilder, UdpSocketWriter};
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{Message, RouterCommand};
 use monad_node_config::{FullNodeConfig, FullNodeIdentityConfig};
@@ -44,7 +44,7 @@ use monad_raptorcast::{
         group_message::FullNodesGroupMessage, RaptorCastSecondary, SecondaryRaptorCastModeConfig,
     },
     util::Group,
-    RaptorCast, RaptorCastEvent,
+    RaptorCast, RaptorCastEvent, RAPTORCAST_SOCKET,
 };
 use monad_types::{Epoch, NodeId};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -66,7 +66,8 @@ where
     self_node_id: NodeId<CertificateSignaturePubKey<ST>>,
     current_epoch: Epoch,
     epoch_validators: BTreeMap<Epoch, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
-    dp_writer: DataplaneWriter,
+
+    dp_writer: UdpSocketWriter,
     shared_pdd: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
 
     phantom: PhantomData<(OM, SE)>,
@@ -96,7 +97,14 @@ where
 
         let dp = dataplane_builder.build();
         assert!(dp.block_until_ready(Duration::from_secs(1)));
-        let (dp_reader, dp_writer) = dp.split();
+
+        let (tcp_socket, mut udp_dataplane, control) = dp.split();
+        let udp_socket = udp_dataplane
+            .take_socket(RAPTORCAST_SOCKET)
+            .expect("raptorcast socket");
+        let udp_writer_secondary = udp_socket.writer().clone();
+
+        let (tcp_reader, tcp_writer) = tcp_socket.split();
 
         // Create a channel between primary and secondary raptorcast instances.
         // Fundamentally this is needed because, while both can send, only the
@@ -122,7 +130,7 @@ where
         let rc_secondary = Self::build_secondary(
             cfg.clone(),
             secondary_mode,
-            dp_writer.clone(),
+            udp_writer_secondary.clone(),
             shared_pdd.clone(),
             recv_net_messages,
             send_group_infos,
@@ -132,8 +140,10 @@ where
         let mut rc_primary = RaptorCast::new(
             cfg.clone(),
             secondary_mode,
-            dp_reader,
-            dp_writer.clone(),
+            tcp_reader,
+            tcp_writer,
+            udp_socket,
+            control,
             shared_pdd.clone(),
             current_epoch,
         );
@@ -146,7 +156,7 @@ where
             current_epoch,
             epoch_validators,
             self_node_id,
-            dp_writer,
+            dp_writer: udp_writer_secondary,
             shared_pdd,
             phantom: PhantomData,
         }
@@ -185,7 +195,7 @@ where
     fn build_secondary(
         cfg: RaptorCastConfig<ST>,
         mode: SecondaryRaptorCastModeConfig,
-        dp_writer: DataplaneWriter,
+        udp_writer: UdpSocketWriter,
         shared_pdd: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
         recv_net_messages: UnboundedReceiver<FullNodesGroupMessage<ST>>,
         send_group_infos: UnboundedSender<Group<ST>>,
@@ -243,7 +253,7 @@ where
             _ => Some(RaptorCastSecondary::new(
                 cfg,
                 secondary_instance.mode,
-                dp_writer,
+                udp_writer,
                 shared_pdd,
                 recv_net_messages,
                 send_group_infos,

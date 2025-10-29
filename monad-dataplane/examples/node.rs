@@ -26,7 +26,10 @@ use futures::{executor, Stream};
 use futures_util::FutureExt;
 use monad_dataplane::{
     udp::DEFAULT_SEGMENT_SIZE, BroadcastMsg, Dataplane, DataplaneBuilder, RecvUdpMsg, TcpMsg,
+    UdpSocketHandle,
 };
+
+const LEGACY_SOCKET: &str = "legacy";
 use rand::Rng;
 
 const NODE_ONE_ADDR: &str = "127.0.0.1:60000";
@@ -82,14 +85,14 @@ fn main() {
 
         println!("START: {:?}", Instant::now());
         for i in 0..num_pkts {
-            tx.network.udp_write_broadcast(BroadcastMsg {
+            tx.udp_socket.write_broadcast(BroadcastMsg {
                 targets: vec![tx.target],
                 payload: b.slice(i * pkt_size..(i + 1) * pkt_size),
                 stride: DEFAULT_SEGMENT_SIZE,
             })
         }
 
-        tx.network.tcp_write(
+        tx.dataplane.tcp_write(
             tx.target,
             TcpMsg {
                 msg: Bytes::from(&b"Hello world"[..]),
@@ -107,14 +110,25 @@ fn main() {
 }
 
 struct Node {
-    network: Dataplane,
+    udp_socket: UdpSocketHandle,
+    dataplane: Dataplane,
     target: SocketAddr,
 }
 
 impl Node {
     pub fn new(addr: &SocketAddr, target_addr: &str) -> Self {
+        let mut dataplane = DataplaneBuilder::new(addr, 1_000)
+            .extend_udp_sockets(vec![monad_dataplane::UdpSocketConfig {
+                socket_addr: *addr,
+                label: LEGACY_SOCKET.to_string(),
+            }])
+            .build();
+        let udp_socket = dataplane
+            .take_udp_socket_handle(LEGACY_SOCKET)
+            .expect("legacy socket");
         Self {
-            network: DataplaneBuilder::new(addr, 1_000).build(),
+            udp_socket,
+            dataplane,
             target: target_addr.parse().unwrap(),
         }
     }
@@ -129,7 +143,7 @@ impl Stream for Node {
     ) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
-        if let Poll::Ready(message) = pin!(this.network.udp_read()).poll_unpin(cx) {
+        if let Poll::Ready(message) = pin!(this.udp_socket.recv()).poll_unpin(cx) {
             return Poll::Ready(Some(message));
         }
         Poll::Pending
