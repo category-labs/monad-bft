@@ -5569,6 +5569,8 @@ name = "monad-node"
 version = "0.1.0"
 dependencies = [
  "agent",
+ "alloy-consensus",
+ "alloy-primitives",
  "alloy-rlp",
  "chrono",
  "clap 4.5.47",
@@ -5587,6 +5589,7 @@ dependencies = [
  "monad-eth-block-policy",
  "monad-eth-block-validator",
  "monad-eth-txpool-executor",
+ "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
  "monad-keystore",
@@ -5614,6 +5617,7 @@ dependencies = [
  "rand_chacha 0.3.1",
  "rayon",
  "reqwest 0.11.27",
+ "serde_json",
  "thiserror 1.0.69",
  "tikv-jemallocator",
  "tokio",
