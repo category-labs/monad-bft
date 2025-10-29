@@ -1143,6 +1143,12 @@ where
                         prioritized_full_nodes: config_update.prioritized_full_nodes,
                     }));
 
+                    cmds.push(Command::RouterCommand(
+                        RouterCommand::UpdateUpstreamValidators {
+                            prioritized_upstream: config_update.prioritized_upstream,
+                        },
+                    ));
+
                     cmds.push(Command::ControlPanelCommand(ControlPanelCommand::Write(
                         WriteCommand::ReloadConfig(ReloadConfig::Response("Success".to_string())),
                     )));
