@@ -35,7 +35,7 @@ use monad_validator::signature_collection::SignatureCollection;
 use pin_project::pin_project;
 use tracing::{debug, error};
 
-const EGRESS_MIN_COMMITTED_SEQ_NUM_DIFF: u64 = 5;
+pub const EGRESS_MIN_COMMITTED_SEQ_NUM_DIFF: u64 = 5;
 const EGRESS_MAX_RETRIES: usize = 3;
 
 const INGRESS_CHUNK_MAX_SIZE: usize = 128;
@@ -218,6 +218,7 @@ impl EthTxPoolForwardingManagerProjected<'_> {
     pub fn schedule_egress_txs<ST, SCT, SBT, CCT, CRT>(
         &mut self,
         pool: &mut EthTxPool<ST, SCT, SBT, CCT, CRT>,
+        limit: &mut crate::Limit,
     ) where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -231,8 +232,9 @@ impl EthTxPoolForwardingManagerProjected<'_> {
         else {
             return;
         };
-
-        self.add_egress_txs(forwardable_txs);
+        let limited_txs =
+            forwardable_txs.take_while(|tx| limit.acquire(tx.eip2718_encoded_length()));
+        self.add_egress_txs(limited_txs);
     }
 }
 

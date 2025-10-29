@@ -80,6 +80,7 @@ where
     events: mpsc::UnboundedReceiver<MempoolEvent<ST, SCT, EthExecutionProtocol>>,
 
     forwarding_manager: Pin<Box<EthTxPoolForwardingManager>>,
+    forwarding_limit: Limit,
     preload_manager: Pin<Box<EthTxPoolPreloadManager>>,
 
     metrics: Arc<EthTxPoolExecutorMetrics>,
@@ -136,11 +137,15 @@ where
                 let metrics = metrics.clone();
 
                 move |command_rx, event_tx| {
+                    let chain_revision = chain_config.get_chain_revision(round);
+                    let proposal_byte_limit =
+                        chain_revision.chain_params().proposal_byte_limit as usize;
+
                     let pool = EthTxPool::new(
                         soft_tx_expiry,
                         hard_tx_expiry,
                         chain_config.chain_id(),
-                        chain_config.get_chain_revision(round),
+                        chain_revision,
                         chain_config.get_execution_chain_revision(execution_timestamp_s),
                         do_local_insert,
                     );
@@ -158,6 +163,8 @@ where
 
                         forwarding_manager: Box::pin(EthTxPoolForwardingManager::default()),
                         preload_manager: Box::pin(EthTxPoolPreloadManager::default()),
+
+                        forwarding_limit: Limit::new(proposal_byte_limit),
 
                         metrics,
                         executor_metrics,
@@ -267,10 +274,12 @@ where
                         );
                     }
 
+                    self.forwarding_limit.renew();
+
                     self.forwarding_manager
                         .as_mut()
                         .project()
-                        .schedule_egress_txs(&mut self.pool);
+                        .schedule_egress_txs(&mut self.pool, &mut self.forwarding_limit);
                 }
                 TxPoolCommand::CreateProposal {
                     node_id,
@@ -485,6 +494,8 @@ where
             forwarding_manager,
             preload_manager,
 
+            forwarding_limit,
+
             metrics,
             executor_metrics,
 
@@ -528,7 +539,7 @@ where
             };
 
             let mut inserted_addresses = HashSet::<Address>::default();
-            let mut inserted_txs = Vec::default();
+            let mut txs_to_forward = Vec::default();
 
             pool.insert_txs(
                 &mut EthTxPoolEventTracker::new(&metrics.pool, &mut ipc_events),
@@ -539,7 +550,10 @@ where
                 true,
                 |tx| {
                     inserted_addresses.insert(tx.signer());
-                    inserted_txs.push(tx.raw().tx().clone());
+                    let size = tx.raw().tx().eip2718_encoded_length();
+                    if forwarding_limit.acquire(size) {
+                        txs_to_forward.push(tx.raw().tx().clone());
+                    }
                 },
             );
 
@@ -548,7 +562,7 @@ where
             forwarding_manager
                 .as_mut()
                 .project()
-                .add_egress_txs(inserted_txs.iter());
+                .add_egress_txs(txs_to_forward.iter());
 
             metrics.update(executor_metrics);
             ipc.as_mut().broadcast_tx_events(ipc_events);
@@ -648,5 +662,29 @@ where
         ipc.as_mut().broadcast_tx_events(ipc_events);
 
         Poll::Pending
+    }
+}
+
+pub(crate) struct Limit {
+    limit: usize,
+    used: usize,
+}
+
+impl Limit {
+    pub(crate) fn new(limit: usize) -> Self {
+        Self { limit, used: 0 }
+    }
+
+    pub(crate) fn acquire(&mut self, size: usize) -> bool {
+        if self.used + size <= self.limit {
+            self.used += size;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn renew(&mut self) {
+        self.used = 0;
     }
 }
