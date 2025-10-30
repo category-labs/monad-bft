@@ -34,17 +34,15 @@ use monad_chain_config::{
 use monad_consensus_types::{
     block::{BlockPolicy, ConsensusBlockHeader, ConsensusFullBlock, TxnFee, TxnFees},
     block_validator::{BlockValidationError, BlockValidator},
+    nonce_usage::{NonceUsage, NonceUsageMap},
     payload::ConsensusBlockBody,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{
-    compute_txn_max_gas_cost,
-    nonce_usage::{NonceUsage, NonceUsageMap},
-    pre_tfm_compute_max_txn_cost, timestamp_ns_to_secs,
-    validation::static_validate_transaction,
-    EthBlockPolicy, EthValidatedBlock,
+    compute_txn_max_gas_cost, pre_tfm_compute_max_txn_cost, timestamp_ns_to_secs,
+    validation::static_validate_transaction, EthBlockPolicy, EthValidatedBlock,
 };
 use monad_eth_types::{
     EthBlockBody, EthExecutionProtocol, ExtractEthAddress, ProposedEthHeader, ValidatedTx,
@@ -448,7 +446,8 @@ where
                     first_txn_gas: compute_txn_max_gas_cost(eth_txn, block_base_fee),
                     max_gas_cost: Balance::ZERO,
                     max_txn_cost: pre_tfm_compute_max_txn_cost(eth_txn),
-                    is_delegated: false,
+                    valid_authorization: None,
+                    authorization_nonce: None,
                 });
 
             trace!(seq_num = ?header.seq_num, address = ?eth_txn.signer(), nonce = ?eth_txn.nonce(), ?txn_fee_entry, "TxnFeeEntry");
@@ -473,16 +472,21 @@ where
                         continue;
                     }
 
+                    let txn_fee = txn_fees.entry(authority).or_default();
+                    txn_fee.authorization_nonce = Some(recovered_auth.nonce());
+                    let mut is_valid_authorization = false;
+
                     match nonce_usages.entry(authority) {
                         BTreeMapEntry::Occupied(nonce_usage) => match nonce_usage.into_mut() {
                             NonceUsage::Known(nonce) => {
-                                if let Some(next) = nonce.checked_add(1) {
-                                    if next == recovered_auth.nonce() {
+                                if *nonce == recovered_auth.nonce() {
+                                    if let Some(next) = nonce.checked_add(1) {
                                         *nonce = next;
+                                        is_valid_authorization = true;
+                                    } else {
+                                        // nonce overflow, invalid
+                                        return Err(BlockValidationError::TxnError);
                                     }
-                                } else {
-                                    // nonce overflow, invalid
-                                    return Err(BlockValidationError::TxnError);
                                 }
                             }
                             NonceUsage::Possible(possible_nonces) => {
@@ -495,9 +499,7 @@ where
                             ])));
                         }
                     }
-
-                    let txn_fee = txn_fees.entry(authority).or_default();
-                    txn_fee.is_delegated = true;
+                    txn_fee.valid_authorization = Some(is_valid_authorization); // cant validate nonces at this point.
                 }
             }
         }
@@ -651,7 +653,7 @@ mod test {
         let auth_list = vec![make_signed_authorization(
             B256::repeat_byte(0xAu8),
             secret_to_eth_address(B256::repeat_byte(0x1u8)),
-            1,
+            u64::MAX,
         )];
         let txn2 = make_eip7702_tx(
             B256::repeat_byte(0xBu8),
@@ -1157,35 +1159,32 @@ mod test {
 
             let (header, body) = block.block.split();
 
+            // Mimic validator logic: transactions must have sequential nonces, and
+            // authorizations can increment Known nonces which affects subsequent transactions
             let expect_success = block.validated_txns.iter().fold_while(Ok(BTreeMap::<Address, u64>::default()), |map, tx| {
                 match map {
                     Err(()) => unreachable!(),
                     Ok(mut map) => {
-                        match map.get_mut(tx.signer_ref()) {
-                            None => {
-                                map.insert(tx.signer(), tx.nonce() + 1);
-                            },
-                            Some(nonce) => {
-                                if *nonce != tx.nonce() {
-                                    return FoldWhile::Done(Err(()));
-                                }
+                        // Mimic the validator's add_known behavior: insert current nonce and get old value
+                        let old_nonce = map.insert(tx.signer(), tx.nonce());
 
-                                *nonce += 1;
+                        // Check if the old nonce is valid (should be one less than current)
+                        if let Some(old) = old_nonce {
+                            if tx.nonce() != old + 1 {
+                                return FoldWhile::Done(Err(()));
                             }
                         }
 
+                        // Process authorizations - they can increment Known nonces
                         for authorization in tx.authorization_list().into_iter().flatten() {
                             let authority = authorization.recover_authority().unwrap();
 
-                            let Some(nonce) = map.get_mut(&authority) else {
-                                continue;
-                            };
-
-                            if *nonce != authorization.nonce {
-                                continue;
+                            // If authority has a Known nonce and it matches auth nonce, increment it
+                            if let Some(nonce) = map.get_mut(&authority) {
+                                if *nonce == authorization.nonce {
+                                    *nonce += 1;
+                                }
                             }
-
-                            *nonce += 1;
                         }
 
                         FoldWhile::Continue(Ok(map))
