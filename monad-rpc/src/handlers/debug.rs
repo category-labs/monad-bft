@@ -673,7 +673,11 @@ async fn include_code_output<T: Triedb>(
     triedb_env: &T,
     block_key: BlockKey,
 ) -> JsonRpcResult<()> {
-    if matches!(frame.typ, CallKind::Create) || matches!(frame.typ, CallKind::Create2) {
+    // If the frame is a create or create2 call and the output is empty, we need to include the code output.
+    // Previously, historical traces would not include the code output in their output field.
+    if frame.output.is_empty()
+        && (matches!(frame.typ, CallKind::Create) || matches!(frame.typ, CallKind::Create2))
+    {
         let Some(contract_addr) = &frame.to else {
             error!("expected contract address in call frame");
             return Err(JsonRpcError::internal_error(
