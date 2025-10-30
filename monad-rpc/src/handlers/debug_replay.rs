@@ -15,9 +15,7 @@
 
 use std::sync::Arc;
 
-use monad_ethcall::{
-    eth_trace_block, eth_trace_transaction, CallResult, EthCallExecutor, MonadTracer,
-};
+use monad_ethcall::{eth_trace_block_or_transaction, CallResult, EthCallExecutor, MonadTracer};
 use monad_triedb_utils::triedb_env::Triedb;
 use monad_types::SeqNum;
 use serde_json::value::RawValue;
@@ -171,12 +169,13 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
                 })?;
             let (seq_number, block_id) = block_key.seq_num_block_id();
             let (_, parent_id) = parent_key.seq_num_block_id();
-            eth_trace_transaction(
+            eth_trace_block_or_transaction(
                 chain_id,
                 header.header,
                 seq_number.0,
                 block_id.map(|id| id.0 .0),
                 parent_id.map(|id| id.0 .0),
+                true,
                 tx_loc.tx_index,
                 eth_call_executor,
                 tracer,
@@ -214,12 +213,14 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
                     )
                 })?;
             let (_, parent_id) = parent_key.seq_num_block_id();
-            eth_trace_block(
+            eth_trace_block_or_transaction(
                 chain_id,
                 header.header,
                 seq_number.0,
                 block_id.map(|id| id.0 .0),
                 parent_id.map(|id| id.0 .0),
+                false,
+                0,
                 eth_call_executor,
                 tracer,
             )
