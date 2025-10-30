@@ -53,13 +53,13 @@ use self::{
 };
 use crate::{
     eth_json_types::serialize_result,
+    handlers::debug::{
+        MonadDebugTraceBlockByHashParams, MonadDebugTraceBlockByNumberParams,
+        MonadDebugTraceTransactionParams,
+    },
     jsonrpc::{
         JsonRpcError, JsonRpcResultExt, Request, RequestParams, RequestWrapper, Response,
         ResponseWrapper,
-    },
-        handlers::debug::{
-        MonadDebugTraceBlockByHashParams, MonadDebugTraceBlockByNumberParams,
-        MonadDebugTraceTransactionParams,
     },
     timing::RequestId,
     vpool::{monad_txpool_statusByAddress, monad_txpool_statusByHash},
