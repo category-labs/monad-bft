@@ -473,7 +473,6 @@ pub async fn eth_trace_block(
         MONAD_DEVNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_DEVNET,
         MONAD_TESTNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_TESTNET,
         MONAD_MAINNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_MAINNET,
-        MONAD_TESTNET2_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_TESTNET2,
         _ => {
             return CallResult::Failure(FailureCallResult {
                 error_code: EthCallResult::OtherError,
@@ -496,7 +495,7 @@ pub async fn eth_trace_block(
     unsafe {
         let sender_ctx_ptr = Box::into_raw(sender_ctx);
 
-        bindings::monad_eth_trace_block_executor_submit(
+        bindings::monad_eth_trace_block_or_transaction_executor_submit(
             eth_call_executor.eth_call_executor,
             chain_config,
             rlp_encoded_block_header.as_ptr(),
@@ -506,6 +505,8 @@ pub async fn eth_trace_block(
             rlp_encoded_block_id.len(),
             rlp_encoded_parent_id.as_ptr(),
             rlp_encoded_parent_id.len(),
+            false,
+            0,
             Some(eth_call_submit_callback),
             sender_ctx_ptr as *mut std::ffi::c_void,
             tracer.into(),
@@ -583,7 +584,6 @@ pub async fn eth_trace_transaction(
         MONAD_DEVNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_DEVNET,
         MONAD_TESTNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_TESTNET,
         MONAD_MAINNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_MAINNET,
-        MONAD_TESTNET2_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_TESTNET2,
         _ => {
             return CallResult::Failure(FailureCallResult {
                 error_code: EthCallResult::OtherError,
@@ -606,7 +606,7 @@ pub async fn eth_trace_transaction(
     unsafe {
         let sender_ctx_ptr = Box::into_raw(sender_ctx);
 
-        bindings::monad_eth_trace_transaction_executor_submit(
+        bindings::monad_eth_trace_block_or_transaction_executor_submit(
             eth_call_executor.eth_call_executor,
             chain_config,
             rlp_encoded_block_header.as_ptr(),
@@ -616,6 +616,7 @@ pub async fn eth_trace_transaction(
             rlp_encoded_block_id.len(),
             rlp_encoded_parent_id.as_ptr(),
             rlp_encoded_parent_id.len(),
+            true,
             transaction_index,
             Some(eth_call_submit_callback),
             sender_ctx_ptr as *mut std::ffi::c_void,
