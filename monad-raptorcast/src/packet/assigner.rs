@@ -635,7 +635,7 @@ mod tests {
     }
 
     fn rand_validator_set(rng: &mut impl rand::Rng, max_n: usize) -> Vec<(NodeId<PT>, Stake)> {
-        let n: usize = rng.gen_range(1..max_n);
+        let n: usize = rng.gen_range(1..=max_n);
         let mut validator_set = Vec::with_capacity(n);
 
         let mon = U256::from(1_000_000_000_000_000_000u64);
@@ -668,7 +668,7 @@ mod tests {
     }
 
     fn rand_node_set(rng: &mut impl rand::Rng, max_n: usize) -> Vec<NodeId<PT>> {
-        let n: usize = rng.gen_range(1..max_n);
+        let n: usize = rng.gen_range(1..=max_n);
         let mut node_set = Vec::with_capacity(n);
 
         for i in 1..=n {
@@ -772,8 +772,8 @@ mod tests {
     fn test_stake_with_rc_properties() {
         let rng = &mut rand::thread_rng();
         for _ in 0..50 {
-            let n_validators = rng.gen_range(1..2000);
-            let validator_set = rand_validator_set(rng, n_validators);
+            let validator_set = rand_validator_set(rng, 2000);
+            let n_validators = validator_set.len();
             let assigner = Partitioned::from_validator_set(validator_set.clone());
             let assigner_rc = StakeBasedWithRC::from_validator_set(validator_set);
 
