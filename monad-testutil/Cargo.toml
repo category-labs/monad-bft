@@ -21,3 +21,4 @@ monad-updaters = { workspace = true }
 monad-validator = { workspace = true }
 
 alloy-rlp = { workspace = true }
+serde = { workspace = true }

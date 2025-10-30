@@ -705,6 +705,7 @@ pub trait ExecutionProtocol:
         + Encodable
         + Decodable
         + Serialize
+        + for<'de> Deserialize<'de>
         // TODO delete Default once null blocks are gone
         + Default;
     type Body: Debug
@@ -717,6 +718,7 @@ pub trait ExecutionProtocol:
         + Encodable
         + Decodable
         + Serialize
+        + for<'de> Deserialize<'de>
         // TODO delete Default once null blocks are gone
         + Default;
 
@@ -725,7 +727,17 @@ pub trait ExecutionProtocol:
 }
 
 pub trait FinalizedHeader:
-    Debug + Clone + PartialEq + Eq + Send + Sync + Unpin + Encodable + Decodable + Serialize
+    Debug
+    + Clone
+    + PartialEq
+    + Eq
+    + Send
+    + Sync
+    + Unpin
+    + Encodable
+    + Decodable
+    + Serialize
+    + for<'de> Deserialize<'de>
 {
     fn seq_num(&self) -> SeqNum;
 }
