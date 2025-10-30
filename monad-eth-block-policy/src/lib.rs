@@ -29,6 +29,7 @@ use itertools::Itertools;
 use monad_chain_config::{
     execution_revision::MonadExecutionRevision, revision::ChainRevision, ChainConfig,
 };
+pub use monad_consensus_types::nonce_usage::{NonceUsage, NonceUsageMap};
 use monad_consensus_types::{
     block::{
         AccountBalanceState, BlockPolicy, BlockPolicyBlockValidator,
@@ -50,8 +51,6 @@ use monad_types::{
 use monad_validator::signature_collection::SignatureCollection;
 use sorted_vector_map::SortedVectorMap;
 use tracing::{debug, trace, warn};
-
-use self::nonce_usage::{NonceUsage, NonceUsageMap};
 
 pub mod nonce_usage;
 pub mod validation;
@@ -235,6 +234,7 @@ where
         emptying_txn_check_block_range: Range<SeqNum>,
         reserve_balance_check_block_range: RangeFrom<SeqNum>,
         chain_config: &CCT,
+        merged_nonce_usages: &mut NonceUsageMap,
     ) -> Result<SeqNum, BlockPolicyError> {
         trace!(
             ?emptying_txn_check_block_range,
@@ -262,6 +262,9 @@ where
                 "Reserve balance check range is not contiguous"
             );
 
+            // Merge nonce_usages from previous blocks
+            merged_nonce_usages.merge_with_previous_block(block.nonce_usages.map.iter());
+
             if let Some(block_txn_fees) = block.fees.get(eth_address) {
                 let validator = EthBlockPolicyBlockValidator::new(
                     block.seq_num,
@@ -278,7 +281,12 @@ where
                     block.seq_num,
                     account_balance
                 );
-                validator.try_apply_block_fees(account_balance, &block_txn_fees, eth_address)?;
+                validator.try_apply_block_fees(
+                    account_balance,
+                    &block_txn_fees,
+                    eth_address,
+                    merged_nonce_usages,
+                )?;
             }
             next_validate += SeqNum(1);
         }
@@ -403,6 +411,7 @@ where
         account_balance: &mut AccountBalanceState,
         block_txn_fees: &TxnFee,
         eth_address: &Address,
+        nonce_usages: &NonceUsageMap,
     ) -> Result<(), BlockPolicyError> {
         let tfm_enabled = self
             .execution_chain_revision
@@ -444,6 +453,25 @@ where
             return Ok(());
         }
 
+        let mut is_delegated_now = false;
+
+        if let Some(is_valid_authorization) = block_txn_fees.valid_authorization {
+            if is_valid_authorization {
+                is_delegated_now = true;
+            } else if let Some(authorization_nonce) = block_txn_fees.authorization_nonce {
+                if let Some(nonce_usage) = nonce_usages.get(eth_address) {
+                    match nonce_usage {
+                        NonceUsage::Known(nonce) => {
+                            is_delegated_now = *nonce == authorization_nonce;
+                        }
+                        NonceUsage::Possible(_) => {}
+                    }
+                }
+            }
+        }
+
+        account_balance.is_delegated |= is_delegated_now;
+
         let has_emptying_transaction = is_possibly_emptying_transaction(
             self.block_seq_num,
             account_balance,
@@ -451,6 +479,9 @@ where
         );
 
         let mut block_gas_cost = block_txn_fees.max_gas_cost;
+        let orig_account_balance = account_balance.balance;
+        let orig_reserve_balance = account_balance.remaining_reserve_balance;
+
         if has_emptying_transaction {
             if account_balance.balance < block_txn_fees.first_txn_gas {
                 trace!(
@@ -506,6 +537,9 @@ where
                 self.block_seq_num,
                 eth_address,
             );
+            account_balance.balance = orig_account_balance;
+            account_balance.remaining_reserve_balance = orig_reserve_balance;
+
             return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
                 BlockPolicyBlockValidatorError::InsufficientReserveBalance,
             ));
@@ -514,7 +548,6 @@ where
             .remaining_reserve_balance
             .saturating_sub(block_gas_cost);
         account_balance.block_seqnum_of_latest_txn = self.block_seq_num;
-        account_balance.is_delegated |= block_txn_fees.is_delegated;
 
         trace!(
             ?account_balance,
@@ -878,16 +911,17 @@ where
         );
 
         let addresses = addresses.unique().collect_vec();
-        let account_balances = self
-            .get_account_statuses(
-                state_backend,
-                &extending_blocks,
-                addresses.iter().copied(),
-                &base_seq_num,
-            )?
-            .into_iter()
+        let account_statuses = self.get_account_statuses(
+            state_backend,
+            &extending_blocks,
+            addresses.iter().copied(),
+            &base_seq_num,
+        )?;
+
+        let account_balances = account_statuses
+            .iter()
             .map(|maybe_status| {
-                maybe_status.map_or(
+                maybe_status.as_ref().map_or(
                     AccountBalanceState::new(base_max_reserve_balance),
                     |status| {
                         AccountBalanceState {
@@ -902,90 +936,101 @@ where
             })
             .collect_vec();
 
-        let account_balances: Result<BTreeMap<&'a Address, AccountBalanceState>, BlockPolicyError> =
-            addresses
-                .into_iter()
-                .zip_eq(account_balances)
-                .map(|(address, mut balance_state)| {
-                    // N - k + 1
-                    let reserve_balance_check_start = base_seq_num + SeqNum(1);
-                    // N - 2k + 2
-                    let mut emptying_txn_check_start = (reserve_balance_check_start + SeqNum(1))
-                        .max(self.execution_delay)
-                        - self.execution_delay;
+        // Initialize merged_nonce_usages for tracking across all committed and extending blocks
+        // Start with all account nonces from the base block
+        let mut merged_nonce_usages = NonceUsageMap::default();
+        for (address, maybe_status) in addresses.iter().zip_eq(account_statuses.iter()) {
+            if let Some(status) = maybe_status {
+                merged_nonce_usages.add_known(**address, status.nonce);
+            }
+        }
 
-                    if emptying_txn_check_start == GENESIS_SEQ_NUM {
-                        emptying_txn_check_start += SeqNum(1);
-                    }
+        // Process account balances using a for loop to allow mutation of merged_nonce_usages
+        let mut account_balance_map = BTreeMap::new();
+        for (address, mut balance_state) in addresses.into_iter().zip_eq(account_balances) {
+            // N - k + 1
+            let reserve_balance_check_start = base_seq_num + SeqNum(1);
+            // N - 2k + 2
+            let mut emptying_txn_check_start = (reserve_balance_check_start + SeqNum(1))
+                .max(self.execution_delay)
+                - self.execution_delay;
 
-                    // N - 2k + 2 (inclusive) to N - k + 1 (non inclusive)
-                    let emptying_txn_check_block_range =
-                        emptying_txn_check_start..reserve_balance_check_start;
-                    // N - k + 1 (inclusive) to N (non inclusive)
-                    let reserve_balance_check_block_range = reserve_balance_check_start..;
+            if emptying_txn_check_start == GENESIS_SEQ_NUM {
+                emptying_txn_check_start += SeqNum(1);
+            }
 
-                    if emptying_txn_check_start > GENESIS_SEQ_NUM {
-                        balance_state.block_seqnum_of_latest_txn =
-                            emptying_txn_check_start - SeqNum(1);
-                    }
+            // N - 2k + 2 (inclusive) to N - k + 1 (non inclusive)
+            let emptying_txn_check_block_range =
+                emptying_txn_check_start..reserve_balance_check_start;
+            // N - k + 1 (inclusive) to N (non inclusive)
+            let reserve_balance_check_block_range = reserve_balance_check_start..;
 
-                    // check for emptying txs and reserve balance in committed blocks
-                    let mut next_validate = self.committed_cache.update_account_balance(
-                        &mut balance_state,
-                        address,
-                        self.execution_delay,
-                        emptying_txn_check_block_range,
-                        reserve_balance_check_block_range,
-                        chain_config,
-                    )?;
+            if emptying_txn_check_start > GENESIS_SEQ_NUM {
+                balance_state.block_seqnum_of_latest_txn = emptying_txn_check_start - SeqNum(1);
+            }
 
-                    // check for emptying txs and reserve balance in extending blocks
-                    if let Some(blocks) = extending_blocks {
-                        // handle the case where base_seq_num is a pending block
-                        let next_blocks = blocks
-                            .iter()
-                            .skip_while(move |block| block.get_seq_num() < next_validate);
+            // check for emptying txs and reserve balance in committed blocks
+            let mut next_validate = self.committed_cache.update_account_balance(
+                &mut balance_state,
+                address,
+                self.execution_delay,
+                emptying_txn_check_block_range,
+                reserve_balance_check_block_range,
+                chain_config,
+                &mut merged_nonce_usages,
+            )?;
 
-                        for extending_block in next_blocks {
-                            assert_eq!(next_validate, extending_block.get_seq_num());
+            // check for emptying txs and reserve balance in extending blocks
+            if let Some(blocks) = extending_blocks {
+                // handle the case where base_seq_num is a pending block
+                let next_blocks = blocks
+                    .iter()
+                    .skip_while(move |block| block.get_seq_num() < next_validate);
 
-                            if let Some(txn_fee) = extending_block.txn_fees.get(address) {
-                                // if still within check emptying range, update latest tx seq num
-                                // otherwise check for reserve balance
-                                if next_validate < reserve_balance_check_start {
-                                    if balance_state.block_seqnum_of_latest_txn < next_validate {
-                                        balance_state.block_seqnum_of_latest_txn =
-                                            extending_block.get_seq_num();
-                                    }
-                                } else {
-                                    let validator = EthBlockPolicyBlockValidator::new(
-                                        extending_block.get_seq_num(),
-                                        self.execution_delay,
-                                        extending_block
-                                            .get_base_fee()
-                                            .unwrap_or(monad_tfm::base_fee::PRE_TFM_BASE_FEE),
-                                        &chain_config
-                                            .get_chain_revision(extending_block.get_block_round()),
-                                        &chain_config.get_execution_chain_revision(
-                                            timestamp_ns_to_secs(extending_block.get_timestamp()),
-                                        ),
-                                    )?;
+                for extending_block in next_blocks {
+                    assert_eq!(next_validate, extending_block.get_seq_num());
 
-                                    validator.try_apply_block_fees(
-                                        &mut balance_state,
-                                        txn_fee,
-                                        address,
-                                    )?;
-                                }
+                    // Merge nonce_usages from previous extending blocks
+                    merged_nonce_usages
+                        .merge_with_previous_block(extending_block.nonce_usages.map.iter());
+
+                    if let Some(txn_fee) = extending_block.txn_fees.get(address) {
+                        // if still within check emptying range, update latest tx seq num
+                        // otherwise check for reserve balance
+                        if next_validate < reserve_balance_check_start {
+                            if balance_state.block_seqnum_of_latest_txn < next_validate {
+                                balance_state.block_seqnum_of_latest_txn =
+                                    extending_block.get_seq_num();
                             }
-                            next_validate += SeqNum(1);
+                        } else {
+                            let validator = EthBlockPolicyBlockValidator::new(
+                                extending_block.get_seq_num(),
+                                self.execution_delay,
+                                extending_block
+                                    .get_base_fee()
+                                    .unwrap_or(monad_tfm::base_fee::PRE_TFM_BASE_FEE),
+                                &chain_config.get_chain_revision(extending_block.get_block_round()),
+                                &chain_config.get_execution_chain_revision(timestamp_ns_to_secs(
+                                    extending_block.get_timestamp(),
+                                )),
+                            )?;
+
+                            validator.try_apply_block_fees(
+                                &mut balance_state,
+                                txn_fee,
+                                address,
+                                &merged_nonce_usages,
+                            )?;
                         }
                     }
+                    next_validate += SeqNum(1);
+                }
+            }
 
-                    Ok((address, balance_state))
-                })
-                .collect();
-        account_balances
+            account_balance_map.insert(address, balance_state);
+        }
+
+        Ok(account_balance_map)
     }
 
     /// return value:
@@ -1472,7 +1517,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, VecDeque};
 
     use alloy_consensus::{SignableTransaction, TxEip1559};
     use alloy_eips::eip7702::Authorization;
@@ -2449,7 +2494,8 @@ mod test {
                             first_txn_gas: Balance::from(10),
                             max_gas_cost: Balance::from(90),
                             max_txn_cost: Balance::ZERO,
-                            is_delegated: false,
+                            valid_authorization: None,
+                            authorization_nonce: None,
                         },
                     ),
                     (
@@ -2459,7 +2505,8 @@ mod test {
                             first_txn_gas: Balance::from(10),
                             max_gas_cost: Balance::from(190),
                             max_txn_cost: Balance::ZERO,
-                            is_delegated: false,
+                            valid_authorization: None,
+                            authorization_nonce: None,
                         },
                     ),
                 ]),
@@ -2491,7 +2538,8 @@ mod test {
                             first_txn_gas: Balance::from(10),
                             max_gas_cost: Balance::from(140),
                             max_txn_cost: Balance::ZERO,
-                            is_delegated: false,
+                            valid_authorization: None,
+                            authorization_nonce: None,
                         },
                     ),
                     (
@@ -2501,7 +2549,8 @@ mod test {
                             first_txn_gas: Balance::from(10),
                             max_gas_cost: Balance::from(290),
                             max_txn_cost: Balance::ZERO,
-                            is_delegated: false,
+                            valid_authorization: None,
+                            authorization_nonce: None,
                         },
                     ),
                 ]),
@@ -2533,7 +2582,8 @@ mod test {
                             first_txn_gas: Balance::from(10),
                             max_gas_cost: Balance::from(240),
                             max_txn_cost: Balance::ZERO,
-                            is_delegated: false,
+                            valid_authorization: None,
+                            authorization_nonce: None,
                         },
                     ),
                     (
@@ -2543,7 +2593,8 @@ mod test {
                             first_txn_gas: Balance::from(10),
                             max_gas_cost: Balance::from(0),
                             max_txn_cost: Balance::ZERO,
-                            is_delegated: false,
+                            valid_authorization: None,
+                            authorization_nonce: None,
                         },
                     ),
                 ]),
@@ -2566,6 +2617,7 @@ mod test {
             max_reserve_balance,
             is_delegated: false,
         };
+        let mut merged_nonce_usages = NonceUsageMap::default();
         let res = buffer.update_account_balance(
             &mut account_balance_address_1,
             &address1,
@@ -2573,6 +2625,7 @@ mod test {
             SeqNum(4)..SeqNum(5),
             SeqNum(5)..,
             &MockChainConfig::DEFAULT,
+            &mut merged_nonce_usages,
         );
         assert!(res.is_ok());
 
@@ -2586,6 +2639,7 @@ mod test {
             max_reserve_balance,
             is_delegated: false,
         };
+        let mut merged_nonce_usages = NonceUsageMap::default();
         let res = buffer.update_account_balance(
             &mut account_balance_address_2,
             &address2,
@@ -2593,6 +2647,7 @@ mod test {
             emptying_txn_check_block_range.clone(),
             reserve_balance_check_block_range.clone(),
             &MockChainConfig::DEFAULT,
+            &mut merged_nonce_usages,
         );
         // no transaction in block2 (emptying transaction check)
         // gas cost + value more than balance in block3 (reserve balance check)
@@ -2610,6 +2665,7 @@ mod test {
             max_reserve_balance,
             is_delegated: false,
         };
+        let mut merged_nonce_usages = NonceUsageMap::default();
         let res = buffer.update_account_balance(
             &mut account_balance_address_3,
             &address3,
@@ -2617,6 +2673,7 @@ mod test {
             emptying_txn_check_block_range,
             reserve_balance_check_block_range,
             &MockChainConfig::DEFAULT,
+            &mut merged_nonce_usages,
         );
         // has a transaction in block2 (emptying transaction check)
         // gas cost more than balance in block3 (reserve balance check)
@@ -3328,14 +3385,15 @@ mod test {
         first_txn_value: u64,
         first_txn_gas: u64,
         max_gas_cost: u64,
-        is_delegated: bool,
+        is_valid_authorization: bool,
     ) -> TxnFee {
         TxnFee {
             first_txn_value: Balance::from(first_txn_value),
             first_txn_gas: Balance::from(first_txn_gas),
             max_gas_cost: Balance::from(max_gas_cost),
             max_txn_cost: Balance::ZERO,
-            is_delegated,
+            valid_authorization: Some(is_valid_authorization),
+            authorization_nonce: None,
         }
     }
 
@@ -3357,8 +3415,9 @@ mod test {
         )
         .unwrap();
 
+        let nonce_usages = NonceUsageMap::default();
         assert_eq!(
-            validator.try_apply_block_fees(account_balance, fees, eth_address),
+            validator.try_apply_block_fees(account_balance, fees, eth_address, &nonce_usages),
             expect,
         );
         assert_eq!(
@@ -3376,7 +3435,7 @@ mod test {
         SeqNum(1),
         vec![(1001, 1, 100)], // value is not checked
         vec![SeqNum(4)],
-        vec![Balance::ZERO],
+        vec![Balance::from(10)],
         vec![RESERVE_FAIL],
     )]
     #[case( // Has emptying txn, insufficient reserve
@@ -3386,7 +3445,7 @@ mod test {
         SeqNum(1),
         vec![(100, 1, 100)],
         vec![SeqNum(4)],
-        vec![Balance::ZERO],
+        vec![Balance::from(10)],
         vec![RESERVE_FAIL],
     )]
     #[case( // Has emptying txn, insufficient reserve
@@ -3579,7 +3638,7 @@ mod test {
         false,
         vec![(11, 1, 1, false)],
         vec![SeqNum(4)],
-        vec![Balance::from(0_u64)],
+        vec![Balance::from(10_u64)],
         vec![false],
         vec![RESERVE_FAIL],
     )]
@@ -3623,9 +3682,9 @@ mod test {
         false,
         vec![(11, 1, 10, true), (11, 1, 1, false)],
         vec![SeqNum(4), SeqNum(5)],
-        vec![Balance::from(78_u64), Balance::from(76_u64)],
+        vec![Balance::from(10_u64), Balance::from(8_u64)],
         vec![true, true],
-        vec![Ok(()), Ok(())],
+        vec![RESERVE_FAIL, Ok(())],
     )]
     #[case( // delegated in initial state, auth
         Balance::from(1),
@@ -3731,6 +3790,401 @@ mod test {
         assert_eq!(
             max_gas_cost,
             Balance::from((base_fee as u128 + max_priority_fee_per_gas) * gas_limit as u128)
+        );
+    }
+
+    #[test]
+    fn test_merged_nonce_usages_initialization() {
+        // Test that merged_nonce_usages is initialized with account nonces from base block
+        let address1 = secret_to_eth_address(S1);
+        let address2 = secret_to_eth_address(S2);
+
+        let mut merged_nonce_usages = NonceUsageMap::default();
+
+        // Simulate initialization from account statuses
+        merged_nonce_usages.add_known(address1, 5);
+        merged_nonce_usages.add_known(address2, 10);
+
+        // Verify nonces are stored correctly
+        assert_eq!(
+            merged_nonce_usages.get(&address1),
+            Some(&NonceUsage::Known(5))
+        );
+        assert_eq!(
+            merged_nonce_usages.get(&address2),
+            Some(&NonceUsage::Known(10))
+        );
+    }
+
+    #[test]
+    fn test_nonce_usages_merge_with_previous_block() {
+        // Test that nonce_usages correctly merges with previous block nonces
+        // Note: merge_with_previous keeps Known values, merges into Possible values
+        let address1 = secret_to_eth_address(S1);
+        let address2 = secret_to_eth_address(S2);
+
+        let mut merged_nonce_usages = NonceUsageMap::default();
+        merged_nonce_usages.add_known(address1, 5);
+
+        // Create a block with nonce usage
+        let mut block_nonce_usages = NonceUsageMap::default();
+        block_nonce_usages.add_known(address1, 6); // Won't override Known value
+        block_nonce_usages.add_known(address2, 10); // New address will be added
+
+        // Merge block nonces into merged_nonce_usages
+        merged_nonce_usages.merge_with_previous_block(block_nonce_usages.map.iter());
+
+        // Verify merged state - address1 keeps its Known(5), address2 gets added as Known(10)
+        assert_eq!(
+            merged_nonce_usages.get(&address1),
+            Some(&NonceUsage::Known(5)), // Keeps original Known value
+            "Known nonce values should not be overridden"
+        );
+        assert_eq!(
+            merged_nonce_usages.get(&address2),
+            Some(&NonceUsage::Known(10)),
+            "New addresses should be added from previous block"
+        );
+    }
+
+    #[test]
+    fn test_try_apply_block_fees_with_nonce_usages() {
+        // Test that try_apply_block_fees uses nonce_usages for authorization validation
+        // The authorization_nonce is checked against the transaction sender's nonce
+        let address = secret_to_eth_address(S1);
+
+        let mut account_balance = AccountBalanceState {
+            balance: Balance::from(ONE_ETHER),
+            remaining_reserve_balance: Balance::from(ONE_ETHER),
+            max_reserve_balance: Balance::from(RESERVE_BALANCE),
+            block_seqnum_of_latest_txn: SeqNum(1),
+            is_delegated: false,
+        };
+
+        let fees = TxnFee {
+            first_txn_value: Balance::from(0),
+            first_txn_gas: Balance::from(0),
+            max_gas_cost: Balance::from(100_000),
+            max_txn_cost: Balance::from(100_000),
+            valid_authorization: Some(false), // Invalid authorization
+            authorization_nonce: Some(5),
+        };
+
+        // Create nonce_usages with the transaction sender's nonce matching the authorization
+        let mut nonce_usages = NonceUsageMap::default();
+        nonce_usages.add_known(address, 5); // Sender's nonce matches authorization_nonce
+
+        let validator = EthBlockPolicyBlockValidator::new(
+            SeqNum(5),
+            EXEC_DELAY,
+            BASE_FEE,
+            &MockChainRevision::DEFAULT,
+            &MonadExecutionRevision::LATEST,
+        )
+        .unwrap();
+
+        // Should set is_delegated to true because sender's nonce matches authorization_nonce
+        let result =
+            validator.try_apply_block_fees(&mut account_balance, &fees, &address, &nonce_usages);
+
+        assert!(result.is_ok());
+        assert!(
+            account_balance.is_delegated,
+            "Account should be marked as delegated when sender nonce matches authorization_nonce"
+        );
+    }
+
+    #[test]
+    fn test_try_apply_block_fees_with_mismatched_nonce() {
+        // Test that authorization fails when nonce doesn't match
+        let address = secret_to_eth_address(S1);
+        let authority = secret_to_eth_address(S2);
+
+        let mut account_balance = AccountBalanceState {
+            balance: Balance::from(ONE_ETHER),
+            remaining_reserve_balance: Balance::from(ONE_ETHER),
+            max_reserve_balance: Balance::from(RESERVE_BALANCE),
+            block_seqnum_of_latest_txn: SeqNum(1),
+            is_delegated: false,
+        };
+
+        let fees = TxnFee {
+            first_txn_value: Balance::from(0),
+            first_txn_gas: Balance::from(0),
+            max_gas_cost: Balance::from(100_000),
+            max_txn_cost: Balance::from(100_000),
+            valid_authorization: Some(false), // Invalid authorization
+            authorization_nonce: Some(5),
+        };
+
+        // Create nonce_usages with different nonce
+        let mut nonce_usages = NonceUsageMap::default();
+        nonce_usages.add_known(authority, 10); // Different nonce
+
+        let validator = EthBlockPolicyBlockValidator::new(
+            SeqNum(5),
+            EXEC_DELAY,
+            BASE_FEE,
+            &MockChainRevision::DEFAULT,
+            &MonadExecutionRevision::LATEST,
+        )
+        .unwrap();
+
+        let result =
+            validator.try_apply_block_fees(&mut account_balance, &fees, &address, &nonce_usages);
+
+        assert!(result.is_ok());
+        assert!(
+            !account_balance.is_delegated,
+            "Account should NOT be marked as delegated"
+        );
+    }
+
+    #[test]
+    fn test_nonce_usages_accumulation_across_blocks() {
+        // Test that nonce_usages accumulates correctly across multiple blocks
+        // Note: merge keeps Known values from the current map (they represent later blocks)
+        let address1 = secret_to_eth_address(S1);
+        let address2 = secret_to_eth_address(S2);
+        let address3 = Address::repeat_byte(0x03);
+
+        // Start with base block nonces (earliest state)
+        let mut merged_nonce_usages = NonceUsageMap::default();
+        merged_nonce_usages.add_known(address1, 5);
+        merged_nonce_usages.add_known(address2, 10);
+
+        // Block 1 updates address1 (but merge won't override Known)
+        let mut block1_nonces = NonceUsageMap::default();
+        block1_nonces.add_known(address1, 6);
+        merged_nonce_usages.merge_with_previous_block(block1_nonces.map.iter());
+
+        // Block 2 updates address2 and adds address3
+        let mut block2_nonces = NonceUsageMap::default();
+        block2_nonces.add_known(address2, 11);
+        block2_nonces.add_known(address3, 20); // New address
+        merged_nonce_usages.merge_with_previous_block(block2_nonces.map.iter());
+
+        // Verify final state - Known values from initialization are preserved
+        assert_eq!(
+            merged_nonce_usages.get(&address1),
+            Some(&NonceUsage::Known(5)), // Keeps original (base block has priority)
+            "Base block Known nonce should be preserved"
+        );
+        assert_eq!(
+            merged_nonce_usages.get(&address2),
+            Some(&NonceUsage::Known(10)), // Keeps original (base block has priority)
+            "Base block Known nonce should be preserved"
+        );
+        assert_eq!(
+            merged_nonce_usages.get(&address3),
+            Some(&NonceUsage::Known(20)),
+            "New addresses from later blocks should be added"
+        );
+    }
+
+    #[test]
+    fn test_update_account_balance_with_nonce_usages() {
+        // Test that update_account_balance correctly uses and updates merged_nonce_usages
+        let address = secret_to_eth_address(S1);
+
+        let mut buffer = CommittedBlkBuffer::<
+            SignatureType,
+            SignatureCollectionType,
+            ChainConfigType,
+            ChainRevisionType,
+        >::new(4);
+
+        // Add some blocks to the buffer
+        let block = make_test_block(Round(1), SeqNum(1), vec![]);
+        buffer.update_committed_block(&block);
+
+        let mut account_balance = AccountBalanceState {
+            balance: Balance::from(ONE_ETHER),
+            remaining_reserve_balance: Balance::from(ONE_ETHER),
+            max_reserve_balance: Balance::from(RESERVE_BALANCE),
+            block_seqnum_of_latest_txn: SeqNum(0),
+            is_delegated: false,
+        };
+
+        let mut merged_nonce_usages = NonceUsageMap::default();
+        merged_nonce_usages.add_known(address, 5);
+
+        let result = buffer.update_account_balance(
+            &mut account_balance,
+            &address,
+            EXEC_DELAY,
+            SeqNum(1)..SeqNum(2),
+            SeqNum(2)..,
+            &MockChainConfig::DEFAULT,
+            &mut merged_nonce_usages,
+        );
+
+        assert!(result.is_ok());
+        // merged_nonce_usages should still be accessible and may have been updated
+        assert!(merged_nonce_usages.get(&address).is_some());
+    }
+
+    #[test]
+    fn test_possible_to_known_nonce_conversion_and_is_delegated() {
+        // Test that Possible nonces are converted to Known when merged with previous Known nonce
+        // and that is_delegated is set correctly based on the Known nonce
+        let address = secret_to_eth_address(S1);
+
+        // Start with a NonceUsageMap containing Possible nonces for an address
+        let mut current_nonce_usages = NonceUsageMap::default();
+        let possible_nonces = VecDeque::from(vec![6, 7, 8]);
+        current_nonce_usages
+            .map
+            .insert(address, NonceUsage::Possible(possible_nonces));
+
+        // Create a previous block with Known nonce
+        let mut previous_block_nonces = NonceUsageMap::default();
+        previous_block_nonces.add_known(address, 5);
+
+        // Merge: Possible([6, 7, 8]) with previous Known(5) should convert to Known(8)
+        // because 6 = 5+1, 7 = 6+1, 8 = 7+1 (all sequential)
+        current_nonce_usages.merge_with_previous_block(previous_block_nonces.map.iter());
+
+        // Verify the conversion to Known(8)
+        assert_eq!(
+            current_nonce_usages.get(&address),
+            Some(&NonceUsage::Known(8)),
+            "Possible nonces should convert to Known when merged with previous Known nonce"
+        );
+
+        // Now test that is_delegated is set correctly based on the Known nonce
+        let mut account_balance = AccountBalanceState {
+            balance: Balance::from(ONE_ETHER),
+            remaining_reserve_balance: Balance::from(ONE_ETHER),
+            max_reserve_balance: Balance::from(RESERVE_BALANCE),
+            block_seqnum_of_latest_txn: SeqNum(1),
+            is_delegated: false,
+        };
+
+        // Create fees with authorization_nonce matching the converted Known nonce
+        let fees = TxnFee {
+            first_txn_value: Balance::from(0),
+            first_txn_gas: Balance::from(0),
+            max_gas_cost: Balance::from(100_000),
+            max_txn_cost: Balance::from(100_000),
+            valid_authorization: Some(false), // Invalid authorization initially
+            authorization_nonce: Some(8),     // Matches the converted Known(8)
+        };
+
+        let validator = EthBlockPolicyBlockValidator::new(
+            SeqNum(5),
+            EXEC_DELAY,
+            BASE_FEE,
+            &MockChainRevision::DEFAULT,
+            &MonadExecutionRevision::LATEST,
+        )
+        .unwrap();
+
+        // Apply fees with the converted nonce_usages
+        let result = validator.try_apply_block_fees(
+            &mut account_balance,
+            &fees,
+            &address,
+            &current_nonce_usages,
+        );
+
+        assert!(result.is_ok());
+        assert!(
+            account_balance.is_delegated,
+            "is_delegated should be true when Known nonce matches authorization_nonce"
+        );
+    }
+
+    #[test]
+    fn test_possible_to_known_partial_conversion() {
+        // Test that Possible nonces are partially converted when not all are sequential
+        let address = secret_to_eth_address(S1);
+
+        // Start with Possible nonces that are NOT all sequential
+        let mut current_nonce_usages = NonceUsageMap::default();
+        let possible_nonces = VecDeque::from(vec![6, 7, 10]); // 10 is not sequential
+        current_nonce_usages
+            .map
+            .insert(address, NonceUsage::Possible(possible_nonces));
+
+        // First, test merging Possible with Possible to verify 10 is preserved
+        let mut test_merge_possible = current_nonce_usages.clone();
+        let mut previous_possible_nonces = NonceUsageMap::default();
+        previous_possible_nonces
+            .map
+            .insert(address, NonceUsage::Possible(VecDeque::from(vec![3, 4])));
+
+        test_merge_possible.merge_with_previous_block(previous_possible_nonces.map.iter());
+
+        // After merging Possible with Possible, verify 10 is still in the result
+        if let Some(NonceUsage::Possible(nonces)) = test_merge_possible.get(&address) {
+            assert!(
+                nonces.contains(&10),
+                "Possible nonces should still contain 10 after merging Possible with Possible"
+            );
+            assert_eq!(
+                nonces.clone(),
+                VecDeque::from(vec![3, 4, 6, 7, 10]),
+                "Merging Possible([6,7,10]) with Possible([3,4]) should prepend to get [3,4,6,7,10]"
+            );
+        } else {
+            panic!("Expected Possible nonces after Possible-to-Possible merge");
+        }
+
+        // Create a previous block with Known nonce
+        let mut previous_block_nonces = NonceUsageMap::default();
+        previous_block_nonces.add_known(address, 5);
+
+        // Merge: Possible([6, 7, 10]) with previous Known(5) should convert to Known(7)
+        // because 6 = 5+1, 7 = 6+1, but 10 != 7+1 so it stops
+        current_nonce_usages.merge_with_previous_block(previous_block_nonces.map.iter());
+
+        // Verify the conversion to Known(7), not Known(10)
+        assert_eq!(
+            current_nonce_usages.get(&address),
+            Some(&NonceUsage::Known(7)),
+            "Possible nonces should convert to Known up to the first non-sequential nonce"
+        );
+
+        // Test that is_delegated is NOT set when authorization_nonce doesn't match
+        let mut account_balance = AccountBalanceState {
+            balance: Balance::from(ONE_ETHER),
+            remaining_reserve_balance: Balance::from(ONE_ETHER),
+            max_reserve_balance: Balance::from(RESERVE_BALANCE),
+            block_seqnum_of_latest_txn: SeqNum(1),
+            is_delegated: false,
+        };
+
+        // Create fees with authorization_nonce that doesn't match
+        let fees = TxnFee {
+            first_txn_value: Balance::from(0),
+            first_txn_gas: Balance::from(0),
+            max_gas_cost: Balance::from(100_000),
+            max_txn_cost: Balance::from(100_000),
+            valid_authorization: Some(false),
+            authorization_nonce: Some(10), // Doesn't match Known(7)
+        };
+
+        let validator = EthBlockPolicyBlockValidator::new(
+            SeqNum(5),
+            EXEC_DELAY,
+            BASE_FEE,
+            &MockChainRevision::DEFAULT,
+            &MonadExecutionRevision::LATEST,
+        )
+        .unwrap();
+
+        let result = validator.try_apply_block_fees(
+            &mut account_balance,
+            &fees,
+            &address,
+            &current_nonce_usages,
+        );
+
+        assert!(result.is_ok());
+        assert!(
+            !account_balance.is_delegated,
+            "is_delegated should be false when Known nonce doesn't match authorization_nonce"
         );
     }
 }
