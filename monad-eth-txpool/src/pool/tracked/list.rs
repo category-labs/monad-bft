@@ -21,7 +21,7 @@ use std::{
 use alloy_primitives::Address;
 use indexmap::map::VacantEntry;
 use monad_chain_config::{execution_revision::MonadExecutionRevision, revision::ChainRevision};
-use monad_eth_block_policy::nonce_usage::NonceUsage;
+use monad_consensus_types::nonce_usage::NonceUsage;
 use monad_eth_txpool_types::EthTxPoolDropReason;
 use monad_types::Nonce;
 use tracing::error;
