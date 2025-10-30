@@ -28,6 +28,7 @@ pub mod block_validator;
 pub mod checkpoint;
 pub mod metrics;
 pub mod no_endorsement;
+pub mod nonce_usage;
 pub mod payload;
 pub mod quorum_certificate;
 pub mod timeout;
