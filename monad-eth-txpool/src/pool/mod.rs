@@ -653,8 +653,14 @@ where
             return Ok(Vec::default());
         }
 
-        let sequencer =
-            ProposalSequencer::new(self.tracked.iter(), &extending_blocks, base_fee, tx_limit);
+        let sequencer = ProposalSequencer::new(
+            self.tracked.iter(),
+            &extending_blocks,
+            base_fee,
+            tx_limit,
+            proposal_gas_limit,
+            proposal_byte_limit,
+        );
         let sequencer_len = sequencer.len();
 
         if sequencer.is_empty() {

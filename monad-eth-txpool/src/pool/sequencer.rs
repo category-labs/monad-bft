@@ -13,10 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{
-    cmp::Ordering,
-    collections::{BTreeMap, BinaryHeap, VecDeque},
-};
+use std::collections::{BTreeMap, BinaryHeap, VecDeque};
 
 use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
 use alloy_eips::eip7702::{RecoveredAuthority, RecoveredAuthorization};
@@ -33,20 +30,20 @@ use monad_eth_block_policy::{
 use monad_eth_types::ValidatedTx;
 use monad_validator::signature_collection::SignatureCollection;
 use rand::seq::SliceRandom;
-use tracing::{debug, error, trace};
+use tracing::{debug, error, trace, warn};
 
 use crate::pool::{
     tracked::TrackedTxList,
     transaction::{ValidEthRecoveredAuthorization, ValidEthTransaction},
 };
 
-#[derive(Debug, PartialEq, Eq)]
-struct OrderedTx<'a> {
+#[derive(Debug)]
+struct SequencableTx<'a> {
     tx: &'a ValidEthTransaction,
     effective_tip_per_gas: u128,
 }
 
-impl<'a> OrderedTx<'a> {
+impl<'a> SequencableTx<'a> {
     fn new(tx: &'a ValidEthTransaction, base_fee: u64) -> Option<Self> {
         let effective_tip_per_gas = tx.raw().effective_tip_per_gas(base_fee)?;
 
@@ -57,33 +54,29 @@ impl<'a> OrderedTx<'a> {
     }
 }
 
-impl<'a> PartialOrd for OrderedTx<'a> {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl<'a> Ord for OrderedTx<'a> {
-    fn cmp(&self, other: &Self) -> Ordering {
-        (
-            self.tx.tx_kind_priority(),
-            self.effective_tip_per_gas,
-            self.tx.gas_limit(),
-        )
-            .cmp(&(
-                other.tx.tx_kind_priority(),
-                other.effective_tip_per_gas,
-                other.tx.gas_limit(),
-            ))
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 struct OrderedTxGroup<'a> {
-    tx: OrderedTx<'a>,
+    tx: SequencableTx<'a>,
+    score: f64,
     virtual_time: u64,
     address: &'a Address,
-    queued: VecDeque<OrderedTx<'a>>,
+    queued: VecDeque<SequencableTx<'a>>,
+}
+
+impl Ord for OrderedTxGroup<'_> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.tx
+            .tx
+            .tx_kind_priority()
+            .cmp(&other.tx.tx.tx_kind_priority())
+            .then_with(|| self.score.total_cmp(&other.score))
+            .then_with(|| {
+                self.tx
+                    .effective_tip_per_gas
+                    .cmp(&other.tx.effective_tip_per_gas)
+            })
+            .then_with(|| self.virtual_time.cmp(&other.virtual_time).reverse())
+    }
 }
 
 impl PartialOrd for OrderedTxGroup<'_> {
@@ -92,11 +85,39 @@ impl PartialOrd for OrderedTxGroup<'_> {
     }
 }
 
-impl Ord for OrderedTxGroup<'_> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.tx
-            .cmp(&other.tx)
-            .then_with(|| self.virtual_time.cmp(&other.virtual_time).reverse())
+impl PartialEq for OrderedTxGroup<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
+}
+
+impl Eq for OrderedTxGroup<'_> {}
+
+enum TxScoreError {
+    NoRemainingCapacity,
+    ScoreNotNormal,
+}
+
+fn compute_score(
+    tx: &SequencableTx<'_>,
+    remaining_txs: usize,
+    remaining_gas: u64,
+    remaining_bytes: u64,
+) -> Result<f64, TxScoreError> {
+    if remaining_gas == 0 || remaining_bytes == 0 || remaining_txs == 0 {
+        return Err(TxScoreError::NoRemainingCapacity);
+    }
+
+    let score_txs = 1f64 / (remaining_txs as f64);
+    let score_gas = tx.tx.gas_limit() as f64 / (remaining_gas as f64);
+    let score_bytes = tx.tx.raw().eip2718_encoded_length() as f64 / (remaining_bytes as f64);
+
+    let score = tx.effective_tip_per_gas as f64 / (score_txs.max(score_gas).max(score_bytes));
+
+    if score.is_normal() {
+        Ok(-score)
+    } else {
+        Err(TxScoreError::ScoreNotNormal)
     }
 }
 
@@ -111,6 +132,8 @@ impl<'a> ProposalSequencer<'a> {
         extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
         base_fee: u64,
         tx_limit: usize,
+        proposal_gas_limit: u64,
+        proposal_byte_limit: u64,
     ) -> Self
     where
         ST: CertificateSignatureRecoverable,
@@ -124,7 +147,7 @@ impl<'a> ProposalSequencer<'a> {
         for (address, tx_list) in tracked_txs {
             let mut queued = tx_list
                 .get_queued(pending_nonce_usages.remove(address))
-                .map_while(|tx| OrderedTx::new(tx, base_fee));
+                .map_while(|tx| SequencableTx::new(tx, base_fee));
 
             let Some(tx) = queued.next() else {
                 continue;
@@ -132,8 +155,25 @@ impl<'a> ProposalSequencer<'a> {
 
             assert_eq!(address, tx.tx.signer_ref());
 
+            let score = match compute_score(&tx, tx_limit, proposal_gas_limit, proposal_byte_limit)
+            {
+                Err(TxScoreError::ScoreNotNormal) => {
+                    warn!(
+                        ?tx,
+                        ?tx_limit,
+                        ?proposal_gas_limit,
+                        ?proposal_byte_limit,
+                        "ProposalSequencer failed to compute tx score during creation"
+                    );
+                    continue;
+                }
+                Err(TxScoreError::NoRemainingCapacity) => break,
+                Ok(score) => score,
+            };
+
             heap_vec.push(OrderedTxGroup {
                 tx,
+                score,
                 virtual_time,
                 address,
                 queued: queued.collect(),
@@ -162,6 +202,7 @@ impl<'a> ProposalSequencer<'a> {
         self.heap.iter().map(
             |OrderedTxGroup {
                  tx: _,
+                 score: _,
                  virtual_time: _,
                  address,
                  queued: _,
@@ -189,6 +230,7 @@ impl<'a> ProposalSequencer<'a> {
         'proposal: while proposal.txs.len() < tx_limit {
             let Some(OrderedTxGroup {
                 mut tx,
+                score: _,
                 virtual_time: _,
                 address,
                 mut queued,
@@ -220,7 +262,15 @@ impl<'a> ProposalSequencer<'a> {
                     break 'proposal;
                 }
 
-                self.push(address, tx, queued);
+                self.try_push(
+                    address,
+                    tx,
+                    queued,
+                    tx_limit,
+                    proposal_gas_limit,
+                    proposal_byte_limit,
+                    &proposal,
+                );
                 continue;
             }
 
@@ -234,7 +284,15 @@ impl<'a> ProposalSequencer<'a> {
                 tx.tx,
             ) {
                 if let Some(next_tx) = queued.pop_front() {
-                    self.push(address, next_tx, queued);
+                    self.try_push(
+                        address,
+                        next_tx,
+                        queued,
+                        tx_limit,
+                        proposal_gas_limit,
+                        proposal_byte_limit,
+                        &proposal,
+                    );
                 }
 
                 for ValidEthRecoveredAuthorization {
@@ -325,11 +383,41 @@ impl<'a> ProposalSequencer<'a> {
     }
 
     #[inline]
-    fn push(&mut self, address: &'a Address, tx: OrderedTx<'a>, queued: VecDeque<OrderedTx<'a>>) {
+    fn try_push(
+        &mut self,
+        address: &'a Address,
+        tx: SequencableTx<'a>,
+        queued: VecDeque<SequencableTx<'a>>,
+        tx_limit: usize,
+        proposal_gas_limit: u64,
+        proposal_byte_limit: u64,
+        proposal: &Proposal,
+    ) {
         assert_eq!(address, tx.tx.signer_ref());
+
+        let score = match compute_score(
+            &tx,
+            tx_limit - proposal.txs.len(),
+            proposal_gas_limit - proposal.total_gas,
+            proposal_byte_limit - proposal.total_size,
+        ) {
+            Err(TxScoreError::ScoreNotNormal) => {
+                warn!(
+                    ?tx,
+                    ?tx_limit,
+                    ?proposal_gas_limit,
+                    ?proposal_byte_limit,
+                    "ProposalSequencer failed to compute tx score during creation"
+                );
+                return;
+            }
+            Err(TxScoreError::NoRemainingCapacity) => return,
+            Ok(score) => score,
+        };
 
         self.heap.push(OrderedTxGroup {
             tx,
+            score,
             virtual_time: self.virtual_time,
             address,
             queued,
