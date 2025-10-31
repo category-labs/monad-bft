@@ -34,8 +34,10 @@ use rand::Rng;
 use rstest::*;
 use tracing_subscriber::fmt::format::FmtSpan;
 
-/// 1_000 = 1 Gbps, 10_000 = 10 Gbps
 const UP_BANDWIDTH_MBPS: u64 = 1_000;
+
+const LEGACY_SOCKET: &str = "legacy";
+const DIRECT_SOCKET: &str = "direct";
 
 static ONCE_SETUP: Once = Once::new();
 
@@ -57,10 +59,19 @@ fn udp_broadcast() {
     let tx_addr = "127.0.0.1:9001".parse().unwrap();
     let num_msgs = 10;
 
-    let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS).build();
-    let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
+    let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS)
+        .extend_udp_sockets(vec![monad_dataplane::UdpSocketConfig {
+            socket_addr: rx_addr,
+            label: LEGACY_SOCKET.to_string(),
+        }])
+        .build();
+    let mut tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS)
+        .extend_udp_sockets(vec![monad_dataplane::UdpSocketConfig {
+            socket_addr: tx_addr,
+            label: LEGACY_SOCKET.to_string(),
+        }])
+        .build();
 
-    // Allow Dataplane threads to set themselves up.
     assert!(rx.block_until_ready(Duration::from_secs(1)));
     assert!(tx.block_until_ready(Duration::from_secs(1)));
 
@@ -68,14 +79,17 @@ fn udp_broadcast() {
         .map(|_| rand::thread_rng().gen_range(0..255))
         .collect();
 
-    tx.udp_write_broadcast(BroadcastMsg {
+    let mut rx_socket = rx.take_udp_socket_handle(LEGACY_SOCKET).unwrap();
+    let tx_socket = tx.take_udp_socket_handle(LEGACY_SOCKET).unwrap();
+
+    tx_socket.write_broadcast(BroadcastMsg {
         targets: vec![rx_addr; num_msgs],
         payload: payload.clone().into(),
         stride: DEFAULT_SEGMENT_SIZE,
     });
 
     for _ in 0..num_msgs {
-        let msg: RecvUdpMsg = executor::block_on(rx.udp_read());
+        let msg: RecvUdpMsg = executor::block_on(rx_socket.recv());
 
         assert_eq!(msg.src_addr, tx_addr);
         assert_eq!(msg.payload, payload);
@@ -91,10 +105,19 @@ fn udp_unicast() {
     let tx_addr = "127.0.0.1:9003".parse().unwrap();
     let num_msgs = 10;
 
-    let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS).build();
-    let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
+    let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS)
+        .extend_udp_sockets(vec![monad_dataplane::UdpSocketConfig {
+            socket_addr: rx_addr,
+            label: LEGACY_SOCKET.to_string(),
+        }])
+        .build();
+    let mut tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS)
+        .extend_udp_sockets(vec![monad_dataplane::UdpSocketConfig {
+            socket_addr: tx_addr,
+            label: LEGACY_SOCKET.to_string(),
+        }])
+        .build();
 
-    // Allow Dataplane threads to set themselves up.
     assert!(rx.block_until_ready(Duration::from_secs(1)));
     assert!(tx.block_until_ready(Duration::from_secs(1)));
 
@@ -102,13 +125,16 @@ fn udp_unicast() {
         .map(|_| rand::thread_rng().gen_range(0..255))
         .collect();
 
-    tx.udp_write_unicast(UnicastMsg {
+    let mut rx_socket = rx.take_udp_socket_handle(LEGACY_SOCKET).unwrap();
+    let tx_socket = tx.take_udp_socket_handle(LEGACY_SOCKET).unwrap();
+
+    tx_socket.write_unicast(UnicastMsg {
         msgs: vec![(rx_addr, payload.clone().into()); num_msgs],
         stride: DEFAULT_SEGMENT_SIZE,
     });
 
     for _ in 0..num_msgs {
-        let msg: RecvUdpMsg = executor::block_on(rx.udp_read());
+        let msg: RecvUdpMsg = executor::block_on(rx_socket.recv());
 
         assert_eq!(msg.src_addr, tx_addr);
         assert_eq!(msg.payload, payload);
@@ -120,17 +146,40 @@ fn udp_unicast() {
 fn udp_direct_socket() {
     once_setup();
 
-    let rx_addr = "127.0.0.1:9030".parse().unwrap();
+    let rx_addr: std::net::SocketAddr = "127.0.0.1:9030".parse().unwrap();
     let rx_direct_port = 9031;
-    let tx_addr = "127.0.0.1:9032".parse().unwrap();
+    let tx_addr: std::net::SocketAddr = "127.0.0.1:9032".parse().unwrap();
     let tx_direct_port = 9033;
     let num_msgs = 10;
 
+    let mut rx_direct_addr = rx_addr;
+    rx_direct_addr.set_port(rx_direct_port);
+    let mut tx_direct_addr = tx_addr;
+    tx_direct_addr.set_port(tx_direct_port);
+
     let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS)
-        .with_direct_socket(rx_direct_port)
+        .extend_udp_sockets(vec![
+            monad_dataplane::UdpSocketConfig {
+                socket_addr: rx_addr,
+                label: LEGACY_SOCKET.to_string(),
+            },
+            monad_dataplane::UdpSocketConfig {
+                socket_addr: rx_direct_addr,
+                label: DIRECT_SOCKET.to_string(),
+            },
+        ])
         .build();
-    let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS)
-        .with_direct_socket(tx_direct_port)
+    let mut tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS)
+        .extend_udp_sockets(vec![
+            monad_dataplane::UdpSocketConfig {
+                socket_addr: tx_addr,
+                label: LEGACY_SOCKET.to_string(),
+            },
+            monad_dataplane::UdpSocketConfig {
+                socket_addr: tx_direct_addr,
+                label: DIRECT_SOCKET.to_string(),
+            },
+        ])
         .build();
 
     assert!(rx.block_until_ready(Duration::from_secs(2)));
@@ -140,27 +189,29 @@ fn udp_direct_socket() {
         .map(|_| rand::thread_rng().gen_range(0..255))
         .collect();
 
-    tx.udp_write_broadcast(BroadcastMsg {
+    let mut rx_legacy_socket = rx.take_udp_socket_handle(LEGACY_SOCKET).unwrap();
+    let mut rx_direct_socket = rx.take_udp_socket_handle(DIRECT_SOCKET).unwrap();
+    let tx_legacy_socket = tx.take_udp_socket_handle(LEGACY_SOCKET).unwrap();
+    let tx_direct_socket = tx.take_udp_socket_handle(DIRECT_SOCKET).unwrap();
+
+    tx_legacy_socket.write_broadcast(BroadcastMsg {
         targets: vec![rx_addr; num_msgs / 2],
         payload: payload.clone().into(),
         stride: DEFAULT_SEGMENT_SIZE,
     });
 
-    let mut rx_direct_addr = rx_addr;
-    rx_direct_addr.set_port(rx_direct_port);
-
     for _ in 0..num_msgs / 2 {
-        tx.udp_write_direct(rx_direct_addr, payload.clone().into(), DEFAULT_SEGMENT_SIZE);
+        tx_direct_socket.write(rx_direct_addr, payload.clone().into(), DEFAULT_SEGMENT_SIZE);
     }
 
     for _ in 0..num_msgs / 2 {
-        let msg: RecvUdpMsg = executor::block_on(rx.udp_read());
+        let msg: RecvUdpMsg = executor::block_on(rx_legacy_socket.recv());
         assert_eq!(msg.src_addr, tx_addr);
         assert_eq!(msg.payload, payload);
     }
 
     for _ in 0..num_msgs / 2 {
-        let msg: RecvUdpMsg = executor::block_on(rx.udp_direct_read());
+        let msg: RecvUdpMsg = executor::block_on(rx_direct_socket.recv());
         assert_eq!(msg.src_addr.ip(), tx_addr.ip());
         assert_eq!(msg.payload, payload);
     }
@@ -503,10 +554,18 @@ fn broadcast_all_strides() {
 
     let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS)
         .with_udp_buffer_size(400 << 10)
+        .extend_udp_sockets(vec![monad_dataplane::UdpSocketConfig {
+            socket_addr: rx_addr,
+            label: LEGACY_SOCKET.to_string(),
+        }])
         .build();
-    let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
+    let mut tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS)
+        .extend_udp_sockets(vec![monad_dataplane::UdpSocketConfig {
+            socket_addr: tx_addr,
+            label: LEGACY_SOCKET.to_string(),
+        }])
+        .build();
 
-    // Allow Dataplane threads to set themselves up.
     assert!(rx.block_until_ready(Duration::from_secs(1)));
     assert!(tx.block_until_ready(Duration::from_secs(1)));
 
@@ -516,8 +575,11 @@ fn broadcast_all_strides() {
         .map(|_| rand::thread_rng().gen_range(0..255))
         .collect();
 
+    let mut rx_socket = rx.take_udp_socket_handle(LEGACY_SOCKET).unwrap();
+    let tx_socket = tx.take_udp_socket_handle(LEGACY_SOCKET).unwrap();
+
     for stride in MINIMUM_SEGMENT_SIZE..=DEFAULT_SEGMENT_SIZE {
-        tx.udp_write_broadcast(BroadcastMsg {
+        tx_socket.write_broadcast(BroadcastMsg {
             targets: vec![rx_addr],
             payload: payload.clone().into(),
             stride,
@@ -528,7 +590,7 @@ fn broadcast_all_strides() {
         let num_msgs = total_length.div_ceil(stride);
 
         for i in 0..num_msgs {
-            let msg: RecvUdpMsg = executor::block_on(rx.udp_read());
+            let msg: RecvUdpMsg = executor::block_on(rx_socket.recv());
 
             assert_eq!(msg.src_addr, tx_addr);
             assert_eq!(
@@ -549,10 +611,18 @@ fn unicast_all_strides() {
 
     let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS)
         .with_udp_buffer_size(400 << 10)
+        .extend_udp_sockets(vec![monad_dataplane::UdpSocketConfig {
+            socket_addr: rx_addr,
+            label: LEGACY_SOCKET.to_string(),
+        }])
         .build();
-    let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
+    let mut tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS)
+        .extend_udp_sockets(vec![monad_dataplane::UdpSocketConfig {
+            socket_addr: tx_addr,
+            label: LEGACY_SOCKET.to_string(),
+        }])
+        .build();
 
-    // Allow Dataplane threads to set themselves up.
     assert!(rx.block_until_ready(Duration::from_secs(1)));
     assert!(tx.block_until_ready(Duration::from_secs(1)));
 
@@ -562,8 +632,11 @@ fn unicast_all_strides() {
         .map(|_| rand::thread_rng().gen_range(0..255))
         .collect();
 
+    let mut rx_socket = rx.take_udp_socket_handle(LEGACY_SOCKET).unwrap();
+    let tx_socket = tx.take_udp_socket_handle(LEGACY_SOCKET).unwrap();
+
     for stride in MINIMUM_SEGMENT_SIZE..=DEFAULT_SEGMENT_SIZE {
-        tx.udp_write_unicast(UnicastMsg {
+        tx_socket.write_unicast(UnicastMsg {
             msgs: vec![(rx_addr, payload.clone().into())],
             stride,
         });
@@ -573,7 +646,7 @@ fn unicast_all_strides() {
         let num_msgs = total_length.div_ceil(stride);
 
         for i in 0..num_msgs {
-            let msg: RecvUdpMsg = executor::block_on(rx.udp_read());
+            let msg: RecvUdpMsg = executor::block_on(rx_socket.recv());
 
             assert_eq!(msg.src_addr, tx_addr);
             assert_eq!(
@@ -793,14 +866,21 @@ fn udp_large_stride() {
         .set_read_timeout(Some(Duration::from_secs(1)))
         .unwrap();
 
-    let tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
+    let mut tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS)
+        .extend_udp_sockets(vec![monad_dataplane::UdpSocketConfig {
+            socket_addr: tx_addr,
+            label: LEGACY_SOCKET.to_string(),
+        }])
+        .build();
     assert!(tx.block_until_ready(Duration::from_secs(1)));
 
     let payload: Vec<u8> = (0..65536)
         .map(|_| rand::thread_rng().gen_range(0..255))
         .collect();
 
-    tx.udp_write_broadcast(BroadcastMsg {
+    let tx_socket = tx.take_udp_socket_handle(LEGACY_SOCKET).unwrap();
+
+    tx_socket.write_broadcast(BroadcastMsg {
         targets: vec![rx_addr],
         payload: payload.clone().into(),
         stride: u16::MAX,
@@ -833,8 +913,18 @@ fn udp_priority_delivery() {
     let tx_addr = find_unused_address();
 
     let low_bandwidth_mbps = 10;
-    let mut rx = DataplaneBuilder::new(&rx_addr, low_bandwidth_mbps).build();
-    let tx = DataplaneBuilder::new(&tx_addr, low_bandwidth_mbps).build();
+    let mut rx = DataplaneBuilder::new(&rx_addr, low_bandwidth_mbps)
+        .extend_udp_sockets(vec![monad_dataplane::UdpSocketConfig {
+            socket_addr: rx_addr,
+            label: LEGACY_SOCKET.to_string(),
+        }])
+        .build();
+    let mut tx = DataplaneBuilder::new(&tx_addr, low_bandwidth_mbps)
+        .extend_udp_sockets(vec![monad_dataplane::UdpSocketConfig {
+            socket_addr: tx_addr,
+            label: LEGACY_SOCKET.to_string(),
+        }])
+        .build();
 
     assert!(rx.block_until_ready(Duration::from_secs(1)));
     assert!(tx.block_until_ready(Duration::from_secs(1)));
@@ -846,10 +936,11 @@ fn udp_priority_delivery() {
     let expected_total_msgs = 2 * message_size.div_ceil(DEFAULT_SEGMENT_SIZE as usize);
     let (msg_tx, msg_rx) = mpsc::channel();
 
+    let mut rx_socket = rx.take_udp_socket_handle(LEGACY_SOCKET).unwrap();
     let rx_handle = thread::spawn(move || {
         let mut messages = Vec::new();
         loop {
-            let msg = executor::block_on(rx.udp_read());
+            let msg = executor::block_on(rx_socket.recv());
             messages.push(msg);
             if messages.len() == expected_total_msgs {
                 msg_tx.send(messages).unwrap();
@@ -858,7 +949,8 @@ fn udp_priority_delivery() {
         }
     });
 
-    tx.udp_write_unicast_with_priority(
+    let tx_socket = tx.take_udp_socket_handle(LEGACY_SOCKET).unwrap();
+    tx_socket.write_unicast_with_priority(
         UnicastMsg {
             msgs: vec![(rx_addr, high_priority_data.into())],
             stride: DEFAULT_SEGMENT_SIZE,
@@ -866,7 +958,7 @@ fn udp_priority_delivery() {
         UdpPriority::High,
     );
 
-    tx.udp_write_unicast_with_priority(
+    tx_socket.write_unicast_with_priority(
         UnicastMsg {
             msgs: vec![(rx_addr, regular_priority_data.into())],
             stride: DEFAULT_SEGMENT_SIZE,
@@ -922,8 +1014,18 @@ fn udp_priority_with_regular_then_high_traffic() {
     let tx_addr = find_unused_address();
     let low_bandwidth_mbps = 10;
 
-    let mut rx = DataplaneBuilder::new(&rx_addr, low_bandwidth_mbps).build();
-    let tx = DataplaneBuilder::new(&tx_addr, low_bandwidth_mbps).build();
+    let mut rx = DataplaneBuilder::new(&rx_addr, low_bandwidth_mbps)
+        .extend_udp_sockets(vec![monad_dataplane::UdpSocketConfig {
+            socket_addr: rx_addr,
+            label: LEGACY_SOCKET.to_string(),
+        }])
+        .build();
+    let mut tx = DataplaneBuilder::new(&tx_addr, low_bandwidth_mbps)
+        .extend_udp_sockets(vec![monad_dataplane::UdpSocketConfig {
+            socket_addr: tx_addr,
+            label: LEGACY_SOCKET.to_string(),
+        }])
+        .build();
 
     assert!(rx.block_until_ready(Duration::from_secs(1)));
     assert!(tx.block_until_ready(Duration::from_secs(1)));
@@ -936,10 +1038,11 @@ fn udp_priority_with_regular_then_high_traffic() {
     let expected_total_msgs = 2 * num_msgs_per_mb;
 
     let (msg_tx, msg_rx) = mpsc::channel();
+    let mut rx_socket = rx.take_udp_socket_handle(LEGACY_SOCKET).unwrap();
     let rx_handle = thread::spawn(move || {
         let mut messages = Vec::new();
         loop {
-            let msg = executor::block_on(rx.udp_read());
+            let msg = executor::block_on(rx_socket.recv());
             messages.push(msg);
             if messages.len() == expected_total_msgs {
                 msg_tx.send(messages).unwrap();
@@ -948,7 +1051,8 @@ fn udp_priority_with_regular_then_high_traffic() {
         }
     });
 
-    tx.udp_write_unicast_with_priority(
+    let tx_socket = tx.take_udp_socket_handle(LEGACY_SOCKET).unwrap();
+    tx_socket.write_unicast_with_priority(
         UnicastMsg {
             msgs: vec![(rx_addr, regular_priority_data.into())],
             stride: DEFAULT_SEGMENT_SIZE,
@@ -958,7 +1062,7 @@ fn udp_priority_with_regular_then_high_traffic() {
 
     thread::sleep(Duration::from_millis(50));
 
-    tx.udp_write_unicast_with_priority(
+    tx_socket.write_unicast_with_priority(
         UnicastMsg {
             msgs: vec![(rx_addr, high_priority_data.into())],
             stride: DEFAULT_SEGMENT_SIZE,
