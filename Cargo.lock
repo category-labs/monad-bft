@@ -5544,6 +5544,7 @@ name = "monad-node"
 version = "0.1.0"
 dependencies = [
  "agent",
+ "alloy-consensus",
  "alloy-primitives",
  "alloy-rlp",
  "chrono",

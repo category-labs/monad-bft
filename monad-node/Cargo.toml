@@ -41,6 +41,7 @@ monad-validator = { workspace = true }
 monad-wal = { workspace = true }
 
 agent = { workspace = true }
+alloy-consensus = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 chrono = { workspace = true }

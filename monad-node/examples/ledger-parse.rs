@@ -17,7 +17,9 @@ use std::{
     cmp::Ordering, error::Error, fs::File, io::Read, path::Path, path::PathBuf, time::SystemTime,
 };
 
+use alloy_consensus::transaction::Transaction;
 use alloy_primitives::hex;
+use alloy_rlp::Encodable;
 use clap::{CommandFactory, FromArgMatches, Parser};
 use monad_bls::{BlsSignature, BlsSignatureCollection};
 use monad_chain_config::{
@@ -192,9 +194,38 @@ fn get_body(
     let body_raw = load_file(path)?;
     let body = decode_body(&body_raw)?;
     if json_output {
+        let total_network_bytes: usize = body
+            .execution_body
+            .transactions
+            .iter()
+            .map(|txn| txn.length())
+            .sum();
+        let num_create = body
+            .execution_body
+            .transactions
+            .iter()
+            .filter(|txn| (*txn).is_create())
+            .count();
+        let num_access_list = body
+            .execution_body
+            .transactions
+            .iter()
+            .filter(|txn| (*txn).access_list().is_some())
+            .count();
+        let num_7702 = body
+            .execution_body
+            .transactions
+            .iter()
+            .filter(|txn| (*txn).authorization_list().is_some())
+            .count();
+
         let output = json!({
             "object": "block_body",
             "num_txns": body.execution_body.transactions.len(),
+            "num_create_txns": num_create,
+            "num_access_list_txns": num_access_list,
+            "num_7702_auth_list_txns": num_7702,
+            "total_bytes": total_network_bytes,
         });
         println!("{}", serde_json::to_string_pretty(&output).unwrap());
     }
