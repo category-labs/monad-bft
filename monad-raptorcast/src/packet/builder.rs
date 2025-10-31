@@ -31,7 +31,7 @@ use super::{
 use crate::{
     message::MAX_MESSAGE_SIZE,
     udp::{
-        MAX_MERKLE_TREE_DEPTH, MAX_NUM_PACKETS, MAX_REDUNDANCY, MAX_SEGMENT_LENGTH,
+        GroupId, MAX_MERKLE_TREE_DEPTH, MAX_NUM_PACKETS, MAX_REDUNDANCY, MAX_SEGMENT_LENGTH,
         MIN_CHUNK_LENGTH, MIN_MERKLE_TREE_DEPTH,
     },
     util::{compute_app_message_hash, unix_ts_ms_now, BuildTarget, Redundancy},
@@ -92,7 +92,7 @@ where
     peer_lookup: PL,
 
     // required fields
-    epoch_no: Option<u64>,
+    group_id: Option<GroupId>,
     redundancy: Option<Redundancy>,
 
     // optional fields
@@ -111,7 +111,7 @@ where
         Self {
             key: self.key.clone(),
             peer_lookup: self.peer_lookup.clone(),
-            epoch_no: self.epoch_no,
+            group_id: self.group_id,
             redundancy: self.redundancy,
             unix_ts_ms: self.unix_ts_ms,
             segment_size: self.segment_size,
@@ -141,7 +141,7 @@ where
 
             // default fields
             redundancy: None,
-            epoch_no: None,
+            group_id: None,
             unix_ts_ms: TimestampMode::RealTime,
 
             // optional fields
@@ -162,8 +162,8 @@ where
         self
     }
 
-    pub fn epoch_no(mut self, epoch_no: impl Into<u64>) -> Self {
-        self.epoch_no = Some(epoch_no.into());
+    pub fn group_id(mut self, group_id: GroupId) -> Self {
+        self.group_id = Some(group_id);
         self
     }
 
@@ -187,8 +187,8 @@ where
     }
 
     // ----- Convenience methods for modifying the builder -----
-    pub fn set_epoch_no(&mut self, epoch_no: impl Into<u64>) {
-        self.epoch_no = Some(epoch_no.into());
+    pub fn set_group_id(&mut self, group_id: GroupId) {
+        self.group_id = Some(group_id);
     }
 
     // ----- Prepare override builder -----
@@ -196,7 +196,7 @@ where
         PreparedMessageBuilder {
             base: self,
             peer_lookup: None,
-            epoch_no: None,
+            group_id: None,
         }
     }
 
@@ -210,7 +210,7 @@ where
         PreparedMessageBuilder {
             base: self,
             peer_lookup: Some(peer_lookup),
-            epoch_no: None,
+            group_id: None,
         }
     }
 
@@ -247,7 +247,7 @@ where
 
     // Add extra override fields as needed
     peer_lookup: Option<PL2>,
-    epoch_no: Option<u64>,
+    group_id: Option<GroupId>,
 }
 
 impl<'base, 'key, ST, PL, PL2> PreparedMessageBuilder<'base, 'key, ST, PL, PL2>
@@ -257,21 +257,21 @@ where
     PL2: PeerAddrLookup<CertificateSignaturePubKey<ST>>,
 {
     // ----- Setters for overrides -----
-    pub fn epoch_no(mut self, epoch_no: impl Into<u64>) -> Self {
-        self.epoch_no = Some(epoch_no.into());
+    pub fn group_id(mut self, group_id: GroupId) -> Self {
+        self.group_id = Some(group_id);
         self
     }
 
     // ----- Parameter validation methods -----
-    fn unwrap_epoch_no(&self) -> Result<u64> {
-        if let Some(epoch_no) = self.epoch_no {
-            return Ok(epoch_no);
+    fn unwrap_group_id(&self) -> Result<GroupId> {
+        if let Some(group_id) = self.group_id {
+            return Ok(group_id);
         }
-        let epoch_no = self
+        let group_id = self
             .base
-            .epoch_no
-            .expect("epoch_no must be set before building");
-        Ok(epoch_no)
+            .group_id
+            .expect("group_id must be set before building");
+        Ok(group_id)
     }
     fn unwrap_unix_ts_ms(&self) -> Result<u64> {
         let unix_ts_ms = match self.base.unix_ts_ms {
@@ -358,14 +358,14 @@ where
         app_message_hash: &[u8; 20],
         app_message_len: usize,
     ) -> Result<Bytes> {
-        let epoch_no = self.unwrap_epoch_no()?;
+        let group_id = self.unwrap_group_id()?;
         let unix_ts_ms = self.unwrap_unix_ts_ms()?;
 
         let header_buf = build_header(
             0, // version
             broadcast_type,
             merkle_tree_depth,
-            epoch_no,
+            group_id,
             unix_ts_ms,
             app_message_hash,
             app_message_len,
