@@ -316,6 +316,7 @@ pub struct MonadCallFrame {
     #[serde(rename = "type")]
     typ: CallKind,
     from: EthAddress,
+    #[serde(skip_serializing_if = "Option::is_none")]
     to: Option<EthAddress>,
     #[serde(skip_serializing_if = "Option::is_none")]
     value: Option<MonadU256>,
