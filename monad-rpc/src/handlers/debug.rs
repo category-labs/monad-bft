@@ -679,10 +679,14 @@ async fn include_code_output<T: Triedb>(
         && (matches!(frame.typ, CallKind::Create) || matches!(frame.typ, CallKind::Create2))
     {
         let Some(contract_addr) = &frame.to else {
-            error!("expected contract address in call frame");
-            return Err(JsonRpcError::internal_error(
-                "contract address not found in call frame".to_string(),
-            ));
+            if frame.status == 0 {
+                error!("expected contract address in call frame");
+                return Err(JsonRpcError::internal_error(
+                    "contract address not found in call frame".to_string(),
+                ));
+            } else {
+                return Ok(());
+            }
         };
 
         let account = triedb_env
