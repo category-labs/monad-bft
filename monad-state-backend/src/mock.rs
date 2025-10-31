@@ -49,6 +49,7 @@ where
                     balance: self.balances.get(address).cloned().unwrap_or_default(),
                     nonce: self.nonces.get(address).cloned().unwrap_or_default(),
                     code_hash: None,
+                    inline_code: None,
                     is_delegated: false,
                 })
             })

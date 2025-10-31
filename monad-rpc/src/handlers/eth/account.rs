@@ -77,10 +77,14 @@ pub async fn monad_eth_getCode<T: Triedb>(
         .await
         .map_err(JsonRpcError::internal_error)?;
 
-    let code = triedb_env
-        .get_code(block_key, account.code_hash)
-        .await
-        .map_err(JsonRpcError::internal_error)?;
+    let code = if account.inline_code.is_some() {
+        format!("0x{:x}", account.inline_code.unwrap())
+    } else {
+        triedb_env
+            .get_code_db(block_key, account.code_hash)
+            .await
+            .map_err(JsonRpcError::internal_error)?
+    };
 
     match triedb_env
         .get_state_availability(block_key)

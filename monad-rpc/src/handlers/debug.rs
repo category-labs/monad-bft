@@ -689,11 +689,15 @@ async fn include_code_output<T: Triedb>(
             .get_account(block_key, contract_addr.0.into())
             .await
             .map_err(JsonRpcError::internal_error)?;
-        let code = triedb_env
-            .get_code(block_key, account.code_hash)
-            .await
-            .map_err(JsonRpcError::internal_error)?;
 
+        let code = if account.inline_code.is_some() {
+            format!("0x{:x}", account.inline_code.unwrap())
+        } else {
+            triedb_env
+                .get_code_db(block_key, account.code_hash)
+                .await
+                .map_err(JsonRpcError::internal_error)?
+        };
         let decoded_code = hex::decode(&code)
             .map_err(|_| JsonRpcError::internal_error("could not decode code".to_string()))?;
         frame.output = decoded_code.into();
