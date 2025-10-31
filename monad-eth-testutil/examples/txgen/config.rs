@@ -310,6 +310,15 @@ pub struct WorkloadGroup {
     pub runtime_minutes: f64,
     pub name: String,
     pub traffic_gens: Vec<TrafficGen>,
+
+    /// Spam rpc and websocket with wallet workflow requests and compare the responses
+    pub spam_rpc_ws: bool,
+
+    /// Compare block headers returned from rpc and websocket
+    pub compare_rpc_ws: bool,
+
+    /// Number of concurrent websocket connections to use for spamming rpc and websocket
+    pub num_ws_connections: usize,
 }
 
 impl Default for WorkloadGroup {
@@ -318,6 +327,9 @@ impl Default for WorkloadGroup {
             runtime_minutes: 10.0,
             name: "default".to_string(),
             traffic_gens: vec![],
+            spam_rpc_ws: false,
+            compare_rpc_ws: false,
+            num_ws_connections: 4,
         }
     }
 }
@@ -354,12 +366,6 @@ pub struct TrafficGen {
     /// How many txs should be generated per sender per cycle.
     /// Or put another way, how many txs should be generated before refreshing the nonce from chain state
     pub tx_per_sender: Option<usize>,
-
-    // Should the txgen spam rpc and websocket with wallet workflow requests
-    pub spam_rpc: bool,
-
-    /// Should the txgen compare rpc and websocket responses
-    pub compare_rpc_ws: bool,
 }
 
 impl Default for TrafficGen {
@@ -376,8 +382,6 @@ impl Default for TrafficGen {
             }),
             sender_group_size: None,
             tx_per_sender: None,
-            spam_rpc: false,
-            compare_rpc_ws: false,
         }
     }
 }

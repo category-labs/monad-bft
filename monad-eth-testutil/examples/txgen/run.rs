@@ -87,6 +87,38 @@ async fn run_workload_group(
 
     // Shared tasks for all workers in the workload group
     let mut tasks = FuturesUnordered::new();
+
+    if workload_group.spam_rpc_ws {
+        let spammer = RpcWalletSpam::new(
+            read_client.clone(),
+            config.ws_url().expect("WS URL is not valid"),
+            workload_group.num_ws_connections,
+        );
+        let shutdown_clone = Arc::clone(&shutdown);
+        tasks.push(
+            critical_task(
+                "Spammer",
+                tokio::spawn(async move { spammer.run(shutdown_clone).await }),
+            )
+            .boxed(),
+        );
+    }
+
+    if workload_group.compare_rpc_ws {
+        let compare_rpc_ws = RpcWsCompare::new(
+            read_client.clone(),
+            config.ws_url().expect("WS URL is not valid"),
+        );
+        let shutdown_clone = Arc::clone(&shutdown);
+        tasks.push(
+            critical_task(
+                "Compare RPC WS",
+                tokio::spawn(async move { compare_rpc_ws.run(shutdown_clone).await }),
+            )
+            .boxed(),
+        );
+    }
+
     // Deployed contract for each traffic gen
     let mut deployed_contracts = Vec::new();
     for traffic_gen in &workload_group.traffic_gens {
@@ -255,7 +287,7 @@ fn run_traffic_gen(
     let refresher = Refresher::new(
         rpc_rx,
         gen_sender,
-        read_client.clone(),
+        read_client,
         Arc::clone(&metrics),
         base_fee,
         Duration::from_secs_f64(config.refresh_delay_secs),
@@ -265,40 +297,12 @@ fn run_traffic_gen(
         Arc::clone(shutdown),
     )?;
 
-    let mut tasks = Vec::new();
-
-    if traffic_gen.spam_rpc {
-        let spammer = RpcWalletSpam::new(
-            read_client.clone(),
-            config.ws_url().expect("WS URL is not valid"),
-        );
-        tasks.push(
-            critical_task("Spammer", tokio::spawn(async move { spammer.run().await })).boxed(),
-        );
-    }
-
-    if traffic_gen.compare_rpc_ws {
-        let compare_rpc_ws = RpcWsCompare::new(
-            read_client.clone(),
-            config.ws_url().expect("WS URL is not valid"),
-        );
-        tasks.push(
-            critical_task(
-                "Compare RPC WS",
-                tokio::spawn(async move { compare_rpc_ws.run().await }),
-            )
-            .boxed(),
-        );
-    }
-
-    Ok(tasks
-        .into_iter()
-        .chain([
-            critical_task("Refresher", tokio::spawn(refresher.run())).boxed(),
-            critical_task("Rpc Sender", tokio::spawn(rpc_sender.run())).boxed(),
-            critical_task("Generator Harness", tokio::spawn(gen.run())).boxed(),
-        ])
-        .into_iter())
+    Ok([
+        critical_task("Refresher", tokio::spawn(refresher.run())).boxed(),
+        critical_task("Rpc Sender", tokio::spawn(rpc_sender.run())).boxed(),
+        critical_task("Generator Harness", tokio::spawn(gen.run())).boxed(),
+    ]
+    .into_iter())
 }
 
 async fn helper_task(

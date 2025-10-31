@@ -23,7 +23,6 @@ monad-validator = { workspace = true }
 alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true }
-alloy-provider = { workspace = true, features = ["ws"] }
 alloy-signer = { workspace = true }
 alloy-signer-local = { workspace = true }
 rand = { workspace = true }
