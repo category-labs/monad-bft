@@ -13,6 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use criterion::{black_box, BatchSize, Criterion};
 use monad_chain_config::MockChainConfig;
 use monad_crypto::NopSignature;
@@ -21,8 +22,10 @@ use monad_testutil::signing::MockSignatures;
 
 pub use self::controller::BenchController;
 use self::controller::BenchControllerConfig;
+use crate::common::txs::{generate_txs, BenchTxSetup};
 
 mod controller;
+pub mod txs;
 
 pub const EXECUTION_DELAY: u64 = 4;
 pub const RESERVE_BALANCE: u128 = 10_000_000_000_000_000_000;
@@ -30,60 +33,50 @@ pub const RESERVE_BALANCE: u128 = 10_000_000_000_000_000_000;
 pub type SignatureType = NopSignature;
 pub type SignatureCollectionType = MockSignatures<NopSignature>;
 
-const BENCH_CONFIGS: [(&str, BenchControllerConfig); 5] = [
+const BENCH_CONFIGS: [(&str, BenchTxSetup); 5] = [
     (
         "simple",
-        BenchControllerConfig {
-            chain_config: MockChainConfig::DEFAULT,
-            accounts: 10_000,
-            txs: 10_000,
+        BenchTxSetup {
+            accounts: 1_000,
+            txs: 1_000,
             nonce_var: 0,
             pending_blocks: 2,
-            proposal_tx_limit: 10_000,
         },
     ),
     (
         "random",
-        BenchControllerConfig {
-            chain_config: MockChainConfig::DEFAULT,
-            accounts: 30_000,
-            txs: 10_000,
+        BenchTxSetup {
+            accounts: 3_000,
+            txs: 1_000,
             nonce_var: 0,
             pending_blocks: 2,
-            proposal_tx_limit: 10_000,
         },
     ),
     (
         "duplicate_nonce",
-        BenchControllerConfig {
-            chain_config: MockChainConfig::DEFAULT,
-            accounts: 1_000,
-            txs: 10_000,
+        BenchTxSetup {
+            accounts: 100,
+            txs: 1_000,
             nonce_var: 0,
             pending_blocks: 2,
-            proposal_tx_limit: 1_000,
         },
     ),
     (
         "increasing_nonce",
-        BenchControllerConfig {
-            chain_config: MockChainConfig::DEFAULT,
-            accounts: 100,
-            txs: 10_000,
-            nonce_var: 50,
+        BenchTxSetup {
+            accounts: 10,
+            txs: 1_000,
+            nonce_var: 5,
             pending_blocks: 2,
-            proposal_tx_limit: 10_000,
         },
     ),
     (
         "nonce_gaps",
-        BenchControllerConfig {
-            chain_config: MockChainConfig::DEFAULT,
-            accounts: 50,
-            txs: 10_000,
-            nonce_var: 100,
+        BenchTxSetup {
+            accounts: 5,
+            txs: 1_000,
+            nonce_var: 10,
             pending_blocks: 2,
-            proposal_tx_limit: 10_000,
         },
     ),
 ];
@@ -91,7 +84,11 @@ const BENCH_CONFIGS: [(&str, BenchControllerConfig); 5] = [
 pub fn run_txpool_benches<T>(
     c: &mut Criterion,
     func_name: &'static str,
-    mut setup: impl FnMut(&BenchControllerConfig) -> T,
+    mut setup: impl FnMut(
+        &BenchControllerConfig,
+        Vec<Vec<Recovered<TxEnvelope>>>,
+        Vec<Recovered<TxEnvelope>>,
+    ) -> T,
     mut routine: impl FnMut(&mut T),
 ) {
     let mut group = c.benchmark_group("txpool");
@@ -107,12 +104,33 @@ pub fn run_txpool_benches<T>(
         }
     };
 
-    for (bench_name, controller_config) in &BENCH_CONFIGS {
+    for (
+        bench_name,
+        BenchTxSetup {
+            accounts,
+            txs,
+            nonce_var,
+            pending_blocks,
+        },
+    ) in &BENCH_CONFIGS
+    {
         let name = format!("{func_name}-{bench_name}");
+
+        let (pending_block_txs, pool_txs) =
+            generate_txs(*accounts, *txs, *nonce_var, *pending_blocks);
 
         group.bench_function(name, |b| {
             b.iter_batched_ref(
-                || setup(controller_config),
+                || {
+                    setup(
+                        &BenchControllerConfig {
+                            chain_config: MockChainConfig::DEFAULT,
+                            proposal_tx_limit: 1_000,
+                        },
+                        pending_block_txs.clone(),
+                        pool_txs.clone(),
+                    )
+                },
                 |t| {
                     if let Some(perf) = perf_controller.as_mut() {
                         perf.enable();

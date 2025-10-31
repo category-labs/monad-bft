@@ -16,22 +16,17 @@
 use std::collections::BTreeMap;
 
 use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
-use alloy_primitives::{Uint, B256};
 use alloy_rlp::Encodable;
 use itertools::Itertools;
 use monad_chain_config::{revision::MockChainRevision, ChainConfig, MockChainConfig};
 use monad_crypto::NopSignature;
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
-use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, recover_tx};
+use monad_eth_testutil::generate_block_with_txs;
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
+use monad_tfm::base_fee::MIN_BASE_FEE;
 use monad_types::{Balance, Round, SeqNum};
-use rand::{seq::SliceRandom, Rng, SeedableRng};
-use rand_chacha::ChaCha8Rng;
-
-const BASE_FEE_PER_GAS: u64 = 100_000_000_000;
-const TRANSACTION_SIZE_BYTES: usize = 400;
 
 pub type SignatureType = NopSignature;
 pub type SignatureCollectionType = MockSignatures<NopSignature>;
@@ -49,10 +44,6 @@ pub type Pool = EthTxPool<
 #[derive(Clone, PartialEq, Eq)]
 pub struct BenchControllerConfig {
     pub chain_config: MockChainConfig,
-    pub accounts: usize,
-    pub txs: usize,
-    pub nonce_var: usize,
-    pub pending_blocks: usize,
     pub proposal_tx_limit: usize,
 }
 
@@ -69,33 +60,32 @@ pub struct BenchController<'a> {
 }
 
 impl<'a> BenchController<'a> {
-    pub fn setup(block_policy: &'a BlockPolicyType, config: BenchControllerConfig) -> Self {
+    pub fn setup(
+        block_policy: &'a BlockPolicyType,
+        config: BenchControllerConfig,
+        pending_block_txs: Vec<Vec<Recovered<TxEnvelope>>>,
+        pool_txs: Vec<Recovered<TxEnvelope>>,
+    ) -> Self {
         let BenchControllerConfig {
             chain_config,
-            accounts,
-            txs,
-            nonce_var,
-            pending_blocks,
             proposal_tx_limit,
         } = config;
 
-        let (pending_block_txs, txs) = Self::generate_txs(accounts, txs, nonce_var, pending_blocks);
-
-        let proposal_gas_limit = txs
+        let proposal_gas_limit = pool_txs
             .iter()
             .map(|tx| tx.gas_limit())
             .sum::<u64>()
             .saturating_add(1);
-        let proposal_byte_limit = txs
+        let proposal_byte_limit = pool_txs
             .iter()
             .map(|tx| tx.length() as u64)
             .sum::<u64>()
             .saturating_add(1);
 
-        let state_backend = Self::generate_state_backend_for_txs(&txs);
+        let state_backend = Self::generate_state_backend_for_txs(&pool_txs);
 
         let metrics = EthTxPoolMetrics::default();
-        let pool = Self::create_pool(block_policy, &chain_config, txs, &metrics);
+        let pool = Self::create_pool(block_policy, &chain_config, pool_txs, &metrics);
 
         Self {
             chain_config,
@@ -109,7 +99,7 @@ impl<'a> BenchController<'a> {
                     generate_block_with_txs(
                         Round(idx as u64 + 1),
                         SeqNum(idx as u64 + 1),
-                        BASE_FEE_PER_GAS,
+                        MIN_BASE_FEE,
                         &MockChainConfig::DEFAULT,
                         txs,
                     )
@@ -136,7 +126,7 @@ impl<'a> BenchController<'a> {
             generate_block_with_txs(
                 Round(0),
                 block_policy.get_last_commit(),
-                BASE_FEE_PER_GAS,
+                MIN_BASE_FEE,
                 &MockChainConfig::DEFAULT,
                 txs,
             ),
@@ -155,74 +145,5 @@ impl<'a> BenchController<'a> {
                     .collect(),
             ),
         )
-    }
-
-    pub fn generate_txs(
-        accounts: usize,
-        txs: usize,
-        nonce_var: usize,
-        pending_blocks: usize,
-    ) -> (Vec<Vec<Recovered<TxEnvelope>>>, Vec<Recovered<TxEnvelope>>) {
-        let mut rng = ChaCha8Rng::seed_from_u64(0);
-
-        let mut accounts = (0..accounts)
-            .map(|_| (B256::from(Uint::from(rng.gen::<u64>())), 0u64))
-            .collect_vec();
-
-        let pending_block_txs = (0..pending_blocks)
-            .map(|pending_block| {
-                let mut txs = (txs * pending_block..txs * (pending_block + 1))
-                    .map(|idx| {
-                        let accounts_len = accounts.len();
-
-                        let (account, nonce) = accounts
-                            .get_mut(idx % accounts_len)
-                            .expect("account idx is in range");
-
-                        let tx = make_legacy_tx(
-                            *account,
-                            rng.gen_range(BASE_FEE_PER_GAS..=BASE_FEE_PER_GAS + 10000)
-                                .into(),
-                            30000,
-                            *nonce,
-                            TRANSACTION_SIZE_BYTES,
-                        );
-
-                        *nonce += 1;
-
-                        recover_tx(tx)
-                    })
-                    .collect_vec();
-
-                txs.shuffle(&mut rng);
-
-                txs
-            })
-            .collect_vec();
-
-        let mut txs = (0..txs)
-            .map(|idx| {
-                let (account, nonce) = accounts
-                    .get(idx % accounts.len())
-                    .expect("account idx is in range");
-
-                let tx = make_legacy_tx(
-                    *account,
-                    rng.gen_range(BASE_FEE_PER_GAS..=BASE_FEE_PER_GAS + 10000)
-                        .into(),
-                    30000,
-                    nonce
-                        .checked_add(rng.gen_range(0..=nonce_var as u64))
-                        .expect("nonce does not overflow"),
-                    TRANSACTION_SIZE_BYTES,
-                );
-
-                recover_tx(tx)
-            })
-            .collect_vec();
-
-        txs.shuffle(&mut rng);
-
-        (pending_block_txs, txs)
     }
 }
