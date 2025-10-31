@@ -816,7 +816,7 @@ macro_rules! enabled_methods {
             fn span(&self) -> Span {
                 match self {
                     $(
-                        EnabledMethod::$method => trace_span!(stringify!($method)),
+                        EnabledMethod::$method => trace_span!(stringify!($method), chainstate.source = tracing::field::Empty),
                     )*
                 }
             }
