@@ -77,6 +77,15 @@ pub struct Config {
 
     /// Otel replica name
     pub otel_replica_name: String,
+
+    /// Spam rpc and websocket with wallet workflow requests
+    pub spam_rpc_ws: bool,
+
+    /// Compare rpc and websocket responses
+    pub compare_rpc_ws: bool,
+
+    /// Number of concurrent websocket connections
+    pub num_ws_connections: usize,
 }
 
 impl Default for Config {
@@ -105,6 +114,9 @@ impl Default for Config {
             use_static_tps_interval: false,
             otel_endpoint: None,
             otel_replica_name: "default".to_string(),
+            spam_rpc_ws: false,
+            compare_rpc_ws: false,
+            num_ws_connections: 4,
         }
     }
 }
@@ -315,12 +327,6 @@ pub struct TrafficGen {
     /// How many txs should be generated per sender per cycle.
     /// Or put another way, how many txs should be generated before refreshing the nonce from chain state
     pub tx_per_sender: Option<usize>,
-
-    // Should the txgen spam rpc and websocket with wallet workflow requests
-    pub spam_rpc: bool,
-
-    /// Should the txgen compare rpc and websocket responses
-    pub compare_rpc_ws: bool,
 }
 
 impl Default for TrafficGen {
@@ -337,8 +343,6 @@ impl Default for TrafficGen {
             }),
             sender_group_size: None,
             tx_per_sender: None,
-            spam_rpc: false,
-            compare_rpc_ws: false,
         }
     }
 }
