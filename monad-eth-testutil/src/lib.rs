@@ -34,6 +34,7 @@ use alloy_signer_local::PrivateKeySigner;
 use monad_chain_config::{revision::ChainRevision, ChainConfig, MockChainConfig};
 use monad_consensus_types::{
     block::{ConsensusBlockHeader, ConsensusFullBlock, TxnFee},
+    nonce_usage::{NonceUsage, NonceUsageMap},
     payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
     quorum_certificate::QuorumCertificate,
 };
@@ -44,9 +45,7 @@ use monad_crypto::{
     NopKeyPair, NopSignature,
 };
 use monad_eth_block_policy::{
-    compute_txn_max_gas_cost,
-    nonce_usage::{NonceUsage, NonceUsageMap},
-    pre_tfm_compute_max_txn_cost, EthValidatedBlock,
+    compute_txn_max_gas_cost, pre_tfm_compute_max_txn_cost, EthValidatedBlock,
 };
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader, ValidatedTx};
 use monad_secp::KeyPair;
@@ -272,7 +271,9 @@ fn compute_expected_txn_fees_and_nonce_usages(
     txs: &[Recovered<TxEnvelope>],
 ) -> (BTreeMap<Address, TxnFee>, NonceUsageMap) {
     let mut txn_fees: BTreeMap<_, TxnFee> = BTreeMap::new();
+    let mut nonce_usages = NonceUsageMap::default();
 
+    // Process transactions in forward order, matching validator behavior
     for eth_txn in txs.iter() {
         txn_fees
             .entry(eth_txn.signer())
@@ -286,58 +287,56 @@ fn compute_expected_txn_fees_and_nonce_usages(
                 first_txn_gas: compute_txn_max_gas_cost(eth_txn, BASE_FEE),
                 max_gas_cost: Balance::ZERO,
                 max_txn_cost: pre_tfm_compute_max_txn_cost(eth_txn),
-                is_delegated: false,
+                valid_authorization: None,
+                authorization_nonce: None,
             });
-    }
 
-    let nonce_usages = txs
-        .iter()
-        .flat_map(|t| {
-            let mut pairs = vec![(t.signer(), NonceUsage::Known(t.nonce()))];
+        // Mimic validator: add_known for transaction signer
+        nonce_usages.add_known(eth_txn.signer(), eth_txn.nonce());
 
-            if t.is_eip7702() {
-                if let Some(auth_list) = t.authorization_list() {
-                    for auth in auth_list {
-                        let authority = auth.recover_authority().unwrap();
+        // Process authorizations (matches validator logic at monad-eth-block-validator/src/lib.rs:456-504)
+        if eth_txn.is_eip7702() {
+            if let Some(auth_list) = eth_txn.authorization_list() {
+                for auth in auth_list {
+                    let authority = auth.recover_authority().unwrap();
 
-                        pairs.push((
-                            authority,
-                            NonceUsage::Possible(VecDeque::from_iter([auth.nonce()])),
-                        ));
-
-                        txn_fees
-                            .entry(authority)
-                            .and_modify(|e| {
-                                e.is_delegated = true;
-                            })
-                            .or_insert(TxnFee {
-                                first_txn_value: Balance::ZERO,
-                                first_txn_gas: Balance::ZERO,
-                                max_gas_cost: Balance::ZERO,
-                                max_txn_cost: Balance::ZERO,
-
-                                is_delegated: true,
-                            });
+                    // Mimic validator nonce_usages.entry(authority) logic
+                    match nonce_usages.entry(authority) {
+                        std::collections::btree_map::Entry::Occupied(mut o) => {
+                            match o.get_mut() {
+                                NonceUsage::Known(nonce) => {
+                                    // If auth nonce matches known nonce, increment it
+                                    if *nonce == auth.nonce {
+                                        *nonce += 1;
+                                    }
+                                }
+                                NonceUsage::Possible(possible_nonces) => {
+                                    possible_nonces.push_back(auth.nonce);
+                                }
+                            }
+                        }
+                        std::collections::btree_map::Entry::Vacant(v) => {
+                            v.insert(NonceUsage::Possible(VecDeque::from_iter([auth.nonce])));
+                        }
                     }
+
+                    txn_fees
+                        .entry(authority)
+                        .and_modify(|e| {
+                            e.valid_authorization = None;
+                        })
+                        .or_insert(TxnFee {
+                            first_txn_value: Balance::ZERO,
+                            first_txn_gas: Balance::ZERO,
+                            max_gas_cost: Balance::ZERO,
+                            max_txn_cost: Balance::ZERO,
+                            valid_authorization: None,
+                            authorization_nonce: None,
+                        });
                 }
             }
-            pairs
-        })
-        .rev()
-        .fold(
-            NonceUsageMap::default(),
-            |mut map, (address, nonce_usage)| {
-                match map.entry(address) {
-                    std::collections::btree_map::Entry::Vacant(v) => {
-                        v.insert(nonce_usage);
-                    }
-                    std::collections::btree_map::Entry::Occupied(mut o) => {
-                        o.get_mut().merge_with_previous(&nonce_usage);
-                    }
-                }
-                map
-            },
-        );
+        }
+    }
 
     (txn_fees, nonce_usages)
 }

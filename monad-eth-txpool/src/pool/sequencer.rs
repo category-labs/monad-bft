@@ -21,13 +21,15 @@ use std::{
 use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
 use alloy_primitives::Address;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
-use monad_consensus_types::block::{AccountBalanceState, BlockPolicyBlockValidator};
+use monad_consensus_types::{
+    block::{AccountBalanceState, BlockPolicyBlockValidator},
+    nonce_usage::NonceUsage,
+};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{
-    nonce_usage::{NonceUsage, NonceUsageRetrievable},
-    EthBlockPolicyBlockValidator, EthValidatedBlock,
+    nonce_usage::NonceUsageRetrievable, EthBlockPolicyBlockValidator, EthValidatedBlock,
 };
 use monad_validator::signature_collection::SignatureCollection;
 use rand::seq::SliceRandom;

@@ -20,11 +20,10 @@ use indexmap::{map::Entry as IndexMapEntry, IndexMap};
 use monad_chain_config::{
     execution_revision::MonadExecutionRevision, revision::ChainRevision, ChainConfig,
 };
-use monad_consensus_types::block::ConsensusBlockHeader;
+use monad_consensus_types::{block::ConsensusBlockHeader, nonce_usage::NonceUsageMap};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_block_policy::nonce_usage::NonceUsageMap;
 use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
 use monad_state_backend::StateBackend;
 use monad_validator::signature_collection::SignatureCollection;

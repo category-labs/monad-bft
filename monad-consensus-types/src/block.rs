@@ -30,7 +30,7 @@ use monad_crypto::{
 };
 use monad_state_backend::{InMemoryState, StateBackend, StateBackendError};
 use monad_types::{
-    Balance, BlockId, Epoch, ExecutionProtocol, FinalizedHeader, NodeId, Round, SeqNum,
+    Balance, BlockId, Epoch, ExecutionProtocol, FinalizedHeader, NodeId, Nonce, Round, SeqNum,
     GENESIS_SEQ_NUM,
 };
 use monad_validator::signature_collection::SignatureCollection;
@@ -356,7 +356,8 @@ pub struct TxnFee {
     pub first_txn_gas: Balance,
     pub max_gas_cost: Balance,
     pub max_txn_cost: Balance, // Used for pre TFM validation
-    pub is_delegated: bool,
+    pub valid_authorization: Option<bool>,
+    pub authorization_nonce: Option<Nonce>,
 }
 
 pub type TxnFees = BTreeMap<Address, TxnFee>;
@@ -381,6 +382,7 @@ where
         account_balance: &mut AccountBalanceState,
         fees: &TxnFee,
         eth_address: &Address,
+        nonce_usages: &crate::nonce_usage::NonceUsageMap,
     ) -> Result<(), BlockPolicyError>;
 
     fn try_add_transaction(
