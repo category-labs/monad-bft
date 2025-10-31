@@ -5589,6 +5589,7 @@ dependencies = [
  "opentelemetry_sdk",
  "rand_chacha 0.3.1",
  "rayon",
+ "serde_json",
  "thiserror 1.0.69",
  "tikv-jemallocator",
  "tokio",

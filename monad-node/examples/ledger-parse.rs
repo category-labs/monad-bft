@@ -33,7 +33,8 @@ use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_types::EthExecutionProtocol;
 use monad_secp::{PubKey, SecpSignature};
 use monad_state_backend::NopStateBackend;
-use monad_types::{BlockId, Round};
+use monad_types::{BlockId, Round, SeqNum};
+use serde_json::json;
 
 type ProductionBlockHeader =
     ConsensusBlockHeader<SecpSignature, BlsSignatureCollection<PubKey>, EthExecutionProtocol>;
@@ -51,8 +52,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         seqnum,
     } = Cli::from_arg_matches_mut(&mut cmd.get_matches_mut()).expect("failed to parse cli");
 
+    // return the block header id for the target round
     if let Some(round) = round {
-        // return the block header id for the round
         let mut files = get_files_with_timestamps(&headers_dir).unwrap();
         files.sort_by_key(|(_, time)| *time);
 
@@ -74,8 +75,25 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    if seqnum.is_some() {
-        // return the block header id for the seqnum
+    // return the block header id for the target seqnum
+    if let Some(seqnum) = seqnum {
+        let mut files = get_files_with_timestamps(&headers_dir).unwrap();
+        files.sort_by_key(|(_, time)| *time);
+
+        let comparator = |header: &ProductionBlockHeader| -> Ordering {
+            if header.seq_num == SeqNum(seqnum) {
+                Ordering::Equal
+            } else if header.seq_num < SeqNum(seqnum) {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        };
+
+        match search_block_headers(&files, comparator) {
+            Some(blockid) => println!("{}", blockid.0),
+            None => println!("no block found"),
+        }
 
         return Ok(());
     }
@@ -110,7 +128,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 #[derive(Debug, Parser)]
 pub struct Cli {
-    #[arg(long, default_value = "finalized_head")]
+    #[arg(short, long, default_value = "finalized_head")]
     pub block_id: String,
 
     #[arg(long, default_value_t = MONAD_DEVNET_CHAIN_ID)]
@@ -150,16 +168,16 @@ fn decode_body(buf: &Vec<u8>) -> Result<ProductionBlockBody, std::io::Error> {
         .map_err(|e| std::io::Error::other(format!("rlp decode block body failed: {:?}", e)))
 }
 
-fn get_header(path: PathBuf, print_output: bool) -> Result<ProductionBlockHeader, std::io::Error> {
+fn get_header(path: PathBuf, json_output: bool) -> Result<ProductionBlockHeader, std::io::Error> {
     let header_raw = load_file(path)?;
     let header = decode_header(&header_raw)?;
-    if print_output {
-        println!("recovered block header");
-        println!("---");
-        println!(
-            "round={:?}, seq_num={:?}",
-            header.block_round, header.seq_num
-        );
+    if json_output {
+        let output = json!({
+            "object": "block_header",
+            "round": header.block_round,
+            "seq_num": header.seq_num,
+        });
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
     }
     Ok(header)
 }
@@ -167,16 +185,18 @@ fn get_header(path: PathBuf, print_output: bool) -> Result<ProductionBlockHeader
 fn get_body(
     header: &ProductionBlockHeader,
     bodies_dir: &str,
-    print_output: bool,
+    json_output: bool,
 ) -> Result<ProductionBlockBody, std::io::Error> {
     let body_id = hex::encode(header.block_body_id.0 .0);
     let path = PathBuf::from(bodies_dir).join(body_id);
     let body_raw = load_file(path)?;
     let body = decode_body(&body_raw)?;
-    if print_output {
-        println!("recovered block body");
-        println!("---");
-        println!("num_txns={:?}", body.execution_body.transactions.len());
+    if json_output {
+        let output = json!({
+            "object": "block_body",
+            "num_txns": body.execution_body.transactions.len(),
+        });
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
     }
     Ok(body)
 }
