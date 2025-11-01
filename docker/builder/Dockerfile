@@ -20,7 +20,8 @@ RUN apt update && apt install -y \
   libcrypto++-dev \
   libhugetlbfs0 \
   libhugetlbfs-bin \
-  libhugetlbfs-dev
+  libhugetlbfs-dev \
+  libmagicenum-dev
 
 RUN apt update && apt install -y \
   libboost1.83-dev \
