@@ -73,10 +73,6 @@ impl TrackedTxList {
         self.txs.values().map(|(tx, _)| tx)
     }
 
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut ValidEthTransaction> {
-        self.txs.values_mut().map(|(tx, _)| tx)
-    }
-
     pub fn num_txs(&self) -> usize {
         self.txs.len()
     }
@@ -92,6 +88,23 @@ impl TrackedTxList {
 
         self.txs
             .range(account_nonce..)
+            .map_while(move |(tx_nonce, (tx, _))| {
+                debug_assert_eq!(*tx_nonce, tx.nonce());
+
+                if *tx_nonce != account_nonce {
+                    return None;
+                }
+
+                account_nonce += 1;
+                Some(tx)
+            })
+    }
+
+    pub fn get_queued_mut(&mut self) -> impl Iterator<Item = &mut ValidEthTransaction> {
+        let mut account_nonce = self.account_nonce;
+
+        self.txs
+            .range_mut(account_nonce..)
             .map_while(move |(tx_nonce, (tx, _))| {
                 debug_assert_eq!(*tx_nonce, tx.nonce());
 

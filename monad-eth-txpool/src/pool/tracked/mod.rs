@@ -94,12 +94,12 @@ where
         self.txs.iter()
     }
 
-    pub fn iter_txs(&self) -> impl Iterator<Item = &ValidEthTransaction> {
-        self.txs.values().flat_map(TrackedTxList::iter)
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&Address, &mut TrackedTxList)> {
+        self.txs.iter_mut()
     }
 
-    pub fn iter_mut_txs(&mut self) -> impl Iterator<Item = &mut ValidEthTransaction> {
-        self.txs.values_mut().flat_map(TrackedTxList::iter_mut)
+    pub fn iter_txs(&self) -> impl Iterator<Item = &ValidEthTransaction> {
+        self.txs.values().flat_map(TrackedTxList::iter)
     }
 
     pub fn try_insert_txs(

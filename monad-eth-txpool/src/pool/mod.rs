@@ -503,11 +503,13 @@ where
         let last_commit_seq_num = last_commit.seq_num;
         let last_commit_base_fee = last_commit.execution_inputs.base_fee_per_gas;
 
-        Some(self.tracked.iter_mut_txs().filter_map(move |tx| {
-            tx.get_if_forwardable::<MIN_SEQNUM_DIFF, MAX_RETRIES>(
-                last_commit_seq_num,
-                last_commit_base_fee,
-            )
+        Some(self.tracked.iter_mut().flat_map(move |(_, tx_list)| {
+            tx_list.get_queued_mut().flat_map(move |tx| {
+                tx.get_if_forwardable::<MIN_SEQNUM_DIFF, MAX_RETRIES>(
+                    last_commit_seq_num,
+                    last_commit_base_fee,
+                )
+            })
         }))
     }
 
