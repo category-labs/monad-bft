@@ -1,0 +1,118 @@
+---
+source: monad-wireauth-protocol/src/handshake.rs
+expression: all_traces
+---
+- test_name: vector_100
+  seed: 100
+  timestamp: 1700000100
+  initiator_static_private: 99dd7fc1ad584d9b174275ef9de7bda04fc61e38899fdce22fd31a49f3fc47d6
+  initiator_static_public: 02a3548483481d4f63dd1eceb6468b1ea59069e5a6799722390b448e3d5b8de8ee
+  responder_static_private: 126242834c575d4ccd51fa7081775c09746305ab0889844fff09c2018a5548bd
+  responder_static_public: 0216a1745cb30cb453c65f69627c82cf28f215a31d90c86fbab3f9db75f9126540
+  initiator_session_index: 4057598532
+  responder_session_index: 3810930514
+  init_message:
+    raw_bytes: 01000000440adaf103a8bee2d6eb6aa7e6342133bfd70fcbccd4ab5df857b3d8738bb4af70805bdaabd9e6ba356d9a487a65ec70f94148b0afe135e8a0544e71ebd89baf7922c9b385d6d3ab80b6e78f8a1b25cb8f56e384ef464448eb894fbd9bcdaa5cb6e80fb5e6d29d8a5d0be1b9f35566d60dbbb2cc6d77e74115ab407c8fecf47500f500000000000000000000000000000000
+    sender_index: 4057598532
+    receiver_index: 0
+    ephemeral_public: 03a8bee2d6eb6aa7e6342133bfd70fcbccd4ab5df857b3d8738bb4af70805bdaab
+    encrypted_static: d9e6ba356d9a487a65ec70f94148b0afe135e8a0544e71ebd89baf7922c9b385d6
+    encrypted_static_tag: d3ab80b6e78f8a1b25cb8f56e384ef46
+    encrypted_timestamp: 4448eb894fbd9bcdaa5cb6e8
+    encrypted_timestamp_tag: 0fb5e6d29d8a5d0be1b9f35566d60dbb
+    encrypted_nothing_tag: ~
+    mac1: b2cc6d77e74115ab407c8fecf47500f5
+    mac2: "00000000000000000000000000000000"
+  response_message:
+    raw_bytes: 02000000522f26e3440adaf102d53ba4d43ff563a77771973b51231948b171c5a2a68e5e0065badd8ccdafbbc0cd2081fb6b80666deba04c952b32a5ccce2afb4044a4d3616f2b87ba2de3cbbf00000000000000000000000000000000
+    sender_index: 3810930514
+    receiver_index: 4057598532
+    ephemeral_public: 02d53ba4d43ff563a77771973b51231948b171c5a2a68e5e0065badd8ccdafbbc0
+    encrypted_static: ""
+    encrypted_static_tag: ""
+    encrypted_timestamp: ""
+    encrypted_timestamp_tag: ""
+    encrypted_nothing_tag: cd2081fb6b80666deba04c952b32a5cc
+    mac1: ce2afb4044a4d3616f2b87ba2de3cbbf
+    mac2: "00000000000000000000000000000000"
+  transport_keys:
+    initiator_send_key: ebf7a4ed2503c39bc000eb5a4b8d3925
+    initiator_recv_key: 1740a6c9c52768d8037372cc20bf56e9
+    responder_send_key: 1740a6c9c52768d8037372cc20bf56e9
+    responder_recv_key: ebf7a4ed2503c39bc000eb5a4b8d3925
+- test_name: vector_200
+  seed: 200
+  timestamp: 1700000200
+  initiator_static_private: 68472ad1a4d2a888dce7571ac9b8080d9c405ea1e1889372504aa50628975c7a
+  initiator_static_public: 038620c6628bd80c1148c9a90833c06e5df5d31150392b35d3de7e3e2561b135dc
+  responder_static_private: c8d2362ecaaf13d084cdc2bd3133ba16b6f48408673e28ac61b1dbfbf54365ed
+  responder_static_public: 02c69fa1f3ff47b7f962ff001716b12bbec1faced974756b7f6f25658ef537806d
+  initiator_session_index: 2527227798
+  responder_session_index: 818229675
+  init_message:
+    raw_bytes: 01000000966fa29603f8c7291f6fe8ad581e735812a7060b472a6d62a18e7854ccd85d33b37a34d9713d426a627fc8b172ccd9f18d7a91565a394e270d09991719075305d7c7842c8db1844874b1547df0165a185173024daaf5c270d89095de7aa0cbace46e69eaae783bdd6005da9703ba6e375d2b89f6a61c4fbc5b67cd8f12bb5d82762f00000000000000000000000000000000
+    sender_index: 2527227798
+    receiver_index: 0
+    ephemeral_public: 03f8c7291f6fe8ad581e735812a7060b472a6d62a18e7854ccd85d33b37a34d971
+    encrypted_static: 3d426a627fc8b172ccd9f18d7a91565a394e270d09991719075305d7c7842c8db1
+    encrypted_static_tag: 844874b1547df0165a185173024daaf5
+    encrypted_timestamp: c270d89095de7aa0cbace46e
+    encrypted_timestamp_tag: 69eaae783bdd6005da9703ba6e375d2b
+    encrypted_nothing_tag: ~
+    mac1: 89f6a61c4fbc5b67cd8f12bb5d82762f
+    mac2: "00000000000000000000000000000000"
+  response_message:
+    raw_bytes: 02000000ab31c530966fa2960216db8b479b16b416e6dbc721ac6dc70570f8e8b3ca38a171ddd282828f09d898a65d56bb2d62c7c218773e1c9055e06c0b39019982cf89ede80170c719018a4900000000000000000000000000000000
+    sender_index: 818229675
+    receiver_index: 2527227798
+    ephemeral_public: 0216db8b479b16b416e6dbc721ac6dc70570f8e8b3ca38a171ddd282828f09d898
+    encrypted_static: ""
+    encrypted_static_tag: ""
+    encrypted_timestamp: ""
+    encrypted_timestamp_tag: ""
+    encrypted_nothing_tag: a65d56bb2d62c7c218773e1c9055e06c
+    mac1: 0b39019982cf89ede80170c719018a49
+    mac2: "00000000000000000000000000000000"
+  transport_keys:
+    initiator_send_key: 14d9484cf797536e9a1adcef72dc1203
+    initiator_recv_key: d9698f68143b505facce394ef60682a1
+    responder_send_key: d9698f68143b505facce394ef60682a1
+    responder_recv_key: 14d9484cf797536e9a1adcef72dc1203
+- test_name: vector_300
+  seed: 300
+  timestamp: 1700000300
+  initiator_static_private: e797f9258332c8d45a477eb922f0c7f51396d65409765311ddcef605caed25b5
+  initiator_static_public: 036700cffdb1df1364cf80ed98ff6192ae3ad04e40c323cbfc28a73bcdd26b1691
+  responder_static_private: d24f8034ba487a79ffa042a1080bf2bf8344e88151808c83fe325954378aa13a
+  responder_static_public: 0391bc8676e4d9ed9da88a599e351f69141c41f9b15ddbd5c02688f8c03f1d0dec
+  initiator_session_index: 3458659921
+  responder_session_index: 3444663251
+  init_message:
+    raw_bytes: 0100000051f626ce02a5ce77b5a2841ea69b23070e208e947a1047056d2af60c121a3a88d4a7f472dd2ec954ebf1a07c98bc2f6bd92a73829a91a277b970cfe4f4ee41cd8a7883f3a5cb13fe7b6c382553f34c5b90d8fc318c1a170cc4fff56b95d47f32789f0e6e3161495c349f9672828cb91321b3639deb6b19a91f12eeaf509781fcb1c900000000000000000000000000000000
+    sender_index: 3458659921
+    receiver_index: 0
+    ephemeral_public: 02a5ce77b5a2841ea69b23070e208e947a1047056d2af60c121a3a88d4a7f472dd
+    encrypted_static: 2ec954ebf1a07c98bc2f6bd92a73829a91a277b970cfe4f4ee41cd8a7883f3a5cb
+    encrypted_static_tag: 13fe7b6c382553f34c5b90d8fc318c1a
+    encrypted_timestamp: 170cc4fff56b95d47f32789f
+    encrypted_timestamp_tag: 0e6e3161495c349f9672828cb91321b3
+    encrypted_nothing_tag: ~
+    mac1: 639deb6b19a91f12eeaf509781fcb1c9
+    mac2: "00000000000000000000000000000000"
+  response_message:
+    raw_bytes: 02000000d36351cd51f626ce029d8409c38893233727bb8176ae3e16750d8a1eccd128d110166a07c4d18318e3c99295dafcf42a45562cb8657c14f83cee08f9f4d1b6e3aa55f11b132035f7a200000000000000000000000000000000
+    sender_index: 3444663251
+    receiver_index: 3458659921
+    ephemeral_public: 029d8409c38893233727bb8176ae3e16750d8a1eccd128d110166a07c4d18318e3
+    encrypted_static: ""
+    encrypted_static_tag: ""
+    encrypted_timestamp: ""
+    encrypted_timestamp_tag: ""
+    encrypted_nothing_tag: c99295dafcf42a45562cb8657c14f83c
+    mac1: ee08f9f4d1b6e3aa55f11b132035f7a2
+    mac2: "00000000000000000000000000000000"
+  transport_keys:
+    initiator_send_key: 19d860737ab92abb275bb2b239bdd1f7
+    initiator_recv_key: bd457fab82ec100f4749de8787fcd2fb
+    responder_send_key: bd457fab82ec100f4749de8787fcd2fb
+    responder_recv_key: 19d860737ab92abb275bb2b239bdd1f7

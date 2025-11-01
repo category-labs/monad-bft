@@ -1,0 +1,49 @@
+---
+source: monad-wireauth-protocol/src/handshake.rs
+expression: trace
+---
+test_name: cookie_handshake
+seed: 43
+cookie_secret: "7777777777777777777777777777777777777777777777777777777777777777"
+cookie_value: 7bb20b9a4d121660f35c669bec4f69df
+init_without_cookie:
+  raw_bytes: 01000000650000000265e25c471caa29f8611c3d20cee58f933fc1a3e4e6fb24cd5b732c2459d320ec0d47119242bc575cef24279f9296f8fbe29110dd82bca2e9d10b3d3664cb263ecb06c3b44f5353e673abb7507dd6629257dc6a2719b942fb54bef8342d9fba6dd46091005730dbea9740df0bdc2e9cdafbc5021053b947a9858ea7a63f00000000000000000000000000000000
+  sender_index: 101
+  receiver_index: 0
+  ephemeral_public: 0265e25c471caa29f8611c3d20cee58f933fc1a3e4e6fb24cd5b732c2459d320ec
+  encrypted_static: 0d47119242bc575cef24279f9296f8fbe29110dd82bca2e9d10b3d3664cb263ecb
+  encrypted_static_tag: 06c3b44f5353e673abb7507dd6629257
+  encrypted_timestamp: dc6a2719b942fb54bef8342d
+  encrypted_timestamp_tag: 9fba6dd46091005730dbea9740df0bdc
+  encrypted_nothing_tag: ~
+  mac1: 2e9cdafbc5021053b947a9858ea7a63f
+  mac2: "00000000000000000000000000000000"
+cookie_reply:
+  raw_bytes: 0300000065000000e18475b5c5b8d03d7294feb1f37c88238a428d90f132081601674e46e5ba75772170a13a17bdaf24bc88e51b8a8479ce
+  receiver_index: 101
+  nonce: e18475b5c5b8d03d7294feb1f37c8823
+  encrypted_cookie: 8a428d90f132081601674e46e5ba7577
+init_with_cookie:
+  raw_bytes: 0100000066000000023864b260a21d2edb2b6d4b375febac55c06f675258d0d7cf67f98bb85a724b15e4452952ac222bd57e88f8fdbdcecdf0b5133626f88ac7eeb281514b61ef23d345e74df2394df4accafe3a818b5ed2b79f8a74acbf3fdbf49dfe58a7035609379c08b14d2dfbece9f62fdfd2effe7f0f5d881e18c065aa17e98f4167e8d13c103fa867ad1b83b0e5bc76fcceb5
+  sender_index: 102
+  receiver_index: 0
+  ephemeral_public: 023864b260a21d2edb2b6d4b375febac55c06f675258d0d7cf67f98bb85a724b15
+  encrypted_static: e4452952ac222bd57e88f8fdbdcecdf0b5133626f88ac7eeb281514b61ef23d345
+  encrypted_static_tag: e74df2394df4accafe3a818b5ed2b79f
+  encrypted_timestamp: 8a74acbf3fdbf49dfe58a703
+  encrypted_timestamp_tag: 5609379c08b14d2dfbece9f62fdfd2ef
+  encrypted_nothing_tag: ~
+  mac1: fe7f0f5d881e18c065aa17e98f4167e8
+  mac2: d13c103fa867ad1b83b0e5bc76fcceb5
+response_with_cookie:
+  raw_bytes: 02000000c900000066000000038625117887c0985ae9c3383da4d1aae4ac406c6523a37e70317c66f4987c210479e80bae2dff6699a68d160e25c8edf70635769467adb99b839cfdf5aa11cf52faa8bd118f88f6265b0eb242fcd004ae
+  sender_index: 201
+  receiver_index: 102
+  ephemeral_public: 038625117887c0985ae9c3383da4d1aae4ac406c6523a37e70317c66f4987c2104
+  encrypted_static: ""
+  encrypted_static_tag: ""
+  encrypted_timestamp: ""
+  encrypted_timestamp_tag: ""
+  encrypted_nothing_tag: 79e80bae2dff6699a68d160e25c8edf7
+  mac1: 0635769467adb99b839cfdf5aa11cf52
+  mac2: faa8bd118f88f6265b0eb242fcd004ae
