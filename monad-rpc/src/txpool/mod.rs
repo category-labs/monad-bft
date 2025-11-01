@@ -43,6 +43,8 @@ mod socket;
 mod state;
 mod types;
 
+pub const ETH_TXPOOL_BRIDGE_CHANNEL_SIZE: usize = 1024;
+
 #[pin_project(project = EthTxPoolBridgeIpcStateProjection)]
 enum EthTxPoolBridgeIpcState {
     Ready,
@@ -77,7 +79,7 @@ impl EthTxPoolBridge {
         let mut eviction_queue = EthTxPoolBridgeEvictionQueue::default();
         let state: EthTxPoolBridgeState = EthTxPoolBridgeState::new(&mut eviction_queue, snapshot);
 
-        let (tx_sender, tx_receiver) = flume::bounded(1024);
+        let (tx_sender, tx_receiver) = flume::bounded(ETH_TXPOOL_BRIDGE_CHANNEL_SIZE);
 
         let client = EthTxPoolBridgeClient::new(tx_sender, state.create_view());
 

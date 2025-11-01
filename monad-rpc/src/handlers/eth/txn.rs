@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use alloy_consensus::{ReceiptEnvelope, ReceiptWithBloom, Transaction as _, TxEnvelope};
 use alloy_primitives::{Address, FixedBytes, TxKind};
@@ -188,7 +188,6 @@ pub struct MonadEthSendRawTransactionParams {
     hex_tx: UnformattedData,
 }
 
-const MAX_CONCURRENT_SEND_RAW_TX: usize = 1_000;
 // TODO: need to support EIP-4844 transactions
 #[rpc(
     method = "eth_sendRawTransaction",
@@ -205,15 +204,12 @@ pub async fn monad_eth_sendRawTransaction(
     allow_unprotected_txs: bool,
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_sendRawTransaction: {params:?}");
-    let tx_inflight_guard = txpool_bridge_client.acquire_inflight_tx_guard();
-    // (strong_count-1) is the total number of pending requests
-    // This is because the Arc is held until the scope is exited.
-    if Arc::strong_count(&tx_inflight_guard) > MAX_CONCURRENT_SEND_RAW_TX {
-        warn!(MAX_CONCURRENT_SEND_RAW_TX, "txpool overloaded");
+    let Some(tx_inflight_guard) = txpool_bridge_client.acquire_tx_inflight_guard() else {
+        warn!("txpool overloaded");
         return Err(JsonRpcError::custom(
             "overloaded, try again later".to_owned(),
         ));
-    }
+    };
 
     match TxEnvelope::decode(&mut &params.hex_tx.0[..]) {
         Ok(tx) => {
@@ -236,9 +232,12 @@ pub async fn monad_eth_sendRawTransaction(
             let (tx_status_send, tx_status_recv) = tokio::sync::oneshot::channel::<TxStatus>();
 
             if let Err(err) = txpool_bridge_client.try_send(tx, tx_status_send) {
-                warn!(?err, "mempool ipc send error");
+                error!(
+                    ?err,
+                    "txpool bridge try_send error after acquiring tx_inflight_guard"
+                );
                 return Err(JsonRpcError::internal_error(
-                    "unable to send to validator".into(),
+                    "overloaded, try again later".to_owned(),
                 ));
             }
 

@@ -27,6 +27,8 @@ use super::{
 #[derive(Clone)]
 pub struct EthTxPoolBridgeClient {
     tx_sender: Sender<(TxEnvelope, TxStatusSender)>,
+    tx_sender_capacity: usize,
+
     tx_inflight: Arc<()>,
 
     state: EthTxPoolBridgeStateView,
@@ -37,16 +39,28 @@ impl EthTxPoolBridgeClient {
         tx_sender: Sender<(TxEnvelope, TxStatusSender)>,
         state: EthTxPoolBridgeStateView,
     ) -> Self {
+        let tx_sender_capacity = tx_sender
+            .capacity()
+            .expect("EthTxPoolBridgeClient uses bounded channel");
+
         Self {
             tx_sender,
+            tx_sender_capacity,
+
             tx_inflight: Arc::new(()),
 
             state,
         }
     }
 
-    pub fn acquire_inflight_tx_guard(&self) -> Arc<()> {
-        self.tx_inflight.clone()
+    pub fn acquire_tx_inflight_guard(&self) -> Option<Arc<()>> {
+        let tx_inflight_guard = self.tx_inflight.clone();
+
+        if Arc::strong_count(&tx_inflight_guard) > self.tx_sender_capacity {
+            return None;
+        }
+
+        Some(tx_inflight_guard)
     }
 
     pub fn try_send(
@@ -70,6 +84,8 @@ impl EthTxPoolBridgeClient {
 
         Self {
             tx_sender,
+            tx_sender_capacity: 0,
+
             tx_inflight: Arc::new(()),
 
             state: EthTxPoolBridgeStateView::for_testing(),
