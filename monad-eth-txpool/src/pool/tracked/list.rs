@@ -118,6 +118,11 @@ impl TrackedTxList {
 
         match self.txs.entry(tx.nonce()) {
             btree_map::Entry::Vacant(v) => {
+                if !limit_tracker.add_tx(&tx) {
+                    event_tracker.drop(tx.hash(), EthTxPoolDropReason::PoolFull);
+                    return None;
+                }
+
                 event_tracker.insert(tx.raw(), tx.is_owned());
                 Some(&v.insert((tx, event_tracker.now)).0)
             }
@@ -173,20 +178,20 @@ impl TrackedTxList {
             return;
         }
 
-        let txs = this.get_mut().txs.split_off(&account_nonce);
+        let remaining_txs = this.get_mut().txs.split_off(&account_nonce);
 
-        limit_tracker.remove_txs(txs.values().map(|(tx, _)| tx));
+        limit_tracker.remove_txs(this.get().txs.values().map(|(tx, _)| tx));
         event_tracker.tracked_commit(
-            txs.is_empty(),
+            remaining_txs.is_empty(),
             this.get().txs.values().map(|(tx, _)| tx.hash()),
         );
 
-        if txs.is_empty() {
+        if remaining_txs.is_empty() {
             this.swap_remove();
             return;
         }
 
-        this.get_mut().txs = txs;
+        this.get_mut().txs = remaining_txs;
     }
 
     // Produces true when the entry was removed and false otherwise
