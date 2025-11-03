@@ -50,15 +50,41 @@ pub async fn run(clients: Vec<ReqwestClient>, config: Config) -> Result<()> {
     }
 
     let mut workload_group_index = 0;
+    let read_client = clients[0].clone();
 
     loop {
-        let current_traffic_gen = &config.workload_groups[workload_group_index];
+        let workload_group = &config.workload_groups[workload_group_index];
         info!(
-            "Starting workload group phase {}: {:?}",
-            workload_group_index, current_traffic_gen.name
+            "Starting workload group phase {}: {}",
+            workload_group_index, workload_group.name
         );
 
-        run_workload_group(&clients, &config, workload_group_index).await?;
+        let start_time = Utc::now();
+        let metrics = Arc::new(Metrics::default());
+        if let Err(e) =
+            run_workload_group(&clients, &config, workload_group_index, metrics.clone()).await
+        {
+            error!(
+                workload_group = workload_group.name,
+                "Failed to run workload group: {e:?}"
+            );
+        }
+
+        if let Some(report_dir) = config.report_dir.as_deref() {
+            let report = Report::new(
+                config.clone(),
+                workload_group_index,
+                start_time,
+                &metrics,
+                &read_client,
+                config.prom_url.clone(),
+            )
+            .await;
+
+            if let Err(e) = report.to_json_file(report_dir.as_ref()) {
+                error!("Failed to write report: {e:?}");
+            }
+        };
 
         workload_group_index = (workload_group_index + 1) % config.workload_groups.len();
     }
@@ -71,6 +97,7 @@ async fn run_workload_group(
     clients: &[ReqwestClient],
     config: &Config,
     workload_group_index: usize,
+    metrics: Arc<Metrics>,
 ) -> Result<()> {
     let workload_group = &config.workload_groups[workload_group_index];
     let read_client = clients[0].clone();
@@ -79,7 +106,6 @@ async fn run_workload_group(
     let shutdown_clone = Arc::clone(&shutdown);
 
     // shared state for monitoring
-    let metrics = Arc::new(Metrics::default());
     let sent_txs = Arc::new(DashMap::with_capacity(100_000));
 
     // Shared tasks for all workers in the workload group
@@ -148,11 +174,9 @@ async fn run_workload_group(
 
     let runtime_seconds = (workload_group.runtime_minutes * 60.) as u64;
     let timeout = tokio::time::sleep(Duration::from_secs(runtime_seconds));
-    // Start time is after all tasks are started. Tasks take some time to start up so this is a better approximation of the start time
-    let start_time = Utc::now();
 
     // Wait for all tasks to complete or timeout
-    let result = tokio::select! {
+    tokio::select! {
         _ = timeout => {
             info!("Traffic phase completed after {} minutes", workload_group.runtime_minutes);
             shutdown_clone.store(true, Ordering::Relaxed);
@@ -171,26 +195,7 @@ async fn run_workload_group(
                 }
             }
         }
-    };
-
-    // Write report regardless of result and return result regardless of reporting errors
-    if let Some(report_dir) = config.report_dir.as_deref() {
-        let report = Report::new(
-            config.clone(),
-            workload_group_index,
-            start_time,
-            &metrics,
-            &read_client,
-            config.prom_url.clone(),
-        )
-        .await;
-
-        if let Err(e) = report.to_json_file(report_dir.as_ref()) {
-            error!("Failed to write report: {e:?}");
-        }
-    };
-
-    result
+    }
 }
 
 fn run_traffic_gen(
