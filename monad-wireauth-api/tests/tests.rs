@@ -1,9 +1,9 @@
-use std::{net::SocketAddr, time::Duration};
+use std::{convert::TryFrom, net::SocketAddr, time::Duration};
 
 use monad_wireauth_api::{Config, TestContext, API};
 use monad_wireauth_protocol::{
     common::PublicKey,
-    messages::{CookieReply, DataPacketHeader, HandshakeInitiation, HandshakeResponse},
+    messages::{CookieReply, DataPacketHeader, HandshakeInitiation, HandshakeResponse, Packet},
 };
 use monad_wireauth_session::DEFAULT_RETRY_ATTEMPTS;
 use secp256k1::rand::rng;
@@ -40,11 +40,18 @@ where
 
 fn dispatch(manager: &mut API<TestContext>, packet: &[u8], from: SocketAddr) -> Option<Vec<u8>> {
     let mut packet_mut = packet.to_vec();
-    manager
-        .dispatch(&mut packet_mut, from)
-        .ok()
-        .flatten()
-        .map(|b| b.to_vec())
+    let parsed_packet = Packet::try_from(&mut packet_mut[..]).ok()?;
+
+    match parsed_packet {
+        Packet::Control(control) => {
+            manager.dispatch_control(control, from).ok()?;
+            None
+        }
+        Packet::Data(data_packet) => {
+            let plaintext = manager.decrypt(data_packet, from).ok()?;
+            Some(plaintext.as_slice().to_vec())
+        }
+    }
 }
 
 fn encrypt(
@@ -504,12 +511,10 @@ fn test_too_many_accepted_sessions() {
 #[test]
 fn test_random_packet_error() {
     init_tracing();
-    let (mut peer, _, _, _) = create_manager();
-    let addr: SocketAddr = "127.0.0.1:8001".parse().unwrap();
 
     let random_packet = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
     let mut packet = random_packet;
-    let result = peer.dispatch(&mut packet, addr);
+    let result = Packet::try_from(&mut packet[..]);
     assert!(result.is_err());
 }
 

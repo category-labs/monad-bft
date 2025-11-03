@@ -5,7 +5,7 @@ use std::{
 
 use monad_wireauth_protocol::{
     common::{CipherKey, SessionIndex},
-    messages::{DataPacket, DataPacketHeader},
+    messages::{DataPacket, DataPacketHeader, Plaintext},
 };
 use tracing::debug;
 
@@ -66,26 +66,30 @@ impl TransportState {
         (header, timer)
     }
 
-    pub fn decrypt(
+    pub fn decrypt<'a>(
         &mut self,
         config: &Config,
         duration_since_start: Duration,
-        data_packet: DataPacket,
-    ) -> Result<Duration, SessionError> {
+        mut data_packet: DataPacket<'a>,
+    ) -> Result<(Duration, Plaintext<'a>), SessionError> {
         use monad_wireauth_protocol::crypto;
 
-        self.replay_filter.check(data_packet.header.counter.get())?;
+        self.replay_filter
+            .check(data_packet.header().counter.get())?;
+
+        let counter = data_packet.header().counter.get();
+        let tag = data_packet.header().tag;
 
         crypto::decrypt_in_place(
             &self.recv_key,
-            &data_packet.header.counter.get().into(),
-            data_packet.plaintext,
-            &data_packet.header.tag,
+            &counter.into(),
+            data_packet.data_mut(),
+            &tag,
             &[],
         )
         .map_err(SessionError::InvalidMac)?;
 
-        self.replay_filter.update(data_packet.header.counter.get());
+        self.replay_filter.update(counter);
 
         self.common
             .reset_session_timeout(duration_since_start, config.session_timeout);
@@ -93,7 +97,7 @@ impl TransportState {
             .common
             .get_next_deadline()
             .expect("expected at least one timer to be set");
-        Ok(timer)
+        Ok((timer, Plaintext::new(data_packet)))
     }
 
     #[allow(clippy::type_complexity)]

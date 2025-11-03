@@ -1,8 +1,8 @@
-use std::{rc::Rc, time::Duration};
+use std::{convert::TryFrom, rc::Rc, time::Duration};
 
 use bytes::Bytes;
 use monad_wireauth_api::{Config, StdContext, API};
-use monad_wireauth_protocol::common::PublicKey;
+use monad_wireauth_protocol::{common::PublicKey, messages::Packet};
 use monad_wireauth_session::DEFAULT_RETRY_ATTEMPTS;
 use monoio::net::udp::UdpSocket;
 use secp256k1::rand::{rngs::StdRng, SeedableRng};
@@ -62,10 +62,21 @@ impl PeerNode {
         let buf = vec![0u8; 65536];
         let (result, mut buf) = self.socket.recv_from(buf).await;
         let (len, src) = result?;
-        let result = self.manager.dispatch(&mut buf[..len], src);
-        match result {
-            Ok(data) => Ok(data),
-            Err(_) => Ok(None),
+
+        let parsed_packet = match Packet::try_from(&mut buf[..len]) {
+            Ok(p) => p,
+            Err(_) => return Ok(None),
+        };
+
+        match parsed_packet {
+            Packet::Control(control) => {
+                let _ = self.manager.dispatch_control(control, src);
+                Ok(None)
+            }
+            Packet::Data(data_packet) => match self.manager.decrypt(data_packet, src) {
+                Ok(plaintext) => Ok(Some(plaintext.as_slice().to_vec().into())),
+                Err(_) => Ok(None),
+            },
         }
     }
 
@@ -95,7 +106,16 @@ async fn exchange_handshake(alice: &mut PeerNode, bob: &mut PeerNode) -> std::io
                 recv_result = alice_socket.recv_from(buf) => {
                     let (result, mut buf) = recv_result;
                     if let Ok((len, src)) = result {
-                        let _ = alice.manager.dispatch(&mut buf[..len], src);
+                        if let Ok(parsed_packet) = Packet::try_from(&mut buf[..len]) {
+                            match parsed_packet {
+                                Packet::Control(control) => {
+                                    let _ = alice.manager.dispatch_control(control, src);
+                                }
+                                Packet::Data(data_packet) => {
+                                    let _ = alice.manager.decrypt(data_packet, src);
+                                }
+                            }
+                        }
                         true
                     } else {
                         false
@@ -113,7 +133,16 @@ async fn exchange_handshake(alice: &mut PeerNode, bob: &mut PeerNode) -> std::io
                 recv_result = bob_socket.recv_from(buf) => {
                     let (result, mut buf) = recv_result;
                     if let Ok((len, src)) = result {
-                        let _ = bob.manager.dispatch(&mut buf[..len], src);
+                        if let Ok(parsed_packet) = Packet::try_from(&mut buf[..len]) {
+                            match parsed_packet {
+                                Packet::Control(control) => {
+                                    let _ = bob.manager.dispatch_control(control, src);
+                                }
+                                Packet::Data(data_packet) => {
+                                    let _ = bob.manager.decrypt(data_packet, src);
+                                }
+                            }
+                        }
                         true
                     } else {
                         false

@@ -130,12 +130,9 @@ fn test_handshake_and_data_exchange() {
     let mut plaintext = b"hello world".to_vec();
     let (header, _timer) = initiator_transport.encrypt(&env.config, env.time, &mut plaintext);
 
-    let data_packet = DataPacket {
-        header: &header,
-        plaintext: &mut plaintext,
-    };
+    let data_packet = DataPacket::new(&header, &mut plaintext);
 
-    let _timer = responder_transport
+    let (_timer, _packet) = responder_transport
         .decrypt(&env.config, env.time, data_packet)
         .unwrap();
     assert_eq!(&plaintext, b"hello world");
@@ -587,11 +584,8 @@ fn test_rekey_interval_with_zero_retries() {
         assert!(result.1.is_some());
         let message_event = result.1.unwrap();
         let mut plaintext = vec![];
-        let data_packet = DataPacket {
-            header: &message_event.header,
-            plaintext: &mut plaintext,
-        };
-        let _timer = initiator_transport
+        let data_packet = DataPacket::new(&message_event.header, &mut plaintext);
+        let (_timer, _packet) = initiator_transport
             .decrypt(&env.config, env.time, data_packet)
             .unwrap();
     }
@@ -680,11 +674,8 @@ fn test_max_session_duration_terminates_after_rekey() {
         assert!(result.1.is_some());
         let message_event = result.1.unwrap();
         let mut plaintext = vec![];
-        let data_packet = DataPacket {
-            header: &message_event.header,
-            plaintext: &mut plaintext,
-        };
-        let _timer = initiator_transport
+        let data_packet = DataPacket::new(&message_event.header, &mut plaintext);
+        let (_timer, _packet) = initiator_transport
             .decrypt(&env.config, env.time, data_packet)
             .unwrap();
     }
