@@ -65,6 +65,8 @@ extern "C" {
     ) -> ffi::c_int;
 
     fn monad_log_get_last_error() -> *const ffi::c_char;
+
+    fn monad_set_terminate_handler();
 }
 
 fn check_log_library_error(rc: ffi::c_int) -> Result<(), String> {
@@ -136,4 +138,11 @@ pub fn init_cxx_logging(log_level: Level) {
         }
         handler
     });
+}
+
+/// Install custom terminate handler that prints exception info and backtrace
+/// before aborting. This should be called early in main() to catch exceptions
+/// that escape noexcept functions (e.g., FFI boundaries).
+pub fn set_terminate_handler() {
+    unsafe { monad_set_terminate_handler() }
 }

@@ -15,6 +15,7 @@ monad-consensus-state = { workspace = true }
 monad-consensus-types = { workspace = true }
 monad-control-panel = { workspace = true }
 monad-crypto = { workspace = true }
+monad-cxx = { workspace = true }
 monad-dataplane = { workspace = true }
 monad-eth-block-policy = { workspace = true }
 monad-eth-block-validator = { workspace = true }

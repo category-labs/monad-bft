@@ -107,6 +107,9 @@ const STATESYNC_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const EXECUTION_DELAY: u64 = 3;
 
 fn main() {
+    // Install terminate handler early to catch C++ exceptions at FFI boundaries
+    monad_cxx::set_terminate_handler();
+
     let mut cmd = Cli::command();
 
     let node_state = NodeState::setup(&mut cmd).unwrap_or_else(|e| cmd.error(e.kind(), e).exit());
