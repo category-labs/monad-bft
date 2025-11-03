@@ -36,7 +36,7 @@ monoio = { workspace = true, features = ["sync", "macros"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 rstest.workspace = true
 proptest.workspace = true
-divan.workspace = true
+criterion.workspace = true
 
 [features]
 bench = ["monad-wireauth-session/bench"]
