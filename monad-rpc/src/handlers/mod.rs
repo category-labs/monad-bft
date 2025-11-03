@@ -26,6 +26,7 @@ use self::{
         monad_debug_getRawTransaction, monad_debug_traceBlockByHash,
         monad_debug_traceBlockByNumber, monad_debug_traceTransaction,
     },
+    debug_replay::{collect_debug_trace_via_replay, DebugTraceParams},
     eth::{
         account::{
             monad_eth_getBalance, monad_eth_getCode, monad_eth_getStorageAt,
@@ -52,6 +53,10 @@ use self::{
 };
 use crate::{
     eth_json_types::serialize_result,
+    handlers::debug::{
+        MonadDebugTraceBlockByHashParams, MonadDebugTraceBlockByNumberParams,
+        MonadDebugTraceTransactionParams,
+    },
     jsonrpc::{
         JsonRpcError, JsonRpcResultExt, Request, RequestParams, RequestWrapper, Response,
         ResponseWrapper,
@@ -61,6 +66,7 @@ use crate::{
 };
 
 mod debug;
+mod debug_replay;
 pub mod eth;
 mod meta;
 pub mod resources;
@@ -263,12 +269,18 @@ async fn debug_getRawTransaction(
 
 #[allow(non_snake_case)]
 async fn debug_traceBlockByHash(
-    _: RequestId,
+    request_id: RequestId,
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-    let params = serde_json::from_str(params.get()).invalid_params()?;
+    let params: MonadDebugTraceBlockByHashParams =
+        serde_json::from_str(params.get()).invalid_params()?;
+    if params.requires_replay() {
+        return collect_debug_trace_via_replay(request_id, triedb_env, app_state, &params)
+            .await
+            .map(serialize_result)?;
+    }
     monad_debug_traceBlockByHash(triedb_env, &app_state.archive_reader, params)
         .await
         .map(serialize_result)?
@@ -276,12 +288,19 @@ async fn debug_traceBlockByHash(
 
 #[allow(non_snake_case)]
 async fn debug_traceBlockByNumber(
-    _: RequestId,
+    request_id: RequestId,
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-    let params = serde_json::from_str(params.get()).invalid_params()?;
+    let params: MonadDebugTraceBlockByNumberParams =
+        serde_json::from_str(params.get()).invalid_params()?;
+    if params.requires_replay() {
+        return collect_debug_trace_via_replay(request_id, triedb_env, app_state, &params)
+            .await
+            .map(serialize_result)?;
+    }
+
     monad_debug_traceBlockByNumber(triedb_env, &app_state.archive_reader, params)
         .await
         .map(serialize_result)?
@@ -317,12 +336,19 @@ async fn debug_traceCall(
 
 #[allow(non_snake_case)]
 async fn debug_traceTransaction(
-    _: RequestId,
+    request_id: RequestId,
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-    let params = serde_json::from_str(params.get()).invalid_params()?;
+    let params: MonadDebugTraceTransactionParams =
+        serde_json::from_str(params.get()).invalid_params()?;
+    if params.requires_replay() {
+        return collect_debug_trace_via_replay(request_id, triedb_env, app_state, &params)
+            .await
+            .map(serialize_result)?;
+    }
+
     monad_debug_traceTransaction(triedb_env, &app_state.archive_reader, params)
         .await
         .map(serialize_result)?

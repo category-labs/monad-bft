@@ -268,11 +268,18 @@ async fn main() -> std::io::Result<()> {
         timeout_sec: args.eth_call_high_executor_queuing_timeout,
         queue_limit: args.eth_call_high_max_concurrent_requests,
     };
+    let block_pool_config = monad_ethcall::PoolConfig {
+        num_threads: args.eth_trace_block_executor_threads,
+        num_fibers: args.eth_trace_block_executor_fibers,
+        timeout_sec: args.eth_trace_block_executor_queuing_timeout,
+        queue_limit: args.eth_trace_block_max_concurrent_requests,
+    };
 
     let eth_call_executor = args.triedb_path.clone().as_deref().map(|path| {
         Arc::new(EthCallExecutor::new(
             low_pool_config,
             high_pool_config,
+            block_pool_config,
             args.eth_call_executor_node_lru_max_mem,
             path,
         ))

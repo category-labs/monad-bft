@@ -455,6 +455,22 @@ impl BlockKey {
             BlockKey::Proposed(ProposedBlockKey(seq_num, _)) => seq_num,
         }
     }
+
+    pub fn block_id(&self) -> Option<&BlockId> {
+        match self {
+            BlockKey::Finalized(_) => None,
+            BlockKey::Proposed(ProposedBlockKey(_, block_id)) => Some(block_id),
+        }
+    }
+}
+
+impl From<BlockKey> for Option<[u8; 32]> {
+    fn from(key: BlockKey) -> Self {
+        match key {
+            BlockKey::Finalized(_) => None,
+            BlockKey::Proposed(ProposedBlockKey(_, block_id)) => Some(block_id.0 .0),
+        }
+    }
 }
 
 impl From<BlockKey> for Version {
