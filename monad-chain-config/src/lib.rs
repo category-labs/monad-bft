@@ -203,15 +203,15 @@ const MONAD_MAINNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
 
     v_0_7_0_activation: Round::MIN,
     v_0_8_0_activation: Round::MIN,
-    v_0_10_0_activation: Round(15643179), // 2025-08-13T13:30:00.000Z
-    v_0_11_0_activation: Round::MAX,
+    v_0_10_0_activation: Round(15_643_179), // 2025-08-13T13:30:00.000Z
+    v_0_11_0_activation: Round(33_493_399), // Approx 2025-11-04T14:00:00.000Z
 
-    staking_activation: Epoch::MAX,
+    staking_activation: Epoch(675),
     staking_rewards_activation: Epoch::MAX,
 
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
-    execution_v_four_activation: u64::MAX,
+    execution_v_four_activation: 1762266600, // 2025-11-04T14:30:00.000Z
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
