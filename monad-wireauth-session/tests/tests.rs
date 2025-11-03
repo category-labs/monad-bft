@@ -3,11 +3,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use monad_wireauth_protocol::{
-    common::{PrivateKey, PublicKey, SerializedPublicKey, SessionIndex},
-    cookies,
-    messages::DataPacket,
-};
+use monad_wireauth_protocol::{common::SessionIndex, cookies, messages::DataPacket};
 use monad_wireauth_session::*;
 use secp256k1::rand::{rngs::StdRng, SeedableRng};
 
@@ -44,8 +40,8 @@ impl TestEnv {
 }
 
 struct Peer {
-    static_key: PrivateKey,
-    static_public: PublicKey,
+    static_keypair: monad_secp::KeyPair,
+    static_public: monad_secp::PubKey,
     addr: SocketAddr,
     session_index: SessionIndex,
 }
@@ -53,10 +49,10 @@ struct Peer {
 impl Peer {
     fn new(port: u16, index: u32) -> Self {
         let mut rng = StdRng::seed_from_u64(port as u64);
-        let (static_public, static_key) =
-            monad_wireauth_protocol::crypto::generate_keypair(&mut rng).unwrap();
+        let static_keypair = monad_secp::KeyPair::generate(&mut rng);
+        let static_public = static_keypair.pubkey();
         Self {
-            static_key,
+            static_keypair,
             static_public,
             addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), port),
             session_index: SessionIndex::new(index),
@@ -84,9 +80,9 @@ fn test_handshake_and_data_exchange() {
         env.time,
         &env.config,
         alice.session_index,
-        &alice.static_key,
-        alice.static_public.clone(),
-        bob.static_public.clone(),
+        &alice.static_keypair,
+        alice.static_public,
+        bob.static_public,
         bob.addr,
         None,
         DEFAULT_RETRY_ATTEMPTS,
@@ -94,7 +90,8 @@ fn test_handshake_and_data_exchange() {
     .unwrap();
 
     let validated_init =
-        ResponderState::validate_init(&bob.static_key, &bob.static_public, &mut init_msg).unwrap();
+        ResponderState::validate_init(&bob.static_keypair, &bob.static_public, &mut init_msg)
+            .unwrap();
 
     let (responder, _timer, mut resp_msg) = ResponderState::new(
         &mut env.rng,
@@ -110,7 +107,7 @@ fn test_handshake_and_data_exchange() {
     let validated_resp = initiator
         .validate_response(
             &env.config,
-            &alice.static_key,
+            &alice.static_keypair,
             &alice.static_public,
             &mut resp_msg,
         )
@@ -158,9 +155,9 @@ fn test_keepalive_sends_twice() {
         env.time,
         &env.config,
         alice.session_index,
-        &alice.static_key,
-        alice.static_public.clone(),
-        bob.static_public.clone(),
+        &alice.static_keypair,
+        alice.static_public,
+        bob.static_public,
         bob.addr,
         None,
         DEFAULT_RETRY_ATTEMPTS,
@@ -168,7 +165,8 @@ fn test_keepalive_sends_twice() {
     .unwrap();
 
     let validated_init =
-        ResponderState::validate_init(&bob.static_key, &bob.static_public, &mut init_msg).unwrap();
+        ResponderState::validate_init(&bob.static_keypair, &bob.static_public, &mut init_msg)
+            .unwrap();
 
     let (responder, _timer, mut resp_msg) = ResponderState::new(
         &mut env.rng,
@@ -184,7 +182,7 @@ fn test_keepalive_sends_twice() {
     let validated_resp = initiator
         .validate_response(
             &env.config,
-            &alice.static_key,
+            &alice.static_keypair,
             &alice.static_public,
             &mut resp_msg,
         )
@@ -236,9 +234,9 @@ fn test_session_timeout_triggers_rekey_after_keepalive() {
         env.time,
         &env.config,
         alice.session_index,
-        &alice.static_key,
-        alice.static_public.clone(),
-        bob.static_public.clone(),
+        &alice.static_keypair,
+        alice.static_public,
+        bob.static_public,
         bob.addr,
         None,
         DEFAULT_RETRY_ATTEMPTS,
@@ -246,7 +244,8 @@ fn test_session_timeout_triggers_rekey_after_keepalive() {
     .unwrap();
 
     let validated_init =
-        ResponderState::validate_init(&bob.static_key, &bob.static_public, &mut init_msg).unwrap();
+        ResponderState::validate_init(&bob.static_keypair, &bob.static_public, &mut init_msg)
+            .unwrap();
 
     let (responder, _timer, mut resp_msg) = ResponderState::new(
         &mut env.rng,
@@ -262,7 +261,7 @@ fn test_session_timeout_triggers_rekey_after_keepalive() {
     let validated_resp = initiator
         .validate_response(
             &env.config,
-            &alice.static_key,
+            &alice.static_keypair,
             &alice.static_public,
             &mut resp_msg,
         )
@@ -306,9 +305,9 @@ fn test_initiator_timeout_triggers_rekey() {
         env.time,
         &env.config,
         alice.session_index,
-        &alice.static_key,
-        alice.static_public.clone(),
-        bob.static_public.clone(),
+        &alice.static_keypair,
+        alice.static_public,
+        bob.static_public,
         bob.addr,
         None,
         DEFAULT_RETRY_ATTEMPTS,
@@ -339,9 +338,9 @@ fn test_responder_timeout_terminates_session() {
         env.time,
         &env.config,
         alice.session_index,
-        &alice.static_key,
-        alice.static_public.clone(),
-        bob.static_public.clone(),
+        &alice.static_keypair,
+        alice.static_public,
+        bob.static_public,
         bob.addr,
         None,
         DEFAULT_RETRY_ATTEMPTS,
@@ -349,7 +348,8 @@ fn test_responder_timeout_terminates_session() {
     .unwrap();
 
     let validated_init =
-        ResponderState::validate_init(&bob.static_key, &bob.static_public, &mut init_msg).unwrap();
+        ResponderState::validate_init(&bob.static_keypair, &bob.static_public, &mut init_msg)
+            .unwrap();
 
     let (mut responder, _timer, _resp_msg) = ResponderState::new(
         &mut env.rng,
@@ -387,9 +387,9 @@ fn test_cookie_stored_and_reused_after_timeout() {
         env.time,
         &env.config,
         alice.session_index,
-        &alice.static_key,
-        alice.static_public.clone(),
-        bob.static_public.clone(),
+        &alice.static_keypair,
+        alice.static_public,
+        bob.static_public,
         bob.addr,
         None,
         DEFAULT_RETRY_ATTEMPTS,
@@ -406,7 +406,7 @@ fn test_cookie_stored_and_reused_after_timeout() {
     let mut cookie_reply = cookies::send_cookie_reply(
         &nonce_secret,
         nonce_counter,
-        &SerializedPublicKey::from(&bob.static_public),
+        &bob.static_public,
         alice.session_index.as_u32(),
         &mac1,
         &cookie,
@@ -429,9 +429,9 @@ fn test_cookie_stored_and_reused_after_timeout() {
         env.time,
         &env.config,
         alice.session_index,
-        &alice.static_key,
-        alice.static_public.clone(),
-        bob.static_public.clone(),
+        &alice.static_keypair,
+        alice.static_public,
+        bob.static_public,
         bob.addr,
         Some(stored_cookie),
         DEFAULT_RETRY_ATTEMPTS - 1,
@@ -439,7 +439,8 @@ fn test_cookie_stored_and_reused_after_timeout() {
     .unwrap();
 
     let validated_init =
-        ResponderState::validate_init(&bob.static_key, &bob.static_public, &mut init_msg2).unwrap();
+        ResponderState::validate_init(&bob.static_keypair, &bob.static_public, &mut init_msg2)
+            .unwrap();
 
     let (_responder, _timer, mut resp_msg) = ResponderState::new(
         &mut env.rng,
@@ -455,7 +456,7 @@ fn test_cookie_stored_and_reused_after_timeout() {
     let validated_resp = initiator2
         .validate_response(
             &env.config,
-            &alice.static_key,
+            &alice.static_keypair,
             &alice.static_public,
             &mut resp_msg,
         )
@@ -489,9 +490,9 @@ fn test_rekey_without_cookie_receives_cookie_reply() {
         env.time,
         &env.config,
         alice.session_index,
-        &alice.static_key,
-        alice.static_public.clone(),
-        bob.static_public.clone(),
+        &alice.static_keypair,
+        alice.static_public,
+        bob.static_public,
         bob.addr,
         Some(cookie),
         DEFAULT_RETRY_ATTEMPTS,
@@ -499,7 +500,8 @@ fn test_rekey_without_cookie_receives_cookie_reply() {
     .unwrap();
 
     let validated_init =
-        ResponderState::validate_init(&bob.static_key, &bob.static_public, &mut init_msg).unwrap();
+        ResponderState::validate_init(&bob.static_keypair, &bob.static_public, &mut init_msg)
+            .unwrap();
 
     let (_responder, _timer, resp_msg) = ResponderState::new(
         &mut env.rng,
@@ -533,9 +535,9 @@ fn test_rekey_interval_with_zero_retries() {
         env.time,
         &env.config,
         alice.session_index,
-        &alice.static_key,
-        alice.static_public.clone(),
-        bob.static_public.clone(),
+        &alice.static_keypair,
+        alice.static_public,
+        bob.static_public,
         bob.addr,
         None,
         0,
@@ -543,7 +545,8 @@ fn test_rekey_interval_with_zero_retries() {
     .unwrap();
 
     let validated_init =
-        ResponderState::validate_init(&bob.static_key, &bob.static_public, &mut init_msg).unwrap();
+        ResponderState::validate_init(&bob.static_keypair, &bob.static_public, &mut init_msg)
+            .unwrap();
 
     let (responder, _timer, mut resp_msg) = ResponderState::new(
         &mut env.rng,
@@ -559,7 +562,7 @@ fn test_rekey_interval_with_zero_retries() {
     let validated_resp = initiator
         .validate_response(
             &env.config,
-            &alice.static_key,
+            &alice.static_keypair,
             &alice.static_public,
             &mut resp_msg,
         )
@@ -617,9 +620,9 @@ fn test_max_session_duration_terminates_after_rekey() {
         env.time,
         &env.config,
         alice.session_index,
-        &alice.static_key,
-        alice.static_public.clone(),
-        bob.static_public.clone(),
+        &alice.static_keypair,
+        alice.static_public,
+        bob.static_public,
         bob.addr,
         None,
         DEFAULT_RETRY_ATTEMPTS,
@@ -627,7 +630,8 @@ fn test_max_session_duration_terminates_after_rekey() {
     .unwrap();
 
     let validated_init =
-        ResponderState::validate_init(&bob.static_key, &bob.static_public, &mut init_msg).unwrap();
+        ResponderState::validate_init(&bob.static_keypair, &bob.static_public, &mut init_msg)
+            .unwrap();
 
     let (responder, _timer, mut resp_msg) = ResponderState::new(
         &mut env.rng,
@@ -643,7 +647,7 @@ fn test_max_session_duration_terminates_after_rekey() {
     let validated_resp = initiator
         .validate_response(
             &env.config,
-            &alice.static_key,
+            &alice.static_keypair,
             &alice.static_public,
             &mut resp_msg,
         )

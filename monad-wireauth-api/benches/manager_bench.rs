@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use divan::Bencher;
 use monad_wireauth_api::{Config, TestContext, API};
-use monad_wireauth_protocol::{common::PublicKey, messages::DataPacketHeader};
+use monad_wireauth_protocol::messages::{DataPacketHeader, Packet};
 use secp256k1::rand::rng;
 use zerocopy::{FromBytes, IntoBytes};
 
@@ -10,30 +10,30 @@ fn main() {
     divan::main();
 }
 
-fn create_test_manager() -> (API<TestContext>, PublicKey, TestContext) {
+fn create_test_manager() -> (API<TestContext>, monad_secp::PubKey, TestContext) {
     let mut rng = rng();
-    let (public_key, private_key) =
-        monad_wireauth_protocol::crypto::generate_keypair(&mut rng).unwrap();
+    let keypair = monad_secp::KeyPair::generate(&mut rng);
+    let public_key = keypair.pubkey();
     let config = Config::default();
     let context = TestContext::new();
     let context_clone = context.clone();
 
-    let manager = API::new(config, private_key, public_key.clone(), context);
+    let manager = API::new(config, keypair, context);
     (manager, public_key, context_clone)
 }
 
 fn establish_session(
     peer1_manager: &mut API<TestContext>,
     peer2_manager: &mut API<TestContext>,
-    _peer1_public: &PublicKey,
-    peer2_public: &PublicKey,
+    _peer1_public: &monad_secp::PubKey,
+    peer2_public: &monad_secp::PubKey,
 ) {
     let peer1_addr: SocketAddr = "127.0.0.1:51820".parse().unwrap();
     let peer2_addr: SocketAddr = "127.0.0.1:51821".parse().unwrap();
 
     peer1_manager
         .connect(
-            peer2_public.clone(),
+            *peer2_public,
             peer2_addr,
             monad_wireauth_session::DEFAULT_RETRY_ATTEMPTS,
         )
@@ -42,20 +42,28 @@ fn establish_session(
     let init_packet = peer1_manager.next_packet().unwrap().1;
 
     let mut init_packet_mut = init_packet.to_vec();
-    peer2_manager
-        .dispatch(&mut init_packet_mut, peer1_addr)
-        .expect("peer2 failed to accept handshake");
+    let parsed = Packet::try_from(&mut init_packet_mut[..]).unwrap();
+    if let Packet::Control(control) = parsed {
+        peer2_manager
+            .dispatch_control(control, peer1_addr)
+            .expect("peer2 failed to accept handshake");
+    }
 
     let response_packet = peer2_manager.next_packet().unwrap().1;
 
     let mut response_packet_mut = response_packet.to_vec();
-    peer1_manager
-        .dispatch(&mut response_packet_mut, peer2_addr)
-        .expect("peer1 failed to complete handshake");
+    let parsed = Packet::try_from(&mut response_packet_mut[..]).unwrap();
+    if let Packet::Control(control) = parsed {
+        peer1_manager
+            .dispatch_control(control, peer2_addr)
+            .expect("peer1 failed to complete handshake");
+    }
 
     while let Some((_addr, packet)) = peer1_manager.next_packet() {
         let mut packet_mut = packet.to_vec();
-        peer2_manager.dispatch(&mut packet_mut, peer1_addr).ok();
+        if let Ok(Packet::Control(control)) = Packet::try_from(&mut packet_mut[..]) {
+            peer2_manager.dispatch_control(control, peer1_addr).ok();
+        }
     }
 }
 
@@ -69,11 +77,11 @@ fn bench_session_send_init(bencher: Bencher) {
 
             (manager, peer2_public, peer2_addr)
         })
-        .bench_local_values(|(mut manager, peer2_public, peer2_addr)| {
+        .bench_local_refs(|(manager, peer2_public, peer2_addr)| {
             manager
                 .connect(
-                    peer2_public,
-                    peer2_addr,
+                    *peer2_public,
+                    *peer2_addr,
                     monad_wireauth_session::DEFAULT_RETRY_ATTEMPTS,
                 )
                 .expect("failed to init session");
@@ -100,11 +108,14 @@ fn bench_session_handle_init(bencher: Bencher) {
 
             (peer2_manager, init_packet, peer1_addr)
         })
-        .bench_local_values(|(mut peer2_manager, init_packet, peer1_addr)| {
+        .bench_local_refs(|(peer2_manager, init_packet, peer1_addr)| {
             let mut init_packet_mut = init_packet.to_vec();
-            peer2_manager
-                .dispatch(&mut init_packet_mut, peer1_addr)
-                .expect("failed to handle init");
+            let parsed = Packet::try_from(&mut init_packet_mut[..]).unwrap();
+            if let Packet::Control(control) = parsed {
+                peer2_manager
+                    .dispatch_control(control, *peer1_addr)
+                    .expect("failed to handle init");
+            }
         });
 }
 
@@ -126,16 +137,22 @@ fn bench_session_handle_response(bencher: Bencher) {
             let init_packet = mgr1.next_packet().unwrap().1;
 
             let mut init_packet_mut = init_packet.to_vec();
-            mgr2.dispatch(&mut init_packet_mut, peer1_addr)
-                .expect("dispatch failed");
+            let parsed = Packet::try_from(&mut init_packet_mut[..]).unwrap();
+            if let Packet::Control(control) = parsed {
+                mgr2.dispatch_control(control, peer1_addr)
+                    .expect("dispatch failed");
+            }
             let response_packet = mgr2.next_packet().unwrap().1;
 
             (mgr1, response_packet, peer2_addr)
         })
-        .bench_local_values(|(mut mgr1, response_packet, peer2_addr)| {
+        .bench_local_refs(|(mgr1, response_packet, peer2_addr)| {
             let mut response_packet_mut = response_packet.to_vec();
-            mgr1.dispatch(&mut response_packet_mut, peer2_addr)
-                .expect("handle response failed");
+            let parsed = Packet::try_from(&mut response_packet_mut[..]).unwrap();
+            if let Packet::Control(control) = parsed {
+                mgr1.dispatch_control(control, *peer2_addr)
+                    .expect("handle response failed");
+            }
         });
 }
 
@@ -179,7 +196,9 @@ fn bench_session_decrypt(bencher: Bencher) {
         mgr2.reset_replay_filter_for_receiver(receiver_index);
 
         let mut packet_clone = packet_data.clone();
-        mgr2.dispatch(&mut packet_clone, peer1_addr)
-            .expect("decryption failed");
+        let parsed = Packet::try_from(&mut packet_clone[..]).unwrap();
+        if let Packet::Data(data) = parsed {
+            mgr2.decrypt(data, peer1_addr).expect("decryption failed");
+        }
     });
 }

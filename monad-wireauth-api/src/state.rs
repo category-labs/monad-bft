@@ -4,7 +4,6 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use monad_wireauth_protocol::common::SerializedPublicKey;
 use monad_wireauth_session::{Config, SessionIndex};
 
 use crate::{InitiatorState, ResponderState, TransportState};
@@ -57,12 +56,12 @@ pub struct State {
     initiating_sessions: HashMap<SessionIndex, InitiatorState>,
     responding_sessions: HashMap<SessionIndex, ResponderState>,
     transport_sessions: HashMap<SessionIndex, TransportState>,
-    last_established_session_by_public_key: HashMap<SerializedPublicKey, EstablishedSessions>,
+    last_established_session_by_public_key: HashMap<monad_secp::PubKey, EstablishedSessions>,
     last_established_session_by_socket: HashMap<SocketAddr, EstablishedSessions>,
     allocated_indices: HashSet<SessionIndex>,
     next_session_index: SessionIndex,
-    initiated_session_by_peer: HashMap<SerializedPublicKey, SessionIndex>,
-    accepted_sessions_by_peer: BTreeSet<(SerializedPublicKey, SessionIndex)>,
+    initiated_session_by_peer: HashMap<monad_secp::PubKey, SessionIndex>,
+    accepted_sessions_by_peer: BTreeSet<(monad_secp::PubKey, SessionIndex)>,
 }
 
 impl State {
@@ -93,7 +92,7 @@ impl State {
 
     pub fn get_session_id_by_public_key(
         &self,
-        public_key: &SerializedPublicKey,
+        public_key: &monad_secp::PubKey,
     ) -> Option<SessionIndex> {
         self.last_established_session_by_public_key
             .get(public_key)
@@ -136,7 +135,7 @@ impl State {
         let created = transport.created;
         let is_initiator = transport.is_initiator;
 
-        let key_bytes = SerializedPublicKey::from(remote_public_key);
+        let key_bytes = *remote_public_key;
 
         let mut replaced_sessions = Vec::new();
 
@@ -186,7 +185,7 @@ impl State {
     pub fn handle_terminate(
         &mut self,
         session_id: SessionIndex,
-        remote_public_key: &SerializedPublicKey,
+        remote_public_key: &monad_secp::PubKey,
         remote_addr: SocketAddr,
     ) {
         let transport = self.transport_sessions.remove(&session_id);
@@ -275,7 +274,7 @@ impl State {
         &mut self,
         session_index: SessionIndex,
         session: InitiatorState,
-        remote_key: SerializedPublicKey,
+        remote_key: monad_secp::PubKey,
     ) {
         self.initiating_sessions.insert(session_index, session);
         self.initiated_session_by_peer
@@ -286,7 +285,7 @@ impl State {
         &mut self,
         session_index: SessionIndex,
         session: ResponderState,
-        remote_key: SerializedPublicKey,
+        remote_key: monad_secp::PubKey,
     ) {
         self.responding_sessions.insert(session_index, session);
         self.accepted_sessions_by_peer
@@ -295,7 +294,7 @@ impl State {
 
     pub fn lookup_cookie_from_initiated_sessions(
         &self,
-        remote_key: &SerializedPublicKey,
+        remote_key: &monad_secp::PubKey,
     ) -> Option<[u8; 16]> {
         self.initiated_session_by_peer
             .get(remote_key)
@@ -308,7 +307,7 @@ impl State {
 
     pub fn lookup_cookie_from_accepted_sessions(
         &self,
-        remote_key: SerializedPublicKey,
+        remote_key: monad_secp::PubKey,
     ) -> Option<[u8; 16]> {
         self.accepted_sessions_by_peer
             .range((remote_key, SessionIndex::new(0))..=(remote_key, SessionIndex::new(u32::MAX)))
@@ -319,7 +318,7 @@ impl State {
             })
     }
 
-    pub fn get_max_timestamp(&self, remote_key: &SerializedPublicKey) -> Option<SystemTime> {
+    pub fn get_max_timestamp(&self, remote_key: &monad_secp::PubKey) -> Option<SystemTime> {
         let accepted_max = self
             .accepted_sessions_by_peer
             .range((*remote_key, SessionIndex::new(0))..=(*remote_key, SessionIndex::new(u32::MAX)))
@@ -343,7 +342,7 @@ impl State {
         }
     }
 
-    pub fn terminate_by_public_key(&mut self, public_key: &SerializedPublicKey) -> Vec<SocketAddr> {
+    pub fn terminate_by_public_key(&mut self, public_key: &monad_secp::PubKey) -> Vec<SocketAddr> {
         let mut session_ids = HashSet::new();
 
         if let Some(&session_id) = self.initiated_session_by_peer.get(public_key) {
@@ -410,7 +409,6 @@ mod tests {
         time::SystemTime,
     };
 
-    use monad_wireauth_protocol::{common::PublicKey, crypto};
     use secp256k1::rand::rng;
 
     use super::*;
@@ -421,7 +419,7 @@ mod tests {
 
     fn create_test_transport(
         session_index: SessionIndex,
-        remote_public_key: &PublicKey,
+        remote_public_key: &monad_secp::PubKey,
         remote_addr: SocketAddr,
         is_initiator: bool,
     ) -> TransportState {
@@ -431,7 +429,7 @@ mod tests {
         let recv_key = monad_wireauth_protocol::common::CipherKey::from(&hash2);
         let common = monad_wireauth_session::SessionState::new(
             remote_addr,
-            remote_public_key.clone(),
+            *remote_public_key,
             session_index,
             Duration::ZERO,
             0,
@@ -441,9 +439,10 @@ mod tests {
         TransportState::new(session_index, send_key, recv_key, common)
     }
 
-    fn create_test_initiator(remote_public_key: &PublicKey) -> InitiatorState {
+    fn create_test_initiator(remote_public_key: &monad_secp::PubKey) -> InitiatorState {
         let mut rng = rng();
-        let (public_key, private_key) = crypto::generate_keypair(&mut rng).unwrap();
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
         let config = Config::default();
         let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let local_index = SessionIndex::new(1);
@@ -453,9 +452,9 @@ mod tests {
             Duration::ZERO,
             &config,
             local_index,
-            &private_key,
+            &keypair,
             public_key,
-            remote_public_key.clone(),
+            *remote_public_key,
             remote_addr,
             None,
             0,
@@ -465,11 +464,11 @@ mod tests {
     }
 
     fn create_test_responder(
-        remote_public_key: &PublicKey,
+        remote_public_key: &monad_secp::PubKey,
         _cookie: Option<[u8; 16]>,
     ) -> ResponderState {
         let mut rng = rng();
-        let (_local_public_key, _local_private_key) = crypto::generate_keypair(&mut rng).unwrap();
+        let _local_keypair = monad_secp::KeyPair::generate(&mut rng);
 
         let remote_index = SessionIndex::new(42);
         let sender_index = SessionIndex::new(1);
@@ -477,21 +476,22 @@ mod tests {
         let hash1 = create_dummy_hash_output();
         let hash2 = create_dummy_hash_output();
 
-        let (ephemeral_public, ephemeral_private) = crypto::generate_keypair(&mut rng).unwrap();
+        let ephemeral_keypair = monad_secp::KeyPair::generate(&mut rng);
+        let ephemeral_public = ephemeral_keypair.pubkey();
 
         let handshake_state = monad_wireauth_protocol::handshake::HandshakeState {
             hash: hash1.into(),
             chaining_key: hash2.into(),
-            remote_static: Some(SerializedPublicKey::from(remote_public_key)),
+            remote_static: Some(*remote_public_key),
             receiver_index: remote_index.as_u32(),
             sender_index: sender_index.as_u32(),
-            ephemeral_private: Some(ephemeral_private),
-            remote_ephemeral: Some(SerializedPublicKey::from(&ephemeral_public)),
+            ephemeral_private: Some(ephemeral_keypair),
+            remote_ephemeral: Some(ephemeral_public),
         };
 
         let validated_init = monad_wireauth_session::ValidatedHandshakeInit {
             handshake_state,
-            remote_public_key: remote_public_key.clone(),
+            remote_public_key: *remote_public_key,
             system_time: SystemTime::now(),
             remote_index,
         };
@@ -576,7 +576,8 @@ mod tests {
     fn test_get_transport_mut() {
         let mut state = State::new();
         let mut rng = rng();
-        let (public_key, _) = crypto::generate_keypair(&mut rng).unwrap();
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
         let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let session_id = SessionIndex::new(100);
         let config = Config::default();
@@ -592,7 +593,8 @@ mod tests {
     fn test_get_transport() {
         let mut state = State::new();
         let mut rng = rng();
-        let (public_key, _) = crypto::generate_keypair(&mut rng).unwrap();
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
         let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let session_id = SessionIndex::new(100);
         let config = Config::default();
@@ -608,8 +610,9 @@ mod tests {
     fn test_get_session_id_by_public_key_empty() {
         let state = State::new();
         let mut rng = rng();
-        let (public_key, _) = crypto::generate_keypair(&mut rng).unwrap();
-        let key_bytes = SerializedPublicKey::from(&public_key);
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
+        let key_bytes = public_key;
         assert!(state.get_session_id_by_public_key(&key_bytes).is_none());
     }
 
@@ -617,8 +620,9 @@ mod tests {
     fn test_get_session_id_by_public_key_single_initiator() {
         let mut state = State::new();
         let mut rng = rng();
-        let (public_key, _) = crypto::generate_keypair(&mut rng).unwrap();
-        let key_bytes = SerializedPublicKey::from(&public_key);
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
+        let key_bytes = public_key;
         let session_id = SessionIndex::new(1);
         let created = Duration::from_secs(100);
 
@@ -640,8 +644,9 @@ mod tests {
     fn test_get_session_id_by_public_key_single_responder() {
         let mut state = State::new();
         let mut rng = rng();
-        let (public_key, _) = crypto::generate_keypair(&mut rng).unwrap();
-        let key_bytes = SerializedPublicKey::from(&public_key);
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
+        let key_bytes = public_key;
         let session_id = SessionIndex::new(2);
         let created = Duration::from_secs(100);
 
@@ -663,8 +668,9 @@ mod tests {
     fn test_get_session_id_by_public_key_both_newer_initiator() {
         let mut state = State::new();
         let mut rng = rng();
-        let (public_key, _) = crypto::generate_keypair(&mut rng).unwrap();
-        let key_bytes = SerializedPublicKey::from(&public_key);
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
+        let key_bytes = public_key;
         let session_id_init = SessionIndex::new(1);
         let session_id_resp = SessionIndex::new(2);
 
@@ -686,8 +692,9 @@ mod tests {
     fn test_get_session_id_by_public_key_both_newer_responder() {
         let mut state = State::new();
         let mut rng = rng();
-        let (public_key, _) = crypto::generate_keypair(&mut rng).unwrap();
-        let key_bytes = SerializedPublicKey::from(&public_key);
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
+        let key_bytes = public_key;
         let session_id_init = SessionIndex::new(1);
         let session_id_resp = SessionIndex::new(2);
 
@@ -752,8 +759,9 @@ mod tests {
     fn test_insert_and_get_initiator() {
         let mut state = State::new();
         let mut rng = rng();
-        let (public_key, _) = crypto::generate_keypair(&mut rng).unwrap();
-        let key_bytes = SerializedPublicKey::from(&public_key);
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
+        let key_bytes = public_key;
         let session_id = SessionIndex::new(10);
         let initiator = create_test_initiator(&public_key);
 
@@ -768,8 +776,9 @@ mod tests {
     fn test_insert_and_get_responder() {
         let mut state = State::new();
         let mut rng = rng();
-        let (public_key, _) = crypto::generate_keypair(&mut rng).unwrap();
-        let key_bytes = SerializedPublicKey::from(&public_key);
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
+        let key_bytes = public_key;
         let session_id = SessionIndex::new(20);
         let responder = create_test_responder(&public_key, None);
 
@@ -785,8 +794,9 @@ mod tests {
     fn test_get_initiator_mut() {
         let mut state = State::new();
         let mut rng = rng();
-        let (public_key, _) = crypto::generate_keypair(&mut rng).unwrap();
-        let key_bytes = SerializedPublicKey::from(&public_key);
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
+        let key_bytes = public_key;
         let session_id = SessionIndex::new(10);
         let initiator = create_test_initiator(&public_key);
 
@@ -798,8 +808,9 @@ mod tests {
     fn test_get_responder_mut() {
         let mut state = State::new();
         let mut rng = rng();
-        let (public_key, _) = crypto::generate_keypair(&mut rng).unwrap();
-        let key_bytes = SerializedPublicKey::from(&public_key);
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
+        let key_bytes = public_key;
         let session_id = SessionIndex::new(20);
         let responder = create_test_responder(&public_key, None);
 
@@ -811,8 +822,9 @@ mod tests {
     fn test_remove_initiator() {
         let mut state = State::new();
         let mut rng = rng();
-        let (public_key, _) = crypto::generate_keypair(&mut rng).unwrap();
-        let key_bytes = SerializedPublicKey::from(&public_key);
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
+        let key_bytes = public_key;
         let session_id = SessionIndex::new(10);
         let initiator = create_test_initiator(&public_key);
 
@@ -825,8 +837,9 @@ mod tests {
     fn test_remove_responder() {
         let mut state = State::new();
         let mut rng = rng();
-        let (public_key, _) = crypto::generate_keypair(&mut rng).unwrap();
-        let key_bytes = SerializedPublicKey::from(&public_key);
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
+        let key_bytes = public_key;
         let session_id = SessionIndex::new(20);
         let responder = create_test_responder(&public_key, None);
 
@@ -839,7 +852,8 @@ mod tests {
     fn test_handle_established_initiator() {
         let mut state = State::new();
         let mut rng = rng();
-        let (public_key, _) = crypto::generate_keypair(&mut rng).unwrap();
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
         let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let session_id = SessionIndex::new(100);
         let config = Config::default();
@@ -850,7 +864,7 @@ mod tests {
 
         assert!(terminated.is_empty());
         assert!(state.get_transport(&session_id).is_some());
-        let key_bytes = SerializedPublicKey::from(&public_key);
+        let key_bytes = public_key;
         assert!(state
             .last_established_session_by_public_key
             .contains_key(&key_bytes));
@@ -863,7 +877,8 @@ mod tests {
     fn test_handle_established_replaces_old_initiator() {
         let mut state = State::new();
         let mut rng = rng();
-        let (public_key, _) = crypto::generate_keypair(&mut rng).unwrap();
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
         let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let config = Config::default();
 
@@ -883,7 +898,8 @@ mod tests {
     fn test_handle_established_responder() {
         let mut state = State::new();
         let mut rng = rng();
-        let (public_key, _) = crypto::generate_keypair(&mut rng).unwrap();
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
         let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let session_id = SessionIndex::new(200);
         let config = Config::default();
@@ -900,7 +916,8 @@ mod tests {
     fn test_handle_established_both_initiator_and_responder() {
         let mut state = State::new();
         let mut rng = rng();
-        let (public_key, _) = crypto::generate_keypair(&mut rng).unwrap();
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
         let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let config = Config::default();
 
@@ -917,7 +934,7 @@ mod tests {
         assert!(state.get_transport(&init_session_id).is_some());
         assert!(state.get_transport(&resp_session_id).is_some());
 
-        let key_bytes = SerializedPublicKey::from(&public_key);
+        let key_bytes = public_key;
         let sessions = state
             .last_established_session_by_public_key
             .get(&key_bytes)
@@ -930,8 +947,9 @@ mod tests {
     fn test_handle_terminate_removes_transport() {
         let mut state = State::new();
         let mut rng = rng();
-        let (public_key, _) = crypto::generate_keypair(&mut rng).unwrap();
-        let key_bytes = SerializedPublicKey::from(&public_key);
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
+        let key_bytes = public_key;
         let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let session_id = SessionIndex::new(100);
         let config = Config::default();
@@ -952,8 +970,9 @@ mod tests {
     fn test_handle_terminate_cleans_up_by_public_key() {
         let mut state = State::new();
         let mut rng = rng();
-        let (public_key, _) = crypto::generate_keypair(&mut rng).unwrap();
-        let key_bytes = SerializedPublicKey::from(&public_key);
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
+        let key_bytes = public_key;
         let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let session_id = SessionIndex::new(100);
         let config = Config::default();
@@ -972,8 +991,9 @@ mod tests {
     fn test_handle_terminate_preserves_other_slot() {
         let mut state = State::new();
         let mut rng = rng();
-        let (public_key, _) = crypto::generate_keypair(&mut rng).unwrap();
-        let key_bytes = SerializedPublicKey::from(&public_key);
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
+        let key_bytes = public_key;
         let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let config = Config::default();
 
@@ -1003,8 +1023,9 @@ mod tests {
     fn test_handle_terminate_cleans_up_by_socket() {
         let mut state = State::new();
         let mut rng = rng();
-        let (public_key, _) = crypto::generate_keypair(&mut rng).unwrap();
-        let key_bytes = SerializedPublicKey::from(&public_key);
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
+        let key_bytes = public_key;
         let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let session_id = SessionIndex::new(100);
         let config = Config::default();
@@ -1023,8 +1044,9 @@ mod tests {
     fn test_handle_terminate_removes_initiator() {
         let mut state = State::new();
         let mut rng = rng();
-        let (public_key, _) = crypto::generate_keypair(&mut rng).unwrap();
-        let key_bytes = SerializedPublicKey::from(&public_key);
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
+        let key_bytes = public_key;
         let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let session_id = SessionIndex::new(100);
 
@@ -1040,8 +1062,9 @@ mod tests {
     fn test_handle_terminate_removes_responder() {
         let mut state = State::new();
         let mut rng = rng();
-        let (public_key, _) = crypto::generate_keypair(&mut rng).unwrap();
-        let key_bytes = SerializedPublicKey::from(&public_key);
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
+        let key_bytes = public_key;
         let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let session_id = SessionIndex::new(200);
 
@@ -1060,8 +1083,9 @@ mod tests {
     fn test_handle_terminate_removes_initiated_session_by_peer() {
         let mut state = State::new();
         let mut rng = rng();
-        let (public_key, _) = crypto::generate_keypair(&mut rng).unwrap();
-        let key_bytes = SerializedPublicKey::from(&public_key);
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
+        let key_bytes = public_key;
         let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let session_id = SessionIndex::new(100);
 
@@ -1077,8 +1101,9 @@ mod tests {
     fn test_lookup_cookie_from_initiated_sessions_none() {
         let state = State::new();
         let mut rng = rng();
-        let (public_key, _) = crypto::generate_keypair(&mut rng).unwrap();
-        let key_bytes = SerializedPublicKey::from(&public_key);
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
+        let key_bytes = public_key;
         assert!(state
             .lookup_cookie_from_initiated_sessions(&key_bytes)
             .is_none());
@@ -1088,8 +1113,9 @@ mod tests {
     fn test_lookup_cookie_from_accepted_sessions_none() {
         let state = State::new();
         let mut rng = rng();
-        let (public_key, _) = crypto::generate_keypair(&mut rng).unwrap();
-        let key_bytes = SerializedPublicKey::from(&public_key);
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
+        let key_bytes = public_key;
         assert!(state
             .lookup_cookie_from_accepted_sessions(key_bytes)
             .is_none());
@@ -1099,8 +1125,9 @@ mod tests {
     fn test_get_max_timestamp_empty() {
         let state = State::new();
         let mut rng = rng();
-        let (public_key, _) = crypto::generate_keypair(&mut rng).unwrap();
-        let key_bytes = SerializedPublicKey::from(&public_key);
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
+        let key_bytes = public_key;
         assert!(state.get_max_timestamp(&key_bytes).is_none());
     }
 

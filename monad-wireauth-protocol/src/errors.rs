@@ -54,7 +54,7 @@ pub enum CryptoError {
     MacVerificationFailed,
 
     #[error("invalid key: {0}")]
-    InvalidKey(#[from] secp256k1::Error),
+    InvalidKey(#[from] monad_secp::Error),
 
     #[error("ECDH operation failed: unable to compute shared secret")]
     EcdhFailed,

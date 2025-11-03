@@ -30,6 +30,8 @@ pub use recoverable_address::RecoverableAddress;
 pub use secp::{Error, KeyPair, PubKey, SecpSignature};
 use serde::{Deserialize, Serialize};
 
+pub const COMPRESSED_PUBLIC_KEY_SIZE: usize = secp256k1::constants::PUBLIC_KEY_SIZE;
+
 impl ExtractEthAddress for PubKey {
     fn get_eth_address(&self) -> Address {
         Address::from_raw_public_key(&self.bytes()[1..])

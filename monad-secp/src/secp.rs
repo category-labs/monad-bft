@@ -98,6 +98,11 @@ fn msg_hash<SD: SigningDomain>(msg: &[u8]) -> secp256k1::Message {
 }
 
 impl KeyPair {
+    pub fn generate<R: secp256k1::rand::Rng + secp256k1::rand::CryptoRng>(rng: &mut R) -> Self {
+        let keypair = secp256k1::Keypair::new(secp256k1::SECP256K1, rng);
+        Self(keypair)
+    }
+
     /// Create a keypair from a secret key slice. The secret is zero-ized after
     /// use. The secret must be 32 byytes.
     pub fn from_bytes(secret: &mut [u8]) -> Result<Self, Error> {
@@ -140,6 +145,15 @@ impl KeyPair {
     pub fn pubkey(&self) -> PubKey {
         PubKey(self.0.public_key())
     }
+
+    pub fn ecdh(&self, public_key: &PubKey) -> [u8; 32] {
+        let shared_secret = secp256k1::ecdh::SharedSecret::new(&public_key.0, &self.0.secret_key());
+        shared_secret.secret_bytes()
+    }
+
+    pub fn secret_bytes(&self) -> [u8; 32] {
+        self.0.secret_bytes()
+    }
 }
 
 impl PubKey {
@@ -158,6 +172,10 @@ impl PubKey {
 
     pub fn bytes_compressed(&self) -> [u8; 33] {
         self.0.serialize()
+    }
+
+    pub fn inner(&self) -> &secp256k1::PublicKey {
+        &self.0
     }
 
     /// Verify that the message is correctly signed

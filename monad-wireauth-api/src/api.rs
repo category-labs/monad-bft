@@ -5,12 +5,10 @@ use std::{
 };
 
 use bytes::Bytes;
-use monad_wireauth_protocol::{
-    common::{PrivateKey, PublicKey, SerializedPublicKey},
-    messages::{
-        ControlPacket, CookieReply, DataPacket, DataPacketHeader, HandshakeInitiation,
-        HandshakeResponse, Plaintext,
-    },
+use monad_secp::PubKey;
+use monad_wireauth_protocol::messages::{
+    ControlPacket, CookieReply, DataPacket, DataPacketHeader, HandshakeInitiation,
+    HandshakeResponse, Plaintext,
 };
 use monad_wireauth_session::{Config, SessionIndex};
 use tracing::{debug, instrument, trace, Level};
@@ -24,29 +22,42 @@ use crate::{
     InitiatorState, ResponderState, TransportState,
 };
 
+struct CompressedPublicKey([u8; monad_secp::COMPRESSED_PUBLIC_KEY_SIZE]);
+
+impl From<&monad_secp::PubKey> for CompressedPublicKey {
+    fn from(pubkey: &monad_secp::PubKey) -> Self {
+        CompressedPublicKey(pubkey.bytes_compressed())
+    }
+}
+
+impl std::fmt::Debug for CompressedPublicKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:02x}{:02x}{:02x}{:02x}",
+            self.0[0], self.0[1], self.0[2], self.0[3]
+        )
+    }
+}
+
 pub struct API<C: Context> {
     state: State,
     next_timers: BTreeSet<(Duration, SessionIndex)>,
     packet_queue: VecDeque<(SocketAddr, Bytes)>,
     config: Config,
-    local_static_key: PrivateKey,
-    local_static_public: PublicKey,
-    local_serialized_public: SerializedPublicKey,
+    local_static_key: monad_secp::KeyPair,
+    local_serialized_public: CompressedPublicKey,
     cookies: Cookies,
     filter: Filter,
     context: C,
 }
 
 impl<C: Context> API<C> {
-    pub fn new(
-        config: Config,
-        local_static_key: PrivateKey,
-        local_static_public: PublicKey,
-        mut context: C,
-    ) -> Self {
+    pub fn new(config: Config, local_static_key: monad_secp::KeyPair, mut context: C) -> Self {
+        let local_static_public = local_static_key.pubkey();
         let cookies = Cookies::new(
             context.rng(),
-            (&local_static_public).into(),
+            local_static_public,
             config.cookie_refresh_duration,
         );
 
@@ -59,7 +70,7 @@ impl<C: Context> API<C> {
             config.low_watermark_sessions,
             config.high_watermark_sessions,
         );
-        let local_serialized_public: SerializedPublicKey = (&local_static_public).into();
+        let local_serialized_public = CompressedPublicKey::from(&local_static_public);
         debug!(local_public_key=?local_serialized_public, "initialized manager");
         Self {
             state: State::new(),
@@ -67,7 +78,6 @@ impl<C: Context> API<C> {
             packet_queue: VecDeque::new(),
             config,
             local_static_key,
-            local_static_public,
             local_serialized_public,
             cookies,
             filter,
@@ -144,9 +154,9 @@ impl<C: Context> API<C> {
                         .push_back((message.remote_addr, message.header.into()));
                 }
 
-                if let Some(rekey) = &rekey {
+                if let Some(rekey) = rekey {
                     self.handle_rekey_event(
-                        rekey.remote_public_key.clone(),
+                        rekey.remote_public_key,
                         rekey.remote_addr,
                         rekey.retry_attempts,
                         rekey.stored_cookie,
@@ -157,10 +167,10 @@ impl<C: Context> API<C> {
                     self.next_timers.insert((timer, session_id));
                 }
 
-                if let Some(terminated) = &terminated {
+                if let Some(terminated) = terminated {
                     self.handle_terminate_event(
                         session_id,
-                        terminated.remote_public_key.clone(),
+                        terminated.remote_public_key,
                         terminated.remote_addr,
                     );
                 }
@@ -171,17 +181,17 @@ impl<C: Context> API<C> {
     fn handle_terminate_event(
         &mut self,
         session_id: SessionIndex,
-        remote_public_key: PublicKey,
+        remote_public_key: monad_secp::PubKey,
         remote_addr: SocketAddr,
     ) {
         self.filter.on_session_removed(remote_addr.ip());
         self.state
-            .handle_terminate(session_id, &(&remote_public_key).into(), remote_addr);
+            .handle_terminate(session_id, &remote_public_key, remote_addr);
     }
 
     fn handle_rekey_event(
         &mut self,
-        remote_public_key: PublicKey,
+        remote_public_key: monad_secp::PubKey,
         remote_addr: SocketAddr,
         retry_attempts: u64,
         stored_cookie: Option<[u8; 16]>,
@@ -210,7 +220,7 @@ impl<C: Context> API<C> {
                 .expect("session must exist");
             self.handle_terminate_event(
                 replaced_session_id,
-                session.remote_public_key.clone(),
+                session.remote_public_key,
                 session.remote_addr,
             );
         }
@@ -219,14 +229,14 @@ impl<C: Context> API<C> {
     #[instrument(level = Level::TRACE, skip(self, remote_static_key), fields(local_public_key = ?self.local_serialized_public, remote_addr = ?remote_addr))]
     pub fn connect(
         &mut self,
-        remote_static_key: PublicKey,
+        remote_static_key: monad_secp::PubKey,
         remote_addr: SocketAddr,
         retry_attempts: u64,
     ) -> Result<()> {
         debug!(retry_attempts, "initiating connection");
         let cookie = self
             .state
-            .lookup_cookie_from_initiated_sessions(&(&remote_static_key).into());
+            .lookup_cookie_from_initiated_sessions(&remote_static_key);
 
         let (local_index, timer, message) =
             self.init_session_with_cookie(remote_static_key, remote_addr, cookie, retry_attempts)?;
@@ -239,7 +249,7 @@ impl<C: Context> API<C> {
 
     fn init_session_with_cookie(
         &mut self,
-        remote_static_key: PublicKey,
+        remote_static_key: monad_secp::PubKey,
         remote_addr: SocketAddr,
         cookie: Option<[u8; 16]>,
         retry_attempts: u64,
@@ -259,8 +269,8 @@ impl<C: Context> API<C> {
             &self.config,
             local_index,
             &self.local_static_key,
-            self.local_static_public.clone(),
-            remote_static_key.clone(),
+            self.local_static_key.pubkey(),
+            remote_static_key,
             remote_addr,
             cookie,
             retry_attempts,
@@ -270,7 +280,7 @@ impl<C: Context> API<C> {
         reservation.commit();
 
         self.state
-            .insert_initiator(local_index, session, (&remote_static_key).into());
+            .insert_initiator(local_index, session, remote_static_key);
 
         self.filter.on_session_added(remote_addr.ip());
 
@@ -322,7 +332,7 @@ impl<C: Context> API<C> {
     ) -> Result<()> {
         monad_wireauth_protocol::crypto::verify_mac1(
             handshake_packet,
-            &(&self.local_static_public).into(),
+            &self.local_static_key.pubkey(),
         )
         .map_err(|source| Error::Mac1VerificationFailed {
             addr: remote_addr,
@@ -342,12 +352,12 @@ impl<C: Context> API<C> {
 
         let validated_init = ResponderState::validate_init(
             &self.local_static_key,
-            &self.local_static_public,
+            &self.local_static_key.pubkey(),
             handshake_packet,
         )
         .map_err(|e| e.with_addr(remote_addr))?;
 
-        let remote_key = SerializedPublicKey::from(&validated_init.remote_public_key);
+        let remote_key = validated_init.remote_public_key;
         if self
             .state
             .get_max_timestamp(&remote_key)
@@ -440,29 +450,32 @@ impl<C: Context> API<C> {
         &mut self,
         data_packet: DataPacket<'a>,
         remote_addr: SocketAddr,
-    ) -> Result<Plaintext<'a>> {
+    ) -> Result<(Plaintext<'a>, PubKey)> {
         let receiver_index = data_packet.header().receiver_index.into();
         let nonce: u64 = data_packet.header().counter.into();
         trace!(local_session_id=?receiver_index, nonce, "decrypting data packet");
 
-        let (timer, plaintext) = if let Some(transport) =
+        let (timer, remote_public_key, plaintext) = if let Some(transport) =
             self.state.get_transport_mut(&receiver_index)
         {
             let duration_since_start = self.context.duration_since_start();
             let remote_addr = transport.remote_addr;
-            transport
+            let (timer, plaintext) = transport
                 .decrypt(&self.config, duration_since_start, data_packet)
-                .map_err(|e| e.with_addr(remote_addr))?
+                .map_err(|e| e.with_addr(remote_addr))?;
+            let remote_public_key = transport.remote_public_key;
+            (timer, remote_public_key, plaintext)
         } else if let Some(responder) = self.state.get_responder_mut(&receiver_index) {
             let duration_since_start = self.context.duration_since_start();
             match responder.decrypt(&self.config, duration_since_start, data_packet) {
                 Ok((_timer, plaintext)) => {
+                    let remote_public_key = responder.transport.remote_public_key;
                     let responder = self.state.remove_responder(&receiver_index).unwrap();
                     let (transport, establish_timer) =
                         responder.establish(self.context.rng(), &self.config, duration_since_start);
                     debug!(local_session_id=?receiver_index, "responder session established");
                     self.handle_established(receiver_index, transport);
-                    (establish_timer, plaintext)
+                    (establish_timer, remote_public_key, plaintext)
                 }
                 Err(e) => {
                     return Err(e.with_addr(remote_addr));
@@ -476,7 +489,7 @@ impl<C: Context> API<C> {
 
         self.next_timers.insert((timer, receiver_index));
 
-        Ok(plaintext)
+        Ok((plaintext, remote_public_key))
     }
 
     fn complete_handshake(
@@ -484,7 +497,7 @@ impl<C: Context> API<C> {
         response: &mut HandshakeResponse,
         remote_addr: SocketAddr,
     ) -> Result<()> {
-        monad_wireauth_protocol::crypto::verify_mac1(response, &(&self.local_static_public).into())
+        monad_wireauth_protocol::crypto::verify_mac1(response, &self.local_static_key.pubkey())
             .map_err(|source| Error::Mac1VerificationFailed {
                 addr: remote_addr,
                 source,
@@ -509,7 +522,7 @@ impl<C: Context> API<C> {
             .validate_response(
                 &self.config,
                 &self.local_static_key,
-                &self.local_static_public,
+                &self.local_static_key.pubkey(),
                 response,
             )
             .map_err(|e| e.with_addr(remote_addr))?;
@@ -555,12 +568,12 @@ impl<C: Context> API<C> {
     #[instrument(level = Level::TRACE, skip(self, public_key, plaintext), fields(local_public_key = ?self.local_serialized_public))]
     pub fn encrypt_by_public_key(
         &mut self,
-        public_key: &PublicKey,
+        public_key: &monad_secp::PubKey,
         plaintext: &mut [u8],
     ) -> Result<DataPacketHeader> {
         self.encrypt(
             self.state
-                .get_session_id_by_public_key(&public_key.into())
+                .get_session_id_by_public_key(public_key)
                 .ok_or(Error::SessionNotFound)?,
             plaintext,
         )
@@ -581,8 +594,8 @@ impl<C: Context> API<C> {
     }
 
     #[instrument(level = Level::TRACE, skip(self, public_key), fields(local_public_key = ?self.local_serialized_public))]
-    pub fn disconnect(&mut self, public_key: &PublicKey) {
-        let terminated_addrs = self.state.terminate_by_public_key(&(public_key).into());
+    pub fn disconnect(&mut self, public_key: &monad_secp::PubKey) {
+        let terminated_addrs = self.state.terminate_by_public_key(public_key);
         for addr in terminated_addrs {
             self.filter.on_session_removed(addr.ip());
         }

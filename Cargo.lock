@@ -6306,6 +6306,7 @@ dependencies = [
  "divan",
  "hex",
  "lru",
+ "monad-secp",
  "monad-wireauth-protocol",
  "monad-wireauth-session",
  "monoio",
@@ -6328,6 +6329,7 @@ dependencies = [
  "bytes",
  "hex",
  "insta",
+ "monad-secp",
  "rand 0.8.5",
  "secp256k1",
  "serde",
@@ -6344,6 +6346,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "hex",
+ "monad-secp",
  "monad-wireauth-protocol",
  "proptest",
  "rand 0.8.5",

@@ -17,13 +17,13 @@ use crate::{
 
 pub struct ValidatedHandshakeInit {
     pub handshake_state: monad_wireauth_protocol::handshake::HandshakeState,
-    pub remote_public_key: PublicKey,
+    pub remote_public_key: monad_secp::PubKey,
     pub system_time: std::time::SystemTime,
     pub remote_index: SessionIndex,
 }
 
 pub struct ResponderState {
-    transport: TransportState,
+    pub transport: TransportState,
 }
 
 impl Deref for ResponderState {
@@ -42,25 +42,17 @@ impl DerefMut for ResponderState {
 
 impl ResponderState {
     pub fn validate_init(
-        local_static_key: &PrivateKey,
-        local_static_public: &PublicKey,
+        local_static_key: &monad_secp::KeyPair,
+        _local_static_public: &monad_secp::PubKey,
         handshake_packet: &mut HandshakeInitiation,
     ) -> Result<ValidatedHandshakeInit, SessionError> {
-        let (handshake_state, system_time) = handshake::accept_handshake_init(
-            local_static_key,
-            &SerializedPublicKey::from(local_static_public),
-            handshake_packet,
-        )
-        .map_err(SessionError::InvalidHandshake)?;
+        let (handshake_state, system_time) =
+            handshake::accept_handshake_init(local_static_key, handshake_packet)
+                .map_err(SessionError::InvalidHandshake)?;
 
-        let remote_public_key: PublicKey = handshake_state
+        let remote_public_key = handshake_state
             .remote_static
-            .as_ref()
-            .expect("remote static key must be set")
-            .try_into()
-            .map_err(|e: monad_wireauth_protocol::errors::CryptoError| {
-                SessionError::InvalidHandshake(e.into())
-            })?;
+            .expect("remote static key must be set");
 
         let remote_index = handshake_state.receiver_index.into();
 

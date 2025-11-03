@@ -7,8 +7,9 @@ edition = "2021"
 zerocopy = { workspace = true, features = ["derive"] }
 blake3.workspace = true
 aegis.workspace = true
-secp256k1 = { workspace = true, features = ["global-context", "recovery", "rand"] }
+monad-secp = { path = "../monad-secp" }
 rand.workspace = true
+secp256k1 = { workspace = true, features = ["rand"] }
 tai64.workspace = true
 bytes.workspace = true
 thiserror.workspace = true
