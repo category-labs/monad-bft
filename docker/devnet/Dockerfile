@@ -43,6 +43,7 @@ RUN apt update && apt install -y \
   libgmp-dev \
   libgtest-dev \
   libhugetlbfs-dev \
+  libmagicenum-dev \
   libmimalloc-dev \
   libtbb-dev \
   liburing-dev \
