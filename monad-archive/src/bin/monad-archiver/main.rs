@@ -20,9 +20,10 @@ use monad_archive::{
     prelude::*,
     workers::{
         bft_archive_worker::bft_block_archive_worker, block_archive_worker::archive_worker,
-        file_checkpointer::file_checkpoint_worker,
+        file_checkpointer::file_checkpoint_worker, generic_folder_archiver::recursive_dir_archiver,
     },
 };
+use tokio::task::JoinHandle;
 use tracing::Level;
 
 mod cli;
@@ -42,6 +43,7 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|| args.archive_sink.replica_name()),
         Duration::from_secs(15),
     )?;
+
     set_source_and_sink_metrics(&args.archive_sink, &args.block_data_source, &metrics);
 
     let archive_writer = args.archive_sink.build_block_data_archive(&metrics).await?;
@@ -52,6 +54,8 @@ async fn main() -> Result<()> {
         Some(source) => Some(source.build(&metrics).await?),
         None => None,
     };
+
+    let mut worker_handles: Vec<JoinHandle<Result<()>>> = Vec::new();
 
     // Confirm connectivity
     if !args.skip_connectivity_check {
@@ -67,23 +71,25 @@ async fn main() -> Result<()> {
 
     if let Some(path) = args.bft_block_path {
         info!("Spawning bft block archive worker...");
-        tokio::spawn(bft_block_archive_worker(
+        let handle = tokio::spawn(bft_block_archive_worker(
             archive_writer.store.clone(),
             path,
             Duration::from_secs(args.bft_block_poll_freq_secs),
             metrics.clone(),
             Some(Duration::from_secs(args.bft_block_min_age_secs)),
         ));
+        worker_handles.push(handle);
     }
 
     if let Some(path) = args.forkpoint_path {
         info!("Spawning forkpoint checkpoint worker...");
-        tokio::spawn(file_checkpoint_worker(
+        let handle = tokio::spawn(file_checkpoint_worker(
             archive_writer.store.clone(),
             path,
             "forkpoint".to_owned(),
             Duration::from_secs(args.forkpoint_checkpoint_freq_secs),
         ));
+        worker_handles.push(handle);
     }
 
     for path in args.additional_files_to_checkpoint {
@@ -92,25 +98,51 @@ async fn main() -> Result<()> {
         };
         let file_name = file_name.to_owned();
         info!("Spawning {} checkpoint worker...", &file_name,);
-        tokio::spawn(file_checkpoint_worker(
+        worker_handles.push(tokio::spawn(file_checkpoint_worker(
             archive_writer.store.clone(),
             path,
             file_name,
             Duration::from_secs(args.additional_checkpoint_freq_secs),
-        ));
+        )));
     }
 
-    tokio::spawn(archive_worker(
-        block_data_source,
-        fallback_block_data_source,
-        archive_writer,
-        args.max_blocks_per_iteration,
-        args.max_concurrent_blocks,
-        args.start_block,
-        args.stop_block,
-        args.unsafe_skip_bad_blocks,
-        metrics,
-    ))
-    .await
-    .map_err(Into::into)
+    for path in args.additional_dirs_to_archive {
+        info!(
+            "Spawning {} folder archive worker...",
+            &path.file_name().unwrap().to_string_lossy()
+        );
+        let handle = tokio::spawn(recursive_dir_archiver(
+            archive_writer.store.clone(),
+            path,
+            Duration::from_millis((args.additional_dirs_archive_freq_secs * 1000.0) as u64),
+            args.additional_dirs_exclude_prefix.clone(),
+            metrics.clone(),
+            Some(Duration::from_secs(1)),
+            Duration::from_secs(60 * 60), // 1 hour hot TTL
+        ));
+        worker_handles.push(handle);
+    }
+
+    if !args.unsafe_disable_normal_archiving {
+        tokio::spawn(archive_worker(
+            block_data_source,
+            fallback_block_data_source,
+            archive_writer,
+            args.max_blocks_per_iteration,
+            args.max_concurrent_blocks,
+            args.start_block,
+            args.stop_block,
+            args.unsafe_skip_bad_blocks,
+            metrics,
+        ))
+        .await?;
+    } else {
+        info!("Normal archiving disabled, only running auxiliary workers");
+    }
+
+    for handle in worker_handles {
+        handle.await??;
+    }
+
+    Ok(())
 }
