@@ -173,12 +173,18 @@ async fn run_workload_group(
         }
     };
 
-    // Write report regardless of result
+    // Write report regardless of result and return result regardless of reporting errors
     if let Some(report_dir) = config.report_dir.as_deref() {
-        let mut report = Report::new(config.clone(), workload_group_index, start_time, &metrics);
-        if let Err(e) = report.join_stats(config.prom_url.clone()).await {
-            error!("Failed to join stats for report: {e:?}");
-        }
+        let report = Report::new(
+            config.clone(),
+            workload_group_index,
+            start_time,
+            &metrics,
+            &read_client,
+            config.prom_url.clone(),
+        )
+        .await;
+
         if let Err(e) = report.to_json_file(report_dir.as_ref()) {
             error!("Failed to write report: {e:?}");
         }
@@ -536,6 +542,16 @@ async fn write_and_verify_deployed_contracts(
         }
     }
     if let Some(addr) = dc.ecmul {
+        if !verify_contract_code(client, addr).await? {
+            bail!("Failed to verify freshly deployed contract");
+        }
+    }
+    if let Some(addr) = dc.uniswap {
+        if !verify_contract_code(client, addr).await? {
+            bail!("Failed to verify freshly deployed contract");
+        }
+    }
+    if let Some(addr) = dc.eip7702 {
         if !verify_contract_code(client, addr).await? {
             bail!("Failed to verify freshly deployed contract");
         }

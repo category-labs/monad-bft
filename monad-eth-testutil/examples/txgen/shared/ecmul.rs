@@ -26,8 +26,10 @@ use alloy_sol_types::SolCall;
 use eyre::Result;
 use serde::Deserialize;
 
-use super::{eth_json_rpc::EthJsonRpc, private_key::PrivateKey};
-use crate::{shared::erc20::ensure_contract_deployed, SimpleAccount};
+use crate::{
+    shared::{ensure_contract_deployed, eth_json_rpc::EthJsonRpc, private_key::PrivateKey},
+    SimpleAccount,
+};
 
 const BYTECODE: &str = include_str!("ecmul_bytecode.txt");
 
@@ -58,7 +60,8 @@ impl ECMul {
             .await?;
 
         let addr = calculate_contract_addr(&deployer.0, nonce);
-        ensure_contract_deployed(client, addr).await?;
+        let hash = tx.tx_hash();
+        ensure_contract_deployed(client, addr, hash).await?;
         Ok(Self { addr })
     }
 

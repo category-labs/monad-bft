@@ -13,6 +13,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use alloy_primitives::{Address, TxHash};
+use alloy_rpc_client::ReqwestClient;
+use tokio::time::sleep;
+
+use crate::prelude::*;
+
 pub mod blockstream;
 pub mod ecmul;
 pub mod eip7702;
@@ -21,3 +27,37 @@ pub mod eth_json_rpc;
 pub mod key_pool;
 pub mod private_key;
 pub mod uniswap;
+
+async fn ensure_contract_deployed(
+    client: &ReqwestClient,
+    addr: Address,
+    hash: &TxHash,
+) -> Result<()> {
+    let mut timeout = Duration::from_millis(200);
+    for _ in 0..10 {
+        info!(
+            "Waiting {}ms for contract to be deployed...",
+            timeout.as_millis()
+        );
+        sleep(timeout).await;
+
+        if let Ok(receipt) = client.get_transaction_receipt(hash).await {
+            info!(receipt = ?receipt, "Contract deployment receipt");
+            return Ok(());
+        }
+
+        let code = client.get_code(&addr).await?;
+        if code != "0x" {
+            info!(addr = addr.to_string(), "Deployed contract");
+            return Ok(());
+        }
+
+        // else exponential backoff
+        timeout *= 2;
+    }
+
+    Err(eyre::eyre!(
+        "Failed to deployed contract {}",
+        addr.to_string()
+    ))
+}

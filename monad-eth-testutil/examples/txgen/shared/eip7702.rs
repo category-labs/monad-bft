@@ -13,8 +13,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::time::Duration;
-
 use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
 use alloy_eips::{eip2718::Encodable2718, eip7702::Authorization};
 use alloy_primitives::{
@@ -26,11 +24,9 @@ use alloy_rpc_client::ReqwestClient;
 use alloy_sol_macro::sol;
 use eyre::Result;
 use serde::Deserialize;
-use tokio::time::sleep;
-use tracing::info;
 
 use crate::{
-    shared::{eth_json_rpc::EthJsonRpc, private_key::PrivateKey},
+    shared::{ensure_contract_deployed, eth_json_rpc::EthJsonRpc, private_key::PrivateKey},
     SimpleAccount,
 };
 
@@ -40,31 +36,6 @@ const BYTECODE: &str = include_str!("7702batchcall_bytecode.txt");
 #[serde(transparent)]
 pub struct EIP7702 {
     pub addr: Address,
-}
-
-pub async fn ensure_contract_deployed(client: &ReqwestClient, addr: Address) -> Result<()> {
-    let mut timeout = Duration::from_millis(200);
-    for _ in 0..10 {
-        info!(
-            "Waiting {}ms for contract to be deployed...",
-            timeout.as_millis()
-        );
-        sleep(timeout).await;
-
-        let code = client.get_code(&addr).await?;
-        if code != "0x" {
-            info!(addr = addr.to_string(), "Deployed contract");
-            return Ok(());
-        }
-
-        // else exponential backoff
-        timeout *= 2;
-    }
-
-    Err(eyre::eyre!(
-        "Failed to deployed contract {}",
-        addr.to_string()
-    ))
 }
 
 impl EIP7702 {
@@ -88,7 +59,7 @@ impl EIP7702 {
             .await?;
 
         let addr = calculate_contract_addr(&deployer.0, nonce);
-        ensure_contract_deployed(client, addr).await?;
+        ensure_contract_deployed(client, addr, tx.tx_hash()).await?;
         Ok(EIP7702 { addr })
     }
 

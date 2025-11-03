@@ -28,9 +28,10 @@ use alloy_sol_types::SolCall;
 use eyre::Result;
 use serde::Deserialize;
 
-use super::{eth_json_rpc::EthJsonRpc, private_key::PrivateKey};
 use crate::{
-    shared::erc20::{ensure_contract_deployed, ERC20},
+    shared::{
+        ensure_contract_deployed, erc20::ERC20, eth_json_rpc::EthJsonRpc, private_key::PrivateKey,
+    },
     SimpleAccount,
 };
 
@@ -152,7 +153,7 @@ impl Uniswap {
             .await?;
         let manager_addr = calculate_contract_addr(&deployer.0, nonce + 5);
 
-        ensure_contract_deployed(client, manager_addr).await?;
+        ensure_contract_deployed(client, manager_addr, tx.tx_hash()).await?;
 
         Ok(Self { addr: manager_addr })
     }

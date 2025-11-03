@@ -37,7 +37,7 @@ pub mod workers;
 async fn main() {
     let cli_config = cli::CliConfig::parse();
     let config = if let Some(config_file) = &cli_config.config_file {
-        let mut config = Config::from_file(&config_file).expect("Failed to load configuration");
+        let mut config = Config::from_file(config_file).expect("Failed to load configuration");
         // CLi args override config file
         // Note: Workload groups and traffic gens are not overridden by CLI args, only top level config is
         cli::patch_config_with_cli_args(&mut config, cli_config);

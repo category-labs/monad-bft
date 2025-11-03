@@ -13,8 +13,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::time::Duration;
-
 use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{
@@ -28,9 +26,8 @@ use alloy_sol_types::SolCall;
 use eyre::Result;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio::time::sleep;
-use tracing::info;
 
+use super::ensure_contract_deployed;
 use crate::{
     shared::{eth_json_rpc::EthJsonRpc, private_key::PrivateKey},
     SimpleAccount,
@@ -42,31 +39,6 @@ const BYTECODE: &str = include_str!("erc20_bytecode.txt");
 #[serde(transparent)]
 pub struct ERC20 {
     pub addr: Address,
-}
-
-pub async fn ensure_contract_deployed(client: &ReqwestClient, addr: Address) -> Result<()> {
-    let mut timeout = Duration::from_millis(200);
-    for _ in 0..10 {
-        info!(
-            "Waiting {}ms for contract to be deployed...",
-            timeout.as_millis()
-        );
-        sleep(timeout).await;
-
-        let code = client.get_code(&addr).await?;
-        if code != "0x" {
-            info!(addr = addr.to_string(), "Deployed contract");
-            return Ok(());
-        }
-
-        // else exponential backoff
-        timeout *= 2;
-    }
-
-    Err(eyre::eyre!(
-        "Failed to deployed contract {}",
-        addr.to_string()
-    ))
 }
 
 impl ERC20 {
@@ -87,7 +59,6 @@ impl ERC20 {
         );
         let mut rlp_encoded_tx = Vec::new();
         tx.encode_2718(&mut rlp_encoded_tx);
-
         // make compiler happy, actually parse string : (
         let _: String = client
             .request(
@@ -97,7 +68,7 @@ impl ERC20 {
             .await?;
 
         let addr = calculate_contract_addr(&deployer.0, nonce);
-        ensure_contract_deployed(client, addr).await?;
+        ensure_contract_deployed(client, addr, tx.tx_hash()).await?;
         Ok(ERC20 { addr })
     }
 
