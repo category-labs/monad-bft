@@ -17,6 +17,7 @@ pub use std::{
     collections::{HashMap, HashSet},
     ffi::OsString,
     ops::RangeInclusive,
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };

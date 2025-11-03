@@ -91,6 +91,19 @@ pub struct Cli {
     #[serde(default = "default_additional_checkpoint_freq_secs")]
     pub additional_checkpoint_freq_secs: u64,
 
+    #[serde(default)]
+    pub additional_dirs_to_archive: Vec<PathBuf>,
+
+    #[serde(default = "default_additional_dirs_archive_freq_secs")]
+    pub additional_dirs_archive_freq_secs: f64,
+
+    #[serde(default = "default_additional_dirs_exclude_prefix")]
+    pub additional_dirs_exclude_prefix: String,
+
+    /// Disable normal archiving and only run auxiliary workers
+    #[serde(default)]
+    pub unsafe_disable_normal_archiving: bool,
+
     pub otel_endpoint: Option<String>,
 
     pub otel_replica_name_override: Option<String>,
@@ -138,6 +151,10 @@ impl Cli {
             forkpoint_checkpoint_freq_secs,
             additional_files_to_checkpoint,
             additional_checkpoint_freq_secs,
+            additional_dirs_to_archive,
+            additional_dirs_archive_freq_secs,
+            additional_dirs_exclude_prefix,
+            unsafe_disable_normal_archiving,
             otel_endpoint,
             otel_replica_name_override,
             skip_connectivity_check,
@@ -167,6 +184,12 @@ impl Cli {
             additional_files_to_checkpoint: additional_files_to_checkpoint.unwrap_or_default(),
             additional_checkpoint_freq_secs: additional_checkpoint_freq_secs
                 .unwrap_or_else(default_additional_checkpoint_freq_secs),
+            additional_dirs_to_archive: additional_dirs_to_archive.unwrap_or_default(),
+            additional_dirs_archive_freq_secs: additional_dirs_archive_freq_secs
+                .unwrap_or_else(default_additional_dirs_archive_freq_secs),
+            additional_dirs_exclude_prefix: additional_dirs_exclude_prefix
+                .unwrap_or_else(default_additional_dirs_exclude_prefix),
+            unsafe_disable_normal_archiving: unsafe_disable_normal_archiving.unwrap_or(false),
             otel_endpoint,
             otel_replica_name_override,
             skip_connectivity_check: skip_connectivity_check.unwrap_or(false),
@@ -218,6 +241,18 @@ impl Cli {
         }
         if let Some(value) = overrides.additional_checkpoint_freq_secs {
             self.additional_checkpoint_freq_secs = value;
+        }
+        if let Some(value) = overrides.additional_dirs_to_archive {
+            self.additional_dirs_to_archive = value;
+        }
+        if let Some(value) = overrides.additional_dirs_archive_freq_secs {
+            self.additional_dirs_archive_freq_secs = value;
+        }
+        if let Some(value) = overrides.additional_dirs_exclude_prefix {
+            self.additional_dirs_exclude_prefix = value;
+        }
+        if let Some(value) = overrides.unsafe_disable_normal_archiving {
+            self.unsafe_disable_normal_archiving = value;
         }
         if let Some(value) = overrides.otel_endpoint {
             self.otel_endpoint = Some(value);
@@ -299,6 +334,19 @@ struct CliArgs {
     #[arg(long)]
     additional_checkpoint_freq_secs: Option<u64>,
 
+    #[arg(long, value_delimiter = ',', num_args = 1..)]
+    additional_dirs_to_archive: Option<Vec<PathBuf>>,
+
+    #[arg(long)]
+    additional_dirs_archive_freq_secs: Option<f64>,
+
+    #[arg(long)]
+    additional_dirs_exclude_prefix: Option<String>,
+
+    /// Disable normal archiving and only run auxiliary workers
+    #[arg(long, action = ArgAction::SetTrue)]
+    unsafe_disable_normal_archiving: bool,
+
     #[arg(long)]
     otel_endpoint: Option<String>,
 
@@ -337,9 +385,13 @@ impl CliArgs {
             forkpoint_checkpoint_freq_secs,
             additional_files_to_checkpoint,
             additional_checkpoint_freq_secs,
+            additional_dirs_to_archive,
+            additional_dirs_archive_freq_secs,
+            additional_dirs_exclude_prefix,
             otel_endpoint,
             otel_replica_name_override,
             skip_connectivity_check,
+            unsafe_disable_normal_archiving,
         } = self;
 
         let overrides = CliOverrides {
@@ -358,9 +410,13 @@ impl CliArgs {
             forkpoint_checkpoint_freq_secs,
             additional_files_to_checkpoint,
             additional_checkpoint_freq_secs,
+            additional_dirs_to_archive,
+            additional_dirs_archive_freq_secs,
+            additional_dirs_exclude_prefix,
             otel_endpoint,
             otel_replica_name_override,
             skip_connectivity_check: bool_override(skip_connectivity_check),
+            unsafe_disable_normal_archiving: bool_override(unsafe_disable_normal_archiving),
         };
 
         (config, overrides)
@@ -384,9 +440,13 @@ struct CliOverrides {
     forkpoint_checkpoint_freq_secs: Option<u64>,
     additional_files_to_checkpoint: Option<Vec<PathBuf>>,
     additional_checkpoint_freq_secs: Option<u64>,
+    additional_dirs_to_archive: Option<Vec<PathBuf>>,
+    additional_dirs_archive_freq_secs: Option<f64>,
+    additional_dirs_exclude_prefix: Option<String>,
     otel_endpoint: Option<String>,
     otel_replica_name_override: Option<String>,
     skip_connectivity_check: Option<bool>,
+    unsafe_disable_normal_archiving: Option<bool>,
 }
 
 fn load_config(path: &Path) -> Result<Cli> {
@@ -424,6 +484,14 @@ fn default_additional_checkpoint_freq_secs() -> u64 {
     300
 }
 
+fn default_additional_dirs_archive_freq_secs() -> f64 {
+    10.0
+}
+
+fn default_additional_dirs_exclude_prefix() -> String {
+    ".".to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use std::{io::Write, path::PathBuf};
@@ -447,6 +515,10 @@ mod tests {
             forkpoint_checkpoint_freq_secs = 123
             additional_files_to_checkpoint = ["/tmp/a", "/tmp/b"]
             additional_checkpoint_freq_secs = 456
+            additional_dirs_to_archive = ["/tmp/dir-a", "/tmp/dir-b"]
+            additional_dirs_archive_freq_secs = 7.5
+            additional_dirs_exclude_prefix = ".skip"
+            unsafe_disable_normal_archiving = true
             otel_endpoint = "http://otel"
             otel_replica_name_override = "special"
             skip_connectivity_check = true
@@ -485,6 +557,10 @@ mod tests {
         assert_eq!(cli.forkpoint_checkpoint_freq_secs, 123);
         assert_eq!(cli.additional_files_to_checkpoint.len(), 2);
         assert_eq!(cli.additional_checkpoint_freq_secs, 456);
+        assert_eq!(cli.additional_dirs_to_archive.len(), 2);
+        assert_eq!(cli.additional_dirs_archive_freq_secs, 7.5);
+        assert_eq!(cli.additional_dirs_exclude_prefix, ".skip");
+        assert!(cli.unsafe_disable_normal_archiving);
         assert_eq!(cli.otel_endpoint.as_deref(), Some("http://otel"));
         assert_eq!(cli.otel_replica_name_override.as_deref(), Some("special"));
         assert!(cli.skip_connectivity_check);
@@ -542,6 +618,10 @@ mod tests {
         assert_eq!(cli.forkpoint_checkpoint_freq_secs, 300);
         assert_eq!(cli.additional_checkpoint_freq_secs, 300);
         assert!(cli.additional_files_to_checkpoint.is_empty());
+        assert!(cli.additional_dirs_to_archive.is_empty());
+        assert_eq!(cli.additional_dirs_archive_freq_secs, 10.0);
+        assert_eq!(cli.additional_dirs_exclude_prefix, ".");
+        assert!(!cli.unsafe_disable_normal_archiving);
         assert!(!cli.skip_connectivity_check);
 
         match &cli.block_data_source {
