@@ -1,8 +1,6 @@
 use std::{net::SocketAddr, time::Duration};
 
-use monad_wireauth_protocol::{
-    common::SerializedPublicKey, errors::ProtocolError, messages::CookieReply,
-};
+use monad_wireauth_protocol::{errors::ProtocolError, messages::CookieReply};
 
 use crate::error::{ProtocolErrorContext, Result};
 
@@ -10,14 +8,14 @@ pub struct Cookies {
     nonce_secret: [u8; 32],
     cookie_secret: [u8; 32],
     nonce: u128,
-    local_static_public: SerializedPublicKey,
+    local_static_public: monad_secp::PubKey,
     refresh_duration: Duration,
 }
 
 impl Cookies {
     pub fn new<R: secp256k1::rand::Rng + secp256k1::rand::CryptoRng>(
         rng: &mut R,
-        local_static_public: SerializedPublicKey,
+        local_static_public: monad_secp::PubKey,
         refresh_duration: Duration,
     ) -> Self {
         let mut cookie_secret = [0u8; 32];
@@ -104,17 +102,12 @@ mod tests {
     #[test]
     fn test_sanity() {
         let mut rng = rng();
-        let (initiator_public, initiator_private) =
-            monad_wireauth_protocol::crypto::generate_keypair(&mut rng).unwrap();
-        let (responder_public, _responder_private) =
-            monad_wireauth_protocol::crypto::generate_keypair(&mut rng).unwrap();
+        let initiator_keypair = monad_secp::KeyPair::generate(&mut rng);
+        let responder_keypair = monad_secp::KeyPair::generate(&mut rng);
+        let responder_public = responder_keypair.pubkey();
         let refresh_duration = Duration::from_secs(120);
 
-        let mut cookies = Cookies::new(
-            &mut rng,
-            SerializedPublicKey::from(&responder_public),
-            refresh_duration,
-        );
+        let mut cookies = Cookies::new(&mut rng, responder_public, refresh_duration);
 
         let addr: SocketAddr = "192.168.1.100:51820".parse().unwrap();
         let duration_since_start = Duration::from_secs(10);
@@ -123,9 +116,8 @@ mod tests {
             &mut rng,
             SystemTime::now(),
             12345,
-            &initiator_private,
-            &SerializedPublicKey::from(&initiator_public),
-            &SerializedPublicKey::from(&responder_public),
+            &initiator_keypair,
+            &responder_public,
             None,
         )
         .unwrap();
@@ -135,7 +127,7 @@ mod tests {
             .unwrap();
 
         let decrypted_cookie = monad_wireauth_protocol::cookies::accept_cookie_reply(
-            &SerializedPublicKey::from(&responder_public),
+            &responder_public,
             &mut cookie_reply,
             init_msg.mac1.as_ref(),
         )
@@ -145,9 +137,8 @@ mod tests {
             &mut rng,
             SystemTime::now(),
             12346,
-            &initiator_private,
-            &SerializedPublicKey::from(&initiator_public),
-            &SerializedPublicKey::from(&responder_public),
+            &initiator_keypair,
+            &responder_public,
             Some(&decrypted_cookie),
         )
         .unwrap();
@@ -159,17 +150,12 @@ mod tests {
     #[test]
     fn test_rotation_invalidates_old_cookie() {
         let mut rng = rng();
-        let (initiator_public, initiator_private) =
-            monad_wireauth_protocol::crypto::generate_keypair(&mut rng).unwrap();
-        let (responder_public, _responder_private) =
-            monad_wireauth_protocol::crypto::generate_keypair(&mut rng).unwrap();
+        let initiator_keypair = monad_secp::KeyPair::generate(&mut rng);
+        let responder_keypair = monad_secp::KeyPair::generate(&mut rng);
+        let responder_public = responder_keypair.pubkey();
         let refresh_duration = Duration::from_secs(10);
 
-        let mut cookies = Cookies::new(
-            &mut rng,
-            SerializedPublicKey::from(&responder_public),
-            refresh_duration,
-        );
+        let mut cookies = Cookies::new(&mut rng, responder_public, refresh_duration);
 
         let addr: SocketAddr = "192.168.1.100:51820".parse().unwrap();
 
@@ -177,9 +163,8 @@ mod tests {
             &mut rng,
             SystemTime::now(),
             12345,
-            &initiator_private,
-            &SerializedPublicKey::from(&initiator_public),
-            &SerializedPublicKey::from(&responder_public),
+            &initiator_keypair,
+            &responder_public,
             None,
         )
         .unwrap();
@@ -190,7 +175,7 @@ mod tests {
             .unwrap();
 
         let decrypted_cookie = monad_wireauth_protocol::cookies::accept_cookie_reply(
-            &SerializedPublicKey::from(&responder_public),
+            &responder_public,
             &mut cookie_reply,
             init_msg.mac1.as_ref(),
         )
@@ -200,9 +185,8 @@ mod tests {
             &mut rng,
             SystemTime::now(),
             12346,
-            &initiator_private,
-            &SerializedPublicKey::from(&initiator_public),
-            &SerializedPublicKey::from(&responder_public),
+            &initiator_keypair,
+            &responder_public,
             Some(&decrypted_cookie),
         )
         .unwrap();
@@ -220,17 +204,12 @@ mod tests {
     #[test]
     fn test_cookies_different_after_reset() {
         let mut rng = rng();
-        let (initiator_public, initiator_private) =
-            monad_wireauth_protocol::crypto::generate_keypair(&mut rng).unwrap();
-        let (responder_public, _responder_private) =
-            monad_wireauth_protocol::crypto::generate_keypair(&mut rng).unwrap();
+        let initiator_keypair = monad_secp::KeyPair::generate(&mut rng);
+        let responder_keypair = monad_secp::KeyPair::generate(&mut rng);
+        let responder_public = responder_keypair.pubkey();
         let refresh_duration = Duration::from_secs(120);
 
-        let mut cookies1 = Cookies::new(
-            &mut rng,
-            SerializedPublicKey::from(&responder_public),
-            refresh_duration,
-        );
+        let mut cookies1 = Cookies::new(&mut rng, responder_public, refresh_duration);
 
         let addr: SocketAddr = "192.168.1.100:51820".parse().unwrap();
         let duration_since_start = Duration::from_secs(10);
@@ -239,9 +218,8 @@ mod tests {
             &mut rng,
             SystemTime::now(),
             12345,
-            &initiator_private,
-            &SerializedPublicKey::from(&initiator_public),
-            &SerializedPublicKey::from(&responder_public),
+            &initiator_keypair,
+            &responder_public,
             None,
         )
         .unwrap();
@@ -256,11 +234,7 @@ mod tests {
             .create(addr, 12345, &init_msg, duration_since_start)
             .unwrap();
 
-        let mut cookies2 = Cookies::new(
-            &mut rng,
-            SerializedPublicKey::from(&responder_public),
-            refresh_duration,
-        );
+        let mut cookies2 = Cookies::new(&mut rng, responder_public, refresh_duration);
 
         let cookie_reply_4 = cookies2
             .create(addr, 12345, &init_msg, duration_since_start)

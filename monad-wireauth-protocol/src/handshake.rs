@@ -6,10 +6,10 @@ use zeroize::Zeroizing;
 use crate::{
     common::*,
     crypto::{
-        decrypt_in_place, ecdh, encrypt_in_place, generate_keypair, CONSTRUCTION, IDENTIFIER,
-        LABEL_COOKIE, LABEL_MAC1,
+        decrypt_in_place, ecdh, encrypt_in_place, CONSTRUCTION, IDENTIFIER, LABEL_COOKIE,
+        LABEL_MAC1,
     },
-    errors::{HandshakeError, ProtocolError},
+    errors::{CryptoError, HandshakeError, ProtocolError},
     hash, keyed_hash,
     messages::*,
 };
@@ -17,9 +17,9 @@ use crate::{
 pub struct HandshakeState {
     pub chaining_key: Zeroizing<HashOutput>,
     pub hash: Zeroizing<HashOutput>,
-    pub ephemeral_private: Option<PrivateKey>,
-    pub remote_ephemeral: Option<SerializedPublicKey>,
-    pub remote_static: Option<SerializedPublicKey>,
+    pub ephemeral_private: Option<monad_secp::KeyPair>,
+    pub remote_ephemeral: Option<monad_secp::PubKey>,
+    pub remote_static: Option<monad_secp::PubKey>,
     pub sender_index: u32,
     pub receiver_index: u32,
 }
@@ -43,35 +43,33 @@ pub fn send_handshake_init<R: secp256k1::rand::Rng + secp256k1::rand::CryptoRng>
     rng: &mut R,
     system_time: SystemTime,
     local_session_index: u32,
-    initiator_static_private: &PrivateKey,
-    initiator_static_public: &SerializedPublicKey,
-    responder_static_public: &SerializedPublicKey,
+    initiator_static_keypair: &monad_secp::KeyPair,
+    responder_static_public: &monad_secp::PubKey,
     stored_cookie: Option<&[u8; 16]>,
 ) -> Result<(HandshakeInitiation, HandshakeState), ProtocolError> {
-    let (ephemeral_public, ephemeral_private) = generate_keypair(rng)?;
+    let initiator_static_public = initiator_static_keypair.pubkey().bytes_compressed();
+    let ephemeral_keypair = monad_secp::KeyPair::generate(rng);
+    let ephemeral_public = ephemeral_keypair.pubkey();
     let mut msg = HandshakeInitiation {
-        ephemeral_public: ephemeral_public.into(),
+        ephemeral_public: ephemeral_public.bytes_compressed(),
         sender_index: local_session_index.into(),
         ..Default::default()
     };
     let mut inititiator = HandshakeState {
         chaining_key: hash!(CONSTRUCTION).into(),
         sender_index: local_session_index,
-        ephemeral_private: Some(ephemeral_private),
+        ephemeral_private: Some(ephemeral_keypair),
         ..Default::default()
     };
 
     inititiator.hash = hash!(
         hash!(inititiator.chaining_key.as_ref(), IDENTIFIER).as_ref(),
-        responder_static_public.as_bytes()
+        &responder_static_public.bytes_compressed()
     )
     .into();
-    inititiator.hash = hash!(inititiator.hash.as_ref(), msg.ephemeral_public.as_bytes()).into();
+    inititiator.hash = hash!(inititiator.hash.as_ref(), &msg.ephemeral_public).into();
 
-    let temp = keyed_hash!(
-        inititiator.chaining_key.as_ref(),
-        msg.ephemeral_public.as_bytes()
-    );
+    let temp = keyed_hash!(inititiator.chaining_key.as_ref(), &msg.ephemeral_public);
     inititiator.chaining_key = keyed_hash!(temp.as_ref(), &[0x1]).into();
 
     let ecdh_es = ecdh(
@@ -80,26 +78,26 @@ pub fn send_handshake_init<R: secp256k1::rand::Rng + secp256k1::rand::CryptoRng>
             .as_ref()
             .expect("ephemeral private key must be set"),
         responder_static_public,
-    )?;
+    );
     let temp = keyed_hash!(inititiator.chaining_key.as_ref(), ecdh_es.as_ref());
     inititiator.chaining_key = keyed_hash!(temp.as_ref(), &[0x1]).into();
     let key = keyed_hash!(temp.as_ref(), inititiator.chaining_key.as_ref(), &[0x2]);
 
-    msg.encrypted_static = *initiator_static_public;
+    msg.encrypted_static = initiator_static_public;
     msg.encrypted_static_tag = encrypt_in_place(
         &(&key).into(),
         &(0u64.into()),
-        msg.encrypted_static.as_mut_bytes(),
+        &mut msg.encrypted_static,
         inititiator.hash.as_ref(),
     );
     inititiator.hash = hash!(
         inititiator.hash.as_ref(),
-        msg.encrypted_static.as_bytes(),
+        &msg.encrypted_static,
         &msg.encrypted_static_tag
     )
     .into();
 
-    let ecdh_ss = ecdh(initiator_static_private, responder_static_public)?;
+    let ecdh_ss = ecdh(initiator_static_keypair, responder_static_public);
     let temp = keyed_hash!(inititiator.chaining_key.as_ref(), ecdh_ss.as_ref());
     inititiator.chaining_key = keyed_hash!(temp.as_ref(), &[0x1]).into();
     let key = keyed_hash!(temp.as_ref(), inititiator.chaining_key.as_ref(), &[0x2]);
@@ -119,10 +117,10 @@ pub fn send_handshake_init<R: secp256k1::rand::Rng + secp256k1::rand::CryptoRng>
     )
     .into();
 
-    let mac_key = hash!(LABEL_MAC1, responder_static_public.as_bytes());
+    let mac_key = hash!(LABEL_MAC1, &responder_static_public.bytes_compressed());
     msg.mac1 = keyed_hash!(mac_key.as_ref(), msg.mac1_input()).into();
     if let Some(cookie) = stored_cookie {
-        let cookie_key = hash!(LABEL_COOKIE, responder_static_public.as_bytes());
+        let cookie_key = hash!(LABEL_COOKIE, &responder_static_public.bytes_compressed());
         msg.mac2 = keyed_hash!(cookie_key.as_ref(), msg.mac2_input(), cookie).into();
     }
 
@@ -130,11 +128,11 @@ pub fn send_handshake_init<R: secp256k1::rand::Rng + secp256k1::rand::CryptoRng>
 }
 
 pub fn accept_handshake_init(
-    responder_static_private: &PrivateKey,
-    responder_static_public: &SerializedPublicKey,
+    responder_static_keypair: &monad_secp::KeyPair,
     msg: &mut HandshakeInitiation,
 ) -> Result<(HandshakeState, SystemTime), ProtocolError> {
-    crate::crypto::verify_mac1(msg, responder_static_public)
+    let responder_static_public = responder_static_keypair.pubkey();
+    crate::crypto::verify_mac1(msg, &responder_static_public)
         .map_err(HandshakeError::Mac1VerificationFailed)?;
 
     let mut state = HandshakeState {
@@ -143,16 +141,22 @@ pub fn accept_handshake_init(
     };
 
     let hash_ck_id = hash!(state.chaining_key.as_ref(), IDENTIFIER);
-    state.hash = hash!(hash_ck_id.as_ref(), responder_static_public.as_bytes()).into();
+    state.hash = hash!(
+        hash_ck_id.as_ref(),
+        &responder_static_public.bytes_compressed()
+    )
+    .into();
 
-    state.hash = hash!(state.hash.as_ref(), msg.ephemeral_public.as_bytes()).into();
-    state.remote_ephemeral = Some(msg.ephemeral_public);
+    state.hash = hash!(state.hash.as_ref(), &msg.ephemeral_public).into();
+    let remote_ephemeral =
+        monad_secp::PubKey::from_slice(&msg.ephemeral_public).map_err(CryptoError::InvalidKey)?;
+    state.remote_ephemeral = Some(remote_ephemeral);
     state.receiver_index = msg.sender_index.get();
 
-    let temp = keyed_hash!(state.chaining_key.as_ref(), msg.ephemeral_public.as_bytes());
+    let temp = keyed_hash!(state.chaining_key.as_ref(), &msg.ephemeral_public);
     state.chaining_key = keyed_hash!(temp.as_ref(), &[0x1]).into();
 
-    let ecdh_ee = ecdh(responder_static_private, &msg.ephemeral_public)?;
+    let ecdh_ee = ecdh(responder_static_keypair, &remote_ephemeral);
     let temp = keyed_hash!(state.chaining_key.as_ref(), ecdh_ee.as_ref());
     state.chaining_key = keyed_hash!(temp.as_ref(), &[0x1]).into();
     let key = keyed_hash!(temp.as_ref(), state.chaining_key.as_ref(), &[0x2]);
@@ -160,22 +164,24 @@ pub fn accept_handshake_init(
     let hash = state.hash.clone();
     state.hash = hash!(
         state.hash.as_ref(),
-        msg.encrypted_static.as_bytes(),
+        &msg.encrypted_static,
         &msg.encrypted_static_tag
     )
     .into();
     decrypt_in_place(
         &(&key).into(),
         &(0u64).into(),
-        msg.encrypted_static.as_mut_bytes(),
+        &mut msg.encrypted_static,
         &msg.encrypted_static_tag,
         hash.as_ref(),
     )
     .map_err(HandshakeError::StaticKeyDecryptionFailed)?;
 
-    state.remote_static = Some(msg.encrypted_static);
+    let remote_static =
+        monad_secp::PubKey::from_slice(&msg.encrypted_static).map_err(CryptoError::InvalidKey)?;
+    state.remote_static = Some(remote_static);
 
-    let ecdh_ss = ecdh(responder_static_private, &msg.encrypted_static)?;
+    let ecdh_ss = ecdh(responder_static_keypair, &remote_static);
     let temp = keyed_hash!(state.chaining_key.as_ref(), ecdh_ss.as_ref());
     state.chaining_key = keyed_hash!(temp.as_ref(), &[0x1]).into();
     let key = keyed_hash!(temp.as_ref(), state.chaining_key.as_ref(), &[0x2]);
@@ -213,7 +219,8 @@ pub fn send_handshake_response<R: secp256k1::rand::Rng + secp256k1::rand::Crypto
     psk: &[u8; 32],
     stored_cookie: Option<&[u8; 16]>,
 ) -> Result<(HandshakeResponse, TransportKeys), ProtocolError> {
-    let (ephemeral_public, ephemeral_private) = generate_keypair(rng)?;
+    let ephemeral_keypair = monad_secp::KeyPair::generate(rng);
+    let ephemeral_public = ephemeral_keypair.pubkey();
     state.sender_index = local_session_index;
     let initiator_static_public = state
         .remote_static
@@ -222,13 +229,13 @@ pub fn send_handshake_response<R: secp256k1::rand::Rng + secp256k1::rand::Crypto
     let mut msg = HandshakeResponse {
         sender_index: local_session_index.into(),
         receiver_index: state.receiver_index.into(),
-        ephemeral_public: (&ephemeral_public).into(),
+        ephemeral_public: ephemeral_public.bytes_compressed(),
         ..Default::default()
     };
 
-    state.hash = hash!(state.hash.as_ref(), msg.ephemeral_public.as_bytes()).into();
+    state.hash = hash!(state.hash.as_ref(), &msg.ephemeral_public).into();
 
-    let temp = keyed_hash!(state.chaining_key.as_ref(), msg.ephemeral_public.as_bytes());
+    let temp = keyed_hash!(state.chaining_key.as_ref(), &msg.ephemeral_public);
     state.chaining_key = keyed_hash!(temp.as_ref(), &[0x1]).into();
 
     let remote_ephemeral = state
@@ -236,11 +243,11 @@ pub fn send_handshake_response<R: secp256k1::rand::Rng + secp256k1::rand::Crypto
         .as_ref()
         .expect("remote ephemeral key must be set");
 
-    let ecdh_ee = ecdh(&ephemeral_private, remote_ephemeral)?;
+    let ecdh_ee = ecdh(&ephemeral_keypair, remote_ephemeral);
     let temp = keyed_hash!(state.chaining_key.as_ref(), ecdh_ee.as_ref());
     state.chaining_key = keyed_hash!(temp.as_ref(), &[0x1]).into();
 
-    let ecdh_se = ecdh(&ephemeral_private, initiator_static_public)?;
+    let ecdh_se = ecdh(&ephemeral_keypair, initiator_static_public);
     let temp = keyed_hash!(state.chaining_key.as_ref(), ecdh_se.as_ref());
     state.chaining_key = keyed_hash!(temp.as_ref(), &[0x1]).into();
 
@@ -255,11 +262,11 @@ pub fn send_handshake_response<R: secp256k1::rand::Rng + secp256k1::rand::Crypto
         encrypt_in_place(&(&key).into(), &(0u64).into(), &mut [], state.hash.as_ref());
     state.hash = hash!(state.hash.as_ref(), &msg.encrypted_nothing_tag).into();
 
-    let mac_key = hash!(LABEL_MAC1, initiator_static_public.as_bytes());
+    let mac_key = hash!(LABEL_MAC1, &initiator_static_public.bytes_compressed());
     msg.mac1 = keyed_hash!(mac_key.as_ref(), msg.mac1_input()).into();
 
     if let Some(cookie) = stored_cookie {
-        let cookie_key = hash!(LABEL_COOKIE, initiator_static_public.as_bytes());
+        let cookie_key = hash!(LABEL_COOKIE, &initiator_static_public.bytes_compressed());
         msg.mac2 = keyed_hash!(cookie_key.as_ref(), msg.mac2_input(), cookie).into();
     }
 
@@ -267,20 +274,22 @@ pub fn send_handshake_response<R: secp256k1::rand::Rng + secp256k1::rand::Crypto
 }
 
 pub fn accept_handshake_response(
-    initiator_static_private: &PrivateKey,
-    initiator_static_public: &SerializedPublicKey,
+    initiator_static_keypair: &monad_secp::KeyPair,
     msg: &mut HandshakeResponse,
     state: &mut HandshakeState,
     psk: &[u8; 32],
 ) -> Result<TransportKeys, ProtocolError> {
-    crate::crypto::verify_mac1(msg, initiator_static_public)
+    let initiator_static_public = initiator_static_keypair.pubkey();
+    crate::crypto::verify_mac1(msg, &initiator_static_public)
         .map_err(HandshakeError::Mac1VerificationFailed)?;
 
     state.receiver_index = msg.sender_index.get();
-    state.remote_ephemeral = Some(msg.ephemeral_public);
-    state.hash = hash!(state.hash.as_ref(), msg.ephemeral_public.as_bytes()).into();
+    let remote_ephemeral =
+        monad_secp::PubKey::from_slice(&msg.ephemeral_public).map_err(CryptoError::InvalidKey)?;
+    state.remote_ephemeral = Some(remote_ephemeral);
+    state.hash = hash!(state.hash.as_ref(), &msg.ephemeral_public).into();
 
-    let temp = keyed_hash!(state.chaining_key.as_ref(), msg.ephemeral_public.as_bytes());
+    let temp = keyed_hash!(state.chaining_key.as_ref(), &msg.ephemeral_public);
     state.chaining_key = keyed_hash!(temp.as_ref(), &[0x1]).into();
 
     let ecdh_ee = ecdh(
@@ -288,12 +297,12 @@ pub fn accept_handshake_response(
             .ephemeral_private
             .as_ref()
             .expect("ephemeral private key must be set"),
-        &msg.ephemeral_public,
-    )?;
+        &remote_ephemeral,
+    );
     let temp = keyed_hash!(state.chaining_key.as_ref(), ecdh_ee.as_ref());
     state.chaining_key = keyed_hash!(temp.as_ref(), &[0x1]).into();
 
-    let ecdh_se = ecdh(initiator_static_private, &msg.ephemeral_public)?;
+    let ecdh_se = ecdh(initiator_static_keypair, &remote_ephemeral);
     let temp = keyed_hash!(state.chaining_key.as_ref(), ecdh_se.as_ref());
     state.chaining_key = keyed_hash!(temp.as_ref(), &[0x1]).into();
 
@@ -459,10 +468,10 @@ mod tests {
         let timestamp = 1700000000u64;
         let system_time = SystemTime::UNIX_EPOCH + Duration::from_secs(timestamp);
 
-        let (initiator_static_public, initiator_static_private) =
-            crate::crypto::generate_keypair(&mut rng).unwrap();
-        let (responder_static_public, responder_static_private) =
-            crate::crypto::generate_keypair(&mut rng).unwrap();
+        let initiator_static_keypair = monad_secp::KeyPair::generate(&mut rng);
+        let initiator_static_public = initiator_static_keypair.pubkey();
+        let responder_static_keypair = monad_secp::KeyPair::generate(&mut rng);
+        let responder_static_public = responder_static_keypair.pubkey();
 
         let initiator_index = 100u32;
         let responder_index = 200u32;
@@ -471,9 +480,8 @@ mod tests {
             &mut rng,
             system_time,
             initiator_index,
-            &initiator_static_private,
-            &SerializedPublicKey::from(&initiator_static_public),
-            &SerializedPublicKey::from(&responder_static_public),
+            &initiator_static_keypair,
+            &responder_static_public,
             None,
         )
         .unwrap();
@@ -481,12 +489,8 @@ mod tests {
         let init_trace = extract_init_message_trace(&init_msg);
 
         let mut init_msg_mut = init_msg;
-        let (responder_state, _timestamp) = accept_handshake_init(
-            &responder_static_private,
-            &SerializedPublicKey::from(&responder_static_public),
-            &mut init_msg_mut,
-        )
-        .unwrap();
+        let (responder_state, _timestamp) =
+            accept_handshake_init(&responder_static_keypair, &mut init_msg_mut).unwrap();
 
         let mut responder_state_mut = responder_state;
         let psk = [0u8; 32];
@@ -504,8 +508,7 @@ mod tests {
         let mut resp_msg_mut = resp_msg;
         let mut init_state_mut = init_state;
         let initiator_transport_keys = accept_handshake_response(
-            &initiator_static_private,
-            &SerializedPublicKey::from(&initiator_static_public),
+            &initiator_static_keypair,
             &mut resp_msg_mut,
             &mut init_state_mut,
             &psk,
@@ -516,10 +519,10 @@ mod tests {
             test_name: "standard_handshake".to_string(),
             seed,
             timestamp,
-            initiator_static_private: to_hex(&initiator_static_private.inner().secret_bytes()),
-            initiator_static_public: to_hex(&<[u8; 33]>::from(&initiator_static_public)),
-            responder_static_private: to_hex(&responder_static_private.inner().secret_bytes()),
-            responder_static_public: to_hex(&<[u8; 33]>::from(&responder_static_public)),
+            initiator_static_private: to_hex(&initiator_static_keypair.secret_bytes()),
+            initiator_static_public: to_hex(&initiator_static_public.bytes_compressed()),
+            responder_static_private: to_hex(&responder_static_keypair.secret_bytes()),
+            responder_static_public: to_hex(&responder_static_public.bytes_compressed()),
             initiator_session_index: initiator_index,
             responder_session_index: responder_index,
             init_message: init_trace,
@@ -542,10 +545,9 @@ mod tests {
         let timestamp = 1700000000u64;
         let system_time = SystemTime::UNIX_EPOCH + Duration::from_secs(timestamp);
 
-        let (initiator_static_public, initiator_static_private) =
-            crate::crypto::generate_keypair(&mut rng).unwrap();
-        let (responder_static_public, responder_static_private) =
-            crate::crypto::generate_keypair(&mut rng).unwrap();
+        let initiator_static_keypair = monad_secp::KeyPair::generate(&mut rng);
+        let responder_static_keypair = monad_secp::KeyPair::generate(&mut rng);
+        let responder_static_public = responder_static_keypair.pubkey();
 
         let initiator_index = 101u32;
         let responder_index = 201u32;
@@ -554,9 +556,8 @@ mod tests {
             &mut rng,
             system_time,
             initiator_index,
-            &initiator_static_private,
-            &SerializedPublicKey::from(&initiator_static_public),
-            &SerializedPublicKey::from(&responder_static_public),
+            &initiator_static_keypair,
+            &responder_static_public,
             None,
         )
         .unwrap();
@@ -575,7 +576,7 @@ mod tests {
         let cookie_reply = crate::cookies::send_cookie_reply(
             &nonce_secret,
             cookie_nonce,
-            &SerializedPublicKey::from(&responder_static_public),
+            &responder_static_public,
             init_sender_index,
             init_mac1.as_ref(),
             &cookie,
@@ -591,7 +592,7 @@ mod tests {
 
         let mut cookie_reply_mut = cookie_reply;
         let extracted_cookie = crate::cookies::accept_cookie_reply(
-            &SerializedPublicKey::from(&responder_static_public),
+            &responder_static_public,
             &mut cookie_reply_mut,
             init_mac1.as_ref(),
         )
@@ -601,9 +602,8 @@ mod tests {
             &mut rng,
             system_time,
             initiator_index + 1,
-            &initiator_static_private,
-            &SerializedPublicKey::from(&initiator_static_public),
-            &SerializedPublicKey::from(&responder_static_public),
+            &initiator_static_keypair,
+            &responder_static_public,
             Some(&extracted_cookie),
         )
         .unwrap();
@@ -611,12 +611,8 @@ mod tests {
         let init_with_cookie_trace = extract_init_message_trace(&init_msg_with_cookie);
 
         let mut init_msg_mut = init_msg_with_cookie;
-        let (responder_state, _timestamp) = accept_handshake_init(
-            &responder_static_private,
-            &SerializedPublicKey::from(&responder_static_public),
-            &mut init_msg_mut,
-        )
-        .unwrap();
+        let (responder_state, _timestamp) =
+            accept_handshake_init(&responder_static_keypair, &mut init_msg_mut).unwrap();
 
         let mut responder_state_mut = responder_state;
         let psk = [0u8; 32];
@@ -651,10 +647,9 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(seed);
         let system_time = SystemTime::UNIX_EPOCH + Duration::from_secs(1700000000);
 
-        let (initiator_static_public, initiator_static_private) =
-            crate::crypto::generate_keypair(&mut rng).unwrap();
-        let (responder_static_public, responder_static_private) =
-            crate::crypto::generate_keypair(&mut rng).unwrap();
+        let initiator_static_keypair = monad_secp::KeyPair::generate(&mut rng);
+        let responder_static_keypair = monad_secp::KeyPair::generate(&mut rng);
+        let responder_static_public = responder_static_keypair.pubkey();
 
         let initiator_index = 102u32;
         let responder_index = 202u32;
@@ -664,20 +659,15 @@ mod tests {
             &mut rng,
             system_time,
             initiator_index,
-            &initiator_static_private,
-            &SerializedPublicKey::from(&initiator_static_public),
-            &SerializedPublicKey::from(&responder_static_public),
+            &initiator_static_keypair,
+            &responder_static_public,
             None,
         )
         .unwrap();
 
         let mut init_msg_mut = init_msg;
-        let (responder_state, _timestamp) = accept_handshake_init(
-            &responder_static_private,
-            &SerializedPublicKey::from(&responder_static_public),
-            &mut init_msg_mut,
-        )
-        .unwrap();
+        let (responder_state, _timestamp) =
+            accept_handshake_init(&responder_static_keypair, &mut init_msg_mut).unwrap();
 
         let mut responder_state_mut = responder_state;
         let (resp_msg, responder_transport_keys) = send_handshake_response(
@@ -692,8 +682,7 @@ mod tests {
         let mut resp_msg_mut = resp_msg;
         let mut init_state_mut = init_state;
         let initiator_transport_keys = accept_handshake_response(
-            &initiator_static_private,
-            &SerializedPublicKey::from(&initiator_static_public),
+            &initiator_static_keypair,
             &mut resp_msg_mut,
             &mut init_state_mut,
             &psk,
@@ -774,10 +763,10 @@ mod tests {
             let timestamp = 1700000000u64 + seed;
             let system_time = SystemTime::UNIX_EPOCH + Duration::from_secs(timestamp);
 
-            let (initiator_static_public, initiator_static_private) =
-                crate::crypto::generate_keypair(&mut rng).unwrap();
-            let (responder_static_public, responder_static_private) =
-                crate::crypto::generate_keypair(&mut rng).unwrap();
+            let initiator_static_keypair = monad_secp::KeyPair::generate(&mut rng);
+            let initiator_static_public = initiator_static_keypair.pubkey();
+            let responder_static_keypair = monad_secp::KeyPair::generate(&mut rng);
+            let responder_static_public = responder_static_keypair.pubkey();
 
             let initiator_index = rng.random::<u32>();
             let responder_index = rng.random::<u32>();
@@ -786,9 +775,8 @@ mod tests {
                 &mut rng,
                 system_time,
                 initiator_index,
-                &initiator_static_private,
-                &SerializedPublicKey::from(&initiator_static_public),
-                &SerializedPublicKey::from(&responder_static_public),
+                &initiator_static_keypair,
+                &responder_static_public,
                 None,
             )
             .unwrap();
@@ -796,12 +784,8 @@ mod tests {
             let init_trace = extract_init_message_trace(&init_msg);
 
             let mut init_msg_mut = init_msg;
-            let (responder_state, _timestamp) = accept_handshake_init(
-                &responder_static_private,
-                &SerializedPublicKey::from(&responder_static_public),
-                &mut init_msg_mut,
-            )
-            .unwrap();
+            let (responder_state, _timestamp) =
+                accept_handshake_init(&responder_static_keypair, &mut init_msg_mut).unwrap();
 
             let mut responder_state_mut = responder_state;
             let psk = [0u8; 32];
@@ -819,8 +803,7 @@ mod tests {
             let mut resp_msg_mut = resp_msg;
             let mut init_state_mut = init_state;
             let initiator_keys = accept_handshake_response(
-                &initiator_static_private,
-                &SerializedPublicKey::from(&initiator_static_public),
+                &initiator_static_keypair,
                 &mut resp_msg_mut,
                 &mut init_state_mut,
                 &psk,
@@ -831,10 +814,10 @@ mod tests {
                 test_name: format!("vector_{}", seed),
                 seed: *seed,
                 timestamp,
-                initiator_static_private: to_hex(&initiator_static_private.inner().secret_bytes()),
-                initiator_static_public: to_hex(&<[u8; 33]>::from(&initiator_static_public)),
-                responder_static_private: to_hex(&responder_static_private.inner().secret_bytes()),
-                responder_static_public: to_hex(&<[u8; 33]>::from(&responder_static_public)),
+                initiator_static_private: to_hex(&initiator_static_keypair.secret_bytes()),
+                initiator_static_public: to_hex(&initiator_static_public.bytes_compressed()),
+                responder_static_private: to_hex(&responder_static_keypair.secret_bytes()),
+                responder_static_public: to_hex(&responder_static_public.bytes_compressed()),
                 initiator_session_index: initiator_index,
                 responder_session_index: responder_index,
                 init_message: init_trace,

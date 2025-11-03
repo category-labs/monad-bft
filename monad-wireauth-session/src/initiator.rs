@@ -33,9 +33,9 @@ impl InitiatorState {
         duration_since_start: Duration,
         config: &Config,
         local_session_index: SessionIndex,
-        local_static_key: &PrivateKey,
-        local_static_public: PublicKey,
-        remote_static_key: PublicKey,
+        local_static_key: &monad_secp::KeyPair,
+        _local_static_public: monad_secp::PubKey,
+        remote_static_key: monad_secp::PubKey,
         remote_addr: SocketAddr,
         cookie_secret: Option<[u8; 16]>,
         retry_attempts: u64,
@@ -45,8 +45,7 @@ impl InitiatorState {
             system_time,
             local_session_index.as_u32(),
             local_static_key,
-            &SerializedPublicKey::from(&local_static_public),
-            &SerializedPublicKey::from(&remote_static_key),
+            &remote_static_key,
             cookie_secret.as_ref(),
         )
         .map_err(SessionError::InvalidHandshake)?;
@@ -86,13 +85,12 @@ impl InitiatorState {
     pub fn validate_response(
         &mut self,
         config: &Config,
-        local_static_key: &PrivateKey,
-        local_static_public: &PublicKey,
+        local_static_key: &monad_secp::KeyPair,
+        _local_static_public: &monad_secp::PubKey,
         msg: &mut HandshakeResponse,
     ) -> Result<ValidatedHandshakeResponse, SessionError> {
         let transport_keys = handshake::accept_handshake_response(
             local_static_key,
-            &SerializedPublicKey::from(local_static_public),
             msg,
             &mut self.handshake_state,
             &config.psk,

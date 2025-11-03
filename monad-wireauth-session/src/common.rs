@@ -19,7 +19,7 @@ pub enum SessionStatus {
 
 #[derive(Debug, Clone)]
 pub struct EstablishedEvent {
-    pub remote_public_key: PublicKey,
+    pub remote_public_key: monad_secp::PubKey,
     pub remote_addr: SocketAddr,
     pub is_initiator: bool,
     pub created: Duration,
@@ -28,7 +28,7 @@ pub struct EstablishedEvent {
 
 #[derive(Debug, Clone)]
 pub struct TerminatedEvent {
-    pub remote_public_key: PublicKey,
+    pub remote_public_key: monad_secp::PubKey,
     pub remote_addr: SocketAddr,
 }
 
@@ -40,7 +40,7 @@ pub struct SessionTimeoutResult {
 
 #[derive(Debug, Clone)]
 pub struct RekeyEvent {
-    pub remote_public_key: PublicKey,
+    pub remote_public_key: monad_secp::PubKey,
     pub remote_addr: SocketAddr,
     pub retry_attempts: u64,
     pub stored_cookie: Option<[u8; 16]>,
@@ -129,7 +129,7 @@ pub struct SessionState {
     pub retry_attempts: u64,
     pub initiator_system_time: Option<SystemTime>,
     pub remote_addr: SocketAddr,
-    pub remote_public_key: PublicKey,
+    pub remote_public_key: monad_secp::PubKey,
     pub local_index: SessionIndex,
     pub created: Duration,
     pub is_initiator: bool,
@@ -138,7 +138,7 @@ pub struct SessionState {
 impl SessionState {
     pub fn new(
         remote_addr: SocketAddr,
-        remote_public_key: PublicKey,
+        remote_public_key: monad_secp::PubKey,
         local_index: SessionIndex,
         created: Duration,
         retry_attempts: u64,
@@ -235,20 +235,16 @@ impl SessionState {
             ));
         };
 
-        let cookie = cookies::accept_cookie_reply(
-            &SerializedPublicKey::from(&self.remote_public_key),
-            cookie_reply,
-            &mac1,
-        )
-        .map_err(|e| {
-            debug!(error=?e, "failed to accept cookie reply");
-            use monad_wireauth_protocol::errors::ProtocolError;
-            match e {
-                ProtocolError::Cookie(c) => SessionError::InvalidCookie(c),
-                ProtocolError::Crypto(c) => SessionError::CryptoError(c),
-                _ => SessionError::InvalidHandshake(e),
-            }
-        })?;
+        let cookie = cookies::accept_cookie_reply(&self.remote_public_key, cookie_reply, &mac1)
+            .map_err(|e| {
+                debug!(error=?e, "failed to accept cookie reply");
+                use monad_wireauth_protocol::errors::ProtocolError;
+                match e {
+                    ProtocolError::Cookie(c) => SessionError::InvalidCookie(c),
+                    ProtocolError::Crypto(c) => SessionError::CryptoError(c),
+                    _ => SessionError::InvalidHandshake(e),
+                }
+            })?;
 
         self.stored_cookie = Some(cookie);
         debug!("cookie stored successfully");
@@ -264,7 +260,7 @@ impl SessionState {
         );
 
         let terminated = TerminatedEvent {
-            remote_public_key: self.remote_public_key.clone(),
+            remote_public_key: self.remote_public_key,
             remote_addr: self.remote_addr,
         };
 
@@ -277,8 +273,8 @@ impl SessionState {
             self.retry_attempts -= 1;
         }
 
-        let rekey = should_retry.then(|| RekeyEvent {
-            remote_public_key: self.remote_public_key.clone(),
+        let rekey = should_retry.then_some(RekeyEvent {
+            remote_public_key: self.remote_public_key,
             remote_addr: self.remote_addr,
             retry_attempts: self.retry_attempts,
             stored_cookie: self.stored_cookie,

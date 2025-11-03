@@ -1,9 +1,8 @@
 use std::{convert::TryFrom, net::SocketAddr, time::Duration};
 
 use monad_wireauth_api::{Config, TestContext, API};
-use monad_wireauth_protocol::{
-    common::PublicKey,
-    messages::{CookieReply, DataPacketHeader, HandshakeInitiation, HandshakeResponse, Packet},
+use monad_wireauth_protocol::messages::{
+    CookieReply, DataPacketHeader, HandshakeInitiation, HandshakeResponse, Packet,
 };
 use monad_wireauth_session::DEFAULT_RETRY_ATTEMPTS;
 use secp256k1::rand::rng;
@@ -16,14 +15,14 @@ fn init_tracing() {
         .try_init();
 }
 
-fn create_manager() -> (API<TestContext>, PublicKey, TestContext, Config) {
+fn create_manager() -> (API<TestContext>, monad_secp::PubKey, TestContext, Config) {
     let mut rng = rng();
-    let (public_key, private_key) =
-        monad_wireauth_protocol::crypto::generate_keypair(&mut rng).unwrap();
+    let keypair = monad_secp::KeyPair::generate(&mut rng);
+    let public_key = keypair.pubkey();
     let config = Config::default();
     let context = TestContext::new();
     let context_clone = context.clone();
-    let manager = API::new(config.clone(), private_key, public_key.clone(), context);
+    let manager = API::new(config.clone(), keypair, context);
     (manager, public_key, context_clone, config)
 }
 
@@ -48,7 +47,7 @@ fn dispatch(manager: &mut API<TestContext>, packet: &[u8], from: SocketAddr) -> 
             None
         }
         Packet::Data(data_packet) => {
-            let plaintext = manager.decrypt(data_packet, from).ok()?;
+            let (plaintext, _public_key) = manager.decrypt(data_packet, from).ok()?;
             Some(plaintext.as_slice().to_vec())
         }
     }
@@ -56,7 +55,7 @@ fn dispatch(manager: &mut API<TestContext>, packet: &[u8], from: SocketAddr) -> 
 
 fn encrypt(
     manager: &mut API<TestContext>,
-    peer_pubkey: &PublicKey,
+    peer_pubkey: &monad_secp::PubKey,
     plaintext: &mut [u8],
 ) -> Vec<u8> {
     let header = manager
@@ -362,15 +361,14 @@ fn test_cookie_reply_on_init() {
     };
 
     let mut rng = rng();
-    let (public_key1, private_key1) =
-        monad_wireauth_protocol::crypto::generate_keypair(&mut rng).unwrap();
+    let keypair1 = monad_secp::KeyPair::generate(&mut rng);
     let context1 = TestContext::new();
-    let mut peer1 = API::new(config.clone(), private_key1, public_key1, context1.clone());
+    let mut peer1 = API::new(config.clone(), keypair1, context1.clone());
 
-    let (public_key2, private_key2) =
-        monad_wireauth_protocol::crypto::generate_keypair(&mut rng).unwrap();
+    let keypair2 = monad_secp::KeyPair::generate(&mut rng);
+    let public_key2 = keypair2.pubkey();
     let context2 = TestContext::new();
-    let mut peer2 = API::new(config, private_key2, public_key2.clone(), context2);
+    let mut peer2 = API::new(config, keypair2, context2);
 
     let peer1_addr: SocketAddr = "127.0.0.1:8001".parse().unwrap();
     let peer2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
@@ -467,28 +465,20 @@ fn test_too_many_accepted_sessions() {
     let config = Config::default();
 
     let mut rng = rng();
-    let (responder_public, responder_private) =
-        monad_wireauth_protocol::crypto::generate_keypair(&mut rng).unwrap();
+    let responder_keypair = monad_secp::KeyPair::generate(&mut rng);
+    let responder_public = responder_keypair.pubkey();
     let responder_ctx = TestContext::new();
-    let mut responder = API::new(
-        config.clone(),
-        responder_private,
-        responder_public.clone(),
-        responder_ctx,
-    );
+    let mut responder = API::new(config.clone(), responder_keypair, responder_ctx);
     let responder_addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
 
-    let (shared_public, shared_private) =
-        monad_wireauth_protocol::crypto::generate_keypair(&mut rng).unwrap();
+    let shared_keypair = monad_secp::KeyPair::generate(&mut rng);
+    let shared_secret_bytes = shared_keypair.secret_bytes();
 
     for i in 0..5 {
         let initiator_ctx = TestContext::new();
-        let mut initiator = API::new(
-            config.clone(),
-            shared_private.clone(),
-            shared_public.clone(),
-            initiator_ctx,
-        );
+        let initiator_keypair =
+            monad_secp::KeyPair::from_bytes(&mut shared_secret_bytes.clone()).unwrap();
+        let mut initiator = API::new(config.clone(), initiator_keypair, initiator_ctx);
         let initiator_addr: SocketAddr = format!("127.0.0.1:800{}", i).parse().unwrap();
 
         initiator
@@ -530,27 +520,16 @@ fn test_filter_drop_rate_limit() {
     };
 
     let mut rng = rng();
-    let (responder_public, responder_private) =
-        monad_wireauth_protocol::crypto::generate_keypair(&mut rng).unwrap();
+    let responder_keypair = monad_secp::KeyPair::generate(&mut rng);
+    let responder_public = responder_keypair.pubkey();
     let responder_ctx = TestContext::new();
-    let mut responder = API::new(
-        config.clone(),
-        responder_private,
-        responder_public.clone(),
-        responder_ctx,
-    );
+    let mut responder = API::new(config.clone(), responder_keypair, responder_ctx);
     let responder_addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
 
     for i in 0..4 {
-        let (initiator_public, initiator_private) =
-            monad_wireauth_protocol::crypto::generate_keypair(&mut rng).unwrap();
+        let initiator_keypair = monad_secp::KeyPair::generate(&mut rng);
         let initiator_ctx = TestContext::new();
-        let mut initiator = API::new(
-            config.clone(),
-            initiator_private,
-            initiator_public.clone(),
-            initiator_ctx,
-        );
+        let mut initiator = API::new(config.clone(), initiator_keypair, initiator_ctx);
         let initiator_addr: SocketAddr = format!("127.0.0.1:800{}", i).parse().unwrap();
 
         initiator
@@ -619,20 +598,14 @@ fn test_responder_timeout() {
     let config = Config::default();
 
     let mut rng = rng();
-    let (peer1_public, peer1_private) =
-        monad_wireauth_protocol::crypto::generate_keypair(&mut rng).unwrap();
+    let peer1_keypair = monad_secp::KeyPair::generate(&mut rng);
     let peer1_ctx = TestContext::new();
-    let mut peer1 = API::new(config.clone(), peer1_private, peer1_public, peer1_ctx);
+    let mut peer1 = API::new(config.clone(), peer1_keypair, peer1_ctx);
 
-    let (peer2_public, peer2_private) =
-        monad_wireauth_protocol::crypto::generate_keypair(&mut rng).unwrap();
+    let peer2_keypair = monad_secp::KeyPair::generate(&mut rng);
+    let peer2_public = peer2_keypair.pubkey();
     let peer2_ctx = TestContext::new();
-    let mut peer2 = API::new(
-        config,
-        peer2_private,
-        peer2_public.clone(),
-        peer2_ctx.clone(),
-    );
+    let mut peer2 = API::new(config, peer2_keypair, peer2_ctx.clone());
 
     let peer1_addr: SocketAddr = "127.0.0.1:8001".parse().unwrap();
     let peer2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
@@ -663,10 +636,9 @@ fn test_next_timer_includes_filter_reset() {
         ..Config::default()
     };
 
-    let (peer_public, peer_private) =
-        monad_wireauth_protocol::crypto::generate_keypair(&mut rng).unwrap();
+    let peer_keypair = monad_secp::KeyPair::generate(&mut rng);
     let peer_ctx = TestContext::new();
-    let peer = API::new(config, peer_private, peer_public, peer_ctx);
+    let peer = API::new(config, peer_keypair, peer_ctx);
 
     let next_timer = peer.next_timer();
     assert!(next_timer.is_some());
@@ -679,15 +651,14 @@ fn test_next_timer_returns_minimum_of_session_and_filter() {
     let mut rng = rng();
     let config = Config::default();
 
-    let (peer1_public, peer1_private) =
-        monad_wireauth_protocol::crypto::generate_keypair(&mut rng).unwrap();
+    let peer1_keypair = monad_secp::KeyPair::generate(&mut rng);
     let peer1_ctx = TestContext::new();
-    let mut peer1 = API::new(config.clone(), peer1_private, peer1_public, peer1_ctx);
+    let mut peer1 = API::new(config.clone(), peer1_keypair, peer1_ctx);
 
-    let (peer2_public, peer2_private) =
-        monad_wireauth_protocol::crypto::generate_keypair(&mut rng).unwrap();
+    let peer2_keypair = monad_secp::KeyPair::generate(&mut rng);
+    let peer2_public = peer2_keypair.pubkey();
     let peer2_ctx = TestContext::new();
-    let mut peer2 = API::new(config, peer2_private, peer2_public.clone(), peer2_ctx);
+    let mut peer2 = API::new(config, peer2_keypair, peer2_ctx);
 
     let peer2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
     let peer1_addr: SocketAddr = "127.0.0.1:8001".parse().unwrap();

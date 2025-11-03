@@ -7,7 +7,7 @@ mod tests {
     };
 
     use monad_wireauth_api::{Config, TestContext, API};
-    use monad_wireauth_protocol::{common::PublicKey, messages::Packet};
+    use monad_wireauth_protocol::messages::Packet;
     use proptest::prelude::*;
     use secp256k1::rand::rng;
     use tracing_subscriber::EnvFilter;
@@ -36,8 +36,8 @@ mod tests {
     }
 
     struct PeerState {
-        public_key: PublicKey,
-        private_key: monad_wireauth_protocol::common::PrivateKey,
+        public_key: monad_secp::PubKey,
+        private_key_bytes: [u8; 32],
         manager: API<TestContext>,
         context: TestContext,
         addr: SocketAddr,
@@ -48,16 +48,12 @@ mod tests {
     impl PeerState {
         fn new(peer_id: u8) -> Self {
             let mut rng = rng();
-            let (public_key, private_key) =
-                monad_wireauth_protocol::crypto::generate_keypair(&mut rng).unwrap();
+            let keypair = monad_secp::KeyPair::generate(&mut rng);
+            let public_key = keypair.pubkey();
+            let private_key_bytes = keypair.secret_bytes();
             let context = TestContext::new();
             let config = test_config();
-            let manager = API::new(
-                config,
-                private_key.clone(),
-                public_key.clone(),
-                context.clone(),
-            );
+            let manager = API::new(config, keypair, context.clone());
             let addr = SocketAddr::new(
                 IpAddr::V4(Ipv4Addr::new(10, 0, 0, peer_id)),
                 30000 + peer_id as u16,
@@ -65,7 +61,7 @@ mod tests {
 
             Self {
                 public_key,
-                private_key,
+                private_key_bytes,
                 manager,
                 context,
                 addr,
@@ -143,7 +139,7 @@ mod tests {
                                 {
                                     self.peers[receiver_idx]
                                         .received_data
-                                        .push(plaintext.as_slice().to_vec());
+                                        .push(plaintext.0.as_slice().to_vec());
                                 }
                             }
                         }
@@ -255,7 +251,7 @@ mod tests {
                                     .expect("decrypt should succeed"),
                             };
 
-                            let received = plaintext.as_slice().to_vec();
+                            let received = plaintext.0.as_slice().to_vec();
                             assert_eq!(
                                 data_bytes, received,
                                 "dispatch should return decrypted data matching sent data"
@@ -271,13 +267,10 @@ mod tests {
                     let peer_idx = (peer - 1) as usize;
                     let context = self.peers[peer_idx].context.clone();
                     let config = test_config();
+                    let mut key_bytes = self.peers[peer_idx].private_key_bytes;
+                    let keypair = monad_secp::KeyPair::from_bytes(&mut key_bytes).unwrap();
 
-                    self.peers[peer_idx].manager = API::new(
-                        config,
-                        self.peers[peer_idx].private_key.clone(),
-                        self.peers[peer_idx].public_key.clone(),
-                        context.clone(),
-                    );
+                    self.peers[peer_idx].manager = API::new(config, keypair, context.clone());
                     self.peers[peer_idx].context = context;
 
                     self.connected_for = Duration::ZERO;
@@ -291,13 +284,10 @@ mod tests {
 
                     let context = self.peers[peer_idx].context.clone();
                     let config = test_config();
+                    let mut key_bytes = self.peers[peer_idx].private_key_bytes;
+                    let keypair = monad_secp::KeyPair::from_bytes(&mut key_bytes).unwrap();
 
-                    self.peers[peer_idx].manager = API::new(
-                        config,
-                        self.peers[peer_idx].private_key.clone(),
-                        self.peers[peer_idx].public_key.clone(),
-                        context.clone(),
-                    );
+                    self.peers[peer_idx].manager = API::new(config, keypair, context.clone());
                     self.peers[peer_idx].context = context;
 
                     self.connected_for = Duration::ZERO;

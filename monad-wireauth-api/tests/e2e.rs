@@ -2,7 +2,7 @@ use std::{convert::TryFrom, rc::Rc, time::Duration};
 
 use bytes::Bytes;
 use monad_wireauth_api::{Config, StdContext, API};
-use monad_wireauth_protocol::{common::PublicKey, messages::Packet};
+use monad_wireauth_protocol::messages::Packet;
 use monad_wireauth_session::DEFAULT_RETRY_ATTEMPTS;
 use monoio::net::udp::UdpSocket;
 use secp256k1::rand::{rngs::StdRng, SeedableRng};
@@ -11,14 +11,14 @@ use zerocopy::IntoBytes;
 struct PeerNode {
     manager: API<StdContext>,
     socket: Rc<UdpSocket>,
-    public_key: PublicKey,
+    public_key: monad_secp::PubKey,
 }
 
 impl PeerNode {
     fn new(port: u16, seed: u64) -> std::io::Result<Self> {
         let mut rng = StdRng::seed_from_u64(seed);
-        let (public_key, private_key) =
-            monad_wireauth_protocol::crypto::generate_keypair(&mut rng).unwrap();
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
 
         let config = Config {
             session_timeout: Duration::from_secs(10),
@@ -31,7 +31,7 @@ impl PeerNode {
         };
 
         let context = StdContext::new();
-        let manager = API::new(config, private_key, public_key.clone(), context);
+        let manager = API::new(config, keypair, context);
 
         let addr = format!("127.0.0.1:{}", port);
         let socket = UdpSocket::bind(addr)?;
@@ -43,7 +43,7 @@ impl PeerNode {
         })
     }
 
-    fn connect(&mut self, peer_public: PublicKey, peer_addr: std::net::SocketAddr) {
+    fn connect(&mut self, peer_public: monad_secp::PubKey, peer_addr: std::net::SocketAddr) {
         self.manager
             .connect(peer_public, peer_addr, DEFAULT_RETRY_ATTEMPTS)
             .unwrap();
@@ -74,7 +74,7 @@ impl PeerNode {
                 Ok(None)
             }
             Packet::Data(data_packet) => match self.manager.decrypt(data_packet, src) {
-                Ok(plaintext) => Ok(Some(plaintext.as_slice().to_vec().into())),
+                Ok((plaintext, _public_key)) => Ok(Some(plaintext.as_slice().to_vec().into())),
                 Err(_) => Ok(None),
             },
         }
@@ -82,7 +82,7 @@ impl PeerNode {
 
     fn encrypt_by_public_key(
         &mut self,
-        peer_public: &PublicKey,
+        peer_public: &monad_secp::PubKey,
         plaintext: &mut [u8],
     ) -> monad_wireauth_api::Result<monad_wireauth_protocol::messages::DataPacketHeader> {
         self.manager.encrypt_by_public_key(peer_public, plaintext)

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+monad-secp = { path = "../monad-secp" }
 monad-wireauth-protocol.workspace = true
 bytes.workspace = true
 rand.workspace = true

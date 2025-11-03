@@ -11,7 +11,7 @@ use crate::{
 pub fn send_cookie_reply(
     nonce_secret: &[u8; 32],
     nonce_counter: u128,
-    responder_static_public: &SerializedPublicKey,
+    responder_static_public: &monad_secp::PubKey,
     msg_sender_index: u32,
     msg_mac1: &[u8; 16],
     cookie: &[u8; 16],
@@ -28,7 +28,7 @@ pub fn send_cookie_reply(
         ..Default::default()
     };
 
-    let temp_key = hash!(LABEL_COOKIE, responder_static_public.as_bytes());
+    let temp_key = hash!(LABEL_COOKIE, &responder_static_public.bytes_compressed());
 
     reply.encrypted_cookie = *cookie;
     reply.encrypted_cookie_tag = encrypt_in_place(
@@ -43,11 +43,11 @@ pub fn send_cookie_reply(
 
 /// decrypts cookie in place and returns the decrypted cookie as a separate buffer for convenience
 pub fn accept_cookie_reply(
-    responder_static_public: &SerializedPublicKey,
+    responder_static_public: &monad_secp::PubKey,
     reply: &mut CookieReply,
     msg_mac1: &[u8; 16],
 ) -> Result<[u8; 16], ProtocolError> {
-    let temp_key = hash!(LABEL_COOKIE, responder_static_public.as_bytes());
+    let temp_key = hash!(LABEL_COOKIE, &responder_static_public.bytes_compressed());
 
     decrypt_in_place(
         &(&temp_key).into(),
@@ -84,7 +84,7 @@ pub fn verify_cookie<M: crate::messages::MacMessage>(
     cookie_secret: &[u8; 32],
     nonce: u64,
     remote_addr: &SocketAddr,
-    static_public: &SerializedPublicKey,
+    static_public: &monad_secp::PubKey,
     message: &M,
 ) -> Result<(), ProtocolError> {
     let expected_cookie = generate_cookie(cookie_secret, nonce, remote_addr);
@@ -106,10 +106,9 @@ mod tests {
     fn test_cookie_send_and_accept() {
         let mut rng = rng();
 
-        let (_initiator_public, _initiator_private) =
-            crate::crypto::generate_keypair(&mut rng).unwrap();
-        let (responder_public, _responder_private) =
-            crate::crypto::generate_keypair(&mut rng).unwrap();
+        let _initiator_keypair = monad_secp::KeyPair::generate(&mut rng);
+        let responder_keypair = monad_secp::KeyPair::generate(&mut rng);
+        let responder_public = responder_keypair.pubkey();
 
         let msg_sender_index = 12345u32;
         let msg_mac1 = [0x42u8; 16];
@@ -124,7 +123,7 @@ mod tests {
         let reply = send_cookie_reply(
             &nonce_secret,
             cookie_nonce,
-            &SerializedPublicKey::from(&responder_public),
+            &responder_public,
             msg_sender_index,
             &msg_mac1,
             &cookie,
@@ -136,12 +135,8 @@ mod tests {
         let reply = <&mut CookieReply>::try_from(reply_bytes_mut.as_mut_slice())
             .expect("Failed to parse cookie reply");
 
-        let decrypted_cookie = accept_cookie_reply(
-            &SerializedPublicKey::from(&responder_public),
-            reply,
-            &msg_mac1,
-        )
-        .expect("Failed to accept cookie reply");
+        let decrypted_cookie = accept_cookie_reply(&responder_public, reply, &msg_mac1)
+            .expect("Failed to accept cookie reply");
 
         assert_eq!(cookie, decrypted_cookie);
     }
@@ -150,10 +145,9 @@ mod tests {
     fn test_cookie_with_wrong_mac1_fails() {
         let mut rng = rng();
 
-        let (_initiator_public, _initiator_private) =
-            crate::crypto::generate_keypair(&mut rng).unwrap();
-        let (responder_public, _responder_private) =
-            crate::crypto::generate_keypair(&mut rng).unwrap();
+        let _initiator_keypair = monad_secp::KeyPair::generate(&mut rng);
+        let responder_keypair = monad_secp::KeyPair::generate(&mut rng);
+        let responder_public = responder_keypair.pubkey();
 
         let msg_sender_index = 12345u32;
         let msg_mac1 = [0x42u8; 16];
@@ -169,7 +163,7 @@ mod tests {
         let reply = send_cookie_reply(
             &nonce_secret,
             cookie_nonce,
-            &SerializedPublicKey::from(&responder_public),
+            &responder_public,
             msg_sender_index,
             &msg_mac1,
             &cookie,
@@ -181,11 +175,7 @@ mod tests {
         let reply = <&mut CookieReply>::try_from(reply_bytes_mut.as_mut_slice())
             .expect("Failed to parse cookie reply");
 
-        let result = accept_cookie_reply(
-            &SerializedPublicKey::from(&responder_public),
-            reply,
-            &wrong_mac1,
-        );
+        let result = accept_cookie_reply(&responder_public, reply, &wrong_mac1);
 
         assert!(result.is_err());
     }
@@ -194,11 +184,11 @@ mod tests {
     fn test_cookie_with_wrong_public_key_fails() {
         let mut rng = rng();
 
-        let (_initiator_public, _initiator_private) =
-            crate::crypto::generate_keypair(&mut rng).unwrap();
-        let (responder_public, _responder_private) =
-            crate::crypto::generate_keypair(&mut rng).unwrap();
-        let (wrong_public, _wrong_private) = crate::crypto::generate_keypair(&mut rng).unwrap();
+        let _initiator_keypair = monad_secp::KeyPair::generate(&mut rng);
+        let responder_keypair = monad_secp::KeyPair::generate(&mut rng);
+        let responder_public = responder_keypair.pubkey();
+        let wrong_keypair = monad_secp::KeyPair::generate(&mut rng);
+        let wrong_public = wrong_keypair.pubkey();
 
         let msg_sender_index = 12345u32;
         let msg_mac1 = [0x42u8; 16];
@@ -213,7 +203,7 @@ mod tests {
         let reply = send_cookie_reply(
             &nonce_secret,
             cookie_nonce,
-            &SerializedPublicKey::from(&responder_public),
+            &responder_public,
             msg_sender_index,
             &msg_mac1,
             &cookie,
@@ -225,8 +215,7 @@ mod tests {
         let reply = <&mut CookieReply>::try_from(reply_bytes_mut.as_mut_slice())
             .expect("Failed to parse cookie reply");
 
-        let result =
-            accept_cookie_reply(&SerializedPublicKey::from(&wrong_public), reply, &msg_mac1);
+        let result = accept_cookie_reply(&wrong_public, reply, &msg_mac1);
 
         assert!(result.is_err());
     }
@@ -264,7 +253,8 @@ mod tests {
     #[test]
     fn test_verify_cookie_with_zero_mac2() {
         let mut rng = rng();
-        let (responder_public, _) = crate::crypto::generate_keypair(&mut rng).unwrap();
+        let responder_keypair = monad_secp::KeyPair::generate(&mut rng);
+        let responder_public = responder_keypair.pubkey();
 
         let cookie_secret = [0x33u8; 32];
         let nonce = 555u64;
@@ -275,20 +265,15 @@ mod tests {
             ..Default::default()
         };
 
-        let result = verify_cookie(
-            &cookie_secret,
-            nonce,
-            &addr,
-            &SerializedPublicKey::from(&responder_public),
-            &msg,
-        );
+        let result = verify_cookie(&cookie_secret, nonce, &addr, &responder_public, &msg);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_verify_cookie_with_valid_mac2() {
         let mut rng = rng();
-        let (responder_public, _) = crate::crypto::generate_keypair(&mut rng).unwrap();
+        let responder_keypair = monad_secp::KeyPair::generate(&mut rng);
+        let responder_public = responder_keypair.pubkey();
 
         let cookie_secret = [0x33u8; 32];
         let nonce = 555u64;
@@ -298,26 +283,21 @@ mod tests {
 
         let mut msg = HandshakeInitiation::default();
 
-        let responder_static_bytes: [u8; 33] = (&responder_public).into();
+        let responder_static_bytes = responder_public.bytes_compressed();
         let cookie_key = crate::hash!(crate::crypto::LABEL_COOKIE, &responder_static_bytes);
         let mac2: crate::common::MacTag =
             crate::keyed_hash!(cookie_key.as_ref(), msg.mac2_input(), &cookie).into();
         msg.mac2 = mac2;
 
-        let result = verify_cookie(
-            &cookie_secret,
-            nonce,
-            &addr,
-            &SerializedPublicKey::from(&responder_public),
-            &msg,
-        );
+        let result = verify_cookie(&cookie_secret, nonce, &addr, &responder_public, &msg);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_verify_cookie_with_wrong_mac2() {
         let mut rng = rng();
-        let (responder_public, _) = crate::crypto::generate_keypair(&mut rng).unwrap();
+        let responder_keypair = monad_secp::KeyPair::generate(&mut rng);
+        let responder_public = responder_keypair.pubkey();
 
         let cookie_secret = [0x33u8; 32];
         let nonce = 555u64;
@@ -328,20 +308,15 @@ mod tests {
             ..Default::default()
         };
 
-        let result = verify_cookie(
-            &cookie_secret,
-            nonce,
-            &addr,
-            &SerializedPublicKey::from(&responder_public),
-            &msg,
-        );
+        let result = verify_cookie(&cookie_secret, nonce, &addr, &responder_public, &msg);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_verify_cookie_response() {
         let mut rng = rng();
-        let (initiator_public, _) = crate::crypto::generate_keypair(&mut rng).unwrap();
+        let initiator_keypair = monad_secp::KeyPair::generate(&mut rng);
+        let initiator_public = initiator_keypair.pubkey();
 
         let cookie_secret = [0x44u8; 32];
         let nonce = 666u64;
@@ -351,25 +326,20 @@ mod tests {
 
         let mut msg = HandshakeResponse::default();
 
-        let initiator_static_bytes: [u8; 33] = (&initiator_public).into();
+        let initiator_static_bytes = initiator_public.bytes_compressed();
         let cookie_key = crate::hash!(crate::crypto::LABEL_COOKIE, &initiator_static_bytes);
         let mac2 = crate::keyed_hash!(cookie_key.as_ref(), msg.mac2_input(), &cookie).into();
         msg.mac2 = mac2;
 
-        let result = verify_cookie(
-            &cookie_secret,
-            nonce,
-            &addr,
-            &SerializedPublicKey::from(&initiator_public),
-            &msg,
-        );
+        let result = verify_cookie(&cookie_secret, nonce, &addr, &initiator_public, &msg);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_verify_cookie_response_with_wrong_mac2() {
         let mut rng = rng();
-        let (initiator_public, _) = crate::crypto::generate_keypair(&mut rng).unwrap();
+        let initiator_keypair = monad_secp::KeyPair::generate(&mut rng);
+        let initiator_public = initiator_keypair.pubkey();
 
         let cookie_secret = [0x55u8; 32];
         let nonce = 777u64;
@@ -380,13 +350,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = verify_cookie(
-            &cookie_secret,
-            nonce,
-            &addr,
-            &SerializedPublicKey::from(&initiator_public),
-            &msg,
-        );
+        let result = verify_cookie(&cookie_secret, nonce, &addr, &initiator_public, &msg);
         assert!(result.is_err());
     }
 }
