@@ -324,8 +324,48 @@ impl From<DataPacketHeader> for Bytes {
 }
 
 pub struct DataPacket<'a> {
-    pub header: &'a DataPacketHeader,
-    pub plaintext: &'a mut [u8],
+    header: &'a DataPacketHeader,
+    plaintext: &'a mut [u8],
+}
+
+impl<'a> DataPacket<'a> {
+    pub const HEADER_SIZE: usize = DataPacketHeader::SIZE;
+
+    pub fn new(header: &'a DataPacketHeader, plaintext: &'a mut [u8]) -> Self {
+        Self { header, plaintext }
+    }
+
+    pub fn header(&self) -> &DataPacketHeader {
+        self.header
+    }
+
+    pub fn data(&self) -> &[u8] {
+        self.plaintext
+    }
+
+    pub fn data_mut(&mut self) -> &mut [u8] {
+        self.plaintext
+    }
+}
+
+pub struct Plaintext<'a>(DataPacket<'a>);
+
+impl<'a> Plaintext<'a> {
+    pub const HEADER_SIZE: usize = DataPacket::HEADER_SIZE;
+
+    pub fn new(data_packet: DataPacket<'a>) -> Self {
+        Self(data_packet)
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        self.0.data()
+    }
+}
+
+impl<'a> AsRef<[u8]> for Plaintext<'a> {
+    fn as_ref(&self) -> &[u8] {
+        self.as_slice()
+    }
 }
 
 impl<'a> TryFrom<&'a mut [u8]> for DataPacket<'a> {
@@ -344,6 +384,55 @@ impl<'a> TryFrom<&'a mut [u8]> for DataPacket<'a> {
             .map_err(|_| MessageError::InvalidDataPacketHeader)?;
 
         Ok(DataPacket { header, plaintext })
+    }
+}
+
+pub enum ControlPacket<'a> {
+    HandshakeInitiation(&'a mut HandshakeInitiation),
+    HandshakeResponse(&'a mut HandshakeResponse),
+    CookieReply(&'a mut CookieReply),
+    Keepalive(DataPacket<'a>),
+}
+
+pub enum Packet<'a> {
+    Control(ControlPacket<'a>),
+    Data(DataPacket<'a>),
+}
+
+impl<'a> TryFrom<&'a mut [u8]> for Packet<'a> {
+    type Error = MessageError;
+
+    fn try_from(bytes: &'a mut [u8]) -> Result<Self, Self::Error> {
+        if bytes.is_empty() {
+            return Err(MessageError::BufferTooSmall {
+                required: 1,
+                actual: 0,
+            });
+        }
+
+        match bytes[0] {
+            TYPE_HANDSHAKE_INITIATION => {
+                let msg = <&mut HandshakeInitiation>::try_from(bytes)?;
+                Ok(Packet::Control(ControlPacket::HandshakeInitiation(msg)))
+            }
+            TYPE_HANDSHAKE_RESPONSE => {
+                let msg = <&mut HandshakeResponse>::try_from(bytes)?;
+                Ok(Packet::Control(ControlPacket::HandshakeResponse(msg)))
+            }
+            TYPE_COOKIE_REPLY => {
+                let msg = <&mut CookieReply>::try_from(bytes)?;
+                Ok(Packet::Control(ControlPacket::CookieReply(msg)))
+            }
+            TYPE_DATA => {
+                let data_packet = DataPacket::try_from(bytes)?;
+                if data_packet.data().is_empty() {
+                    Ok(Packet::Control(ControlPacket::Keepalive(data_packet)))
+                } else {
+                    Ok(Packet::Data(data_packet))
+                }
+            }
+            _ => Err(MessageError::InvalidHeader),
+        }
     }
 }
 

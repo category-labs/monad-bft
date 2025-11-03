@@ -1,12 +1,13 @@
 mod tests {
     use std::{
+        convert::TryFrom,
         net::{IpAddr, Ipv4Addr, SocketAddr},
         sync::Once,
         time::Duration,
     };
 
     use monad_wireauth_api::{Config, TestContext, API};
-    use monad_wireauth_protocol::common::PublicKey;
+    use monad_wireauth_protocol::{common::PublicKey, messages::Packet};
     use proptest::prelude::*;
     use secp256k1::rand::rng;
     use tracing_subscriber::EnvFilter;
@@ -123,19 +124,29 @@ mod tests {
                     break;
                 }
 
-                for (_sender_idx, receiver_idx, src_addr, packet) in packets_to_process {
+                for (_sender_idx, receiver_idx, src_addr, mut packet) in packets_to_process {
                     if !self.should_deliver_message() {
                         continue;
                     }
 
-                    let mut packet_copy = packet;
-                    if let Ok(Some(plaintext)) = self.peers[receiver_idx]
-                        .manager
-                        .dispatch(&mut packet_copy, src_addr)
-                    {
-                        self.peers[receiver_idx]
-                            .received_data
-                            .push(plaintext.to_vec());
+                    if let Ok(parsed_packet) = Packet::try_from(&mut packet[..]) {
+                        match parsed_packet {
+                            Packet::Control(control) => {
+                                let _ = self.peers[receiver_idx]
+                                    .manager
+                                    .dispatch_control(control, src_addr);
+                            }
+                            Packet::Data(data_packet) => {
+                                if let Ok(plaintext) = self.peers[receiver_idx]
+                                    .manager
+                                    .decrypt(data_packet, src_addr)
+                                {
+                                    self.peers[receiver_idx]
+                                        .received_data
+                                        .push(plaintext.as_slice().to_vec());
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -231,24 +242,25 @@ mod tests {
                         packet.extend_from_slice(&plaintext);
 
                         if should_deliver {
-                            let dispatch_result = self.peers[receiver_idx]
-                                .manager
-                                .dispatch(&mut packet, sender_addr);
+                            let parsed_packet =
+                                Packet::try_from(&mut packet[..]).expect("packet should parse");
 
-                            let received = match dispatch_result {
-                                Ok(Some(data)) => data,
-                                Ok(None) => panic!("when send succeeds and connected, dispatch should return some data, got none"),
-                                Err(e) => panic!("when send succeeds and connected, dispatch should succeed, error={e:?}"),
+                            let plaintext = match parsed_packet {
+                                Packet::Control(_) => {
+                                    panic!("expected data packet, got control packet")
+                                }
+                                Packet::Data(data_packet) => self.peers[receiver_idx]
+                                    .manager
+                                    .decrypt(data_packet, sender_addr)
+                                    .expect("decrypt should succeed"),
                             };
 
-                            self.peers[receiver_idx]
-                                .received_data
-                                .push(received.to_vec());
+                            let received = plaintext.as_slice().to_vec();
                             assert_eq!(
-                                data_bytes,
-                                received.to_vec(),
+                                data_bytes, received,
                                 "dispatch should return decrypted data matching sent data"
                             );
+                            self.peers[receiver_idx].received_data.push(received);
                         }
                     }
 

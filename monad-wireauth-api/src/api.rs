@@ -1,6 +1,5 @@
 use std::{
     collections::{BTreeSet, VecDeque},
-    convert::TryFrom,
     net::SocketAddr,
     time::Duration,
 };
@@ -9,8 +8,8 @@ use bytes::Bytes;
 use monad_wireauth_protocol::{
     common::{PrivateKey, PublicKey, SerializedPublicKey},
     messages::{
-        CookieReply, DataPacket, DataPacketHeader, HandshakeInitiation, HandshakeResponse,
-        TYPE_COOKIE_REPLY, TYPE_DATA, TYPE_HANDSHAKE_INITIATION, TYPE_HANDSHAKE_RESPONSE,
+        ControlPacket, CookieReply, DataPacket, DataPacketHeader, HandshakeInitiation,
+        HandshakeResponse, Plaintext,
     },
 };
 use monad_wireauth_session::{Config, SessionIndex};
@@ -19,7 +18,7 @@ use tracing::{debug, instrument, trace, Level};
 use crate::{
     context::Context,
     cookie::Cookies,
-    error::{Error, ProtocolErrorContext, Result, SessionErrorContext},
+    error::{Error, Result, SessionErrorContext},
     filter::{Filter, FilterAction},
     state::State,
     InitiatorState, ResponderState, TransportState,
@@ -409,14 +408,46 @@ impl<C: Context> API<C> {
         Ok(())
     }
 
-    fn decrypt_data_packet(&mut self, packet: &mut [u8], remote_addr: SocketAddr) -> Result<bool> {
-        let is_keepalive = packet.len() == DataPacketHeader::SIZE;
-        let data_packet = DataPacket::try_from(packet).map_err(|e| e.with_addr(remote_addr))?;
-        let receiver_index = data_packet.header.receiver_index.into();
-        let nonce: u64 = data_packet.header.counter.into();
+    #[instrument(level = Level::TRACE, skip(self, control), fields(local_public_key = ?self.local_serialized_public, remote_addr = ?remote_addr))]
+    pub fn dispatch_control(
+        &mut self,
+        control: ControlPacket,
+        remote_addr: SocketAddr,
+    ) -> Result<()> {
+        match control {
+            ControlPacket::HandshakeInitiation(handshake) => {
+                debug!("processing handshake initiation");
+                self.accept_handshake_init(handshake, remote_addr)
+            }
+            ControlPacket::HandshakeResponse(response) => {
+                debug!("processing handshake response");
+                self.complete_handshake(response, remote_addr)
+            }
+            ControlPacket::CookieReply(cookie_reply) => {
+                debug!("processing cookie reply");
+                self.accept_cookie(cookie_reply, remote_addr)
+            }
+            ControlPacket::Keepalive(data_packet) => {
+                trace!("processing keepalive packet");
+                self.decrypt(data_packet, remote_addr)?;
+                Ok(())
+            }
+        }
+    }
+
+    #[instrument(level = Level::TRACE, skip(self, data_packet), fields(local_public_key = ?self.local_serialized_public, remote_addr = ?remote_addr))]
+    pub fn decrypt<'a>(
+        &mut self,
+        data_packet: DataPacket<'a>,
+        remote_addr: SocketAddr,
+    ) -> Result<Plaintext<'a>> {
+        let receiver_index = data_packet.header().receiver_index.into();
+        let nonce: u64 = data_packet.header().counter.into();
         trace!(local_session_id=?receiver_index, nonce, "decrypting data packet");
 
-        let timer = if let Some(transport) = self.state.get_transport_mut(&receiver_index) {
+        let (timer, plaintext) = if let Some(transport) =
+            self.state.get_transport_mut(&receiver_index)
+        {
             let duration_since_start = self.context.duration_since_start();
             let remote_addr = transport.remote_addr;
             transport
@@ -425,13 +456,13 @@ impl<C: Context> API<C> {
         } else if let Some(responder) = self.state.get_responder_mut(&receiver_index) {
             let duration_since_start = self.context.duration_since_start();
             match responder.decrypt(&self.config, duration_since_start, data_packet) {
-                Ok(_) => {
+                Ok((_timer, plaintext)) => {
                     let responder = self.state.remove_responder(&receiver_index).unwrap();
                     let (transport, establish_timer) =
                         responder.establish(self.context.rng(), &self.config, duration_since_start);
                     debug!(local_session_id=?receiver_index, "responder session established");
                     self.handle_established(receiver_index, transport);
-                    establish_timer
+                    (establish_timer, plaintext)
                 }
                 Err(e) => {
                     return Err(e.with_addr(remote_addr));
@@ -445,7 +476,7 @@ impl<C: Context> API<C> {
 
         self.next_timers.insert((timer, receiver_index));
 
-        Ok(is_keepalive)
+        Ok(plaintext)
     }
 
     fn complete_handshake(
@@ -547,58 +578,6 @@ impl<C: Context> API<C> {
                 .ok_or(Error::SessionNotEstablishedForAddress { addr: *socket_addr })?,
             plaintext,
         )
-    }
-
-    #[instrument(level = Level::TRACE, skip(self, packet), fields(local_public_key = ?self.local_serialized_public, remote_addr = ?remote_addr))]
-    pub fn dispatch(
-        &mut self,
-        packet: &mut [u8],
-        remote_addr: SocketAddr,
-    ) -> Result<Option<Bytes>> {
-        if packet.is_empty() {
-            return Err(Error::EmptyPacket { addr: remote_addr });
-        }
-
-        match packet[0] {
-            TYPE_HANDSHAKE_INITIATION => {
-                debug!("processing handshake initiation");
-                let handshake = <&mut HandshakeInitiation>::try_from(packet)
-                    .map_err(|e| e.with_addr(remote_addr))?;
-                self.accept_handshake_init(handshake, remote_addr)?;
-                Ok(None)
-            }
-            TYPE_HANDSHAKE_RESPONSE => {
-                debug!("processing handshake response");
-                let response = <&mut HandshakeResponse>::try_from(packet)
-                    .map_err(|e| e.with_addr(remote_addr))?;
-                self.complete_handshake(response, remote_addr)?;
-                Ok(None)
-            }
-            TYPE_COOKIE_REPLY => {
-                debug!("processing cookie reply");
-                let cookie_reply =
-                    <&mut CookieReply>::try_from(packet).map_err(|e| e.with_addr(remote_addr))?;
-                self.accept_cookie(cookie_reply, remote_addr)?;
-                Ok(None)
-            }
-            TYPE_DATA => {
-                trace!("processing data packet");
-                let is_keepalive = self.decrypt_data_packet(packet, remote_addr)?;
-                if is_keepalive {
-                    trace!("keepalive packet");
-                    Ok(None)
-                } else {
-                    Ok(Some(packet[DataPacketHeader::SIZE..].to_vec().into()))
-                }
-            }
-            _ => {
-                debug!(packet_type = packet[0], "unknown packet type");
-                Err(Error::InvalidMessageType {
-                    msg_type: packet[0] as u32,
-                    addr: remote_addr,
-                })
-            }
-        }
     }
 
     #[instrument(level = Level::TRACE, skip(self, public_key), fields(local_public_key = ?self.local_serialized_public))]

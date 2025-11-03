@@ -7,7 +7,7 @@ use std::{
 use monad_wireauth_protocol::{
     common::*,
     handshake::{self},
-    messages::{DataPacket, HandshakeInitiation, HandshakeResponse},
+    messages::{DataPacket, HandshakeInitiation, HandshakeResponse, Plaintext},
 };
 
 use crate::{
@@ -121,12 +121,12 @@ impl ResponderState {
         Ok((ResponderState { transport }, timer, response_msg))
     }
 
-    pub fn decrypt(
+    pub fn decrypt<'a>(
         &mut self,
         config: &Config,
         duration_since_start: Duration,
-        data_packet: DataPacket,
-    ) -> Result<Duration, SessionError> {
+        data_packet: DataPacket<'a>,
+    ) -> Result<(Duration, Plaintext<'a>), SessionError> {
         self.transport
             .decrypt(config, duration_since_start, data_packet)
     }
