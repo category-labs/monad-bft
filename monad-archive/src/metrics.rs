@@ -65,6 +65,12 @@ pub enum MetricNames {
     BFT_BLOCK_FILES_UPLOADED,
     BFT_BLOCK_FILES_FAILED_TO_PROCESS,
 
+    // Generic Dir Archiver
+    GENERIC_ARCHIVE_FILES_DISCOVERED,
+    GENERIC_ARCHIVE_FILES_ALREADY_IN_S3,
+    GENERIC_ARCHIVE_FILES_UPLOADED,
+    GENERIC_ARCHIVE_FILES_FAILED_TO_PROCESS,
+
     // Archive Checker
     LATEST_TO_CHECK,
     NEXT_TO_CHECK,
@@ -132,6 +138,14 @@ impl MetricNames {
             MetricNames::BFT_BLOCK_FILES_UPLOADED => "bft_block_files_uploaded",
             MetricNames::BFT_BLOCK_FILES_FAILED_TO_PROCESS => "bft_block_files_failed_to_process",
             MetricNames::BLOCK_ARCHIVE_WORKER_TRACES_FAILED => "block_archive_worker_traces_failed",
+            MetricNames::GENERIC_ARCHIVE_FILES_DISCOVERED => "generic_archive_files_discovered",
+            MetricNames::GENERIC_ARCHIVE_FILES_ALREADY_IN_S3 => {
+                "generic_archive_files_already_in_s3"
+            }
+            MetricNames::GENERIC_ARCHIVE_FILES_UPLOADED => "generic_archive_files_uploaded",
+            MetricNames::GENERIC_ARCHIVE_FILES_FAILED_TO_PROCESS => {
+                "generic_archive_files_failed_to_process"
+            }
         }
     }
 }

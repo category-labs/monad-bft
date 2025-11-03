@@ -30,7 +30,7 @@ pub async fn file_checkpoint_worker(
     path: PathBuf,
     blob_prefix: String,
     poll_frequency: Duration,
-) {
+) -> Result<()> {
     let mut interval = tokio::time::interval(poll_frequency);
 
     loop {

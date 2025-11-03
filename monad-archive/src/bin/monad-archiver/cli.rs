@@ -82,6 +82,16 @@ pub struct Cli {
     #[arg(long, default_value_t = 300)]
     pub additional_checkpoint_freq_secs: u64,
 
+    #[arg(long, value_delimiter = ',')]
+    pub additional_dirs_to_archive: Vec<PathBuf>,
+
+    #[arg(long, default_value_t = 10.)]
+    pub additional_dirs_archive_freq_secs: f64,
+
+    #[arg(long)]
+    /// Disable normal archiving and only run auxiliary workers
+    pub unsafe_disable_normal_archiving: bool,
+
     #[arg(long)]
     pub otel_endpoint: Option<String>,
 
