@@ -22,11 +22,9 @@ CPU: 12th Gen Intel(R) Core(TM) i9-12900KF
 RUSTFLAGS: `-C target-cpu=haswell -C opt-level=3`
 
 ```
-Timer precision: 26 ns
-manager_bench                     fastest       │ slowest       │ median        │ mean          │ samples │ iters
-├─ bench_session_decrypt          162.8 ns      │ 235.5 ns      │ 166.1 ns      │ 167.2 ns      │ 100     │ 1600
-├─ bench_session_encrypt          133.5 ns      │ 136 ns        │ 134.6 ns      │ 134.6 ns      │ 100     │ 3200
-├─ bench_session_handle_init      131.7 µs      │ 206.9 µs      │ 135.7 µs      │ 137.7 µs      │ 100     │ 100
-├─ bench_session_handle_response  61.64 µs      │ 72.83 µs      │ 62.98 µs      │ 63.74 µs      │ 100     │ 100
-╰─ bench_session_send_init        74.48 µs      │ 116.2 µs      │ 76.31 µs      │ 77.72 µs      │ 100     │ 100
+session_send_init       time:   [60.101 µs 60.224 µs 60.339 µs]
+session_handle_init     time:   [112.86 µs 113.14 µs 113.41 µs]
+session_handle_response time:   [51.354 µs 51.535 µs 51.756 µs]
+session_encrypt         time:   [117.21 ns 117.46 ns 117.72 ns]
+session_decrypt         time:   [175.48 ns 175.81 ns 176.16 ns]
 ```
