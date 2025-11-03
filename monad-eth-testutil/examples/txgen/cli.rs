@@ -241,6 +241,77 @@ impl From<CliGenMode> for GenMode {
     }
 }
 
+pub fn patch_config_with_cli_args(config: &mut Config, value: CliConfig) {
+    if config.workload_groups.is_empty() {
+        config.workload_groups = vec![value.clone().into()];
+    }
+
+    if let Some(rpc_url) = value.rpc_url {
+        config.rpc_urls = vec![rpc_url.to_string()];
+    }
+
+    if let Some(root_private_keys) = value.root_private_keys {
+        config.root_private_keys = root_private_keys;
+    }
+    if let Some(refresh_delay_secs) = value.refresh_delay_secs {
+        config.refresh_delay_secs = refresh_delay_secs;
+    }
+
+    if let Some(use_receipts) = value.use_receipts {
+        config.use_receipts = use_receipts;
+    }
+    if let Some(use_receipts_by_block) = value.use_receipts_by_block {
+        config.use_receipts_by_block = use_receipts_by_block;
+    }
+    if let Some(use_get_logs) = value.use_get_logs {
+        config.use_get_logs = use_get_logs;
+    }
+    if let Some(chain_id) = value.chain_id {
+        config.chain_id = chain_id;
+    }
+    if let Some(min_native_amount) = value.min_native_amount {
+        config.min_native_amount = min_native_amount.to_string();
+    }
+    if let Some(seed_native_amount) = value.seed_native_amount {
+        config.seed_native_amount = seed_native_amount.to_string();
+    }
+    if let Some(debug_log_file) = value.debug_log_file {
+        config.debug_log_file = debug_log_file;
+    }
+    if let Some(trace_log_file) = value.trace_log_file {
+        config.trace_log_file = trace_log_file;
+    }
+    if let Some(use_static_tps_interval) = value.use_static_tps_interval {
+        config.use_static_tps_interval = use_static_tps_interval;
+    }
+    if let Some(otel_endpoint) = value.otel_endpoint {
+        config.otel_endpoint = Some(otel_endpoint);
+    }
+    if let Some(otel_replica_name) = value.otel_replica_name {
+        config.otel_replica_name = otel_replica_name;
+    }
+    if let Some(gas_limit) = value.gas_limit_contract_deployment {
+        config.gas_limit_contract_deployment = Some(gas_limit);
+    }
+    if let Some(gas_limit) = value.set_tx_gas_limit {
+        config.set_tx_gas_limit = Some(gas_limit);
+    }
+    if let Some(priority_fee) = value.priority_fee {
+        config.priority_fee = Some(priority_fee);
+    }
+    if let Some(range_str) = value.random_priority_fee_range {
+        if let Some((min, max)) = parse_priority_fee_range(&range_str) {
+            config.random_priority_fee_range = Some((min, max));
+        }
+    }
+    if let Some(erc20_contract) = value.erc20_contract {
+        config.erc20_contract = Some(erc20_contract);
+    }
+    if let Some(native_contract) = value.native_contract {
+        config.native_contract = Some(native_contract);
+    }
+}
+
 impl From<CliConfig> for Config {
     fn from(value: CliConfig) -> Self {
         let mut config = Config {
@@ -248,70 +319,7 @@ impl From<CliConfig> for Config {
             ..Default::default()
         };
 
-        if let Some(rpc_url) = value.rpc_url {
-            config.rpc_urls = vec![rpc_url.to_string()];
-        }
-
-        if let Some(root_private_keys) = value.root_private_keys {
-            config.root_private_keys = root_private_keys;
-        }
-        if let Some(refresh_delay_secs) = value.refresh_delay_secs {
-            config.refresh_delay_secs = refresh_delay_secs;
-        }
-
-        if let Some(use_receipts) = value.use_receipts {
-            config.use_receipts = use_receipts;
-        }
-        if let Some(use_receipts_by_block) = value.use_receipts_by_block {
-            config.use_receipts_by_block = use_receipts_by_block;
-        }
-        if let Some(use_get_logs) = value.use_get_logs {
-            config.use_get_logs = use_get_logs;
-        }
-        if let Some(chain_id) = value.chain_id {
-            config.chain_id = chain_id;
-        }
-        if let Some(min_native_amount) = value.min_native_amount {
-            config.min_native_amount = min_native_amount.to_string();
-        }
-        if let Some(seed_native_amount) = value.seed_native_amount {
-            config.seed_native_amount = seed_native_amount.to_string();
-        }
-        if let Some(debug_log_file) = value.debug_log_file {
-            config.debug_log_file = debug_log_file;
-        }
-        if let Some(trace_log_file) = value.trace_log_file {
-            config.trace_log_file = trace_log_file;
-        }
-        if let Some(use_static_tps_interval) = value.use_static_tps_interval {
-            config.use_static_tps_interval = use_static_tps_interval;
-        }
-        if let Some(otel_endpoint) = value.otel_endpoint {
-            config.otel_endpoint = Some(otel_endpoint);
-        }
-        if let Some(otel_replica_name) = value.otel_replica_name {
-            config.otel_replica_name = otel_replica_name;
-        }
-        if let Some(gas_limit) = value.gas_limit_contract_deployment {
-            config.gas_limit_contract_deployment = Some(gas_limit);
-        }
-        if let Some(gas_limit) = value.set_tx_gas_limit {
-            config.set_tx_gas_limit = Some(gas_limit);
-        }
-        if let Some(priority_fee) = value.priority_fee {
-            config.priority_fee = Some(priority_fee);
-        }
-        if let Some(range_str) = value.random_priority_fee_range {
-            if let Some((min, max)) = parse_priority_fee_range(&range_str) {
-                config.random_priority_fee_range = Some((min, max));
-            }
-        }
-        if let Some(erc20_contract) = value.erc20_contract {
-            config.erc20_contract = Some(erc20_contract);
-        }
-        if let Some(native_contract) = value.native_contract {
-            config.native_contract = Some(native_contract);
-        }
+        patch_config_with_cli_args(&mut config, value);
         config
     }
 }
