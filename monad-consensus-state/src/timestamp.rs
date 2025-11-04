@@ -17,7 +17,7 @@ use monad_consensus_types::quorum_certificate::{
     TimestampAdjustment, TimestampAdjustmentDirection,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BlockTimestamp {
     local_time_ns: u128,
 

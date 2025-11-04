@@ -99,6 +99,19 @@ where
             timeout_signature,
         }
     }
+
+    pub fn extract_vote(&self) -> Option<(Vote, SCT::SignatureType)> {
+        let HighExtendVote::Tip(tip, Some(sig)) = &self.high_extend else {
+            return None;
+        };
+
+        let vote = Vote {
+            id: tip.block_header.get_id(),
+            epoch: self.tminfo.epoch,
+            round: self.tminfo.round,
+        };
+        Some((vote, *sig))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -509,8 +522,25 @@ where
             high_extend: highest_extend,
         })
     }
+
+    pub fn try_into_no_tip_certificate(self) -> Option<NoTipCertificate<SCT>> {
+        match self.high_extend {
+            HighExtend::Qc(high_qc) => Some(NoTipCertificate {
+                epoch: self.epoch,
+                round: self.round,
+                tip_rounds: self.tip_rounds,
+                high_qc,
+            }),
+            _ => None,
+        }
+    }
 }
 
+// A NoTipCertificate is a TC where the high_extend is a QC. The
+// creation of a valid NoTipCertificate requires 2f+1 validators to
+// testify in the Timeouts that they have not seen the proposal of the
+// last round. Therefore, NoTipCertificate has the same attestation
+// power as a NEC, allowing the next leader to make fresh proposal.
 #[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
 pub struct NoTipCertificate<SCT>
 where
