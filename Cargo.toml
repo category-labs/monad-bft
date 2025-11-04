@@ -84,9 +84,7 @@ monad-types = { path = "./monad-types" }
 monad-updaters = { path = "./monad-updaters" }
 monad-validator = { path = "./monad-validator" }
 monad-wal = { path = "./monad-wal" }
-monad-wireauth-api = { path = "./monad-wireauth-api" }
-monad-wireauth-protocol = { path = "./monad-wireauth-protocol" }
-monad-wireauth-session = { path = "./monad-wireauth-session" }
+monad-wireauth = { path = "./monad-wireauth" }
 
 actix = "0.13"
 actix-http = "3.11.1"
