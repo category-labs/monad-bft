@@ -46,7 +46,6 @@ impl StakingContractCall {
     pub const EPOCH_CHANGE_FUNCTION_SELECTOR: FixedBytes<4> = FixedBytes::new(hex!("0x1d4e9f02"));
 
     pub const MON: u64 = 1_000_000_000_000_000_000;
-    pub const BLOCK_REWARD_MON: u64 = 1;
 
     pub fn is_restricted_staking_contract_call(txn: &Recovered<TxEnvelope>) -> bool {
         if txn.to() == Some(Self::STAKING_CONTRACT_ADDRESS) {
