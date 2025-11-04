@@ -44,13 +44,23 @@ pub(crate) struct TrackedTxLimitsConfig {
 }
 
 impl TrackedTxLimitsConfig {
-    pub fn new(soft_tx_expiry: Duration, hard_tx_expiry: Duration) -> Self {
-        Self {
-            max_addresses: DEFAULT_MAX_ADDRESSES,
-            max_txs: DEFAULT_MAX_TXS,
-            max_eip2718_bytes: DEFAULT_MAX_EIP2718_BYTES,
+    pub fn new(
+        max_addresses: Option<usize>,
+        max_txs: Option<usize>,
+        max_eip2718_bytes: Option<u64>,
 
-            soft_evict_addresses_watermark: DEFAULT_MAX_ADDRESSES - 512,
+        soft_evict_addresses_watermark: Option<usize>,
+
+        soft_tx_expiry: Duration,
+        hard_tx_expiry: Duration,
+    ) -> Self {
+        Self {
+            max_addresses: max_addresses.unwrap_or(DEFAULT_MAX_ADDRESSES),
+            max_txs: max_txs.unwrap_or(DEFAULT_MAX_TXS),
+            max_eip2718_bytes: max_eip2718_bytes.unwrap_or(DEFAULT_MAX_EIP2718_BYTES),
+
+            soft_evict_addresses_watermark: soft_evict_addresses_watermark
+                .unwrap_or(DEFAULT_MAX_ADDRESSES - 512),
 
             soft_tx_expiry,
             hard_tx_expiry,

@@ -48,7 +48,11 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing::{debug, error, info, warn};
 
 pub use self::transaction::max_eip2718_encoded_length;
-use self::{sequencer::ProposalSequencer, tracked::TrackedTxMap, transaction::ValidEthTransaction};
+use self::{
+    sequencer::ProposalSequencer,
+    tracked::{TrackedTxLimitsConfig, TrackedTxMap},
+    transaction::ValidEthTransaction,
+};
 use crate::EthTxPoolEventTracker;
 
 mod sequencer;
@@ -85,6 +89,10 @@ where
     CertificateSignaturePubKey<ST>: ExtractEthAddress,
 {
     pub fn new(
+        max_addresses: Option<usize>,
+        max_txs: Option<usize>,
+        max_eip2718_bytes: Option<u64>,
+        soft_evict_addresses_watermark: Option<usize>,
         soft_tx_expiry: Duration,
         hard_tx_expiry: Duration,
         chain_id: u64,
@@ -93,7 +101,14 @@ where
         do_local_insert: bool,
     ) -> Self {
         Self {
-            tracked: TrackedTxMap::new(soft_tx_expiry, hard_tx_expiry),
+            tracked: TrackedTxMap::new(TrackedTxLimitsConfig::new(
+                max_addresses,
+                max_txs,
+                max_eip2718_bytes,
+                soft_evict_addresses_watermark,
+                soft_tx_expiry,
+                hard_tx_expiry,
+            )),
 
             last_commit: None,
 
@@ -716,6 +731,10 @@ where
 {
     pub fn default_testing() -> Self {
         Self::new(
+            None,
+            None,
+            None,
+            None,
             Duration::from_secs(60),
             Duration::from_secs(60),
             MockChainConfig::DEFAULT.chain_id(),

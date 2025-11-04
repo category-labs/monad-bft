@@ -137,6 +137,10 @@ where
 
                 move |command_rx, event_tx| {
                     let pool = EthTxPool::new(
+                        None,
+                        None,
+                        None,
+                        None,
                         soft_tx_expiry,
                         hard_tx_expiry,
                         chain_config.chain_id(),

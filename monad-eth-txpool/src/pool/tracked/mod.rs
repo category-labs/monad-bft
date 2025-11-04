@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{marker::PhantomData, time::Duration};
+use std::marker::PhantomData;
 
 use alloy_primitives::Address;
 use indexmap::{map::Entry as IndexMapEntry, IndexMap};
@@ -31,9 +31,9 @@ use monad_state_backend::StateBackend;
 use monad_validator::signature_collection::SignatureCollection;
 
 use self::limits::TrackedTxLimits;
-pub(super) use self::list::TrackedTxList;
+pub(super) use self::{limits::TrackedTxLimitsConfig, list::TrackedTxList};
 use super::transaction::ValidEthTransaction;
-use crate::{pool::tracked::limits::TrackedTxLimitsConfig, EthTxPoolEventTracker};
+use crate::EthTxPoolEventTracker;
 
 mod limits;
 mod list;
@@ -65,9 +65,7 @@ where
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
-    pub fn new(soft_tx_expiry: Duration, hard_tx_expiry: Duration) -> Self {
-        let limits_config = TrackedTxLimitsConfig::new(soft_tx_expiry, hard_tx_expiry);
-
+    pub fn new(limits_config: TrackedTxLimitsConfig) -> Self {
         let limits = TrackedTxLimits::new(limits_config);
 
         Self {
