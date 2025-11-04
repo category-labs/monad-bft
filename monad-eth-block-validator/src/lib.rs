@@ -290,7 +290,10 @@ where
         }
 
         // early return if sum of transaction gas limits exceed block gas limit
-        let total_gas: u64 = transactions.iter().map(|tx| tx.gas_limit()).sum();
+        let total_gas: u64 = transactions
+            .iter()
+            .try_fold(0u64, |acc, tx| acc.checked_add(tx.gas_limit()))
+            .ok_or(BlockValidationError::TxnError)?;
         if total_gas > chain_params.proposal_gas_limit {
             return Err(BlockValidationError::TxnError);
         }
