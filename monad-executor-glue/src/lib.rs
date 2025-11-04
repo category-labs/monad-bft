@@ -269,17 +269,31 @@ pub struct PeerEntry<ST: CertificateSignatureRecoverable> {
 
     pub signature: ST,
     pub record_seq_num: u64,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_port: Option<u16>,
 }
 
 impl<ST: CertificateSignatureRecoverable> Encodable for PeerEntry<ST> {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-        let enc: [&dyn Encodable; 4] = [
-            &self.pubkey,
-            &self.addr.to_string(),
-            &self.signature,
-            &self.record_seq_num,
-        ];
-        encode_list::<_, dyn Encodable>(&enc, out);
+        if let Some(auth_port) = self.auth_port {
+            let enc: [&dyn Encodable; 5] = [
+                &self.pubkey,
+                &self.addr.to_string(),
+                &self.signature,
+                &self.record_seq_num,
+                &auth_port,
+            ];
+            encode_list::<_, dyn Encodable>(&enc, out);
+        } else {
+            let enc: [&dyn Encodable; 4] = [
+                &self.pubkey,
+                &self.addr.to_string(),
+                &self.signature,
+                &self.record_seq_num,
+            ];
+            encode_list::<_, dyn Encodable>(&enc, out);
+        }
     }
 }
 
@@ -295,11 +309,18 @@ impl<ST: CertificateSignatureRecoverable> Decodable for PeerEntry<ST> {
         let signature = ST::decode(&mut payload)?;
         let record_seq_num = u64::decode(&mut payload)?;
 
+        let auth_port = if !payload.is_empty() {
+            Some(u16::decode(&mut payload)?)
+        } else {
+            None
+        };
+
         Ok(Self {
             pubkey,
             addr,
             signature,
             record_seq_num,
+            auth_port,
         })
     }
 }
@@ -2493,6 +2514,7 @@ mod tests {
             addr,
             signature,
             record_seq_num,
+            auth_port: None,
         };
         let encoded = alloy_rlp::encode(&entry);
         let decoded: PeerEntry<NopSignature> = alloy_rlp::decode_exact(&encoded).unwrap();

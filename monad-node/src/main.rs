@@ -30,11 +30,8 @@ use monad_chain_config::ChainConfig;
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{metrics::Metrics, validator_data::ValidatorSetDataWithEpoch};
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
-use monad_crypto::{
-    certificate_signature::{
-        CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
-    },
-    signing_domain,
+use monad_crypto::certificate_signature::{
+    CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_dataplane::DataplaneBuilder;
 use monad_eth_block_policy::EthBlockPolicy;
@@ -588,22 +585,17 @@ where
                     return None;
                 }
             };
-            let name_record = NameRecord::new(*address.ip(), address.port(), peer.record_seq_num);
 
-            // verify signature of name record
-            let mut encoded = Vec::new();
-            name_record.encode(&mut encoded);
-            match peer
-                .name_record_sig
-                .verify::<signing_domain::NameRecord>(&encoded, &peer.secp256k1_pubkey)
-            {
-                Ok(_) => Some((
-                    node_id,
-                    MonadNameRecord {
-                        name_record,
-                        signature: peer.name_record_sig,
-                    },
-                )),
+            let peer_entry = monad_executor_glue::PeerEntry {
+                pubkey: peer.secp256k1_pubkey,
+                addr: address,
+                signature: peer.name_record_sig,
+                record_seq_num: peer.record_seq_num,
+                auth_port: peer.auth_port,
+            };
+
+            match MonadNameRecord::try_from(&peer_entry) {
+                Ok(monad_name_record) => Some((node_id, monad_name_record)),
                 Err(_) => {
                     warn!(?node_id, "invalid name record signature in config file");
                     None

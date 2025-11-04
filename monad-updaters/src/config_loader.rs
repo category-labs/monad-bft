@@ -217,6 +217,7 @@ where
                 addr,
                 signature: peer.name_record_sig,
                 record_seq_num: peer.record_seq_num,
+                auth_port: peer.auth_port,
             });
         }
         peer_entries

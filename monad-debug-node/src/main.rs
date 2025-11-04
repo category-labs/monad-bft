@@ -176,6 +176,7 @@ fn main() -> Result<(), Error> {
                         secp256k1_pubkey: peer.pubkey,
                         name_record_sig: peer.signature,
                         record_seq_num: peer.record_seq_num,
+                        auth_port: peer.auth_port,
                     };
                     peer_configs.push(peer_config);
                 }

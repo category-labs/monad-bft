@@ -479,13 +479,7 @@ where
                         // FIXME: bind name records with peers and ask peer discovery to verify
                         for ii in 0..num_mappings {
                             let rec = &confirm_msg.name_records[ii];
-                            let peer_entry = PeerEntry {
-                                pubkey: confirm_msg.peers[ii].pubkey(),
-                                addr: rec.udp_address(),
-                                signature: rec.signature,
-                                record_seq_num: rec.name_record.seq(),
-                            };
-                            peers.push(peer_entry);
+                            peers.push(rec.with_pubkey(confirm_msg.peers[ii].pubkey()).into());
                         }
                         this.peer_discovery_driver
                             .lock()

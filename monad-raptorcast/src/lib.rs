@@ -628,11 +628,8 @@ where
                         .get_name_records();
                     let peer_list = name_records
                         .iter()
-                        .map(|(node_id, name_record)| PeerEntry {
-                            pubkey: node_id.pubkey(),
-                            addr: name_record.udp_address(),
-                            signature: name_record.signature,
-                            record_seq_num: name_record.seq(),
+                        .map(|(node_id, name_record)| {
+                            name_record.with_pubkey(node_id.pubkey()).into()
                         })
                         .collect::<Vec<_>>();
                     self.pending_events
@@ -975,10 +972,13 @@ where
                     }
                     PeerDiscoveryEmit::PingPongCommand {
                         target,
-                        socket_address,
+                        name_record,
                         message,
                     } => {
-                        let addrs = HashMap::from_iter([(target, SocketAddr::V4(socket_address))]);
+                        let addrs = HashMap::from_iter([(
+                            target,
+                            SocketAddr::V4(name_record.udp_socket()),
+                        )]);
                         send_peer_disc_msg(this, target, message, Some(addrs));
                     }
                     PeerDiscoveryEmit::MetricsCommand(executor_metrics) => {

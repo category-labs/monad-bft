@@ -15,7 +15,7 @@
 
 use std::{
     collections::{HashMap, VecDeque},
-    net::{SocketAddr, SocketAddrV4},
+    net::SocketAddr,
     task::{Context, Poll, Waker},
     time::Duration,
 };
@@ -40,7 +40,7 @@ pub enum PeerDiscoveryEmit<ST: CertificateSignatureRecoverable> {
     },
     PingPongCommand {
         target: NodeId<CertificateSignaturePubKey<ST>>,
-        socket_address: SocketAddrV4,
+        name_record: crate::NameRecord,
         message: PeerDiscoveryMessage<ST>,
     },
     MetricsCommand(ExecutorMetrics),
@@ -174,9 +174,9 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
         let cmds = match event {
             PeerDiscoveryEvent::SendPing {
                 to,
-                socket_address,
+                name_record,
                 ping,
-            } => self.pd.send_ping(to, socket_address, ping),
+            } => self.pd.send_ping(to, name_record, ping),
             PeerDiscoveryEvent::PingRequest { from, ping } => self.pd.handle_ping(from, ping),
             PeerDiscoveryEvent::PongResponse { from, pong } => self.pd.handle_pong(from, pong),
             PeerDiscoveryEvent::PingTimeout { to, ping_id } => {
@@ -244,13 +244,13 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
                 }
                 PeerDiscoveryCommand::PingPongCommand {
                     target,
-                    socket_address,
+                    name_record,
                     message,
                 } => {
                     self.pending_emits
                         .push_back(PeerDiscoveryEmit::PingPongCommand {
                             target,
-                            socket_address,
+                            name_record,
                             message,
                         });
 
@@ -307,6 +307,13 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
         MonadNameRecord<PD::SignatureType>,
     > {
         self.pd.get_name_records()
+    }
+
+    pub fn get_name_record(
+        &self,
+        id: &NodeId<CertificateSignaturePubKey<PD::SignatureType>>,
+    ) -> Option<&MonadNameRecord<PD::SignatureType>> {
+        self.pd.get_name_record(id)
     }
 
     pub fn metrics(&self) -> &ExecutorMetrics {
