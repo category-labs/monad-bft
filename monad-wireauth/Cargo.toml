@@ -1,0 +1,38 @@
+[package]
+name = "monad-wireauth"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+monad-secp.workspace = true
+
+bytes.workspace = true
+rand.workspace = true
+secp256k1 = { workspace = true, features = ["rand", "global-context"] }
+thiserror.workspace = true
+zerocopy = { workspace = true, features = ["derive"] }
+tracing.workspace = true
+hex.workspace = true
+lru.workspace = true
+blake3.workspace = true
+aegis.workspace = true
+tai64.workspace = true
+zeroize = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+clap = { workspace = true, features = ["derive"] }
+monoio = { workspace = true, features = ["sync", "macros"] }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+rstest.workspace = true
+proptest.workspace = true
+criterion.workspace = true
+insta = { workspace = true, features = ["yaml"] }
+serde = { workspace = true, features = ["derive"] }
+tikv-jemallocator.workspace = true
+
+[[bench]]
+name = "manager_bench"
+harness = false
+
+[[example]]
+name = "demo"
