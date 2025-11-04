@@ -309,6 +309,13 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
         self.pd.get_name_records()
     }
 
+    pub fn get_name_record(
+        &self,
+        id: &NodeId<CertificateSignaturePubKey<PD::SignatureType>>,
+    ) -> Option<&MonadNameRecord<PD::SignatureType>> {
+        self.pd.get_name_record(id)
+    }
+
     pub fn metrics(&self) -> &ExecutorMetrics {
         self.pd.metrics()
     }

@@ -34,12 +34,14 @@ use crate::{
 
 pub struct NopDiscovery<ST: CertificateSignatureRecoverable> {
     known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4>,
+    name_records: HashMap<NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<ST>>,
     metrics: ExecutorMetrics,
     pd: PhantomData<ST>,
 }
 
 pub struct NopDiscoveryBuilder<ST: CertificateSignatureRecoverable> {
     pub known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4>,
+    pub name_records: HashMap<NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<ST>>,
     pub pd: PhantomData<ST>,
 }
 
@@ -47,6 +49,7 @@ impl<ST: CertificateSignatureRecoverable> Default for NopDiscoveryBuilder<ST> {
     fn default() -> Self {
         Self {
             known_addresses: HashMap::new(),
+            name_records: HashMap::new(),
             pd: PhantomData,
         }
     }
@@ -65,6 +68,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for NopDiscov
     ) {
         let state = NopDiscovery {
             known_addresses: self.known_addresses,
+            name_records: self.name_records,
             metrics: ExecutorMetrics::default(),
             pd: PhantomData,
         };
@@ -277,6 +281,13 @@ where
     fn get_name_records(
         &self,
     ) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<ST>> {
-        HashMap::new()
+        self.name_records.clone()
+    }
+
+    fn get_name_record(
+        &self,
+        id: &NodeId<CertificateSignaturePubKey<ST>>,
+    ) -> Option<&MonadNameRecord<ST>> {
+        self.name_records.get(id)
     }
 }
