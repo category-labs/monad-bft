@@ -6,9 +6,8 @@ pub mod responder;
 pub mod transport;
 
 pub use common::*;
-pub use initiator::{InitiatorState, ValidatedHandshakeResponse};
-pub use replay_filter::ReplayFilter;
-pub use responder::{ResponderState, ValidatedHandshakeInit};
+pub use initiator::InitiatorState;
+pub use responder::ResponderState;
 pub use transport::TransportState;
 
 pub use crate::protocol::SessionIndex;

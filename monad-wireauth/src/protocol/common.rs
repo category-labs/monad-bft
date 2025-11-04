@@ -4,7 +4,6 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 pub const CIPHER_TAG_SIZE: usize = 16;
 pub const MAC_TAG_SIZE: usize = 16;
 pub const PUBLIC_KEY_SIZE: usize = monad_secp::COMPRESSED_PUBLIC_KEY_SIZE;
-pub const HASH_OUTPUT_SIZE: usize = 32;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SessionIndex(u32);

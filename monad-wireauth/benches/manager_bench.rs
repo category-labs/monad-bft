@@ -33,7 +33,7 @@ fn establish_session(
         .connect(
             *peer2_public,
             peer2_addr,
-            monad_wireauth::session::DEFAULT_RETRY_ATTEMPTS,
+            monad_wireauth::DEFAULT_RETRY_ATTEMPTS,
         )
         .expect("peer1 failed to init session");
 
@@ -79,7 +79,7 @@ fn bench_session_send_init(c: &mut Criterion) {
                     .connect(
                         *peer2_public,
                         *peer2_addr,
-                        monad_wireauth::session::DEFAULT_RETRY_ATTEMPTS,
+                        monad_wireauth::DEFAULT_RETRY_ATTEMPTS,
                     )
                     .expect("failed to init session");
             },
@@ -101,7 +101,7 @@ fn bench_session_handle_init(c: &mut Criterion) {
                     .connect(
                         peer2_public,
                         peer2_addr,
-                        monad_wireauth::session::DEFAULT_RETRY_ATTEMPTS,
+                        monad_wireauth::DEFAULT_RETRY_ATTEMPTS,
                     )
                     .expect("failed to init session");
                 let init_packet = peer1_manager.next_packet().unwrap().1;
@@ -134,7 +134,7 @@ fn bench_session_handle_response(c: &mut Criterion) {
                 mgr1.connect(
                     peer2_public,
                     peer2_addr,
-                    monad_wireauth::session::DEFAULT_RETRY_ATTEMPTS,
+                    monad_wireauth::DEFAULT_RETRY_ATTEMPTS,
                 )
                 .expect("init failed");
                 let init_packet = mgr1.next_packet().unwrap().1;

@@ -15,10 +15,9 @@ use crate::protocol::{
 };
 
 pub struct ValidatedHandshakeInit {
-    pub handshake_state: crate::protocol::handshake::HandshakeState,
-    pub remote_public_key: monad_secp::PubKey,
-    pub system_time: std::time::SystemTime,
-    pub remote_index: SessionIndex,
+    pub(crate) handshake_state: crate::protocol::handshake::HandshakeState,
+    pub(crate) remote_public_key: monad_secp::PubKey,
+    pub(crate) system_time: std::time::SystemTime,
 }
 
 pub struct ResponderState {
@@ -52,13 +51,10 @@ impl ResponderState {
             .remote_static
             .expect("remote static key must be set");
 
-        let remote_index = handshake_state.receiver_index.into();
-
         Ok(ValidatedHandshakeInit {
             handshake_state,
             remote_public_key,
             system_time,
-            remote_index,
         })
     }
 

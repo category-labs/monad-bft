@@ -5,9 +5,10 @@ use std::{
 };
 
 use lru::LruCache;
+use monad_executor::ExecutorMetrics;
 use tracing::debug;
 
-use crate::state::State;
+use crate::{metrics::*, state::State};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterAction {
@@ -26,6 +27,7 @@ pub struct Filter {
     max_sessions_per_ip: usize,
     low_watermark_sessions: usize,
     high_watermark_sessions: usize,
+    metrics: ExecutorMetrics,
 }
 
 impl Filter {
@@ -48,7 +50,12 @@ impl Filter {
             max_sessions_per_ip,
             low_watermark_sessions,
             high_watermark_sessions,
+            metrics: ExecutorMetrics::default(),
         }
+    }
+
+    pub fn metrics(&self) -> &ExecutorMetrics {
+        &self.metrics
     }
 
     pub fn tick(&mut self, duration_since_start: Duration) {
@@ -81,6 +88,7 @@ impl Filter {
                 high_watermark = self.high_watermark_sessions,
                 "high load - rejecting new handshake"
             );
+            self.metrics[GAUGE_WIREAUTH_FILTER_DROP] += 1;
             return FilterAction::Drop;
         }
 
@@ -93,14 +101,17 @@ impl Filter {
                 rate_limit = self.handshake_rate_limit,
                 "rate limit exceeded - dropping handshake"
             );
+            self.metrics[GAUGE_WIREAUTH_FILTER_DROP] += 1;
             return FilterAction::Drop;
         }
 
         if total_sessions < self.low_watermark_sessions {
+            self.metrics[GAUGE_WIREAUTH_FILTER_PASS] += 1;
             return FilterAction::Pass;
         }
 
         if !cookie_valid {
+            self.metrics[GAUGE_WIREAUTH_FILTER_SEND_COOKIE] += 1;
             return FilterAction::SendCookie;
         }
 
@@ -124,9 +135,11 @@ impl Filter {
                 max = self.max_sessions_per_ip,
                 "too many sessions for ip"
             );
+            self.metrics[GAUGE_WIREAUTH_FILTER_DROP] += 1;
             return FilterAction::Drop;
         }
 
+        self.metrics[GAUGE_WIREAUTH_FILTER_PASS] += 1;
         FilterAction::Pass
     }
 }

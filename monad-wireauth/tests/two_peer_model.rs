@@ -177,7 +177,7 @@ mod tests {
                     let _ = self.peers[initiator_idx].manager.connect(
                         responder_pubkey,
                         responder_addr,
-                        monad_wireauth::session::RETRY_ALWAYS,
+                        monad_wireauth::RETRY_ALWAYS,
                     );
 
                     self.process_all_messages();

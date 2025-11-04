@@ -6277,6 +6277,7 @@ dependencies = [
  "hex",
  "insta",
  "lru",
+ "monad-executor",
  "monad-secp",
  "monoio",
  "proptest",
