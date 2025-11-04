@@ -46,7 +46,7 @@ pub fn send_handshake_init<R: secp256k1::rand::Rng + secp256k1::rand::CryptoRng>
     initiator_static_keypair: &monad_secp::KeyPair,
     responder_static_public: &monad_secp::PubKey,
     stored_cookie: Option<&[u8; 16]>,
-) -> Result<(HandshakeInitiation, HandshakeState), ProtocolError> {
+) -> (HandshakeInitiation, HandshakeState) {
     let initiator_static_public = initiator_static_keypair.pubkey().bytes_compressed();
     let ephemeral_keypair = monad_secp::KeyPair::generate(rng);
     let ephemeral_public = ephemeral_keypair.pubkey();
@@ -124,7 +124,7 @@ pub fn send_handshake_init<R: secp256k1::rand::Rng + secp256k1::rand::CryptoRng>
         msg.mac2 = keyed_hash!(cookie_key.as_ref(), msg.mac2_input(), cookie).into();
     }
 
-    Ok((msg, inititiator))
+    (msg, inititiator)
 }
 
 pub fn accept_handshake_init(
@@ -484,8 +484,7 @@ mod tests {
             &initiator_static_keypair,
             &responder_static_public,
             None,
-        )
-        .unwrap();
+        );
 
         let init_trace = extract_init_message_trace(&init_msg);
 
@@ -560,8 +559,7 @@ mod tests {
             &initiator_static_keypair,
             &responder_static_public,
             None,
-        )
-        .unwrap();
+        );
 
         let init_no_cookie_trace = extract_init_message_trace(&init_msg);
         let init_mac1 = init_msg.mac1;
@@ -581,8 +579,7 @@ mod tests {
             init_sender_index,
             init_mac1.as_ref(),
             &cookie,
-        )
-        .unwrap();
+        );
 
         let cookie_reply_trace = CookieReplyTrace {
             raw_bytes: to_hex(cookie_reply.as_bytes()),
@@ -606,8 +603,7 @@ mod tests {
             &initiator_static_keypair,
             &responder_static_public,
             Some(&extracted_cookie),
-        )
-        .unwrap();
+        );
 
         let init_with_cookie_trace = extract_init_message_trace(&init_msg_with_cookie);
 
@@ -663,8 +659,7 @@ mod tests {
             &initiator_static_keypair,
             &responder_static_public,
             None,
-        )
-        .unwrap();
+        );
 
         let mut init_msg_mut = init_msg;
         let (responder_state, _timestamp) =
@@ -779,8 +774,7 @@ mod tests {
                 &initiator_static_keypair,
                 &responder_static_public,
                 None,
-            )
-            .unwrap();
+            );
 
             let init_trace = extract_init_message_trace(&init_msg);
 

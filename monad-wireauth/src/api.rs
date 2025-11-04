@@ -17,7 +17,7 @@ use crate::{
         ControlPacket, CookieReply, DataPacket, DataPacketHeader, HandshakeInitiation,
         HandshakeResponse, Plaintext,
     },
-    session::{Config, InitiatorState, ResponderState, SessionIndex, TransportState},
+    session::{Config, InitiatorState, ResponderState, SessionIndex},
     state::State,
 };
 
@@ -41,7 +41,7 @@ impl std::fmt::Debug for CompressedPublicKey {
 
 pub struct API<C: Context> {
     state: State,
-    next_timers: BTreeSet<(Duration, SessionIndex)>,
+    timers: BTreeSet<(Duration, SessionIndex)>,
     packet_queue: VecDeque<(SocketAddr, Bytes)>,
     config: Config,
     local_static_key: monad_secp::KeyPair,
@@ -73,7 +73,7 @@ impl<C: Context> API<C> {
         debug!(local_public_key=?local_serialized_public, "initialized manager");
         Self {
             state: State::new(),
-            next_timers: BTreeSet::new(),
+            timers: BTreeSet::new(),
             packet_queue: VecDeque::new(),
             config,
             local_static_key,
@@ -93,7 +93,7 @@ impl<C: Context> API<C> {
     pub fn next_timer(&self) -> Option<Duration> {
         let duration_since_start = self.context.duration_since_start();
 
-        let session_timer = self.next_timers.iter().next().map(|&(deadline, _)| {
+        let session_timer = self.timers.iter().next().map(|&(deadline, _)| {
             if deadline > duration_since_start {
                 deadline - duration_since_start
             } else {
@@ -120,108 +120,60 @@ impl<C: Context> API<C> {
 
         self.filter.tick(duration_since_start);
 
-        let expired_sessions: Vec<(Duration, SessionIndex)> = self
-            .next_timers
-            .range(..=(duration_since_start, SessionIndex::new(u32::MAX)))
+        let expired_timers: Vec<(Duration, SessionIndex)> = self
+            .timers
+            .range(..=(duration_since_start, SessionIndex::MAX))
             .copied()
             .collect();
 
-        for timer in &expired_sessions {
-            self.next_timers.remove(timer);
-        }
+        for (duration, session_id) in expired_timers {
+            self.timers.remove(&(duration, session_id));
 
-        for (_, session_id) in expired_sessions {
-            let tick_result = if self.state.get_initiator(&session_id).is_some() {
-                self.state.get_initiator_mut(&session_id).and_then(|s| {
-                    s.tick(duration_since_start)
-                        .map(|(timer, r)| (timer, None, r.rekey, Some(r.terminated)))
-                })
-            } else if self.state.get_responder(&session_id).is_some() {
-                self.state.get_responder_mut(&session_id).and_then(|s| {
-                    s.tick(duration_since_start)
-                        .map(|(timer, r)| (timer, None, r.rekey, Some(r.terminated)))
-                })
+            let tick_result = if let Some(s) = self.state.get_initiator_mut(&session_id) {
+                s.tick(duration_since_start)
+                    .map(|(timer, r)| (timer, None, r.rekey, Some(r.terminated)))
+            } else if let Some(s) = self.state.get_responder_mut(&session_id) {
+                s.tick(duration_since_start)
+                    .map(|(timer, r)| (timer, None, r.rekey, Some(r.terminated)))
             } else if let Some(transport) = self.state.get_transport_mut(&session_id) {
                 Some(transport.tick(&self.config, duration_since_start))
             } else {
                 None
             };
 
-            if let Some((timer, message, rekey, terminated)) = tick_result {
-                if let Some(message) = message {
+            let Some((timer, message, rekey, terminated)) = tick_result else {
+                continue;
+            };
+
+            if let Some(message) = message {
+                self.packet_queue
+                    .push_back((message.remote_addr, message.header.into()));
+            }
+
+            if let Some(rekey) = rekey {
+                if let Ok((new_session_index, timer, message)) = self.init_session_with_cookie(
+                    rekey.remote_public_key,
+                    rekey.remote_addr,
+                    rekey.stored_cookie,
+                    rekey.retry_attempts,
+                ) {
                     self.packet_queue
-                        .push_back((message.remote_addr, message.header.into()));
-                }
-
-                if let Some(rekey) = rekey {
-                    self.handle_rekey_event(
-                        rekey.remote_public_key,
-                        rekey.remote_addr,
-                        rekey.retry_attempts,
-                        rekey.stored_cookie,
-                    );
-                }
-
-                if let Some(timer) = timer {
-                    self.next_timers.insert((timer, session_id));
-                }
-
-                if let Some(terminated) = terminated {
-                    self.handle_terminate_event(
-                        session_id,
-                        terminated.remote_public_key,
-                        terminated.remote_addr,
-                    );
+                        .push_back((rekey.remote_addr, message.into()));
+                    self.timers.insert((timer, new_session_index));
                 }
             }
-        }
-    }
 
-    fn handle_terminate_event(
-        &mut self,
-        session_id: SessionIndex,
-        remote_public_key: monad_secp::PubKey,
-        remote_addr: SocketAddr,
-    ) {
-        self.filter.on_session_removed(remote_addr.ip());
-        self.state
-            .handle_terminate(session_id, &remote_public_key, remote_addr);
-    }
+            if let Some(timer) = timer {
+                self.timers.insert((timer, session_id));
+            }
 
-    fn handle_rekey_event(
-        &mut self,
-        remote_public_key: monad_secp::PubKey,
-        remote_addr: SocketAddr,
-        retry_attempts: u64,
-        stored_cookie: Option<[u8; 16]>,
-    ) {
-        if let Ok((new_session_index, timer, message)) = self.init_session_with_cookie(
-            remote_public_key,
-            remote_addr,
-            stored_cookie,
-            retry_attempts,
-        ) {
-            self.packet_queue.push_back((remote_addr, message.into()));
-            self.next_timers.insert((timer, new_session_index));
-        }
-    }
-
-    fn handle_established(&mut self, session_id: SessionIndex, transport: TransportState) {
-        debug!(local_session_id=?session_id, "handling established session");
-        let replaced_sessions = self
-            .state
-            .handle_established(session_id, transport, &self.config);
-
-        for replaced_session_id in replaced_sessions {
-            let session = self
-                .state
-                .get_transport(&replaced_session_id)
-                .expect("session must exist");
-            self.handle_terminate_event(
-                replaced_session_id,
-                session.remote_public_key,
-                session.remote_addr,
-            );
+            if let Some(terminated) = terminated {
+                self.state.terminate_session(
+                    session_id,
+                    &terminated.remote_public_key,
+                    terminated.remote_addr,
+                );
+            }
         }
     }
 
@@ -241,7 +193,7 @@ impl<C: Context> API<C> {
             self.init_session_with_cookie(remote_static_key, remote_addr, cookie, retry_attempts)?;
 
         self.packet_queue.push_back((remote_addr, message.into()));
-        self.next_timers.insert((timer, local_index));
+        self.timers.insert((timer, local_index));
 
         Ok(())
     }
@@ -257,8 +209,7 @@ impl<C: Context> API<C> {
             .state
             .reserve_session_index()
             .ok_or(Error::SessionIndexExhausted)?;
-        let local_index = reservation.index();
-        debug!(local_session_id=?local_index, "allocating session index for new connection");
+        debug!(local_session_id=?reservation.index(), "allocating session index for new connection");
         let system_time = self.context.system_time();
         let duration_since_start = self.context.duration_since_start();
         let (session, (timer, message)) = InitiatorState::new(
@@ -266,24 +217,20 @@ impl<C: Context> API<C> {
             system_time,
             duration_since_start,
             &self.config,
-            local_index,
+            reservation.index(),
             &self.local_static_key,
-            self.local_static_key.pubkey(),
             remote_static_key,
             remote_addr,
             cookie,
             retry_attempts,
-        )
-        .map_err(|e| e.with_addr(remote_addr))?;
-
+        );
+        let index = reservation.index();
         reservation.commit();
 
         self.state
-            .insert_initiator(local_index, session, remote_static_key);
+            .insert_initiator(index, session, remote_static_key);
 
-        self.filter.on_session_added(remote_addr.ip());
-
-        Ok((local_index, timer, message))
+        Ok((index, timer, message))
     }
 
     fn check_under_load<M: crate::protocol::messages::MacMessage>(
@@ -291,9 +238,10 @@ impl<C: Context> API<C> {
         remote_addr: SocketAddr,
         sender_index: u32,
         message: &M,
-    ) -> Result<bool> {
+    ) -> bool {
         let duration_since_start = self.context.duration_since_start();
         let action = self.filter.apply(
+            &self.state,
             remote_addr,
             duration_since_start,
             self.cookies
@@ -302,24 +250,21 @@ impl<C: Context> API<C> {
         );
 
         match action {
-            FilterAction::Pass => Ok(true),
+            FilterAction::Pass => true,
             FilterAction::SendCookie => {
                 debug!(?remote_addr, sender_index, "sending cookie reply");
-                let reply = self.cookies.create(
-                    remote_addr,
-                    sender_index,
-                    message,
-                    duration_since_start,
-                )?;
+                let reply =
+                    self.cookies
+                        .create(remote_addr, sender_index, message, duration_since_start);
                 self.packet_queue.push_back((remote_addr, reply.into()));
-                Ok(false)
+                false
             }
             FilterAction::Drop => {
                 debug!(
                     ?remote_addr,
                     sender_index, "dropping packet due to rate limit"
                 );
-                Ok(false)
+                false
             }
         }
     }
@@ -339,19 +284,16 @@ impl<C: Context> API<C> {
             remote_addr,
             handshake_packet.sender_index.get(),
             handshake_packet,
-        )? {
+        ) {
             debug!(?remote_addr, "handshake initiation dropped under load");
             return Ok(());
         }
 
         let duration_since_start = self.context.duration_since_start();
 
-        let validated_init = ResponderState::validate_init(
-            &self.local_static_key,
-            &self.local_static_key.pubkey(),
-            handshake_packet,
-        )
-        .map_err(|e| e.with_addr(remote_addr))?;
+        let validated_init =
+            ResponderState::validate_init(&self.local_static_key, handshake_packet)
+                .map_err(|e| e.with_addr(remote_addr))?;
 
         let remote_key = validated_init.remote_public_key;
         if self
@@ -387,10 +329,8 @@ impl<C: Context> API<C> {
         self.state
             .insert_responder(local_index, session, remote_key);
 
-        self.filter.on_session_added(remote_addr.ip());
-
         self.packet_queue.push_back((remote_addr, message.into()));
-        self.next_timers.insert((timer, local_index));
+        self.timers.insert((timer, local_index));
 
         Ok(())
     }
@@ -470,7 +410,7 @@ impl<C: Context> API<C> {
                     let (transport, establish_timer) =
                         responder.establish(self.context.rng(), &self.config, duration_since_start);
                     debug!(local_session_id=?receiver_index, "responder session established");
-                    self.handle_established(receiver_index, transport);
+                    self.state.insert_transport(receiver_index, transport);
                     (establish_timer, remote_public_key, plaintext)
                 }
                 Err(e) => {
@@ -483,7 +423,7 @@ impl<C: Context> API<C> {
             });
         };
 
-        self.next_timers.insert((timer, receiver_index));
+        self.timers.insert((timer, receiver_index));
 
         Ok((plaintext, remote_public_key))
     }
@@ -500,7 +440,7 @@ impl<C: Context> API<C> {
             },
         )?;
 
-        if !self.check_under_load(remote_addr, response.sender_index.get(), response)? {
+        if !self.check_under_load(remote_addr, response.sender_index.get(), response) {
             debug!(?remote_addr, "handshake response dropped under load");
             return Ok(());
         }
@@ -516,12 +456,7 @@ impl<C: Context> API<C> {
             })?;
 
         let validated_response = initiator
-            .validate_response(
-                &self.config,
-                &self.local_static_key,
-                &self.local_static_key.pubkey(),
-                response,
-            )
+            .validate_response(&self.config, &self.local_static_key, response)
             .map_err(|e| e.with_addr(remote_addr))?;
 
         let initiator = self
@@ -539,27 +474,13 @@ impl<C: Context> API<C> {
             remote_addr,
         );
 
-        self.handle_established(receiver_session_index, transport);
+        self.state
+            .insert_transport(receiver_session_index, transport);
 
         self.packet_queue.push_back((remote_addr, message.into()));
-        self.next_timers.insert((timer, receiver_session_index));
+        self.timers.insert((timer, receiver_session_index));
 
         Ok(())
-    }
-
-    fn encrypt(
-        &mut self,
-        session_id: SessionIndex,
-        plaintext: &mut [u8],
-    ) -> Result<DataPacketHeader> {
-        let transport = self
-            .state
-            .get_transport_mut(&session_id)
-            .ok_or(Error::SessionNotFound)?;
-        let (header, timer) =
-            transport.encrypt(&self.config, self.context.duration_since_start(), plaintext);
-        self.next_timers.insert((timer, session_id));
-        Ok(header)
     }
 
     #[instrument(level = Level::TRACE, skip(self, public_key, plaintext), fields(local_public_key = ?self.local_serialized_public))]
@@ -568,12 +489,15 @@ impl<C: Context> API<C> {
         public_key: &monad_secp::PubKey,
         plaintext: &mut [u8],
     ) -> Result<DataPacketHeader> {
-        self.encrypt(
-            self.state
-                .get_session_id_by_public_key(public_key)
-                .ok_or(Error::SessionNotFound)?,
-            plaintext,
-        )
+        let transport = self
+            .state
+            .get_transport_by_public_key(public_key)
+            .ok_or(Error::SessionNotFound)?;
+        let (header, timer) =
+            transport.encrypt(&self.config, self.context.duration_since_start(), plaintext);
+        let session_id = transport.common.local_index;
+        self.timers.insert((timer, session_id));
+        Ok(header)
     }
 
     #[instrument(level = Level::TRACE, skip(self, plaintext), fields(local_public_key = ?self.local_serialized_public, socket_addr = ?socket_addr))]
@@ -582,19 +506,19 @@ impl<C: Context> API<C> {
         socket_addr: &SocketAddr,
         plaintext: &mut [u8],
     ) -> Result<DataPacketHeader> {
-        self.encrypt(
-            self.state
-                .get_session_id_by_socket(socket_addr)
-                .ok_or(Error::SessionNotEstablishedForAddress { addr: *socket_addr })?,
-            plaintext,
-        )
+        let transport = self
+            .state
+            .get_transport_by_socket(socket_addr)
+            .ok_or(Error::SessionNotEstablishedForAddress { addr: *socket_addr })?;
+        let (header, timer) =
+            transport.encrypt(&self.config, self.context.duration_since_start(), plaintext);
+        let session_id = transport.common.local_index;
+        self.timers.insert((timer, session_id));
+        Ok(header)
     }
 
     #[instrument(level = Level::TRACE, skip(self, public_key), fields(local_public_key = ?self.local_serialized_public))]
     pub fn disconnect(&mut self, public_key: &monad_secp::PubKey) {
-        let terminated_addrs = self.state.terminate_by_public_key(public_key);
-        for addr in terminated_addrs {
-            self.filter.on_session_removed(addr.ip());
-        }
+        self.state.terminate_by_public_key(public_key);
     }
 }

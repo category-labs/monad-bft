@@ -15,7 +15,7 @@ pub fn send_cookie_reply(
     msg_sender_index: u32,
     msg_mac1: &[u8; 16],
     cookie: &[u8; 16],
-) -> Result<CookieReply, ProtocolError> {
+) -> CookieReply {
     let nonce_hash = keyed_hash!(nonce_secret, &nonce_counter.to_le_bytes());
     let hash_bytes: &[u8] = nonce_hash.as_ref();
     let mut nonce_bytes = [0u8; 16];
@@ -38,7 +38,7 @@ pub fn send_cookie_reply(
         msg_mac1,
     );
 
-    Ok(reply)
+    reply
 }
 
 /// decrypts cookie in place and returns the decrypted cookie as a separate buffer for convenience
@@ -130,8 +130,7 @@ mod tests {
             msg_sender_index,
             &msg_mac1,
             &cookie,
-        )
-        .expect("Failed to create cookie reply");
+        );
 
         let reply_bytes = reply.as_bytes();
         let mut reply_bytes_mut = reply_bytes.to_vec();
@@ -170,8 +169,7 @@ mod tests {
             msg_sender_index,
             &msg_mac1,
             &cookie,
-        )
-        .expect("Failed to create cookie reply");
+        );
 
         let reply_bytes = reply.as_bytes();
         let mut reply_bytes_mut = reply_bytes.to_vec();
@@ -210,8 +208,7 @@ mod tests {
             msg_sender_index,
             &msg_mac1,
             &cookie,
-        )
-        .expect("Failed to create cookie reply");
+        );
 
         let reply_bytes = reply.as_bytes();
         let mut reply_bytes_mut = reply_bytes.to_vec();

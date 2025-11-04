@@ -42,7 +42,6 @@ impl DerefMut for ResponderState {
 impl ResponderState {
     pub fn validate_init(
         local_static_key: &monad_secp::KeyPair,
-        _local_static_public: &monad_secp::PubKey,
         handshake_packet: &mut HandshakeInitiation,
     ) -> Result<ValidatedHandshakeInit, SessionError> {
         let (handshake_state, system_time) =

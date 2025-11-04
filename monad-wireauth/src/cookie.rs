@@ -40,7 +40,7 @@ impl Cookies {
         sender_index: u32,
         message: &M,
         duration_since_start: Duration,
-    ) -> Result<CookieReply> {
+    ) -> CookieReply {
         let time_counter = duration_since_start.as_secs() / self.refresh_duration.as_secs();
         let cookie =
             crate::protocol::cookies::generate_cookie(&self.cookie_secret, time_counter, &addr);
@@ -56,12 +56,6 @@ impl Cookies {
             message.mac1().as_ref(),
             &cookie,
         )
-        .map_err(|e| match e {
-            ProtocolError::Cookie(c) => c.with_addr(addr),
-            ProtocolError::Crypto(c) => c.with_addr(addr),
-            ProtocolError::Handshake(h) => h.with_addr(addr),
-            ProtocolError::Message(m) => m.with_addr(addr),
-        })
     }
 
     pub fn verify<M: crate::protocol::messages::MacMessage>(
@@ -117,12 +111,9 @@ mod tests {
             &initiator_keypair,
             &responder_public,
             None,
-        )
-        .unwrap();
+        );
 
-        let mut cookie_reply = cookies
-            .create(addr, 12345, &init_msg, duration_since_start)
-            .unwrap();
+        let mut cookie_reply = cookies.create(addr, 12345, &init_msg, duration_since_start);
 
         let decrypted_cookie = crate::protocol::cookies::accept_cookie_reply(
             &responder_public,
@@ -138,8 +129,7 @@ mod tests {
             &initiator_keypair,
             &responder_public,
             Some(&decrypted_cookie),
-        )
-        .unwrap();
+        );
 
         let verify_result = cookies.verify(&addr, &init_msg_with_cookie, duration_since_start);
         assert!(verify_result.is_ok());
@@ -164,13 +154,10 @@ mod tests {
             &initiator_keypair,
             &responder_public,
             None,
-        )
-        .unwrap();
+        );
 
         let duration_at_time_0 = Duration::from_secs(5);
-        let mut cookie_reply = cookies
-            .create(addr, 12345, &init_msg, duration_at_time_0)
-            .unwrap();
+        let mut cookie_reply = cookies.create(addr, 12345, &init_msg, duration_at_time_0);
 
         let decrypted_cookie = crate::protocol::cookies::accept_cookie_reply(
             &responder_public,
@@ -186,8 +173,7 @@ mod tests {
             &initiator_keypair,
             &responder_public,
             Some(&decrypted_cookie),
-        )
-        .unwrap();
+        );
 
         let verify_before_rotation =
             cookies.verify(&addr, &init_msg_with_cookie, duration_at_time_0);
@@ -219,30 +205,17 @@ mod tests {
             &initiator_keypair,
             &responder_public,
             None,
-        )
-        .unwrap();
+        );
 
-        let cookie_reply_1 = cookies1
-            .create(addr, 12345, &init_msg, duration_since_start)
-            .unwrap();
-        let cookie_reply_2 = cookies1
-            .create(addr, 12345, &init_msg, duration_since_start)
-            .unwrap();
-        let cookie_reply_3 = cookies1
-            .create(addr, 12345, &init_msg, duration_since_start)
-            .unwrap();
+        let cookie_reply_1 = cookies1.create(addr, 12345, &init_msg, duration_since_start);
+        let cookie_reply_2 = cookies1.create(addr, 12345, &init_msg, duration_since_start);
+        let cookie_reply_3 = cookies1.create(addr, 12345, &init_msg, duration_since_start);
 
         let mut cookies2 = Cookies::new(&mut rng, responder_public, refresh_duration);
 
-        let cookie_reply_4 = cookies2
-            .create(addr, 12345, &init_msg, duration_since_start)
-            .unwrap();
-        let cookie_reply_5 = cookies2
-            .create(addr, 12345, &init_msg, duration_since_start)
-            .unwrap();
-        let cookie_reply_6 = cookies2
-            .create(addr, 12345, &init_msg, duration_since_start)
-            .unwrap();
+        let cookie_reply_4 = cookies2.create(addr, 12345, &init_msg, duration_since_start);
+        let cookie_reply_5 = cookies2.create(addr, 12345, &init_msg, duration_since_start);
+        let cookie_reply_6 = cookies2.create(addr, 12345, &init_msg, duration_since_start);
 
         assert_ne!(
             cookie_reply_1.encrypted_cookie,
