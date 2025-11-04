@@ -1,7 +1,7 @@
 use std::{convert::TryFrom, rc::Rc, time::Duration};
 
 use bytes::Bytes;
-use monad_wireauth::{messages::Packet, session::DEFAULT_RETRY_ATTEMPTS, Config, StdContext, API};
+use monad_wireauth::{messages::Packet, Config, StdContext, API, DEFAULT_RETRY_ATTEMPTS};
 use monoio::net::udp::UdpSocket;
 use secp256k1::rand::{rngs::StdRng, SeedableRng};
 use zerocopy::IntoBytes;

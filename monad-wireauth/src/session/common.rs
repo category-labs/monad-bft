@@ -11,22 +11,6 @@ use crate::protocol::{common::*, cookies};
 pub const RETRY_ALWAYS: u64 = u64::MAX;
 pub const DEFAULT_RETRY_ATTEMPTS: u64 = 3;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SessionStatus {
-    Initiating,
-    Open,
-    Closed,
-}
-
-#[derive(Debug, Clone)]
-pub struct EstablishedEvent {
-    pub remote_public_key: monad_secp::PubKey,
-    pub remote_addr: SocketAddr,
-    pub is_initiator: bool,
-    pub created: Duration,
-    pub local_index: SessionIndex,
-}
-
 #[derive(Debug, Clone)]
 pub struct TerminatedEvent {
     pub remote_public_key: monad_secp::PubKey,
@@ -102,10 +86,6 @@ impl Default for Config {
 pub enum SessionError {
     #[error("handshake validation failed: {0}")]
     InvalidHandshake(#[source] crate::protocol::errors::ProtocolError),
-    #[error("session not established: attempted operation on non-existent or expired session")]
-    NotEstablished,
-    #[error("invalid packet format: {0}")]
-    InvalidPacket(#[source] crate::protocol::errors::MessageError),
     #[error("cryptographic operation failed: {0}")]
     CryptoError(#[source] crate::protocol::errors::CryptoError),
     #[error("MAC verification failed: {0}")]
@@ -114,10 +94,6 @@ pub enum SessionError {
     InvalidCookie(#[source] crate::protocol::errors::CookieError),
     #[error("replay attack detected: packet counter {counter} already seen")]
     ReplayAttack { counter: u64 },
-    #[error("timestamp replay detected: timestamp not newer than last seen")]
-    TimestampReplay,
-    #[error("session timed out: exceeded maximum duration or idle time")]
-    SessionTimeout,
 }
 
 pub struct SessionState {

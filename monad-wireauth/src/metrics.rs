@@ -1,0 +1,70 @@
+pub const GAUGE_WIREAUTH_STATE_INITIATING_SESSIONS: &str =
+    "monad.wireauth.state.initiating_sessions";
+pub const GAUGE_WIREAUTH_STATE_RESPONDING_SESSIONS: &str =
+    "monad.wireauth.state.responding_sessions";
+pub const GAUGE_WIREAUTH_STATE_TRANSPORT_SESSIONS: &str = "monad.wireauth.state.transport_sessions";
+pub const GAUGE_WIREAUTH_STATE_TOTAL_SESSIONS: &str = "monad.wireauth.state.total_sessions";
+pub const GAUGE_WIREAUTH_STATE_ALLOCATED_INDICES: &str = "monad.wireauth.state.allocated_indices";
+pub const GAUGE_WIREAUTH_STATE_SESSIONS_BY_PUBLIC_KEY: &str =
+    "monad.wireauth.state.sessions_by_public_key";
+pub const GAUGE_WIREAUTH_STATE_SESSIONS_BY_SOCKET: &str = "monad.wireauth.state.sessions_by_socket";
+pub const GAUGE_WIREAUTH_STATE_SESSION_INDEX_ALLOCATED: &str =
+    "monad.wireauth.state.session_index_allocated";
+pub const GAUGE_WIREAUTH_STATE_SESSION_ESTABLISHED_INITIATOR: &str =
+    "monad.wireauth.state.session_established_initiator";
+pub const GAUGE_WIREAUTH_STATE_SESSION_ESTABLISHED_RESPONDER: &str =
+    "monad.wireauth.state.session_established_responder";
+pub const GAUGE_WIREAUTH_STATE_SESSION_TERMINATED: &str = "monad.wireauth.state.session_terminated";
+
+pub const GAUGE_WIREAUTH_FILTER_PASS: &str = "monad.wireauth.filter.pass";
+pub const GAUGE_WIREAUTH_FILTER_SEND_COOKIE: &str = "monad.wireauth.filter.send_cookie";
+pub const GAUGE_WIREAUTH_FILTER_DROP: &str = "monad.wireauth.filter.drop";
+
+pub const GAUGE_WIREAUTH_API_CONNECT: &str = "monad.wireauth.api.connect";
+pub const GAUGE_WIREAUTH_API_DECRYPT: &str = "monad.wireauth.api.decrypt";
+pub const GAUGE_WIREAUTH_API_ENCRYPT_BY_PUBLIC_KEY: &str =
+    "monad.wireauth.api.encrypt_by_public_key";
+pub const GAUGE_WIREAUTH_API_ENCRYPT_BY_SOCKET: &str = "monad.wireauth.api.encrypt_by_socket";
+pub const GAUGE_WIREAUTH_API_DISCONNECT: &str = "monad.wireauth.api.disconnect";
+pub const GAUGE_WIREAUTH_API_DISPATCH_CONTROL: &str = "monad.wireauth.api.dispatch_control";
+pub const GAUGE_WIREAUTH_API_NEXT_PACKET: &str = "monad.wireauth.api.next_packet";
+pub const GAUGE_WIREAUTH_API_TICK: &str = "monad.wireauth.api.tick";
+
+pub const GAUGE_WIREAUTH_DISPATCH_HANDSHAKE_INIT: &str =
+    "monad.wireauth.dispatch.handshake_initiation";
+pub const GAUGE_WIREAUTH_DISPATCH_HANDSHAKE_RESPONSE: &str =
+    "monad.wireauth.dispatch.handshake_response";
+pub const GAUGE_WIREAUTH_DISPATCH_COOKIE_REPLY: &str = "monad.wireauth.dispatch.cookie_reply";
+pub const GAUGE_WIREAUTH_DISPATCH_KEEPALIVE: &str = "monad.wireauth.dispatch.keepalive";
+
+pub const GAUGE_WIREAUTH_ERROR_CONNECT: &str = "monad.wireauth.error.connect";
+pub const GAUGE_WIREAUTH_ERROR_DECRYPT: &str = "monad.wireauth.error.decrypt";
+pub const GAUGE_WIREAUTH_ERROR_ENCRYPT_BY_PUBLIC_KEY: &str =
+    "monad.wireauth.error.encrypt_by_public_key";
+pub const GAUGE_WIREAUTH_ERROR_ENCRYPT_BY_SOCKET: &str = "monad.wireauth.error.encrypt_by_socket";
+pub const GAUGE_WIREAUTH_ERROR_DISPATCH_CONTROL: &str = "monad.wireauth.error.dispatch_control";
+
+pub const GAUGE_WIREAUTH_ERROR_SESSION_EXHAUSTED: &str = "monad.wireauth.error.session_exhausted";
+pub const GAUGE_WIREAUTH_ERROR_MAC1_VERIFICATION_FAILED: &str =
+    "monad.wireauth.error.mac1_verification_failed";
+pub const GAUGE_WIREAUTH_ERROR_TIMESTAMP_REPLAY: &str = "monad.wireauth.error.timestamp_replay";
+pub const GAUGE_WIREAUTH_ERROR_SESSION_NOT_FOUND: &str = "monad.wireauth.error.session_not_found";
+pub const GAUGE_WIREAUTH_ERROR_SESSION_INDEX_NOT_FOUND: &str =
+    "monad.wireauth.error.session_index_not_found";
+pub const GAUGE_WIREAUTH_ERROR_INVALID_RECEIVER_INDEX: &str =
+    "monad.wireauth.error.invalid_receiver_index";
+pub const GAUGE_WIREAUTH_ERROR_SESSION_NOT_ESTABLISHED_FOR_ADDRESS: &str =
+    "monad.wireauth.error.session_not_established_for_address";
+pub const GAUGE_WIREAUTH_ERROR_HANDSHAKE_INIT_VALIDATION: &str =
+    "monad.wireauth.error.handshake_init_validation";
+pub const GAUGE_WIREAUTH_ERROR_HANDSHAKE_INIT_RESPONDER_NEW: &str =
+    "monad.wireauth.error.handshake_init_responder_new";
+pub const GAUGE_WIREAUTH_ERROR_COOKIE_REPLY: &str = "monad.wireauth.error.cookie_reply";
+pub const GAUGE_WIREAUTH_ERROR_HANDSHAKE_RESPONSE_VALIDATION: &str =
+    "monad.wireauth.error.handshake_response_validation";
+
+pub const GAUGE_WIREAUTH_ENQUEUED_HANDSHAKE_INIT: &str = "monad.wireauth.enqueued.handshake_init";
+pub const GAUGE_WIREAUTH_ENQUEUED_HANDSHAKE_RESPONSE: &str =
+    "monad.wireauth.enqueued.handshake_response";
+pub const GAUGE_WIREAUTH_ENQUEUED_COOKIE_REPLY: &str = "monad.wireauth.enqueued.cookie_reply";
+pub const GAUGE_WIREAUTH_ENQUEUED_KEEPALIVE: &str = "monad.wireauth.enqueued.keepalive";

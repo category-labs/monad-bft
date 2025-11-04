@@ -2,8 +2,7 @@ use std::{convert::TryFrom, net::SocketAddr, time::Duration};
 
 use monad_wireauth::{
     messages::{CookieReply, DataPacketHeader, HandshakeInitiation, HandshakeResponse, Packet},
-    session::DEFAULT_RETRY_ATTEMPTS,
-    Config, TestContext, API,
+    Config, TestContext, API, DEFAULT_RETRY_ATTEMPTS,
 };
 use secp256k1::rand::rng;
 use tracing_subscriber::EnvFilter;

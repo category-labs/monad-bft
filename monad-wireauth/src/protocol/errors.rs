@@ -5,9 +5,6 @@ pub enum HandshakeError {
     #[error("MAC1 verification failed: {0}")]
     Mac1VerificationFailed(#[source] CryptoError),
 
-    #[error("MAC2 verification failed: {0}")]
-    Mac2VerificationFailed(#[source] CryptoError),
-
     #[error("static key decryption failed: {0}")]
     StaticKeyDecryptionFailed(#[source] CryptoError),
 
@@ -19,18 +16,6 @@ pub enum HandshakeError {
 
     #[error("empty message decryption failed: {0}")]
     EmptyMessageDecryptionFailed(#[source] CryptoError),
-
-    #[error("timestamp replay detected: received {received:?}, expected after {expected:?}")]
-    TimestampReplay {
-        received: tai64::Tai64N,
-        expected: tai64::Tai64N,
-    },
-
-    #[error("invalid message type: {0:#04x} is not a recognized handshake message")]
-    InvalidMessageType(u32),
-
-    #[error("invalid receiver index: {index} does not match any active session")]
-    InvalidReceiverIndex { index: super::common::SessionIndex },
 }
 
 #[derive(Error, Debug)]
@@ -62,9 +47,6 @@ pub enum CryptoError {
 
 #[derive(Error, Debug)]
 pub enum CookieError {
-    #[error("invalid message type: {0:#04x} is not a cookie reply message")]
-    InvalidMessageType(u32),
-
     #[error("cookie decryption failed: {0}")]
     CookieDecryptionFailed(#[source] CryptoError),
 

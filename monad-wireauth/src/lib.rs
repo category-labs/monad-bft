@@ -1,5 +1,6 @@
-pub mod protocol;
-pub mod session;
+pub(crate) mod metrics;
+pub(crate) mod protocol;
+pub(crate) mod session;
 
 mod api;
 mod context;
@@ -13,4 +14,4 @@ pub use context::{Context, StdContext, TestContext};
 pub use error::{Error, Result};
 pub use monad_secp::PubKey as PublicKey;
 pub use protocol::{crypto, messages};
-pub use session::{Config, RETRY_ALWAYS};
+pub use session::{Config, DEFAULT_RETRY_ATTEMPTS, RETRY_ALWAYS};

@@ -134,8 +134,6 @@ impl SessionErrorContext for SessionError {
                     ProtocolError::Cookie(c) => c.with_addr(addr),
                 }
             }
-            SessionError::NotEstablished => Error::SessionNotEstablishedForAddress { addr },
-            SessionError::InvalidPacket(e) => e.with_addr(addr),
             SessionError::CryptoError(e) => e.with_addr(addr),
             SessionError::InvalidMac(e) => match e {
                 CryptoError::MacVerificationFailed => Error::DataMacVerificationFailed { addr },
@@ -147,8 +145,6 @@ impl SessionErrorContext for SessionError {
             },
             SessionError::InvalidCookie(e) => e.with_addr(addr),
             SessionError::ReplayAttack { .. } => Error::ReplayAttack { addr },
-            SessionError::TimestampReplay => Error::TimestampReplay { addr },
-            SessionError::SessionTimeout => Error::SessionTimeout { addr },
         }
     }
 }
@@ -163,9 +159,6 @@ impl ProtocolErrorContext for HandshakeError {
             HandshakeError::Mac1VerificationFailed(source) => {
                 Error::Mac1VerificationFailed { addr, source }
             }
-            HandshakeError::Mac2VerificationFailed(source) => {
-                Error::Mac2VerificationFailed { addr, source }
-            }
             HandshakeError::StaticKeyDecryptionFailed(source) => {
                 Error::StaticKeyDecryptionFailed { addr, source }
             }
@@ -174,13 +167,6 @@ impl ProtocolErrorContext for HandshakeError {
             }
             HandshakeError::EmptyMessageDecryptionFailed(source) => {
                 Error::EmptyMessageDecryptionFailed { addr, source }
-            }
-            HandshakeError::TimestampReplay { .. } => Error::TimestampReplay { addr },
-            HandshakeError::InvalidMessageType(msg_type) => {
-                Error::InvalidMessageType { msg_type, addr }
-            }
-            HandshakeError::InvalidReceiverIndex { index } => {
-                Error::InvalidReceiverIndex { index, addr }
             }
             HandshakeError::InvalidTimestamp { size } => Error::InvalidTimestamp { size },
         }
@@ -220,9 +206,6 @@ impl ProtocolErrorContext for MessageError {
 impl ProtocolErrorContext for CookieError {
     fn with_addr(self, addr: SocketAddr) -> Error {
         match self {
-            CookieError::InvalidMessageType(msg_type) => {
-                Error::InvalidMessageType { msg_type, addr }
-            }
             CookieError::CookieDecryptionFailed(source) => {
                 Error::CookieDecryptionFailed { addr, source }
             }
