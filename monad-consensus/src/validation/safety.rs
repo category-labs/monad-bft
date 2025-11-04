@@ -161,6 +161,7 @@ where
     }
 
     pub fn is_safe_to_no_endorse(&self, round: Round) -> bool {
+        // has not sent NE in round
         round > self.highest_no_endorse.round.max(self.highest_vote)
     }
 

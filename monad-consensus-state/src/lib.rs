@@ -41,7 +41,7 @@ use monad_consensus_types::{
     no_endorsement::{FreshProposalCertificate, NoEndorsement},
     payload::{ConsensusBlockBody, RoundSignature},
     quorum_certificate::QuorumCertificate,
-    timeout::{HighExtend, HighExtendVote, NoTipCertificate, TimeoutCertificate},
+    timeout::{HighExtend, NoTipCertificate, TimeoutCertificate},
     tip::ConsensusTip,
     voting::Vote,
     RoundCertificate,
@@ -726,19 +726,8 @@ where
         let process_certificate_cmds = self.process_qc(timeout.high_extend.qc());
         cmds.extend(process_certificate_cmds);
 
-        if let HighExtendVote::Tip(tip, Some(vote_signature)) = &timeout.high_extend {
-            let handle_vote_cmds = self.handle_vote_message(
-                author,
-                VoteMessage {
-                    vote: Vote {
-                        id: tip.block_header.get_id(),
-
-                        epoch: timeout.tminfo.epoch,
-                        round: timeout.tminfo.round,
-                    },
-                    sig: *vote_signature,
-                },
-            );
+        if let Some((vote, sig)) = timeout.extract_vote() {
+            let handle_vote_cmds = self.handle_vote_message(author, VoteMessage { vote, sig });
             cmds.extend(handle_vote_cmds);
         }
 
@@ -848,6 +837,7 @@ where
             return cmds;
         }
 
+        let tip_block_id = tip.block_header.get_id();
         if self
             .consensus
             .safety
@@ -855,7 +845,7 @@ where
         {
             self.consensus
                 .safety
-                .no_endorse(round_recovery.round, tip.block_header.get_id());
+                .no_endorse(round_recovery.round, tip_block_id);
 
             debug!(?author, ?round_recovery, "no endorsing");
             cmds.push(ConsensusCommand::Publish {
@@ -1852,7 +1842,10 @@ mod test {
     use monad_consensus::{
         messages::{
             consensus_message::ProtocolMessage,
-            message::{ProposalMessage, TimeoutMessage, VoteMessage},
+            message::{
+                NoEndorsementMessage, ProposalMessage, RoundRecoveryMessage, TimeoutMessage,
+                VoteMessage,
+            },
         },
         pacemaker::PacemakerCommand,
         validation::{safety::Safety, signing::Verified},
@@ -1865,8 +1858,10 @@ mod test {
         block_validator::BlockValidator,
         checkpoint::RootInfo,
         metrics::Metrics,
+        no_endorsement::{FreshProposalCertificate, NoEndorsementCertificate},
         payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
         quorum_certificate::QuorumCertificate,
+        timeout::{HighExtend, TimeoutCertificate},
         tip::ConsensusTip,
         voting::Vote,
         RoundCertificate,
@@ -1938,7 +1933,7 @@ mod test {
     where
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         ST: CertificateSignatureRecoverable,
-        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
         BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT, MockChainConfig, MockChainRevision>,
         SBT: StateBackend<ST, SCT> + StateBackendTest<ST, SCT>,
         BVT: BlockValidator<
@@ -2155,6 +2150,7 @@ mod test {
             &mut self,
         ) -> Verified<ST, ProposalMessage<ST, SCT, EthExecutionProtocol>> {
             self.proposal_gen.next_proposal(
+                None,
                 &self.keys,
                 &self.cert_keys,
                 &self.epoch_manager,
@@ -2187,6 +2183,7 @@ mod test {
             delayed_execution_results: Vec<EthHeader>,
         ) -> Verified<ST, ProposalMessage<ST, SCT, EthExecutionProtocol>> {
             self.proposal_gen.next_proposal(
+                None,
                 &self.keys,
                 &self.cert_keys,
                 &self.epoch_manager,
@@ -2214,12 +2211,46 @@ mod test {
             )
         }
 
+        fn next_fresh_proposal_with_certificate(
+            &mut self,
+            fresh_proposal_certificate: FreshProposalCertificate<SCT>,
+        ) -> Verified<ST, ProposalMessage<ST, SCT, EthExecutionProtocol>> {
+            self.proposal_gen.next_proposal(
+                Some(fresh_proposal_certificate),
+                &self.keys,
+                &self.cert_keys,
+                &self.epoch_manager,
+                &self.val_epoch_map,
+                &self.election,
+                |seq_num, timestamp_ns, round_signature: RoundSignature<_>| ProposedEthHeader {
+                    transactions_root: *EMPTY_TRANSACTIONS,
+                    ommers_hash: *EMPTY_OMMER_ROOT_HASH,
+                    withdrawals_root: *EMPTY_WITHDRAWALS,
+                    beneficiary: Default::default(),
+                    difficulty: 0,
+                    number: seq_num.0,
+                    gas_limit: CHAIN_PARAMS.proposal_gas_limit,
+                    timestamp: (timestamp_ns / 1_000_000_000) as u64,
+                    mix_hash: round_signature.get_hash().0,
+                    nonce: [0_u8; 8],
+                    extra_data: [0_u8; 32],
+                    base_fee_per_gas: BASE_FEE,
+                    blob_gas_used: 0,
+                    excess_blob_gas: 0,
+                    parent_beacon_block_root: [0_u8; 32],
+                    requests_hash: Some([0_u8; 32]),
+                },
+                Vec::new(),
+            )
+        }
+
         // TODO come up with better API for making mal proposals relative to state of proposal_gen
         fn branch_proposal(
             &mut self,
             delayed_execution_results: Vec<EthHeader>,
         ) -> Verified<ST, ProposalMessage<ST, SCT, EthExecutionProtocol>> {
             self.malicious_proposal_gen.next_proposal(
+                None,
                 &self.keys,
                 &self.cert_keys,
                 &self.epoch_manager,
@@ -2531,6 +2562,50 @@ mod test {
                 message,
             } => match &message.deref().deref().message {
                 ProtocolMessage::Proposal(p) => Some(p.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+    }
+
+    fn find_no_endorsement<ST, SCT, EPT, BPT, SBT>(
+        cmds: Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>>,
+    ) -> Option<NoEndorsementMessage<SCT>>
+    where
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        EPT: ExecutionProtocol,
+        BPT: BlockPolicy<ST, SCT, EPT, SBT, MockChainConfig, MockChainRevision>,
+        SBT: StateBackend<ST, SCT>,
+    {
+        cmds.iter().find_map(|c| match c {
+            ConsensusCommand::Publish {
+                target: RouterTarget::PointToPoint(_),
+                message,
+            } => match &message.deref().deref().message {
+                ProtocolMessage::NoEndorsement(ne) => Some(ne.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+    }
+
+    fn find_timeout<ST, SCT, EPT, BPT, SBT>(
+        cmds: Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>>,
+    ) -> Option<TimeoutMessage<ST, SCT, EPT>>
+    where
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        EPT: ExecutionProtocol,
+        BPT: BlockPolicy<ST, SCT, EPT, SBT, MockChainConfig, MockChainRevision>,
+        SBT: StateBackend<ST, SCT>,
+    {
+        cmds.iter().find_map(|c| match c {
+            ConsensusCommand::Publish {
+                target: RouterTarget::Broadcast(_),
+                message,
+            } => match &message.deref().deref().message {
+                ProtocolMessage::Timeout(timeout) => Some(timeout.clone()),
                 _ => None,
             },
             _ => None,
@@ -5358,6 +5433,290 @@ mod test {
                 .collect_vec();
 
             assert_eq!(future_other_leaders, expected_future_other_leaders);
+        }
+    }
+
+    #[test]
+    fn test_qc_xor_nec() {
+        let epoch = Epoch(1);
+        let n_validators = 10usize;
+        let execution_delay = SeqNum::MAX;
+
+        for n_voters in 0..n_validators {
+            let (mut env_ctx, mut nodes) = setup::<
+                SignatureType,
+                SignatureCollectionType,
+                BlockPolicyType,
+                StateBackendType,
+                BlockValidatorType,
+                _,
+                _,
+            >(
+                n_validators as u32,
+                ValidatorSetFactory::default(),
+                SimpleRoundRobin::default(),
+                || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
+                || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+                EthBlockValidator::default,
+                execution_delay,
+            );
+
+            let val_set = env_ctx.val_epoch_map.get_val_set(&epoch).unwrap().clone();
+            let val_mapping = env_ctx
+                .val_epoch_map
+                .get_cert_pubkeys(&epoch)
+                .unwrap()
+                .clone();
+
+            let (author, _, proposal) = env_ctx.next_proposal_empty().destructure();
+            let prev_round = proposal.proposal_round;
+
+            // let n_voters see and vote for the proposal of round r-1
+            for node in &mut nodes[..n_voters] {
+                if node.nodeid == author {
+                    continue;
+                }
+                let _ = node.handle_proposal_message(author, proposal.clone());
+                assert!(
+                    matches!(
+                        node.consensus_state.scheduled_vote,
+                        Some(OutgoingVoteStatus::VoteReady(_))
+                    ),
+                    "must vote for valid proposal"
+                );
+            }
+
+            // trigger timeout expiry on all validators
+            let mut timeouts = vec![];
+            let expected_vote = Vote {
+                id: proposal.tip.block_header.get_id(),
+                round: prev_round,
+                epoch,
+            };
+            for node in &mut nodes {
+                let commands = node.wrapped_state().handle_timeout_expiry(prev_round);
+                let timeout = find_timeout(commands).expect("must send timeout");
+
+                if let Some((vote, _sig)) = timeout.0.extract_vote() {
+                    assert_eq!(vote, expected_vote);
+                };
+                timeouts.push((node.nodeid, timeout.0));
+            }
+
+            // construct TC(r-1), which will be used as high_certificate for round r
+            let tc = TimeoutCertificate::new(epoch, prev_round, &timeouts, &val_mapping)
+                .expect("must form tc");
+
+            // solicit no endorsements for round r using TC(r-1), make
+            // TC(r-1) the high_certificate for entering round r.
+            let round = prev_round + Round(1);
+            let leader = env_ctx
+                .election
+                .get_leader(round, val_set.get_members());
+            let round_recovery = RoundRecoveryMessage {
+                epoch,
+                round,
+                tc: tc.clone(),
+            };
+
+            let mut nes = vec![];
+            for node in &mut nodes {
+                // the tip needs to be older than node's local timestamp for it to NE
+                node.block_timestamp
+                    .update_time(proposal.tip.block_header.timestamp_ns + 1);
+                let commands = node
+                    .wrapped_state()
+                    .handle_round_recovery_message(leader, round_recovery.clone());
+                if let Some(_ne) = find_no_endorsement(commands) {
+                    nes.push(node.nodeid);
+                };
+            }
+
+            let can_form_nec = val_set.has_super_majority_votes(&nes).unwrap();
+
+            // repropose in round r and solicit votes
+            env_ctx.proposal_gen.set_last_tc(tc);
+            let (author, _, proposal) = env_ctx.next_proposal_empty().destructure();
+            assert_eq!(proposal.proposal_round, prev_round);
+
+            let mut voters = vec![];
+            for node in &mut nodes {
+                let _commands = node.handle_proposal_message(author, proposal.clone());
+                if let Some(OutgoingVoteStatus::VoteReady(_)) = node.consensus_state.scheduled_vote
+                {
+                    voters.push(node.nodeid);
+                }
+            }
+            let can_form_qc = val_set.has_super_majority_votes(&voters).unwrap();
+
+            // NEC and QC must not both form for the same round.
+            assert!(!(can_form_nec && can_form_qc))
+        }
+    }
+
+    #[test_case("same_tc")]
+    #[test_case("diff_tc")]
+    fn test_refuse_to_vote_on_mismatched_tc(case: &str) {
+        let epoch = Epoch(1);
+        let n_validators = 10usize;
+        let execution_delay = SeqNum::MAX;
+
+        let (mut env_ctx, mut nodes) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            BlockPolicyType,
+            StateBackendType,
+            BlockValidatorType,
+            _,
+            _,
+        >(
+            n_validators as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            EthBlockValidator::default,
+            execution_delay,
+        );
+
+        let val_set = env_ctx.val_epoch_map.get_val_set(&epoch).unwrap().clone();
+        let val_mapping = env_ctx
+            .val_epoch_map
+            .get_cert_pubkeys(&epoch)
+            .unwrap()
+            .clone();
+
+        let (author, _, proposal) = env_ctx.next_proposal_empty().destructure();
+        let prev_round = proposal.proposal_round;
+
+        // Show the proposal to first two validators, so they get a tip.
+        for node in &mut nodes[..2] {
+            let _commands = node
+                .wrapped_state()
+                .handle_proposal_message(author, proposal.clone());
+            assert!(
+                matches!(
+                    node.consensus_state.scheduled_vote,
+                    Some(OutgoingVoteStatus::VoteReady(_))
+                ),
+                "must vote for valid proposal"
+            );
+        }
+
+        // Trigger timeout expiry on all validators
+        let mut timeouts = vec![];
+        for node in &mut nodes {
+            let commands = node.wrapped_state().handle_timeout_expiry(prev_round);
+            let timeout = find_timeout(commands).expect("must send timeout");
+            timeouts.push((node.nodeid, timeout.0));
+        }
+
+        // Construct TC_1(r-1), which is used to solicit NE from validators
+        let round = prev_round + Round(1);
+        let leader = env_ctx
+            .election
+            .get_leader(round, val_set.get_members());
+        let (tc1, rec) = {
+            let timeouts = &timeouts[..(timeouts.len() - 2)]; // pick some N >= 2f+1
+            let tc = TimeoutCertificate::new(epoch, prev_round, timeouts, &val_mapping)
+                .expect("must form tc");
+            assert!(matches!(tc.high_extend, HighExtend::Tip(_)));
+            let rec = RoundRecoveryMessage {
+                epoch,
+                round,
+                tc: tc.clone(),
+            };
+            (tc, rec)
+        };
+
+        // Solicit NE using TC_1(r-1). This will cause validators to
+        // advance into round r using TC_1 as high_certificate.
+        let mut nes = vec![];
+        let mut ne_validators = vec![];
+        let mut ne = None;
+        for node in &mut nodes {
+            let commands = node
+                .wrapped_state()
+                .handle_round_recovery_message(leader, rec.clone());
+
+            // ensure advanced round.
+            assert_eq!(node.consensus_state.pacemaker.get_current_round(), round);
+            if let Some(signed_ne) = find_no_endorsement(commands) {
+                let _ = ne.insert(signed_ne.msg);
+                ne_validators.push(node.nodeid);
+                nes.push((node.nodeid, signed_ne.signature));
+            };
+        }
+
+        // Construct TC_2(r-1), which will be used make fresh proposal
+        // in round r (i.e. FreshProposalCertificate::NoTip).
+        let (tc2, ntc) = {
+            let timeouts = &timeouts[2..]; // exclude the two validators with tip
+            let tc = TimeoutCertificate::new(epoch, prev_round, timeouts, &val_mapping)
+                .expect("must form tc");
+            assert!(matches!(tc.high_extend, HighExtend::Qc(_)));
+            let ntc = tc.clone().try_into_no_tip_certificate().unwrap();
+            (tc, ntc)
+        };
+
+        match case {
+            "diff_tc" => {
+                // Make fresh proposal using NTC (derived from TC_2), which is
+                // different from validators' high_certificate (TC_1).
+                env_ctx.proposal_gen.set_last_tc(tc2);
+                let fresh_proposal_cert = FreshProposalCertificate::NoTip(ntc);
+                let (author, _, proposal) = env_ctx
+                    .next_fresh_proposal_with_certificate(fresh_proposal_cert)
+                    .destructure();
+
+                // iterate through validators who sent the NE
+                for node in &mut nodes[2..] {
+                    let commands = node.handle_proposal_message(author, proposal.clone());
+                    let voted = find_vote_message(&commands).is_some()
+                        || matches!(
+                            node.consensus_state.scheduled_vote,
+                            Some(OutgoingVoteStatus::VoteReady(_))
+                        );
+                    // no one should vote because of the mismatched TC.
+                    assert!(!voted);
+                }
+            }
+
+            "same_tc" => {
+                // Since we solicited NE using TC_1, using the NEC
+                // formed from these NEs is the legit way to make
+                // fresh proposal (i.e. FreshProposalCertificate::NEC)
+                let nec = {
+                    let can_form_nec = val_set.has_super_majority_votes(&ne_validators).unwrap();
+                    assert!(can_form_nec);
+                    NoEndorsementCertificate::<SignatureCollectionType>::from_nes(
+                        ne.unwrap(),
+                        nes.into_iter(),
+                        &val_mapping,
+                    )
+                    .expect("must form nec")
+                };
+
+                // Instead we make the fresh proposal using the NEC.
+                env_ctx.proposal_gen.set_last_tc(tc1);
+                let fresh_proposal_cert = FreshProposalCertificate::Nec(nec);
+                let (author, _, proposal) = env_ctx
+                    .next_fresh_proposal_with_certificate(fresh_proposal_cert)
+                    .destructure();
+
+                for node in &mut nodes {
+                    let commands = node.handle_proposal_message(author, proposal.clone());
+                    let voted = find_vote_message(&commands).is_some()
+                        || matches!(
+                            node.consensus_state.scheduled_vote,
+                            Some(OutgoingVoteStatus::VoteReady(_))
+                        );
+                    // validators must vote for legit fresh proposal
+                    assert!(voted);
+                }
+            }
+
+            _ => unreachable!(),
         }
     }
 }
