@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     net::{IpAddr, SocketAddr},
     num::NonZeroUsize,
     time::Duration,
@@ -7,6 +6,8 @@ use std::{
 
 use lru::LruCache;
 use tracing::debug;
+
+use crate::state::State;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterAction {
@@ -22,11 +23,9 @@ pub struct Filter {
     handshake_rate_reset_interval: Duration,
     ip_request_history: LruCache<IpAddr, Duration>,
     ip_rate_limit_window: Duration,
-    ip_session_counts: HashMap<IpAddr, usize>,
     max_sessions_per_ip: usize,
     low_watermark_sessions: usize,
     high_watermark_sessions: usize,
-    total_sessions: usize,
 }
 
 impl Filter {
@@ -46,11 +45,9 @@ impl Filter {
             handshake_rate_reset_interval,
             ip_request_history: LruCache::new(NonZeroUsize::new(ip_history_capacity).unwrap()),
             ip_rate_limit_window,
-            ip_session_counts: HashMap::new(),
             max_sessions_per_ip,
             low_watermark_sessions,
             high_watermark_sessions,
-            total_sessions: 0,
         }
     }
 
@@ -69,16 +66,18 @@ impl Filter {
 
     pub fn apply(
         &mut self,
+        state: &State,
         remote_addr: SocketAddr,
         duration_since_start: Duration,
         cookie_valid: bool,
     ) -> FilterAction {
         self.counter += 1;
 
-        if self.total_sessions >= self.high_watermark_sessions {
+        let total_sessions = state.total_sessions();
+        if total_sessions >= self.high_watermark_sessions {
             debug!(
                 remote_addr = %remote_addr,
-                sessions = self.total_sessions,
+                sessions = total_sessions,
                 high_watermark = self.high_watermark_sessions,
                 "high load - rejecting new handshake"
             );
@@ -97,7 +96,7 @@ impl Filter {
             return FilterAction::Drop;
         }
 
-        if self.total_sessions < self.low_watermark_sessions {
+        if total_sessions < self.low_watermark_sessions {
             return FilterAction::Pass;
         }
 
@@ -118,7 +117,7 @@ impl Filter {
             self.ip_request_history.put(ip, duration_since_start);
         }
 
-        let session_count = self.ip_session_counts.get(&ip).copied().unwrap_or(0);
+        let session_count = state.ip_session_count(&ip);
         if session_count >= self.max_sessions_per_ip {
             debug!(
                 ip = %ip,
@@ -130,26 +129,12 @@ impl Filter {
 
         FilterAction::Pass
     }
-
-    pub fn on_session_added(&mut self, ip: IpAddr) {
-        *self.ip_session_counts.entry(ip).or_insert(0) += 1;
-        self.total_sessions += 1;
-    }
-
-    pub fn on_session_removed(&mut self, ip: IpAddr) {
-        if let Some(count) = self.ip_session_counts.get_mut(&ip) {
-            *count = count.saturating_sub(1);
-            if *count == 0 {
-                self.ip_session_counts.remove(&ip);
-            }
-        }
-        self.total_sessions = self.total_sessions.saturating_sub(1);
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::insert_test_initiator_session;
 
     fn default_filter() -> Filter {
         Filter::new(
@@ -166,8 +151,9 @@ mod tests {
     #[test]
     fn test_basic_pass_no_limits() {
         let mut filter = default_filter();
+        let state = State::new();
         let addr = "127.0.0.1:8080".parse().unwrap();
-        let action = filter.apply(addr, Duration::from_secs(1), false);
+        let action = filter.apply(&state, addr, Duration::from_secs(1), false);
         assert_eq!(action, FilterAction::Pass);
     }
 
@@ -183,11 +169,13 @@ mod tests {
             5,
             high_watermark,
         );
+        let mut state = State::new();
         for i in 0..high_watermark {
-            filter.on_session_added(format!("10.0.0.{}", i).parse().unwrap());
+            let ip: IpAddr = format!("10.0.0.{}", i).parse().unwrap();
+            insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));
         }
         let addr = "127.0.0.1:8080".parse().unwrap();
-        let action = filter.apply(addr, Duration::from_secs(1), false);
+        let action = filter.apply(&state, addr, Duration::from_secs(1), false);
         assert_eq!(action, FilterAction::Drop);
     }
 
@@ -203,11 +191,13 @@ mod tests {
             low_watermark,
             10,
         );
+        let mut state = State::new();
         for i in 0..low_watermark {
-            filter.on_session_added(format!("10.0.0.{}", i).parse().unwrap());
+            let ip: IpAddr = format!("10.0.0.{}", i).parse().unwrap();
+            insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));
         }
         let addr = "127.0.0.1:8080".parse().unwrap();
-        let action = filter.apply(addr, Duration::from_secs(1), false);
+        let action = filter.apply(&state, addr, Duration::from_secs(1), false);
         assert_eq!(action, FilterAction::SendCookie);
     }
 
@@ -223,11 +213,13 @@ mod tests {
             low_watermark,
             10,
         );
+        let mut state = State::new();
         for i in 0..low_watermark {
-            filter.on_session_added(format!("10.0.0.{}", i).parse().unwrap());
+            let ip: IpAddr = format!("10.0.0.{}", i).parse().unwrap();
+            insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));
         }
         let addr = "127.0.0.1:8080".parse().unwrap();
-        let action = filter.apply(addr, Duration::from_secs(1), true);
+        let action = filter.apply(&state, addr, Duration::from_secs(1), true);
         assert_eq!(action, FilterAction::Pass);
     }
 
@@ -243,11 +235,12 @@ mod tests {
             50,
             100,
         );
+        let state = State::new();
         let addr = "127.0.0.1:8080".parse().unwrap();
         for _ in 0..handshake_rate_limit {
-            filter.apply(addr, Duration::from_secs(1), false);
+            filter.apply(&state, addr, Duration::from_secs(1), false);
         }
-        let action = filter.apply(addr, Duration::from_secs(1), false);
+        let action = filter.apply(&state, addr, Duration::from_secs(1), false);
         assert_eq!(action, FilterAction::Drop);
     }
 
@@ -263,11 +256,12 @@ mod tests {
             50,
             100,
         );
+        let state = State::new();
         let addr = "127.0.0.1:8080".parse().unwrap();
         for _ in 0..handshake_rate_limit {
-            filter.apply(addr, Duration::from_secs(1), false);
+            filter.apply(&state, addr, Duration::from_secs(1), false);
         }
-        let action = filter.apply(addr, Duration::from_secs(1), true);
+        let action = filter.apply(&state, addr, Duration::from_secs(1), true);
         assert_eq!(action, FilterAction::Drop);
     }
 
@@ -283,12 +277,13 @@ mod tests {
             50,
             100,
         );
+        let state = State::new();
         let addr = "127.0.0.1:8080".parse().unwrap();
         for _ in 0..handshake_rate_limit {
-            filter.apply(addr, Duration::from_secs(0), false);
+            filter.apply(&state, addr, Duration::from_secs(0), false);
         }
         filter.tick(Duration::from_secs(1));
-        let action = filter.apply(addr, Duration::from_secs(1), false);
+        let action = filter.apply(&state, addr, Duration::from_secs(1), false);
         assert_eq!(action, FilterAction::Pass);
     }
 
@@ -304,12 +299,13 @@ mod tests {
             50,
             100,
         );
+        let state = State::new();
         let addr = "127.0.0.1:8080".parse().unwrap();
         for _ in 0..handshake_rate_limit {
-            filter.apply(addr, Duration::from_secs(0), false);
+            filter.apply(&state, addr, Duration::from_secs(0), false);
         }
         filter.tick(Duration::from_secs(5));
-        let action = filter.apply(addr, Duration::from_secs(5), false);
+        let action = filter.apply(&state, addr, Duration::from_secs(5), false);
         assert_eq!(action, FilterAction::Drop);
     }
 
@@ -325,12 +321,14 @@ mod tests {
             low_watermark,
             10,
         );
+        let mut state = State::new();
         for i in 0..low_watermark {
-            filter.on_session_added(format!("10.0.0.{}", i).parse().unwrap());
+            let ip: IpAddr = format!("10.0.0.{}", i).parse().unwrap();
+            insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));
         }
         let addr = "127.0.0.1:8080".parse().unwrap();
-        filter.apply(addr, Duration::from_secs(0), true);
-        let action = filter.apply(addr, Duration::from_secs(3), true);
+        filter.apply(&state, addr, Duration::from_secs(0), true);
+        let action = filter.apply(&state, addr, Duration::from_secs(3), true);
         assert_eq!(action, FilterAction::Drop);
     }
 
@@ -346,12 +344,14 @@ mod tests {
             low_watermark,
             10,
         );
+        let mut state = State::new();
         for i in 0..low_watermark {
-            filter.on_session_added(format!("10.0.0.{}", i).parse().unwrap());
+            let ip: IpAddr = format!("10.0.0.{}", i).parse().unwrap();
+            insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));
         }
         let addr = "127.0.0.1:8080".parse().unwrap();
-        filter.apply(addr, Duration::from_secs(0), true);
-        let action = filter.apply(addr, Duration::from_secs(6), true);
+        filter.apply(&state, addr, Duration::from_secs(0), true);
+        let action = filter.apply(&state, addr, Duration::from_secs(6), true);
         assert_eq!(action, FilterAction::Pass);
     }
 
@@ -368,15 +368,17 @@ mod tests {
             low_watermark,
             10,
         );
+        let mut state = State::new();
         for i in 0..low_watermark {
-            filter.on_session_added(format!("10.0.0.{}", i).parse().unwrap());
+            let ip: IpAddr = format!("10.0.0.{}", i).parse().unwrap();
+            insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));
         }
         let ip: IpAddr = "192.168.1.1".parse().unwrap();
         for _ in 0..max_sessions_per_ip {
-            filter.on_session_added(ip);
+            insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));
         }
         let addr = "192.168.1.1:8080".parse().unwrap();
-        let action = filter.apply(addr, Duration::from_secs(1), true);
+        let action = filter.apply(&state, addr, Duration::from_secs(1), true);
         assert_eq!(action, FilterAction::Drop);
     }
 
@@ -393,13 +395,15 @@ mod tests {
             low_watermark,
             10,
         );
+        let mut state = State::new();
         for i in 0..low_watermark {
-            filter.on_session_added(format!("10.0.0.{}", i).parse().unwrap());
+            let ip: IpAddr = format!("10.0.0.{}", i).parse().unwrap();
+            insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));
         }
         let ip: IpAddr = "192.168.1.1".parse().unwrap();
-        filter.on_session_added(ip);
+        insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));
         let addr = "192.168.1.1:8080".parse().unwrap();
-        let action = filter.apply(addr, Duration::from_secs(1), true);
+        let action = filter.apply(&state, addr, Duration::from_secs(1), true);
         assert_eq!(action, FilterAction::Pass);
     }
 
@@ -416,14 +420,16 @@ mod tests {
             low_watermark,
             10,
         );
+        let mut state = State::new();
         for i in 0..low_watermark {
-            filter.on_session_added(format!("10.0.0.{}", i).parse().unwrap());
+            let ip: IpAddr = format!("10.0.0.{}", i).parse().unwrap();
+            insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));
         }
         let addr = "127.0.0.1:8080".parse().unwrap();
         for _ in 0..handshake_rate_limit {
-            filter.apply(addr, Duration::from_secs(1), false);
+            filter.apply(&state, addr, Duration::from_secs(1), false);
         }
-        let action = filter.apply(addr, Duration::from_secs(1), false);
+        let action = filter.apply(&state, addr, Duration::from_secs(1), false);
         assert_eq!(action, FilterAction::Drop);
     }
 
@@ -439,16 +445,18 @@ mod tests {
             low_watermark,
             10,
         );
+        let mut state = State::new();
         for i in 0..low_watermark {
-            filter.on_session_added(format!("10.0.0.{}", i).parse().unwrap());
+            let ip: IpAddr = format!("10.0.0.{}", i).parse().unwrap();
+            insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));
         }
         let addr1 = "192.168.1.1:8080".parse().unwrap();
         let addr2 = "192.168.1.2:8080".parse().unwrap();
         let addr3 = "192.168.1.3:8080".parse().unwrap();
-        filter.apply(addr1, Duration::from_secs(0), true);
-        filter.apply(addr2, Duration::from_secs(1), true);
-        filter.apply(addr3, Duration::from_secs(2), true);
-        let action = filter.apply(addr1, Duration::from_secs(3), true);
+        filter.apply(&state, addr1, Duration::from_secs(0), true);
+        filter.apply(&state, addr2, Duration::from_secs(1), true);
+        filter.apply(&state, addr3, Duration::from_secs(2), true);
+        let action = filter.apply(&state, addr1, Duration::from_secs(3), true);
         assert_eq!(action, FilterAction::Pass);
     }
 }

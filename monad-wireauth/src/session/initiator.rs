@@ -33,12 +33,11 @@ impl InitiatorState {
         config: &Config,
         local_session_index: SessionIndex,
         local_static_key: &monad_secp::KeyPair,
-        _local_static_public: monad_secp::PubKey,
         remote_static_key: monad_secp::PubKey,
         remote_addr: SocketAddr,
         cookie_secret: Option<[u8; 16]>,
         retry_attempts: u64,
-    ) -> Result<(Self, (Duration, HandshakeInitiation)), SessionError> {
+    ) -> (Self, (Duration, HandshakeInitiation)) {
         let (init_msg, handshake_state) = handshake::send_handshake_init(
             rng,
             system_time,
@@ -46,8 +45,7 @@ impl InitiatorState {
             local_static_key,
             &remote_static_key,
             cookie_secret.as_ref(),
-        )
-        .map_err(SessionError::InvalidHandshake)?;
+        );
 
         let mac1 = init_msg.mac1.0;
         let mut common = SessionState::new(
@@ -78,14 +76,13 @@ impl InitiatorState {
             .get_next_deadline()
             .expect("expected at least one timer to be set");
 
-        Ok((session, (timer, init_msg)))
+        (session, (timer, init_msg))
     }
 
     pub fn validate_response(
         &mut self,
         config: &Config,
         local_static_key: &monad_secp::KeyPair,
-        _local_static_public: &monad_secp::PubKey,
         msg: &mut HandshakeResponse,
     ) -> Result<ValidatedHandshakeResponse, SessionError> {
         let transport_keys = handshake::accept_handshake_response(

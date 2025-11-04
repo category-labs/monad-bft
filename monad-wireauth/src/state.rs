@@ -1,10 +1,10 @@
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     time::{Duration, SystemTime},
 };
 
-use crate::session::{Config, InitiatorState, ResponderState, SessionIndex, TransportState};
+use crate::session::{InitiatorState, ResponderState, SessionIndex, TransportState};
 
 #[derive(Default)]
 struct EstablishedSessions {
@@ -60,6 +60,8 @@ pub struct State {
     next_session_index: SessionIndex,
     initiated_session_by_peer: HashMap<monad_secp::PubKey, SessionIndex>,
     accepted_sessions_by_peer: BTreeSet<(monad_secp::PubKey, SessionIndex)>,
+    ip_session_counts: HashMap<IpAddr, usize>,
+    total_sessions: usize,
 }
 
 impl State {
@@ -74,9 +76,12 @@ impl State {
             next_session_index: SessionIndex::new(0),
             initiated_session_by_peer: HashMap::new(),
             accepted_sessions_by_peer: BTreeSet::new(),
+            ip_session_counts: HashMap::new(),
+            total_sessions: 0,
         }
     }
 
+    #[cfg(test)]
     pub fn get_transport(&self, session_index: &SessionIndex) -> Option<&TransportState> {
         self.transport_sessions.get(session_index)
     }
@@ -88,19 +93,26 @@ impl State {
         self.transport_sessions.get_mut(session_index)
     }
 
-    pub fn get_session_id_by_public_key(
-        &self,
+    pub fn get_transport_by_public_key(
+        &mut self,
         public_key: &monad_secp::PubKey,
-    ) -> Option<SessionIndex> {
-        self.last_established_session_by_public_key
+    ) -> Option<&mut TransportState> {
+        let session_id = self
+            .last_established_session_by_public_key
             .get(public_key)
-            .and_then(|sessions| sessions.get_latest())
+            .and_then(|sessions| sessions.get_latest())?;
+        self.transport_sessions.get_mut(&session_id)
     }
 
-    pub fn get_session_id_by_socket(&self, socket_addr: &SocketAddr) -> Option<SessionIndex> {
-        self.last_established_session_by_socket
+    pub fn get_transport_by_socket(
+        &mut self,
+        socket_addr: &SocketAddr,
+    ) -> Option<&mut TransportState> {
+        let session_id = self
+            .last_established_session_by_socket
             .get(socket_addr)
-            .and_then(|sessions| sessions.get_latest())
+            .and_then(|sessions| sessions.get_latest())?;
+        self.transport_sessions.get_mut(&session_id)
     }
 
     pub(crate) fn reserve_session_index(&mut self) -> Option<SessionIndexReservation<'_>> {
@@ -122,12 +134,7 @@ impl State {
         }
     }
 
-    pub fn handle_established(
-        &mut self,
-        session_id: SessionIndex,
-        transport: TransportState,
-        _config: &Config,
-    ) -> Vec<SessionIndex> {
+    pub fn insert_transport(&mut self, session_id: SessionIndex, transport: TransportState) {
         let remote_public_key = &transport.remote_public_key;
         let remote_addr = transport.remote_addr;
         let created = transport.created;
@@ -175,17 +182,35 @@ impl State {
             sessions.responder = Some((session_id, created));
         }
 
-        self.transport_sessions.insert(session_id, transport);
+        for replaced_session_id in replaced_sessions {
+            if let Some(session) = self.transport_sessions.get(&replaced_session_id) {
+                let replaced_remote_public_key = session.remote_public_key;
+                let replaced_remote_addr = session.remote_addr;
+                self.terminate_session(
+                    replaced_session_id,
+                    &replaced_remote_public_key,
+                    replaced_remote_addr,
+                );
+            }
+        }
 
-        replaced_sessions
+        self.transport_sessions.insert(session_id, transport);
     }
 
-    pub fn handle_terminate(
+    pub fn terminate_session(
         &mut self,
         session_id: SessionIndex,
         remote_public_key: &monad_secp::PubKey,
         remote_addr: SocketAddr,
     ) {
+        if let Some(count) = self.ip_session_counts.get_mut(&remote_addr.ip()) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                self.ip_session_counts.remove(&remote_addr.ip());
+            }
+        }
+        self.total_sessions = self.total_sessions.saturating_sub(1);
+
         let transport = self.transport_sessions.remove(&session_id);
         self.initiating_sessions.remove(&session_id);
         self.responding_sessions.remove(&session_id);
@@ -238,6 +263,7 @@ impl State {
             .remove(&(*remote_public_key, session_id));
     }
 
+    #[cfg(test)]
     pub fn get_initiator(&self, session_index: &SessionIndex) -> Option<&InitiatorState> {
         self.initiating_sessions.get(session_index)
     }
@@ -249,6 +275,7 @@ impl State {
         self.initiating_sessions.get_mut(session_index)
     }
 
+    #[cfg(test)]
     pub fn get_responder(&self, session_index: &SessionIndex) -> Option<&ResponderState> {
         self.responding_sessions.get(session_index)
     }
@@ -274,9 +301,12 @@ impl State {
         session: InitiatorState,
         remote_key: monad_secp::PubKey,
     ) {
+        let remote_addr = session.remote_addr;
         self.initiating_sessions.insert(session_index, session);
         self.initiated_session_by_peer
             .insert(remote_key, session_index);
+        *self.ip_session_counts.entry(remote_addr.ip()).or_insert(0) += 1;
+        self.total_sessions += 1;
     }
 
     pub fn insert_responder(
@@ -285,9 +315,12 @@ impl State {
         session: ResponderState,
         remote_key: monad_secp::PubKey,
     ) {
+        let remote_addr = session.remote_addr;
         self.responding_sessions.insert(session_index, session);
         self.accepted_sessions_by_peer
             .insert((remote_key, session_index));
+        *self.ip_session_counts.entry(remote_addr.ip()).or_insert(0) += 1;
+        self.total_sessions += 1;
     }
 
     pub fn lookup_cookie_from_initiated_sessions(
@@ -384,13 +417,51 @@ impl State {
                 });
 
             if let Some(addr) = remote_addr {
-                self.handle_terminate(session_id, public_key, addr);
+                self.terminate_session(session_id, public_key, addr);
                 terminated_addrs.push(addr);
             }
         }
 
         terminated_addrs
     }
+
+    pub fn total_sessions(&self) -> usize {
+        self.total_sessions
+    }
+
+    pub fn ip_session_count(&self, ip: &IpAddr) -> usize {
+        self.ip_session_counts.get(ip).copied().unwrap_or(0)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn insert_test_initiator_session(
+    state: &mut State,
+    remote_addr: SocketAddr,
+) -> SessionIndex {
+    use secp256k1::rand::rng;
+
+    use crate::session::Config;
+    let mut rng = rng();
+    let keypair = monad_secp::KeyPair::generate(&mut rng);
+    let remote_public_key = keypair.pubkey();
+    let local_keypair = monad_secp::KeyPair::generate(&mut rng);
+    let config = Config::default();
+    let local_index = SessionIndex::new(1);
+    let (initiator, _) = InitiatorState::new(
+        &mut rng,
+        std::time::SystemTime::now(),
+        Duration::ZERO,
+        &config,
+        local_index,
+        &local_keypair,
+        remote_public_key,
+        remote_addr,
+        None,
+        0,
+    );
+    state.insert_initiator(local_index, initiator, remote_public_key);
+    local_index
 }
 
 #[cfg(test)]
@@ -403,6 +474,7 @@ mod tests {
     use secp256k1::rand::rng;
 
     use super::*;
+    use crate::session::Config;
 
     fn create_dummy_hash_output() -> crate::protocol::common::HashOutput {
         crate::protocol::common::HashOutput([0u8; 32])
@@ -431,27 +503,33 @@ mod tests {
     }
 
     fn create_test_initiator(remote_public_key: &monad_secp::PubKey) -> InitiatorState {
+        create_test_initiator_with_addr(
+            remote_public_key,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820),
+        )
+    }
+
+    fn create_test_initiator_with_addr(
+        remote_public_key: &monad_secp::PubKey,
+        remote_addr: SocketAddr,
+    ) -> InitiatorState {
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
-        let public_key = keypair.pubkey();
         let config = Config::default();
-        let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let local_index = SessionIndex::new(1);
-        InitiatorState::new(
+        let (initiator, _) = InitiatorState::new(
             &mut rng,
             SystemTime::now(),
             Duration::ZERO,
             &config,
             local_index,
             &keypair,
-            public_key,
             *remote_public_key,
             remote_addr,
             None,
             0,
-        )
-        .unwrap()
-        .0
+        );
+        initiator
     }
 
     fn create_test_responder(
@@ -505,16 +583,6 @@ mod tests {
     }
 
     #[test]
-    fn test_new() {
-        let state = State::new();
-        assert_eq!(state.next_session_index, SessionIndex::new(0));
-        assert!(state.allocated_indices.is_empty());
-        assert!(state.transport_sessions.is_empty());
-        assert!(state.initiating_sessions.is_empty());
-        assert!(state.responding_sessions.is_empty());
-    }
-
-    #[test]
     fn test_allocate_session_index() {
         let mut state = State::new();
 
@@ -557,13 +625,6 @@ mod tests {
     }
 
     #[test]
-    fn test_get_nonexistent_transport() {
-        let state = State::new();
-        let session_id = SessionIndex::new(42);
-        assert!(state.get_transport(&session_id).is_none());
-    }
-
-    #[test]
     fn test_get_transport_mut() {
         let mut state = State::new();
         let mut rng = rng();
@@ -571,10 +632,9 @@ mod tests {
         let public_key = keypair.pubkey();
         let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let session_id = SessionIndex::new(100);
-        let config = Config::default();
 
         let transport = create_test_transport(session_id, &public_key, remote_addr, true);
-        state.handle_established(session_id, transport, &config);
+        state.insert_transport(session_id, transport);
 
         assert!(state.get_transport_mut(&session_id).is_some());
         assert!(state.get_transport_mut(&SessionIndex::new(999)).is_none());
@@ -588,162 +648,143 @@ mod tests {
         let public_key = keypair.pubkey();
         let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let session_id = SessionIndex::new(100);
-        let config = Config::default();
 
         let transport = create_test_transport(session_id, &public_key, remote_addr, true);
-        state.handle_established(session_id, transport, &config);
+        state.insert_transport(session_id, transport);
 
         assert!(state.get_transport(&session_id).is_some());
         assert!(state.get_transport(&SessionIndex::new(999)).is_none());
     }
 
     #[test]
-    fn test_get_session_id_by_public_key_empty() {
-        let state = State::new();
-        let mut rng = rng();
-        let keypair = monad_secp::KeyPair::generate(&mut rng);
-        let public_key = keypair.pubkey();
-        let key_bytes = public_key;
-        assert!(state.get_session_id_by_public_key(&key_bytes).is_none());
-    }
-
-    #[test]
-    fn test_get_session_id_by_public_key_single_initiator() {
+    fn test_get_transport_by_public_key_empty() {
         let mut state = State::new();
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
-        let key_bytes = public_key;
+        assert!(state.get_transport_by_public_key(&public_key).is_none());
+    }
+
+    #[test]
+    fn test_get_transport_by_public_key_single_initiator() {
+        let mut state = State::new();
+        let mut rng = rng();
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
+        let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let session_id = SessionIndex::new(1);
-        let created = Duration::from_secs(100);
 
-        state.last_established_session_by_public_key.insert(
-            key_bytes,
-            EstablishedSessions {
-                initiator: Some((session_id, created)),
-                responder: None,
-            },
-        );
+        let transport = create_test_transport(session_id, &public_key, remote_addr, true);
+        state.insert_transport(session_id, transport);
 
-        assert_eq!(
-            state.get_session_id_by_public_key(&key_bytes),
-            Some(session_id)
-        );
+        assert!(state.get_transport_by_public_key(&public_key).is_some());
     }
 
     #[test]
-    fn test_get_session_id_by_public_key_single_responder() {
+    fn test_get_transport_by_public_key_single_responder() {
         let mut state = State::new();
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
-        let key_bytes = public_key;
+        let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let session_id = SessionIndex::new(2);
-        let created = Duration::from_secs(100);
 
-        state.last_established_session_by_public_key.insert(
-            key_bytes,
-            EstablishedSessions {
-                initiator: None,
-                responder: Some((session_id, created)),
-            },
-        );
+        let transport = create_test_transport(session_id, &public_key, remote_addr, false);
+        state.insert_transport(session_id, transport);
 
-        assert_eq!(
-            state.get_session_id_by_public_key(&key_bytes),
-            Some(session_id)
-        );
+        assert!(state.get_transport_by_public_key(&public_key).is_some());
     }
 
     #[test]
-    fn test_get_session_id_by_public_key_both_newer_initiator() {
+    fn test_get_transport_by_public_key_both_newer_initiator() {
         let mut state = State::new();
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
-        let key_bytes = public_key;
+        let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let session_id_init = SessionIndex::new(1);
         let session_id_resp = SessionIndex::new(2);
 
-        state.last_established_session_by_public_key.insert(
-            key_bytes,
-            EstablishedSessions {
-                initiator: Some((session_id_init, Duration::from_secs(200))),
-                responder: Some((session_id_resp, Duration::from_secs(100))),
-            },
-        );
+        let mut transport_resp =
+            create_test_transport(session_id_resp, &public_key, remote_addr, false);
+        transport_resp.created = Duration::from_secs(100);
+        state.insert_transport(session_id_resp, transport_resp);
 
-        assert_eq!(
-            state.get_session_id_by_public_key(&key_bytes),
-            Some(session_id_init)
-        );
+        let mut transport_init =
+            create_test_transport(session_id_init, &public_key, remote_addr, true);
+        transport_init.created = Duration::from_secs(200);
+        state.insert_transport(session_id_init, transport_init);
+
+        let retrieved = state.get_transport_by_public_key(&public_key).unwrap();
+        assert_eq!(retrieved.local_index, session_id_init);
     }
 
     #[test]
-    fn test_get_session_id_by_public_key_both_newer_responder() {
+    fn test_get_transport_by_public_key_both_newer_responder() {
         let mut state = State::new();
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
-        let key_bytes = public_key;
+        let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let session_id_init = SessionIndex::new(1);
         let session_id_resp = SessionIndex::new(2);
 
-        state.last_established_session_by_public_key.insert(
-            key_bytes,
-            EstablishedSessions {
-                initiator: Some((session_id_init, Duration::from_secs(100))),
-                responder: Some((session_id_resp, Duration::from_secs(200))),
-            },
-        );
+        let mut transport_init =
+            create_test_transport(session_id_init, &public_key, remote_addr, true);
+        transport_init.created = Duration::from_secs(100);
+        state.insert_transport(session_id_init, transport_init);
 
-        assert_eq!(
-            state.get_session_id_by_public_key(&key_bytes),
-            Some(session_id_resp)
-        );
+        let mut transport_resp =
+            create_test_transport(session_id_resp, &public_key, remote_addr, false);
+        transport_resp.created = Duration::from_secs(200);
+        state.insert_transport(session_id_resp, transport_resp);
+
+        let retrieved = state.get_transport_by_public_key(&public_key).unwrap();
+        assert_eq!(retrieved.local_index, session_id_resp);
     }
 
     #[test]
-    fn test_get_session_id_by_socket_empty() {
-        let state = State::new();
+    fn test_get_transport_by_socket_empty() {
+        let mut state = State::new();
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
-        assert!(state.get_session_id_by_socket(&addr).is_none());
+        assert!(state.get_transport_by_socket(&addr).is_none());
     }
 
     #[test]
-    fn test_get_session_id_by_socket_single() {
+    fn test_get_transport_by_socket_single() {
         let mut state = State::new();
+        let mut rng = rng();
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let session_id = SessionIndex::new(5);
-        let created = Duration::from_secs(100);
 
-        state.last_established_session_by_socket.insert(
-            addr,
-            EstablishedSessions {
-                initiator: Some((session_id, created)),
-                responder: None,
-            },
-        );
+        let transport = create_test_transport(session_id, &public_key, addr, true);
+        state.insert_transport(session_id, transport);
 
-        assert_eq!(state.get_session_id_by_socket(&addr), Some(session_id));
+        assert!(state.get_transport_by_socket(&addr).is_some());
     }
 
     #[test]
-    fn test_get_session_id_by_socket_both_newer_initiator() {
+    fn test_get_transport_by_socket_both_newer_initiator() {
         let mut state = State::new();
+        let mut rng = rng();
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let public_key = keypair.pubkey();
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let session_id_init = SessionIndex::new(3);
         let session_id_resp = SessionIndex::new(4);
 
-        state.last_established_session_by_socket.insert(
-            addr,
-            EstablishedSessions {
-                initiator: Some((session_id_init, Duration::from_secs(300))),
-                responder: Some((session_id_resp, Duration::from_secs(100))),
-            },
-        );
+        let mut transport_resp = create_test_transport(session_id_resp, &public_key, addr, false);
+        transport_resp.created = Duration::from_secs(100);
+        state.insert_transport(session_id_resp, transport_resp);
 
-        assert_eq!(state.get_session_id_by_socket(&addr), Some(session_id_init));
+        let mut transport_init = create_test_transport(session_id_init, &public_key, addr, true);
+        transport_init.created = Duration::from_secs(300);
+        state.insert_transport(session_id_init, transport_init);
+
+        let retrieved = state.get_transport_by_socket(&addr).unwrap();
+        assert_eq!(retrieved.local_index, session_id_init);
     }
 
     #[test]
@@ -755,12 +796,18 @@ mod tests {
         let key_bytes = public_key;
         let session_id = SessionIndex::new(10);
         let initiator = create_test_initiator(&public_key);
+        let remote_ip = initiator.remote_addr.ip();
+
+        assert_eq!(state.total_sessions(), 0);
+        assert_eq!(state.ip_session_count(&remote_ip), 0);
 
         state.insert_initiator(session_id, initiator, key_bytes);
 
         assert!(state.get_initiator(&session_id).is_some());
         assert!(state.initiated_session_by_peer.contains_key(&key_bytes));
         assert_eq!(state.initiated_session_by_peer[&key_bytes], session_id);
+        assert_eq!(state.total_sessions(), 1);
+        assert_eq!(state.ip_session_count(&remote_ip), 1);
     }
 
     #[test]
@@ -772,6 +819,10 @@ mod tests {
         let key_bytes = public_key;
         let session_id = SessionIndex::new(20);
         let responder = create_test_responder(&public_key, None);
+        let remote_ip = responder.remote_addr.ip();
+
+        assert_eq!(state.total_sessions(), 0);
+        assert_eq!(state.ip_session_count(&remote_ip), 0);
 
         state.insert_responder(session_id, responder, key_bytes);
 
@@ -779,6 +830,8 @@ mod tests {
         assert!(state
             .accepted_sessions_by_peer
             .contains(&(key_bytes, session_id)));
+        assert_eq!(state.total_sessions(), 1);
+        assert_eq!(state.ip_session_count(&remote_ip), 1);
     }
 
     #[test]
@@ -840,20 +893,18 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_established_initiator() {
+    fn test_insert_transport_initiator() {
         let mut state = State::new();
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
         let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let session_id = SessionIndex::new(100);
-        let config = Config::default();
 
         let transport = create_test_transport(session_id, &public_key, remote_addr, true);
 
-        let terminated = state.handle_established(session_id, transport, &config);
+        state.insert_transport(session_id, transport);
 
-        assert!(terminated.is_empty());
         assert!(state.get_transport(&session_id).is_some());
         let key_bytes = public_key;
         assert!(state
@@ -865,63 +916,63 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_established_replaces_old_initiator() {
+    fn test_insert_transport_replaces_old_initiator() {
         let mut state = State::new();
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
         let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
-        let config = Config::default();
+        let remote_ip = remote_addr.ip();
 
         let old_session_id = SessionIndex::new(100);
         let transport1 = create_test_transport(old_session_id, &public_key, remote_addr, true);
-        state.handle_established(old_session_id, transport1, &config);
+        state.insert_transport(old_session_id, transport1);
+
+        assert_eq!(state.total_sessions(), 0);
 
         let new_session_id = SessionIndex::new(101);
         let transport2 = create_test_transport(new_session_id, &public_key, remote_addr, true);
-        let terminated = state.handle_established(new_session_id, transport2, &config);
+        state.insert_transport(new_session_id, transport2);
 
-        assert_eq!(terminated.len(), 1);
-        assert_eq!(terminated[0], old_session_id);
+        assert!(state.get_transport(&old_session_id).is_none());
+        assert!(state.get_transport(&new_session_id).is_some());
+        assert_eq!(state.total_sessions(), 0);
+        assert_eq!(state.ip_session_count(&remote_ip), 0);
     }
 
     #[test]
-    fn test_handle_established_responder() {
+    fn test_insert_transport_responder() {
         let mut state = State::new();
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
         let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let session_id = SessionIndex::new(200);
-        let config = Config::default();
 
         let transport = create_test_transport(session_id, &public_key, remote_addr, false);
 
-        let terminated = state.handle_established(session_id, transport, &config);
+        state.insert_transport(session_id, transport);
 
-        assert!(terminated.is_empty());
         assert!(state.get_transport(&session_id).is_some());
     }
 
     #[test]
-    fn test_handle_established_both_initiator_and_responder() {
+    fn test_insert_transport_both_initiator_and_responder() {
         let mut state = State::new();
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
         let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
-        let config = Config::default();
 
         let init_session_id = SessionIndex::new(100);
         let transport_init = create_test_transport(init_session_id, &public_key, remote_addr, true);
-        state.handle_established(init_session_id, transport_init, &config);
+        state.insert_transport(init_session_id, transport_init);
 
         let resp_session_id = SessionIndex::new(200);
         let transport_resp =
             create_test_transport(resp_session_id, &public_key, remote_addr, false);
-        let terminated = state.handle_established(resp_session_id, transport_resp, &config);
+        state.insert_transport(resp_session_id, transport_resp);
 
-        assert!(terminated.is_empty());
         assert!(state.get_transport(&init_session_id).is_some());
         assert!(state.get_transport(&resp_session_id).is_some());
 
@@ -943,15 +994,14 @@ mod tests {
         let key_bytes = public_key;
         let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let session_id = SessionIndex::new(100);
-        let config = Config::default();
 
         let transport = create_test_transport(session_id, &public_key, remote_addr, true);
-        state.handle_established(session_id, transport, &config);
+        state.insert_transport(session_id, transport);
 
         let reservation = state.reserve_session_index().unwrap();
         reservation.commit();
 
-        state.handle_terminate(session_id, &key_bytes, remote_addr);
+        state.terminate_session(session_id, &key_bytes, remote_addr);
 
         assert!(state.get_transport(&session_id).is_none());
         assert!(!state.allocated_indices.contains(&session_id));
@@ -966,12 +1016,11 @@ mod tests {
         let key_bytes = public_key;
         let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let session_id = SessionIndex::new(100);
-        let config = Config::default();
 
         let transport = create_test_transport(session_id, &public_key, remote_addr, true);
-        state.handle_established(session_id, transport, &config);
+        state.insert_transport(session_id, transport);
 
-        state.handle_terminate(session_id, &key_bytes, remote_addr);
+        state.terminate_session(session_id, &key_bytes, remote_addr);
 
         assert!(!state
             .last_established_session_by_public_key
@@ -986,18 +1035,17 @@ mod tests {
         let public_key = keypair.pubkey();
         let key_bytes = public_key;
         let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
-        let config = Config::default();
 
         let init_session_id = SessionIndex::new(100);
         let transport_init = create_test_transport(init_session_id, &public_key, remote_addr, true);
-        state.handle_established(init_session_id, transport_init, &config);
+        state.insert_transport(init_session_id, transport_init);
 
         let resp_session_id = SessionIndex::new(200);
         let transport_resp =
             create_test_transport(resp_session_id, &public_key, remote_addr, false);
-        state.handle_established(resp_session_id, transport_resp, &config);
+        state.insert_transport(resp_session_id, transport_resp);
 
-        state.handle_terminate(init_session_id, &key_bytes, remote_addr);
+        state.terminate_session(init_session_id, &key_bytes, remote_addr);
 
         assert!(state
             .last_established_session_by_public_key
@@ -1019,12 +1067,11 @@ mod tests {
         let key_bytes = public_key;
         let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let session_id = SessionIndex::new(100);
-        let config = Config::default();
 
         let transport = create_test_transport(session_id, &public_key, remote_addr, true);
-        state.handle_established(session_id, transport, &config);
+        state.insert_transport(session_id, transport);
 
-        state.handle_terminate(session_id, &key_bytes, remote_addr);
+        state.terminate_session(session_id, &key_bytes, remote_addr);
 
         assert!(!state
             .last_established_session_by_socket
@@ -1040,13 +1087,19 @@ mod tests {
         let key_bytes = public_key;
         let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let session_id = SessionIndex::new(100);
+        let remote_ip = remote_addr.ip();
 
         let initiator = create_test_initiator(&public_key);
         state.insert_initiator(session_id, initiator, key_bytes);
 
-        state.handle_terminate(session_id, &key_bytes, remote_addr);
+        assert_eq!(state.total_sessions(), 1);
+        assert_eq!(state.ip_session_count(&remote_ip), 1);
+
+        state.terminate_session(session_id, &key_bytes, remote_addr);
 
         assert!(state.get_initiator(&session_id).is_none());
+        assert_eq!(state.total_sessions(), 0);
+        assert_eq!(state.ip_session_count(&remote_ip), 0);
     }
 
     #[test]
@@ -1056,18 +1109,24 @@ mod tests {
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
         let key_bytes = public_key;
-        let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         let session_id = SessionIndex::new(200);
 
         let responder = create_test_responder(&public_key, None);
+        let remote_addr = responder.remote_addr;
+        let remote_ip = remote_addr.ip();
         state.insert_responder(session_id, responder, key_bytes);
 
-        state.handle_terminate(session_id, &key_bytes, remote_addr);
+        assert_eq!(state.total_sessions(), 1);
+        assert_eq!(state.ip_session_count(&remote_ip), 1);
+
+        state.terminate_session(session_id, &key_bytes, remote_addr);
 
         assert!(state.get_responder(&session_id).is_none());
         assert!(!state
             .accepted_sessions_by_peer
             .contains(&(key_bytes, session_id)));
+        assert_eq!(state.total_sessions(), 0);
+        assert_eq!(state.ip_session_count(&remote_ip), 0);
     }
 
     #[test]
@@ -1083,7 +1142,7 @@ mod tests {
         let initiator = create_test_initiator(&public_key);
         state.insert_initiator(session_id, initiator, key_bytes);
 
-        state.handle_terminate(session_id, &key_bytes, remote_addr);
+        state.terminate_session(session_id, &key_bytes, remote_addr);
 
         assert!(!state.initiated_session_by_peer.contains_key(&key_bytes));
     }
