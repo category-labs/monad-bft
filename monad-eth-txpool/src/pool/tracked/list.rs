@@ -18,16 +18,18 @@ use std::{
     time::{Duration, Instant},
 };
 
+use alloy_consensus::Transaction;
 use alloy_primitives::Address;
 use indexmap::map::VacantEntry;
 use monad_chain_config::{execution_revision::MonadExecutionRevision, revision::ChainRevision};
 use monad_eth_block_policy::nonce_usage::NonceUsage;
 use monad_eth_txpool_types::EthTxPoolDropReason;
+use monad_tfm::base_fee::MIN_BASE_FEE;
 use monad_types::Nonce;
 use tracing::error;
 
 use super::{limits::TrackedTxLimits, ValidEthTransaction};
-use crate::EthTxPoolEventTracker;
+use crate::{pool::tracked::priority::Priority, EthTxPoolEventTracker};
 
 /// Stores byte-validated transactions alongside the an account_nonce to enforce at the type level
 /// that all the transactions in the txs map have a nonce at least account_nonce. Similar to
@@ -81,6 +83,27 @@ impl TrackedTxList {
         self.txs.len()
     }
 
+    pub(super) fn compute_priority(&self) -> Priority {
+        let nonce_gap = self
+            .txs
+            .first_key_value()
+            .and_then(|(tx_nonce, _)| tx_nonce.checked_sub(self.account_nonce))
+            .unwrap_or(u64::MAX);
+
+        let mut tips = [u64::MAX; 7];
+
+        for (idx, tx) in self.get_queued(None).take(7).enumerate() {
+            tips[idx] = u64::MAX.saturating_sub(
+                tx.raw()
+                    .effective_tip_per_gas(MIN_BASE_FEE)
+                    .unwrap_or_default()
+                    .min(u64::MAX as u128) as u64,
+            );
+        }
+
+        Priority { nonce_gap, tips }
+    }
+
     pub fn get_queued(
         &self,
         pending_nonce_usage: Option<NonceUsage>,
@@ -104,7 +127,7 @@ impl TrackedTxList {
             })
     }
 
-    pub(crate) fn try_insert_tx(
+    pub fn try_insert_tx(
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         limit_tracker: &mut TrackedTxLimits,
@@ -118,12 +141,10 @@ impl TrackedTxList {
 
         match self.txs.entry(tx.nonce()) {
             btree_map::Entry::Vacant(v) => {
-                if !limit_tracker.add_tx(&tx) {
-                    event_tracker.drop(tx.hash(), EthTxPoolDropReason::PoolFull);
-                    return None;
-                }
+                limit_tracker.add_tx(&tx);
 
                 event_tracker.insert(tx.raw(), tx.is_owned());
+
                 Some(&v.insert((tx, event_tracker.now)).0)
             }
             btree_map::Entry::Occupied(mut entry) => {
@@ -139,18 +160,16 @@ impl TrackedTxList {
                     return None;
                 }
 
-                if !limit_tracker.add_tx(&tx) {
-                    event_tracker.drop(tx.hash(), EthTxPoolDropReason::PoolFull);
-                    return None;
-                }
-
+                limit_tracker.add_tx(&tx);
                 limit_tracker.remove_tx(existing_tx);
+
                 event_tracker.replace(
                     tx.signer_ref(),
                     existing_tx.hash(),
                     tx.hash(),
                     tx.is_owned(),
                 );
+
                 entry.insert((tx, event_tracker.now));
 
                 Some(&entry.into_mut().0)
@@ -163,7 +182,7 @@ impl TrackedTxList {
         limit_tracker: &mut TrackedTxLimits,
         mut this: indexmap::map::OccupiedEntry<'_, Address, Self>,
         nonce_usage: NonceUsage,
-    ) {
+    ) -> bool {
         let account_nonce = nonce_usage.apply_to_account_nonce(this.get().account_nonce);
         this.get_mut().account_nonce = account_nonce;
 
@@ -171,11 +190,11 @@ impl TrackedTxList {
             error!("txpool invalid tracked tx list state");
 
             this.swap_remove();
-            return;
+            return false;
         };
 
         if lowest_nonce >= &account_nonce {
-            return;
+            return true;
         }
 
         let remaining_txs = this.get_mut().txs.split_off(&account_nonce);
@@ -188,10 +207,11 @@ impl TrackedTxList {
 
         if remaining_txs.is_empty() {
             this.swap_remove();
-            return;
+            return false;
         }
 
         this.get_mut().txs = remaining_txs;
+        true
     }
 
     // Produces true when the entry was removed and false otherwise
@@ -257,6 +277,20 @@ impl TrackedTxList {
         });
 
         !self.txs.is_empty()
+    }
+
+    pub(crate) fn evict_pool_full(
+        event_tracker: &mut EthTxPoolEventTracker<'_>,
+        limit_tracker: &mut TrackedTxLimits,
+        this: indexmap::map::OccupiedEntry<'_, Address, Self>,
+    ) {
+        let this = this.swap_remove();
+
+        limit_tracker.remove_txs(this.txs.values().map(|(tx, _)| tx));
+        event_tracker.drop_all(
+            this.txs.into_values().map(|(tx, _)| tx.into_raw()),
+            EthTxPoolDropReason::PoolFull,
+        );
     }
 }
 

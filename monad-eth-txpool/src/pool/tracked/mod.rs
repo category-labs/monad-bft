@@ -17,6 +17,7 @@ use std::marker::PhantomData;
 
 use alloy_primitives::Address;
 use indexmap::{map::Entry as IndexMapEntry, IndexMap};
+use itertools::Itertools;
 use monad_chain_config::{
     execution_revision::MonadExecutionRevision, revision::ChainRevision, ChainConfig,
 };
@@ -25,18 +26,19 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::nonce_usage::NonceUsageMap;
-use monad_eth_txpool_types::EthTxPoolDropReason;
 use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
 use monad_state_backend::StateBackend;
 use monad_validator::signature_collection::SignatureCollection;
+use tracing::error;
 
 use self::limits::TrackedTxLimits;
 pub(super) use self::{limits::TrackedTxLimitsConfig, list::TrackedTxList};
 use super::transaction::ValidEthTransaction;
-use crate::EthTxPoolEventTracker;
+use crate::{pool::tracked::priority::PriorityMap, EthTxPoolEventTracker};
 
 mod limits;
 mod list;
+mod priority;
 
 /// Stores transactions using a "snapshot" system by which each address has an associated
 /// account_nonce stored in the TrackedTxList which is guaranteed to be the correct
@@ -51,6 +53,7 @@ where
     // By using IndexMap, we can iterate through the map with Vec-like performance and are able to
     // evict expired txs through the entry API.
     txs: IndexMap<Address, TrackedTxList>,
+    priority: PriorityMap,
     limits: TrackedTxLimits,
 
     _phantom: PhantomData<(ST, SCT, SBT, CCT, CRT)>,
@@ -70,6 +73,7 @@ where
 
         Self {
             txs: limits.build_txs_map(),
+            priority: PriorityMap::default(),
             limits,
 
             _phantom: PhantomData,
@@ -100,6 +104,19 @@ where
         self.txs.values_mut().flat_map(TrackedTxList::iter_mut)
     }
 
+    fn update_priority(&mut self, event_tracker: &EthTxPoolEventTracker<'_>, address: Address) {
+        let Some(tx_list) = self.txs.get(&address) else {
+            error!(
+                ?address,
+                "txpool update tx list called on non-existent address"
+            );
+            return;
+        };
+
+        self.priority
+            .update_priority(event_tracker, address, tx_list);
+    }
+
     pub fn try_insert_txs(
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
@@ -109,7 +126,7 @@ where
         account_nonce: u64,
         on_insert: &mut impl FnMut(&ValidEthTransaction),
     ) {
-        let txs_len = self.txs.len();
+        let mut inserted = false;
 
         match self.txs.entry(address) {
             IndexMapEntry::Occupied(o) => {
@@ -123,27 +140,44 @@ where
                         last_commit.execution_inputs.base_fee_per_gas,
                     ) {
                         on_insert(tx);
+                        inserted = true;
                     }
                 }
             }
-            IndexMapEntry::Vacant(v) => {
-                if !self.limits.can_add_address(txs_len) {
-                    event_tracker.drop_all(
-                        txs.into_iter().map(ValidEthTransaction::into_raw),
-                        EthTxPoolDropReason::PoolFull,
-                    );
-                    return;
-                }
+            IndexMapEntry::Vacant(v) => TrackedTxList::try_new(
+                v,
+                event_tracker,
+                &mut self.limits,
+                txs,
+                account_nonce,
+                &mut |tx| {
+                    on_insert(tx);
+                    inserted = true;
+                },
+                last_commit.execution_inputs.base_fee_per_gas,
+            ),
+        }
 
-                TrackedTxList::try_new(
-                    v,
-                    event_tracker,
-                    &mut self.limits,
-                    txs,
-                    account_nonce,
-                    on_insert,
-                    last_commit.execution_inputs.base_fee_per_gas,
-                );
+        if !inserted {
+            return;
+        }
+
+        self.update_priority(event_tracker, address);
+
+        while self.limits.is_exceeding_limits(self.txs.len()) {
+            let Some(removal_address) = self.priority.pop_eviction_address() else {
+                error!("txpool cannot find eviction address but exceeding limits");
+                self.reset();
+                return;
+            };
+
+            match self.txs.entry(removal_address) {
+                IndexMapEntry::Vacant(_) => {
+                    error!("txpool failed to find removal address during insertion");
+                }
+                IndexMapEntry::Occupied(o) => {
+                    TrackedTxList::evict_pool_full(event_tracker, &mut self.limits, o);
+                }
             }
         }
     }
@@ -155,12 +189,18 @@ where
     ) {
         for (address, nonce_usage) in nonce_usages.into_map() {
             match self.txs.entry(address) {
-                IndexMapEntry::Occupied(tx_list) => TrackedTxList::update_committed_nonce_usage(
-                    event_tracker,
-                    &mut self.limits,
-                    tx_list,
-                    nonce_usage,
-                ),
+                IndexMapEntry::Occupied(tx_list) => {
+                    if TrackedTxList::update_committed_nonce_usage(
+                        event_tracker,
+                        &mut self.limits,
+                        tx_list,
+                        nonce_usage,
+                    ) {
+                        self.update_priority(event_tracker, address);
+                    } else {
+                        self.priority.remove(address);
+                    }
+                }
                 IndexMapEntry::Vacant(_) => {}
             }
         }
@@ -180,16 +220,17 @@ where
                 break;
             };
 
+            let address = *entry.key();
+
             if TrackedTxList::evict_expired_txs(event_tracker, &mut self.limits, entry, tx_expiry) {
+                self.priority.remove(address);
                 continue;
             }
 
+            self.update_priority(event_tracker, address);
+
             idx += 1;
         }
-    }
-
-    pub fn reset(&mut self) {
-        self.txs.clear();
     }
 
     pub fn static_validate_all_txs(
@@ -199,14 +240,30 @@ where
         chain_revision: &CRT,
         execution_revision: &MonadExecutionRevision,
     ) {
-        self.txs.retain(|_, tx_list| {
-            tx_list.static_validate_all_txs(
+        self.txs.retain(|address, tx_list| {
+            let retain = tx_list.static_validate_all_txs(
                 event_tracker,
                 &mut self.limits,
                 chain_id,
                 chain_revision,
                 execution_revision,
-            )
+            );
+
+            if !retain {
+                self.priority.remove(*address);
+            }
+
+            retain
         });
+
+        for address in self.txs.keys().cloned().collect_vec() {
+            self.update_priority(event_tracker, address);
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.txs.clear();
+        self.priority.reset();
+        self.limits.reset();
     }
 }
