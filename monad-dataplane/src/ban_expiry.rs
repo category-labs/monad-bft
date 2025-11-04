@@ -13,14 +13,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::VecDeque, net::IpAddr, sync::Arc, time::Duration};
+use std::{collections::VecDeque, net::IpAddr, pin::Pin, sync::Arc, time::Duration};
 
 use monoio::{
     select,
-    time::{interval, Instant, Interval},
+    time::{sleep, Instant, Sleep},
 };
 use tokio::sync::mpsc;
-use tracing::{debug, info};
+use tracing::{debug, info, trace};
 
 use crate::addrlist::Addrlist;
 
@@ -30,13 +30,12 @@ pub(crate) async fn task(
     ban_duration: Duration,
 ) {
     let mut queue: VecDeque<(IpAddr, Instant)> = VecDeque::new();
-    let mut ticker: Option<Interval> = None;
-
+    let mut ticker: Option<Pin<Box<Sleep>>> = None;
     loop {
         select! {
            _ = async {
                 match &mut ticker {
-                    Some(t) => t.tick().await,
+                    Some(t) => t.await,
                     None => std::future::pending().await,
                 }
             } => {
@@ -53,7 +52,8 @@ pub(crate) async fn task(
                             });
                         queue.pop_front();
                     } else {
-                        ticker = Some(interval(ban_duration - timestamp.elapsed()));
+                        trace!("renew ticker");
+                        ticker = Some(Box::pin(sleep(ban_duration - timestamp.elapsed())));
                         break;
                     }
                 }
@@ -61,10 +61,11 @@ pub(crate) async fn task(
             },
             banned = banned_connections.recv() => {
                 match banned {
-                    Some(banned) => {
-                        queue.push_back(banned);
+                    Some((addr, timestamp)) => {
+                        debug!(%addr, ?timestamp, "ban");
+                        queue.push_back((addr, timestamp));
                         if ticker.is_none() {
-                            ticker = Some(interval(ban_duration));
+                            ticker = Some(Box::pin(sleep(ban_duration)));
                         }
                     },
                     None => {
