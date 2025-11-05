@@ -25,7 +25,7 @@ use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{Address, Bytes, B256, U256, U64};
 use alloy_rlp::Encodable;
 use alloy_sol_types::decode_revert_reason;
-use bindings::monad_eth_call_result;
+use bindings::monad_executor_result;
 use futures::channel::oneshot::{channel, Sender};
 use monad_chain_config::{
     ETHEREUM_MAINNET_CHAIN_ID, MONAD_DEVNET_CHAIN_ID, MONAD_MAINNET_CHAIN_ID,
@@ -39,11 +39,11 @@ pub mod bindings {
     include!(concat!(env!("OUT_DIR"), "/ethcall.rs"));
 }
 
-pub use bindings::monad_eth_call_pool_config as PoolConfig;
+pub use bindings::monad_executor_pool_config as PoolConfig;
 
 #[derive(Debug)]
 pub struct EthCallExecutor {
-    eth_call_executor: *mut bindings::monad_eth_call_executor,
+    eth_call_executor: *mut bindings::monad_executor,
 }
 
 unsafe impl Send for EthCallExecutor {}
@@ -62,7 +62,7 @@ impl EthCallExecutor {
             .expect("failed to create CString");
 
         let eth_call_executor = unsafe {
-            bindings::monad_eth_call_executor_create(
+            bindings::monad_executor_create(
                 low_pool_config,
                 high_pool_config,
                 node_lru_max_mem,
@@ -78,7 +78,7 @@ impl Drop for EthCallExecutor {
     fn drop(&mut self) {
         info!("dropping eth_call_executor");
         unsafe {
-            bindings::monad_eth_call_executor_destroy(self.eth_call_executor);
+            bindings::monad_executor_destroy(self.eth_call_executor);
         }
         info!("eth_call_executor successfully destroyed");
     }
@@ -164,7 +164,7 @@ pub struct RevertCallResult {
 }
 
 pub struct SenderContext {
-    sender: Sender<*mut monad_eth_call_result>,
+    sender: Sender<*mut monad_executor_result>,
 }
 
 /// # Safety
@@ -173,7 +173,7 @@ pub struct SenderContext {
 /// This function is called when the eth_call is finished and the result is returned over the
 /// channel
 pub unsafe extern "C" fn eth_call_submit_callback(
-    result: *mut monad_eth_call_result,
+    result: *mut monad_executor_result,
     user: *mut std::ffi::c_void,
 ) {
     let user = unsafe { Box::from_raw(user as *mut SenderContext) };
@@ -309,7 +309,7 @@ pub async fn eth_call(
     unsafe {
         let sender_ctx_ptr = Box::into_raw(sender_ctx);
 
-        bindings::monad_eth_call_executor_submit(
+        bindings::monad_executor_eth_call_submit(
             eth_call_executor.eth_call_executor,
             chain_config,
             rlp_encoded_tx.as_ptr(),
@@ -436,7 +436,7 @@ pub async fn eth_call(
             }
         };
 
-        bindings::monad_eth_call_result_release(result);
+        bindings::monad_executor_result_release(result);
         bindings::monad_state_override_destroy(override_ctx);
 
         call_result
