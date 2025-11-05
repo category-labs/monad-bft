@@ -74,6 +74,24 @@ pub struct ValidatorsConfigFile<SCT: SignatureCollection> {
     pub validator_sets: Vec<ValidatorSetDataWithEpoch<SCT>>,
 }
 
+impl<SCT> From<&ValidatorsConfig<SCT>> for ValidatorsConfigFile<SCT>
+where
+    SCT: SignatureCollection,
+{
+    fn from(config: &ValidatorsConfig<SCT>) -> Self {
+        Self {
+            validator_sets: config
+                .validators
+                .iter()
+                .map(|(&epoch, vset)| ValidatorSetDataWithEpoch {
+                    epoch,
+                    validators: vset.clone(),
+                })
+                .collect(),
+        }
+    }
+}
+
 impl<SCT: SignatureCollection> ValidatorsConfig<SCT> {
     pub fn read_from_path(validators_path: impl AsRef<Path>) -> Result<Self, Box<dyn Error>> {
         let contents = std::fs::read_to_string(validators_path)?;

@@ -24,6 +24,7 @@ use agent::AgentBuilder;
 use clap::{error::ErrorKind, FromArgMatches};
 use monad_bls::BlsKeyPair;
 use monad_chain_config::MonadChainConfig;
+use monad_consensus_types::validator_data::ValidatorsConfigFile;
 use monad_control_panel::TracingReload;
 use monad_keystore::keystore::Keystore;
 use monad_node_config::{ForkpointConfig, MonadNodeConfig, ValidatorsConfigType};
@@ -242,20 +243,21 @@ impl NodeState {
 fn fetch_local_configs(
     forkpoint_config_path: &Path,
     validators_config_path: &Path,
-) -> Result<(ForkpointConfig, ValidatorsConfigType), String> {
-    let local_forkpoint_config: ForkpointConfig = toml::from_str(
-        &std::fs::read_to_string(forkpoint_config_path)
-            .map_err(|_| "failed to read local forkpoint.toml file".to_owned())?,
+) -> Result<(ForkpointConfig, ValidatorsConfigType), Box<dyn std::error::Error>> {
+    let local_forkpoint_bytes = std::fs::read(forkpoint_config_path)
+        .map_err(|err| format!("failed to read local forkpoint, err={}", err))?;
+    let local_forkpoint_config = ForkpointConfig::try_parse_bytes(
+        &forkpoint_config_path.to_string_lossy(),
+        &local_forkpoint_bytes,
     )
-    .map_err(|err| err.to_string())?;
+    .map_err(|err| format!("failed to parse local forkpoint bytes (hint: if it's toml, file extension must be .toml) err={:?}", err))?;
     let local_validators_config = ValidatorsConfigType::read_from_path(validators_config_path)
         .map_err(|_| "failed to read local validators.toml file".to_owned())?;
 
     Ok((local_forkpoint_config, local_validators_config))
 }
 
-fn fetch_remote_configs() -> Result<(ForkpointConfig, String, ValidatorsConfigType, String), String>
-{
+fn fetch_remote_configs() -> Result<(ForkpointConfig, ValidatorsConfigType), String> {
     let forkpoint_url_str = env::var(REMOTE_FORKPOINT_URL_ENV)
         .map_err(|_| format!("{REMOTE_FORKPOINT_URL_ENV} env variable unset"))?;
     let remote_forkpoint_url = Url::from_str(&forkpoint_url_str)
@@ -268,14 +270,15 @@ fn fetch_remote_configs() -> Result<(ForkpointConfig, String, ValidatorsConfigTy
 
     let client = Client::new();
 
-    let forkpoint_str = client
-        .get(remote_forkpoint_url)
+    let forkpoint_bytes = client
+        .get(remote_forkpoint_url.clone())
         .send()
         .and_then(|forkpoint_response| forkpoint_response.error_for_status())
-        .and_then(|valid_forkpoint_response| valid_forkpoint_response.text())
+        .and_then(|valid_forkpoint_response| valid_forkpoint_response.bytes())
         .map_err(|err| format!("error fetching remote forkpoint config: {err}"))?;
-    let forkpoint_config = toml::from_str(&forkpoint_str)
-        .map_err(|err| format!("failed to parse remote forkpoint config: {err}"))?;
+    let forkpoint_config =
+        ForkpointConfig::try_parse_bytes(remote_forkpoint_url.path(), &forkpoint_bytes)
+            .map_err(|err| format!("failed to parse remote forkpoint bytes (hint: if it's toml, file extension must be .toml), err={err}"))?;
 
     let validators_str = client
         .get(remote_validators_url)
@@ -286,12 +289,7 @@ fn fetch_remote_configs() -> Result<(ForkpointConfig, String, ValidatorsConfigTy
     let validators_config = ValidatorsConfigType::read_from_str(&validators_str)
         .map_err(|err| format!("failed to parse remote validators config: {err}"))?;
 
-    Ok((
-        forkpoint_config,
-        forkpoint_str,
-        validators_config,
-        validators_str,
-    ))
+    Ok((forkpoint_config, validators_config))
 }
 
 fn get_latest_configs(
@@ -302,25 +300,39 @@ fn get_latest_configs(
     let local_configs = fetch_local_configs(forkpoint_config_path, validators_config_path);
     let remote_configs = fetch_remote_configs();
 
-    let replace_local_configs = |remote_forkpoint_str, remote_validators_str| {
-        // can fail if local forkpoint doesn't exist
-        let _ = std::fs::rename(
-            forkpoint_config_path,
-            format!("{}.local", forkpoint_config_path.to_string_lossy()),
-        );
-        std::fs::write(forkpoint_config_path, remote_forkpoint_str)
-            .expect("failed to overwrite local forkpoint config with remote config");
+    let replace_local_configs =
+        |remote_forkpoint: &ForkpointConfig, remote_validators: &ValidatorsConfigType| {
+            // can fail if local forkpoint doesn't exist
+            let _ = std::fs::rename(
+                forkpoint_config_path,
+                format!("{}.local", forkpoint_config_path.to_string_lossy()),
+            );
+            let remote_forkpoint_bytes = if forkpoint_config_path.ends_with(".toml") {
+                remote_forkpoint
+                    .try_to_toml_string()
+                    .expect("failed to re-serialize remote forkpoint config to toml")
+                    .as_bytes()
+                    .to_vec()
+            } else {
+                remote_forkpoint.to_rlp_bytes()
+            };
+            std::fs::write(forkpoint_config_path, remote_forkpoint_bytes)
+                .expect("failed to overwrite local forkpoint config with remote config");
 
-        // can fail if local validators doesn't exist
-        let _ = std::fs::rename(
-            validators_config_path,
-            format!("{}.local", validators_config_path.to_string_lossy()),
-        );
-        std::fs::write(validators_config_path, remote_validators_str)
-            .expect("failed to overwrite local validators config with remote config");
+            // can fail if local validators doesn't exist
+            let _ = std::fs::rename(
+                validators_config_path,
+                format!("{}.local", validators_config_path.to_string_lossy()),
+            );
 
-        info!("replaced local configs with remote configs");
-    };
+            let remote_validators_str =
+                toml::to_string_pretty(&ValidatorsConfigFile::from(remote_validators))
+                    .expect("failed to re-serialize remote validators config");
+            std::fs::write(validators_config_path, remote_validators_str)
+                .expect("failed to overwrite local validators config with remote config");
+
+            info!("replaced local configs with remote configs");
+        };
 
     match (local_configs, remote_configs) {
         (Err(local_err), Err(remote_err)) => Err(NodeSetupError::Custom {
@@ -332,12 +344,7 @@ fn get_latest_configs(
         }),
         (
             Ok((local_forkpoint_config, local_validators_config)),
-            Ok((
-                remote_forkpoint_config,
-                remote_forkpoint_str,
-                remote_validators_config,
-                remote_validators_str,
-            )),
+            Ok((remote_forkpoint_config, remote_validators_config)),
         ) => {
             let local_forkpoint_round = local_forkpoint_config.high_certificate.round();
             let remote_forkpoint_round = remote_forkpoint_config.high_certificate.round();
@@ -351,7 +358,7 @@ fn get_latest_configs(
                     remote_configs_threshold.0
                 );
 
-                replace_local_configs(remote_forkpoint_str, remote_validators_str);
+                replace_local_configs(&remote_forkpoint_config, &remote_validators_config);
                 return Ok((remote_forkpoint_config, remote_validators_config));
             }
 
@@ -371,7 +378,6 @@ fn get_latest_configs(
                     remote_configs_threshold.0
                 );
             }
-
             Ok((local_forkpoint_config, local_validators_config))
         }
         (Ok((local_forkpoint_config, local_validators_config)), Err(fetch_err)) => {
@@ -382,17 +388,14 @@ fn get_latest_configs(
 
             Ok((local_forkpoint_config, local_validators_config))
         }
-        (
-            Err(fetch_err),
-            Ok((forkpoint_config, forkpoint_str, validators_config, validators_str)),
-        ) => {
+        (Err(fetch_err), Ok((remote_forkpoint_config, remote_validators_config))) => {
             info!(
                 fetch_err,
                 "failed to fetch local configs, using remote forkpoint and validators config"
             );
 
-            replace_local_configs(forkpoint_str, validators_str);
-            Ok((forkpoint_config, validators_config))
+            replace_local_configs(&remote_forkpoint_config, &remote_validators_config);
+            Ok((remote_forkpoint_config, remote_validators_config))
         }
     }
 }

@@ -293,8 +293,11 @@ pub fn latest_tip_stream(
     inotify_events.filter_map(move |maybe_event| {
         let result = (|| match maybe_event {
             Ok(_event) => {
-                let forkpoint_config: ForkpointConfig =
-                    toml::from_str(&std::fs::read_to_string(&forkpoint_path).ok()?).ok()?;
+                let forkpoint_config = ForkpointConfig::try_parse_bytes(
+                    &forkpoint_path.to_string_lossy(),
+                    &std::fs::read(&forkpoint_path).ok()?,
+                )
+                .ok()?;
                 let proposed_head = block_persist.read_proposed_head_bft_header().ok()?;
                 Some((forkpoint_config.high_certificate, proposed_head))
             }
