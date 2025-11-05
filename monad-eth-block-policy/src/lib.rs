@@ -379,8 +379,6 @@ where
     Self: Sized,
     CRT: ChainRevision,
 {
-    type Transaction = Recovered<TxEnvelope>;
-
     fn new(
         block_seq_num: SeqNum,
         execution_delay: SeqNum,
@@ -528,7 +526,7 @@ where
     fn try_add_transaction(
         &self,
         account_balances: &mut BTreeMap<&Address, AccountBalanceState>,
-        txn: &Self::Transaction,
+        txn: &ValidatedTx,
     ) -> Result<(), BlockPolicyError> {
         let eth_address = txn.signer();
 
@@ -588,6 +586,13 @@ where
             account_balance,
             self.execution_delay,
         );
+        // if txn is a transaction that also contains an authorization from the sender, we consider
+        // the transaction to be non emptying transaction
+        let contains_self_authorization = txn
+            .authorizations_7702
+            .iter()
+            .any(|auth| auth.authority() == Some(eth_address));
+        let is_emptying_transaction = is_emptying_transaction && !contains_self_authorization;
 
         // if an account for txn T is not delegated and has no prior txns, then T can charge into reserve.
         if is_emptying_transaction {
@@ -650,6 +655,15 @@ where
 
             account_balance.remaining_reserve_balance = reserve_balance;
             account_balance.block_seqnum_of_latest_txn = self.block_seq_num;
+        }
+
+        // update delegation status of authority addresses
+        for recovered_auth in &txn.authorizations_7702 {
+            if let Some(auth_address) = recovered_auth.authority() {
+                if let Some(account_balance) = account_balances.get_mut(&auth_address) {
+                    account_balance.is_delegated = true;
+                }
+            }
         }
 
         Ok(())
@@ -1362,8 +1376,7 @@ where
             return Err(BlockPolicyError::BaseFeeError);
         }
 
-        let (tx_signers, authority_addresses) =
-            self.extract_signers(&block.validated_txns, &block.system_txns)?;
+        let (tx_signers, _) = self.extract_signers(&block.validated_txns, &block.system_txns)?;
 
         // these must be updated as we go through txs in the block
         let mut account_nonces = self.get_account_base_nonces(
@@ -1380,15 +1393,6 @@ where
             Some(&extending_blocks),
             tx_signers.iter(),
         )?;
-
-        for authority in &authority_addresses {
-            let account_balance = account_balances
-                .get_mut(authority)
-                .expect("account_balances should have been populated for delegated accounts");
-
-            trace!(?authority, "Setting account to is_delegated: true");
-            account_balance.is_delegated = true;
-        }
 
         let validator = EthBlockPolicyBlockValidator::new(
             block.get_seq_num(),
@@ -1475,7 +1479,7 @@ mod test {
     use std::collections::HashMap;
 
     use alloy_consensus::{SignableTransaction, TxEip1559};
-    use alloy_eips::eip7702::Authorization;
+    use alloy_eips::eip7702::{Authorization, RecoveredAuthority};
     use alloy_primitives::{Address, FixedBytes, PrimitiveSignature, TxKind, B256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
@@ -1560,6 +1564,33 @@ mod test {
                 .collect(),
             0, // input length
         ))
+    }
+
+    fn make_validated_tx(tx: Recovered<TxEnvelope>) -> ValidatedTx {
+        if let Some(txn_7702) = tx.as_eip7702() {
+            let authorizations_7702: Vec<RecoveredAuthorization> = txn_7702
+                .tx()
+                .authorization_list
+                .iter()
+                .filter_map(|signed_auth| {
+                    signed_auth.recover_authority().ok().map(|authority| {
+                        RecoveredAuthorization::new_unchecked(
+                            signed_auth.inner().clone(),
+                            RecoveredAuthority::Valid(authority),
+                        )
+                    })
+                })
+                .collect();
+            ValidatedTx {
+                tx,
+                authorizations_7702,
+            }
+        } else {
+            ValidatedTx {
+                tx,
+                authorizations_7702: Vec::new(),
+            }
+        }
     }
 
     pub fn make_test_block(
@@ -2196,6 +2227,161 @@ mod test {
             CoherencyCheckMode::ReserveBalanceCoherency,
         );
         assert!(result.is_ok(), "Block coherency check failed: {:?}", result);
+
+        /////////////////////////////////////////////////////////////////////////////
+        // Case8: Emptying transactions then delegation later in the same block   ///
+        /////////////////////////////////////////////////////////////////////////////
+
+        // first tx is an emptying transaction that transfer out all balance
+        // second tx has insufficient reserve balance to include gas cost
+        // third tx is a delegation transaction by sender of first two txns
+        let tx1 = make_test_tx(50000, HALF_ETHER, 0, S1);
+        let tx2 = make_test_tx(50000, HALF_ETHER, 1, S1);
+        let tx3 = make_test_delegation_tx(
+            50000,
+            0,
+            0,
+            S2,
+            HashMap::from([(
+                S1,
+                Authorization {
+                    chain_id: CHAIN_ID,
+                    nonce: 2,
+                    address: Address(FixedBytes([0x11; 20])),
+                },
+            )]),
+        );
+        let signer1 = tx1.signer();
+        let signer2 = tx3.signer();
+        let txs = BTreeMap::from([(4, vec![tx1, tx2, tx3])]);
+
+        // balance of signer at block n-3
+        let gas_cost = 50000 * BASE_FEE as u128;
+        let state_backend = NopStateBackend {
+            balances: BTreeMap::from([
+                (signer1, U256::from(gas_cost + HALF_ETHER)),
+                (signer2, U256::from(gas_cost)),
+            ]),
+            ..Default::default()
+        };
+
+        let result = setup_block_policy_with_txs(
+            txs,
+            vec![signer1, signer2],
+            &state_backend,
+            num_committed_blocks,
+            CoherencyCheckMode::ReserveBalanceCoherency,
+        );
+        assert_eq!(
+            result,
+            Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+                BlockPolicyBlockValidatorError::InsufficientReserveBalance
+            )),
+            "Block coherency check should have failed: {:?}",
+            result
+        );
+
+        /////////////////////////////////////////////////////////////////////////////
+        // Case9: Delegation and transfer transaction in the same transaction     ///
+        /////////////////////////////////////////////////////////////////////////////
+
+        // transaction contains a delegation and also a transfer
+        // transaction considered as non-emptying
+        let gas_limit = RESERVE_BALANCE as u64 / BASE_FEE + 1;
+        let tx = make_test_delegation_tx(
+            gas_limit,
+            HALF_ETHER,
+            0,
+            S1,
+            HashMap::from([(
+                S1,
+                Authorization {
+                    chain_id: CHAIN_ID,
+                    nonce: 1,
+                    address: Address(FixedBytes([0x11; 20])),
+                },
+            )]),
+        );
+        let signer = tx.signer();
+        let txs = BTreeMap::from([(4, vec![tx])]);
+
+        // balance of signer at block n-3
+        let state_backend = NopStateBackend {
+            balances: BTreeMap::from([(signer, U256::from(2 * RESERVE_BALANCE))]),
+            ..Default::default()
+        };
+
+        // although the signer has sufficient balance, as the transaction is considered reserve balance
+        // gas cost that exceeds reserve balance is rejected
+        let result = setup_block_policy_with_txs(
+            txs,
+            vec![signer],
+            &state_backend,
+            num_committed_blocks,
+            CoherencyCheckMode::ReserveBalanceCoherency,
+        );
+        assert_eq!(
+            result,
+            Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+                BlockPolicyBlockValidatorError::InsufficientReserveBalance
+            )),
+            "Block coherency check should have failed: {:?}",
+            result
+        );
+
+        /////////////////////////////////////////////////////////////////////////////
+        // Case10: Delegation with invalid chain id, non emptying transaction     ///
+        /////////////////////////////////////////////////////////////////////////////
+
+        // first tx is a delegation with invalid chain id
+        // it still counts towards has_delegated
+        // which makes the second tx non-emptying
+        let tx1 = make_test_delegation_tx(
+            50000,
+            0,
+            0,
+            S1,
+            HashMap::from([(
+                S2,
+                Authorization {
+                    chain_id: CHAIN_ID + 1, // invalid chain id
+                    nonce: 0,
+                    address: Address(FixedBytes([0x11; 20])),
+                },
+            )]),
+        );
+        let gas_limit = RESERVE_BALANCE as u64 / BASE_FEE + 1;
+        let tx2 = make_test_tx(gas_limit, HALF_ETHER, 1, S2);
+
+        let signer1 = tx1.signer();
+        let signer2 = tx2.signer();
+        let txs = BTreeMap::from([(4, vec![tx1, tx2])]);
+
+        // balance of signer at block n-3
+        let gas_cost = 50000 * BASE_FEE as u128;
+        let state_backend = NopStateBackend {
+            balances: BTreeMap::from([
+                (signer1, U256::from(gas_cost)),
+                (signer2, U256::from(2 * RESERVE_BALANCE)),
+            ]),
+            ..Default::default()
+        };
+
+        let result = setup_block_policy_with_txs(
+            txs,
+            vec![signer1, signer2],
+            &state_backend,
+            num_committed_blocks,
+            CoherencyCheckMode::ReserveBalanceCoherency,
+        );
+        assert_eq!(
+            result,
+            Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+                BlockPolicyBlockValidatorError::InsufficientReserveBalance
+            )),
+            "Block coherency check should have failed: {:?}",
+            result
+        );
     }
 
     #[test_case(3; "three committed blocks, one extending block")]
@@ -2667,6 +2853,7 @@ mod test {
         let block_seq_num = latest_seq_num + EXEC_DELAY;
 
         let tx = make_test_tx(50000, txn_value, 0, S1);
+        let tx = make_validated_tx(tx);
         let txs = vec![tx.clone()];
         let signer = tx.recover_signer().unwrap();
         let min_balance = compute_txn_max_gas_cost(&tx, BASE_FEE);
@@ -2737,6 +2924,7 @@ mod test {
         let block_seq_num = latest_seq_num + EXEC_DELAY - SeqNum(1);
 
         let tx = make_test_tx(50000, txn_value, 0, S1);
+        let tx = make_validated_tx(tx);
         let txs = vec![tx.clone()];
         let signer = tx.recover_signer().unwrap();
         let min_balance = compute_txn_max_gas_cost(&tx, BASE_FEE);
@@ -2807,6 +2995,7 @@ mod test {
         let block_seq_num = latest_seq_num + EXEC_DELAY;
 
         let tx = make_test_tx(50000, txn_value, 0, S1);
+        let tx = make_validated_tx(tx);
         let txs = vec![tx.clone()];
         let min_balance = compute_txn_max_gas_cost(&tx, BASE_FEE);
 
@@ -2851,6 +3040,7 @@ mod test {
         let block_seq_num = latest_seq_num + EXEC_DELAY;
 
         let tx = make_test_tx(50000, txn_value, 0, S1);
+        let tx = make_validated_tx(tx);
         let txs = vec![tx.clone()];
         let signer = tx.recover_signer().unwrap();
         let min_balance = compute_txn_max_value(&tx, BASE_FEE);
@@ -2922,7 +3112,9 @@ mod test {
         let block_seq_num = latest_seq_num + EXEC_DELAY;
 
         let tx1 = make_test_tx(50000, txn_value, 0, S1);
+        let tx1 = make_validated_tx(tx1);
         let tx2 = make_test_tx(50000, txn_value * 2, 1, S1);
+        let tx2 = make_validated_tx(tx2);
         let signer = tx1.recover_signer().unwrap();
 
         let txs = vec![tx1.clone(), tx2.clone()];
@@ -3047,6 +3239,7 @@ mod test {
         };
 
         let txn = make_test_eip1559_tx(txn_value, 0, txn_gas_limit, S1);
+        let txn = make_validated_tx(txn);
         let signer = txn.recover_signer().unwrap();
 
         let mut account_balances: BTreeMap<&Address, AccountBalanceState> = BTreeMap::new();
@@ -3296,6 +3489,7 @@ mod test {
         txn: &Recovered<TxEnvelope>,
         expect: Result<(), BlockPolicyError>,
     ) {
+        let txn = &make_validated_tx(txn.clone());
         let validator = EthBlockPolicyBlockValidator::new(
             block_seq_num,
             EXEC_DELAY,

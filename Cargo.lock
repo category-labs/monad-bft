@@ -5009,6 +5009,7 @@ dependencies = [
  "monad-bls",
  "monad-chain-config",
  "monad-crypto",
+ "monad-eth-types",
  "monad-secp",
  "monad-state-backend",
  "monad-testutil",

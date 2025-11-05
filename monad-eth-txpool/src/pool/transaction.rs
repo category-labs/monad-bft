@@ -129,12 +129,6 @@ impl ValidEthTransaction {
                             return Some(Err(EthTxPoolDropReason::InvalidSignature));
                         }
 
-                        if signed_authorization.chain_id != 0
-                            && signed_authorization.chain_id != chain_id
-                        {
-                            return None;
-                        }
-
                         Some(Ok(ValidEthRecoveredAuthorization {
                             authority,
                             authorization: signed_authorization.inner().clone(),
