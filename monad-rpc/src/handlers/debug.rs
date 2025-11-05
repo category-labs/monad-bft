@@ -360,10 +360,21 @@ impl From<CallFrame> for MonadCallFrame {
             .as_ref()
             .and_then(|_| monad_ethcall::decode_revert_message(&value.output));
 
+        let mut to = value.to.map(Into::into);
+
+        // Historical traces include a Some(NullAddress) for the 'to' field if the contract deployment failed.
+        // Newer traces do not include the 'to' field, so match this behavior.
+        if error.is_some()
+            && matches!(value.typ, CallKind::Create | CallKind::Create2)
+            && value.to.is_some()
+        {
+            to = None;
+        }
+
         Self {
             typ: value.typ,
             from: value.from.into(),
-            to: value.to.map(Into::into),
+            to,
             value: frame_value,
             gas: Quantity(u64::from_le_bytes(value.gas.to_le_bytes())),
             gas_used: Quantity(u64::from_le_bytes(value.gas_used.to_le_bytes())),
