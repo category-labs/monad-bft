@@ -712,3 +712,38 @@ fn test_disconnect() {
     let result = peer1.encrypt_by_public_key(&peer2_pubkey, &mut plaintext2);
     assert!(result.is_err());
 }
+
+#[test]
+fn test_is_connected_no_connection() {
+    init_tracing();
+    let (peer1, _, _, _) = create_manager();
+    let (_, peer2_pubkey, _, _) = create_manager();
+    let peer2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
+
+    assert!(!peer1.is_connected_socket(&peer2_addr));
+    assert!(!peer1.is_connected_public_key(&peer2_pubkey));
+}
+
+#[test]
+fn test_is_connected_after_handshake() {
+    init_tracing();
+    let (mut peer1, _, _, _) = create_manager();
+    let (mut peer2, peer2_pubkey, _, _) = create_manager();
+    let peer1_addr: SocketAddr = "127.0.0.1:8001".parse().unwrap();
+    let peer2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
+
+    peer1
+        .connect(peer2_pubkey.clone(), peer2_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+
+    let init = collect::<HandshakeInitiation>(&mut peer1);
+    dispatch(&mut peer2, &init, peer1_addr);
+
+    let response = collect::<HandshakeResponse>(&mut peer2);
+    dispatch(&mut peer1, &response, peer2_addr);
+
+    collect::<DataPacketHeader>(&mut peer1);
+
+    assert!(peer1.is_connected_socket(&peer2_addr));
+    assert!(peer1.is_connected_public_key(&peer2_pubkey));
+}

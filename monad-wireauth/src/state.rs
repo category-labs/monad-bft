@@ -106,6 +106,22 @@ impl State {
         self.transport_sessions.get_mut(session_index)
     }
 
+    pub fn has_transport_by_public_key(&self, public_key: &monad_secp::PubKey) -> bool {
+        self.last_established_session_by_public_key
+            .get(public_key)
+            .and_then(|sessions| sessions.get_latest())
+            .map(|session_id| self.transport_sessions.contains_key(&session_id))
+            .unwrap_or(false)
+    }
+
+    pub fn has_transport_by_socket(&self, socket_addr: &SocketAddr) -> bool {
+        self.last_established_session_by_socket
+            .get(socket_addr)
+            .and_then(|sessions| sessions.get_latest())
+            .map(|session_id| self.transport_sessions.contains_key(&session_id))
+            .unwrap_or(false)
+    }
+
     pub fn get_transport_by_public_key(
         &mut self,
         public_key: &monad_secp::PubKey,
