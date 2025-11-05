@@ -317,6 +317,23 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         .map(|p| NodeId::new(p.secp256k1_pubkey))
         .collect();
 
+    let whitelisted_statesync_nodes = node_state
+        .node_config
+        .fullnode_dedicated
+        .identities
+        .into_iter()
+        .map(|p| NodeId::new(p.secp256k1_pubkey))
+        .chain(
+            node_state
+                .node_config
+                .fullnode_raptorcast
+                .full_nodes_prioritized
+                .identities
+                .into_iter()
+                .map(|p| NodeId::new(p.secp256k1_pubkey)),
+        )
+        .collect();
+
     let mut last_ledger_tip: Option<SeqNum> = None;
 
     let builder = MonadStateBuilder {
@@ -344,6 +361,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             timestamp_latency_estimate_ns: 20_000_000,
             _phantom: Default::default(),
         },
+        whitelisted_statesync_nodes,
         _phantom: PhantomData,
     };
 

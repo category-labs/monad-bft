@@ -280,6 +280,7 @@ where
         locked_epoch_validators,
         block_sync_override_peers: Default::default(),
         consensus_config: config.consensus_config,
+        whitelisted_statesync_nodes: Default::default(),
 
         _phantom: PhantomData,
     }

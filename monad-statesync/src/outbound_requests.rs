@@ -275,6 +275,26 @@ impl<PT: PubKey> OutboundRequests<PT> {
         }
     }
 
+    pub fn handle_not_whitelisted(&mut self, from: NodeId<PT>) {
+        tracing::debug!(
+            ?from,
+            "peer does not serve statesync request, removing from peer list"
+        );
+        self.peers.remove(&from);
+
+        let requests_to_remove: Vec<_> = self
+            .in_flight_requests
+            .iter()
+            .filter(|(_, in_flight_request)| in_flight_request.peer == from)
+            .map(|(request, _)| *request)
+            .collect();
+
+        for request in requests_to_remove {
+            self.in_flight_requests.remove(&request);
+            self.pending_requests.insert(request);
+        }
+    }
+
     fn choose_peer(&self, prefix: u64) -> NodeId<PT> {
         *self
             .prefix_peers

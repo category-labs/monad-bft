@@ -120,6 +120,8 @@ pub fn make_state_configs<S: SwarmRelation>(
                 _phantom: PhantomData,
             },
 
+            whitelisted_statesync_nodes: Default::default(),
+
             _phantom: PhantomData,
         })
         .collect()

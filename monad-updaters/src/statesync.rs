@@ -183,6 +183,7 @@ where
                     }
                     StateSyncNetworkMessage::BadVersion(_) => {}
                     StateSyncNetworkMessage::Completion(_) => {}
+                    StateSyncNetworkMessage::NotWhitelisted => {}
                 },
             }
         }

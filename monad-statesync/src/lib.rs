@@ -201,6 +201,19 @@ where
                         )
                     }
                 }
+                StateSyncCommand::Message((from, StateSyncNetworkMessage::NotWhitelisted)) => {
+                    let statesync = match &mut self.mode {
+                        StateSyncMode::Sync(sync) => sync,
+                        StateSyncMode::Live(_) => {
+                            tracing::warn!(
+                                ?from,
+                                "dropping statesync not whitelisted, already done syncing"
+                            );
+                            continue;
+                        }
+                    };
+                    statesync.handle_not_whitelisted(from);
+                }
                 StateSyncCommand::StartExecution => {
                     let valid_transition = match self.mode {
                         StateSyncMode::Sync(_) => true,

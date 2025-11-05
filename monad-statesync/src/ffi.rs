@@ -403,6 +403,18 @@ impl<PT: PubKey> StateSync<PT> {
         self.outbound_requests.handle_bad_version(from, bad_version);
     }
 
+    pub fn handle_not_whitelisted(&mut self, from: NodeId<PT>) {
+        if !self.state_sync_peers.iter().any(|trusted| trusted == &from) {
+            tracing::warn!(
+                ?from,
+                "dropping statesync not whitelisted notification from untrusted peer",
+            );
+            return;
+        }
+
+        self.outbound_requests.handle_not_whitelisted(from);
+    }
+
     /// An estimate of current sync progress in `Target` units
     pub fn progress_estimate(&self) -> Option<SeqNum> {
         self.progress.lock().unwrap().estimate()

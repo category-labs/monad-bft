@@ -1675,6 +1675,7 @@ pub enum StateSyncNetworkMessage {
     Response(StateSyncResponse),
     BadVersion(StateSyncBadVersion),
     Completion(SessionId),
+    NotWhitelisted,
 }
 
 impl Encodable for StateSyncNetworkMessage {
@@ -1695,6 +1696,10 @@ impl Encodable for StateSyncNetworkMessage {
             }
             Self::Completion(session_id) => {
                 let enc: [&dyn Encodable; 3] = [&name, &4u8, &session_id];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::NotWhitelisted => {
+                let enc: [&dyn Encodable; 2] = [&name, &5u8];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
         }
@@ -1719,6 +1724,10 @@ impl Encodable for StateSyncNetworkMessage {
                 let enc: Vec<&dyn Encodable> = vec![&name, &4u8, &session_id];
                 Encodable::length(&enc)
             }
+            Self::NotWhitelisted => {
+                let enc: Vec<&dyn Encodable> = vec![&name, &5u8];
+                Encodable::length(&enc)
+            }
         }
     }
 }
@@ -1738,6 +1747,7 @@ impl Decodable for StateSyncNetworkMessage {
             2 => Ok(Self::Response(StateSyncResponse::decode(&mut payload)?)),
             3 => Ok(Self::BadVersion(StateSyncBadVersion::decode(&mut payload)?)),
             4 => Ok(Self::Completion(SessionId::decode(&mut payload)?)),
+            5 => Ok(Self::NotWhitelisted),
             _ => Err(alloy_rlp::Error::Custom(
                 "failed to decode unknown StateSyncNetworkMessage",
             )),

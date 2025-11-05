@@ -150,6 +150,8 @@ where
 
                 consensus_config: self.state_config.consensus_config,
 
+                whitelisted_statesync_nodes: Default::default(),
+
                 _phantom: PhantomData,
             },
             partition: self.partition.clone(),
@@ -399,6 +401,8 @@ where
                 timestamp_latency_estimate_ns: 10_000_000,
                 _phantom: PhantomData,
             },
+
+            whitelisted_statesync_nodes: Default::default(),
 
             _phantom: PhantomData,
         })

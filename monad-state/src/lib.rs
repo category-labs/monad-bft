@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt::Debug,
     marker::PhantomData,
     ops::Deref,
@@ -57,8 +57,8 @@ use monad_executor_glue::{
     BlockSyncEvent, ClearMetrics, Command, ConfigEvent, ConfigReloadCommand, ConsensusEvent,
     ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers, LedgerCommand,
     MempoolEvent, Message, MonadEvent, ReadCommand, ReloadConfig, RouterCommand, StateSyncCommand,
-    StateSyncEvent, StateSyncNetworkMessage, TxPoolCommand, ValSetCommand, ValidatorEvent,
-    WriteCommand,
+    StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest, TxPoolCommand, ValSetCommand,
+    ValidatorEvent, WriteCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{
@@ -421,6 +421,9 @@ where
 
     /// Versions for client and protocol validation
     version: MonadVersion,
+
+    /// Whitelisted full nodes for statesync filtering
+    whitelisted_statesync_nodes: HashSet<NodeId<CertificateSignaturePubKey<ST>>>,
 }
 
 impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
@@ -501,6 +504,44 @@ where
 
     pub fn metrics(&self) -> &Metrics {
         &self.metrics
+    }
+
+    /// Check if a statesync request from the given sender should be serviced.
+    ///
+    /// Service rules:
+    /// - If self is a validator: only service requests from validators or whitelisted full nodes
+    /// - If self is a full node: service all requests
+    fn should_service_statesync_request(
+        &mut self,
+        sender: &NodeId<CertificateSignaturePubKey<ST>>,
+        _request: &StateSyncRequest,
+    ) -> bool {
+        // Check if self is a validator
+        let self_role = self.get_role();
+
+        match self_role {
+            // Full nodes service all requests
+            Role::FullNode => true,
+            // Validator only service requests from other validators or whitelisted full nodes
+            Role::Validator => {
+                let current_epoch = self.consensus.current_epoch();
+
+                // Check if sender is a validator
+                if let Some(validator_set) = self.val_epoch_map.get_val_set(&current_epoch) {
+                    if validator_set.get_members().contains_key(sender) {
+                        return true;
+                    }
+                }
+
+                // Check if sender is a whitelisted node
+                if self.whitelisted_statesync_nodes.contains(sender) {
+                    return true;
+                }
+
+                // Drop the request
+                false
+            }
+        }
     }
 }
 
@@ -790,6 +831,7 @@ where
     pub certkey: SignatureCollectionKeyPairType<SCT>,
     pub beneficiary: [u8; 20],
     pub block_sync_override_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
+    pub whitelisted_statesync_nodes: HashSet<NodeId<SCT::NodeIdPubKey>>,
 
     pub consensus_config: ConsensusConfig<CCT, CRT>,
 
@@ -881,6 +923,8 @@ where
 
             metrics: Metrics::default(),
             version: MonadVersion::version(),
+
+            whitelisted_statesync_nodes: self.whitelisted_statesync_nodes,
         };
 
         let mut init_cmds = Vec::new();
@@ -997,8 +1041,27 @@ where
             }
             MonadEvent::StateSyncEvent(state_sync_event) => match state_sync_event {
                 StateSyncEvent::Inbound(sender, message) => {
-                    // TODO we need to add some sort of throttling to who we service... right now
-                    // we'll service indiscriminately
+                    // Filter statesync requests based on sender
+                    if let StateSyncNetworkMessage::Request(request) = message {
+                        if !self.should_service_statesync_request(&sender, &request) {
+                            tracing::debug!(
+                                ?sender,
+                                "dropping statesync request from non-whitelisted sender"
+                            );
+
+                            // Send NotWhitelisted response to sender so that it can look for other peers
+                            return vec![Command::RouterCommand(RouterCommand::Publish {
+                                target: RouterTarget::TcpPointToPoint {
+                                    to: sender,
+                                    completion: None,
+                                },
+                                message: VerifiedMonadMessage::StateSyncMessage(
+                                    StateSyncNetworkMessage::NotWhitelisted,
+                                ),
+                            })];
+                        }
+                    }
+
                     vec![Command::StateSyncCommand(StateSyncCommand::Message((
                         sender, message,
                     )))]
@@ -1137,6 +1200,15 @@ where
                 ConfigEvent::ConfigUpdate(config_update) => {
                     self.block_sync
                         .set_override_peers(config_update.blocksync_override_peers);
+
+                    // Store whitelisted full nodes for statesync filtering
+                    self.whitelisted_statesync_nodes = config_update
+                        .dedicated_full_nodes
+                        .iter()
+                        .chain(config_update.prioritized_full_nodes.iter())
+                        .cloned()
+                        .collect();
+
                     let mut cmds = Vec::new();
                     cmds.push(Command::RouterCommand(RouterCommand::UpdateFullNodes {
                         dedicated_full_nodes: config_update.dedicated_full_nodes,
