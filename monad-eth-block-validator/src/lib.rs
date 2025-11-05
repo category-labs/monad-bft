@@ -470,6 +470,11 @@ where
                         return Err(BlockValidationError::TxnError);
                     }
 
+                    // TODO: currently consensus and execution both treats invalid authorization as has_delegated
+                    // this has to be updated together with execution change in the future
+                    let txn_fee = txn_fees.entry(authority).or_default();
+                    txn_fee.is_delegated = true;
+
                     if recovered_auth.chain_id() != 0_u64
                         && recovered_auth.chain_id() != chain_config.chain_id()
                     {
@@ -498,9 +503,6 @@ where
                             ])));
                         }
                     }
-
-                    let txn_fee = txn_fees.entry(authority).or_default();
-                    txn_fee.is_delegated = true;
                 }
             }
         }

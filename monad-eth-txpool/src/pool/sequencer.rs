@@ -19,6 +19,7 @@ use std::{
 };
 
 use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
+use alloy_eips::eip7702::{RecoveredAuthority, RecoveredAuthorization};
 use alloy_primitives::Address;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::block::{AccountBalanceState, BlockPolicyBlockValidator};
@@ -29,9 +30,10 @@ use monad_eth_block_policy::{
     nonce_usage::{NonceUsage, NonceUsageRetrievable},
     EthBlockPolicyBlockValidator, EthValidatedBlock,
 };
+use monad_eth_types::ValidatedTx;
 use monad_validator::signature_collection::SignatureCollection;
 use rand::seq::SliceRandom;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, trace};
 
 use crate::pool::{
     tracked::TrackedTxList,
@@ -235,13 +237,6 @@ impl<'a> ProposalSequencer<'a> {
                     if authorization.chain_id != 0
                         && authorization.chain_id != chain_config.chain_id()
                     {
-                        warn!(
-                            tx = ?tx.tx,
-                            ?address,
-                            ?authority,
-                            ?authorization,
-                            "txpool looked up nonces for invalid chain id authorization"
-                        );
                         continue;
                     }
 
@@ -288,7 +283,20 @@ impl<'a> ProposalSequencer<'a> {
             return false;
         }
 
-        if let Err(error) = validator.try_add_transaction(account_balances, tx.raw()) {
+        // TODO: we should consolidate the ValidEthTransaction type with ValidatedTx type
+        let validated_tx = ValidatedTx {
+            tx: tx.raw().clone(),
+            authorizations_7702: tx
+                .iter_valid_recovered_authorizations()
+                .map(|auth| {
+                    RecoveredAuthorization::new_unchecked(
+                        auth.authorization.clone(),
+                        RecoveredAuthority::Valid(auth.authority),
+                    )
+                })
+                .collect(),
+        };
+        if let Err(error) = validator.try_add_transaction(account_balances, &validated_tx) {
             debug!(
                 ?error,
                 signer = ?tx.raw().signer(),
