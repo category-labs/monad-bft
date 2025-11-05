@@ -593,4 +593,12 @@ impl<C: Context> API<C> {
         self.metrics[GAUGE_WIREAUTH_API_DISCONNECT] += 1;
         self.state.terminate_by_public_key(public_key);
     }
+
+    pub fn is_connected_socket(&self, socket_addr: &SocketAddr) -> bool {
+        self.state.has_transport_by_socket(socket_addr)
+    }
+
+    pub fn is_connected_public_key(&self, public_key: &monad_secp::PubKey) -> bool {
+        self.state.has_transport_by_public_key(public_key)
+    }
 }
