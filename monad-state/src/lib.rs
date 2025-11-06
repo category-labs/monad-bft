@@ -1383,6 +1383,17 @@ where
         );
         self.consensus = ConsensusMode::Live(consensus);
         commands.push(Command::StateSyncCommand(StateSyncCommand::StartExecution));
+        // technically we should be waiting for the vote pacing timer
+        // to expire before we set scheduled_vote to TimerFired
+        //
+        // in practice, it won't make a difference, because f+1 nodes
+        // would need to restart at the exact same time and finish
+        // statesyncing/blocksyncing within the vote pacing window
+        commands.extend(
+            self.update(MonadEvent::ConsensusEvent(ConsensusEvent::SendVote(
+                current_round,
+            ))),
+        );
         commands.extend(
             self.update(MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(
                 current_round,

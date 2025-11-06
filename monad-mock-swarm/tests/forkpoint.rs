@@ -125,6 +125,28 @@ static CHAIN_PARAMS: ChainParams = ChainParams {
 };
 
 #[test]
+fn test_quick_restart() {
+    let epoch_length = SeqNum(3);
+    let statesync_threshold = SeqNum(5);
+    let statesync_service_window = SeqNum::MAX;
+
+    let blocks_before_failure = SeqNum(10);
+    let time_before_new_forkpoint = SeqNum(0);
+    let recovery_time = SeqNum(0);
+    let finalization_delay = SeqNum(0);
+    forkpoint_restart_one(
+        20,
+        blocks_before_failure,
+        time_before_new_forkpoint,
+        recovery_time,
+        epoch_length,
+        statesync_threshold,
+        statesync_service_window,
+        finalization_delay,
+    );
+}
+
+#[test]
 fn test_forkpoint_restart_f_simple_blocksync() {
     let epoch_length = SeqNum(200);
     let statesync_threshold = SeqNum(100);
@@ -134,7 +156,8 @@ fn test_forkpoint_restart_f_simple_blocksync() {
     let time_before_new_forkpoint = SeqNum(0);
     let recovery_time = SeqNum(statesync_threshold.0 / 2);
     let finalization_delay = SeqNum(0);
-    forkpoint_restart_f(
+    forkpoint_restart_one(
+        4,
         blocks_before_failure,
         time_before_new_forkpoint,
         recovery_time,
@@ -157,7 +180,8 @@ fn test_forkpoint_restart_f_delayed_execution_no_statesync() {
     let time_before_new_forkpoint = SeqNum(0);
     let recovery_time = SeqNum(statesync_threshold.0 / 2);
     let finalization_delay = SeqNum(8); // state_root_delay is 4
-    forkpoint_restart_f(
+    forkpoint_restart_one(
+        4,
         blocks_before_failure,
         time_before_new_forkpoint,
         recovery_time,
@@ -178,7 +202,8 @@ fn test_forkpoint_restart_f_simple_statesync() {
     let time_before_new_forkpoint = SeqNum(statesync_threshold.0 * 3 / 2);
     let recovery_time = time_before_new_forkpoint;
     let finalization_delay = SeqNum(0);
-    forkpoint_restart_f(
+    forkpoint_restart_one(
+        4,
         blocks_before_failure,
         time_before_new_forkpoint,
         recovery_time,
@@ -204,7 +229,8 @@ fn test_forkpoint_restart_f_target_reset_statesync() {
     let time_before_new_forkpoint = SeqNum(10);
     let recovery_time = SeqNum(statesync_threshold.0 * 3 / 2);
     let finalization_delay = SeqNum(0);
-    forkpoint_restart_f(
+    forkpoint_restart_one(
+        4,
         blocks_before_failure,
         time_before_new_forkpoint,
         recovery_time,
@@ -225,7 +251,8 @@ fn test_forkpoint_restart_f_epoch_boundary_statesync() {
     let time_before_new_forkpoint = SeqNum(statesync_threshold.0 * 3 / 2);
     let recovery_time = time_before_new_forkpoint;
     let finalization_delay = SeqNum(0);
-    forkpoint_restart_f(
+    forkpoint_restart_one(
+        4,
         blocks_before_failure,
         time_before_new_forkpoint,
         recovery_time,
@@ -257,7 +284,8 @@ fn test_forkpoint_restart_f() {
         pool.install(|| {
             recovery_range.par_iter().for_each(|&recovery| {
                 let recovery_time = SeqNum(recovery);
-                forkpoint_restart_f(
+                forkpoint_restart_one(
+                    4,
                     blocks_before,
                     time_before_new_forkpoint,
                     recovery_time,
@@ -275,7 +303,8 @@ fn test_forkpoint_restart_f() {
 /// 4 node restarts. During the restart, the remaining network produces
 /// `recovery_time` blocks. Assert that the node can catch up using local
 /// forkpoint and blocksync
-fn forkpoint_restart_f(
+fn forkpoint_restart_one(
+    num_nodes: u16,
     blocks_before_failure: SeqNum,
     time_before_new_forkpoint: SeqNum,
     recovery_time: SeqNum,
@@ -291,7 +320,7 @@ fn forkpoint_restart_f(
     let chain_config =
         MockChainConfig::new_with_epoch_params(&CHAIN_PARAMS, epoch_length, Round(50));
     let state_configs = make_state_configs::<ForkpointSwarm>(
-        4, // num_nodes
+        num_nodes, // num_nodes
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
         EthBlockValidator::default,
@@ -316,7 +345,7 @@ fn forkpoint_restart_f(
         // regenerate state config every iteration as they do not implement
         // Clone, due to KeyPair not implementing Clone
         let state_configs = make_state_configs::<ForkpointSwarm>(
-            4, // num_nodes
+            num_nodes, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
             EthBlockValidator::default,
@@ -331,7 +360,7 @@ fn forkpoint_restart_f(
             .validators
             .clone();
         let state_configs_dup = make_state_configs::<ForkpointSwarm>(
-            4, // num_nodes
+            num_nodes, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
             EthBlockValidator::default,
@@ -524,6 +553,8 @@ fn forkpoint_restart_f(
             .validation_errors
             .invalid_epoch
             > 0;
+        let restarted_node_is_voting =
+            restarted_node.state.metrics().consensus_events.created_vote > 0;
         let close_to_threshold =
             SeqNum(statesync_threshold.0.saturating_sub(recovery_time.0)) < SeqNum(5);
         // epoch_cross_over means that the restarting node doesn't have the
@@ -543,6 +574,7 @@ fn forkpoint_restart_f(
             .unwrap_or(false);
 
         let test_result = restarted_node_caught_up
+            && restarted_node_is_voting
             && (!state_sync_triggered || close_to_threshold)
             && (!state_sync_reset_target || should_reset_statesync_target)
             && (!invalid_epoch_error || epoch_cross_over);
@@ -554,6 +586,7 @@ block_before_failure={:?},
 recovery_time={:?},
 epoch_length={:?},
 restarted_node_caught_up={:?},
+restarted_node_is_voting={:?},
 state_sync_triggered={:?},
 close_to_threshold={:?},
 invalid_epoch_error={:?},
@@ -564,6 +597,7 @@ restarted_node_metrics={:#?}",
             recovery_time,
             epoch_length,
             restarted_node_caught_up,
+            restarted_node_is_voting,
             state_sync_triggered,
             close_to_threshold,
             invalid_epoch_error,
