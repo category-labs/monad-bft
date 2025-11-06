@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeSet, VecDeque},
     net::SocketAddr,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use bytes::Bytes;
@@ -102,28 +102,17 @@ impl<C: Context> API<C> {
     }
 
     #[instrument(level = Level::TRACE, skip(self), fields(local_public_key = ?self.local_serialized_public))]
-    pub fn next_timer(&self) -> Option<Duration> {
-        let duration_since_start = self.context.duration_since_start();
+    pub fn next_deadline(&self) -> Option<Instant> {
+        let session_deadline = self.timers.iter().next().map(|&(deadline, _)| deadline);
 
-        let session_timer = self.timers.iter().next().map(|&(deadline, _)| {
-            if deadline > duration_since_start {
-                deadline - duration_since_start
-            } else {
-                Duration::ZERO
-            }
-        });
+        let filter_deadline = self.filter.next_reset_time();
 
-        let filter_reset_time = self.filter.next_reset_time();
-        let filter_timer = if filter_reset_time > duration_since_start {
-            filter_reset_time - duration_since_start
-        } else {
-            Duration::ZERO
+        let deadline = match session_deadline {
+            Some(sd) => sd.min(filter_deadline),
+            None => filter_deadline,
         };
 
-        match session_timer {
-            Some(st) => Some(st.min(filter_timer)),
-            None => Some(filter_timer),
-        }
+        Some(self.context.convert_duration_since_start_to_deadline(deadline))
     }
 
     #[instrument(level = Level::TRACE, skip(self), fields(local_public_key = ?self.local_serialized_public))]

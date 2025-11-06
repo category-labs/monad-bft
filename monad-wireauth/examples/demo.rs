@@ -1,8 +1,8 @@
-use std::{convert::TryFrom, future::pending, net::SocketAddr, rc::Rc, time::Duration};
+use std::{convert::TryFrom, future::pending, net::SocketAddr, rc::Rc, time::{Duration, Instant}};
 
 use clap::Parser;
 use monad_wireauth::{messages::Packet, Config, PublicKey, StdContext, API, RETRY_ALWAYS};
-use monoio::net::udp::UdpSocket;
+use monoio::{net::udp::UdpSocket, time::sleep_until};
 use secp256k1::rand::{rngs::StdRng, SeedableRng};
 use tracing::{debug, info, warn};
 use zerocopy::IntoBytes;
@@ -81,8 +81,8 @@ impl PeerNode {
         self.manager.encrypt_by_public_key(peer_public, plaintext)
     }
 
-    fn next_timer(&mut self) -> Option<Duration> {
-        self.manager.next_timer()
+    fn next_deadline(&mut self) -> Option<Instant> {
+        self.manager.next_deadline()
     }
 }
 
@@ -114,8 +114,8 @@ async fn main() -> std::io::Result<()> {
         peer_keys.push((peer_id, peer_public, peer_addr));
     }
 
-    for &(peer_id, ref peer_public, peer_addr) in &peer_keys {
-        node.connect(peer_id, peer_public.clone(), peer_addr);
+    for &(peer_id, peer_public, peer_addr) in &peer_keys {
+        node.connect(peer_id, peer_public, peer_addr);
     }
 
     let mut tick_interval = monoio::time::interval(Duration::from_secs(1));
@@ -133,13 +133,10 @@ async fn main() -> std::io::Result<()> {
                             let _ = node.manager.dispatch_control(control, src);
                         }
                         Ok(Packet::Data(data_packet)) => {
-                            match node.manager.decrypt(data_packet, src) {
-                                Ok((plaintext, _peer_key)) => {
-                                    if let Ok(msg) = std::str::from_utf8(plaintext.as_ref()) {
-                                        info!(id = node.id, src = %src, message = %msg, "received message");
-                                    }
+                            if let Ok((plaintext, _peer_key)) = node.manager.decrypt(data_packet, src) {
+                                if let Ok(msg) = std::str::from_utf8(plaintext.as_ref()) {
+                                    info!(id = node.id, src = %src, message = %msg, "received message");
                                 }
-                                Err(_) => {}
                             }
                         }
                         Err(_) => {}
@@ -147,21 +144,21 @@ async fn main() -> std::io::Result<()> {
                 }
             },
             _ = async {
-                match node.next_timer() {
-                    Some(duration) => {
-                        debug!(?duration, "next timer");
-                        monoio::time::sleep(duration).await;
+                match node.next_deadline() {
+                    Some(deadline) => {
+                        debug!(?deadline, "next deadline");
+                        sleep_until(deadline.into()).await;
                         node.manager.tick();
                     },
                     None => pending().await,
                 }
             } => {},
             _ = tick_interval.tick() => {
-                for &(peer_id, ref peer_public, peer_addr) in &peer_keys {
+                for &(peer_id, peer_public, peer_addr) in &peer_keys {
                     let message = format!("hello from {} to {}", node.id, peer_id);
                     let mut plaintext = message.as_bytes().to_vec();
 
-                    match node.encrypt_by_public_key(peer_public, &mut plaintext) {
+                    match node.encrypt_by_public_key(&peer_public, &mut plaintext) {
                         Ok(header) => {
                             let mut packet = Vec::new();
                             packet.extend_from_slice(header.as_bytes());

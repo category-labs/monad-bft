@@ -12,6 +12,7 @@ pub trait Context {
     fn system_time(&self) -> SystemTime;
     fn duration_since_start(&self) -> Duration;
     fn rng(&mut self) -> &mut Self::Rng;
+    fn convert_duration_since_start_to_deadline(&self, duration: Duration) -> Instant;
 }
 
 pub struct StdContext {
@@ -42,6 +43,10 @@ impl Context for StdContext {
     fn rng(&mut self) -> &mut Self::Rng {
         &mut self.rng
     }
+
+    fn convert_duration_since_start_to_deadline(&self, duration: Duration) -> Instant {
+        self.start_instant + duration
+    }
 }
 
 impl Default for StdContext {
@@ -59,6 +64,7 @@ struct TestContextShared {
     rng: ThreadRng,
     time_offset: Duration,
     start_time: SystemTime,
+    start_instant: Instant,
 }
 
 impl TestContext {
@@ -68,6 +74,7 @@ impl TestContext {
                 rng: rng(),
                 time_offset: Duration::ZERO,
                 start_time: SystemTime::UNIX_EPOCH,
+                start_instant: Instant::now(),
             })),
         }
     }
@@ -98,6 +105,11 @@ impl Context for TestContext {
 
     fn rng(&mut self) -> &mut Self::Rng {
         unsafe { &mut (*self.shared.as_ptr()).rng }
+    }
+
+    fn convert_duration_since_start_to_deadline(&self, duration: Duration) -> Instant {
+        let shared = self.shared.borrow();
+        shared.start_instant + duration
     }
 }
 
