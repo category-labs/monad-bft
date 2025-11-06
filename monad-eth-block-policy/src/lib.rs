@@ -31,8 +31,8 @@ use monad_chain_config::{
 };
 use monad_consensus_types::{
     block::{
-        AccountBalanceState, BlockPolicy, BlockPolicyBlockValidator,
-        BlockPolicyBlockValidatorError, BlockPolicyError, ConsensusFullBlock, TxnFee, TxnFees,
+        AccountBalanceState, BlockPolicy, BlockPolicyBlockValidatorError, BlockPolicyError,
+        ConsensusFullBlock, TxnFee, TxnFees,
     },
     checkpoint::RootInfo,
 };
@@ -374,12 +374,11 @@ pub fn timestamp_ns_to_secs(timestamp_ns: u128) -> u64 {
     timestamp_seconds.min(u64::MAX.into()) as u64
 }
 
-impl<CRT> BlockPolicyBlockValidator<CRT> for EthBlockPolicyBlockValidator<CRT>
+impl<CRT> EthBlockPolicyBlockValidator<CRT>
 where
-    Self: Sized,
     CRT: ChainRevision,
 {
-    fn new(
+    pub fn new(
         block_seq_num: SeqNum,
         execution_delay: SeqNum,
         base_fee: u64,
@@ -396,7 +395,7 @@ where
         })
     }
 
-    fn try_apply_block_fees(
+    pub fn try_apply_block_fees(
         &self,
         account_balance: &mut AccountBalanceState,
         block_txn_fees: &TxnFee,
@@ -523,7 +522,7 @@ where
         Ok(())
     }
 
-    fn try_add_transaction(
+    pub fn try_add_transaction(
         &self,
         account_balances: &mut BTreeMap<&Address, AccountBalanceState>,
         txn: &ValidatedTx,

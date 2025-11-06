@@ -22,7 +22,7 @@ use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
 use alloy_eips::eip7702::{RecoveredAuthority, RecoveredAuthorization};
 use alloy_primitives::Address;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
-use monad_consensus_types::block::{AccountBalanceState, BlockPolicyBlockValidator};
+use monad_consensus_types::block::AccountBalanceState;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
