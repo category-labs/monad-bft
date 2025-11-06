@@ -51,7 +51,7 @@ struct triedb
 };
 
 int triedb_open(
-    char const *dbdirpath, triedb **db, uint64_t const node_lru_max_mem)
+    char const *dbdirpath, triedb **db, uint64_t const node_lru_max_mem) noexcept
 {
     if (*db != nullptr) {
         return -1;
@@ -82,7 +82,7 @@ int triedb_open(
     return 0;
 }
 
-int triedb_close(triedb *db)
+int triedb_close(triedb *db) noexcept
 {
     delete db;
     return 0;
@@ -90,7 +90,7 @@ int triedb_close(triedb *db)
 
 int triedb_read(
     triedb *db, bytes key, uint8_t key_len_nibbles, bytes *value,
-    uint64_t block_id)
+    uint64_t block_id) noexcept
 {
     auto result = db->db_.find(
         monad::mpt::NibblesView{0, key_len_nibbles, key}, block_id);
@@ -111,7 +111,7 @@ int triedb_read(
 
 void triedb_async_read(
     triedb *db, bytes key, uint8_t key_len_nibbles, uint64_t block_id,
-    void (*completed)(bytes value, int length, void *user), void *user)
+    void (*completed)(bytes value, int length, void *user), void *user) noexcept
 {
     struct receiver_t
     {
@@ -301,7 +301,7 @@ namespace detail
 
 bool triedb_traverse(
     triedb *db, bytes key, uint8_t key_len_nibbles, uint64_t block_id,
-    void *context, callback_func callback)
+    void *context, callback_func callback) noexcept
 {
     auto prefix = monad::mpt::NibblesView{0, key_len_nibbles, key};
     auto cursor = db->db_.find(prefix, block_id);
@@ -334,7 +334,7 @@ bool triedb_traverse(
 void triedb_async_ranged_get(
     triedb *db, bytes prefix_key, uint8_t prefix_len_nibbles, bytes min_key,
     uint8_t min_len_nibbles, bytes max_key, uint8_t max_len_nibbles,
-    uint64_t block_id, void *context, callback_func callback)
+    uint64_t block_id, void *context, callback_func callback) noexcept
 {
     monad::mpt::NibblesView const prefix{0, prefix_len_nibbles, prefix_key};
     monad::mpt::NibblesView const min{0, min_len_nibbles, min_key};
@@ -375,7 +375,7 @@ void triedb_async_ranged_get(
 
 void triedb_async_traverse(
     triedb *db, bytes key, uint8_t key_len_nibbles, uint64_t block_id,
-    void *context, callback_func callback)
+    void *context, callback_func callback) noexcept
 {
     auto prefix = monad::mpt::NibblesView{0, key_len_nibbles, key};
     auto machine = std::make_unique<detail::Traverse>(
@@ -390,24 +390,24 @@ void triedb_async_traverse(
         ->initiate();
 }
 
-size_t triedb_poll(triedb *db, bool blocking, size_t count)
+size_t triedb_poll(triedb *db, bool blocking, size_t count) noexcept
 {
     return db->db_.poll(blocking, count);
 }
 
-int triedb_finalize(bytes value)
+int triedb_finalize(bytes value) noexcept
 {
     delete[] value;
     return 0;
 }
 
-uint64_t triedb_latest_voted_block(triedb *db)
+uint64_t triedb_latest_voted_block(triedb *db) noexcept
 {
     uint64_t latest_voted_version = db->db_.get_latest_voted_version();
     return latest_voted_version;
 }
 
-bytes triedb_latest_voted_block_id(triedb *db)
+bytes triedb_latest_voted_block_id(triedb *db) noexcept
 {
     monad::bytes32_t latest_voted_block_id =
         db->db_.get_latest_voted_block_id();
@@ -419,19 +419,19 @@ bytes triedb_latest_voted_block_id(triedb *db)
     return id;
 }
 
-uint64_t triedb_latest_finalized_block(triedb *db)
+uint64_t triedb_latest_finalized_block(triedb *db) noexcept
 {
     uint64_t latest_finalized_version = db->db_.get_latest_finalized_version();
     return latest_finalized_version;
 }
 
-uint64_t triedb_latest_verified_block(triedb *db)
+uint64_t triedb_latest_verified_block(triedb *db) noexcept
 {
     uint64_t latest_verified_version = db->db_.get_latest_verified_version();
     return latest_verified_version;
 }
 
-uint64_t triedb_earliest_finalized_block(triedb *db)
+uint64_t triedb_earliest_finalized_block(triedb *db) noexcept
 {
     uint64_t earliest_finalized_block = db->db_.get_earliest_version();
     return earliest_finalized_block;
@@ -443,14 +443,14 @@ validator_set *alloc_valset(uint64_t length)
     return new validator_set{.validators = validators, .length = length};
 }
 
-void free_valset(validator_set *valset)
+void free_valset(validator_set *valset) noexcept
 {
     delete[] valset->validators;
     delete valset;
 }
 
 validator_set *
-read_valset(triedb *db, size_t block_num, uint64_t requested_epoch)
+read_valset(triedb *db, size_t block_num, uint64_t requested_epoch) noexcept
 {
     auto ret = monad::staking::read_valset(db->db_, block_num, requested_epoch);
     if (!ret.has_value()) {

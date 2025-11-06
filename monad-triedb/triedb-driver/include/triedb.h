@@ -13,25 +13,29 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-#ifdef __cplusplus
-extern "C"
-{
-#endif
-
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
+// Define MONAD_NOEXCEPT for FFI functions
+#ifdef __cplusplus
+    #define MONAD_NOEXCEPT noexcept
+extern "C"
+{
+#else
+    #define MONAD_NOEXCEPT
+#endif
+
 typedef struct triedb triedb;
-int triedb_open(char const *dbdirpath, triedb **, uint64_t node_lru_max_mem);
-int triedb_close(triedb *);
+int triedb_open(char const *dbdirpath, triedb **, uint64_t node_lru_max_mem) MONAD_NOEXCEPT;
+int triedb_close(triedb *) MONAD_NOEXCEPT;
 
 typedef uint8_t const *bytes;
 // returns -1 if key not found
 // if >= 0, returns length of value
 int triedb_read(
     triedb *, bytes key, uint8_t key_len_nibbles, bytes *value,
-    uint64_t block_id);
+    uint64_t block_id) MONAD_NOEXCEPT;
 // calls (*completed) when read is
 // complete. length is -1 if key not
 // found. If >=0, returns length of
@@ -39,7 +43,7 @@ int triedb_read(
 // done with the value.
 void triedb_async_read(
     triedb *, bytes key, uint8_t key_len_nibbles, uint64_t block_id,
-    void (*completed)(bytes value, int length, void *user), void *user);
+    void (*completed)(bytes value, int length, void *user), void *user) MONAD_NOEXCEPT;
 
 // traverse the trie.
 enum triedb_async_traverse_callback
@@ -54,32 +58,32 @@ typedef void (*callback_func)(
     size_t path_len, bytes value, size_t value_len);
 bool triedb_traverse(
     triedb *, bytes key, uint8_t key_len_nibbles, uint64_t block_id,
-    void *context, callback_func callback);
+    void *context, callback_func callback) MONAD_NOEXCEPT;
 void triedb_async_traverse(
     triedb *, bytes key, uint8_t key_len_nibbles, uint64_t block_id,
-    void *context, callback_func callback);
+    void *context, callback_func callback) MONAD_NOEXCEPT;
 void triedb_async_ranged_get(
     triedb *, bytes prefix_key, uint8_t prefix_len_nibbles, bytes min_key,
     uint8_t min_len_nibbles, bytes max_key, uint8_t max_len_nibbles,
-    uint64_t block_id, void *context, callback_func callback);
+    uint64_t block_id, void *context, callback_func callback) MONAD_NOEXCEPT;
 // pumps async reads, processing no
 // more than count maximum, returning
 // how many were processed.
-size_t triedb_poll(triedb *, bool blocking, size_t count);
-int triedb_finalize(bytes value);
+size_t triedb_poll(triedb *, bool blocking, size_t count) MONAD_NOEXCEPT;
+int triedb_finalize(bytes value) MONAD_NOEXCEPT;
 
 // returns MAX if doesn't exist
-uint64_t triedb_latest_voted_block(triedb *);
+uint64_t triedb_latest_voted_block(triedb *) MONAD_NOEXCEPT;
 // returns NULL if doesn't exist
 // triedb_finalize must be called if not null
-bytes triedb_latest_voted_block_id(triedb *);
+bytes triedb_latest_voted_block_id(triedb *) MONAD_NOEXCEPT;
 // returns MAX if doesn't exist
-uint64_t triedb_latest_finalized_block(triedb *);
+uint64_t triedb_latest_finalized_block(triedb *) MONAD_NOEXCEPT;
 // returns MAX if doesn't exist
-uint64_t triedb_latest_verified_block(triedb *);
+uint64_t triedb_latest_verified_block(triedb *) MONAD_NOEXCEPT;
 
 // returns MAX if doesn't exist
-uint64_t triedb_earliest_finalized_block(triedb *);
+uint64_t triedb_earliest_finalized_block(triedb *) MONAD_NOEXCEPT;
 
 #pragma pack(push, 1)
 
@@ -99,9 +103,9 @@ typedef struct validator_set
 
 #pragma pack(pop)
 
-void free_valset(validator_set*);
+void free_valset(validator_set*) MONAD_NOEXCEPT;
 
-validator_set* read_valset(triedb *, size_t block_num, uint64_t requested_epoch);
+validator_set* read_valset(triedb *, size_t block_num, uint64_t requested_epoch) MONAD_NOEXCEPT;
 
 #ifdef __cplusplus
 }
