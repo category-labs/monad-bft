@@ -27,9 +27,7 @@ use monad_chain_config::{
     ChainConfig, MockChainConfig,
 };
 use monad_consensus_types::{
-    block::{
-        BlockPolicyBlockValidator, BlockPolicyError, ConsensusBlockHeader, ProposedExecutionInputs,
-    },
+    block::{BlockPolicyError, ConsensusBlockHeader, ProposedExecutionInputs},
     payload::RoundSignature,
 };
 use monad_crypto::certificate_signature::{

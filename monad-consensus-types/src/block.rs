@@ -20,7 +20,6 @@ use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use auto_impl::auto_impl;
 use bytes::Bytes;
 use monad_chain_config::{
-    execution_revision::MonadExecutionRevision,
     revision::{ChainRevision, MockChainRevision},
     ChainConfig, MockChainConfig,
 };
@@ -28,7 +27,6 @@ use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
     hasher::{Hasher, HasherType},
 };
-use monad_eth_types::ValidatedTx;
 use monad_state_backend::{InMemoryState, StateBackend, StateBackendError};
 use monad_types::{
     Balance, BlockId, Epoch, ExecutionProtocol, FinalizedHeader, NodeId, Round, SeqNum,
@@ -361,33 +359,6 @@ pub struct TxnFee {
 }
 
 pub type TxnFees = BTreeMap<Address, TxnFee>;
-
-pub trait BlockPolicyBlockValidator<CRT>
-where
-    Self: Sized,
-    CRT: ChainRevision,
-{
-    fn new(
-        block_seq_num: SeqNum,
-        execution_delay: SeqNum,
-        base_fee: u64,
-        chain_revision: &CRT,
-        execution_chain_revision: &MonadExecutionRevision,
-    ) -> Result<Self, BlockPolicyError>;
-
-    fn try_apply_block_fees(
-        &self,
-        account_balance: &mut AccountBalanceState,
-        fees: &TxnFee,
-        eth_address: &Address,
-    ) -> Result<(), BlockPolicyError>;
-
-    fn try_add_transaction(
-        &self,
-        account_balances: &mut BTreeMap<&Address, AccountBalanceState>,
-        txn: &ValidatedTx,
-    ) -> Result<(), BlockPolicyError>;
-}
 
 /// Trait that represents how inner contents of a block should be validated
 #[auto_impl(Box)]
