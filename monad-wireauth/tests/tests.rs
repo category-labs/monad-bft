@@ -2,7 +2,7 @@ use std::{convert::TryFrom, net::SocketAddr, time::Duration};
 
 use monad_wireauth::{
     messages::{CookieReply, DataPacketHeader, HandshakeInitiation, HandshakeResponse, Packet},
-    Config, TestContext, API, DEFAULT_RETRY_ATTEMPTS,
+    Config, Context, TestContext, API, DEFAULT_RETRY_ATTEMPTS,
 };
 use secp256k1::rand::rng;
 use tracing_subscriber::EnvFilter;
@@ -548,42 +548,43 @@ fn test_filter_drop_rate_limit() {
     assert!(response_count <= 2);
 }
 
-//1. create manager and initiate connection
-//2. check next_timer returns some duration
-//3. advance time partially
-//4. verify timer decreases
-//5. advance time past deadline
-//6. verify timer returns zero
+//1. create manager and verify initial filter reset deadline
+//2. initiate connection and verify session deadline is set
+//3. advance time partially and verify deadline remains unchanged
+//4. advance time past deadline and verify deadline is now in the past
 #[test]
-fn test_next_timer() {
+fn test_next_deadline() {
     init_tracing();
     let (mut peer1, _, peer1_ctx, config) = create_manager();
     let (_, peer2_pubkey, _, _) = create_manager();
     let peer2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
 
-    let timer_before = peer1.next_timer();
-    assert_eq!(timer_before, Some(config.handshake_rate_reset_interval));
+    let initial_deadline = peer1.next_deadline();
+    let expected_filter_deadline = peer1_ctx.convert_duration_since_start_to_deadline(config.handshake_rate_reset_interval);
+    assert_eq!(initial_deadline, Some(expected_filter_deadline));
 
     peer1
         .connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
         .unwrap();
 
-    let timer_after = peer1.next_timer();
-    assert!(timer_after.is_some());
-    let initial_timer = timer_after.unwrap();
-    assert!(initial_timer.as_secs() <= 10);
+    let session_deadline = peer1.next_deadline();
+    assert!(session_deadline.is_some());
+    let deadline_instant = session_deadline.unwrap();
+    let max_expected_deadline = peer1_ctx.convert_duration_since_start_to_deadline(Duration::from_secs(10));
+    assert!(deadline_instant <= max_expected_deadline);
 
     peer1_ctx.advance_time(Duration::from_secs(5));
 
-    let timer_decreased = peer1.next_timer();
-    assert!(timer_decreased.is_some());
-    assert!(timer_decreased.unwrap() < initial_timer);
+    let deadline_after_time_advance = peer1.next_deadline();
+    assert!(deadline_after_time_advance.is_some());
+    assert_eq!(deadline_after_time_advance.unwrap(), deadline_instant);
 
     peer1_ctx.advance_time(Duration::from_secs(20));
 
-    let timer_zero = peer1.next_timer();
-    assert!(timer_zero.is_some());
-    assert_eq!(timer_zero.unwrap(), Duration::ZERO);
+    let deadline_in_past = peer1.next_deadline();
+    assert!(deadline_in_past.is_some());
+    let current_instant = peer1_ctx.convert_duration_since_start_to_deadline(peer1_ctx.duration_since_start());
+    assert!(deadline_in_past.unwrap() <= current_instant);
 }
 
 //1. peer1 initiates to peer2
@@ -616,43 +617,50 @@ fn test_responder_timeout() {
     let init = collect::<HandshakeInitiation>(&mut peer1);
     dispatch(&mut peer2, &init, peer1_addr);
 
-    let timer_before_timeout = peer2.next_timer();
+    let timer_before_timeout = peer2.next_deadline();
     assert!(timer_before_timeout.is_some());
 
     peer2_ctx.advance_time(Duration::from_secs(11));
     peer2.tick();
 
-    let timer_after_timeout = peer2.next_timer();
+    let timer_after_timeout = peer2.next_deadline();
     assert!(timer_after_timeout.is_some());
 }
 
+//1. create manager with custom filter reset interval
+//2. verify next_deadline returns filter reset deadline
 #[test]
-fn test_next_timer_includes_filter_reset() {
+fn test_next_deadline_includes_filter_reset() {
     init_tracing();
     let mut rng = rng();
+    let filter_reset_interval = Duration::from_secs(5);
     let config = Config {
-        handshake_rate_reset_interval: Duration::from_secs(5),
+        handshake_rate_reset_interval: filter_reset_interval,
         ..Config::default()
     };
 
     let peer_keypair = monad_secp::KeyPair::generate(&mut rng);
     let peer_ctx = TestContext::new();
-    let peer = API::new(config, peer_keypair, peer_ctx);
+    let peer = API::new(config, peer_keypair, peer_ctx.clone());
 
-    let next_timer = peer.next_timer();
-    assert!(next_timer.is_some());
-    assert_eq!(next_timer.unwrap(), Duration::from_secs(5));
+    let deadline = peer.next_deadline();
+    assert!(deadline.is_some());
+    let expected_deadline = peer_ctx.convert_duration_since_start_to_deadline(filter_reset_interval);
+    assert_eq!(deadline.unwrap(), expected_deadline);
 }
 
+//1. establish session between peer1 and peer2
+//2. verify next_deadline returns keepalive deadline
+//3. verify deadline is in the future but within keepalive interval
 #[test]
-fn test_next_timer_returns_minimum_of_session_and_filter() {
+fn test_next_deadline_returns_minimum_of_session_and_filter() {
     init_tracing();
     let mut rng = rng();
     let config = Config::default();
 
     let peer1_keypair = monad_secp::KeyPair::generate(&mut rng);
     let peer1_ctx = TestContext::new();
-    let mut peer1 = API::new(config.clone(), peer1_keypair, peer1_ctx);
+    let mut peer1 = API::new(config.clone(), peer1_keypair, peer1_ctx.clone());
 
     let peer2_keypair = monad_secp::KeyPair::generate(&mut rng);
     let peer2_public = peer2_keypair.pubkey();
@@ -674,11 +682,13 @@ fn test_next_timer_returns_minimum_of_session_and_filter() {
 
     collect::<DataPacketHeader>(&mut peer1);
 
-    let next_timer = peer1.next_timer();
-    assert!(next_timer.is_some());
-    let timer_value = next_timer.unwrap();
-    assert!(timer_value <= Duration::from_secs(3));
-    assert!(timer_value > Duration::ZERO);
+    let keepalive_deadline = peer1.next_deadline();
+    assert!(keepalive_deadline.is_some());
+    let deadline_instant = keepalive_deadline.unwrap();
+    let max_keepalive_deadline = peer1_ctx.convert_duration_since_start_to_deadline(Duration::from_secs(3));
+    let current_instant = peer1_ctx.convert_duration_since_start_to_deadline(peer1_ctx.duration_since_start());
+    assert!(deadline_instant <= max_keepalive_deadline);
+    assert!(deadline_instant > current_instant);
 }
 
 #[test]
