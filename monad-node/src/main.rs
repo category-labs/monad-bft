@@ -22,18 +22,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-use agent::AgentBuilder;
 use alloy_rlp::{Decodable, Encodable};
 use chrono::Utc;
 use clap::CommandFactory;
 use futures_util::{FutureExt, StreamExt};
 use monad_chain_config::ChainConfig;
 use monad_consensus_state::ConsensusConfig;
-use monad_consensus_types::{
-    metrics::Metrics,
-    validator_data::{ValidatorSetDataWithEpoch, ValidatorsConfig},
-};
-use monad_control_panel::{ipc::ControlPanelIpcReceiver, TracingReload};
+use monad_consensus_types::{metrics::Metrics, validator_data::ValidatorSetDataWithEpoch};
+use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::{
     certificate_signature::{
         CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
@@ -79,12 +75,6 @@ use opentelemetry_otlp::{MetricExporter, WithExportConfig};
 use rand_chacha::{rand_core::SeedableRng, ChaCha8Rng};
 use tokio::signal::unix::{signal, SignalKind};
 use tracing::{error, event, info, warn, Instrument, Level};
-use tracing_manytrace::{ManytraceLayer, TracingExtension};
-use tracing_subscriber::{
-    fmt::{format::FmtSpan, Layer as FmtLayer},
-    layer::SubscriberExt,
-    Layer,
-};
 
 use self::{cli::Cli, error::NodeSetupError, state::NodeState};
 
@@ -124,9 +114,6 @@ fn main() {
         .map_err(Into::into)
         .unwrap_or_else(|e: NodeSetupError| cmd.error(e.kind(), e).exit());
 
-    let (reload_handle, _agent) = setup_tracing(&node_state)
-        .unwrap_or_else(|e: NodeSetupError| cmd.error(e.kind(), e).exit());
-
     drop(cmd);
 
     MONAD_NODE_VERSION.map(|v| info!("starting monad-bft with version {}", v));
@@ -149,70 +136,14 @@ fn main() {
         });
     }
 
-    if let Err(e) = runtime.block_on(run(node_state, reload_handle)) {
+    if let Err(e) = runtime.block_on(run(node_state)) {
         tracing::error!("monad consensus node crashed: {:?}", e);
     }
 }
 
-fn setup_tracing(
-    node_state: &NodeState,
-) -> Result<(Box<dyn TracingReload>, Option<agent::Agent>), NodeSetupError> {
-    if let Some(socket_path) = &node_state.manytrace_socket {
-        let extension = std::sync::Arc::new(TracingExtension::new());
-        let agent = AgentBuilder::new(socket_path.clone())
-            .register_tracing(Box::new((*extension).clone()))
-            .build()
-            .map_err(|e| NodeSetupError::Custom {
-                kind: clap::error::ErrorKind::Io,
-                msg: format!("failed to build manytrace agent: {}", e),
-            })?;
-        let (filter, reload_handle) = tracing_subscriber::reload::Layer::new(
-            tracing_subscriber::EnvFilter::from_default_env(),
-        );
-        let subscriber = tracing_subscriber::Registry::default()
-            .with(ManytraceLayer::new(extension))
-            .with(
-                FmtLayer::default()
-                    .json()
-                    .with_span_events(FmtSpan::NONE)
-                    .with_current_span(false)
-                    .with_span_list(false)
-                    .with_writer(std::io::stdout)
-                    .with_ansi(false)
-                    .with_filter(filter),
-            );
-
-        tracing::subscriber::set_global_default(subscriber)?;
-        info!("manytrace tracing enabled");
-        Ok((Box::new(reload_handle), Some(agent)))
-    } else {
-        let (filter, reload_handle) = tracing_subscriber::reload::Layer::new(
-            tracing_subscriber::EnvFilter::from_default_env(),
-        );
-
-        let subscriber = tracing_subscriber::Registry::default().with(filter).with(
-            FmtLayer::default()
-                .json()
-                .with_span_events(FmtSpan::NONE)
-                .with_current_span(false)
-                .with_span_list(false)
-                .with_writer(std::io::stdout)
-                .with_ansi(false),
-        );
-
-        tracing::subscriber::set_global_default(subscriber)?;
-        Ok((Box::new(reload_handle), None))
-    }
-}
-
-async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Result<(), ()> {
-    let locked_epoch_validators = ValidatorsConfig::read_from_path(&node_state.validators_path)
-        .unwrap_or_else(|err| {
-            panic!(
-                "failed to read/parse validators_path={:?}, err={:?}",
-                &node_state.validators_path, err
-            )
-        })
+async fn run(node_state: NodeState) -> Result<(), ()> {
+    let locked_epoch_validators = node_state
+        .validators_config
         .get_locked_validator_sets(&node_state.forkpoint_config);
 
     let current_epoch = node_state
@@ -341,7 +272,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
         .expect("txpool ipc succeeds"),
         control_panel: ControlPanelIpcReceiver::new(
             node_state.control_panel_ipc_path,
-            reload_handle,
+            node_state.reload_handle,
             1000,
         )
         .expect("uds bind failed"),
@@ -397,8 +328,8 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
         key: node_state.secp256k1_identity,
         certkey: node_state.bls12_381_identity,
         beneficiary: node_state.node_config.beneficiary.into(),
-        locked_epoch_validators,
         forkpoint: node_state.forkpoint_config.into(),
+        locked_epoch_validators,
         block_sync_override_peers,
         consensus_config: ConsensusConfig {
             execution_delay: SeqNum(EXECUTION_DELAY),
