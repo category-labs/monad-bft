@@ -139,7 +139,8 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 locked_epoch_validators: self.state_builder.locked_epoch_validators,
                 block_sync_override_peers: self.state_builder.block_sync_override_peers,
                 consensus_config: self.state_builder.consensus_config,
-                whitelisted_statesync_nodes: Default::default(),
+                whitelisted_statesync_nodes: self.state_builder.whitelisted_statesync_nodes,
+                statesync_expand_to_group: self.state_builder.statesync_expand_to_group,
 
                 _phantom: PhantomData,
             },

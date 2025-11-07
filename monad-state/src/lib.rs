@@ -425,6 +425,10 @@ where
 
     /// Whitelisted full nodes for statesync filtering
     whitelisted_statesync_nodes: HashSet<NodeId<CertificateSignaturePubKey<ST>>>,
+    // Expand statesync client peer set to its group
+    // - For validators, this means all validators
+    // - For full nodes, this means all secondary raptorcast peers
+    statesync_expand_to_group: bool,
 }
 
 impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
@@ -446,6 +450,10 @@ where
             ConsensusMode::Sync { .. } => None,
             ConsensusMode::Live(consensus) => Some(consensus),
         }
+    }
+
+    pub fn is_statesyncing(&self) -> bool {
+        self.consensus().is_none()
     }
 
     pub fn state_backend(&self) -> &SBT {
@@ -481,7 +489,7 @@ where
     }
 
     pub fn get_self_stake_bps(&self) -> u64 {
-        if matches!(self.consensus, ConsensusMode::Sync { .. }) {
+        if self.is_statesyncing() {
             return 0;
         }
 
@@ -833,6 +841,7 @@ where
     pub beneficiary: [u8; 20],
     pub block_sync_override_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
     pub whitelisted_statesync_nodes: HashSet<NodeId<SCT::NodeIdPubKey>>,
+    pub statesync_expand_to_group: bool,
 
     pub consensus_config: ConsensusConfig<CCT, CRT>,
 
@@ -927,6 +936,7 @@ where
             version: MonadVersion::version(),
 
             whitelisted_statesync_nodes: self.whitelisted_statesync_nodes,
+            statesync_expand_to_group: self.statesync_expand_to_group,
         };
 
         let mut init_cmds = Vec::new();
@@ -1029,12 +1039,15 @@ where
             }
 
             MonadEvent::ValidatorEvent(ValidatorEvent::UpdateValidators(validator_set_data)) => {
+                let val_ids = validator_set_data.validators.get_pubkeys();
+
                 self.val_epoch_map.insert(
                     validator_set_data.epoch,
                     validator_set_data.validators.get_stakes(),
                     ValidatorMapping::new(validator_set_data.validators.get_cert_pubkeys()),
                 );
-                vec![
+
+                let mut cmds = vec![
                     Command::RouterCommand(RouterCommand::AddEpochValidatorSet {
                         epoch: validator_set_data.epoch,
                         validator_set: validator_set_data.validators.get_stakes(),
@@ -1042,7 +1055,24 @@ where
                     Command::ConfigFileCommand(ConfigFileCommand::ValidatorSetData {
                         validator_set_data,
                     }),
-                ]
+                ];
+
+                // if expand_to_group and not live and is_validator, emit
+                // validator peers to statesync
+                if self.statesync_expand_to_group
+                    && self.is_statesyncing()
+                    && val_ids.contains(&self.nodeid)
+                {
+                    let vals_excl_self: Vec<_> = val_ids
+                        .into_iter()
+                        .filter(|peer| peer != &self.nodeid)
+                        .collect();
+                    cmds.push(Command::StateSyncCommand(
+                        StateSyncCommand::ExpandUpstreamPeers(vals_excl_self),
+                    ))
+                }
+
+                cmds
             }
 
             MonadEvent::MempoolEvent(event) => {
@@ -1260,13 +1290,22 @@ where
                     .retain(|_, expiry_round| *expiry_round > current_round);
 
                 // Push back existing peer's expiry round, or insert new if not found
-                for peer in peers_excl_self {
+                for &peer in &peers_excl_self {
                     self.secondary_raptorcast_peers
                         .entry(peer)
                         .and_modify(|expiry| *expiry = (*expiry).max(expiry_round))
                         .or_insert(expiry_round);
                 }
-                Vec::new()
+
+                // if expand_to_group and not live, emit secondary raptorcast
+                // peers to statesync
+                let mut cmds = Vec::new();
+                if self.statesync_expand_to_group && self.is_statesyncing() {
+                    cmds.push(Command::StateSyncCommand(
+                        StateSyncCommand::ExpandUpstreamPeers(peers_excl_self),
+                    ))
+                }
+                cmds
             }
         }
     }

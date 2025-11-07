@@ -396,15 +396,8 @@ fn forkpoint_restart_one(
                             .with_chain_params(&CHAIN_PARAMS),
                         MockLedger::new(state_backend.clone())
                             .with_finalization_delay(finalization_delay),
-                        MockStateSyncExecutor::new(
-                            state_backend,
-                            validators
-                                .0
-                                .iter()
-                                .map(|validator| validator.node_id)
-                                .collect(),
-                        )
-                        .with_max_service_window(statesync_service_window),
+                        MockStateSyncExecutor::new(state_backend)
+                            .with_max_service_window(statesync_service_window),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                         vec![],
                         TimestamperConfig::default(),
@@ -500,14 +493,7 @@ fn forkpoint_restart_one(
             MockLedger::new(restart_builder_state_backend.clone())
                 .with_finalization_delay(finalization_delay)
                 .with_blocks(failed_node.executor.ledger()),
-            MockStateSyncExecutor::new(
-                restart_builder_state_backend,
-                validators
-                    .0
-                    .iter()
-                    .map(|validator| validator.node_id)
-                    .collect(),
-            ),
+            MockStateSyncExecutor::new(restart_builder_state_backend),
             vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
             vec![],
             TimestamperConfig::default(),
@@ -723,14 +709,7 @@ fn forkpoint_restart_below_all(
                         MockValSetUpdaterNop::new(validators.clone(), epoch_length),
                         MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
                         MockLedger::new(state_backend.clone()),
-                        MockStateSyncExecutor::new(
-                            state_backend,
-                            validators
-                                .0
-                                .iter()
-                                .map(|validator| validator.node_id)
-                                .collect(),
-                        ),
+                        MockStateSyncExecutor::new(state_backend),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                         vec![],
                         TimestamperConfig::default(),
@@ -834,14 +813,7 @@ fn forkpoint_restart_below_all(
                 MockValSetUpdaterNop::new(validators.clone(), epoch_length),
                 MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
                 MockLedger::new(state_backend.clone()),
-                MockStateSyncExecutor::new(
-                    state_backend,
-                    validators
-                        .0
-                        .iter()
-                        .map(|validator| validator.node_id)
-                        .collect(),
-                ),
+                MockStateSyncExecutor::new(state_backend),
                 vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                 vec![],
                 TimestamperConfig::default(),

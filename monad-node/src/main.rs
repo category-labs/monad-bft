@@ -197,18 +197,13 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         bootstrap_nodes.push(peer_id);
     }
 
-    // default statesync peers to bootstrap nodes if none is specified
-    let state_sync_peers = if node_state.node_config.statesync.peers.is_empty() {
-        bootstrap_nodes
-    } else {
-        node_state
-            .node_config
-            .statesync
-            .peers
-            .into_iter()
-            .map(|p| NodeId::new(p.secp256k1_pubkey))
-            .collect()
-    };
+    let state_sync_init_peers = node_state
+        .node_config
+        .statesync
+        .init_peers
+        .into_iter()
+        .map(|p| NodeId::new(p.secp256k1_pubkey))
+        .collect();
 
     // TODO: use PassThruBlockPolicy and NopStateBackend for consensus only mode
     let create_block_policy = || {
@@ -280,7 +275,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         state_sync: StateSync::<SignatureType, SignatureCollectionType>::new(
             vec![statesync_triedb_path.to_string_lossy().to_string()],
             node_state.statesync_sq_thread_cpu,
-            state_sync_peers,
+            state_sync_init_peers,
             node_state
                 .node_config
                 .statesync_max_concurrent_requests
@@ -362,6 +357,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             _phantom: Default::default(),
         },
         whitelisted_statesync_nodes,
+        statesync_expand_to_group: node_state.node_config.statesync.expand_to_group,
         _phantom: PhantomData,
     };
 

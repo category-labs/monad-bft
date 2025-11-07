@@ -475,6 +475,8 @@ where
         ),
     ),
     StartExecution,
+    /// Expand the set of peers the statesync client can sync from
+    ExpandUpstreamPeers(Vec<NodeId<CertificateSignaturePubKey<ST>>>),
 }
 
 #[derive(Debug)]

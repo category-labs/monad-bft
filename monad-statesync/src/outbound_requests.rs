@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{btree_map::Entry, BTreeMap, BTreeSet, HashMap},
+    collections::{btree_map::Entry, BTreeMap, BTreeSet, HashMap, HashSet},
     marker::PhantomData,
     time::{Duration, Instant},
 };
@@ -29,7 +29,11 @@ use rand::seq::IteratorRandom;
 
 pub(crate) struct OutboundRequests<PT: PubKey> {
     // List of trusted peers with their negotiated state sync version
+    // This set can expand
     peers: HashMap<NodeId<PT>, PeerInfo>,
+    // List of peers that have been pruned
+    pruned_peers: HashSet<NodeId<PT>>,
+
     max_parallel_requests: usize,
     request_timeout: Duration,
 
@@ -181,16 +185,17 @@ impl<PT: PubKey> OutboundRequests<PT> {
     pub fn new(
         max_parallel_requests: usize,
         request_timeout: Duration,
-        peers: &[NodeId<PT>],
+        init_peers: &[NodeId<PT>],
     ) -> Self {
         assert!(max_parallel_requests > 0);
         // Initialize peers with the maximum state sync version, it will be negotiated
         // down if not supported by peer.
         Self {
-            peers: peers
+            peers: init_peers
                 .iter()
                 .map(|&peer| (peer, PeerInfo::default()))
                 .collect(),
+            pruned_peers: Default::default(),
             max_parallel_requests,
             request_timeout,
 
@@ -281,6 +286,7 @@ impl<PT: PubKey> OutboundRequests<PT> {
                 bad_version
             );
             self.peers.remove(&from);
+            self.pruned_peers.insert(from);
         } else {
             self.peers.insert(
                 from,
@@ -309,6 +315,7 @@ impl<PT: PubKey> OutboundRequests<PT> {
             "peer does not serve statesync request, removing from peer list"
         );
         self.peers.remove(&from);
+        self.pruned_peers.insert(from);
 
         let requests_to_remove: Vec<_> = self
             .in_flight_requests
@@ -320,6 +327,22 @@ impl<PT: PubKey> OutboundRequests<PT> {
         for request in requests_to_remove {
             self.in_flight_requests.remove(&request);
             self.pending_requests.insert(request);
+        }
+    }
+
+    pub fn expand_upstream_peers(&mut self, new_peers: &[NodeId<PT>]) {
+        let new_peers: Vec<_> = new_peers
+            .iter()
+            .filter(|&peer| !self.peers.contains_key(peer) && !self.pruned_peers.contains(peer))
+            .cloned()
+            .collect();
+        if new_peers.is_empty() {
+            return;
+        }
+        tracing::debug!(?new_peers, "expanding upstream statesync peer set");
+
+        for peer in new_peers {
+            self.peers.insert(peer, PeerInfo::default());
         }
     }
 

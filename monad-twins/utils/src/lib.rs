@@ -110,20 +110,12 @@ where
             )
             .build(),
             MockValSetUpdaterNop::new(
-                validators.validators.clone(),
+                validators.validators,
                 SeqNum(TWINS_STATE_ROOT_DELAY), // ?? val_set_interval?
             ),
             S::TxPoolExecutor::default(),
             MockLedger::new(state_backend.clone()),
-            MockStateSyncExecutor::new(
-                state_backend,
-                validators
-                    .validators
-                    .0
-                    .into_iter()
-                    .map(|v| v.node_id)
-                    .collect(),
-            ),
+            MockStateSyncExecutor::new(state_backend),
             outbound_pipeline,
             vec![],
             TimestamperConfig::default(),

@@ -68,7 +68,7 @@ where
     pub fn new(
         db_paths: Vec<String>,
         sq_thread_cpu: Option<u32>,
-        state_sync_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+        state_sync_init_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
         max_parallel_requests: usize,
         request_timeout: Duration,
         incoming_request_timeout: Duration,
@@ -83,7 +83,7 @@ where
             mode: StateSyncMode::Sync(ffi::StateSync::start(
                 &db_paths,
                 sq_thread_cpu,
-                &state_sync_peers,
+                &state_sync_init_peers,
                 max_parallel_requests,
                 request_timeout,
             )),
@@ -225,6 +225,21 @@ where
                         &self.uds_path,
                         self.incoming_request_timeout,
                     ));
+                    if let Some(waker) = self.waker.take() {
+                        waker.wake();
+                    }
+                }
+                StateSyncCommand::ExpandUpstreamPeers(new_peers) => {
+                    let statesync = match &mut self.mode {
+                        StateSyncMode::Sync(sync) => sync,
+                        StateSyncMode::Live(_) => {
+                            tracing::warn!(
+                                "dropping statesync expand upstream peers, already done syncing"
+                            );
+                            continue;
+                        }
+                    };
+                    statesync.expand_upstream_peers(&new_peers);
                     if let Some(waker) = self.waker.take() {
                         waker.wake();
                     }

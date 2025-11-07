@@ -197,11 +197,7 @@ where
         )
         .expect("uds bind failed"),
         loopback: LoopbackExecutor::default(),
-        state_sync: MockStateSyncExecutor::new(
-            state_backend,
-            // TODO do we test statesync in testground?
-            Vec::new(),
-        ),
+        state_sync: MockStateSyncExecutor::new(state_backend),
         config_loader: MockConfigLoader::default(),
     }
 }
@@ -281,6 +277,7 @@ where
         block_sync_override_peers: Default::default(),
         consensus_config: config.consensus_config,
         whitelisted_statesync_nodes: Default::default(),
+        statesync_expand_to_group: true,
 
         _phantom: PhantomData,
     }

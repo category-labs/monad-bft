@@ -151,6 +151,7 @@ where
                 consensus_config: self.state_config.consensus_config,
 
                 whitelisted_statesync_nodes: Default::default(),
+                statesync_expand_to_group: true,
 
                 _phantom: PhantomData,
             },
@@ -403,6 +404,7 @@ where
             },
 
             whitelisted_statesync_nodes: Default::default(),
+            statesync_expand_to_group: true,
 
             _phantom: PhantomData,
         })

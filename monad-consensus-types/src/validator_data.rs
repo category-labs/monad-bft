@@ -216,6 +216,19 @@ impl<SCT: SignatureCollection> ValidatorSetData<SCT> {
             )
             .collect()
     }
+
+    pub fn get_pubkeys(&self) -> Vec<NodeId<SCT::NodeIdPubKey>> {
+        self.0
+            .iter()
+            .map(
+                |ValidatorData {
+                     node_id,
+                     stake: _,
+                     cert_pubkey: _,
+                 }| *node_id,
+            )
+            .collect()
+    }
 }
 
 pub fn serialize_nodeid<S, SCT>(

@@ -190,19 +190,11 @@ mod test {
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockValSetUpdaterNop::new(validators.validators.clone(), epoch_length),
+                        MockValSetUpdaterNop::new(validators.validators, epoch_length),
                         MockTxPoolExecutor::new(create_block_policy(), state_backend.clone())
                             .with_chain_params(&CHAIN_PARAMS),
                         MockEthLedger::new(state_backend.clone()),
-                        MockStateSyncExecutor::new(
-                            state_backend,
-                            validators
-                                .validators
-                                .0
-                                .into_iter()
-                                .map(|v| v.node_id)
-                                .collect(),
-                        ),
+                        MockStateSyncExecutor::new(state_backend),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(
                             CONSENSUS_DELTA,
                         ))],

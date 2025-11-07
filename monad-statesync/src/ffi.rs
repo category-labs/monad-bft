@@ -155,7 +155,7 @@ impl<PT: PubKey> StateSync<PT> {
     pub fn start(
         db_paths: &[String],
         sq_thread_cpu: Option<u32>,
-        state_sync_peers: &[NodeId<PT>],
+        state_sync_init_peers: &[NodeId<PT>],
         max_parallel_requests: usize,
         request_timeout: Duration,
     ) -> Self {
@@ -338,7 +338,7 @@ impl<PT: PubKey> StateSync<PT> {
             outbound_requests: OutboundRequests::new(
                 max_parallel_requests,
                 request_timeout,
-                state_sync_peers,
+                state_sync_init_peers,
             ),
             current_target: None,
 
@@ -411,6 +411,10 @@ impl<PT: PubKey> StateSync<PT> {
         }
 
         self.outbound_requests.handle_not_whitelisted(from);
+    }
+
+    pub fn expand_upstream_peers(&mut self, new_peers: &[NodeId<PT>]) {
+        self.outbound_requests.expand_upstream_peers(new_peers);
     }
 
     /// An estimate of current sync progress in `Target` units
