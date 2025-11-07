@@ -15,6 +15,7 @@
 
 use std::collections::BTreeMap;
 
+use alloy_consensus::Header;
 use alloy_primitives::Address;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -61,7 +62,7 @@ where
         _seq_num: &SeqNum,
         _is_finalized: bool,
     ) -> Result<EthHeader, StateBackendError> {
-        Err(StateBackendError::NotAvailableYet)
+        Ok(EthHeader(Header::default()))
     }
 
     /// Fetches earliest block from storage backend

@@ -5162,6 +5162,8 @@ dependencies = [
  "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
+ "alloy-signer",
+ "alloy-signer-local",
  "itertools 0.10.5",
  "monad-chain-config",
  "monad-consensus-types",
@@ -5177,8 +5179,10 @@ dependencies = [
  "monad-types",
  "monad-validator",
  "proptest",
+ "rand 0.8.5",
  "rayon",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
