@@ -34,5 +34,9 @@ monad-testutil = { workspace = true }
 monad-types = { workspace = true }
 
 alloy-eips = { workspace = true }
+alloy-signer = { workspace = true }
+alloy-signer-local = { workspace = true }
 itertools = { workspace = true }
 proptest = { workspace = true }
+rand = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
