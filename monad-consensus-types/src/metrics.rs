@@ -161,6 +161,7 @@ metrics!(
             self_payload_response_successful,
             self_payload_response_failed,
             request_timeout,
+            request_failed_no_peers,
             peer_headers_request,
             peer_headers_request_successful,
             peer_headers_request_failed,
