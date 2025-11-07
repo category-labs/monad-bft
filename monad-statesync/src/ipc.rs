@@ -16,6 +16,10 @@
 use std::{
     collections::VecDeque,
     pin::pin,
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
@@ -46,6 +50,19 @@ pub(crate) struct StateSyncIpc<PT: PubKey> {
     /// `completion` gets resolved when the message is serialized + written to the socket
     pub response_rx:
         tokio::sync::mpsc::Receiver<(NodeId<PT>, StateSyncNetworkMessage, oneshot::Sender<()>)>,
+
+    pending_request_len: Arc<AtomicUsize>,
+    is_servicing_request: Arc<AtomicBool>,
+}
+
+impl<PT: PubKey> StateSyncIpc<PT> {
+    pub fn pending_request_len(&self) -> usize {
+        self.pending_request_len.load(Ordering::Relaxed)
+    }
+
+    pub fn is_servicing_request(&self) -> bool {
+        self.is_servicing_request.load(Ordering::Relaxed)
+    }
 }
 
 // Flow:
@@ -84,7 +101,15 @@ impl<PT: PubKey> StateSyncIpc<PT> {
 
         let (request_tx_writer, mut request_tx_reader) = tokio::sync::mpsc::channel(10);
         let (mut response_rx_writer, response_rx_reader) = tokio::sync::mpsc::channel(100);
+
+        let pending_request_len = Arc::new(AtomicUsize::new(0));
+        let pending_request_len_clone = pending_request_len.clone();
+        let is_servicing_request = Arc::new(AtomicBool::new(false));
+        let is_servicing_request_clone = is_servicing_request.clone();
+
         tokio::spawn(async move {
+            let pending_request_len = pending_request_len_clone;
+            let is_servicing_request = is_servicing_request_clone;
             loop {
                 let execution_stream = {
                     let conn_fut = async {
@@ -116,15 +141,24 @@ impl<PT: PubKey> StateSyncIpc<PT> {
                     &mut request_tx_reader,
                     &mut response_rx_writer,
                 );
-                while let Ok(()) = stream_state.poll().await {}
+                while let Ok(()) = stream_state.poll().await {
+                    pending_request_len
+                        .store(stream_state.pending_requests.len(), Ordering::Relaxed);
+                    is_servicing_request
+                        .store(stream_state.wip_response.is_some(), Ordering::Relaxed);
+                }
 
                 tracing::warn!("UDS socket error, retrying");
+                pending_request_len.store(0, Ordering::Relaxed);
+                is_servicing_request.store(false, Ordering::Relaxed);
             }
         });
 
         Self {
             request_tx: request_tx_writer,
             response_rx: response_rx_reader,
+            pending_request_len,
+            is_servicing_request,
         }
     }
 }

@@ -45,6 +45,7 @@ mod outbound_requests;
 const GAUGE_STATESYNC_SYNCING: &str = "monad.statesync.syncing";
 const GAUGE_STATESYNC_PROGRESS_ESTIMATE: &str = "monad.statesync.progress_estimate";
 const GAUGE_STATESYNC_LAST_TARGET: &str = "monad.statesync.last_target";
+const GAUGE_STATESYNC_SERVER_PENDING_REQUESTS: &str = "monad.statesync.server_pending_requests";
 
 pub struct StateSync<ST, SCT>
 where
@@ -286,6 +287,9 @@ where
                 }
             }
             StateSyncMode::Live(execution_ipc) => {
+                this.metrics[GAUGE_STATESYNC_SERVER_PENDING_REQUESTS] =
+                    execution_ipc.pending_request_len() as u64
+                        + execution_ipc.is_servicing_request() as u64;
                 if let Poll::Ready(maybe_response) = execution_ipc.response_rx.poll_recv(cx) {
                     let (to, message, completion) = maybe_response.expect("did StateSyncIpc die?");
                     tracing::debug!(
