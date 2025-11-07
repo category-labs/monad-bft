@@ -436,34 +436,13 @@ where
                 }
             }
 
-            let txn_fee_entry = txn_fees
-                .entry(eth_txn.signer())
-                .and_modify(|e| {
-                    e.max_gas_cost = e
-                        .max_gas_cost
-                        .saturating_add(compute_txn_max_gas_cost(eth_txn, block_base_fee));
-                    e.max_txn_cost = e
-                        .max_txn_cost
-                        .saturating_add(pre_tfm_compute_max_txn_cost(eth_txn));
-                })
-                .or_insert(TxnFee {
-                    first_txn_value: eth_txn.value(),
-                    first_txn_gas: compute_txn_max_gas_cost(eth_txn, block_base_fee),
-                    max_gas_cost: Balance::ZERO,
-                    max_txn_cost: pre_tfm_compute_max_txn_cost(eth_txn),
-                    is_delegated: false,
-                });
-
-            trace!(seq_num = ?header.seq_num, address = ?eth_txn.signer(), nonce = ?eth_txn.nonce(), ?txn_fee_entry, "TxnFeeEntry");
-
+            // we first consider delegation status of authority addresses before dealing with reserve balance
+            // authorizations for the current transaction also count towards has_delegated status in reserve balance
             if eth_txn.is_eip7702() {
                 for recovered_auth in eth_txn.authorizations_7702.iter() {
-                    // skip invalid authority
                     let Some(authority) = recovered_auth.authority() else {
                         continue;
                     };
-
-                    trace!(address =? recovered_auth.address(), nonce =? recovered_auth.nonce(), ?authority, "Signed authority");
 
                     // do not allow system account from sending authorization
                     if authority == SYSTEM_SENDER_ETH_ADDRESS {
@@ -472,8 +451,17 @@ where
 
                     // TODO: currently consensus and execution both treats invalid authorization as has_delegated
                     // this has to be updated together with execution change in the future
-                    let txn_fee = txn_fees.entry(authority).or_default();
-                    txn_fee.is_delegated = true;
+                    txn_fees
+                        .entry(authority)
+                        .and_modify(|e| e.is_delegated = true)
+                        .or_insert(TxnFee {
+                            first_txn_value: Balance::ZERO,
+                            first_txn_gas: Balance::ZERO,
+                            max_gas_cost: Balance::ZERO,
+                            max_txn_cost: Balance::ZERO,
+                            is_delegated: true,
+                            delegation_before_first_txn: true,
+                        });
 
                     if recovered_auth.chain_id() != 0_u64
                         && recovered_auth.chain_id() != chain_config.chain_id()
@@ -481,6 +469,7 @@ where
                         continue;
                     }
 
+                    // update nonce usage for authority
                     match nonce_usages.entry(authority) {
                         BTreeMapEntry::Occupied(nonce_usage) => match nonce_usage.into_mut() {
                             NonceUsage::Known(nonce) => {
@@ -505,6 +494,27 @@ where
                     }
                 }
             }
+
+            let txn_fee_entry = txn_fees
+                .entry(eth_txn.signer())
+                .and_modify(|e| {
+                    e.max_gas_cost = e
+                        .max_gas_cost
+                        .saturating_add(compute_txn_max_gas_cost(eth_txn, block_base_fee));
+                    e.max_txn_cost = e
+                        .max_txn_cost
+                        .saturating_add(pre_tfm_compute_max_txn_cost(eth_txn));
+                })
+                .or_insert(TxnFee {
+                    first_txn_value: eth_txn.value(),
+                    first_txn_gas: compute_txn_max_gas_cost(eth_txn, block_base_fee),
+                    max_gas_cost: Balance::ZERO,
+                    max_txn_cost: pre_tfm_compute_max_txn_cost(eth_txn),
+                    is_delegated: false,
+                    delegation_before_first_txn: false,
+                });
+
+            trace!(seq_num = ?header.seq_num, address = ?eth_txn.signer(), nonce = ?eth_txn.nonce(), ?txn_fee_entry, "TxnFeeEntry");
         }
 
         Ok((system_txns, validated_txns, nonce_usages, txn_fees))
@@ -619,6 +629,67 @@ mod test {
         assert_eq!(validated_txns.len(), 2);
         assert_eq!(validated_txns[0].authorizations_7702.len(), 0);
         assert_eq!(validated_txns[1].authorizations_7702.len(), 2);
+    }
+
+    #[test]
+    fn test_delegation_status_extraction() {
+        let authorization_list = vec![
+            make_signed_authorization(
+                B256::repeat_byte(0xAu8),
+                secret_to_eth_address(B256::repeat_byte(0x1u8)),
+                50,
+            ),
+            make_signed_authorization(
+                B256::repeat_byte(0xCu8),
+                secret_to_eth_address(B256::repeat_byte(0x2u8)),
+                2,
+            ),
+        ];
+        let txn1 = make_legacy_tx(B256::repeat_byte(0xCu8), BASE_FEE, 30_000, 1, 10);
+        let txn2 = make_eip7702_tx(
+            B256::repeat_byte(0xBu8),
+            BASE_FEE,
+            0,
+            1_000_000,
+            2,
+            authorization_list,
+            0,
+        );
+        let txn3 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 1, 10);
+
+        // create a block with the above transactions
+        let txs = vec![txn1, txn2, txn3];
+        let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
+            execution_body: EthBlockBody {
+                transactions: txs,
+                ommers: Vec::new(),
+                withdrawals: Vec::new(),
+            },
+        });
+        let header = get_header(payload.get_id());
+
+        let result =
+            EthBlockValidator::<NopSignature, MockSignatures<NopSignature>>::validate_block_body(
+                &header,
+                &payload,
+                &MockChainConfig::DEFAULT,
+            );
+        assert!(result.is_ok());
+
+        let (_, _, _, txn_fees) = result.unwrap();
+        assert_eq!(txn_fees.len(), 3);
+        let signer_a = secret_to_eth_address(B256::repeat_byte(0xAu8));
+        let signer_b = secret_to_eth_address(B256::repeat_byte(0xBu8));
+        let signer_c = secret_to_eth_address(B256::repeat_byte(0xCu8));
+
+        assert!(txn_fees.get(&signer_a).unwrap().is_delegated);
+        assert!(txn_fees.get(&signer_a).unwrap().delegation_before_first_txn);
+
+        assert!(!txn_fees.get(&signer_b).unwrap().is_delegated);
+        assert!(!txn_fees.get(&signer_b).unwrap().delegation_before_first_txn);
+
+        assert!(txn_fees.get(&signer_c).unwrap().is_delegated);
+        assert!(!txn_fees.get(&signer_c).unwrap().delegation_before_first_txn);
     }
 
     #[test]

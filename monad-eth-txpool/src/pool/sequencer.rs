@@ -240,11 +240,6 @@ impl<'a> ProposalSequencer<'a> {
                         continue;
                     }
 
-                    let Some(account_balance) = account_balances.get_mut(authority) else {
-                        continue;
-                    };
-
-                    account_balance.is_delegated = true;
                     authority_possible_nonce_deltas
                         .entry(*authority)
                         .or_default()

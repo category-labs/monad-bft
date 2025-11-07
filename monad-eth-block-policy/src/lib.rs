@@ -441,11 +441,13 @@ where
             return Ok(());
         }
 
-        let has_emptying_transaction = is_possibly_emptying_transaction(
+        let is_possibly_emptying_transaction = is_possibly_emptying_transaction(
             self.block_seq_num,
             account_balance,
             self.execution_delay,
         );
+        let has_emptying_transaction =
+            is_possibly_emptying_transaction && !block_txn_fees.delegation_before_first_txn;
 
         let mut block_gas_cost = block_txn_fees.max_gas_cost;
         if has_emptying_transaction {
@@ -2381,6 +2383,87 @@ mod test {
             "Block coherency check should have failed: {:?}",
             result
         );
+
+        /////////////////////////////////////////////////////////////////////////////
+        // Case11: Delegation then multi block transactions                       ///
+        /////////////////////////////////////////////////////////////////////////////
+
+        // first tx is a delegation by sender S1
+        let tx1 = make_test_delegation_tx(
+            50000,
+            0,
+            0,
+            S2,
+            HashMap::from([(
+                S1,
+                Authorization {
+                    chain_id: CHAIN_ID,
+                    nonce: 0,
+                    address: Address(FixedBytes([0x11; 20])),
+                },
+            )]),
+        );
+        // second tx is non-emptying transaction (gas cost of full reserve balance)
+        let gas_limit = RESERVE_BALANCE as u64 / BASE_FEE;
+        let tx2 = make_test_tx(gas_limit, 0, 1, S1);
+        // third tx is non emptying transaction (gas cost exceeds reserve balance)
+        let tx3 = make_test_tx(50000, 0, 2, S1);
+
+        let signer1 = tx2.signer();
+        let signer2 = tx1.signer();
+        let txs = BTreeMap::from([(3, vec![tx1.clone(), tx2]), (4, vec![tx3])]);
+
+        // balance of signer at block n-3
+        let gas_cost = 50000 * BASE_FEE as u128;
+        let state_backend = NopStateBackend {
+            balances: BTreeMap::from([
+                (signer1, U256::from(2 * RESERVE_BALANCE)),
+                (signer2, U256::from(gas_cost)),
+            ]),
+            ..Default::default()
+        };
+
+        let result = setup_block_policy_with_txs(
+            txs,
+            vec![signer1, signer2],
+            &state_backend,
+            num_committed_blocks,
+            CoherencyCheckMode::ReserveBalanceCoherency,
+        );
+        assert_eq!(
+            result,
+            Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+                BlockPolicyBlockValidatorError::InsufficientReserveBalance
+            )),
+            "Block coherency check should have failed: {:?}",
+            result
+        );
+
+        // second tx is non-emptying transaction (transfer value of half ether)
+        let tx2 = make_test_tx(50000, HALF_ETHER, 1, S1);
+        // third tx is non emptying transaction
+        let tx3 = make_test_tx(50000, 0, 2, S1);
+
+        let txs = BTreeMap::from([(3, vec![tx1, tx2]), (4, vec![tx3])]);
+
+        // balance of signer at block n-3
+        let gas_cost = 2 * 50000 * BASE_FEE as u128;
+        let state_backend = NopStateBackend {
+            balances: BTreeMap::from([
+                (signer1, U256::from(gas_cost)),
+                (signer2, U256::from(gas_cost)),
+            ]),
+            ..Default::default()
+        };
+
+        let result = setup_block_policy_with_txs(
+            txs,
+            vec![signer1, signer2],
+            &state_backend,
+            num_committed_blocks,
+            CoherencyCheckMode::ReserveBalanceCoherency,
+        );
+        assert!(result.is_ok(), "Block coherency check failed: {:?}", result);
     }
 
     #[test_case(3; "three committed blocks, one extending block")]
@@ -2635,6 +2718,7 @@ mod test {
                             max_gas_cost: Balance::from(90),
                             max_txn_cost: Balance::ZERO,
                             is_delegated: false,
+                            delegation_before_first_txn: false,
                         },
                     ),
                     (
@@ -2645,6 +2729,7 @@ mod test {
                             max_gas_cost: Balance::from(190),
                             max_txn_cost: Balance::ZERO,
                             is_delegated: false,
+                            delegation_before_first_txn: false,
                         },
                     ),
                 ]),
@@ -2677,6 +2762,7 @@ mod test {
                             max_gas_cost: Balance::from(140),
                             max_txn_cost: Balance::ZERO,
                             is_delegated: false,
+                            delegation_before_first_txn: false,
                         },
                     ),
                     (
@@ -2687,6 +2773,7 @@ mod test {
                             max_gas_cost: Balance::from(290),
                             max_txn_cost: Balance::ZERO,
                             is_delegated: false,
+                            delegation_before_first_txn: false,
                         },
                     ),
                 ]),
@@ -2719,6 +2806,7 @@ mod test {
                             max_gas_cost: Balance::from(240),
                             max_txn_cost: Balance::ZERO,
                             is_delegated: false,
+                            delegation_before_first_txn: false,
                         },
                     ),
                     (
@@ -2729,6 +2817,7 @@ mod test {
                             max_gas_cost: Balance::from(0),
                             max_txn_cost: Balance::ZERO,
                             is_delegated: false,
+                            delegation_before_first_txn: false,
                         },
                     ),
                 ]),
@@ -3522,6 +3611,7 @@ mod test {
         first_txn_gas: u64,
         max_gas_cost: u64,
         is_delegated: bool,
+        delegation_before_first_txn: bool,
     ) -> TxnFee {
         TxnFee {
             first_txn_value: Balance::from(first_txn_value),
@@ -3529,6 +3619,7 @@ mod test {
             max_gas_cost: Balance::from(max_gas_cost),
             max_txn_cost: Balance::ZERO,
             is_delegated,
+            delegation_before_first_txn,
         }
     }
 
@@ -3637,7 +3728,7 @@ mod test {
 
         let blk_fees = blk_fees
             .into_iter()
-            .map(|x| make_txn_fees(x.0, x.1, x.2, false))
+            .map(|x| make_txn_fees(x.0, x.1, x.2, false, false))
             .collect_vec();
 
         for (((fees, expect), seqnum), expected_remaining_reserve) in blk_fees
@@ -3770,7 +3861,7 @@ mod test {
         Balance::from(10),
         SeqNum(1),
         false,
-        vec![(11, 1, 1, false)],
+        vec![(11, 1, 1, false, false)],
         vec![SeqNum(4)],
         vec![Balance::from(0_u64)],
         vec![false],
@@ -3781,7 +3872,7 @@ mod test {
         Balance::from(10),
         SeqNum(1),
         true,
-        vec![(11, 1, 1, false)],
+        vec![(11, 1, 1, false, false)],
         vec![SeqNum(4)],
         vec![Balance::from(8_u64)],
         vec![true],
@@ -3792,7 +3883,7 @@ mod test {
         Balance::from(10),
         SeqNum(1),
         true,
-        vec![(11, 1, 1, true)],
+        vec![(11, 1, 1, true, false)],
         vec![SeqNum(4)],
         vec![Balance::from(8_u64)],
         vec![true],
@@ -3803,7 +3894,7 @@ mod test {
         Balance::from(10),
         SeqNum(1),
         true,
-        vec![(11, 1, 1, false)],
+        vec![(11, 1, 1, false, false)],
         vec![SeqNum(4)],
         vec![Balance::from(8_u64)],
         vec![true],
@@ -3814,7 +3905,7 @@ mod test {
         Balance::from(10),
         SeqNum(1),
         false,
-        vec![(11, 1, 10, true), (11, 1, 1, false)],
+        vec![(11, 1, 10, true, false), (11, 1, 1, false, false)],
         vec![SeqNum(4), SeqNum(5)],
         vec![Balance::from(78_u64), Balance::from(76_u64)],
         vec![true, true],
@@ -3825,7 +3916,7 @@ mod test {
         Balance::from(10),
         SeqNum(1),
         false,
-        vec![(11, 1, 2, true), (11, 1, 1, false), (4, 2, 0, false)],
+        vec![(11, 1, 2, true, false), (11, 1, 1, false, false), (4, 2, 0, false, false)],
         vec![SeqNum(1), SeqNum(2), SeqNum(5)],
         vec![Balance::from(7_u64), Balance::from(5_u64), Balance::from(3_u64)],
         vec![true, true, true],
@@ -3836,7 +3927,7 @@ mod test {
         Balance::from(10),
         SeqNum(1),
         false,
-        vec![(11, 1, 2, false), (11, 1, 1, false), (4, 2, 0, false)],
+        vec![(11, 1, 2, false, false), (11, 1, 1, false, false), (4, 2, 0, false, false)],
         vec![SeqNum(1), SeqNum(2), SeqNum(5)],
         vec![Balance::from(7_u64), Balance::from(5_u64), Balance::from(5_u64)],
         vec![false, false, false],
@@ -3848,7 +3939,7 @@ mod test {
         #[case] reserve_balance: Balance,
         #[case] block_seqnum_of_latest_txn: SeqNum,
         #[case] is_delegated: bool,
-        #[case] blk_fees: Vec<(u64, u64, u64, bool)>, // (first_txn_value, first_txn_gas, max_gas_cost, is_delegated)
+        #[case] blk_fees: Vec<(u64, u64, u64, bool, bool)>, // (first_txn_value, first_txn_gas, max_gas_cost, is_delegated, delegation_before_first_txn)
         #[case] txn_block_num: Vec<SeqNum>,
         #[case] expected_remaining_reserve: Vec<Balance>,
         #[case] expected_is_delegated: Vec<bool>,
@@ -3869,7 +3960,7 @@ mod test {
 
         let blk_fees = blk_fees
             .into_iter()
-            .map(|x| make_txn_fees(x.0, x.1, x.2, x.3))
+            .map(|x| make_txn_fees(x.0, x.1, x.2, x.3, x.4))
             .collect_vec();
 
         for ((((fees, expect), seqnum), expected_remaining_reserve), expected_is_delegated) in
