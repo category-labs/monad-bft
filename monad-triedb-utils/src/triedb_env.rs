@@ -568,12 +568,6 @@ struct TriedbEnvMeta {
     cache_manager: CacheManager,
 }
 
-impl TriedbEnvMeta {
-    fn latest_safe_voted(&self) -> SeqNum {
-        self.latest_finalized.0 + SeqNum(1)
-    }
-}
-
 #[derive(Clone)]
 struct BlockCache {
     transactions: Arc<Vec<TxEnvelopeWithSender>>,
@@ -914,17 +908,11 @@ impl Triedb for TriedbEnv {
     }
     fn get_latest_voted_block_key(&self) -> BlockKey {
         let meta = self.meta.lock().expect("mutex poisoned");
-        let latest_safe_voted = meta.latest_safe_voted();
-        match meta.voted_proposals.get(&latest_safe_voted) {
-            Some(block_id) => BlockKey::Proposed(ProposedBlockKey(latest_safe_voted, *block_id)),
-            None => BlockKey::Finalized(meta.latest_finalized),
-        }
+        meta.latest_voted
     }
     fn get_block_key(&self, seq_num: SeqNum) -> Option<BlockKey> {
         let meta = self.meta.lock().expect("mutex poisoned");
-        if seq_num > meta.latest_safe_voted() {
-            None
-        } else if let Some(&voted_block_id) = meta.voted_proposals.get(&seq_num) {
+        if let Some(&voted_block_id) = meta.voted_proposals.get(&seq_num) {
             // there's an unfinalized, voted proposal with this seq_num
             Some(BlockKey::Proposed(ProposedBlockKey(
                 seq_num,

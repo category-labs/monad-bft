@@ -209,25 +209,13 @@ impl ChainStateBuffer {
     pub fn get_latest_finalized_block_num(&self) -> u64 {
         self.finalized.load(Ordering::SeqCst)
     }
-
-    pub fn get_latest_safe_voted_block_num(&self) -> u64 {
-        // eth_call currently floors the voted block to finalized + 1. Do the same here in order to avoid errors in common wallet workflows.
-        let voted = self.voted.load(Ordering::SeqCst);
-        let finalized = self.finalized.load(Ordering::SeqCst);
-
-        if (finalized + 1) <= voted {
-            finalized + 1
-        } else {
-            finalized
-        }
-    }
 }
 
 pub(super) fn block_height_from_tag(buffer: &ChainStateBuffer, tag: &BlockTags) -> u64 {
     match tag {
         BlockTags::Number(n) => n.0,
-        BlockTags::Latest => buffer.get_latest_safe_voted_block_num(),
-        BlockTags::Safe => buffer.get_latest_safe_voted_block_num(),
+        BlockTags::Latest => buffer.get_latest_voted_block_num(),
+        BlockTags::Safe => buffer.get_latest_voted_block_num(),
         BlockTags::Finalized => buffer.get_latest_finalized_block_num(),
     }
 }
