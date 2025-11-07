@@ -626,9 +626,20 @@ pub async fn decode_call_frame<T: Triedb>(
             // If logs were requested and there were none stored with the call
             // frame, this RPC call should be rejected.
             if frame.logs.is_none() {
-                return Err(JsonRpcError::internal_error(
-                    "logs not found in call frame".to_string(),
-                ));
+                if matches!(frame.typ, CallKind::SelfDestruct) {
+                    // Fix up a bug for historical traces, where the logs for
+                    // SELFDESTRUCT were stored as None instead of an empty
+                    // vector, causing decoding to fail if any frames in a call
+                    // contained a selfdestruct. This is safe to do, because if
+                    // the transaction is a historical one where there
+                    // legitimately were no logs stored, then one of the other
+                    // frames will cause decoding to fail on a None log entry.
+                    frame.logs = Some(Vec::new());
+                } else {
+                    return Err(JsonRpcError::internal_error(
+                        "logs not found in call frame".to_string(),
+                    ));
+                }
             }
         } else {
             // Logs are stored in TrieDB by default; if the RPC request didn't ask for
