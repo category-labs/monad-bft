@@ -240,11 +240,11 @@ impl<'a> ProposalSequencer<'a> {
                         continue;
                     }
 
-                    let Some(account_balance) = account_balances.get_mut(authority) else {
+                    if !account_balances.contains_key(&authority) {
+                        // Authority not used during sequencing, no need to track possible nonces
                         continue;
-                    };
+                    }
 
-                    account_balance.is_delegated = true;
                     authority_possible_nonce_deltas
                         .entry(*authority)
                         .or_default()

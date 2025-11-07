@@ -356,6 +356,7 @@ pub struct TxnFee {
     pub max_gas_cost: Balance,
     pub max_txn_cost: Balance, // Used for pre TFM validation
     pub is_delegated: bool,
+    pub delegation_before_first_txn: bool,
 }
 
 pub type TxnFees = BTreeMap<Address, TxnFee>;
