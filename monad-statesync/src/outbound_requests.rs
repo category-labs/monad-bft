@@ -160,7 +160,7 @@ impl<PT: PubKey> OutboundRequests<PT> {
     pub fn new(
         max_parallel_requests: usize,
         request_timeout: Duration,
-        peers: Vec<NodeId<PT>>,
+        peers: &[NodeId<PT>],
     ) -> Self {
         assert!(max_parallel_requests > 0);
         // Initialize peers with the maximum state sync version, it will be negotiated
@@ -183,6 +183,10 @@ impl<PT: PubKey> OutboundRequests<PT> {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.pending_requests.is_empty() && self.in_flight_requests.is_empty()
+    }
+
+    pub fn is_trusted_peer(&self, peer: &NodeId<PT>) -> bool {
+        self.peers.contains_key(peer)
     }
 
     pub fn clear_prefix_peers(&mut self) {
