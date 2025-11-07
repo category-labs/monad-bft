@@ -69,6 +69,11 @@ size_t triedb_poll(triedb *, bool blocking, size_t count);
 int triedb_finalize(bytes value);
 
 // returns MAX if doesn't exist
+uint64_t triedb_latest_proposed_block(triedb *);
+// returns NULL if doesn't exist
+// triedb_finalize must be called if not null
+bytes triedb_latest_proposed_block_id(triedb *);
+// returns MAX if doesn't exist
 uint64_t triedb_latest_voted_block(triedb *);
 // returns NULL if doesn't exist
 // triedb_finalize must be called if not null
@@ -99,9 +104,10 @@ typedef struct validator_set
 
 #pragma pack(pop)
 
-void free_valset(validator_set*);
+void free_valset(validator_set *);
 
-validator_set* read_valset(triedb *, size_t block_num, uint64_t requested_epoch);
+validator_set *
+read_valset(triedb *, size_t block_num, uint64_t requested_epoch);
 
 #ifdef __cplusplus
 }

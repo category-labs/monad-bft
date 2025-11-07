@@ -414,6 +414,33 @@ impl TriedbHandle {
         };
     }
 
+    pub fn latest_proposed_block(&self) -> Option<u64> {
+        let maybe_latest_proposed_block =
+            unsafe { bindings::triedb_latest_proposed_block(self.db_ptr) };
+        if maybe_latest_proposed_block == u64::MAX {
+            None
+        } else {
+            Some(maybe_latest_proposed_block)
+        }
+    }
+
+    /// Note that this *can* return an inconsistent blockid if concurrently written to
+    pub fn latest_proposed_block_id(&self) -> Option<[u8; 32]> {
+        let maybe_latest_proposed_block_id =
+            unsafe { bindings::triedb_latest_proposed_block_id(self.db_ptr) };
+        if maybe_latest_proposed_block_id.is_null() {
+            None
+        } else {
+            let id: [u8; 32] = unsafe {
+                std::slice::from_raw_parts(maybe_latest_proposed_block_id, 32)
+                    .try_into()
+                    .unwrap()
+            };
+            unsafe { bindings::triedb_finalize(maybe_latest_proposed_block_id) };
+            Some(id)
+        }
+    }
+
     pub fn latest_voted_block(&self) -> Option<u64> {
         let maybe_latest_voted_block = unsafe { bindings::triedb_latest_voted_block(self.db_ptr) };
         if maybe_latest_voted_block == u64::MAX {

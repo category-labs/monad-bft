@@ -77,6 +77,16 @@ impl TriedbReader {
         Some(BlockId(Hash(latest_voted)))
     }
 
+    pub fn get_latest_proposed_block(&self) -> Option<SeqNum> {
+        let latest_proposed = self.handle.latest_proposed_block()?;
+        Some(SeqNum(latest_proposed))
+    }
+
+    pub fn get_latest_proposed_block_id(&self) -> Option<BlockId> {
+        let latest_proposed = self.handle.latest_proposed_block_id()?;
+        Some(BlockId(Hash(latest_proposed)))
+    }
+
     pub fn get_latest_finalized_block(&self) -> Option<SeqNum> {
         let latest_finalized = self.handle.latest_finalized_block()?;
         Some(SeqNum(latest_finalized))

@@ -401,6 +401,24 @@ int triedb_finalize(bytes value)
     return 0;
 }
 
+uint64_t triedb_latest_proposed_block(triedb *db)
+{
+    uint64_t latest_proposed_version = db->db_.get_latest_proposed_version();
+    return latest_proposed_version;
+}
+
+bytes triedb_latest_proposed_block_id(triedb *db)
+{
+    monad::bytes32_t latest_proposed_block_id =
+        db->db_.get_latest_proposed_block_id();
+    if (latest_proposed_block_id == monad::bytes32_t{}) {
+        return nullptr;
+    }
+    auto id = new uint8_t[32];
+    std::copy_n(latest_proposed_block_id.bytes, 32, id);
+    return id;
+}
+
 uint64_t triedb_latest_voted_block(triedb *db)
 {
     uint64_t latest_voted_version = db->db_.get_latest_voted_version();
