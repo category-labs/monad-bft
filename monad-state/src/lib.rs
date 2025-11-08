@@ -54,11 +54,11 @@ use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor_glue::{
-    BlockSyncEvent, ClearMetrics, Command, ConfigEvent, ConfigReloadCommand, ConsensusEvent,
-    ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers, LedgerCommand,
-    MempoolEvent, Message, MonadEvent, ReadCommand, ReloadConfig, RouterCommand, StateSyncCommand,
-    StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest, TxPoolCommand, ValSetCommand,
-    ValidatorEvent, WriteCommand,
+    BlockSyncEvent, ClearMetrics, Command, ConfigEvent, ConfigFileCommand, ConfigReloadCommand,
+    ConsensusEvent, ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers,
+    LedgerCommand, MempoolEvent, Message, MonadEvent, ReadCommand, ReloadConfig, RouterCommand,
+    StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest, TxPoolCommand,
+    ValSetCommand, ValidatorEvent, WriteCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{
@@ -77,13 +77,11 @@ use monad_validator::{
 };
 
 use self::{
-    blocksync::BlockSyncChildState, consensus::ConsensusChildState, epoch::EpochChildState,
-    statesync::BlockBuffer,
+    blocksync::BlockSyncChildState, consensus::ConsensusChildState, statesync::BlockBuffer,
 };
 
 mod blocksync;
 mod consensus;
-mod epoch;
 mod statesync;
 
 pub(crate) fn handle_validation_error(e: validation::Error, metrics: &mut Metrics) {
@@ -1030,13 +1028,21 @@ where
                     .collect::<Vec<_>>()
             }
 
-            MonadEvent::ValidatorEvent(validator_event) => {
-                let validator_cmds = EpochChildState::new(self).update(validator_event);
-
-                validator_cmds
-                    .into_iter()
-                    .flat_map(Into::<Vec<Command<_, _, _, _, _, _, _, _, _>>>::into)
-                    .collect::<Vec<_>>()
+            MonadEvent::ValidatorEvent(ValidatorEvent::UpdateValidators(validator_set_data)) => {
+                self.val_epoch_map.insert(
+                    validator_set_data.epoch,
+                    validator_set_data.validators.get_stakes(),
+                    ValidatorMapping::new(validator_set_data.validators.get_cert_pubkeys()),
+                );
+                vec![
+                    Command::RouterCommand(RouterCommand::AddEpochValidatorSet {
+                        epoch: validator_set_data.epoch,
+                        validator_set: validator_set_data.validators.get_stakes(),
+                    }),
+                    Command::ConfigFileCommand(ConfigFileCommand::ValidatorSetData {
+                        validator_set_data,
+                    }),
+                ]
             }
 
             MonadEvent::MempoolEvent(event) => {
