@@ -166,10 +166,6 @@ where
     /// Excludes self node id
     override_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
 
-    /// Excludes self node id
-    /// Expiry NodeId -> round
-    secondary_raptorcast_peers: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Round>,
-
     self_node_id: NodeId<CertificateSignaturePubKey<ST>>,
 
     rng: ChaCha8Rng,
@@ -210,7 +206,6 @@ where
             self_completed_headers_requests: Default::default(),
             self_request_mode: BlockSyncSelfRequester::StateSync,
             override_peers: Default::default(),
-            secondary_raptorcast_peers: Default::default(),
             self_node_id,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
@@ -228,30 +223,6 @@ where
             .filter(|peer| peer != &self.self_node_id)
             .collect();
         self.override_peers = peers_excl_self;
-    }
-
-    pub fn set_secondary_raptorcast_peers(
-        &mut self,
-        secondary_raptorcast_peers_inc_self: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
-        end_round: Round,
-        current_round: Round,
-    ) {
-        let peers_excl_self: Vec<_> = secondary_raptorcast_peers_inc_self
-            .into_iter()
-            .filter(|peer| peer != &self.self_node_id)
-            .collect();
-
-        // Trim peers that have expired
-        self.secondary_raptorcast_peers
-            .retain(|_, expiry_round| *expiry_round > current_round);
-
-        // Push back existing peer's expiry round, or insert new if not found
-        for peer in peers_excl_self {
-            self.secondary_raptorcast_peers
-                .entry(peer)
-                .and_modify(|expiry| *expiry = (*expiry).max(end_round))
-                .or_insert(end_round);
-        }
     }
 
     fn clear_self_requests(&mut self) {
@@ -302,6 +273,7 @@ where
     pub current_epoch: Epoch,
     pub epoch_manager: &'a EpochManager,
     pub val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
+    pub secondary_raptorcast_peers: &'a BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Round>,
 }
 
 impl<ST, SCT, EPT, BPT, SBT, VTF, CCT, CRT>
@@ -493,7 +465,7 @@ where
         current_epoch: Epoch,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         override_peers: &[NodeId<CertificateSignaturePubKey<ST>>],
-        secondary_raptorcast_peers: &BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Round>,
+        secondary_raptorcast_peers: impl Iterator<Item = NodeId<CertificateSignaturePubKey<ST>>>,
         rng: &mut ChaCha8Rng,
     ) -> Option<NodeId<CertificateSignaturePubKey<ST>>> {
         if !override_peers.is_empty() {
@@ -513,12 +485,12 @@ where
 
         if !self_is_validator {
             // Choose a random peer from secondary_raptorcast_peers
-            let candidate_peers: Vec<_> = secondary_raptorcast_peers.keys().collect();
+            let candidate_peers: Vec<_> = secondary_raptorcast_peers.collect();
             debug!(
                 "blocksync: pick_peer among {} secondary raptorcast peers",
                 candidate_peers.len()
             );
-            candidate_peers.choose(rng).copied().copied()
+            candidate_peers.choose(rng).copied()
         } else {
             // stake-weighted choose from validators
             let members = validators
@@ -753,7 +725,7 @@ where
                         self.current_epoch,
                         self.val_epoch_map,
                         &self.block_sync.override_peers,
-                        &self.block_sync.secondary_raptorcast_peers,
+                        self.secondary_raptorcast_peers.keys().copied(),
                         &mut self.block_sync.rng,
                     );
                     self_request.to = maybe_to;
@@ -872,7 +844,7 @@ where
                         self.current_epoch,
                         self.val_epoch_map,
                         &self.block_sync.override_peers,
-                        &self.block_sync.secondary_raptorcast_peers,
+                        self.secondary_raptorcast_peers.keys().copied(),
                         &mut self.block_sync.rng,
                     );
                     self_request.to = maybe_to;
@@ -1084,7 +1056,7 @@ where
                         self.current_epoch,
                         self.val_epoch_map,
                         &self.block_sync.override_peers,
-                        &self.block_sync.secondary_raptorcast_peers,
+                        self.secondary_raptorcast_peers.keys().copied(),
                         &mut self.block_sync.rng,
                     );
                     self_request.to = maybe_to;
@@ -1128,7 +1100,7 @@ where
                         self.current_epoch,
                         self.val_epoch_map,
                         &self.block_sync.override_peers,
-                        &self.block_sync.secondary_raptorcast_peers,
+                        self.secondary_raptorcast_peers.keys().copied(),
                         &mut self.block_sync.rng,
                     );
                     self_request.to = maybe_to;
@@ -1243,6 +1215,7 @@ mod test {
         current_epoch: Epoch,
         epoch_manager: EpochManager,
         val_epoch_map: ValidatorsEpochMapping<VTF, SCT>,
+        secondary_raptorcast_peers: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Round>,
 
         keys: Vec<ST::KeyPairType>,
         cert_keys: Vec<SignatureCollectionKeyPairType<SCT>>,
@@ -1303,6 +1276,7 @@ mod test {
                 current_epoch: self.current_epoch,
                 epoch_manager: &self.epoch_manager,
                 val_epoch_map: &self.val_epoch_map,
+                secondary_raptorcast_peers: &self.secondary_raptorcast_peers,
             }
         }
 
@@ -1491,15 +1465,26 @@ mod test {
 
         fn set_secondary_raptorcast_peers(
             &mut self,
-            secondary_raptorcast_peers_inc_self: Vec<NodeId<NopPubKey>>,
+            confirm_group_peers: Vec<NodeId<NopPubKey>>,
             expiry_round: Round,
             current_round: Round,
         ) {
-            self.block_sync.set_secondary_raptorcast_peers(
-                secondary_raptorcast_peers_inc_self,
-                expiry_round,
-                current_round,
-            );
+            let peers_excl_self: Vec<_> = confirm_group_peers
+                .into_iter()
+                .filter(|peer| peer != &self.self_node_id)
+                .collect();
+
+            // Trim peers that have expired
+            self.secondary_raptorcast_peers
+                .retain(|_, expiry_round| *expiry_round > current_round);
+
+            // Push back existing peer's expiry round, or insert new if not found
+            for peer in peers_excl_self {
+                self.secondary_raptorcast_peers
+                    .entry(peer)
+                    .and_modify(|expiry| *expiry = (*expiry).max(expiry_round))
+                    .or_insert(expiry_round);
+            }
         }
     }
 
@@ -1556,6 +1541,7 @@ mod test {
             current_epoch: Epoch(1),
             epoch_manager,
             val_epoch_map,
+            secondary_raptorcast_peers: Default::default(),
 
             keys,
             cert_keys,
@@ -1617,6 +1603,7 @@ mod test {
             current_epoch: Epoch(1),
             epoch_manager,
             val_epoch_map,
+            secondary_raptorcast_peers: Default::default(),
 
             keys,
             cert_keys,
@@ -2619,11 +2606,10 @@ mod test {
         let override_peers = ctx.block_sync.override_peers.clone();
 
         ctx.set_secondary_raptorcast_peers(vec![sr1, sr2], Round(4), Round(2));
-        let ws = ctx.wrapped_state();
 
-        let current_epoch = ws.current_epoch;
-        let val_epoch_map = ws.val_epoch_map;
-        let secondary_raptorcast_peers = ws.block_sync.secondary_raptorcast_peers.clone();
+        let current_epoch = ctx.current_epoch;
+        let val_epoch_map = &ctx.val_epoch_map;
+        let secondary_raptorcast_peers = &ctx.secondary_raptorcast_peers.clone();
 
         let mut pickings = BTreeMap::<NodeId<PubKeyType>, usize>::new();
 
@@ -2635,7 +2621,7 @@ mod test {
                 current_epoch,
                 val_epoch_map,
                 &override_peers,
-                &secondary_raptorcast_peers,
+                secondary_raptorcast_peers.keys().cloned(),
                 &mut rng,
             )
             .expect("overrides nonempty");
@@ -2673,11 +2659,10 @@ mod test {
         let override_peers = ctx.block_sync.override_peers.clone();
 
         ctx.set_secondary_raptorcast_peers(vec![sr1, sr2], Round(4), Round(2));
-        let ws = ctx.wrapped_state();
 
-        let current_epoch = ws.current_epoch;
-        let val_epoch_map = ws.val_epoch_map;
-        let secondary_raptorcast_peers = ws.block_sync.secondary_raptorcast_peers.clone();
+        let current_epoch = ctx.current_epoch;
+        let val_epoch_map = &ctx.val_epoch_map;
+        let secondary_raptorcast_peers = &ctx.secondary_raptorcast_peers;
 
         let mut pickings = BTreeMap::<NodeId<PubKeyType>, usize>::new();
 
@@ -2689,7 +2674,7 @@ mod test {
                 current_epoch,
                 val_epoch_map,
                 &override_peers,
-                &secondary_raptorcast_peers,
+                secondary_raptorcast_peers.keys().cloned(),
                 &mut rng,
             )
             .expect("overrides nonempty");
@@ -2743,11 +2728,10 @@ mod test {
         let override_peers = ctx.block_sync.override_peers.clone();
 
         ctx.set_secondary_raptorcast_peers(vec![sr1, sr2, sr3], Round(4), Round(2));
-        let ws = ctx.wrapped_state();
 
-        let current_epoch = ws.current_epoch;
-        let val_epoch_map = ws.val_epoch_map;
-        let secondary_raptorcast_peers = ws.block_sync.secondary_raptorcast_peers.clone();
+        let current_epoch = ctx.current_epoch;
+        let val_epoch_map = &ctx.val_epoch_map;
+        let secondary_raptorcast_peers = &ctx.secondary_raptorcast_peers;
 
         let mut pickings = BTreeMap::<NodeId<PubKeyType>, usize>::new();
 
@@ -2757,7 +2741,7 @@ mod test {
                 current_epoch,
                 val_epoch_map,
                 &override_peers,
-                &secondary_raptorcast_peers,
+                secondary_raptorcast_peers.keys().cloned(),
                 &mut rng,
             )
             .expect("secondary raptorcast peers nonempty");
@@ -2782,11 +2766,9 @@ mod test {
         ctx.set_override_peers(vec![]);
         let override_peers = ctx.block_sync.override_peers.clone();
 
-        let ws = ctx.wrapped_state();
-
-        let current_epoch = ws.current_epoch;
-        let val_epoch_map = ws.val_epoch_map;
-        let secondary_raptorcast_peers = ws.block_sync.secondary_raptorcast_peers.clone();
+        let current_epoch = ctx.current_epoch;
+        let val_epoch_map = &ctx.val_epoch_map;
+        let secondary_raptorcast_peers = &ctx.secondary_raptorcast_peers;
 
         // Pick a blocksync peer while we have specific overrides.
         // Should only ever pick v2, because self is v1
@@ -2796,7 +2778,7 @@ mod test {
                 current_epoch,
                 val_epoch_map,
                 &override_peers,
-                &secondary_raptorcast_peers,
+                secondary_raptorcast_peers.keys().cloned(),
                 &mut rng,
             )
             .expect("validators nonempty");
@@ -2818,11 +2800,9 @@ mod test {
         ctx.set_override_peers(vec![]);
         let override_peers = ctx.block_sync.override_peers.clone();
 
-        let ws = ctx.wrapped_state();
-
-        let current_epoch = ws.current_epoch;
-        let val_epoch_map = ws.val_epoch_map;
-        let secondary_raptorcast_peers = ws.block_sync.secondary_raptorcast_peers.clone();
+        let current_epoch = ctx.current_epoch;
+        let val_epoch_map = &ctx.val_epoch_map;
+        let secondary_raptorcast_peers = &ctx.secondary_raptorcast_peers;
 
         for _ in 0..100 {
             let maybe_pick_nodeid = TestBlockSyncWrap::pick_peer(
@@ -2830,7 +2810,7 @@ mod test {
                 current_epoch,
                 val_epoch_map,
                 &override_peers,
-                &secondary_raptorcast_peers,
+                secondary_raptorcast_peers.keys().cloned(),
                 &mut rng,
             );
             assert!(maybe_pick_nodeid.is_none());
@@ -2873,9 +2853,7 @@ mod test {
         let override_peers = ctx.block_sync.override_peers.clone();
         assert_eq!(override_peers.len(), 0);
 
-        let ws = ctx.wrapped_state();
-        let current_epoch = ws.current_epoch;
-        let val_epoch_map = ws.val_epoch_map;
+        let current_epoch = ctx.current_epoch;
 
         //=============================================
         // Round inserts:
@@ -2917,26 +2895,25 @@ mod test {
         let maybe_pick = TestBlockSyncWrap::pick_peer(
             &self_node_id,
             current_epoch,
-            val_epoch_map,
+            &ctx.val_epoch_map,
             &override_peers,
-            &ws.block_sync.secondary_raptorcast_peers,
+            ctx.secondary_raptorcast_peers.keys().cloned(),
             &mut rng,
         );
         assert!(maybe_pick.is_none());
 
         // Round 2
         {
-            ws.block_sync
-                .set_secondary_raptorcast_peers(vec![p1, p2], Round(12), Round(2));
+            ctx.set_secondary_raptorcast_peers(vec![p1, p2], Round(12), Round(2));
 
             let mut pickings = BTreeMap::<NodeId<PubKeyType>, usize>::new();
             for _ in 0..100 {
                 let pick_nodeid = TestBlockSyncWrap::pick_peer(
                     &self_node_id,
                     current_epoch,
-                    val_epoch_map,
+                    &ctx.val_epoch_map,
                     &override_peers,
-                    &ws.block_sync.secondary_raptorcast_peers,
+                    ctx.secondary_raptorcast_peers.keys().cloned(),
                     &mut rng,
                 )
                 .expect("secondary raptorcast peers nonempty");
@@ -2947,17 +2924,16 @@ mod test {
 
         // Round 3
         {
-            ws.block_sync
-                .set_secondary_raptorcast_peers(vec![p2, p3], Round(13), Round(3));
+            ctx.set_secondary_raptorcast_peers(vec![p2, p3], Round(13), Round(3));
 
             let mut pickings = BTreeMap::<NodeId<PubKeyType>, usize>::new();
             for _ in 0..100 {
                 let pick_nodeid = TestBlockSyncWrap::pick_peer(
                     &self_node_id,
                     current_epoch,
-                    val_epoch_map,
+                    &ctx.val_epoch_map,
                     &override_peers,
-                    &ws.block_sync.secondary_raptorcast_peers,
+                    ctx.secondary_raptorcast_peers.keys().cloned(),
                     &mut rng,
                 )
                 .expect("secondary raptorcast peers nonempty");
@@ -2968,17 +2944,16 @@ mod test {
 
         // Round 10
         {
-            ws.block_sync
-                .set_secondary_raptorcast_peers(vec![p4], Round(17), Round(10));
+            ctx.set_secondary_raptorcast_peers(vec![p4], Round(17), Round(10));
 
             let mut pickings = BTreeMap::<NodeId<PubKeyType>, usize>::new();
             for _ in 0..100 {
                 let pick_nodeid = TestBlockSyncWrap::pick_peer(
                     &self_node_id,
                     current_epoch,
-                    val_epoch_map,
+                    &ctx.val_epoch_map,
                     &override_peers,
-                    &ws.block_sync.secondary_raptorcast_peers,
+                    ctx.secondary_raptorcast_peers.keys().cloned(),
                     &mut rng,
                 )
                 .expect("secondary raptorcast peers nonempty");
@@ -2992,17 +2967,16 @@ mod test {
 
         // Round 15
         {
-            ws.block_sync
-                .set_secondary_raptorcast_peers(vec![p1, p5], Round(22), Round(15));
+            ctx.set_secondary_raptorcast_peers(vec![p1, p5], Round(22), Round(15));
 
             let mut pickings = BTreeMap::<NodeId<PubKeyType>, usize>::new();
             for _ in 0..100 {
                 let pick_nodeid = TestBlockSyncWrap::pick_peer(
                     &self_node_id,
                     current_epoch,
-                    val_epoch_map,
+                    &ctx.val_epoch_map,
                     &override_peers,
-                    &ws.block_sync.secondary_raptorcast_peers,
+                    ctx.secondary_raptorcast_peers.keys().cloned(),
                     &mut rng,
                 )
                 .expect("secondary raptorcast peers nonempty");

@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{marker::PhantomData, time::Duration};
+use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
 
 use monad_blocksync::blocksync::{
     BlockCache, BlockSync, BlockSyncCommand, BlockSyncSelfRequester, BlockSyncWrapper,
@@ -30,7 +30,7 @@ use monad_executor_glue::{
     RouterCommand, StateSyncEvent, TimeoutVariant, TimerCommand,
 };
 use monad_state_backend::StateBackend;
-use monad_types::{ExecutionProtocol, NodeId, RouterTarget};
+use monad_types::{ExecutionProtocol, NodeId, Round, RouterTarget};
 use monad_validator::{
     epoch_manager::EpochManager, signature_collection::SignatureCollection,
     validator_set::ValidatorSetTypeFactory, validators_epoch_mapping::ValidatorsEpochMapping,
@@ -56,6 +56,7 @@ where
     consensus: &'a ConsensusMode<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
     epoch_manager: &'a EpochManager,
     val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
+    secondary_raptorcast_peers: &'a BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Round>,
     delta: &'a Duration,
     nodeid: &'a NodeId<CertificateSignaturePubKey<ST>>,
 
@@ -85,6 +86,7 @@ where
             consensus: &monad_state.consensus,
             epoch_manager: &monad_state.epoch_manager,
             val_epoch_map: &monad_state.val_epoch_map,
+            secondary_raptorcast_peers: &monad_state.secondary_raptorcast_peers,
             delta: &monad_state.consensus_config.delta,
             nodeid: &monad_state.nodeid,
             metrics: &mut monad_state.metrics,
@@ -111,6 +113,7 @@ where
             current_epoch: self.consensus.current_epoch(),
             epoch_manager: self.epoch_manager,
             val_epoch_map: self.val_epoch_map,
+            secondary_raptorcast_peers: self.secondary_raptorcast_peers,
         };
 
         let cmds = match event {
@@ -135,17 +138,6 @@ where
                 block_sync_wrapper.handle_peer_response(sender, response)
             }
             BlockSyncEvent::Timeout(request) => block_sync_wrapper.handle_timeout(request),
-            BlockSyncEvent::SecondaryRaptorcastPeersUpdate {
-                expiry_round,
-                confirm_group_peers,
-            } => {
-                self.block_sync.set_secondary_raptorcast_peers(
-                    confirm_group_peers,
-                    expiry_round,
-                    self.consensus.current_round(),
-                );
-                Vec::new()
-            }
         };
         cmds.into_iter()
             .map(|command| WrappedBlockSyncCommand {

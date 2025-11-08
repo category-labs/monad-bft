@@ -409,6 +409,9 @@ where
     epoch_manager: EpochManager,
     /// Maps the epoch number to validator stakes and certificate pubkeys
     val_epoch_map: ValidatorsEpochMapping<VTF, SCT>,
+    /// Excludes self node id
+    /// Expiry NodeId -> round
+    secondary_raptorcast_peers: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Round>,
 
     block_timestamp: BlockTimestamp,
     block_validator: BVT,
@@ -914,6 +917,7 @@ where
             leader_election: self.leader_election,
             epoch_manager,
             val_epoch_map,
+            secondary_raptorcast_peers: Default::default(),
 
             block_timestamp,
             block_validator: self.block_validator,
@@ -1234,6 +1238,30 @@ where
                     })]
                 }
             },
+            MonadEvent::SecondaryRaptorcastPeersUpdate {
+                expiry_round,
+                confirm_group_peers,
+            } => {
+                let peers_excl_self: Vec<_> = confirm_group_peers
+                    .into_iter()
+                    .filter(|peer| peer != &self.nodeid)
+                    .collect();
+
+                let current_round = self.consensus.current_round();
+
+                // Trim peers that have expired
+                self.secondary_raptorcast_peers
+                    .retain(|_, expiry_round| *expiry_round > current_round);
+
+                // Push back existing peer's expiry round, or insert new if not found
+                for peer in peers_excl_self {
+                    self.secondary_raptorcast_peers
+                        .entry(peer)
+                        .and_modify(|expiry| *expiry = (*expiry).max(expiry_round))
+                        .or_insert(expiry_round);
+                }
+                Vec::new()
+            }
         }
     }
 

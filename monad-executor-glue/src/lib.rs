@@ -894,11 +894,6 @@ where
     SelfResponse {
         response: BlockSyncResponseMessage<ST, SCT, EPT>,
     },
-    /// Events for secondary raptorcast updates
-    SecondaryRaptorcastPeersUpdate {
-        expiry_round: Round,
-        confirm_group_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
-    },
 }
 
 impl<ST, SCT, EPT> Debug for BlockSyncEvent<ST, SCT, EPT>
@@ -938,14 +933,6 @@ where
             Self::SelfResponse { response } => f
                 .debug_struct("BlockSyncSelfResponse")
                 .field("response", response)
-                .finish(),
-            Self::SecondaryRaptorcastPeersUpdate {
-                expiry_round,
-                confirm_group_peers,
-            } => f
-                .debug_struct("BlockSyncSecondaryRaptorcastEvent")
-                .field("expiry_round", expiry_round)
-                .field("confirm_group_peers", confirm_group_peers)
                 .finish(),
             Self::Timeout(request) => f.debug_struct("Timeout").field("request", request).finish(),
         }
@@ -988,13 +975,6 @@ where
             }
             Self::SelfResponse { response } => {
                 let enc: [&dyn Encodable; 2] = [&6u8, &response];
-                encode_list::<_, dyn Encodable>(&enc, out);
-            }
-            Self::SecondaryRaptorcastPeersUpdate {
-                expiry_round,
-                confirm_group_peers,
-            } => {
-                let enc: [&dyn Encodable; 3] = [&7u8, &expiry_round, &confirm_group_peers];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
         }
@@ -1042,14 +1022,6 @@ where
             6 => {
                 let response = BlockSyncResponseMessage::<ST, SCT, EPT>::decode(&mut payload)?;
                 Ok(Self::SelfResponse { response })
-            }
-            7 => {
-                let expiry_round = Round::decode(&mut payload)?;
-                let confirm_group_peers = Vec::<NodeId<SCT::NodeIdPubKey>>::decode(&mut payload)?;
-                Ok(Self::SecondaryRaptorcastPeersUpdate {
-                    expiry_round,
-                    confirm_group_peers,
-                })
             }
             _ => Err(alloy_rlp::Error::Custom(
                 "failed to decode unknown BlockSyncEvent",
@@ -2038,6 +2010,11 @@ where
     StateSyncEvent(StateSyncEvent<ST, SCT, EPT>),
     /// Config updates
     ConfigEvent(ConfigEvent<ST, SCT>),
+    /// Secondary raptorcast updates
+    SecondaryRaptorcastPeersUpdate {
+        expiry_round: Round,
+        confirm_group_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
+    },
 }
 
 impl<ST, SCT, EPT> MonadEvent<ST, SCT, EPT>
@@ -2090,6 +2067,13 @@ where
                 MonadEvent::StateSyncEvent(event)
             }
             MonadEvent::ConfigEvent(event) => MonadEvent::ConfigEvent(event.clone()),
+            MonadEvent::SecondaryRaptorcastPeersUpdate {
+                expiry_round,
+                confirm_group_peers,
+            } => MonadEvent::SecondaryRaptorcastPeersUpdate {
+                expiry_round: *expiry_round,
+                confirm_group_peers: confirm_group_peers.clone(),
+            },
         }
     }
 }
@@ -2134,6 +2118,13 @@ where
                 let enc: [&dyn Encodable; 2] = [&8u8, &event];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
+            Self::SecondaryRaptorcastPeersUpdate {
+                expiry_round,
+                confirm_group_peers,
+            } => {
+                let enc: [&dyn Encodable; 3] = [&9u8, &expiry_round, &confirm_group_peers];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
         }
     }
 }
@@ -2169,6 +2160,14 @@ where
             8 => Ok(Self::ConfigEvent(ConfigEvent::<ST, SCT>::decode(
                 &mut payload,
             )?)),
+            9 => {
+                let expiry_round = Round::decode(&mut payload)?;
+                let confirm_group_peers = Vec::<NodeId<SCT::NodeIdPubKey>>::decode(&mut payload)?;
+                Ok(Self::SecondaryRaptorcastPeersUpdate {
+                    expiry_round,
+                    confirm_group_peers,
+                })
+            }
             _ => Err(alloy_rlp::Error::Custom(
                 "failed to decode unknown MonadEvent",
             )),
@@ -2239,6 +2238,9 @@ where
             MonadEvent::TimestampUpdateEvent(t) => format!("MempoolEvent::TimestampUpdate: {t}"),
             MonadEvent::StateSyncEvent(_) => "STATESYNC".to_string(),
             MonadEvent::ConfigEvent(_) => "CONFIGEVENT".to_string(),
+            MonadEvent::SecondaryRaptorcastPeersUpdate { .. } => {
+                "SecondaryRaptorcastPeersUpdate".to_string()
+            }
         };
 
         write!(f, "{}", s)
