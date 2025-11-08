@@ -302,13 +302,6 @@ fn get_latest_configs(
     let local_configs = fetch_local_configs(forkpoint_config_path, validators_config_path);
     let remote_configs = fetch_remote_configs();
 
-    if local_configs.is_err() && remote_configs.is_err() {
-        return Err(NodeSetupError::Custom {
-            kind: ErrorKind::MissingRequiredArgument,
-            msg: "failed to fetch local and remote configs".to_owned(),
-        });
-    }
-
     let replace_local_configs = |remote_forkpoint_str, remote_validators_str| {
         // can fail if local forkpoint doesn't exist
         let _ = std::fs::rename(
@@ -329,66 +322,74 @@ fn get_latest_configs(
         info!("replaced local configs with remote configs");
     };
 
-    match local_configs {
-        Ok((local_forkpoint_config, local_validators_config)) => {
-            match remote_configs {
-                Ok((
-                    remote_forkpoint_config,
-                    remote_forkpoint_str,
-                    remote_validators_config,
-                    remote_validators_str,
-                )) => {
-                    let local_forkpoint_round = local_forkpoint_config.high_certificate.round();
-                    let remote_forkpoint_round = remote_forkpoint_config.high_certificate.round();
+    match (local_configs, remote_configs) {
+        (Err(local_err), Err(remote_err)) => Err(NodeSetupError::Custom {
+            kind: ErrorKind::MissingRequiredArgument,
+            msg: format!(
+                "failed to fetch local and remote configs, local_err={:?}, remote_err={:?}",
+                local_err, remote_err
+            ),
+        }),
+        (
+            Ok((local_forkpoint_config, local_validators_config)),
+            Ok((
+                remote_forkpoint_config,
+                remote_forkpoint_str,
+                remote_validators_config,
+                remote_validators_str,
+            )),
+        ) => {
+            let local_forkpoint_round = local_forkpoint_config.high_certificate.round();
+            let remote_forkpoint_round = remote_forkpoint_config.high_certificate.round();
 
-                    // if remote config is more recent, use that over local config
-                    if remote_forkpoint_round > local_forkpoint_round + remote_configs_threshold {
-                        info!(
-                            ?remote_forkpoint_round,
-                            ?local_forkpoint_round,
-                            "local forkpoint over {} rounds older than remote forkpoint, using remote configs",
-                            remote_configs_threshold.0
-                        );
+            // if remote config is more recent, use that over local config
+            if remote_forkpoint_round > local_forkpoint_round + remote_configs_threshold {
+                info!(
+                    ?remote_forkpoint_round,
+                    ?local_forkpoint_round,
+                    "local forkpoint over {} rounds older than remote forkpoint, using remote configs",
+                    remote_configs_threshold.0
+                );
 
-                        replace_local_configs(remote_forkpoint_str, remote_validators_str);
-                        return Ok((remote_forkpoint_config, remote_validators_config));
-                    } else {
-                        info!(
-                            ?remote_forkpoint_round,
-                            ?local_forkpoint_round,
-                            "local forkpoint within {} rounds of remote forkpoint, using local configs",
-                            remote_configs_threshold.0
-                        );
-                    }
+                replace_local_configs(remote_forkpoint_str, remote_validators_str);
+                return Ok((remote_forkpoint_config, remote_validators_config));
+            }
 
-                    if remote_forkpoint_round + remote_configs_threshold < local_forkpoint_round {
-                        // warn user if remote configs are stale
-                        warn!(
-                            ?remote_forkpoint_round,
-                            ?local_forkpoint_round,
-                            "remote forkpoint over {} rounds older than local forkpoint",
-                            remote_configs_threshold.0
-                        );
-                    }
-                }
-                Err(fetch_err) => {
-                    info!(
-                        fetch_err,
-                        "failed to fetch remote configs, using local forkpoint and validators config"
-                    );
-                }
+            info!(
+                ?remote_forkpoint_round,
+                ?local_forkpoint_round,
+                "local forkpoint within {} rounds of remote forkpoint, using local configs",
+                remote_configs_threshold.0
+            );
+
+            if remote_forkpoint_round + remote_configs_threshold < local_forkpoint_round {
+                // warn user if remote configs are stale
+                warn!(
+                    ?remote_forkpoint_round,
+                    ?local_forkpoint_round,
+                    "remote forkpoint over {} rounds older than local forkpoint",
+                    remote_configs_threshold.0
+                );
             }
 
             Ok((local_forkpoint_config, local_validators_config))
         }
-        Err(fetch_err) => {
+        (Ok((local_forkpoint_config, local_validators_config)), Err(fetch_err)) => {
+            info!(
+                fetch_err,
+                "failed to fetch remote configs, using local forkpoint and validators config"
+            );
+
+            Ok((local_forkpoint_config, local_validators_config))
+        }
+        (
+            Err(fetch_err),
+            Ok((forkpoint_config, forkpoint_str, validators_config, validators_str)),
+        ) => {
             info!(
                 fetch_err,
                 "failed to fetch local configs, using remote forkpoint and validators config"
             );
-
-            let (forkpoint_config, forkpoint_str, validators_config, validators_str) =
-                remote_configs.unwrap();
 
             replace_local_configs(forkpoint_str, validators_str);
             Ok((forkpoint_config, validators_config))
