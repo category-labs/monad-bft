@@ -770,3 +770,78 @@ fn test_is_connected_after_handshake() {
     assert!(peer1.is_connected_socket(&peer2_addr));
     assert!(peer1.is_connected_public_key(&peer2_pubkey));
 }
+
+#[test]
+fn test_keepalive_reset_on_encrypt() {
+    init_tracing();
+    let config = Config {
+        keepalive_interval: Duration::from_secs(3),
+        keepalive_jitter: Duration::from_millis(0),
+        session_timeout: Duration::from_secs(1000),
+        session_timeout_jitter: Duration::from_secs(0),
+        ..Config::default()
+    };
+
+    let mut rng = rng();
+    let keypair1 = monad_secp::KeyPair::generate(&mut rng);
+    let context1 = TestContext::new();
+    let mut peer1 = API::new(config.clone(), keypair1, context1.clone());
+
+    let keypair2 = monad_secp::KeyPair::generate(&mut rng);
+    let peer2_pubkey = keypair2.pubkey();
+    let context2 = TestContext::new();
+    let mut peer2 = API::new(config, keypair2, context2);
+
+    let peer1_addr: SocketAddr = "127.0.0.1:8001".parse().unwrap();
+    let peer2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
+
+    peer1
+        .connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+
+    let init = collect::<HandshakeInitiation>(&mut peer1);
+    dispatch(&mut peer2, &init, peer1_addr);
+
+    let response = collect::<HandshakeResponse>(&mut peer2);
+    dispatch(&mut peer1, &response, peer2_addr);
+
+    collect::<DataPacketHeader>(&mut peer1);
+
+    for i in 0..10 {
+        context1.advance_time(Duration::from_millis(500));
+        peer1.tick();
+
+        let mut plaintext = format!("data{}", i).into_bytes();
+        let packet = encrypt(&mut peer1, &peer2_pubkey, &mut plaintext);
+        decrypt(&mut peer2, &packet, peer1_addr);
+
+        assert!(
+            peer1.next_packet().is_none(),
+            "unexpected packet at iteration {}",
+            i
+        );
+    }
+
+    context1.advance_time(Duration::from_secs(4));
+    peer1.tick();
+
+    let keepalive_packet = peer1.next_packet();
+    assert!(
+        keepalive_packet.is_some(),
+        "expected keepalive after idle period"
+    );
+
+    let mut plaintext = b"more data".to_vec();
+    let packet = encrypt(&mut peer1, &peer2_pubkey, &mut plaintext);
+    let decrypted = decrypt(&mut peer2, &packet, peer1_addr);
+    assert_eq!(decrypted, b"more data");
+
+    context1.advance_time(Duration::from_secs(2));
+    peer1.tick();
+    let unexpected_packet = peer1.next_packet();
+    assert!(
+        unexpected_packet.is_none(),
+        "unexpected packet after sending data: {:?}",
+        unexpected_packet
+    );
+}

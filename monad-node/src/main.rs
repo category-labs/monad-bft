@@ -58,7 +58,7 @@ use monad_peer_discovery::{
 use monad_pprof::start_pprof_server;
 use monad_raptorcast::{
     config::{RaptorCastConfig, RaptorCastConfigPrimary},
-    RAPTORCAST_SOCKET,
+    AUTHENTICATED_RAPTORCAST_SOCKET, RAPTORCAST_SOCKET,
 };
 use monad_router_multi::MultiRouter;
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
@@ -581,6 +581,10 @@ where
         IpAddr::V4(node_config.network.bind_address_host),
         node_config.network.bind_address_port,
     );
+    let authenticated_bind_address = SocketAddr::new(
+        IpAddr::V4(node_config.network.bind_address_host),
+        node_config.network.authenticated_bind_address_port,
+    );
     let Some(SocketAddr::V4(name_record_address)) = resolve_domain_v4(
         &NodeId::new(identity.pubkey()),
         &peer_discovery_config.self_address,
@@ -593,6 +597,7 @@ where
 
     tracing::debug!(
         ?bind_address,
+        ?authenticated_bind_address,
         ?name_record_address,
         "Monad-node starting, pid: {}",
         process::id()
@@ -613,10 +618,16 @@ where
             network_config.tcp_rate_limit_rps,
             network_config.tcp_rate_limit_burst,
         )
-        .extend_udp_sockets(vec![monad_dataplane::UdpSocketConfig {
-            socket_addr: bind_address,
-            label: RAPTORCAST_SOCKET.to_string(),
-        }]);
+        .extend_udp_sockets(vec![
+            monad_dataplane::UdpSocketConfig {
+                socket_addr: authenticated_bind_address,
+                label: AUTHENTICATED_RAPTORCAST_SOCKET.to_string(),
+            },
+            monad_dataplane::UdpSocketConfig {
+                socket_addr: bind_address,
+                label: RAPTORCAST_SOCKET.to_string(),
+            },
+        ]);
 
     let self_id = NodeId::new(identity.pubkey());
     let self_record = NameRecord::new(

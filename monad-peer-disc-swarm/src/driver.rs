@@ -145,9 +145,9 @@ where
         let cmds = match event {
             PeerDiscoveryEvent::SendPing {
                 to,
-                socket_address,
+                name_record,
                 ping,
-            } => self.algo.send_ping(to, socket_address, ping),
+            } => self.algo.send_ping(to, name_record, ping),
             PeerDiscoveryEvent::PingRequest { from, ping } => self.algo.handle_ping(from, ping),
             PeerDiscoveryEvent::PongResponse { from, pong } => self.algo.handle_pong(from, pong),
             PeerDiscoveryEvent::PingTimeout { to, ping_id } => {
@@ -215,7 +215,7 @@ where
                 PeerDiscoveryCommand::RouterCommand { target, message }
                 | PeerDiscoveryCommand::PingPongCommand {
                     target,
-                    socket_address: _,
+                    name_record: _,
                     message,
                 } => router_cmds.push(RouterCommand::Publish {
                     target: RouterTarget::PointToPoint(target),

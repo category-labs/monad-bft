@@ -226,6 +226,20 @@ pub enum BuildTarget<'a, ST: CertificateSignatureRecoverable> {
     FullNodeRaptorCast(&'a Group<ST>),
 }
 
+impl<'a, ST: CertificateSignatureRecoverable> BuildTarget<'a, ST> {
+    pub fn iter(&self) -> Box<dyn Iterator<Item = &NodeId<CertificateSignaturePubKey<ST>>> + '_> {
+        match self {
+            BuildTarget::Broadcast(nodes_view) => match nodes_view {
+                NodesView::Validators(validators_view) => Box::new(validators_view.iter_nodes()),
+                NodesView::FullNodes(fullnodes_view) => Box::new(fullnodes_view.iter()),
+            },
+            BuildTarget::Raptorcast(validators_view) => Box::new(validators_view.iter_nodes()),
+            BuildTarget::PointToPoint(node_id) => Box::new(std::iter::once(*node_id)),
+            BuildTarget::FullNodeRaptorCast(group) => Box::new(group.iter_peers()),
+        }
+    }
+}
+
 pub fn compute_hash<PT>(id: &NodeId<PT>) -> NodeIdHash
 where
     PT: PubKey,
@@ -410,6 +424,10 @@ where
     pub fn get_validator_id(&self) -> &NodeId<CertificateSignaturePubKey<ST>> {
         // Only set when re-raptorcasting to full-nodes
         self.validator_id.as_ref().expect("Validator ID is not set")
+    }
+
+    pub fn iter_peers(&self) -> impl Iterator<Item = &NodeId<CertificateSignaturePubKey<ST>>> + '_ {
+        self.sorted_other_peers.iter()
     }
 
     #[cfg(test)]

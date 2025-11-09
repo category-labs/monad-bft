@@ -21,7 +21,7 @@ use std::{
 
 use lru::LruCache;
 use monad_executor::ExecutorMetrics;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::{metrics::*, state::State};
 
@@ -75,9 +75,22 @@ impl Filter {
     }
 
     pub fn tick(&mut self, duration_since_start: Duration) {
+        let expected_reset_time = self.last_reset + self.handshake_rate_reset_interval;
         if duration_since_start.saturating_sub(self.last_reset)
             >= self.handshake_rate_reset_interval
         {
+            // tick on filter is expected to be called more often than the reset interval
+            if let Some(elapsed) = duration_since_start.checked_sub(expected_reset_time) {
+                let elapsed_ms = elapsed.as_millis();
+                if elapsed_ms > 5 {
+                    warn!(
+                        elapsed_ms=elapsed_ms,
+                        last_reset=?self.last_reset,
+                        expected_reset_time=?expected_reset_time,
+                        "filter reset deadline is too old"
+                    );
+                }
+            }
             self.counter = 0;
             self.last_reset = duration_since_start;
         }
@@ -95,68 +108,99 @@ impl Filter {
         cookie_valid: bool,
     ) -> FilterAction {
         self.counter += 1;
-
         let total_sessions = state.total_sessions();
-        if total_sessions >= self.high_watermark_sessions {
+        let ip = remote_addr.ip();
+
+        let action = self
+            .check_high_watermark(total_sessions, remote_addr)
+            .or_else(|| self.check_rate_limit(remote_addr))
+            .or_else(|| self.check_low_watermark(total_sessions))
+            .or_else(|| self.check_cookie_validity(cookie_valid))
+            .or_else(|| self.check_ip_rate_limit(ip, duration_since_start))
+            .or_else(|| self.check_max_sessions_per_ip(state, ip))
+            .unwrap_or(FilterAction::Pass);
+
+        self.record_metric(action);
+        action
+    }
+
+    fn check_high_watermark(
+        &self,
+        total_sessions: usize,
+        remote_addr: SocketAddr,
+    ) -> Option<FilterAction> {
+        (total_sessions >= self.high_watermark_sessions).then(|| {
             debug!(
                 remote_addr = %remote_addr,
                 sessions = total_sessions,
                 high_watermark = self.high_watermark_sessions,
                 "high load - rejecting new handshake"
             );
-            self.metrics[GAUGE_WIREAUTH_FILTER_DROP] += 1;
-            return FilterAction::Drop;
-        }
+            FilterAction::Drop
+        })
+    }
 
-        let under_load = self.counter >= self.handshake_rate_limit;
-
-        if under_load {
+    fn check_rate_limit(&self, remote_addr: SocketAddr) -> Option<FilterAction> {
+        (self.counter >= self.handshake_rate_limit).then(|| {
             debug!(
                 remote_addr = %remote_addr,
                 counter = self.counter,
                 rate_limit = self.handshake_rate_limit,
                 "rate limit exceeded - dropping handshake"
             );
-            self.metrics[GAUGE_WIREAUTH_FILTER_DROP] += 1;
-            return FilterAction::Drop;
-        }
+            FilterAction::Drop
+        })
+    }
 
-        if total_sessions < self.low_watermark_sessions {
-            self.metrics[GAUGE_WIREAUTH_FILTER_PASS] += 1;
-            return FilterAction::Pass;
-        }
+    fn check_low_watermark(&self, total_sessions: usize) -> Option<FilterAction> {
+        (total_sessions < self.low_watermark_sessions).then_some(FilterAction::Pass)
+    }
 
-        if !cookie_valid {
-            self.metrics[GAUGE_WIREAUTH_FILTER_SEND_COOKIE] += 1;
-            return FilterAction::SendCookie;
-        }
+    fn check_cookie_validity(&self, cookie_valid: bool) -> Option<FilterAction> {
+        (!cookie_valid).then_some(FilterAction::SendCookie)
+    }
 
-        let ip = remote_addr.ip();
+    fn check_ip_rate_limit(
+        &mut self,
+        ip: IpAddr,
+        duration_since_start: Duration,
+    ) -> Option<FilterAction> {
         let window_start = duration_since_start.saturating_sub(self.ip_rate_limit_window);
 
-        if let Some(last_time) = self.ip_request_history.get_mut(&ip) {
-            if *last_time >= window_start {
+        match self.ip_request_history.get_mut(&ip) {
+            Some(last_time) if *last_time >= window_start => {
                 debug!(ip = %ip, "ip rate limit exceeded");
-                return FilterAction::Drop;
+                Some(FilterAction::Drop)
             }
-            *last_time = duration_since_start;
-        } else {
-            self.ip_request_history.put(ip, duration_since_start);
+            Some(last_time) => {
+                *last_time = duration_since_start;
+                None
+            }
+            None => {
+                self.ip_request_history.put(ip, duration_since_start);
+                None
+            }
         }
+    }
 
-        let session_count = state.ip_session_count(&ip);
-        if session_count >= self.max_sessions_per_ip {
+    fn check_max_sessions_per_ip(&self, state: &State, ip: IpAddr) -> Option<FilterAction> {
+        (state.ip_session_count(&ip) >= self.max_sessions_per_ip).then(|| {
             debug!(
                 ip = %ip,
                 max = self.max_sessions_per_ip,
                 "too many sessions for ip"
             );
-            self.metrics[GAUGE_WIREAUTH_FILTER_DROP] += 1;
-            return FilterAction::Drop;
-        }
+            FilterAction::Drop
+        })
+    }
 
-        self.metrics[GAUGE_WIREAUTH_FILTER_PASS] += 1;
-        FilterAction::Pass
+    fn record_metric(&mut self, action: FilterAction) {
+        let metric = match action {
+            FilterAction::Pass => GAUGE_WIREAUTH_FILTER_PASS,
+            FilterAction::SendCookie => GAUGE_WIREAUTH_FILTER_SEND_COOKIE,
+            FilterAction::Drop => GAUGE_WIREAUTH_FILTER_DROP,
+        };
+        self.metrics[metric] += 1;
     }
 }
 

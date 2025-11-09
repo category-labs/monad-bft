@@ -22,7 +22,7 @@ use std::{
 use bytes::Bytes;
 use monad_executor::{ExecutorMetrics, ExecutorMetricsChain};
 use monad_secp::PubKey;
-use tracing::{debug, instrument, trace, Level};
+use tracing::{debug, instrument, trace, warn, Level};
 
 use crate::{
     context::Context,
@@ -67,6 +67,7 @@ pub struct API<C: Context> {
     filter: Filter,
     context: C,
     metrics: ExecutorMetrics,
+    last_tick: Option<Duration>,
 }
 
 impl<C: Context> API<C> {
@@ -100,6 +101,7 @@ impl<C: Context> API<C> {
             filter,
             context,
             metrics: ExecutorMetrics::default(),
+            last_tick: None,
         }
     }
 
@@ -146,8 +148,42 @@ impl<C: Context> API<C> {
             .copied()
             .collect();
 
+        if let Some(last_tick) = self.last_tick {
+            let checked_duration = duration_since_start.saturating_sub(last_tick);
+            trace!(
+                checked_duration_ms = checked_duration.as_millis(),
+                expired_timers = expired_timers.len(),
+                "tick"
+            );
+        } else {
+            trace!(expired_timers = expired_timers.len(), "tick");
+        }
+
         for (duration, session_id) in expired_timers {
             self.timers.remove(&(duration, session_id));
+
+            if let Some(elapsed) = duration_since_start.checked_sub(duration) {
+                let elapsed_ms = elapsed.as_millis();
+                trace!(
+                    session_id=?session_id,
+                    elapsed_ms=elapsed_ms,
+                    "timer triggered"
+                );
+                if elapsed_ms > 10 {
+                    warn!(
+                        session_id=?session_id,
+                        elapsed_ms=elapsed_ms,
+                        "deadline is too old"
+                    );
+                }
+            } else {
+                warn!(
+                    session_id=?session_id,
+                    deadline_duration=?duration,
+                    duration_since_start=?duration_since_start,
+                    "deadline is in the future"
+                );
+            }
 
             let tick_result = if let Some(s) = self.state.get_initiator_mut(&session_id) {
                 s.tick(duration_since_start)
@@ -156,7 +192,7 @@ impl<C: Context> API<C> {
                 s.tick(duration_since_start)
                     .map(|(timer, r)| (timer, None, r.rekey, Some(r.terminated)))
             } else if let Some(transport) = self.state.get_transport_mut(&session_id) {
-                Some(transport.tick(&self.config, duration_since_start))
+                Some(transport.tick(self.context.rng(), &self.config, duration_since_start))
             } else {
                 None
             };
@@ -197,6 +233,8 @@ impl<C: Context> API<C> {
                 );
             }
         }
+
+        self.last_tick = Some(duration_since_start);
     }
 
     #[instrument(level = Level::TRACE, skip(self, remote_static_key), fields(local_public_key = ?self.local_serialized_public, remote_addr = ?remote_addr))]
@@ -565,8 +603,13 @@ impl<C: Context> API<C> {
                 self.metrics[GAUGE_WIREAUTH_ERROR_SESSION_NOT_FOUND] += 1;
                 Error::SessionNotFound
             })?;
-        let (header, timer) =
-            transport.encrypt(&self.config, self.context.duration_since_start(), plaintext);
+        let duration_since_start = self.context.duration_since_start();
+        let (header, timer) = transport.encrypt(
+            self.context.rng(),
+            &self.config,
+            duration_since_start,
+            plaintext,
+        );
         let session_id = transport.common.local_index;
         self.timers.insert((timer, session_id));
         Ok(header)
@@ -587,8 +630,13 @@ impl<C: Context> API<C> {
                 self.metrics[GAUGE_WIREAUTH_ERROR_SESSION_NOT_ESTABLISHED_FOR_ADDRESS] += 1;
                 Error::SessionNotEstablishedForAddress { addr: *socket_addr }
             })?;
-        let (header, timer) =
-            transport.encrypt(&self.config, self.context.duration_since_start(), plaintext);
+        let duration_since_start = self.context.duration_since_start();
+        let (header, timer) = transport.encrypt(
+            self.context.rng(),
+            &self.config,
+            duration_since_start,
+            plaintext,
+        );
         let session_id = transport.common.local_index;
         self.timers.insert((timer, session_id));
         Ok(header)
@@ -606,6 +654,15 @@ impl<C: Context> API<C> {
 
     pub fn is_connected_public_key(&self, public_key: &monad_secp::PubKey) -> bool {
         self.state.has_transport_by_public_key(public_key)
+    }
+
+    /// Checks if there is any session (initiated, accepted, or established) with the given public key.
+    /// Returns true if a session exists in any state:
+    /// - Initiated: handshake in progress from initiator side
+    /// - Accepted: handshake in progress from responder side
+    /// - Established: ready for data transmission
+    pub fn has_any_session_by_public_key(&self, public_key: &monad_secp::PubKey) -> bool {
+        self.state.has_any_session_by_public_key(public_key)
     }
 
     pub fn is_connected_socket_and_public_key(

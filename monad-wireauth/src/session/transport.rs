@@ -55,8 +55,9 @@ impl TransportState {
         }
     }
 
-    pub fn encrypt(
+    pub fn encrypt<R: secp256k1::rand::Rng>(
         &mut self,
+        rng: &mut R,
         config: &Config,
         duration_since_start: Duration,
         plaintext: &mut [u8],
@@ -72,8 +73,10 @@ impl TransportState {
 
         self.send_nonce += 1;
 
-        self.common
-            .reset_keepalive(duration_since_start, config.keepalive_interval);
+        self.common.reset_keepalive(
+            duration_since_start,
+            super::common::add_jitter(rng, config.keepalive_interval, config.keepalive_jitter),
+        );
         let timer = self
             .common
             .get_next_deadline()
@@ -115,8 +118,9 @@ impl TransportState {
     }
 
     #[allow(clippy::type_complexity)]
-    pub fn tick(
+    pub fn tick<R: secp256k1::rand::Rng>(
         &mut self,
+        rng: &mut R,
         config: &Config,
         duration_since_start: Duration,
     ) -> (
@@ -140,7 +144,7 @@ impl TransportState {
                 remote_addr = ?self.common.remote_addr,
                 "sending keepalive packet"
             );
-            let (header, _) = self.encrypt(config, duration_since_start, &mut []);
+            let (header, _) = self.encrypt(rng, config, duration_since_start, &mut []);
             message = Some(MessageEvent {
                 remote_addr: self.common.remote_addr,
                 header,

@@ -423,8 +423,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
         });
         self.metrics[GAUGE_PEER_DISC_NUM_PENDING_PEERS] = self.pending_queue.len() as u64;
 
-        // send ping to the peer, which will also insert the peer into pending queue
-        Ok(self.send_ping(peer_id, name_record.udp_address(), ping_msg))
+        Ok(self.send_ping(peer_id, name_record.name_record, ping_msg))
     }
 
     fn remove_peer_from_pending(
@@ -619,7 +618,7 @@ where
     fn send_ping(
         &mut self,
         to: NodeId<CertificateSignaturePubKey<ST>>,
-        socket_address: SocketAddrV4,
+        name_record: NameRecord,
         ping: Ping<ST>,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!(?to, "sending ping request");
@@ -630,7 +629,7 @@ where
 
         cmds.push(PeerDiscoveryCommand::PingPongCommand {
             target: to,
-            socket_address,
+            name_record,
             message: PeerDiscoveryMessage::Ping(ping),
         });
 
@@ -711,7 +710,7 @@ where
         };
         cmds.push(PeerDiscoveryCommand::PingPongCommand {
             target: from,
-            socket_address: ping_msg.local_name_record.udp_address(),
+            name_record: ping_msg.local_name_record.name_record,
             message: PeerDiscoveryMessage::Pong(pong_msg),
         });
         self.metrics[GAUGE_PEER_DISC_SEND_PONG] += 1;
@@ -779,14 +778,13 @@ where
                 );
                 cmds.extend(self.remove_peer_from_pending(to));
             } else {
-                // retry ping
-                let socket_address = info.name_record.udp_address();
+                let name_record = info.name_record.name_record.clone();
                 let ping = Ping {
                     id: self.rng.next_u32(),
                     local_name_record: self.self_record.clone(),
                 };
                 info.last_ping = ping.clone();
-                cmds.extend(self.send_ping(to, socket_address, ping));
+                cmds.extend(self.send_ping(to, name_record, ping));
             }
         }
 
@@ -1673,7 +1671,7 @@ mod tests {
             .filter_map(|c| match c {
                 PeerDiscoveryCommand::PingPongCommand {
                     target,
-                    socket_address: _,
+                    name_record: _,
                     message: PeerDiscoveryMessage::Ping(ping),
                 } => Some((target, ping)),
                 _ => None,
@@ -1686,7 +1684,7 @@ mod tests {
             .filter_map(|c| match c {
                 PeerDiscoveryCommand::PingPongCommand {
                     target: _,
-                    socket_address: _,
+                    name_record: _,
                     message: PeerDiscoveryMessage::Pong(pong),
                 } => Some(pong),
                 _ => None,
@@ -1703,14 +1701,13 @@ mod tests {
 
         let mut state = generate_test_state(peer0, vec![peer1]);
 
-        // send ping to peer1
         let ping = Ping {
             id: 12345,
             local_name_record: state.self_record.clone(),
         };
-        let cmds = state.send_ping(peer1_pubkey, DUMMY_ADDR, ping);
+        let peer1_name_record = generate_name_record(peer1, 1).name_record;
+        let cmds = state.send_ping(peer1_pubkey, peer1_name_record, ping);
 
-        // should send a ping command and schedule a ping timeout
         assert_eq!(cmds.len(), 2);
         assert!(matches!(
             cmds[0],
@@ -1721,7 +1718,7 @@ mod tests {
         ));
         assert!(matches!(cmds[1], PeerDiscoveryCommand::PingPongCommand {
             target: _,
-            socket_address: _,
+            name_record: _,
             message: PeerDiscoveryMessage::Ping(_)
         }));
     }
