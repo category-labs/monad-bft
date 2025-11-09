@@ -8,7 +8,6 @@ monad-executor.workspace = true
 monad-secp.workspace = true
 
 bytes.workspace = true
-rand.workspace = true
 secp256k1 = { workspace = true, features = ["rand", "global-context"] }
 serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
