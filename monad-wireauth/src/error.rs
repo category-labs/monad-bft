@@ -171,9 +171,6 @@ pub trait ProtocolErrorContext {
 impl ProtocolErrorContext for HandshakeError {
     fn with_addr(self, addr: SocketAddr) -> Error {
         match self {
-            HandshakeError::Mac1VerificationFailed(source) => {
-                Error::Mac1VerificationFailed { addr, source }
-            }
             HandshakeError::StaticKeyDecryptionFailed(source) => {
                 Error::StaticKeyDecryptionFailed { addr, source }
             }

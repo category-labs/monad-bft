@@ -283,7 +283,7 @@ pub struct DataPacketHeader {
     pub message_type: u8,
     pub reserved: [u8; 3],
     pub receiver_index: U32<LE>,
-    pub counter: U64<LE>,
+    pub nonce: U64<LE>,
     pub tag: [u8; CIPHER_TAG_SIZE],
 }
 

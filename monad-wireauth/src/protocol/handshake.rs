@@ -147,8 +147,6 @@ pub fn accept_handshake_init(
     msg: &mut HandshakeInitiation,
 ) -> Result<(HandshakeState, SystemTime), ProtocolError> {
     let responder_static_public = responder_static_keypair.pubkey();
-    crate::crypto::verify_mac1(msg, &responder_static_public)
-        .map_err(HandshakeError::Mac1VerificationFailed)?;
 
     let mut state = HandshakeState {
         chaining_key: hash!(CONSTRUCTION).into(),
@@ -294,10 +292,6 @@ pub fn accept_handshake_response(
     state: &mut HandshakeState,
     psk: &[u8; 32],
 ) -> Result<TransportKeys, ProtocolError> {
-    let initiator_static_public = initiator_static_keypair.pubkey();
-    crate::crypto::verify_mac1(msg, &initiator_static_public)
-        .map_err(HandshakeError::Mac1VerificationFailed)?;
-
     state.receiver_index = msg.sender_index.get();
     let remote_ephemeral =
         monad_secp::PubKey::from_slice(&msg.ephemeral_public).map_err(CryptoError::InvalidKey)?;

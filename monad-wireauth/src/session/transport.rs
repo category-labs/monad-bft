@@ -65,7 +65,7 @@ impl TransportState {
 
         let header = DataPacketHeader {
             receiver_index: self.remote_index.as_u32().into(),
-            counter: self.send_nonce.into(),
+            nonce: self.send_nonce.into(),
             tag: crypto::encrypt_in_place(&self.send_key, &self.send_nonce.into(), plaintext, &[]),
             ..Default::default()
         };
@@ -90,9 +90,9 @@ impl TransportState {
         use crate::protocol::crypto;
 
         self.replay_filter
-            .check(data_packet.header().counter.get())?;
+            .check(data_packet.header().nonce.get())?;
 
-        let counter = data_packet.header().counter.get();
+        let counter = data_packet.header().nonce.get();
         let tag = data_packet.header().tag;
 
         crypto::decrypt_in_place(
