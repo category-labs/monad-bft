@@ -31,7 +31,8 @@ pub enum FilterAction {
     SendCookie,
     Drop,
 }
-
+// Filter ...
+// NOTE that rate limiting for ipv6 is not properly supported
 pub struct Filter {
     counter: u64,
     last_reset: Duration,

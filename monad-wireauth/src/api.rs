@@ -441,7 +441,7 @@ impl<C: Context> API<C> {
     ) -> Result<(Plaintext<'a>, PubKey)> {
         self.metrics[GAUGE_WIREAUTH_API_DECRYPT] += 1;
         let receiver_index = data_packet.header().receiver_index.into();
-        let nonce: u64 = data_packet.header().counter.into();
+        let nonce: u64 = data_packet.header().nonce.into();
         trace!(local_session_id=?receiver_index, nonce, "decrypting data packet");
 
         let (timer, remote_public_key, plaintext) = if let Some(transport) =

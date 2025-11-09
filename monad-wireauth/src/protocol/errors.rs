@@ -17,9 +17,6 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum HandshakeError {
-    #[error("MAC1 verification failed: {0}")]
-    Mac1VerificationFailed(#[source] CryptoError),
-
     #[error("static key decryption failed: {0}")]
     StaticKeyDecryptionFailed(#[source] CryptoError),
 
