@@ -13,8 +13,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::path::PathBuf;
-
 use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
 use monad_types::Round;
 use serde::{Deserialize, Serialize};
@@ -34,5 +32,4 @@ pub struct PeerDiscoveryConfig<ST: CertificateSignatureRecoverable> {
     pub last_participation_prune_threshold: Round,
     pub min_num_peers: usize,
     pub max_num_peers: usize,
-    pub persisted_peers_path: PathBuf,
 }

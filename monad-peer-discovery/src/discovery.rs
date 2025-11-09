@@ -274,39 +274,52 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
             });
 
         // Attempt to load persisted peers from JSON file and restore into pending queue
-        if let Ok(contents) = std::fs::read_to_string(&state.persisted_peers_path) {
-            match toml::from_str::<BTreeMap<
-                NodeId<CertificateSignaturePubKey<ST>>,
-                MonadNameRecord<ST>,
-            >>(&contents)
-            {
-                Ok(loaded) => {
-                    debug!(path = ?state.persisted_peers_path, loaded_len = loaded.len(), "loaded persisted peers");
-                    for (peer_id, name_record) in loaded.into_iter() {
-                        if peer_id == state.self_id {
-                            continue;
-                        }
-
-                        match name_record.recover_pubkey() {
-                            Ok(recovered) if recovered == peer_id => {}
-                            _ => {
-                                warn!(?peer_id, "skipping persisted peer with invalid signature");
+        match std::fs::read_to_string(&state.persisted_peers_path) {
+            Ok(contents) => {
+                match toml::from_str::<
+                    BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<ST>>,
+                >(&contents)
+                {
+                    Ok(loaded) => {
+                        debug!(path =? state.persisted_peers_path, loaded_len = loaded.len(), "loaded persisted peers");
+                        for (peer_id, name_record) in loaded.into_iter() {
+                            if peer_id == state.self_id {
                                 continue;
                             }
-                        }
 
-                        match state.insert_peer_to_pending(peer_id, name_record) {
-                            Ok(cmds_from_insert) => cmds.extend(cmds_from_insert),
-                            Err(err) => {
-                            warn!(?err, "skipping persisted peer due to IP/validation error");
-                            continue;
+                            match name_record.recover_pubkey() {
+                                Ok(recovered) if recovered == peer_id => {}
+                                _ => {
+                                    warn!(
+                                        ?peer_id,
+                                        "skipping persisted peer with invalid signature"
+                                    );
+                                    continue;
+                                }
+                            }
+
+                            match state.insert_peer_to_pending(peer_id, name_record) {
+                                Ok(cmds_from_insert) => {
+                                    cmds.extend(cmds_from_insert);
+                                    debug!(?peer_id, "inserted persisted peer");
+                                }
+                                Err(err) => {
+                                    warn!(
+                                        ?err,
+                                        "skipping persisted peer due to IP/validation error"
+                                    );
+                                    continue;
+                                }
                             }
                         }
                     }
+                    Err(err) => {
+                        warn!(path =? state.persisted_peers_path, ?err, "failed to deserialize persisted peers");
+                    }
                 }
-                Err(err) => {
-                    warn!(path = ?state.persisted_peers_path, ?err, "failed to deserialize persisted peers");
-                }
+            }
+            Err(err) => {
+                debug!(path =? state.persisted_peers_path, ?err, "Skipped loading persisted peers");
             }
         }
 
@@ -656,18 +669,18 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
         // Persist both routing_info and pending_queue to TOML file
         let mut routing_info = self.routing_info.clone();
         for (peer_id, conn_info) in self.pending_queue.iter() {
-            routing_info.insert(peer_id.clone(), conn_info.name_record.clone());
+            routing_info.insert(*peer_id, conn_info.name_record.clone());
         }
         match toml::to_string(&routing_info) {
             Ok(serialized) => {
                 if let Err(e) = std::fs::write(&self.persisted_peers_path, serialized) {
-                    warn!(path = ?self.persisted_peers_path, ?e, "failed to persist peers");
+                    warn!(path =? self.persisted_peers_path, ?e, "failed to persist peers");
                 } else {
-                    debug!(path = ?self.persisted_peers_path, routing_len = ?self.routing_info.len(), "persisted peers to disk (initial)");
+                    debug!(path =? self.persisted_peers_path, routing_len =? self.routing_info.len(), "persisted peers to disk (initial)");
                 }
             }
             Err(err) => {
-                warn!(path = ?self.persisted_peers_path, ?err, "failed to serialize peers");
+                warn!(path =? self.persisted_peers_path, ?err, "failed to serialize peers");
             }
         }
     }

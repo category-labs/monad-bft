@@ -45,7 +45,6 @@ unresponsive_prune_threshold = 5
 last_participation_prune_threshold = 5000
 min_num_peers = 0
 max_num_peers = 200
-persisted_peers_path = "/tmp/peers.toml"
 
 [fullnode_dedicated]
 identities = []
