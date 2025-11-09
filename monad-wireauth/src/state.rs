@@ -122,6 +122,19 @@ impl State {
             .unwrap_or(false)
     }
 
+    pub fn has_transport_by_socket_and_public_key(
+        &self,
+        socket_addr: &SocketAddr,
+        public_key: &monad_secp::PubKey,
+    ) -> bool {
+        self.last_established_session_by_socket
+            .get(socket_addr)
+            .and_then(|sessions| sessions.get_latest())
+            .and_then(|session_id| self.transport_sessions.get(&session_id))
+            .map(|transport| &transport.remote_public_key == public_key)
+            .unwrap_or(false)
+    }
+
     pub fn get_transport_by_public_key(
         &mut self,
         public_key: &monad_secp::PubKey,
@@ -131,6 +144,16 @@ impl State {
             .get(public_key)
             .and_then(|sessions| sessions.get_latest())?;
         self.transport_sessions.get_mut(&session_id)
+    }
+
+    pub fn get_socket_by_public_key(&self, public_key: &monad_secp::PubKey) -> Option<SocketAddr> {
+        let session_id = self
+            .last_established_session_by_public_key
+            .get(public_key)
+            .and_then(|sessions| sessions.get_latest())?;
+        self.transport_sessions
+            .get(&session_id)
+            .map(|transport| transport.remote_addr)
     }
 
     pub fn get_transport_by_socket(

@@ -560,7 +560,8 @@ fn test_next_deadline() {
     let peer2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
 
     let initial_deadline = peer1.next_deadline();
-    let expected_filter_deadline = peer1_ctx.convert_duration_since_start_to_deadline(config.handshake_rate_reset_interval);
+    let expected_filter_deadline =
+        peer1_ctx.convert_duration_since_start_to_deadline(config.handshake_rate_reset_interval);
     assert_eq!(initial_deadline, Some(expected_filter_deadline));
 
     peer1
@@ -570,7 +571,8 @@ fn test_next_deadline() {
     let session_deadline = peer1.next_deadline();
     assert!(session_deadline.is_some());
     let deadline_instant = session_deadline.unwrap();
-    let max_expected_deadline = peer1_ctx.convert_duration_since_start_to_deadline(Duration::from_secs(10));
+    let max_expected_deadline =
+        peer1_ctx.convert_duration_since_start_to_deadline(Duration::from_secs(10));
     assert!(deadline_instant <= max_expected_deadline);
 
     peer1_ctx.advance_time(Duration::from_secs(5));
@@ -583,7 +585,8 @@ fn test_next_deadline() {
 
     let deadline_in_past = peer1.next_deadline();
     assert!(deadline_in_past.is_some());
-    let current_instant = peer1_ctx.convert_duration_since_start_to_deadline(peer1_ctx.duration_since_start());
+    let current_instant =
+        peer1_ctx.convert_duration_since_start_to_deadline(peer1_ctx.duration_since_start());
     assert!(deadline_in_past.unwrap() <= current_instant);
 }
 
@@ -645,7 +648,8 @@ fn test_next_deadline_includes_filter_reset() {
 
     let deadline = peer.next_deadline();
     assert!(deadline.is_some());
-    let expected_deadline = peer_ctx.convert_duration_since_start_to_deadline(filter_reset_interval);
+    let expected_deadline =
+        peer_ctx.convert_duration_since_start_to_deadline(filter_reset_interval);
     assert_eq!(deadline.unwrap(), expected_deadline);
 }
 
@@ -685,8 +689,10 @@ fn test_next_deadline_returns_minimum_of_session_and_filter() {
     let keepalive_deadline = peer1.next_deadline();
     assert!(keepalive_deadline.is_some());
     let deadline_instant = keepalive_deadline.unwrap();
-    let max_keepalive_deadline = peer1_ctx.convert_duration_since_start_to_deadline(Duration::from_secs(3));
-    let current_instant = peer1_ctx.convert_duration_since_start_to_deadline(peer1_ctx.duration_since_start());
+    let max_keepalive_deadline =
+        peer1_ctx.convert_duration_since_start_to_deadline(Duration::from_secs(3));
+    let current_instant =
+        peer1_ctx.convert_duration_since_start_to_deadline(peer1_ctx.duration_since_start());
     assert!(deadline_instant <= max_keepalive_deadline);
     assert!(deadline_instant > current_instant);
 }

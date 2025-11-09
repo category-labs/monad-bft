@@ -1,4 +1,10 @@
-use std::{convert::TryFrom, future::pending, net::SocketAddr, rc::Rc, time::{Duration, Instant}};
+use std::{
+    convert::TryFrom,
+    future::pending,
+    net::SocketAddr,
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 use clap::Parser;
 use monad_wireauth::{messages::Packet, Config, PublicKey, StdContext, API, RETRY_ALWAYS};
