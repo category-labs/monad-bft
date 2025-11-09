@@ -643,6 +643,7 @@ where
         enable_publisher: node_config.fullnode_raptorcast.enable_publisher,
         enable_client: node_config.fullnode_raptorcast.enable_client,
         rng: ChaCha8Rng::from_entropy(),
+        persisted_peers_path: peer_discovery_config.persisted_peers_path,
     };
 
     MultiRouter::new(
