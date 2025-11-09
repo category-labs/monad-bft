@@ -120,8 +120,11 @@ impl NodeState {
         let node_config: MonadNodeConfig =
             toml::from_str(&std::fs::read_to_string(&node_config_path)?)?;
 
-        let (forkpoint_config, validators_config) =
-            get_latest_configs(&forkpoint_config_path, &validators_config_path)?;
+        let (forkpoint_config, validators_config) = get_latest_configs(
+            &forkpoint_config_path,
+            &validators_config_path,
+            Round(node_config.statesync_threshold as u64),
+        )?;
 
         let devnet_chain_config_override =
             if let Some(devnet_override_path) = maybe_devnet_chain_config_override_path {
@@ -294,6 +297,7 @@ fn fetch_remote_configs() -> Result<(ForkpointConfig, String, ValidatorsConfigTy
 fn get_latest_configs(
     forkpoint_config_path: &Path,
     validators_config_path: &Path,
+    remote_configs_threshold: Round,
 ) -> Result<(ForkpointConfig, ValidatorsConfigType), NodeSetupError> {
     let local_configs = fetch_local_configs(forkpoint_config_path, validators_config_path);
     let remote_configs = fetch_remote_configs();
@@ -338,11 +342,12 @@ fn get_latest_configs(
                     let remote_forkpoint_round = remote_forkpoint_config.high_certificate.round();
 
                     // if remote config is more recent, use that over local config
-                    if remote_forkpoint_round > local_forkpoint_round {
+                    if remote_forkpoint_round > local_forkpoint_round + remote_configs_threshold {
                         info!(
                             ?remote_forkpoint_round,
                             ?local_forkpoint_round,
-                            "remote forkpoint newer than local forkpoint, using remote configs"
+                            "local forkpoint over {} rounds older than remote forkpoint, using remote configs",
+                            remote_configs_threshold.0
                         );
 
                         replace_local_configs(remote_forkpoint_str, remote_validators_str);
@@ -351,16 +356,18 @@ fn get_latest_configs(
                         info!(
                             ?remote_forkpoint_round,
                             ?local_forkpoint_round,
-                            "local forkpoint newer than remote forkpoint, using local configs"
+                            "local forkpoint within {} rounds of remote forkpoint, using local configs",
+                            remote_configs_threshold.0
                         );
                     }
 
-                    if remote_forkpoint_round < local_forkpoint_round - Round(200) {
+                    if remote_forkpoint_round + remote_configs_threshold < local_forkpoint_round {
                         // warn user if remote configs are stale
                         warn!(
                             ?remote_forkpoint_round,
                             ?local_forkpoint_round,
-                            "remote forkpoint 200 rounds older than local forkpoint"
+                            "remote forkpoint over {} rounds older than local forkpoint",
+                            remote_configs_threshold.0
                         );
                     }
                 }
