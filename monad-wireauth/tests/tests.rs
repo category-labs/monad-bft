@@ -104,10 +104,10 @@ fn test_concurrent_init() {
     let peer2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
 
     peer1
-        .connect(peer2_pubkey.clone(), peer2_addr, DEFAULT_RETRY_ATTEMPTS)
+        .connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
         .unwrap();
     peer2
-        .connect(peer1_pubkey.clone(), peer1_addr, DEFAULT_RETRY_ATTEMPTS)
+        .connect(peer1_pubkey, peer1_addr, DEFAULT_RETRY_ATTEMPTS)
         .unwrap();
 
     let init1 = collect::<HandshakeInitiation>(&mut peer1);
@@ -150,7 +150,7 @@ fn test_retries() {
     let peer1_addr: SocketAddr = "127.0.0.1:8001".parse().unwrap();
     let peer2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
 
-    peer1.connect(peer2_pubkey.clone(), peer2_addr, 2).unwrap();
+    peer1.connect(peer2_pubkey, peer2_addr, 2).unwrap();
 
     let _init1 = collect::<HandshakeInitiation>(&mut peer1);
 
@@ -200,26 +200,26 @@ fn test_five_peers() {
     let a3: SocketAddr = "127.0.0.1:8003".parse().unwrap();
     let a4: SocketAddr = "127.0.0.1:8004".parse().unwrap();
 
-    m0.connect(pk1.clone(), a1, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m0.connect(pk2.clone(), a2, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m0.connect(pk3.clone(), a3, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m0.connect(pk4.clone(), a4, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m1.connect(pk0.clone(), a0, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m1.connect(pk2.clone(), a2, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m1.connect(pk3.clone(), a3, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m1.connect(pk4.clone(), a4, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m2.connect(pk0.clone(), a0, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m2.connect(pk1.clone(), a1, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m2.connect(pk3.clone(), a3, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m2.connect(pk4.clone(), a4, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m3.connect(pk0.clone(), a0, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m3.connect(pk1.clone(), a1, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m3.connect(pk2.clone(), a2, DEFAULT_RETRY_ATTEMPTS).unwrap();
+    m0.connect(pk1, a1, DEFAULT_RETRY_ATTEMPTS).unwrap();
+    m0.connect(pk2, a2, DEFAULT_RETRY_ATTEMPTS).unwrap();
+    m0.connect(pk3, a3, DEFAULT_RETRY_ATTEMPTS).unwrap();
+    m0.connect(pk4, a4, DEFAULT_RETRY_ATTEMPTS).unwrap();
+    m1.connect(pk0, a0, DEFAULT_RETRY_ATTEMPTS).unwrap();
+    m1.connect(pk2, a2, DEFAULT_RETRY_ATTEMPTS).unwrap();
+    m1.connect(pk3, a3, DEFAULT_RETRY_ATTEMPTS).unwrap();
+    m1.connect(pk4, a4, DEFAULT_RETRY_ATTEMPTS).unwrap();
+    m2.connect(pk0, a0, DEFAULT_RETRY_ATTEMPTS).unwrap();
+    m2.connect(pk1, a1, DEFAULT_RETRY_ATTEMPTS).unwrap();
+    m2.connect(pk3, a3, DEFAULT_RETRY_ATTEMPTS).unwrap();
+    m2.connect(pk4, a4, DEFAULT_RETRY_ATTEMPTS).unwrap();
+    m3.connect(pk0, a0, DEFAULT_RETRY_ATTEMPTS).unwrap();
+    m3.connect(pk1, a1, DEFAULT_RETRY_ATTEMPTS).unwrap();
+    m3.connect(pk2, a2, DEFAULT_RETRY_ATTEMPTS).unwrap();
     m3.connect(pk4, a4, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m4.connect(pk0.clone(), a0, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m4.connect(pk1.clone(), a1, DEFAULT_RETRY_ATTEMPTS).unwrap();
+    m4.connect(pk0, a0, DEFAULT_RETRY_ATTEMPTS).unwrap();
+    m4.connect(pk1, a1, DEFAULT_RETRY_ATTEMPTS).unwrap();
     m4.connect(pk2, a2, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m4.connect(pk3.clone(), a3, DEFAULT_RETRY_ATTEMPTS).unwrap();
+    m4.connect(pk3, a3, DEFAULT_RETRY_ATTEMPTS).unwrap();
 
     let i01 = collect::<HandshakeInitiation>(&mut m0);
     let i02 = collect::<HandshakeInitiation>(&mut m0);
@@ -335,7 +335,7 @@ fn test_encrypt_by_pubkey_and_socket() {
     let peer2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
 
     peer1
-        .connect(peer2_pubkey.clone(), peer2_addr, DEFAULT_RETRY_ATTEMPTS)
+        .connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
         .unwrap();
 
     let init = collect::<HandshakeInitiation>(&mut peer1);
@@ -388,7 +388,7 @@ fn test_cookie_reply_on_init() {
     let peer2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
 
     peer1
-        .connect(public_key2.clone(), peer2_addr, DEFAULT_RETRY_ATTEMPTS)
+        .connect(public_key2, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
         .unwrap();
     let init1 = collect::<HandshakeInitiation>(&mut peer1);
     dispatch(&mut peer2, &init1, peer1_addr);
@@ -426,7 +426,7 @@ fn test_connect_after_established() {
     let peer2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
 
     peer1
-        .connect(peer2_pubkey.clone(), peer2_addr, DEFAULT_RETRY_ATTEMPTS)
+        .connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
         .unwrap();
     let init = collect::<HandshakeInitiation>(&mut peer1);
     dispatch(&mut peer2, &init, peer1_addr);
@@ -438,7 +438,7 @@ fn test_connect_after_established() {
     let decrypted = decrypt(&mut peer2, &packet, peer1_addr);
     assert_eq!(decrypted, b"before reconnect");
 
-    let _ = peer1.connect(peer2_pubkey.clone(), peer2_addr, DEFAULT_RETRY_ATTEMPTS);
+    let _ = peer1.connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS);
 
     let mut plaintext = b"after reconnect".to_vec();
     let packet = encrypt(&mut peer1, &peer2_pubkey, &mut plaintext);
@@ -496,11 +496,7 @@ fn test_too_many_accepted_sessions() {
         let initiator_addr: SocketAddr = format!("127.0.0.1:800{}", i).parse().unwrap();
 
         initiator
-            .connect(
-                responder_public.clone(),
-                responder_addr,
-                DEFAULT_RETRY_ATTEMPTS,
-            )
+            .connect(responder_public, responder_addr, DEFAULT_RETRY_ATTEMPTS)
             .unwrap();
 
         let init = collect::<HandshakeInitiation>(&mut initiator);
@@ -547,11 +543,7 @@ fn test_filter_drop_rate_limit() {
         let initiator_addr: SocketAddr = format!("127.0.0.1:800{}", i).parse().unwrap();
 
         initiator
-            .connect(
-                responder_public.clone(),
-                responder_addr,
-                DEFAULT_RETRY_ATTEMPTS,
-            )
+            .connect(responder_public, responder_addr, DEFAULT_RETRY_ATTEMPTS)
             .unwrap();
 
         let init = collect::<HandshakeInitiation>(&mut initiator);
@@ -721,7 +713,7 @@ fn test_disconnect() {
     let peer2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
 
     peer1
-        .connect(peer2_pubkey.clone(), peer2_addr, DEFAULT_RETRY_ATTEMPTS)
+        .connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
         .unwrap();
 
     let init = collect::<HandshakeInitiation>(&mut peer1);
@@ -764,7 +756,7 @@ fn test_is_connected_after_handshake() {
     let peer2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
 
     peer1
-        .connect(peer2_pubkey.clone(), peer2_addr, DEFAULT_RETRY_ATTEMPTS)
+        .connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
         .unwrap();
 
     let init = collect::<HandshakeInitiation>(&mut peer1);
