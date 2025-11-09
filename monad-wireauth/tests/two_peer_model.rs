@@ -186,7 +186,7 @@ mod tests {
                     let initiator_idx = (from - 1) as usize;
                     let responder_idx = initiator_idx ^ 1;
 
-                    let responder_pubkey = self.peers[responder_idx].public_key.clone();
+                    let responder_pubkey = self.peers[responder_idx].public_key;
                     let responder_addr = self.peers[responder_idx].addr;
 
                     let _ = self.peers[initiator_idx].manager.connect(
@@ -234,7 +234,7 @@ mod tests {
                     let sender_idx = (from - 1) as usize;
                     let receiver_idx = sender_idx ^ 1;
 
-                    let receiver_pubkey = self.peers[receiver_idx].public_key.clone();
+                    let receiver_pubkey = self.peers[receiver_idx].public_key;
                     let sender_addr = self.peers[sender_idx].addr;
 
                     self.peers[sender_idx].sent_data.push(data_bytes.clone());

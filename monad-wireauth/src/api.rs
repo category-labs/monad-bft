@@ -214,9 +214,8 @@ impl<C: Context> API<C> {
 
         let (local_index, timer, message) = self
             .init_session_with_cookie(remote_static_key, remote_addr, cookie, retry_attempts)
-            .map_err(|e| {
+            .inspect_err(|_| {
                 self.metrics[GAUGE_WIREAUTH_ERROR_CONNECT] += 1;
-                e
             })?;
 
         self.metrics[GAUGE_WIREAUTH_ENQUEUED_HANDSHAKE_INIT] += 1;

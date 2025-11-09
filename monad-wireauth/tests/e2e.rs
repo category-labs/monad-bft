@@ -185,7 +185,7 @@ async fn test_e2e_handshake_and_data() {
     let mut bob = PeerNode::new(28002, 2).unwrap();
 
     let bob_addr = bob.socket.local_addr().unwrap();
-    alice.connect(bob.public_key.clone(), bob_addr);
+    alice.connect(bob.public_key, bob_addr);
 
     exchange_handshake(&mut alice, &mut bob).await.unwrap();
 
@@ -213,7 +213,7 @@ async fn test_e2e_bidirectional() {
     let bob_addr = bob.socket.local_addr().unwrap();
     let alice_addr = alice.socket.local_addr().unwrap();
 
-    alice.connect(bob.public_key.clone(), bob_addr);
+    alice.connect(bob.public_key, bob_addr);
 
     exchange_handshake(&mut alice, &mut bob).await.unwrap();
 
