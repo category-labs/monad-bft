@@ -89,8 +89,7 @@ impl TransportState {
     ) -> Result<(Duration, Plaintext<'a>), SessionError> {
         use crate::protocol::crypto;
 
-        self.replay_filter
-            .check(data_packet.header().nonce.get())?;
+        self.replay_filter.check(data_packet.header().nonce.get())?;
 
         let counter = data_packet.header().nonce.get();
         let tag = data_packet.header().tag;
