@@ -112,7 +112,10 @@ impl<C: Context> API<C> {
             None => filter_deadline,
         };
 
-        Some(self.context.convert_duration_since_start_to_deadline(deadline))
+        Some(
+            self.context
+                .convert_duration_since_start_to_deadline(deadline),
+        )
     }
 
     #[instrument(level = Level::TRACE, skip(self), fields(local_public_key = ?self.local_serialized_public))]
@@ -589,5 +592,18 @@ impl<C: Context> API<C> {
 
     pub fn is_connected_public_key(&self, public_key: &monad_secp::PubKey) -> bool {
         self.state.has_transport_by_public_key(public_key)
+    }
+
+    pub fn is_connected_socket_and_public_key(
+        &self,
+        socket_addr: &SocketAddr,
+        public_key: &monad_secp::PubKey,
+    ) -> bool {
+        self.state
+            .has_transport_by_socket_and_public_key(socket_addr, public_key)
+    }
+
+    pub fn get_socket_by_public_key(&self, public_key: &monad_secp::PubKey) -> Option<SocketAddr> {
+        self.state.get_socket_by_public_key(public_key)
     }
 }
