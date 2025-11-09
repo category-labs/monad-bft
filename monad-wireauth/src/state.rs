@@ -129,6 +129,21 @@ impl State {
             .unwrap_or(false)
     }
 
+    pub fn has_any_session_by_public_key(&self, public_key: &monad_secp::PubKey) -> bool {
+        if self.has_transport_by_public_key(public_key) {
+            return true;
+        }
+
+        if self.initiated_session_by_peer.contains_key(public_key) {
+            return true;
+        }
+
+        self.accepted_sessions_by_peer
+            .range((*public_key, SessionIndex::new(0))..=(*public_key, SessionIndex::new(u32::MAX)))
+            .next()
+            .is_some()
+    }
+
     pub fn has_transport_by_socket(&self, socket_addr: &SocketAddr) -> bool {
         self.last_established_session_by_socket
             .get(socket_addr)
@@ -158,7 +173,7 @@ impl State {
             .last_established_session_by_public_key
             .get(public_key)
             .and_then(|sessions| sessions.get_latest())?;
-        self.transport_sessions.get_mut(&session_id)
+        Some(self.transport_sessions.get_mut(&session_id).expect("session_id from last_established_session_by_public_key must exist in transport_sessions"))
     }
 
     pub fn get_socket_by_public_key(&self, public_key: &monad_secp::PubKey) -> Option<SocketAddr> {
@@ -166,9 +181,10 @@ impl State {
             .last_established_session_by_public_key
             .get(public_key)
             .and_then(|sessions| sessions.get_latest())?;
-        self.transport_sessions
+        Some(self.transport_sessions
             .get(&session_id)
-            .map(|transport| transport.remote_addr)
+            .expect("session_id from last_established_session_by_public_key must exist in transport_sessions")
+            .remote_addr)
     }
 
     pub fn get_transport_by_socket(
@@ -179,7 +195,9 @@ impl State {
             .last_established_session_by_socket
             .get(socket_addr)
             .and_then(|sessions| sessions.get_latest())?;
-        self.transport_sessions.get_mut(&session_id)
+        Some(self.transport_sessions.get_mut(&session_id).expect(
+            "session_id from last_established_session_by_socket must exist in transport_sessions",
+        ))
     }
 
     pub(crate) fn reserve_session_index(&mut self) -> Option<SessionIndexReservation<'_>> {
@@ -209,26 +227,24 @@ impl State {
 
         if is_initiator {
             self.metrics[GAUGE_WIREAUTH_STATE_SESSION_ESTABLISHED_INITIATOR] += 1;
-            if self.initiating_sessions.remove(&session_id).is_some() {
-                self.metrics[GAUGE_WIREAUTH_STATE_INITIATING_SESSIONS] -= 1;
-            }
+            self.initiating_sessions.remove(&session_id);
+            self.metrics[GAUGE_WIREAUTH_STATE_INITIATING_SESSIONS] =
+                self.initiating_sessions.len() as u64;
         } else {
             self.metrics[GAUGE_WIREAUTH_STATE_SESSION_ESTABLISHED_RESPONDER] += 1;
-            if self.responding_sessions.remove(&session_id).is_some() {
-                self.metrics[GAUGE_WIREAUTH_STATE_RESPONDING_SESSIONS] -= 1;
-            }
+            self.responding_sessions.remove(&session_id);
+            self.metrics[GAUGE_WIREAUTH_STATE_RESPONDING_SESSIONS] =
+                self.responding_sessions.len() as u64;
         }
-
-        let key_bytes = *remote_public_key;
 
         let mut replaced_sessions = Vec::new();
 
         let sessions_by_key_new = !self
             .last_established_session_by_public_key
-            .contains_key(&key_bytes);
+            .contains_key(remote_public_key);
         let sessions = self
             .last_established_session_by_public_key
-            .entry(key_bytes)
+            .entry(*remote_public_key)
             .or_default();
 
         if is_initiator {
@@ -403,11 +419,23 @@ impl State {
     }
 
     pub fn remove_initiator(&mut self, session_index: &SessionIndex) -> Option<InitiatorState> {
-        self.initiating_sessions.remove(session_index)
+        let session = self.initiating_sessions.remove(session_index)?;
+        let remote_public_key = session.remote_public_key;
+        if let Some(&stored_session_index) = self.initiated_session_by_peer.get(&remote_public_key)
+        {
+            if stored_session_index == *session_index {
+                self.initiated_session_by_peer.remove(&remote_public_key);
+            }
+        }
+        Some(session)
     }
 
     pub fn remove_responder(&mut self, session_index: &SessionIndex) -> Option<ResponderState> {
-        self.responding_sessions.remove(session_index)
+        let session = self.responding_sessions.remove(session_index)?;
+        let remote_public_key = session.remote_public_key;
+        self.accepted_sessions_by_peer
+            .remove(&(remote_public_key, *session_index));
+        Some(session)
     }
 
     pub fn insert_initiator(
@@ -454,7 +482,8 @@ impl State {
             .and_then(|&session_id| {
                 self.initiating_sessions
                     .get(&session_id)
-                    .and_then(|s| s.stored_cookie())
+                    .expect("session_id from initiated_session_by_peer must exist in initiating_sessions")
+                    .stored_cookie()
             })
     }
 
@@ -467,7 +496,8 @@ impl State {
             .find_map(|(_, session_id)| {
                 self.responding_sessions
                     .get(session_id)
-                    .and_then(|s| s.stored_cookie())
+                    .expect("session_id from accepted_sessions_by_peer must exist in responding_sessions")
+                    .stored_cookie()
             })
     }
 
@@ -475,7 +505,11 @@ impl State {
         let accepted_max = self
             .accepted_sessions_by_peer
             .range((*remote_key, SessionIndex::new(0))..=(*remote_key, SessionIndex::new(u32::MAX)))
-            .filter_map(|(_, session_id)| self.responding_sessions.get(session_id))
+            .map(|(_, session_id)| {
+                self.responding_sessions.get(session_id).expect(
+                    "session_id from accepted_sessions_by_peer must exist in responding_sessions",
+                )
+            })
             .filter_map(|s| s.initiator_system_time())
             .max();
 
@@ -484,7 +518,7 @@ impl State {
             .get(remote_key)
             .and_then(|sessions| sessions.responder)
             .map(|(session_id, _)| session_id)
-            .and_then(|session_id| self.transport_sessions.get(&session_id))
+            .map(|session_id| self.transport_sessions.get(&session_id).expect("session_id from last_established_session_by_public_key must exist in transport_sessions"))
             .and_then(|s| s.initiator_system_time());
 
         match (accepted_max, open_max) {
