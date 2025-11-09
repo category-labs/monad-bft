@@ -79,7 +79,7 @@ impl Default for Config {
             session_timeout: Duration::from_secs(10),
             session_timeout_jitter: Duration::from_secs(1),
             keepalive_interval: Duration::from_secs(3),
-            keepalive_jitter: Duration::from_secs(1),
+            keepalive_jitter: Duration::from_millis(300),
             rekey_interval: Duration::from_secs(6 * 60 * 60),
             rekey_jitter: Duration::from_secs(60),
             max_session_duration: Duration::from_secs(7 * 60 * 60),

@@ -139,7 +139,7 @@ impl InitiatorState {
             validated_response.transport_keys.recv_key,
             self.common,
         );
-        let (header, timer) = transport.encrypt(config, duration_since_start, &mut []);
+        let (header, timer) = transport.encrypt(rng, config, duration_since_start, &mut []);
         (transport, timer, header)
     }
 

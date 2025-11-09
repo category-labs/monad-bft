@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc bf2fdd1a111f509ab890fc9a331c1f2b23d5c7bf85d0bcc96a0205327cae63bc # shrinks to actions = [Initiate { from: 1 }, Initiate { from: 1 }]
+cc 0891cb6f8b4f30812ceaf476aa7cc23fa4b4e78742ce9dc770bf411e9acb88fa # shrinks to actions = [Initiate { from: 2 }, Initiate { from: 2 }]
+cc 60326344fff00f9c36982f9d8bd2288e5a37bfddaf55ed5965f81a112fed0019 # shrinks to actions = [Initiate { from: 1 }, Initiate { from: 1 }]
+cc 8d32acc88c6c04d9872b41226880a4210a0d1f61b71e44d669bb5c91d24fce3a # shrinks to actions = [Initiate { from: 2 }, Initiate { from: 2 }]
+cc 6115254bd0fd7307d0b0764b79cc6dc75a0bca6c1802041e0e5f265f18696052 # shrinks to actions = [Initiate { from: 1 }, Initiate { from: 1 }, Initiate { from: 1 }]

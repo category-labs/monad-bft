@@ -87,7 +87,7 @@ where
     fn send_ping(
         &mut self,
         target: NodeId<CertificateSignaturePubKey<ST>>,
-        _socket_address: SocketAddrV4,
+        _name_record: crate::NameRecord,
         _ping: Ping<ST>,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!(?target, "handle send ping");

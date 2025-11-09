@@ -469,7 +469,7 @@ impl<ST: CertificateSignatureRecoverable> MonadNameRecord<ST> {
 pub enum PeerDiscoveryEvent<ST: CertificateSignatureRecoverable> {
     SendPing {
         to: NodeId<CertificateSignaturePubKey<ST>>,
-        socket_address: SocketAddrV4,
+        name_record: NameRecord,
         ping: Ping<ST>,
     },
     PingRequest {
@@ -567,7 +567,7 @@ pub enum PeerDiscoveryCommand<ST: CertificateSignatureRecoverable> {
     },
     PingPongCommand {
         target: NodeId<CertificateSignaturePubKey<ST>>,
-        socket_address: SocketAddrV4,
+        name_record: NameRecord,
         message: PeerDiscoveryMessage<ST>,
     },
     TimerCommand(PeerDiscoveryTimerCommand<PeerDiscoveryEvent<ST>, ST>),
@@ -580,7 +580,7 @@ pub trait PeerDiscoveryAlgo {
     fn send_ping(
         &mut self,
         target: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
-        socket_address: SocketAddrV4,
+        name_record: NameRecord,
         ping: Ping<Self::SignatureType>,
     ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
