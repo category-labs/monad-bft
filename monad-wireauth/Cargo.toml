@@ -3,6 +3,9 @@ name = "monad-wireauth"
 version = "0.1.0"
 edition = "2021"
 
+[package.metadata.cargo-shear]
+ignored = ["blake3"]
+
 [dependencies]
 monad-executor.workspace = true
 monad-secp.workspace = true
