@@ -22,13 +22,14 @@ use std::{
 use bytes::Bytes;
 use monad_executor::{ExecutorMetrics, ExecutorMetricsChain};
 use monad_secp::PubKey;
-use tracing::{debug, instrument, trace, Level};
+use tracing::{debug, instrument, trace, warn, Level};
 
 use crate::{
     context::Context,
     cookie::Cookies,
     error::{Error, Result, SessionErrorContext},
     filter::{Filter, FilterAction},
+    messages::MacMessage,
     metrics::*,
     protocol::messages::{
         ControlPacket, CookieReply, DataPacket, DataPacketHeader, HandshakeInitiation,
@@ -38,30 +39,13 @@ use crate::{
     state::State,
 };
 
-struct CompressedPublicKey([u8; monad_secp::COMPRESSED_PUBLIC_KEY_SIZE]);
-
-impl From<&monad_secp::PubKey> for CompressedPublicKey {
-    fn from(pubkey: &monad_secp::PubKey) -> Self {
-        CompressedPublicKey(pubkey.bytes_compressed())
-    }
-}
-
-impl std::fmt::Debug for CompressedPublicKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{:02x}{:02x}{:02x}{:02x}",
-            self.0[0], self.0[1], self.0[2], self.0[3]
-        )
-    }
-}
-
 pub struct API<C: Context> {
     state: State,
     timers: BTreeSet<(Duration, SessionIndex)>,
     packet_queue: VecDeque<(SocketAddr, Bytes)>,
     config: Config,
     local_static_key: monad_secp::KeyPair,
+    // Cached compressed public key to avoid recomputing when logging
     local_serialized_public: CompressedPublicKey,
     cookies: Cookies,
     filter: Filter,
@@ -70,6 +54,7 @@ pub struct API<C: Context> {
 }
 
 impl<C: Context> API<C> {
+    /// Creates a new API instance, it should be created for an individual socket.
     pub fn new(config: Config, local_static_key: monad_secp::KeyPair, mut context: C) -> Self {
         let local_static_public = local_static_key.pubkey();
         let cookies = Cookies::new(
@@ -110,12 +95,23 @@ impl<C: Context> API<C> {
             .push(self.filter.metrics())
     }
 
+    /// Returns the next packet to send over the network.
+    ///
+    /// Note: There are no limits for the internal queue, so it is better to use a separate
+    /// queue for pacing.
     #[instrument(level = Level::TRACE, skip(self), fields(local_public_key = ?self.local_serialized_public))]
     pub fn next_packet(&mut self) -> Option<(SocketAddr, Bytes)> {
-        self.metrics[GAUGE_WIREAUTH_API_NEXT_PACKET] += 1;
-        self.packet_queue.pop_front()
+        let pkt = self.packet_queue.pop_front();
+        self.metrics[GAUGE_WIREAUTH_PACKET_QUEUE_SIZE] = self.packet_queue.len() as u64;
+        pkt
     }
 
+    fn enqueue_packet(&mut self, addr: SocketAddr, pkt: impl Into<Bytes>) {
+        self.packet_queue.push_back((addr, pkt.into()));
+        self.metrics[GAUGE_WIREAUTH_PACKET_QUEUE_SIZE] = self.packet_queue.len() as u64;
+    }
+
+    /// Returns the next deadline.
     #[instrument(level = Level::TRACE, skip(self), fields(local_public_key = ?self.local_serialized_public))]
     pub fn next_deadline(&self) -> Option<Instant> {
         let session_deadline = self.timers.iter().next().map(|&(deadline, _)| deadline);
@@ -133,6 +129,14 @@ impl<C: Context> API<C> {
         )
     }
 
+    fn insert_timer(&mut self, timer: Duration, session_id: SessionIndex) {
+        self.timers.insert((timer, session_id));
+        self.metrics[GAUGE_WIREAUTH_TIMERS_SIZE] = self.timers.len() as u64;
+    }
+
+    /// Processes any pending timers.
+    ///
+    /// The caller is expected to call [`next_deadline`](Self::next_deadline) and then call this method when it fires.
     #[instrument(level = Level::TRACE, skip(self), fields(local_public_key = ?self.local_serialized_public))]
     pub fn tick(&mut self) {
         self.metrics[GAUGE_WIREAUTH_API_TICK] += 1;
@@ -167,8 +171,7 @@ impl<C: Context> API<C> {
 
             if let Some(message) = message {
                 self.metrics[GAUGE_WIREAUTH_ENQUEUED_KEEPALIVE] += 1;
-                self.packet_queue
-                    .push_back((message.remote_addr, message.header.into()));
+                self.enqueue_packet(message.remote_addr, message.header);
             }
 
             if let Some(rekey) = rekey {
@@ -179,14 +182,13 @@ impl<C: Context> API<C> {
                     rekey.retry_attempts,
                 ) {
                     self.metrics[GAUGE_WIREAUTH_ENQUEUED_HANDSHAKE_INIT] += 1;
-                    self.packet_queue
-                        .push_back((rekey.remote_addr, message.into()));
-                    self.timers.insert((timer, new_session_index));
+                    self.enqueue_packet(rekey.remote_addr, message);
+                    self.insert_timer(timer, new_session_index);
                 }
             }
 
             if let Some(timer) = timer {
-                self.timers.insert((timer, session_id));
+                self.insert_timer(timer, session_id);
             }
 
             if let Some(terminated) = terminated {
@@ -197,8 +199,13 @@ impl<C: Context> API<C> {
                 );
             }
         }
+        self.metrics[GAUGE_WIREAUTH_TIMERS_SIZE] = self.timers.len() as u64;
     }
 
+    /// Initiates a connection with a peer.
+    ///
+    /// This will initiate a connection even if the peer is already connected.
+    /// To avoid this, the caller can check for existing sessions before calling this method.
     #[instrument(level = Level::TRACE, skip(self, remote_static_key), fields(local_public_key = ?self.local_serialized_public, remote_addr = ?remote_addr))]
     pub fn connect(
         &mut self,
@@ -208,6 +215,9 @@ impl<C: Context> API<C> {
     ) -> Result<()> {
         self.metrics[GAUGE_WIREAUTH_API_CONNECT] += 1;
         debug!(retry_attempts, "initiating connection");
+
+        // Cookies are looked up from initiated sessions for simplicity.
+        // In the future, this can be improved to look up from both initiated and accepted sessions.
         let cookie = self
             .state
             .lookup_cookie_from_initiated_sessions(&remote_static_key);
@@ -219,8 +229,8 @@ impl<C: Context> API<C> {
             })?;
 
         self.metrics[GAUGE_WIREAUTH_ENQUEUED_HANDSHAKE_INIT] += 1;
-        self.packet_queue.push_back((remote_addr, message.into()));
-        self.timers.insert((timer, local_index));
+        self.enqueue_packet(remote_addr, message);
+        self.insert_timer(timer, local_index);
 
         Ok(())
     }
@@ -232,6 +242,7 @@ impl<C: Context> API<C> {
         cookie: Option<[u8; 16]>,
         retry_attempts: u64,
     ) -> Result<(SessionIndex, Duration, HandshakeInitiation)> {
+        // Reservation should be committed when code is no longer fallible
         let reservation = self.state.reserve_session_index().ok_or_else(|| {
             self.metrics[GAUGE_WIREAUTH_ERROR_SESSION_EXHAUSTED] += 1;
             Error::SessionIndexExhausted
@@ -260,11 +271,11 @@ impl<C: Context> API<C> {
         Ok((index, timer, message))
     }
 
-    fn check_under_load<M: crate::protocol::messages::MacMessage>(
+    fn is_under_load(
         &mut self,
         remote_addr: SocketAddr,
         sender_index: u32,
-        message: &M,
+        message: &impl MacMessage,
     ) -> bool {
         let duration_since_start = self.context.duration_since_start();
         let action = self.filter.apply(
@@ -284,14 +295,11 @@ impl<C: Context> API<C> {
                     self.cookies
                         .create(remote_addr, sender_index, message, duration_since_start);
                 self.metrics[GAUGE_WIREAUTH_ENQUEUED_COOKIE_REPLY] += 1;
-                self.packet_queue.push_back((remote_addr, reply.into()));
+                self.enqueue_packet(remote_addr, reply);
                 false
             }
             FilterAction::Drop => {
-                debug!(
-                    ?remote_addr,
-                    sender_index, "dropping packet due to rate limit"
-                );
+                self.metrics[GAUGE_WIREAUTH_RATE_LIMIT_DROP] += 1;
                 false
             }
         }
@@ -311,7 +319,7 @@ impl<C: Context> API<C> {
                 }
             })?;
 
-        if !self.check_under_load(
+        if !self.is_under_load(
             remote_addr,
             handshake_packet.sender_index.get(),
             handshake_packet,
@@ -341,13 +349,19 @@ impl<C: Context> API<C> {
             return Err(Error::TimestampReplay { addr: remote_addr });
         }
 
+        // Cookie is looked up from accepted sessions for simplicity.
+        // There is technically no reason not to reuse cookies between initiated and accepted sessions,
+        // and this can be improved in the future.
         let stored_cookie = self.state.lookup_cookie_from_accepted_sessions(remote_key);
 
+        // Reservation should be committed only when code is no longer fallible
+        // TODO(dshulyak): Get rid of reservation; code was refactored to be non-fallible when index is allocated
         let reservation = self.state.reserve_session_index().ok_or_else(|| {
             self.metrics[GAUGE_WIREAUTH_ERROR_SESSION_EXHAUSTED] += 1;
             Error::SessionIndexExhausted
         })?;
         let local_index = reservation.index();
+        reservation.commit();
 
         let (session, timer, message) = ResponderState::new(
             self.context.rng(),
@@ -357,20 +371,14 @@ impl<C: Context> API<C> {
             stored_cookie.as_ref(),
             validated_init,
             remote_addr,
-        )
-        .map_err(|e| {
-            self.metrics[GAUGE_WIREAUTH_ERROR_HANDSHAKE_INIT_RESPONDER_NEW] += 1;
-            e.with_addr(remote_addr)
-        })?;
-
-        reservation.commit();
+        );
 
         self.state
             .insert_responder(local_index, session, remote_key);
 
         self.metrics[GAUGE_WIREAUTH_ENQUEUED_HANDSHAKE_RESPONSE] += 1;
-        self.packet_queue.push_back((remote_addr, message.into()));
-        self.timers.insert((timer, local_index));
+        self.enqueue_packet(remote_addr, message);
+        self.insert_timer(timer, local_index);
 
         Ok(())
     }
@@ -396,6 +404,10 @@ impl<C: Context> API<C> {
         Ok(())
     }
 
+    /// Processes any control message.
+    ///
+    /// Note: Keepalive is a control message. For payloads with data, the caller must use the
+    /// [`decrypt`](Self::decrypt) method.
     #[instrument(level = Level::TRACE, skip(self, control), fields(local_public_key = ?self.local_serialized_public, remote_addr = ?remote_addr))]
     pub fn dispatch_control(
         &mut self,
@@ -432,6 +444,7 @@ impl<C: Context> API<C> {
         result
     }
 
+    /// Decrypts a data packet in place, returning the plaintext and the originator of the packet.
     #[instrument(level = Level::TRACE, skip(self, data_packet), fields(local_public_key = ?self.local_serialized_public, remote_addr = ?remote_addr))]
     pub fn decrypt<'a>(
         &mut self,
@@ -457,6 +470,9 @@ impl<C: Context> API<C> {
             let remote_public_key = transport.remote_public_key;
             (timer, remote_public_key, plaintext)
         } else if let Some(responder) = self.state.get_responder_mut(&receiver_index) {
+            // The session responder needs to receive at least one packet from the originator
+            // to prove private key ownership. We implement this by storing the
+            // responder separately until it has received that packet.
             let duration_since_start = self.context.duration_since_start();
             match responder.decrypt(&self.config, duration_since_start, data_packet) {
                 Ok((_timer, plaintext)) => {
@@ -481,7 +497,7 @@ impl<C: Context> API<C> {
             });
         };
 
-        self.timers.insert((timer, receiver_index));
+        self.insert_timer(timer, receiver_index);
 
         Ok((plaintext, remote_public_key))
     }
@@ -491,6 +507,8 @@ impl<C: Context> API<C> {
         response: &mut HandshakeResponse,
         remote_addr: SocketAddr,
     ) -> Result<()> {
+        // The initiator is transitioned into transport in 2 stages.
+        // All validators and other fallible actions must be done before removing the initiator from state.
         crate::protocol::crypto::verify_mac1(response, &self.local_static_key.pubkey()).map_err(
             |source| {
                 self.metrics[GAUGE_WIREAUTH_ERROR_MAC1_VERIFICATION_FAILED] += 1;
@@ -501,7 +519,7 @@ impl<C: Context> API<C> {
             },
         )?;
 
-        if !self.check_under_load(remote_addr, response.sender_index.get(), response) {
+        if !self.is_under_load(remote_addr, response.sender_index.get(), response) {
             debug!(?remote_addr, "handshake response dropped under load");
             return Ok(());
         }
@@ -526,10 +544,11 @@ impl<C: Context> API<C> {
                 e.with_addr(remote_addr)
             })?;
 
+        // Code should not be fallible after this point
         let initiator = self
             .state
             .remove_initiator(&receiver_session_index)
-            .unwrap();
+            .expect("initiator was accessed above");
 
         let duration_since_start = self.context.duration_since_start();
         debug!(local_session_id=?receiver_session_index, "initiator session established");
@@ -544,12 +563,13 @@ impl<C: Context> API<C> {
         self.state
             .insert_transport(receiver_session_index, transport);
 
-        self.packet_queue.push_back((remote_addr, message.into()));
-        self.timers.insert((timer, receiver_session_index));
+        self.enqueue_packet(remote_addr, message);
+        self.insert_timer(timer, receiver_session_index);
 
         Ok(())
     }
 
+    /// Encrypts plaintext in place using the latest established session for a public key.
     #[instrument(level = Level::TRACE, skip(self, public_key, plaintext), fields(local_public_key = ?self.local_serialized_public))]
     pub fn encrypt_by_public_key(
         &mut self,
@@ -568,10 +588,11 @@ impl<C: Context> API<C> {
         let (header, timer) =
             transport.encrypt(&self.config, self.context.duration_since_start(), plaintext);
         let session_id = transport.common.local_index;
-        self.timers.insert((timer, session_id));
+        self.insert_timer(timer, session_id);
         Ok(header)
     }
 
+    /// Encrypts plaintext in place using the latest established session for a socket address.
     #[instrument(level = Level::TRACE, skip(self, plaintext), fields(local_public_key = ?self.local_serialized_public, socket_addr = ?socket_addr))]
     pub fn encrypt_by_socket(
         &mut self,
@@ -590,24 +611,28 @@ impl<C: Context> API<C> {
         let (header, timer) =
             transport.encrypt(&self.config, self.context.duration_since_start(), plaintext);
         let session_id = transport.common.local_index;
-        self.timers.insert((timer, session_id));
+        self.insert_timer(timer, session_id);
         Ok(header)
     }
 
+    /// Disconnects and removes all sessions with the given public key.
     #[instrument(level = Level::TRACE, skip(self, public_key), fields(local_public_key = ?self.local_serialized_public))]
     pub fn disconnect(&mut self, public_key: &monad_secp::PubKey) {
         self.metrics[GAUGE_WIREAUTH_API_DISCONNECT] += 1;
         self.state.terminate_by_public_key(public_key);
     }
 
+    /// Checks if there is a session for the given socket.
     pub fn is_connected_socket(&self, socket_addr: &SocketAddr) -> bool {
         self.state.has_transport_by_socket(socket_addr)
     }
 
+    /// Checks if there is a session for the given public key.
     pub fn is_connected_public_key(&self, public_key: &monad_secp::PubKey) -> bool {
         self.state.has_transport_by_public_key(public_key)
     }
 
+    /// Checks if there is a session for the given public key and socket.
     pub fn is_connected_socket_and_public_key(
         &self,
         socket_addr: &SocketAddr,
@@ -617,7 +642,26 @@ impl<C: Context> API<C> {
             .has_transport_by_socket_and_public_key(socket_addr, public_key)
     }
 
+    /// Returns the socket address of the latest initiated session with the given public key.
     pub fn get_socket_by_public_key(&self, public_key: &monad_secp::PubKey) -> Option<SocketAddr> {
         self.state.get_socket_by_public_key(public_key)
+    }
+}
+
+struct CompressedPublicKey([u8; monad_secp::COMPRESSED_PUBLIC_KEY_SIZE]);
+
+impl From<&monad_secp::PubKey> for CompressedPublicKey {
+    fn from(pubkey: &monad_secp::PubKey) -> Self {
+        CompressedPublicKey(pubkey.bytes_compressed())
+    }
+}
+
+impl std::fmt::Debug for CompressedPublicKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:02x}{:02x}{:02x}{:02x}",
+            self.0[0], self.0[1], self.0[2], self.0[3]
+        )
     }
 }

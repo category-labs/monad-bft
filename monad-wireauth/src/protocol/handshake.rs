@@ -231,7 +231,7 @@ pub fn send_handshake_response<R: secp256k1::rand::Rng + secp256k1::rand::Crypto
     state: &mut HandshakeState,
     psk: &[u8; 32],
     stored_cookie: Option<&[u8; 16]>,
-) -> Result<(HandshakeResponse, TransportKeys), ProtocolError> {
+) -> (HandshakeResponse, TransportKeys) {
     let ephemeral_keypair = monad_secp::KeyPair::generate(rng);
     let ephemeral_public = ephemeral_keypair.pubkey();
     state.sender_index = local_session_index;
@@ -283,7 +283,7 @@ pub fn send_handshake_response<R: secp256k1::rand::Rng + secp256k1::rand::Crypto
         msg.mac2 = keyed_hash!(cookie_key.as_ref(), msg.mac2_input(), cookie).into();
     }
 
-    Ok((msg, derive_transport_keys(&state.chaining_key, false)))
+    (msg, derive_transport_keys(&state.chaining_key, false))
 }
 
 pub fn accept_handshake_response(
@@ -509,8 +509,7 @@ mod tests {
             &mut responder_state_mut,
             &psk,
             None,
-        )
-        .unwrap();
+        );
 
         let response_trace = extract_response_trace(&resp_msg);
 
@@ -628,8 +627,7 @@ mod tests {
             &mut responder_state_mut,
             &psk,
             Some(&cookie),
-        )
-        .unwrap();
+        );
 
         let response_with_cookie_trace = extract_response_trace(&resp_msg);
 
@@ -681,8 +679,7 @@ mod tests {
             &mut responder_state_mut,
             &psk,
             None,
-        )
-        .unwrap();
+        );
 
         let mut resp_msg_mut = resp_msg;
         let mut init_state_mut = init_state;
@@ -799,8 +796,7 @@ mod tests {
                 &mut responder_state_mut,
                 &psk,
                 None,
-            )
-            .unwrap();
+            );
 
             let response_trace = extract_response_trace(&resp_msg);
 

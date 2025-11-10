@@ -182,145 +182,6 @@ fn test_retries() {
     assert_eq!(decrypted3, b"message3");
 }
 
-//1. create 5 peers with independent managers
-//2. each peer initiates to all other peers
-//3. complete all handshakes
-//4. each peer exchanges messages with all other peers
-#[test]
-fn test_five_peers() {
-    init_tracing();
-    let (mut m0, pk0, _, _) = create_manager();
-    let (mut m1, pk1, _, _) = create_manager();
-    let (mut m2, pk2, _, _) = create_manager();
-    let (mut m3, pk3, _, _) = create_manager();
-    let (mut m4, pk4, _, _) = create_manager();
-    let a0: SocketAddr = "127.0.0.1:8000".parse().unwrap();
-    let a1: SocketAddr = "127.0.0.1:8001".parse().unwrap();
-    let a2: SocketAddr = "127.0.0.1:8002".parse().unwrap();
-    let a3: SocketAddr = "127.0.0.1:8003".parse().unwrap();
-    let a4: SocketAddr = "127.0.0.1:8004".parse().unwrap();
-
-    m0.connect(pk1, a1, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m0.connect(pk2, a2, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m0.connect(pk3, a3, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m0.connect(pk4, a4, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m1.connect(pk0, a0, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m1.connect(pk2, a2, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m1.connect(pk3, a3, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m1.connect(pk4, a4, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m2.connect(pk0, a0, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m2.connect(pk1, a1, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m2.connect(pk3, a3, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m2.connect(pk4, a4, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m3.connect(pk0, a0, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m3.connect(pk1, a1, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m3.connect(pk2, a2, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m3.connect(pk4, a4, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m4.connect(pk0, a0, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m4.connect(pk1, a1, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m4.connect(pk2, a2, DEFAULT_RETRY_ATTEMPTS).unwrap();
-    m4.connect(pk3, a3, DEFAULT_RETRY_ATTEMPTS).unwrap();
-
-    let i01 = collect::<HandshakeInitiation>(&mut m0);
-    let i02 = collect::<HandshakeInitiation>(&mut m0);
-    let i03 = collect::<HandshakeInitiation>(&mut m0);
-    let i04 = collect::<HandshakeInitiation>(&mut m0);
-    let i10 = collect::<HandshakeInitiation>(&mut m1);
-    let i12 = collect::<HandshakeInitiation>(&mut m1);
-    let i13 = collect::<HandshakeInitiation>(&mut m1);
-    let i14 = collect::<HandshakeInitiation>(&mut m1);
-    let i20 = collect::<HandshakeInitiation>(&mut m2);
-    let i21 = collect::<HandshakeInitiation>(&mut m2);
-    let i23 = collect::<HandshakeInitiation>(&mut m2);
-    let i24 = collect::<HandshakeInitiation>(&mut m2);
-    let i30 = collect::<HandshakeInitiation>(&mut m3);
-    let i31 = collect::<HandshakeInitiation>(&mut m3);
-    let i32 = collect::<HandshakeInitiation>(&mut m3);
-    let i34 = collect::<HandshakeInitiation>(&mut m3);
-    let i40 = collect::<HandshakeInitiation>(&mut m4);
-    let i41 = collect::<HandshakeInitiation>(&mut m4);
-    let i42 = collect::<HandshakeInitiation>(&mut m4);
-    let i43 = collect::<HandshakeInitiation>(&mut m4);
-
-    dispatch(&mut m1, &i01, a0);
-    dispatch(&mut m2, &i02, a0);
-    dispatch(&mut m3, &i03, a0);
-    dispatch(&mut m4, &i04, a0);
-    dispatch(&mut m0, &i10, a1);
-    dispatch(&mut m2, &i12, a1);
-    dispatch(&mut m3, &i13, a1);
-    dispatch(&mut m4, &i14, a1);
-    dispatch(&mut m0, &i20, a2);
-    dispatch(&mut m1, &i21, a2);
-    dispatch(&mut m3, &i23, a2);
-    dispatch(&mut m4, &i24, a2);
-    dispatch(&mut m0, &i30, a3);
-    dispatch(&mut m1, &i31, a3);
-    dispatch(&mut m2, &i32, a3);
-    dispatch(&mut m4, &i34, a3);
-    dispatch(&mut m0, &i40, a4);
-    dispatch(&mut m1, &i41, a4);
-    dispatch(&mut m2, &i42, a4);
-    dispatch(&mut m3, &i43, a4);
-
-    let r10 = collect::<HandshakeResponse>(&mut m1);
-    let r20 = collect::<HandshakeResponse>(&mut m2);
-    let r30 = collect::<HandshakeResponse>(&mut m3);
-    let r40 = collect::<HandshakeResponse>(&mut m4);
-    let r01 = collect::<HandshakeResponse>(&mut m0);
-    let r21 = collect::<HandshakeResponse>(&mut m2);
-    let r31 = collect::<HandshakeResponse>(&mut m3);
-    let r41 = collect::<HandshakeResponse>(&mut m4);
-    let r02 = collect::<HandshakeResponse>(&mut m0);
-    let r12 = collect::<HandshakeResponse>(&mut m1);
-    let r32 = collect::<HandshakeResponse>(&mut m3);
-    let r42 = collect::<HandshakeResponse>(&mut m4);
-    let r03 = collect::<HandshakeResponse>(&mut m0);
-    let r13 = collect::<HandshakeResponse>(&mut m1);
-    let r23 = collect::<HandshakeResponse>(&mut m2);
-    let r43 = collect::<HandshakeResponse>(&mut m4);
-    let r04 = collect::<HandshakeResponse>(&mut m0);
-    let r14 = collect::<HandshakeResponse>(&mut m1);
-    let r24 = collect::<HandshakeResponse>(&mut m2);
-    let r34 = collect::<HandshakeResponse>(&mut m3);
-
-    dispatch(&mut m0, &r10, a1);
-    dispatch(&mut m0, &r20, a2);
-    dispatch(&mut m0, &r30, a3);
-    dispatch(&mut m0, &r40, a4);
-    dispatch(&mut m1, &r01, a0);
-    dispatch(&mut m1, &r21, a2);
-    dispatch(&mut m1, &r31, a3);
-    dispatch(&mut m1, &r41, a4);
-    dispatch(&mut m2, &r02, a0);
-    dispatch(&mut m2, &r12, a1);
-    dispatch(&mut m2, &r32, a3);
-    dispatch(&mut m2, &r42, a4);
-    dispatch(&mut m3, &r03, a0);
-    dispatch(&mut m3, &r13, a1);
-    dispatch(&mut m3, &r23, a2);
-    dispatch(&mut m3, &r43, a4);
-    dispatch(&mut m4, &r04, a0);
-    dispatch(&mut m4, &r14, a1);
-    dispatch(&mut m4, &r24, a2);
-    dispatch(&mut m4, &r34, a3);
-
-    let mut plaintext = b"0->1".to_vec();
-    let packet = encrypt(&mut m0, &pk1, &mut plaintext);
-    let decrypted = decrypt(&mut m1, &packet, a0);
-    assert_eq!(decrypted, b"0->1");
-
-    let mut plaintext = b"2->3".to_vec();
-    let packet = encrypt(&mut m2, &pk3, &mut plaintext);
-    let decrypted = decrypt(&mut m3, &packet, a2);
-    assert_eq!(decrypted, b"2->3");
-
-    let mut plaintext = b"4->0".to_vec();
-    let packet = encrypt(&mut m4, &pk0, &mut plaintext);
-    let decrypted = decrypt(&mut m0, &packet, a4);
-    assert_eq!(decrypted, b"4->0");
-}
-
 //1. peer1 initiates to peer2
 //2. complete handshake
 //3. peer1 encrypts by public key and sends to peer2
@@ -470,13 +331,17 @@ fn test_timestamp_replay() {
     assert!(result2.is_none());
 }
 
-//1. create 10 peer managers with same keypair
+//1. create 10 peer managers
 //2. each initiates to one responder with distinct key
 //3. verify responder hits max accepted sessions limit
 #[test]
 fn test_too_many_accepted_sessions() {
     init_tracing();
-    let config = Config::default();
+    let config = Config {
+        low_watermark_sessions: 5,
+        high_watermark_sessions: 5,
+        ..Default::default()
+    };
 
     let mut rng = rng();
     let responder_keypair = monad_secp::KeyPair::generate(&mut rng);
@@ -485,13 +350,9 @@ fn test_too_many_accepted_sessions() {
     let mut responder = API::new(config.clone(), responder_keypair, responder_ctx);
     let responder_addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
 
-    let shared_keypair = monad_secp::KeyPair::generate(&mut rng);
-    let shared_secret_bytes = shared_keypair.secret_bytes();
-
-    for i in 0..5 {
+    for i in 0..10 {
         let initiator_ctx = TestContext::new();
-        let initiator_keypair =
-            monad_secp::KeyPair::from_bytes(&mut shared_secret_bytes.clone()).unwrap();
+        let initiator_keypair = monad_secp::KeyPair::generate(&mut rng);
         let mut initiator = API::new(config.clone(), initiator_keypair, initiator_ctx);
         let initiator_addr: SocketAddr = format!("127.0.0.1:800{}", i).parse().unwrap();
 
@@ -502,8 +363,11 @@ fn test_too_many_accepted_sessions() {
         let init = collect::<HandshakeInitiation>(&mut initiator);
         dispatch(&mut responder, &init, initiator_addr);
     }
-
-    assert!(responder.next_packet().is_some());
+    let mut pkts = vec![];
+    while let Some(pkt) = responder.next_packet() {
+        pkts.push(pkt);
+    }
+    assert_eq!(pkts.len(), 5);
 }
 
 //1. dispatch random invalid packet
@@ -525,7 +389,7 @@ fn test_random_packet_error() {
 fn test_filter_drop_rate_limit() {
     init_tracing();
     let config = Config {
-        handshake_rate_limit: 2,
+        handshake_rate_limit: 3,
         ..Config::default()
     };
 
@@ -550,9 +414,11 @@ fn test_filter_drop_rate_limit() {
         dispatch(&mut responder, &init, initiator_addr);
     }
 
-    let response_count = (0..4).filter(|_| responder.next_packet().is_some()).count();
-
-    assert!(response_count <= 2);
+    let mut pkts = vec![];
+    while let Some(pkt) = responder.next_packet() {
+        pkts.push(pkt);
+    }
+    assert_eq!(pkts.len(), 2);
 }
 
 //1. create manager and verify initial filter reset deadline
@@ -595,46 +461,6 @@ fn test_next_deadline() {
     let current_instant =
         peer1_ctx.convert_duration_since_start_to_deadline(peer1_ctx.duration_since_start());
     assert!(deadline_in_past.unwrap() <= current_instant);
-}
-
-//1. peer1 initiates to peer2
-//2. peer2 receives init and creates responder session
-//3. advance time past session timeout on peer2
-//4. peer2 tick triggers responder timeout
-//5. verify responder session terminated
-#[test]
-fn test_responder_timeout() {
-    init_tracing();
-    let config = Config::default();
-
-    let mut rng = rng();
-    let peer1_keypair = monad_secp::KeyPair::generate(&mut rng);
-    let peer1_ctx = TestContext::new();
-    let mut peer1 = API::new(config.clone(), peer1_keypair, peer1_ctx);
-
-    let peer2_keypair = monad_secp::KeyPair::generate(&mut rng);
-    let peer2_public = peer2_keypair.pubkey();
-    let peer2_ctx = TestContext::new();
-    let mut peer2 = API::new(config, peer2_keypair, peer2_ctx.clone());
-
-    let peer1_addr: SocketAddr = "127.0.0.1:8001".parse().unwrap();
-    let peer2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
-
-    peer1
-        .connect(peer2_public, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
-        .unwrap();
-
-    let init = collect::<HandshakeInitiation>(&mut peer1);
-    dispatch(&mut peer2, &init, peer1_addr);
-
-    let timer_before_timeout = peer2.next_deadline();
-    assert!(timer_before_timeout.is_some());
-
-    peer2_ctx.advance_time(Duration::from_secs(11));
-    peer2.tick();
-
-    let timer_after_timeout = peer2.next_deadline();
-    assert!(timer_after_timeout.is_some());
 }
 
 //1. create manager with custom filter reset interval

@@ -81,7 +81,7 @@ impl ResponderState {
         stored_cookie: Option<&[u8; 16]>,
         validated_init: ValidatedHandshakeInit,
         remote_addr: SocketAddr,
-    ) -> Result<(ResponderState, Duration, HandshakeResponse), SessionError> {
+    ) -> (ResponderState, Duration, HandshakeResponse) {
         let mut handshake_state = validated_init.handshake_state;
         let (response_msg, transport_keys) = handshake::send_handshake_response(
             rng,
@@ -89,8 +89,7 @@ impl ResponderState {
             &mut handshake_state,
             &config.psk,
             stored_cookie,
-        )
-        .map_err(SessionError::InvalidHandshake)?;
+        );
 
         let response_mac1 = response_msg.mac1.0;
 
@@ -119,7 +118,7 @@ impl ResponderState {
             transport_keys.recv_key,
             common,
         );
-        Ok((ResponderState { transport }, timer, response_msg))
+        (ResponderState { transport }, timer, response_msg)
     }
 
     pub fn decrypt<'a>(

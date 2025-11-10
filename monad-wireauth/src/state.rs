@@ -699,7 +699,6 @@ mod tests {
             validated_init,
             remote_addr,
         )
-        .unwrap()
         .0
     }
 
