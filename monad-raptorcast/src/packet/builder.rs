@@ -173,17 +173,17 @@ where
     }
 
     // we currently don't use non-standard merkle_tree_depth
-    #[expect(unused)]
-    pub fn merkle_tree_depth(mut self, depth: u8) -> Result<Self> {
+    #[cfg_attr(not(test), expect(unused))]
+    pub fn merkle_tree_depth(mut self, depth: u8) -> Self {
         self.merkle_tree_depth = depth;
-        Ok(self)
+        self
     }
 
     // we currently don't use any non-standard assemble mode.
     #[expect(unused)]
-    pub fn assemble_mode(mut self, mode: AssembleMode) -> Result<Self> {
+    pub fn assemble_mode(mut self, mode: AssembleMode) -> Self {
         self.assemble_mode = mode;
-        Ok(self)
+        self
     }
 
     // ----- Convenience methods for modifying the builder -----

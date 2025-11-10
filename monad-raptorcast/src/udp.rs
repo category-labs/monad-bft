@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeMap, num::NonZero};
+use std::{collections::BTreeMap, num::NonZero, ops::Range};
 
 use bytes::Bytes;
 use lru::LruCache;
@@ -94,6 +94,10 @@ const _: () = assert!(
 /// The max segment length should not exceed the standard MTU for
 /// Ethernet to avoid fragmentation when routed across the internet.
 pub const MAX_SEGMENT_LENGTH: usize = ETHERNET_SEGMENT_SIZE as usize;
+
+/// The maximum sane validator set size. Defined in
+/// <execution>/monad/staking/util/constants.hpp.
+pub const MAX_VALIDATOR_SET_SIZE: usize = 200;
 
 pub(crate) struct UdpState<ST: CertificateSignatureRecoverable> {
     self_id: NodeId<CertificateSignaturePubKey<ST>>,
@@ -339,6 +343,7 @@ pub enum MessageValidationError {
     InvalidSignature,
     InvalidTreeDepth,
     InvalidMerkleProof,
+    InvalidChunkId,
     InvalidTimestamp {
         timestamp: u64,
         max: u64,
@@ -360,7 +365,7 @@ pub enum MessageValidationError {
 ///     for simplicity
 /// - 4 bytes (u32) => Serialized AppMessage length (bytes)
 /// - 20 bytes * (merkle_tree_depth - 1) => merkle proof (leaves include everything that follows,
-///   eg hash(chunk_recipient + chunk_byte_offset + chunk_len + payload))
+///   eg hash(chunk_recipient + chunk_byte_offset + symbol_len + payload))
 ///
 /// - 20 bytes => first 20 bytes of hash of chunk's first hop recipient
 ///   - we set this even if broadcast bit is not set so that it's known if a message was intended
@@ -403,7 +408,7 @@ where
     let maybe_broadcast_mode = match (broadcast, secondary_broadcast) {
         (true, false) => Some(BroadcastMode::Primary),
         (false, true) => Some(BroadcastMode::Secondary),
-        (false, false) => None,
+        (false, false) => None, // broadcast or unicast
         (true, true) => {
             return Err(MessageValidationError::InvalidBroadcastBits);
         }
@@ -444,9 +449,9 @@ where
             .as_ref()
             .try_into()
             .expect("u32 is 4 bytes"),
-    );
+    ) as usize;
 
-    if app_message_len as usize > MAX_MESSAGE_SIZE {
+    if app_message_len > MAX_MESSAGE_SIZE {
         return Err(MessageValidationError::TooLong);
     };
 
@@ -476,6 +481,25 @@ where
 
     let cursor_chunk_id = split_off(2)?;
     let chunk_id = u16::from_le_bytes(cursor_chunk_id.as_ref().try_into().expect("u16 is 2 bytes"));
+    let symbol_len = cursor.len();
+
+    let chunk_id_range = match maybe_broadcast_mode {
+        None | Some(BroadcastMode::Secondary) => valid_chunk_id_range(app_message_len, symbol_len),
+        Some(BroadcastMode::Primary) => {
+            // only perform a basic sanity check here. more precise
+            // check of chunk_id is in decoding.rs when the validator
+            // set is available.
+            valid_chunk_id_range_raptorcast(app_message_len, symbol_len, MAX_VALIDATOR_SET_SIZE)
+        }
+    };
+    let Some(chunk_id_range) = chunk_id_range else {
+        // app_message_len overflow when scaled. this should not be
+        // reachable if app_message_len check works.
+        return Err(MessageValidationError::TooLong);
+    };
+    if !chunk_id_range.contains(&(chunk_id as usize)) {
+        return Err(MessageValidationError::InvalidChunkId);
+    }
 
     let cursor_payload = cursor;
     if cursor_payload.is_empty() {
@@ -516,7 +540,7 @@ where
         group_id,
         unix_ts_ms,
         app_message_hash,
-        app_message_len,
+        app_message_len: app_message_len as u32,
         maybe_broadcast_mode,
         recipient_hash,
         chunk_id,
@@ -541,6 +565,23 @@ fn ensure_valid_timestamp(unix_ts_ms: u64, max_age_ms: u64) -> Result<(), Messag
     } else {
         Ok(())
     }
+}
+
+fn valid_chunk_id_range_raptorcast(
+    app_message_len: usize,
+    symbol_len: usize,
+    num_validators: usize,
+) -> Option<Range<usize>> {
+    let base_chunks = app_message_len.div_ceil(symbol_len);
+    let rounding_chunks = num_validators;
+    let num_chunks = MAX_REDUNDANCY.scale(base_chunks)? + rounding_chunks;
+    Some(0..num_chunks)
+}
+
+fn valid_chunk_id_range(app_message_len: usize, symbol_len: usize) -> Option<Range<usize>> {
+    let base_chunks = app_message_len.div_ceil(symbol_len);
+    let num_chunks = MAX_REDUNDANCY.scale(base_chunks)?;
+    Some(0..num_chunks)
 }
 
 struct BroadcastBatch<PT: PubKey> {
@@ -691,7 +732,8 @@ mod tests {
 
     use super::{GroupId, MessageValidationError, UdpState};
     use crate::{
-        udp::{build_messages, parse_message, SIGNATURE_CACHE_SIZE},
+        packet::{MessageBuilder, PacketLayout},
+        udp::{build_messages, parse_message, MAX_VALIDATOR_SET_SIZE, SIGNATURE_CACHE_SIZE},
         util::{
             BroadcastMode, BuildTarget, EpochValidators, Group, ReBroadcastGroupMap, Redundancy,
         },
@@ -1047,6 +1089,68 @@ mod tests {
                 MessageValidationError::InvalidTimestamp { .. } => {}
                 other => panic!("unexpected error {:?}", other),
             }
+        }
+    }
+
+    pub const MERKLE_TREE_DEPTH: u8 = 6;
+    pub const SYMBOL_LEN: usize =
+        PacketLayout::new(DEFAULT_SEGMENT_SIZE as usize, MERKLE_TREE_DEPTH).symbol_len();
+    pub const MAX_REDUNDANCY: u16 = 7;
+
+    #[rstest]
+    #[case(SYMBOL_LEN * 2, 1, false, true)] // sanity check
+    #[case(SYMBOL_LEN * 2, MAX_REDUNDANCY * 2 - 1, false, true)]
+    #[case(SYMBOL_LEN * 2, MAX_REDUNDANCY * 2, false, false)]
+    #[case(SYMBOL_LEN * 2, MAX_REDUNDANCY * 2, true, true)]
+    #[case(SYMBOL_LEN * 2, MAX_REDUNDANCY * 2 + MAX_VALIDATOR_SET_SIZE as u16 - 1, true, true)]
+    #[case(SYMBOL_LEN * 2, MAX_REDUNDANCY * 2 + MAX_VALIDATOR_SET_SIZE as u16, true, false)]
+    fn test_chunk_id_validation(
+        #[case] app_msg_len: usize,
+        #[case] chunk_id: u16,
+        #[case] raptorcast: bool,
+        #[case] should_succeed: bool,
+    ) {
+        let (key, validators, known_addresses) = validator_set();
+        let epoch_validators = validators.view_without(vec![&NodeId::new(key.pubkey())]);
+        let target = if raptorcast {
+            BuildTarget::Raptorcast(epoch_validators)
+        } else {
+            BuildTarget::Broadcast(epoch_validators.into())
+        };
+        let app_msg = vec![0; app_msg_len];
+        let messages = MessageBuilder::new(&key, known_addresses)
+            .segment_size(DEFAULT_SEGMENT_SIZE as usize)
+            .group_id(GroupId::Primary(EPOCH))
+            .redundancy(Redundancy::from_u8(1))
+            .merkle_tree_depth(MERKLE_TREE_DEPTH)
+            .build_vec(&app_msg, &target);
+        let message = messages.unwrap().into_iter().next().unwrap();
+        let mut payload = BytesMut::from(&message.payload[..message.stride]);
+
+        let current_time = std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as u64;
+
+        let layout = PacketLayout::new(DEFAULT_SEGMENT_SIZE as usize, MERKLE_TREE_DEPTH);
+        let chunk_header = &mut payload[layout.chunk_header_range()];
+        let chunk_id_buf: &mut [u8] = &mut chunk_header[22..24];
+        chunk_id_buf.copy_from_slice(&chunk_id.to_le_bytes()); // override chunk id
+
+        let mut signature_cache = LruCache::new(SIGNATURE_CACHE_SIZE);
+        let result =
+            parse_message::<SignatureType>(&mut signature_cache, payload.freeze(), u64::MAX);
+
+        if should_succeed {
+            // modifying the chunk_id field can still result in invalid leaf hash/signature.
+            assert!(matches!(
+                result,
+                Ok(_)
+                    | Err(MessageValidationError::InvalidMerkleProof)
+                    | Err(MessageValidationError::InvalidSignature)
+            ));
+        } else {
+            assert!(matches!(
+                result,
+                Err(MessageValidationError::InvalidChunkId)
+            ));
         }
     }
 }
