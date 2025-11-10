@@ -20,7 +20,7 @@ use std::{
     sync::Arc,
 };
 
-use alloy_consensus::{Header, Transaction as _, TxEnvelope};
+use alloy_consensus::{Header, TxEnvelope};
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{Address, Bytes, B256, U256, U64};
 use alloy_rlp::Encodable;
@@ -195,15 +195,6 @@ pub async fn eth_call(
     tracer: MonadTracer,
     gas_specified: bool,
 ) -> CallResult {
-    // upper bound gas limit of transaction to block gas limit to prevent abuse of eth_call
-    if transaction.gas_limit() > block_header.gas_limit {
-        return CallResult::Failure(FailureCallResult {
-            error_code: EthCallResult::OtherError,
-            message: "gas limit too high".into(),
-            data: None,
-        });
-    }
-
     let mut rlp_encoded_tx = vec![];
     transaction.encode_2718(&mut rlp_encoded_tx);
 
