@@ -37,7 +37,7 @@ use rand::Rng as _;
 
 use crate::{
     udp::{ValidatedMessage, MAX_REDUNDANCY},
-    util::{compute_hash, AppMessageHash, HexBytes, NodeIdHash},
+    util::{compute_hash, AppMessageHash, BroadcastMode, HexBytes, NodeIdHash},
 };
 
 pub(crate) const RECENTLY_DECODED_CACHE_SIZE: usize = 10000;
@@ -174,7 +174,7 @@ where
 
             None => {
                 // the decoder state is not in cache, try create a new one
-                let decoder_state = DecoderState::from_initial_message(message)
+                let decoder_state = DecoderState::from_initial_message(message, context)
                     .map_err(TryDecodeError::InvalidSymbol)?;
 
                 let Some(decoder_state) =
@@ -442,6 +442,10 @@ impl<'a, PT: PubKey> DecodingContext<'a, PT> {
             validator_set,
             unix_ts_now,
         }
+    }
+
+    pub fn validator_set_size(&self) -> Option<usize> {
+        self.validator_set.map(|set| set.len())
     }
 }
 
@@ -1342,7 +1346,10 @@ struct DecoderState {
 }
 
 impl DecoderState {
-    pub fn from_initial_message<PT>(message: &ValidatedMessage<PT>) -> Result<Self, InvalidSymbol>
+    pub fn from_initial_message<PT>(
+        message: &ValidatedMessage<PT>,
+        context: &DecodingContext<PT>,
+    ) -> Result<Self, InvalidSymbol>
     where
         PT: PubKey,
     {
@@ -1354,9 +1361,22 @@ impl DecoderState {
 
         // symbol_len is always greater than zero, so this division is safe
         let num_source_symbols = app_message_len.div_ceil(symbol_len).max(SOURCE_SYMBOLS_MIN);
-        let encoded_symbol_capacity = MAX_REDUNDANCY
+        let mut encoded_symbol_capacity = MAX_REDUNDANCY
             .scale(num_source_symbols)
             .expect("redundancy-scaled num_source_symbols doesn't fit in usize");
+
+        if matches!(message.maybe_broadcast_mode, Some(BroadcastMode::Primary)) {
+            // Validator-to-validator raptorcast can include up to |valset| round-up chunks.
+            encoded_symbol_capacity += context.validator_set_size().unwrap_or_else(|| {
+                tracing::warn!(
+                    ?message,
+                    ?context,
+                    "Decoding raptorcast primary specifying validator set"
+                );
+                0
+            });
+        };
+
         let decoder = ManagedDecoder::new(num_source_symbols, encoded_symbol_capacity, symbol_len)
             .map_err(InvalidSymbol::InvalidDecoderParameter)?;
 
