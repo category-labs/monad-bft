@@ -230,13 +230,13 @@ impl RpcSender {
 
     fn create_size_aware_batches(
         &self,
-        txs: &[(TxEnvelope, Address)],
-    ) -> Vec<Vec<(TxEnvelope, Address)>> {
+        txs: &[(TxEnvelope, Address, crate::shared::private_key::PrivateKey)],
+    ) -> Vec<Vec<(TxEnvelope, Address, crate::shared::private_key::PrivateKey)>> {
         let mut batches = Vec::new();
         let mut current_batch = Vec::new();
         let mut current_batch_size = 0;
 
-        for (tx, addr) in txs {
+        for (tx, addr, _key) in txs {
             let tx_size = self.calculate_tx_payload_size(tx);
 
             // Start new batch if this would exceed max payload
@@ -246,7 +246,7 @@ impl RpcSender {
                 current_batch_size = 0;
             }
 
-            current_batch.push((tx.clone(), *addr));
+            current_batch.push((tx.clone(), *addr, _key.clone()));
             current_batch_size += tx_size;
         }
 
@@ -270,7 +270,10 @@ impl RpcSender {
         rlp_encoded_tx.len() * 2 + 2
     }
 
-    fn spawn_send_batch(&mut self, batch: &[(TxEnvelope, Address)]) {
+    fn spawn_send_batch(
+        &mut self,
+        batch: &[(TxEnvelope, Address, crate::shared::private_key::PrivateKey)],
+    ) {
         if batch.is_empty() {
             return;
         }
@@ -291,11 +294,11 @@ impl RpcSender {
 
         tokio::spawn(async move {
             let now = Instant::now();
-            for (tx, _to) in &batch {
+            for (tx, _to, _key) in &batch {
                 let _ = sent_txs.insert(*tx.tx_hash(), now);
             }
 
-            send_batch(&client, batch.iter().map(|(tx, _)| tx), &metrics).await;
+            send_batch(&client, batch.iter().map(|(tx, _, _)| tx), &metrics).await;
 
             trace!("Tx batch sent");
         });

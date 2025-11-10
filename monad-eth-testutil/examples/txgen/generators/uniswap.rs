@@ -26,7 +26,7 @@ impl Generator for UniswapGenerator {
         &mut self,
         accts: &mut [SimpleAccount],
         ctx: &GenCtx,
-    ) -> Vec<(TxEnvelope, Address)> {
+    ) -> Vec<(TxEnvelope, Address, crate::shared::private_key::PrivateKey)> {
         let mut txs = Vec::with_capacity(self.tx_per_sender * accts.len());
 
         // for each sender, provide liquidity in uniswap pools
@@ -39,7 +39,7 @@ impl Generator for UniswapGenerator {
                     ctx.set_tx_gas_limit,
                     ctx.priority_fee,
                 );
-                txs.push((tx, self.uniswap.addr));
+                txs.push((tx, self.uniswap.addr, sender.key.clone()));
             }
         }
 

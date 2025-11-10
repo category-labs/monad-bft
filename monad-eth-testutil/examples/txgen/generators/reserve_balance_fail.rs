@@ -27,7 +27,7 @@ impl Generator for ReserveBalanceFailGenerator {
         &mut self,
         accts: &mut [SimpleAccount],
         ctx: &GenCtx,
-    ) -> Vec<(TxEnvelope, Address)> {
+    ) -> Vec<(TxEnvelope, Address, crate::shared::private_key::PrivateKey)> {
         accts
             .iter_mut()
             .flat_map(|sender| {
@@ -61,7 +61,7 @@ impl Generator for ReserveBalanceFailGenerator {
                         let sig = sender.key.sign_transaction(&tx);
                         let tx = TxEnvelope::Eip1559(tx.into_signed(sig));
 
-                        (tx, to)
+                        (tx, to, sender.key.clone())
                     })
                     .collect_vec()
                     .into_iter()

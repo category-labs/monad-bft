@@ -118,7 +118,7 @@ impl Generator for ExtremeValuesGenerator {
         &mut self,
         accts: &mut [SimpleAccount],
         ctx: &GenCtx,
-    ) -> Vec<(TxEnvelope, Address)> {
+    ) -> Vec<(TxEnvelope, Address, crate::shared::private_key::PrivateKey)> {
         let mut txs = Vec::with_capacity(self.tx_per_sender * accts.len());
 
         for sender in accts {
@@ -132,8 +132,8 @@ impl Generator for ExtremeValuesGenerator {
                 let erc20_tx =
                     self.create_erc20_transaction(sender, to, combination, &self.erc20, ctx);
 
-                txs.push((native_tx, to));
-                txs.push((erc20_tx, to));
+                txs.push((native_tx, to, sender.key.clone()));
+                txs.push((erc20_tx, to, sender.key.clone()));
             }
         }
 

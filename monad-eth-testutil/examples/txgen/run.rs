@@ -246,6 +246,7 @@ fn run_traffic_gen(
         config.set_tx_gas_limit,
         config.priority_fee,
         config.random_priority_fee_range,
+        workload_group.mutation_percentage,
         Arc::clone(shutdown),
     );
 

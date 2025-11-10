@@ -291,11 +291,18 @@ impl Config {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct WorkloadGroup {
     /// How long to run this traffic pattern in seconds
     pub runtime_minutes: f64,
     pub name: String,
     pub traffic_gens: Vec<TrafficGen>,
+
+    /// Approximately what percentage of transactions should be mutated.
+    /// Txns are selected randomly for mutation, so actual percentage may vary,
+    /// but should be close to the configured percentage. On average, each
+    /// mutated txn will have one of its fields modified, but there may be more.
+    pub mutation_percentage: f64,
 }
 
 impl Default for WorkloadGroup {
@@ -304,6 +311,7 @@ impl Default for WorkloadGroup {
             runtime_minutes: 10.0,
             name: "default".to_string(),
             traffic_gens: vec![],
+            mutation_percentage: 0.0,
         }
     }
 }

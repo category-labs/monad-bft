@@ -29,7 +29,7 @@ impl Generator for DuplicateTxGenerator {
         &mut self,
         accts: &mut [SimpleAccount],
         ctx: &GenCtx,
-    ) -> Vec<(TxEnvelope, Address)> {
+    ) -> Vec<(TxEnvelope, Address, crate::shared::private_key::PrivateKey)> {
         let mut rng = SmallRng::from_entropy();
         let mut txs = Vec::with_capacity(self.tx_per_sender * accts.len());
 
@@ -56,7 +56,7 @@ impl Generator for DuplicateTxGenerator {
                         native_transfer_priority_fee(sender, to, U256::from(10), priority_fee, ctx)
                     }
                 };
-                txs.push((tx, to));
+                txs.push((tx, to, sender.key.clone()));
             }
         }
 

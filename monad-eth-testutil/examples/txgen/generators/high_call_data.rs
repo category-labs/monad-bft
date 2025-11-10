@@ -26,7 +26,7 @@ impl Generator for HighCallDataTxGenerator {
         &mut self,
         accts: &mut [SimpleAccount],
         ctx: &GenCtx,
-    ) -> Vec<(TxEnvelope, Address)> {
+    ) -> Vec<(TxEnvelope, Address, crate::shared::private_key::PrivateKey)> {
         let mut txs = Vec::with_capacity(accts.len());
 
         for sender in accts {
@@ -41,7 +41,7 @@ impl Generator for HighCallDataTxGenerator {
                     ctx,
                 );
 
-                txs.push((tx, to));
+                txs.push((tx, to, sender.key.clone()));
             }
         }
 

@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
+use alloy_consensus::{SignableTransaction, TxEip1559, TxEip7702, TxEnvelope};
 use alloy_eips::{eip2718::Encodable2718, eip7702::Authorization};
 use alloy_primitives::{
     hex::{self, FromHex},
@@ -23,7 +23,9 @@ use alloy_rlp::Encodable;
 use alloy_rpc_client::ReqwestClient;
 use alloy_sol_macro::sol;
 use eyre::Result;
+use rand::prelude::*;
 use serde::Deserialize;
+use tracing::error;
 
 use crate::{
     shared::{ensure_contract_deployed, eth_json_rpc::EthJsonRpc, private_key::PrivateKey},
@@ -255,5 +257,97 @@ sol! {
 
         function execute(Call[] calldata calls, bytes calldata signature) external payable;
         function execute(Call[] calldata calls) external payable;
+    }
+}
+
+pub fn mutate_eip7702_transaction(tx: &TxEnvelope, original_key: &PrivateKey) -> TxEnvelope {
+    let mut rng = rand::thread_rng();
+
+    let TxEnvelope::Eip7702(signed_tx) = tx else {
+        error!("mutate_eip7702_transaction called with non-EIP7702 transaction");
+        return tx.clone();
+    };
+
+    let original_tx = &signed_tx.tx();
+
+    let mut new_tx = TxEip7702 {
+        chain_id: original_tx.chain_id,
+        nonce: original_tx.nonce,
+        gas_limit: original_tx.gas_limit,
+        max_fee_per_gas: original_tx.max_fee_per_gas,
+        max_priority_fee_per_gas: original_tx.max_priority_fee_per_gas,
+        to: original_tx.to,
+        value: original_tx.value,
+        access_list: original_tx.access_list.clone(),
+        input: original_tx.input.clone(),
+        authorization_list: original_tx.authorization_list.clone(),
+    };
+
+    // 9 fields total: 8 transaction fields + 1 signature field
+    const FIELD_MUTATION_PROB: f64 = 1.0 / 9.0;
+
+    if rng.gen_bool(FIELD_MUTATION_PROB) {
+        new_tx.nonce = rng.gen_range(0..=u64::MAX);
+    }
+
+    if rng.gen_bool(FIELD_MUTATION_PROB) {
+        new_tx.gas_limit = rng.gen_range(0..=u64::MAX);
+    }
+
+    if rng.gen_bool(FIELD_MUTATION_PROB) {
+        new_tx.max_fee_per_gas = rng.gen_range(0..=u128::MAX);
+    }
+
+    if rng.gen_bool(FIELD_MUTATION_PROB) {
+        new_tx.max_priority_fee_per_gas = rng.gen_range(0..=u128::MAX);
+    }
+
+    if rng.gen_bool(FIELD_MUTATION_PROB) {
+        new_tx.to = Address::from(rng.gen::<[u8; 20]>());
+    }
+
+    if rng.gen_bool(FIELD_MUTATION_PROB) {
+        new_tx.value = U256::from(rng.gen::<u128>());
+    }
+
+    if rng.gen_bool(FIELD_MUTATION_PROB) {
+        let input_len = rng.gen_range(0..=1000);
+        new_tx.input = Bytes::from((0..input_len).map(|_| rng.gen::<u8>()).collect::<Vec<_>>());
+    }
+
+    if rng.gen_bool(FIELD_MUTATION_PROB) {
+        // Either clear authorizations or add random ones
+        if rng.gen_bool(0.5) {
+            new_tx.authorization_list = Vec::new();
+        } else {
+            let sender_address = signed_tx.recover_signer().unwrap_or(original_tx.to);
+            let num_auths = rng.gen_range(0..=10);
+            new_tx.authorization_list = (0..num_auths)
+                .map(|_| {
+                    let chain_id = rng.gen_range(0..=u64::MAX);
+                    let nonce = rng.gen_range(0..=u64::MAX);
+                    let auth = Authorization {
+                        chain_id,
+                        address: sender_address,
+                        nonce,
+                    };
+                    let sig_hash = auth.signature_hash();
+                    let signature = original_key.sign_hash(&sig_hash);
+                    auth.into_signed(signature)
+                })
+                .collect();
+        }
+    }
+
+    // Mutate signature (sign with wrong key) if selected
+    if rng.gen_bool(FIELD_MUTATION_PROB) {
+        // Mutate signature by signing with a random key (invalid signature)
+        let (_random_addr, random_key) = PrivateKey::new_with_random(&mut rng);
+        let sig = random_key.sign_transaction(&new_tx);
+        TxEnvelope::Eip7702(new_tx.into_signed(sig))
+    } else {
+        // Sign with original key (valid signature, but mutated fields)
+        let sig = original_key.sign_transaction(&new_tx);
+        TxEnvelope::Eip7702(new_tx.into_signed(sig))
     }
 }

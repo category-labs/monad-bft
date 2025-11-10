@@ -43,9 +43,11 @@ impl Generator for SystemTransactionSpamGenerator {
         &mut self,
         _accts: &mut [SimpleAccount],
         ctx: &GenCtx,
-    ) -> Vec<(TxEnvelope, Address)> {
+    ) -> Vec<(TxEnvelope, Address, crate::shared::private_key::PrivateKey)> {
         let mut txs = Vec::with_capacity(self.tx_per_sender);
         let system_signer = LocalSigner::from_bytes(&SYSTEM_SENDER_PRIV_KEY).unwrap();
+        let (_system_addr, system_key) =
+            crate::shared::private_key::PrivateKey::new_with_pk(SYSTEM_SENDER_PRIV_KEY);
 
         for i in 0..self.tx_per_sender {
             let recipient = self.recipient_keys.next_addr();
@@ -85,7 +87,7 @@ impl Generator for SystemTransactionSpamGenerator {
             let signature = system_signer.sign_hash_sync(&signature_hash).unwrap();
             let signed_tx = TxEnvelope::Eip1559(tx.into_signed(signature));
 
-            txs.push((signed_tx, recipient));
+            txs.push((signed_tx, recipient, system_key.clone()));
         }
 
         self.system_nonce += u64::try_from(self.tx_per_sender).unwrap_or(0);

@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
-use alloy_primitives::{Bytes, TxKind};
+use alloy_primitives::{Address, Bytes, TxKind, U256};
 use duplicates::DuplicateTxGenerator;
 use ecmul::ECMulGenerator;
 use eip7702::EIP7702Generator;
@@ -24,6 +24,7 @@ use few_to_many::CreateAccountsGenerator;
 use high_call_data::HighCallDataTxGenerator;
 use many_to_many::ManyToManyGenerator;
 use non_deterministic_storage::NonDeterministicStorageTxGenerator;
+use rand::prelude::*;
 use reserve_balance::ReserveBalanceGenerator;
 use reserve_balance_fail::ReserveBalanceFailGenerator;
 use self_destruct::SelfDestructTxGenerator;
@@ -167,7 +168,7 @@ impl Generator for NullGen {
         &mut self,
         _accts: &mut [SimpleAccount],
         _ctx: &GenCtx,
-    ) -> Vec<(TxEnvelope, Address)> {
+    ) -> Vec<(TxEnvelope, Address, crate::shared::private_key::PrivateKey)> {
         vec![]
     }
 }
@@ -296,4 +297,75 @@ pub fn erc20_mint(from: &mut SimpleAccount, erc20: &ERC20, ctx: &GenCtx) -> TxEn
         .unwrap_or(U256::ZERO); // todo: wire gas correctly, see above comment
     from.erc20_bal += U256::from(10_u128.pow(30)); // todo: current erc20 impl just mints a constant
     tx
+}
+
+pub fn mutate_eip1559_transaction(
+    tx: &TxEnvelope,
+    original_key: &crate::shared::private_key::PrivateKey,
+) -> TxEnvelope {
+    let mut rng = rand::thread_rng();
+
+    let TxEnvelope::Eip1559(signed_tx) = tx else {
+        error!("mutate_eip1559_transaction called with non-EIP1559 transaction");
+        return tx.clone();
+    };
+
+    let original_tx = &signed_tx.tx();
+
+    let mut new_tx = TxEip1559 {
+        chain_id: original_tx.chain_id,
+        nonce: original_tx.nonce,
+        gas_limit: original_tx.gas_limit,
+        max_fee_per_gas: original_tx.max_fee_per_gas,
+        max_priority_fee_per_gas: original_tx.max_priority_fee_per_gas,
+        to: original_tx.to,
+        value: original_tx.value,
+        access_list: original_tx.access_list.clone(),
+        input: original_tx.input.clone(),
+    };
+
+    // 8 fields total: 7 transaction fields + 1 signature field
+    const FIELD_MUTATION_PROB: f64 = 1.0 / 8.0;
+
+    if rng.gen_bool(FIELD_MUTATION_PROB) {
+        new_tx.nonce = rng.gen_range(0..=u64::MAX);
+    }
+
+    if rng.gen_bool(FIELD_MUTATION_PROB) {
+        new_tx.gas_limit = rng.gen_range(0..=u64::MAX);
+    }
+
+    if rng.gen_bool(FIELD_MUTATION_PROB) {
+        new_tx.max_fee_per_gas = rng.gen_range(0..=u128::MAX);
+    }
+
+    if rng.gen_bool(FIELD_MUTATION_PROB) {
+        new_tx.max_priority_fee_per_gas = rng.gen_range(0..=u128::MAX);
+    }
+
+    if rng.gen_bool(FIELD_MUTATION_PROB) {
+        new_tx.to = TxKind::Call(Address::from(rng.gen::<[u8; 20]>()));
+    }
+
+    if rng.gen_bool(FIELD_MUTATION_PROB) {
+        new_tx.value = U256::from(rng.gen::<u128>());
+    }
+
+    if rng.gen_bool(FIELD_MUTATION_PROB) {
+        let input_len = rng.gen_range(0..=1000);
+        new_tx.input = Bytes::from((0..input_len).map(|_| rng.gen::<u8>()).collect::<Vec<_>>());
+    }
+
+    // Mutate signature (sign with wrong key) if selected
+    if rng.gen_bool(FIELD_MUTATION_PROB) {
+        // Mutate signature by signing with a random key (invalid signature)
+        let (_random_addr, random_key) =
+            crate::shared::private_key::PrivateKey::new_with_random(&mut rng);
+        let sig = random_key.sign_transaction(&new_tx);
+        TxEnvelope::Eip1559(new_tx.into_signed(sig))
+    } else {
+        // Sign with original key (valid signature, but mutated fields)
+        let sig = original_key.sign_transaction(&new_tx);
+        TxEnvelope::Eip1559(new_tx.into_signed(sig))
+    }
 }

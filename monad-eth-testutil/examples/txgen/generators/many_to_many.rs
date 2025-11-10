@@ -28,7 +28,7 @@ impl Generator for ManyToManyGenerator {
         &mut self,
         accts: &mut [SimpleAccount],
         ctx: &GenCtx,
-    ) -> Vec<(TxEnvelope, Address)> {
+    ) -> Vec<(TxEnvelope, Address, crate::shared::private_key::PrivateKey)> {
         let mut idxs: Vec<usize> = (0..accts.len()).collect();
         let mut rng = SmallRng::from_entropy();
         let mut txs = Vec::with_capacity(self.tx_per_sender * accts.len());
@@ -53,7 +53,7 @@ impl Generator for ManyToManyGenerator {
                     TxType::Native => native_transfer(sender, to, U256::from(10), ctx),
                 };
 
-                txs.push((tx, to));
+                txs.push((tx, to, sender.key.clone()));
             }
         }
 

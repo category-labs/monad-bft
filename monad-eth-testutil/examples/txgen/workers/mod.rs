@@ -171,7 +171,7 @@ pub struct AddrsWithTime {
 
 pub struct AccountsWithTxs {
     pub accts: Accounts,
-    pub txs: Vec<(TxEnvelope, Address)>,
+    pub txs: Vec<(TxEnvelope, Address, crate::shared::private_key::PrivateKey)>,
 }
 
 impl ExactSizeIterator for AccountsIter<'_> {}

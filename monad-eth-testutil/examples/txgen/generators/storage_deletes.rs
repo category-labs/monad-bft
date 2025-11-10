@@ -30,7 +30,7 @@ impl Generator for StorageDeletesTxGenerator {
         &mut self,
         accts: &mut [SimpleAccount],
         ctx: &GenCtx,
-    ) -> Vec<(TxEnvelope, Address)> {
+    ) -> Vec<(TxEnvelope, Address, crate::shared::private_key::PrivateKey)> {
         let mut idxs: Vec<usize> = (0..accts.len()).collect();
         let mut rng = SmallRng::from_entropy();
         let mut txs = Vec::with_capacity(self.tx_per_sender * accts.len());
@@ -65,7 +65,7 @@ impl Generator for StorageDeletesTxGenerator {
                     )
                 };
 
-                txs.push((tx, to));
+                txs.push((tx, to, from.key.clone()));
             }
         }
 
