@@ -1337,7 +1337,6 @@ impl InvalidSymbol {
 struct DecoderState {
     decoder: ManagedDecoder,
     recipient_chunks: BTreeMap<NodeIdHash, usize>,
-    encoded_symbol_capacity: usize,
     app_message_len: usize,
     seen_esis: BitVec<usize, Lsb0>,
 }
@@ -1364,7 +1363,6 @@ impl DecoderState {
         let mut decoder_state = DecoderState {
             decoder,
             recipient_chunks: BTreeMap::new(),
-            encoded_symbol_capacity,
             app_message_len,
             seen_esis: bitvec![usize, Lsb0; 0; encoded_symbol_capacity],
         };
@@ -1402,7 +1400,6 @@ impl DecoderState {
         validate_symbol(
             message,
             self.decoder.symbol_len(),
-            self.encoded_symbol_capacity,
             self.app_message_len,
             &self.seen_esis,
         )
@@ -1411,7 +1408,6 @@ impl DecoderState {
 
 struct RecentlyDecodedState {
     symbol_len: usize,
-    encoded_symbol_capacity: usize,
     app_message_len: usize,
     seen_esis: BitVec<usize, Lsb0>,
     excess_chunk_count: usize,
@@ -1428,7 +1424,6 @@ impl RecentlyDecodedState {
         validate_symbol(
             message,
             self.symbol_len,
-            self.encoded_symbol_capacity,
             self.app_message_len,
             &self.seen_esis,
         )?;
@@ -1445,7 +1440,6 @@ impl From<DecoderState> for RecentlyDecodedState {
     fn from(decoder_state: DecoderState) -> Self {
         RecentlyDecodedState {
             symbol_len: decoder_state.decoder.symbol_len(),
-            encoded_symbol_capacity: decoder_state.encoded_symbol_capacity,
             app_message_len: decoder_state.app_message_len,
             seen_esis: decoder_state.seen_esis,
             excess_chunk_count: 0,
@@ -1456,7 +1450,6 @@ impl From<DecoderState> for RecentlyDecodedState {
 fn validate_symbol<PT: PubKey>(
     parsed_message: &ValidatedMessage<PT>,
     symbol_len: usize,
-    encoded_symbol_capacity: usize,
     app_message_len: usize,
     seen_esis: &BitVec,
 ) -> Result<(), InvalidSymbol> {
@@ -1469,9 +1462,9 @@ fn validate_symbol<PT: PubKey>(
         });
     }
 
-    if encoding_symbol_id >= encoded_symbol_capacity {
+    if encoding_symbol_id >= seen_esis.len() {
         return Err(InvalidSymbol::InvalidSymbolId {
-            encoded_symbol_capacity,
+            encoded_symbol_capacity: seen_esis.len(),
             encoding_symbol_id,
         });
     }
