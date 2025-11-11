@@ -36,10 +36,7 @@ impl<PT: PubKey> LeaderElection for SimpleRoundRobin<PT> {
         _epoch: Epoch,
         validators: &BTreeMap<NodeId<Self::NodeIdPubKey>, Stake>,
     ) -> NodeId<PT> {
-        let validators: Vec<_> = validators
-            .iter()
-            .filter_map(|(node_id, stake)| (*stake != Stake::ZERO).then_some(node_id))
-            .collect();
+        let validators: Vec<_> = validators.iter().map(|(node_id, _)| node_id).collect();
         *validators[round.0 as usize % validators.len()]
     }
 }

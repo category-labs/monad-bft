@@ -106,7 +106,18 @@ impl<SCT: SignatureCollection> ValidatorsConfig<SCT> {
             validators: validators_config
                 .validator_sets
                 .into_iter()
-                .map(|validator| (validator.epoch, validator.validators))
+                .map(|validator_set| {
+                    assert!(
+                        validator_set
+                            .validators
+                            .get_stakes()
+                            .iter()
+                            .all(|(_, stake)| *stake > Stake::ZERO),
+                        "validators should have non-zero stake"
+                    );
+
+                    (validator_set.epoch, validator_set.validators)
+                })
                 .collect(),
         })
     }

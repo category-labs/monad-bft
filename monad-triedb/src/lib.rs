@@ -542,12 +542,18 @@ impl TriedbHandle {
 
         let mut unique_secp_keys = HashSet::new();
         let mut unique_bls_keys = HashSet::new();
-        for (secp_key, bls_key, _) in &validator_set {
+        for (secp_key, bls_key, stake) in &validator_set {
             assert!(!unique_secp_keys.contains(secp_key));
             unique_secp_keys.insert(*secp_key);
 
             assert!(!unique_bls_keys.contains(bls_key));
             unique_bls_keys.insert(*bls_key);
+
+            assert!(
+                *stake > Stake::ZERO,
+                "validator {:?} should have non-zero stake",
+                secp_key
+            );
         }
 
         validator_set
