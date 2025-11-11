@@ -4840,6 +4840,7 @@ dependencies = [
  "eyre",
  "futures",
  "hex",
+ "monad-compress",
  "monad-eth-testutil",
  "monad-triedb-utils",
  "monad-types",
