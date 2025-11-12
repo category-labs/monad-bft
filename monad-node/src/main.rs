@@ -52,7 +52,10 @@ use monad_peer_discovery::{
     MonadNameRecord, NameRecord,
 };
 use monad_pprof::start_pprof_server;
-use monad_raptorcast::config::{RaptorCastConfig, RaptorCastConfigPrimary};
+use monad_raptorcast::{
+    config::{RaptorCastConfig, RaptorCastConfigPrimary},
+    RAPTORCAST_SOCKET,
+};
 use monad_router_multi::MultiRouter;
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::StateBackendThreadClient;
@@ -554,7 +557,11 @@ where
         .with_tcp_rps_burst(
             network_config.tcp_rate_limit_rps,
             network_config.tcp_rate_limit_burst,
-        );
+        )
+        .extend_udp_sockets(vec![monad_dataplane::UdpSocketConfig {
+            socket_addr: bind_address,
+            label: RAPTORCAST_SOCKET.to_string(),
+        }]);
 
     let self_id = NodeId::new(identity.pubkey());
     let self_record = NameRecord::new(
