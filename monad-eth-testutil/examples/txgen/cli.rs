@@ -205,6 +205,7 @@ pub enum CliGenMode {
     EIP7702Create {
         authorizations_per_tx: usize,
     },
+    NftSale,
 }
 
 impl From<CliGenMode> for GenMode {
@@ -235,6 +236,7 @@ impl From<CliGenMode> for GenMode {
             } => GenMode::EIP7702Create(EIP7702CreateConfig {
                 authorizations_per_tx,
             }),
+            CliGenMode::NftSale => GenMode::NftSale,
         }
     }
 }

@@ -23,6 +23,7 @@ use extreme_values::ExtremeValuesGenerator;
 use few_to_many::CreateAccountsGenerator;
 use high_call_data::HighCallDataTxGenerator;
 use many_to_many::ManyToManyGenerator;
+use nft_sale::NftSaleGenerator;
 use non_deterministic_storage::NonDeterministicStorageTxGenerator;
 use reserve_balance::ReserveBalanceGenerator;
 use reserve_balance_fail::ReserveBalanceFailGenerator;
@@ -46,6 +47,7 @@ mod extreme_values;
 mod few_to_many;
 mod high_call_data;
 mod many_to_many;
+mod nft_sale;
 mod non_deterministic_storage;
 mod reserve_balance;
 mod reserve_balance_fail;
@@ -158,6 +160,10 @@ pub fn make_generator(
             tx_per_sender,
             deployed_contract.erc20()?,
         )),
+        GenMode::NftSale => Box::new(NftSaleGenerator {
+            nft_sale: deployed_contract.nft_sale()?,
+            tx_per_sender,
+        }),
     })
 }
 
