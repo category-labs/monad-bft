@@ -789,7 +789,7 @@ where
         .get_cert_pubkeys(&epoch)
         .ok_or(Error::ValidatorSetDataUnavailable)?;
 
-    let leader = election.get_leader(round, epoch, validator_set.get_members());
+    let leader = election.get_leader(round, validator_set.get_members());
 
     Ok((validator_set, validator_cert_pubkeys, leader))
 }
@@ -1577,7 +1577,7 @@ mod test {
             SignatureCollectionType,
             _,
         >(2, ValidatorSetFactory::default());
-        let election = WeightedRoundRobin::new(Epoch(1));
+        let election = WeightedRoundRobin::default();
 
         // TC doesn't have any signatures
         let tc: TimeoutCertificate<SignatureType, SignatureCollectionType, ExecutionProtocolType> =
@@ -1653,7 +1653,7 @@ mod test {
             SignatureCollectionType,
             _,
         >(2, ValidatorSetFactory::default());
-        let election = WeightedRoundRobin::new(Epoch(1));
+        let election = WeightedRoundRobin::default();
 
         let tmo_epoch = Epoch(1);
         let tmo_round = Round(5);
@@ -1747,7 +1747,7 @@ mod test {
         >(4, ValidatorSetFactory::default());
 
         let validator_stakes = Vec::from_iter(valset.get_members().clone());
-        let election = WeightedRoundRobin::new(Epoch(1));
+        let election = WeightedRoundRobin::default();
 
         let author = &keys[0];
         let author_cert_key = &cert_keys[0];
@@ -1870,7 +1870,7 @@ mod test {
             _,
         >(4, ValidatorSetFactory::default());
         let validator_stakes = Vec::from_iter(valset.get_members().clone());
-        let election = WeightedRoundRobin::new(Epoch(1));
+        let election = WeightedRoundRobin::default();
 
         let author_cert_key = &cert_keys[0];
 
@@ -1928,7 +1928,7 @@ mod test {
             _,
         >(4, ValidatorSetFactory::default());
         let validator_stakes = Vec::from_iter(valset.get_members().clone());
-        let election = WeightedRoundRobin::new(Epoch(1));
+        let election = WeightedRoundRobin::default();
 
         let author_cert_key = &cert_keys[0];
 
@@ -1971,7 +1971,7 @@ mod test {
             _,
         >(4, ValidatorSetFactory::default());
         let validator_stakes = Vec::from_iter(valset.get_members().clone());
-        let election = WeightedRoundRobin::new(Epoch(1));
+        let election = WeightedRoundRobin::default();
 
         let vote = Vote {
             id: BlockId(Hash([0x09_u8; 32])),
@@ -2026,7 +2026,7 @@ mod test {
             _,
         >(4, ValidatorSetFactory::default());
         let validator_stakes = Vec::from_iter(valset.get_members().clone());
-        let election = WeightedRoundRobin::new(Epoch(1));
+        let election = WeightedRoundRobin::default();
 
         // create valid QC
         let vote = Vote {
