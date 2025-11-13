@@ -141,10 +141,9 @@ fn main() {
                 &keystore_path,
                 KeystoreVersion::DirectIkm,
             );
-            if result.is_ok() {
-                println!("Successfully generated keystore file.");
-            } else {
-                println!("Keystore file generation failed, try again.");
+            match result {
+                Ok(()) => println!("Successfully generated keystore file."),
+                Err(err) => println!("Keystore file generation failed, try again. {:?}", err),
             }
             ikm.zeroize();
         }
@@ -212,19 +211,22 @@ fn main() {
                 None => &ikm,
             };
             let ikm_vec = hex::decode(ikm_hex).expect("failed to parse ikm as hex");
-            let mut ikm: KeystoreSecret = ikm_vec.into();
 
             if let Some(key_type) = key_type {
+                // print private and public key using version 2 approach
+                let mut keystore_secret = KeystoreSecret::new(ikm_vec.clone());
                 match key_type {
                     KeyType::Bls => {
-                        let bls_keypair = ikm.to_bls(KeystoreVersion::DirectIkm).unwrap();
+                        let bls_keypair =
+                            keystore_secret.to_bls(KeystoreVersion::DirectIkm).unwrap();
                         let private_key = bls_keypair.privkey_view();
                         let public_key = bls_keypair.pubkey();
                         println!("BLS private key: {}", private_key);
                         println!("BLS public key: {:?}", public_key);
                     }
                     KeyType::Secp => {
-                        let secp_keypair = ikm.to_secp(KeystoreVersion::DirectIkm).unwrap();
+                        let secp_keypair =
+                            keystore_secret.to_secp(KeystoreVersion::DirectIkm).unwrap();
                         let private_key = secp_keypair.privkey_view();
                         let public_key = secp_keypair.pubkey();
                         println!("Secp private key: {}", private_key);
@@ -234,16 +236,16 @@ fn main() {
             }
 
             let result = Keystore::create_keystore_json_with_version(
-                ikm.as_ref(),
+                &ikm_vec,
                 &password,
                 &keystore_path,
                 KeystoreVersion::DirectIkm,
             );
-            if result.is_ok() {
-                println!("Successfully generated keystore file.");
-            } else {
-                println!("Keystore file generation failed, try again.");
+            match result {
+                Ok(()) => println!("Successfully generated keystore file."),
+                Err(err) => println!("Keystore file generation failed, try again. {:?}", err),
             }
+            ikm_vec.zeroize();
         }
     }
 }

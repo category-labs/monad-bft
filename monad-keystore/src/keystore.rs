@@ -130,6 +130,7 @@ impl KeystoreSecret {
         self.0.is_empty()
     }
 
+    /// zeroizes the keystore secret
     pub fn to_bls(&mut self, version: KeystoreVersion) -> Result<BlsKeyPair, KeystoreError> {
         match version {
             KeystoreVersion::Legacy => {
@@ -141,6 +142,7 @@ impl KeystoreSecret {
         }
     }
 
+    /// zeroizes the keystore secret
     pub fn to_secp(&mut self, version: KeystoreVersion) -> Result<KeyPair, KeystoreError> {
         match version {
             KeystoreVersion::Legacy => {
