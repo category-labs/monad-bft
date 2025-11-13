@@ -205,7 +205,7 @@ fn run_custom_iter<const N: usize>(
                         vec![(
                             tx.clone(),
                             if owned {
-                                PoolTransactionKind::Owned
+                                PoolTransactionKind::owned_default()
                             } else {
                                 PoolTransactionKind::Forwarded
                             },
@@ -258,7 +258,7 @@ fn run_custom_iter<const N: usize>(
                             (
                                 tx,
                                 if owned {
-                                    PoolTransactionKind::Owned
+                                    PoolTransactionKind::owned_default()
                                 } else {
                                     PoolTransactionKind::Forwarded
                                 },
