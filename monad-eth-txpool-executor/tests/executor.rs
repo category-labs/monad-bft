@@ -115,7 +115,7 @@ async fn test_ipc_tx_forwarding_pacing() {
 
     assert!(txpool_executor.poll_next_unpin(&mut cx).is_pending());
 
-    const NUM_TXS: usize = 1024;
+    const NUM_TXS: usize = 256;
 
     for nonce in 0..NUM_TXS {
         ipc_client

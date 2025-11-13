@@ -25,11 +25,17 @@ use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolSnapshot};
 use tokio::{net::UnixStream, sync::mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
-use tracing::warn;
+use tracing::{error, warn};
 
 pub use self::message::EthTxPoolIpcTx;
 
 mod message;
+
+fn build_length_delimited_codec() -> LengthDelimitedCodec {
+    LengthDelimitedCodec::builder()
+        .max_frame_length(64 * 1024 * 1024)
+        .new_codec()
+}
 
 pub struct EthTxPoolIpcStream {
     // It's really ugly to emulate Sink for a Framed<UnixStream, ...> in a sync
@@ -62,7 +68,7 @@ impl EthTxPoolIpcStream {
         tx_sender: mpsc::Sender<EthTxPoolIpcTx>,
         mut event_rx: mpsc::Receiver<Vec<EthTxPoolEvent>>,
     ) -> io::Result<()> {
-        let mut stream = Framed::new(stream, LengthDelimitedCodec::default());
+        let mut stream = Framed::new(stream, build_length_delimited_codec());
 
         let snapshot_bytes = bincode::serialize(&snapshot).expect("snapshot is serializable");
 
@@ -81,6 +87,7 @@ impl EthTxPoolIpcStream {
                             "EthTxPoolIpcStream received invalid tx serialized bytes!"
                         ));
                     };
+
 
                     let Err(error) = tx_sender.try_send(tx) else {
                         continue;
@@ -103,7 +110,10 @@ impl EthTxPoolIpcStream {
 
                     let events = bincode::serialize(&events).expect("txpool events are serializable");
 
-                    stream.send(events.into()).await?;
+                    if let Err(err) = stream.send(events.into()).await {
+                        error!(?err, "txpool events failed to send over socket");
+                        return Err(err);
+                    }
                 }
             }
         }
@@ -157,7 +167,7 @@ impl EthTxPoolIpcClient {
         P: AsRef<Path>,
     {
         let stream = UnixStream::connect(path).await?;
-        let mut stream = Framed::new(stream, LengthDelimitedCodec::default());
+        let mut stream = Framed::new(stream, build_length_delimited_codec());
 
         let snapshot_bytes = stream.next().await.ok_or_else(|| {
             io::Error::new(
