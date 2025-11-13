@@ -33,6 +33,8 @@ criterion.workspace = true
 insta = { workspace = true, features = ["yaml"] }
 serde = { workspace = true, features = ["derive"] }
 tikv-jemallocator.workspace = true
+byte-unit.workspace = true
+humantime.workspace = true
 
 [[bench]]
 name = "manager_bench"
@@ -40,3 +42,6 @@ harness = false
 
 [[example]]
 name = "demo"
+
+[[example]]
+name = "spam"

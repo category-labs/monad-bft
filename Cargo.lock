@@ -6277,10 +6277,12 @@ version = "0.1.0"
 dependencies = [
  "aegis",
  "blake3",
+ "byte-unit",
  "bytes",
  "clap 4.5.47",
  "criterion",
  "hex",
+ "humantime",
  "insta",
  "lru",
  "monad-executor",
