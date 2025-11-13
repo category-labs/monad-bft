@@ -25,6 +25,8 @@ tracing = { workspace = true }
 zerocopy = { workspace = true }
 
 [dev-dependencies]
+clap = { workspace = true, features = ["derive"] }
+io-uring = { workspace = true }
 ntest = { workspace = true }
 rstest = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }

@@ -5072,10 +5072,12 @@ name = "monad-dataplane"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "clap 4.5.47",
  "env_logger 0.10.2",
  "futures",
  "futures-util",
  "governor",
+ "io-uring 0.7.10",
  "libc",
  "monad-types",
  "monoio",

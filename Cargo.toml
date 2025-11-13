@@ -141,6 +141,7 @@ console_error_panic_hook = "0.1"
 criterion = { version = "0.4", features = ["html_reports"] }
 dateparser = "0.2"
 insta = "1.42"
+io-uring = "0.7"
 ctr = "0.9.2"
 dashmap = "6.1.0"
 enum_dispatch = "0.3.13"
