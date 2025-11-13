@@ -22,7 +22,7 @@ use alloy_consensus::Transaction;
 use alloy_primitives::Address;
 use indexmap::map::VacantEntry;
 use monad_chain_config::{execution_revision::MonadExecutionRevision, revision::ChainRevision};
-use monad_eth_block_policy::nonce_usage::NonceUsage;
+use monad_consensus_types::nonce_usage::NonceUsage;
 use monad_eth_txpool_types::EthTxPoolDropReason;
 use monad_tfm::base_fee::MIN_BASE_FEE;
 use monad_types::Nonce;
