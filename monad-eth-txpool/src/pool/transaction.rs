@@ -15,7 +15,7 @@
 
 use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
 use alloy_eips::eip7702::Authorization;
-use alloy_primitives::{Address, TxHash};
+use alloy_primitives::{Address, TxHash, U256};
 use alloy_rlp::Encodable;
 use monad_chain_config::{execution_revision::ExecutionChainParams, revision::ChainParams};
 use monad_consensus_types::block::ConsensusBlockHeader;
@@ -26,7 +26,7 @@ use monad_eth_block_policy::{
     compute_txn_max_gas_cost, compute_txn_max_value,
     validation::{static_validate_transaction, StaticValidationError},
 };
-use monad_eth_txpool_types::EthTxPoolDropReason;
+use monad_eth_txpool_types::{EthTxPoolDropReason, DEFAULT_TX_PRIORITY};
 use monad_eth_types::EthExecutionProtocol;
 use monad_system_calls::{validator::SystemTransactionValidator, SYSTEM_SENDER_ETH_ADDRESS};
 use monad_tfm::base_fee::{MIN_BASE_FEE, PRE_TFM_BASE_FEE};
@@ -42,8 +42,17 @@ pub const fn max_eip2718_encoded_length(execution_params: &ExecutionChainParams)
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PoolTransactionKind {
-    Owned,
+    Owned { priority: U256, extra_data: Vec<u8> },
     Forwarded,
+}
+
+impl PoolTransactionKind {
+    pub fn owned_default() -> Self {
+        Self::Owned {
+            priority: DEFAULT_TX_PRIORITY,
+            extra_data: vec![],
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -240,7 +249,7 @@ impl ValidEthTransaction {
 
     pub fn is_owned(&self) -> bool {
         match self.kind {
-            PoolTransactionKind::Owned => true,
+            PoolTransactionKind::Owned { .. } => true,
             PoolTransactionKind::Forwarded => false,
         }
     }

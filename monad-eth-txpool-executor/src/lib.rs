@@ -34,6 +34,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, PoolTransactionKind};
+use monad_eth_txpool_ipc::EthTxPoolIpcTx;
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolEventType};
 use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
@@ -527,21 +528,30 @@ where
 
             let recovered_txs = {
                 let (recovered_txs, dropped_txs): (Vec<_>, BTreeMap<_, _>) =
-                    unvalidated_txs.into_par_iter().partition_map(|tx| {
-                        let _span = trace_span!("txpool: ipc tx recover signer").entered();
-                        match tx.secp256k1_recover() {
-                            Ok(signer) => rayon::iter::Either::Left((
-                                Recovered::new_unchecked(tx, signer),
-                                PoolTransactionKind::Owned,
-                            )),
-                            Err(_) => rayon::iter::Either::Right((
-                                *tx.tx_hash(),
-                                EthTxPoolEventType::Drop {
-                                    reason: EthTxPoolDropReason::InvalidSignature,
-                                },
-                            )),
-                        }
-                    });
+                    unvalidated_txs.into_par_iter().partition_map(
+                        |EthTxPoolIpcTx {
+                             tx,
+                             priority,
+                             extra_data,
+                         }| {
+                            let _span = trace_span!("txpool: ipc tx recover signer").entered();
+                            match tx.secp256k1_recover() {
+                                Ok(signer) => rayon::iter::Either::Left((
+                                    Recovered::new_unchecked(tx, signer),
+                                    PoolTransactionKind::Owned {
+                                        priority,
+                                        extra_data,
+                                    },
+                                )),
+                                Err(_) => rayon::iter::Either::Right((
+                                    *tx.tx_hash(),
+                                    EthTxPoolEventType::Drop {
+                                        reason: EthTxPoolDropReason::InvalidSignature,
+                                    },
+                                )),
+                            }
+                        },
+                    );
                 ipc_events.extend(dropped_txs);
                 recovered_txs
             };
