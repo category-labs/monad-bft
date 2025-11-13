@@ -97,7 +97,7 @@ fn with_txpool(
         vec![(
             tx,
             if insert_tx_owned {
-                PoolTransactionKind::Owned
+                PoolTransactionKind::owned_default()
             } else {
                 PoolTransactionKind::Forwarded
             },
