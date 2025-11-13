@@ -16,7 +16,7 @@
 use std::{collections::BTreeMap, sync::atomic::Ordering, time::Instant};
 
 use alloy_consensus::{transaction::Recovered, TxEnvelope};
-use alloy_primitives::{Address, TxHash};
+use alloy_primitives::TxHash;
 use monad_eth_txpool_types::{
     EthTxPoolDropReason, EthTxPoolEventType, EthTxPoolEvictReason, EthTxPoolInternalDropReason,
 };
@@ -43,7 +43,7 @@ impl<'a> EthTxPoolEventTracker<'a> {
         }
     }
 
-    pub fn insert(&mut self, address: Address, tx_hash: TxHash, owned: bool) {
+    pub fn insert(&mut self, tx: &Recovered<TxEnvelope>, owned: bool) {
         if owned {
             self.metrics.insert_owned_txs.fetch_add(1, Ordering::SeqCst);
         } else {
@@ -52,25 +52,30 @@ impl<'a> EthTxPoolEventTracker<'a> {
                 .fetch_add(1, Ordering::SeqCst);
         }
 
-        self.events
-            .insert(tx_hash, EthTxPoolEventType::Insert { address, owned });
+        self.events.insert(
+            *tx.tx_hash(),
+            EthTxPoolEventType::Insert {
+                address: tx.signer(),
+                owned,
+                tx: tx.clone_tx(),
+            },
+        );
     }
 
     pub fn replace(
         &mut self,
-        address: Address,
         old_tx_hash: TxHash,
-        new_tx_hash: TxHash,
+        new_tx: &Recovered<TxEnvelope>,
         new_owned: bool,
     ) {
         self.drop(
             old_tx_hash,
             EthTxPoolDropReason::ReplacedByHigherPriority {
-                replacement: new_tx_hash,
+                replacement: *new_tx.tx_hash(),
             },
         );
 
-        self.insert(address, new_tx_hash, new_owned);
+        self.insert(new_tx, new_owned);
     }
 
     pub fn drop(&mut self, tx_hash: TxHash, reason: EthTxPoolDropReason) {

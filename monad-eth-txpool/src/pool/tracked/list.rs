@@ -143,7 +143,7 @@ impl TrackedTxList {
             btree_map::Entry::Vacant(v) => {
                 limit_tracker.add_tx(&tx);
 
-                event_tracker.insert(tx.signer(), tx.hash(), tx.is_owned());
+                event_tracker.insert(tx.raw(), tx.is_owned());
 
                 Some(&v.insert((tx, event_tracker.now)).0)
             }
@@ -163,7 +163,7 @@ impl TrackedTxList {
                 limit_tracker.add_tx(&tx);
                 limit_tracker.remove_tx(existing_tx);
 
-                event_tracker.replace(tx.signer(), existing_tx.hash(), tx.hash(), tx.is_owned());
+                event_tracker.replace(existing_tx.hash(), tx.raw(), tx.is_owned());
 
                 entry.insert((tx, event_tracker.now));
 
