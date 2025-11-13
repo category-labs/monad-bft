@@ -5457,10 +5457,12 @@ dependencies = [
  "monad-secp",
  "pbkdf2 0.12.2",
  "rand 0.8.5",
+ "rstest",
  "scrypt",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "unicode-normalization",
  "zeroize",
 ]

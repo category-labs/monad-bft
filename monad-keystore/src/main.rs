@@ -21,7 +21,6 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use rand::{rngs::OsRng, RngCore};
-use zeroize::Zeroize;
 
 use crate::keystore::{Keystore, KeystoreSecret, KeystoreVersion};
 
@@ -94,11 +93,8 @@ enum KeyType {
     Bls,
 }
 
-fn main() {
-    let args = Args::parse();
-    let mode = args.mode;
-
-    match mode {
+fn run(args: Args) -> Result<(), String> {
+    match args.mode {
         Commands::Create {
             keystore_path,
             password,
@@ -111,21 +107,26 @@ fn main() {
             OsRng.fill_bytes(&mut ikm);
             println!("Keep your IKM secure: {}", hex::encode(&ikm));
 
+            let keystore_secret = KeystoreSecret::new(ikm);
+
             if let Some(key_type) = key_type {
                 // print private and public key using version 2 approach
-                let mut keystore_secret = KeystoreSecret::new(ikm.clone());
                 match key_type {
                     KeyType::Bls => {
-                        let bls_keypair =
-                            keystore_secret.to_bls(KeystoreVersion::DirectIkm).unwrap();
+                        let bls_keypair = keystore_secret
+                            .clone()
+                            .to_bls(KeystoreVersion::DirectIkm)
+                            .map_err(|e| format!("failed to create bls keypair: {:?}", e))?;
                         let private_key = bls_keypair.privkey_view();
                         let public_key = bls_keypair.pubkey();
                         println!("BLS private key: {}", private_key);
                         println!("BLS public key: {:?}", public_key);
                     }
                     KeyType::Secp => {
-                        let secp_keypair =
-                            keystore_secret.to_secp(KeystoreVersion::DirectIkm).unwrap();
+                        let secp_keypair = keystore_secret
+                            .clone()
+                            .to_secp(KeystoreVersion::DirectIkm)
+                            .map_err(|e| format!("failed to create secp keypair: {:?}", e))?;
                         let private_key = secp_keypair.privkey_view();
                         let public_key = secp_keypair.pubkey();
                         println!("Secp private key: {}", private_key);
@@ -135,18 +136,16 @@ fn main() {
             }
 
             // generate keystore json file with version 2
-            let result = Keystore::create_keystore_json_with_version(
-                &ikm,
+            Keystore::create_keystore_json_with_version(
+                keystore_secret.as_ref(),
                 &password,
                 &keystore_path,
                 KeystoreVersion::DirectIkm,
-            );
-            if result.is_ok() {
-                println!("Successfully generated keystore file.");
-            } else {
-                println!("Keystore file generation failed, try again.");
-            }
-            ikm.zeroize();
+            )
+            .map_err(|e| format!("keystore file generation failed: {:?}", e))?;
+
+            println!("Successfully generated keystore file.");
+            Ok(())
         }
         Commands::Recover {
             keystore_path,
@@ -156,28 +155,9 @@ fn main() {
             println!("Recovering secret from keystore file...");
 
             // recover keystore secret with version
-            let result = Keystore::load_key_with_version(&keystore_path, &password);
-            let (mut keystore_secret, version) = match result {
-                Ok((keystore_secret, version)) => (keystore_secret, version),
-                Err(err) => {
-                    println!("Unable to recover keystore secret");
-                    match err {
-                        keystore::KeystoreError::InvalidJSONFormat => {
-                            println!("Invalid JSON format")
-                        }
-                        keystore::KeystoreError::KDFError(kdf_err) => {
-                            println!("KDFError {:?}", kdf_err)
-                        }
-                        keystore::KeystoreError::ChecksumError(chksum_err) => {
-                            println!("ChecksumError {:?}", chksum_err)
-                        }
-                        keystore::KeystoreError::FileIOError(io_err) => {
-                            println!("IO Error {:?}", io_err)
-                        }
-                    }
-                    return;
-                }
-            };
+            let (keystore_secret, version) =
+                Keystore::load_key_with_version(&keystore_path, &password)
+                    .map_err(|err| format!("unable to recover keystore secret: {:?}", err))?;
 
             println!("Keystore version: {}", version);
 
@@ -185,14 +165,18 @@ fn main() {
                 // print public key based on key type and version
                 match key_type {
                     KeyType::Bls => {
-                        let bls_keypair = keystore_secret.to_bls(version).unwrap();
+                        let bls_keypair = keystore_secret
+                            .to_bls(version)
+                            .map_err(|e| format!("failed to create bls keypair: {:?}", e))?;
                         let private_key = bls_keypair.privkey_view();
                         let public_key = bls_keypair.pubkey();
                         println!("BLS private key: {}", private_key);
                         println!("BLS public key: {:?}", public_key);
                     }
                     KeyType::Secp => {
-                        let secp_keypair = keystore_secret.to_secp(version).unwrap();
+                        let secp_keypair = keystore_secret
+                            .to_secp(version)
+                            .map_err(|e| format!("failed to create secp keypair: {:?}", e))?;
                         let private_key = secp_keypair.privkey_view();
                         let public_key = secp_keypair.pubkey();
                         println!("Secp private key: {}", private_key);
@@ -200,6 +184,7 @@ fn main() {
                     }
                 }
             }
+            Ok(())
         }
         Commands::Import {
             ikm,
@@ -211,20 +196,27 @@ fn main() {
                 Some(hex) => hex,
                 None => &ikm,
             };
-            let ikm_vec = hex::decode(ikm_hex).expect("failed to parse ikm as hex");
-            let mut ikm: KeystoreSecret = ikm_vec.into();
+            let ikm_vec =
+                hex::decode(ikm_hex).map_err(|e| format!("failed to parse ikm as hex: {}", e))?;
+            let keystore_secret = KeystoreSecret::new(ikm_vec);
 
             if let Some(key_type) = key_type {
                 match key_type {
                     KeyType::Bls => {
-                        let bls_keypair = ikm.to_bls(KeystoreVersion::DirectIkm).unwrap();
+                        let bls_keypair = keystore_secret
+                            .clone()
+                            .to_bls(KeystoreVersion::DirectIkm)
+                            .map_err(|e| format!("failed to create bls keypair: {:?}", e))?;
                         let private_key = bls_keypair.privkey_view();
                         let public_key = bls_keypair.pubkey();
                         println!("BLS private key: {}", private_key);
                         println!("BLS public key: {:?}", public_key);
                     }
                     KeyType::Secp => {
-                        let secp_keypair = ikm.to_secp(KeystoreVersion::DirectIkm).unwrap();
+                        let secp_keypair = keystore_secret
+                            .clone()
+                            .to_secp(KeystoreVersion::DirectIkm)
+                            .map_err(|e| format!("failed to create secp keypair: {:?}", e))?;
                         let private_key = secp_keypair.privkey_view();
                         let public_key = secp_keypair.pubkey();
                         println!("Secp private key: {}", private_key);
@@ -233,17 +225,154 @@ fn main() {
                 }
             }
 
-            let result = Keystore::create_keystore_json_with_version(
-                ikm.as_ref(),
+            Keystore::create_keystore_json_with_version(
+                keystore_secret.as_ref(),
                 &password,
                 &keystore_path,
                 KeystoreVersion::DirectIkm,
-            );
-            if result.is_ok() {
-                println!("Successfully generated keystore file.");
-            } else {
-                println!("Keystore file generation failed, try again.");
+            )
+            .map_err(|e| format!("keystore file generation failed: {:?}", e))?;
+
+            println!("Successfully generated keystore file.");
+            Ok(())
+        }
+    }
+}
+
+fn main() {
+    let args = Args::parse();
+    if let Err(e) = run(args) {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use monad_crypto::signing_domain;
+    use rstest::rstest;
+    use tempfile::TempDir;
+
+    use super::*;
+
+    const TEST_PASSWORD: &str = "test_password";
+
+    type TestSigningDomain = signing_domain::Tip;
+
+    #[rstest]
+    #[case::no_key_type(None)]
+    #[case::bls_key_type(Some(KeyType::Bls))]
+    #[case::secp_key_type(Some(KeyType::Secp))]
+    fn test_create_keystore_contains_valid_key(#[case] key_type: Option<KeyType>) {
+        let temp_dir = TempDir::new().unwrap();
+        let keystore_path = temp_dir.path().join("test_keystore.json");
+
+        let create_args = Args {
+            mode: Commands::Create {
+                keystore_path: keystore_path.clone(),
+                password: TEST_PASSWORD.to_string(),
+                key_type,
+            },
+        };
+        run(create_args).unwrap();
+
+        assert!(keystore_path.exists());
+
+        let (keystore_secret, version) =
+            Keystore::load_key_with_version(&keystore_path, TEST_PASSWORD).unwrap();
+
+        if let Some(kt) = key_type {
+            let test_message = b"test message";
+            match kt {
+                KeyType::Bls => {
+                    let keypair = keystore_secret.to_bls(version).unwrap();
+                    assert!(!keypair.privkey_view().to_string().is_empty());
+
+                    let signature = keypair.sign::<TestSigningDomain>(test_message);
+                    let pubkey = keypair.pubkey();
+                    assert!(signature
+                        .verify::<TestSigningDomain>(test_message, &pubkey)
+                        .is_ok());
+                }
+                KeyType::Secp => {
+                    let keypair = keystore_secret.to_secp(version).unwrap();
+                    assert!(!keypair.privkey_view().to_string().is_empty());
+
+                    let signature = keypair.sign::<TestSigningDomain>(test_message);
+                    let pubkey = keypair.pubkey();
+                    assert!(pubkey
+                        .verify::<TestSigningDomain>(test_message, &signature)
+                        .is_ok());
+                }
             }
         }
+    }
+
+    #[rstest]
+    #[case::no_key_type(None)]
+    #[case::bls_key_type(Some(KeyType::Bls))]
+    #[case::secp_key_type(Some(KeyType::Secp))]
+    fn test_import_keystore_matches_created(#[case] key_type: Option<KeyType>) {
+        let temp_dir = TempDir::new().unwrap();
+        let created_path = temp_dir.path().join("created.json");
+        let imported_path = temp_dir.path().join("imported.json");
+
+        let create_args = Args {
+            mode: Commands::Create {
+                keystore_path: created_path.clone(),
+                password: TEST_PASSWORD.to_string(),
+                key_type,
+            },
+        };
+        run(create_args).unwrap();
+
+        let (secret, _) = Keystore::load_key_with_version(&created_path, TEST_PASSWORD).unwrap();
+        let ikm_hex = hex::encode(secret.as_ref());
+
+        let import_args = Args {
+            mode: Commands::Import {
+                ikm: ikm_hex,
+                keystore_path: imported_path.clone(),
+                password: TEST_PASSWORD.to_string(),
+                key_type,
+            },
+        };
+        run(import_args).unwrap();
+
+        let (created_secret, _) =
+            Keystore::load_key_with_version(&created_path, TEST_PASSWORD).unwrap();
+        let (imported_secret, _) =
+            Keystore::load_key_with_version(&imported_path, TEST_PASSWORD).unwrap();
+
+        assert_eq!(created_secret.as_ref(), imported_secret.as_ref());
+    }
+
+    #[rstest]
+    #[case::no_key_type(None)]
+    #[case::bls_key_type(Some(KeyType::Bls))]
+    #[case::secp_key_type(Some(KeyType::Secp))]
+    fn test_recover_on_created_keystore(#[case] key_type: Option<KeyType>) {
+        let temp_dir = TempDir::new().unwrap();
+        let keystore_path = temp_dir.path().join("test_keystore.json");
+
+        let create_args = Args {
+            mode: Commands::Create {
+                keystore_path: keystore_path.clone(),
+                password: TEST_PASSWORD.to_string(),
+                key_type: None,
+            },
+        };
+        run(create_args).unwrap();
+
+        let recover_args = Args {
+            mode: Commands::Recover {
+                keystore_path,
+                password: TEST_PASSWORD.to_string(),
+                key_type,
+            },
+        };
+
+        let result = run(recover_args);
+        assert!(result.is_ok());
     }
 }
