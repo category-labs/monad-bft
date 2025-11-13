@@ -471,8 +471,13 @@ mod tests {
     use alloy_signer_local::PrivateKeySigner;
     use monad_triedb_utils::{mock_triedb::MockTriedb, triedb_env::Account};
 
-    use super::{monad_eth_sendRawTransaction, MonadEthSendRawTransactionParams};
-    use crate::{eth_json_types::UnformattedData, txpool::EthTxPoolBridgeClient};
+    use super::{
+        monad_eth_sendRawTransaction, monad_eth_sendRawTransactionSync,
+        MonadEthSendRawTransactionParams, MonadEthSendRawTransactionSyncParams,
+    };
+    use crate::{
+        chainstate::ChainState, eth_json_types::UnformattedData, txpool::EthTxPoolBridgeClient,
+    };
 
     fn serialize_tx(tx: (impl Encodable + Encodable2718)) -> UnformattedData {
         let mut rlp_encoded_tx = Vec::new();
@@ -544,6 +549,67 @@ mod tests {
                 monad_eth_sendRawTransaction(&EthTxPoolBridgeClient::for_testing(), case, 1, true)
                     .await
                     .is_err(),
+                "Expected error for case: {:?}",
+                idx + 1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn eth_send_raw_transaction_sync() {
+        let mut triedb = MockTriedb::default();
+        let sender = FixedBytes::<32>::from([1u8; 32]);
+        let signer = PrivateKeySigner::from_bytes(&sender).unwrap();
+
+        triedb.set_account(
+            signer.address().0.into(),
+            Account {
+                nonce: 10,
+                ..Default::default()
+            },
+        );
+
+        // Create a mock ChainState (needed for the sync method)
+        let chain_state = ChainState::new(None, triedb, None);
+
+        // Test the same validation failures as eth_sendRawTransaction
+        // to ensure both methods have consistent validation
+        let expected_failures = [
+            MonadEthSendRawTransactionSyncParams {
+                hex_tx: serialize_tx(make_tx(sender, 1000, 1000, 21_000, 11, 1337)), // invalid chain id
+                timeout_ms: Some(2000),
+            },
+            MonadEthSendRawTransactionSyncParams {
+                hex_tx: serialize_tx(make_tx(sender, 1000, 1000, 1_000, 11, 1)), // intrinsic gas too low
+                timeout_ms: Some(2000),
+            },
+            MonadEthSendRawTransactionSyncParams {
+                hex_tx: serialize_tx(make_tx(sender, 1000, 1000, 400_000_000_000, 11, 1)), // gas too high
+                timeout_ms: Some(2000),
+            },
+            MonadEthSendRawTransactionSyncParams {
+                hex_tx: serialize_tx(make_tx(sender, 1000, 1000, 21_000, 1, 1)), // nonce too low
+                timeout_ms: Some(2000),
+            },
+            MonadEthSendRawTransactionSyncParams {
+                hex_tx: serialize_tx(make_tx(sender, 1000, 12000, 21_000, 11, 1)), // max priority fee too high
+                timeout_ms: Some(2000),
+            },
+        ];
+
+        for (idx, case) in expected_failures.into_iter().enumerate() {
+            assert!(
+                monad_eth_sendRawTransactionSync(
+                    &EthTxPoolBridgeClient::for_testing(),
+                    &chain_state,
+                    case,
+                    1,
+                    true,
+                    2000,
+                    30000,
+                )
+                .await
+                .is_err(),
                 "Expected error for case: {:?}",
                 idx + 1
             );
