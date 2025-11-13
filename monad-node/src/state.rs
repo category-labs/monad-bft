@@ -15,6 +15,7 @@
 
 use std::{
     env,
+    ffi::OsStr,
     path::{Path, PathBuf},
     str::FromStr,
     time::Duration,
@@ -120,6 +121,16 @@ impl NodeState {
 
         let node_config: MonadNodeConfig =
             toml::from_str(&std::fs::read_to_string(&node_config_path)?)?;
+
+        if !matches!(
+            forkpoint_config_path.extension().and_then(OsStr::to_str),
+            Some("toml" | "rlp")
+        ) {
+            return Err(NodeSetupError::Custom {
+                kind: ErrorKind::InvalidValue,
+                msg: "forkpoint must have .toml or .rlp extension".to_owned(),
+            });
+        }
 
         let (forkpoint_config, validators_config) = get_latest_configs(
             &forkpoint_config_path,
@@ -307,17 +318,24 @@ fn get_latest_configs(
                 forkpoint_config_path,
                 format!("{}.local", forkpoint_config_path.to_string_lossy()),
             );
-            let remote_forkpoint_bytes = if forkpoint_config_path.ends_with(".toml") {
-                remote_forkpoint
-                    .try_to_toml_string()
-                    .expect("failed to re-serialize remote forkpoint config to toml")
-                    .as_bytes()
-                    .to_vec()
-            } else {
-                remote_forkpoint.to_rlp_bytes()
-            };
-            std::fs::write(forkpoint_config_path, remote_forkpoint_bytes)
-                .expect("failed to overwrite local forkpoint config with remote config");
+
+            let forkpoint_toml_path = forkpoint_config_path.with_extension("toml");
+            match remote_forkpoint.try_to_toml_string() {
+                Ok(remote_forkpoint_toml) => {
+                    std::fs::write(&forkpoint_toml_path, remote_forkpoint_toml).expect(
+                        "failed to overwrite local forkpoint config toml with remote config",
+                    );
+                }
+                Err(err) => {
+                    warn!(?err, "failed to write remote forkpoint to toml string");
+                    let _ = std::fs::remove_file(&forkpoint_toml_path);
+                }
+            }
+            std::fs::write(
+                forkpoint_config_path.with_extension("rlp"),
+                remote_forkpoint.to_rlp_bytes(),
+            )
+            .expect("failed to overwrite local forkpoint config rlp with remote config");
 
             // can fail if local validators doesn't exist
             let _ = std::fs::rename(
