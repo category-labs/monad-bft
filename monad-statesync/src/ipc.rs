@@ -53,6 +53,8 @@ pub(crate) struct StateSyncIpc<PT: PubKey> {
 
     pending_request_len: Arc<AtomicUsize>,
     is_servicing_request: Arc<AtomicBool>,
+    num_syncdone_success: Arc<AtomicUsize>,
+    num_syncdone_failed: Arc<AtomicUsize>,
 }
 
 impl<PT: PubKey> StateSyncIpc<PT> {
@@ -62,6 +64,14 @@ impl<PT: PubKey> StateSyncIpc<PT> {
 
     pub fn is_servicing_request(&self) -> bool {
         self.is_servicing_request.load(Ordering::Relaxed)
+    }
+
+    pub fn num_syncdone_success(&self) -> usize {
+        self.num_syncdone_success.load(Ordering::Relaxed)
+    }
+
+    pub fn num_syncdone_failed(&self) -> usize {
+        self.num_syncdone_failed.load(Ordering::Relaxed)
     }
 }
 
@@ -106,10 +116,16 @@ impl<PT: PubKey> StateSyncIpc<PT> {
         let pending_request_len_clone = pending_request_len.clone();
         let is_servicing_request = Arc::new(AtomicBool::new(false));
         let is_servicing_request_clone = is_servicing_request.clone();
+        let num_syncdone_success = Arc::new(AtomicUsize::new(0));
+        let num_syncdone_success_clone = num_syncdone_success.clone();
+        let num_syncdone_failed = Arc::new(AtomicUsize::new(0));
+        let num_syncdone_failed_clone = num_syncdone_failed.clone();
 
         tokio::spawn(async move {
             let pending_request_len = pending_request_len_clone;
             let is_servicing_request = is_servicing_request_clone;
+            let num_syncdone_success = num_syncdone_success_clone;
+            let num_syncdone_failed = num_syncdone_failed_clone;
             loop {
                 let execution_stream = {
                     let conn_fut = async {
@@ -146,11 +162,17 @@ impl<PT: PubKey> StateSyncIpc<PT> {
                         .store(stream_state.pending_requests.len(), Ordering::Relaxed);
                     is_servicing_request
                         .store(stream_state.wip_response.is_some(), Ordering::Relaxed);
+                    num_syncdone_success
+                        .store(stream_state.metric_syncdone_success, Ordering::Relaxed);
+                    num_syncdone_failed
+                        .store(stream_state.metric_syncdone_failed, Ordering::Relaxed);
                 }
 
                 tracing::warn!("UDS socket error, retrying");
                 pending_request_len.store(0, Ordering::Relaxed);
                 is_servicing_request.store(false, Ordering::Relaxed);
+                num_syncdone_success.store(0, Ordering::Relaxed);
+                num_syncdone_failed.store(0, Ordering::Relaxed);
             }
         });
 
@@ -159,6 +181,8 @@ impl<PT: PubKey> StateSyncIpc<PT> {
             response_rx: response_rx_reader,
             pending_request_len,
             is_servicing_request,
+            num_syncdone_success,
+            num_syncdone_failed,
         }
     }
 }
@@ -176,6 +200,9 @@ struct StreamState<'a, PT: PubKey> {
 
     pending_requests: VecDeque<PendingRequest<PT>>,
     wip_response: Option<WipResponse<PT>>,
+
+    metric_syncdone_success: usize,
+    metric_syncdone_failed: usize,
 }
 
 #[derive(Debug)]
@@ -283,6 +310,9 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
 
             pending_requests: Default::default(),
             wip_response: Default::default(),
+
+            metric_syncdone_success: 0,
+            metric_syncdone_failed: 0,
         }
     }
 
@@ -465,6 +495,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                     "received SyncDone"
                 );
                 if done.success {
+                    self.metric_syncdone_success += 1;
                     assert_eq!(wip_response.response.request.prefix, done.prefix);
                     // response_n is overloaded to indicate that the response is done
                     wip_response.response.response_n = done.n;
@@ -485,6 +516,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                         )
                     }
                 } else {
+                    self.metric_syncdone_failed += 1;
                     // request failed, so don't send finish the response. we've dropped the
                     // wip_response at this point.
                     tracing::warn!(
