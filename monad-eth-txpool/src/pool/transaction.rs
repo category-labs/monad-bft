@@ -244,6 +244,13 @@ impl ValidEthTransaction {
         self.tx
     }
 
+    pub fn priority(&self) -> U256 {
+        match self.kind {
+            PoolTransactionKind::Owned { priority, .. } => priority,
+            PoolTransactionKind::Forwarded => DEFAULT_TX_PRIORITY,
+        }
+    }
+
     pub fn is_owned(&self) -> bool {
         match self.kind {
             PoolTransactionKind::Owned { .. } => true,
@@ -252,8 +259,9 @@ impl ValidEthTransaction {
     }
 
     pub fn has_higher_priority(&self, other: &Self, _base_fee: u64) -> bool {
-        self.tx.max_fee_per_gas() > other.tx.max_fee_per_gas()
-            && self.tx.max_priority_fee_per_gas() >= other.tx.max_priority_fee_per_gas()
+        self.priority() > other.priority()
+            || (self.tx.max_fee_per_gas() > other.tx.max_fee_per_gas()
+                && self.tx.max_priority_fee_per_gas() >= other.tx.max_priority_fee_per_gas())
     }
 
     pub fn iter_valid_recovered_authorizations(
