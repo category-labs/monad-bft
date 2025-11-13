@@ -1,0 +1,20 @@
+---
+source: monad-wireauth-protocol/src/handshake.rs
+expression: "vec![initiator_to_responder, responder_to_initiator,]"
+---
+- test_name: initiator_to_responder
+  plaintext: "Hello, encrypted world!"
+  nonce: "01000000000000000000000000000000"
+  sender_index: 102
+  receiver_index: 202
+  encrypted_payload: 854bf0e0c5fbb0c976465c6645920a485c19bd544b4eb9
+  auth_tag: bbef4ee6d67de4e12f05ff8d455f411b
+  complete_packet: 04ca00000001000000000000000000000000000000854bf0e0c5fbb0c976465c6645920a485c19bd544b4eb9bbef4ee6d67de4e12f05ff8d455f411b
+- test_name: responder_to_initiator
+  plaintext: Response from responder!
+  nonce: "01000000000000000000000000000000"
+  sender_index: 202
+  receiver_index: 102
+  encrypted_payload: e3d9bad5a97edb95122e1c59dee16ada81e941ec66fec578
+  auth_tag: f0d4e02ea40bf601b84923069abd933e
+  complete_packet: 046600000001000000000000000000000000000000e3d9bad5a97edb95122e1c59dee16ada81e941ec66fec578f0d4e02ea40bf601b84923069abd933e
