@@ -55,6 +55,7 @@ pub(crate) struct StateSyncIpc<PT: PubKey> {
     is_servicing_request: Arc<AtomicBool>,
     num_syncdone_success: Arc<AtomicUsize>,
     num_syncdone_failed: Arc<AtomicUsize>,
+    total_service_time_us: Arc<AtomicUsize>,
 }
 
 impl<PT: PubKey> StateSyncIpc<PT> {
@@ -72,6 +73,10 @@ impl<PT: PubKey> StateSyncIpc<PT> {
 
     pub fn num_syncdone_failed(&self) -> usize {
         self.num_syncdone_failed.load(Ordering::Relaxed)
+    }
+
+    pub fn total_service_time_us(&self) -> usize {
+        self.total_service_time_us.load(Ordering::Relaxed)
     }
 }
 
@@ -120,12 +125,15 @@ impl<PT: PubKey> StateSyncIpc<PT> {
         let num_syncdone_success_clone = num_syncdone_success.clone();
         let num_syncdone_failed = Arc::new(AtomicUsize::new(0));
         let num_syncdone_failed_clone = num_syncdone_failed.clone();
+        let total_service_time_us = Arc::new(AtomicUsize::new(0));
+        let total_service_time_us_clone = total_service_time_us.clone();
 
         tokio::spawn(async move {
             let pending_request_len = pending_request_len_clone;
             let is_servicing_request = is_servicing_request_clone;
             let num_syncdone_success = num_syncdone_success_clone;
             let num_syncdone_failed = num_syncdone_failed_clone;
+            let total_service_time_us = total_service_time_us_clone;
             loop {
                 let execution_stream = {
                     let conn_fut = async {
@@ -166,6 +174,8 @@ impl<PT: PubKey> StateSyncIpc<PT> {
                         .store(stream_state.metric_syncdone_success, Ordering::Relaxed);
                     num_syncdone_failed
                         .store(stream_state.metric_syncdone_failed, Ordering::Relaxed);
+                    total_service_time_us
+                        .store(stream_state.metric_total_service_time_us, Ordering::Relaxed);
                 }
 
                 tracing::warn!("UDS socket error, retrying");
@@ -173,6 +183,7 @@ impl<PT: PubKey> StateSyncIpc<PT> {
                 is_servicing_request.store(false, Ordering::Relaxed);
                 num_syncdone_success.store(0, Ordering::Relaxed);
                 num_syncdone_failed.store(0, Ordering::Relaxed);
+                total_service_time_us.store(0, Ordering::Relaxed);
             }
         });
 
@@ -183,6 +194,7 @@ impl<PT: PubKey> StateSyncIpc<PT> {
             is_servicing_request,
             num_syncdone_success,
             num_syncdone_failed,
+            total_service_time_us,
         }
     }
 }
@@ -203,6 +215,7 @@ struct StreamState<'a, PT: PubKey> {
 
     metric_syncdone_success: usize,
     metric_syncdone_failed: usize,
+    metric_total_service_time_us: usize,
 }
 
 #[derive(Debug)]
@@ -313,6 +326,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
 
             metric_syncdone_success: 0,
             metric_syncdone_failed: 0,
+            metric_total_service_time_us: 0,
         }
     }
 
@@ -487,9 +501,11 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                     .wip_response
                     .take()
                     .expect("syncdone received with no pending_response");
+                let service_elapsed = wip_response.service_start_time.elapsed();
+                self.metric_total_service_time_us += service_elapsed.as_micros() as usize;
                 tracing::debug!(
                     rx_elapsed =? wip_response.rx_time.elapsed(),
-                    service_elapsed =? wip_response.service_start_time.elapsed(),
+                    ?service_elapsed,
                     from =? wip_response.from,
                     ?done,
                     "received SyncDone"

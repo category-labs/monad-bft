@@ -50,6 +50,8 @@ const GAUGE_STATESYNC_SERVER_NUM_SYNCDONE_SUCCESS: &str =
     "monad.statesync.server_num_syncdone_success";
 const GAUGE_STATESYNC_SERVER_NUM_SYNCDONE_FAILED: &str =
     "monad.statesync.server_num_syncdone_failed";
+const GAUGE_STATESYNC_SERVER_TOTAL_SERVICE_TIME_US: &str =
+    "monad.statesync.server_total_service_time_us";
 
 pub struct StateSync<ST, SCT>
 where
@@ -313,6 +315,8 @@ where
                     execution_ipc.num_syncdone_success() as u64;
                 this.metrics[GAUGE_STATESYNC_SERVER_NUM_SYNCDONE_FAILED] =
                     execution_ipc.num_syncdone_failed() as u64;
+                this.metrics[GAUGE_STATESYNC_SERVER_TOTAL_SERVICE_TIME_US] =
+                    execution_ipc.total_service_time_us() as u64;
                 if let Poll::Ready(maybe_response) = execution_ipc.response_rx.poll_recv(cx) {
                     let (to, message, completion) = maybe_response.expect("did StateSyncIpc die?");
                     tracing::debug!(
