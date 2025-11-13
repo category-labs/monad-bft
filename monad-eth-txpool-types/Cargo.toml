@@ -9,5 +9,6 @@ edition = "2021"
 bench = false
 
 [dependencies]
+alloy-consensus = { workspace = true }
 alloy-primitives = { workspace = true }
 serde = { workspace = true }

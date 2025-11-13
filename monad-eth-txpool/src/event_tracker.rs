@@ -57,6 +57,7 @@ impl<'a> EthTxPoolEventTracker<'a> {
             EthTxPoolEventType::Insert {
                 address: tx.signer(),
                 owned,
+                tx: tx.clone_tx(),
             },
         );
     }
@@ -65,7 +66,7 @@ impl<'a> EthTxPoolEventTracker<'a> {
         &mut self,
         address: &Address,
         old_tx_hash: TxHash,
-        new_tx_hash: TxHash,
+        new_tx: &Recovered<TxEnvelope>,
         new_owned: bool,
     ) {
         if new_owned {
@@ -80,15 +81,16 @@ impl<'a> EthTxPoolEventTracker<'a> {
             old_tx_hash,
             EthTxPoolEventType::Drop {
                 reason: EthTxPoolDropReason::ReplacedByHigherPriority {
-                    replacement: new_tx_hash,
+                    replacement: *new_tx.tx_hash(),
                 },
             },
         );
         self.events.insert(
-            new_tx_hash,
+            *new_tx.tx_hash(),
             EthTxPoolEventType::Insert {
                 address: *address,
                 owned: new_owned,
+                tx: new_tx.clone_tx(),
             },
         );
     }
