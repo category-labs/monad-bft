@@ -247,6 +247,13 @@ impl ValidEthTransaction {
         self.tx
     }
 
+    pub fn priority(&self) -> u64 {
+        match self.kind {
+            PoolTransactionKind::Owned { priority, .. } => priority,
+            PoolTransactionKind::Forwarded => DEFAULT_TX_PRIORITY,
+        }
+    }
+
     pub fn is_owned(&self) -> bool {
         match self.kind {
             PoolTransactionKind::Owned { .. } => true,
