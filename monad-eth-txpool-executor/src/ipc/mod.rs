@@ -22,7 +22,6 @@ use std::{
     time::Duration,
 };
 
-use alloy_consensus::TxEnvelope;
 use alloy_primitives::{TxHash, U256};
 use futures::StreamExt;
 use monad_eth_txpool_ipc::{EthTxPoolIpcStream, EthTxPoolIpcTx};
@@ -48,7 +47,7 @@ pub struct EthTxPoolIpcServer {
 
     connections: Vec<EthTxPoolIpcStream>,
 
-    queue: BTreeMap<U256, VecDeque<TxEnvelope>>,
+    queue: BTreeMap<U256, VecDeque<EthTxPoolIpcTx>>,
     queue_len: usize,
     #[pin]
     queue_timer: Sleep,
@@ -107,7 +106,7 @@ impl EthTxPoolIpcServer {
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         generate_snapshot: impl Fn() -> EthTxPoolSnapshot,
-    ) -> Poll<Vec<TxEnvelope>> {
+    ) -> Poll<Vec<EthTxPoolIpcTx>> {
         let EthTxPoolIpcServerProjected {
             listener,
 
@@ -142,16 +141,11 @@ impl EthTxPoolIpcServer {
                     break;
                 };
 
-                let Some(EthTxPoolIpcTx {
-                    tx,
-                    priority,
-                    extra_data: _,
-                }) = result
-                else {
+                let Some(tx) = result else {
                     return false;
                 };
 
-                queue.entry(priority).or_default().push_back(tx);
+                queue.entry(tx.priority).or_default().push_back(tx);
                 *queue_len += 1;
             }
 

@@ -79,7 +79,7 @@ fn txpool_create_proposal_lookups_bound_by_tx_limit() {
                 recover_tx(make_legacy_tx(S2, MIN_BASE_FEE.into(), 100_000, 0, 0)),
             ]
             .into_iter()
-            .map(|tx| (tx, PoolTransactionKind::Owned))
+            .map(|tx| (tx, PoolTransactionKind::owned_default()))
             .collect(),
             |_| {},
         );
@@ -164,7 +164,7 @@ fn txpool_create_proposal_no_lookup_for_unknown_authorizations() {
                 0,
             ))]
             .into_iter()
-            .map(|tx| (tx, PoolTransactionKind::Owned))
+            .map(|tx| (tx, PoolTransactionKind::owned_default()))
             .collect(),
             |_| {},
         );
