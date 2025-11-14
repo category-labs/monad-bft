@@ -22,7 +22,8 @@ use alloy_rpc_types::{Filter, Log, Receipt, TransactionReceipt};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, Triedb, TxEnvelopeWithSender};
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::de::{self, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 use tracing::{debug, error, trace, warn};
 
 use crate::{
@@ -287,8 +288,39 @@ async fn submit_to_txpool(
     Err(JsonRpcError::custom("txpool not responding".to_string()))
 }
 
-#[derive(Deserialize, Debug, schemars::JsonSchema)]
+#[derive(Debug, schemars::JsonSchema)]
 pub struct MonadEthSendRawTransactionSyncParams(UnformattedData, Option<u64>);
+
+impl<'de> Deserialize<'de> for MonadEthSendRawTransactionSyncParams {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ParamsVisitor;
+
+        impl<'de> Visitor<'de> for ParamsVisitor {
+            type Value = MonadEthSendRawTransactionSyncParams;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("an array [hex_tx, timeout_ms?]")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let hex_tx = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let timeout_ms = seq.next_element()?.flatten();
+
+                Ok(MonadEthSendRawTransactionSyncParams(hex_tx, timeout_ms))
+            }
+        }
+
+        deserializer.deserialize_seq(ParamsVisitor)
+    }
+}
 
 impl MonadEthSendRawTransactionSyncParams {
     fn hex_tx(&self) -> &UnformattedData {
