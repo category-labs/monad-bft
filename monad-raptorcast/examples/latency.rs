@@ -420,6 +420,7 @@ fn setup_node(
 
     let noop_builder = NopDiscoveryBuilder {
         known_addresses,
+        name_records: routing_info.clone().into_iter().collect(),
         pd: std::marker::PhantomData,
     };
 
