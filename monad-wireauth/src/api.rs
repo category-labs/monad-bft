@@ -115,7 +115,9 @@ impl<C: Context> API<C> {
     #[instrument(level = Level::TRACE, skip(self), fields(local_public_key = ?self.local_serialized_public))]
     pub fn next_packet(&mut self) -> Option<(SocketAddr, Bytes)> {
         self.metrics[GAUGE_WIREAUTH_API_NEXT_PACKET] += 1;
-        self.packet_queue.pop_front()
+        let result = self.packet_queue.pop_front();
+        self.metrics[GAUGE_WIREAUTH_STATE_PACKET_QUEUE_SIZE] = self.packet_queue.len() as u64;
+        result
     }
 
     #[instrument(level = Level::TRACE, skip(self), fields(local_public_key = ?self.local_serialized_public))]
@@ -161,6 +163,7 @@ impl<C: Context> API<C> {
 
         for (duration, session_id) in expired_timers {
             self.timers.remove(&(duration, session_id));
+            self.metrics[GAUGE_WIREAUTH_STATE_TIMERS_SIZE] = self.timers.len() as u64;
 
             if let Some(elapsed) = duration_since_start.checked_sub(duration) {
                 let elapsed_ms = elapsed.as_millis();
@@ -217,12 +220,16 @@ impl<C: Context> API<C> {
                     self.metrics[GAUGE_WIREAUTH_ENQUEUED_HANDSHAKE_INIT] += 1;
                     self.packet_queue
                         .push_back((rekey.remote_addr, message.into()));
+                    self.metrics[GAUGE_WIREAUTH_STATE_PACKET_QUEUE_SIZE] =
+                        self.packet_queue.len() as u64;
                     self.timers.insert((timer, new_session_index));
+                    self.metrics[GAUGE_WIREAUTH_STATE_TIMERS_SIZE] = self.timers.len() as u64;
                 }
             }
 
             if let Some(timer) = timer {
                 self.timers.insert((timer, session_id));
+                self.metrics[GAUGE_WIREAUTH_STATE_TIMERS_SIZE] = self.timers.len() as u64;
             }
 
             if let Some(terminated) = terminated {
@@ -258,7 +265,9 @@ impl<C: Context> API<C> {
 
         self.metrics[GAUGE_WIREAUTH_ENQUEUED_HANDSHAKE_INIT] += 1;
         self.packet_queue.push_back((remote_addr, message.into()));
+        self.metrics[GAUGE_WIREAUTH_STATE_PACKET_QUEUE_SIZE] = self.packet_queue.len() as u64;
         self.timers.insert((timer, local_index));
+        self.metrics[GAUGE_WIREAUTH_STATE_TIMERS_SIZE] = self.timers.len() as u64;
 
         Ok(())
     }
@@ -323,6 +332,8 @@ impl<C: Context> API<C> {
                         .create(remote_addr, sender_index, message, duration_since_start);
                 self.metrics[GAUGE_WIREAUTH_ENQUEUED_COOKIE_REPLY] += 1;
                 self.packet_queue.push_back((remote_addr, reply.into()));
+                self.metrics[GAUGE_WIREAUTH_STATE_PACKET_QUEUE_SIZE] =
+                    self.packet_queue.len() as u64;
                 false
             }
             FilterAction::Drop => {
@@ -408,7 +419,9 @@ impl<C: Context> API<C> {
 
         self.metrics[GAUGE_WIREAUTH_ENQUEUED_HANDSHAKE_RESPONSE] += 1;
         self.packet_queue.push_back((remote_addr, message.into()));
+        self.metrics[GAUGE_WIREAUTH_STATE_PACKET_QUEUE_SIZE] = self.packet_queue.len() as u64;
         self.timers.insert((timer, local_index));
+        self.metrics[GAUGE_WIREAUTH_STATE_TIMERS_SIZE] = self.timers.len() as u64;
 
         Ok(())
     }
@@ -520,6 +533,7 @@ impl<C: Context> API<C> {
         };
 
         self.timers.insert((timer, receiver_index));
+        self.metrics[GAUGE_WIREAUTH_STATE_TIMERS_SIZE] = self.timers.len() as u64;
 
         Ok((plaintext, remote_public_key))
     }
@@ -583,7 +597,9 @@ impl<C: Context> API<C> {
             .insert_transport(receiver_session_index, transport);
 
         self.packet_queue.push_back((remote_addr, message.into()));
+        self.metrics[GAUGE_WIREAUTH_STATE_PACKET_QUEUE_SIZE] = self.packet_queue.len() as u64;
         self.timers.insert((timer, receiver_session_index));
+        self.metrics[GAUGE_WIREAUTH_STATE_TIMERS_SIZE] = self.timers.len() as u64;
 
         Ok(())
     }
@@ -639,6 +655,7 @@ impl<C: Context> API<C> {
         );
         let session_id = transport.common.local_index;
         self.timers.insert((timer, session_id));
+        self.metrics[GAUGE_WIREAUTH_STATE_TIMERS_SIZE] = self.timers.len() as u64;
         Ok(header)
     }
 

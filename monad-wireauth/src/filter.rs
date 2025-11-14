@@ -178,6 +178,8 @@ impl Filter {
             }
             None => {
                 self.ip_request_history.put(ip, duration_since_start);
+                self.metrics[GAUGE_WIREAUTH_FILTER_IP_REQUEST_HISTORY_SIZE] =
+                    self.ip_request_history.len() as u64;
                 None
             }
         }

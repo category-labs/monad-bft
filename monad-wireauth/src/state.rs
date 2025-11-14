@@ -227,23 +227,20 @@ impl State {
 
         if is_initiator {
             self.metrics[GAUGE_WIREAUTH_STATE_SESSION_ESTABLISHED_INITIATOR] += 1;
-            if self.initiating_sessions.remove(&session_id).is_some() {
-                self.metrics[GAUGE_WIREAUTH_STATE_INITIATING_SESSIONS] -= 1;
-            }
+            self.initiating_sessions.remove(&session_id);
+            self.metrics[GAUGE_WIREAUTH_STATE_INITIATING_SESSIONS] =
+                self.initiating_sessions.len() as u64;
         } else {
             self.metrics[GAUGE_WIREAUTH_STATE_SESSION_ESTABLISHED_RESPONDER] += 1;
-            if self.responding_sessions.remove(&session_id).is_some() {
-                self.metrics[GAUGE_WIREAUTH_STATE_RESPONDING_SESSIONS] -= 1;
-            }
+            self.responding_sessions.remove(&session_id);
+            self.metrics[GAUGE_WIREAUTH_STATE_RESPONDING_SESSIONS] =
+                self.responding_sessions.len() as u64;
         }
 
         let key_bytes = *remote_public_key;
 
         let mut replaced_sessions = Vec::new();
 
-        let sessions_by_key_new = !self
-            .last_established_session_by_public_key
-            .contains_key(&key_bytes);
         let sessions = self
             .last_established_session_by_public_key
             .entry(key_bytes)
@@ -260,14 +257,9 @@ impl State {
             }
             sessions.responder = Some((session_id, created));
         }
-        if sessions_by_key_new {
-            self.metrics[GAUGE_WIREAUTH_STATE_SESSIONS_BY_PUBLIC_KEY] =
-                self.last_established_session_by_public_key.len() as u64;
-        }
+        self.metrics[GAUGE_WIREAUTH_STATE_SESSIONS_BY_PUBLIC_KEY] =
+            self.last_established_session_by_public_key.len() as u64;
 
-        let sessions_by_socket_new = !self
-            .last_established_session_by_socket
-            .contains_key(&remote_addr);
         let sessions = self
             .last_established_session_by_socket
             .entry(remote_addr)
@@ -288,10 +280,8 @@ impl State {
             }
             sessions.responder = Some((session_id, created));
         }
-        if sessions_by_socket_new {
-            self.metrics[GAUGE_WIREAUTH_STATE_SESSIONS_BY_SOCKET] =
-                self.last_established_session_by_socket.len() as u64;
-        }
+        self.metrics[GAUGE_WIREAUTH_STATE_SESSIONS_BY_SOCKET] =
+            self.last_established_session_by_socket.len() as u64;
 
         for replaced_session_id in replaced_sessions {
             if let Some(session) = self.transport_sessions.get(&replaced_session_id) {
@@ -322,28 +312,25 @@ impl State {
             *count = count.saturating_sub(1);
             if *count == 0 {
                 self.ip_session_counts.remove(&remote_addr.ip());
+                self.metrics[GAUGE_WIREAUTH_STATE_IP_SESSION_COUNTS_SIZE] =
+                    self.ip_session_counts.len() as u64;
             }
         }
         self.total_sessions = self.total_sessions.saturating_sub(1);
         self.metrics[GAUGE_WIREAUTH_STATE_TOTAL_SESSIONS] = self.total_sessions as u64;
 
         let transport = self.transport_sessions.remove(&session_id);
-        if transport.is_some() {
-            self.metrics[GAUGE_WIREAUTH_STATE_TRANSPORT_SESSIONS] =
-                self.transport_sessions.len() as u64;
-        }
-        if self.initiating_sessions.remove(&session_id).is_some() {
-            self.metrics[GAUGE_WIREAUTH_STATE_INITIATING_SESSIONS] =
-                self.initiating_sessions.len() as u64;
-        }
-        if self.responding_sessions.remove(&session_id).is_some() {
-            self.metrics[GAUGE_WIREAUTH_STATE_RESPONDING_SESSIONS] =
-                self.responding_sessions.len() as u64;
-        }
-        if self.allocated_indices.remove(&session_id) {
-            self.metrics[GAUGE_WIREAUTH_STATE_ALLOCATED_INDICES] =
-                self.allocated_indices.len() as u64;
-        }
+        self.metrics[GAUGE_WIREAUTH_STATE_TRANSPORT_SESSIONS] =
+            self.transport_sessions.len() as u64;
+        self.initiating_sessions.remove(&session_id);
+        self.metrics[GAUGE_WIREAUTH_STATE_INITIATING_SESSIONS] =
+            self.initiating_sessions.len() as u64;
+        self.responding_sessions.remove(&session_id);
+        self.metrics[GAUGE_WIREAUTH_STATE_RESPONDING_SESSIONS] =
+            self.responding_sessions.len() as u64;
+        self.allocated_indices.remove(&session_id);
+        self.metrics[GAUGE_WIREAUTH_STATE_ALLOCATED_INDICES] =
+            self.allocated_indices.len() as u64;
 
         if let Some(transport) = transport {
             if let Some(sessions) = self
@@ -389,11 +376,15 @@ impl State {
         if let Some(&initiated_id) = self.initiated_session_by_peer.get(remote_public_key) {
             if initiated_id == session_id {
                 self.initiated_session_by_peer.remove(remote_public_key);
+                self.metrics[GAUGE_WIREAUTH_STATE_INITIATED_SESSION_BY_PEER_SIZE] =
+                    self.initiated_session_by_peer.len() as u64;
             }
         }
 
         self.accepted_sessions_by_peer
             .remove(&(*remote_public_key, session_id));
+        self.metrics[GAUGE_WIREAUTH_STATE_ACCEPTED_SESSIONS_BY_PEER_SIZE] =
+            self.accepted_sessions_by_peer.len() as u64;
     }
 
     #[cfg(test)]
@@ -422,11 +413,15 @@ impl State {
 
     pub fn remove_initiator(&mut self, session_index: &SessionIndex) -> Option<InitiatorState> {
         let session = self.initiating_sessions.remove(session_index)?;
+        self.metrics[GAUGE_WIREAUTH_STATE_INITIATING_SESSIONS] =
+            self.initiating_sessions.len() as u64;
         let remote_public_key = session.remote_public_key;
         if let Some(&stored_session_index) = self.initiated_session_by_peer.get(&remote_public_key)
         {
             if stored_session_index == *session_index {
                 self.initiated_session_by_peer.remove(&remote_public_key);
+                self.metrics[GAUGE_WIREAUTH_STATE_INITIATED_SESSION_BY_PEER_SIZE] =
+                    self.initiated_session_by_peer.len() as u64;
             }
         }
         Some(session)
@@ -434,9 +429,13 @@ impl State {
 
     pub fn remove_responder(&mut self, session_index: &SessionIndex) -> Option<ResponderState> {
         let session = self.responding_sessions.remove(session_index)?;
+        self.metrics[GAUGE_WIREAUTH_STATE_RESPONDING_SESSIONS] =
+            self.responding_sessions.len() as u64;
         let remote_public_key = session.remote_public_key;
         self.accepted_sessions_by_peer
             .remove(&(remote_public_key, *session_index));
+        self.metrics[GAUGE_WIREAUTH_STATE_ACCEPTED_SESSIONS_BY_PEER_SIZE] =
+            self.accepted_sessions_by_peer.len() as u64;
         Some(session)
     }
 
@@ -452,7 +451,11 @@ impl State {
             self.initiating_sessions.len() as u64;
         self.initiated_session_by_peer
             .insert(remote_key, session_index);
+        self.metrics[GAUGE_WIREAUTH_STATE_INITIATED_SESSION_BY_PEER_SIZE] =
+            self.initiated_session_by_peer.len() as u64;
         *self.ip_session_counts.entry(remote_addr.ip()).or_insert(0) += 1;
+        self.metrics[GAUGE_WIREAUTH_STATE_IP_SESSION_COUNTS_SIZE] =
+            self.ip_session_counts.len() as u64;
         self.total_sessions += 1;
         self.metrics[GAUGE_WIREAUTH_STATE_TOTAL_SESSIONS] = self.total_sessions as u64;
         self.metrics[GAUGE_WIREAUTH_STATE_SESSION_INDEX_ALLOCATED] += 1;
@@ -470,7 +473,11 @@ impl State {
             self.responding_sessions.len() as u64;
         self.accepted_sessions_by_peer
             .insert((remote_key, session_index));
+        self.metrics[GAUGE_WIREAUTH_STATE_ACCEPTED_SESSIONS_BY_PEER_SIZE] =
+            self.accepted_sessions_by_peer.len() as u64;
         *self.ip_session_counts.entry(remote_addr.ip()).or_insert(0) += 1;
+        self.metrics[GAUGE_WIREAUTH_STATE_IP_SESSION_COUNTS_SIZE] =
+            self.ip_session_counts.len() as u64;
         self.total_sessions += 1;
         self.metrics[GAUGE_WIREAUTH_STATE_TOTAL_SESSIONS] = self.total_sessions as u64;
     }

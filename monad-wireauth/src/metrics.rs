@@ -30,6 +30,16 @@ pub const GAUGE_WIREAUTH_STATE_SESSION_ESTABLISHED_INITIATOR: &str =
 pub const GAUGE_WIREAUTH_STATE_SESSION_ESTABLISHED_RESPONDER: &str =
     "monad.wireauth.state.session_established_responder";
 pub const GAUGE_WIREAUTH_STATE_SESSION_TERMINATED: &str = "monad.wireauth.state.session_terminated";
+pub const GAUGE_WIREAUTH_STATE_TIMERS_SIZE: &str = "monad.wireauth.state.timers_size";
+pub const GAUGE_WIREAUTH_STATE_PACKET_QUEUE_SIZE: &str = "monad.wireauth.state.packet_queue_size";
+pub const GAUGE_WIREAUTH_STATE_INITIATED_SESSION_BY_PEER_SIZE: &str =
+    "monad.wireauth.state.initiated_session_by_peer_size";
+pub const GAUGE_WIREAUTH_STATE_ACCEPTED_SESSIONS_BY_PEER_SIZE: &str =
+    "monad.wireauth.state.accepted_sessions_by_peer_size";
+pub const GAUGE_WIREAUTH_STATE_IP_SESSION_COUNTS_SIZE: &str =
+    "monad.wireauth.state.ip_session_counts_size";
+pub const GAUGE_WIREAUTH_FILTER_IP_REQUEST_HISTORY_SIZE: &str =
+    "monad.wireauth.filter.ip_request_history_size";
 
 pub const GAUGE_WIREAUTH_FILTER_PASS: &str = "monad.wireauth.filter.pass";
 pub const GAUGE_WIREAUTH_FILTER_SEND_COOKIE: &str = "monad.wireauth.filter.send_cookie";
