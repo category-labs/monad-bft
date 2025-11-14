@@ -6,6 +6,7 @@ Type=oneshot
 User=root
 Group=root
 ExecStart=/opt/monad/scripts/clear-old-artifacts.sh
+EnvironmentFile=-/home/monad/.env
 
 [Install]
 WantedBy=multi-user.target
