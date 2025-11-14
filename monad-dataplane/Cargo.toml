@@ -20,6 +20,7 @@ libc = { workspace = true }
 monoio = { workspace = true }
 rand = { workspace = true }
 socket2 = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 zerocopy = { workspace = true }
