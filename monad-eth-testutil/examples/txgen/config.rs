@@ -303,6 +303,12 @@ pub struct WorkloadGroup {
     /// but should be close to the configured percentage. On average, each
     /// mutated txn will have one of its fields modified, but there may be more.
     pub mutation_percentage: f64,
+
+    /// Percentage of transactions the workload should drop at random before sending (0-100).
+    pub drop_percentage: u64,
+
+    /// Convert EIP-1559 transactions to legacy transactions after mutation.
+    pub convert_eip1559_to_legacy: bool,
 }
 
 impl Default for WorkloadGroup {
@@ -312,6 +318,8 @@ impl Default for WorkloadGroup {
             name: "default".to_string(),
             traffic_gens: vec![],
             mutation_percentage: 0.0,
+            drop_percentage: 0,
+            convert_eip1559_to_legacy: false,
         }
     }
 }
