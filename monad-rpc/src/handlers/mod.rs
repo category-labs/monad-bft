@@ -46,6 +46,7 @@ use self::{
             monad_eth_getLogs, monad_eth_getTransactionByBlockHashAndIndex,
             monad_eth_getTransactionByBlockNumberAndIndex, monad_eth_getTransactionByHash,
             monad_eth_getTransactionReceipt, monad_eth_sendRawTransaction,
+            monad_eth_sendRawTransactionSync,
         },
     },
     meta::{monad_net_version, monad_web3_client_version},
@@ -416,6 +417,29 @@ async fn eth_sendRawTransaction(
         params,
         app_state.chain_id,
         app_state.allow_unprotected_txs,
+    )
+    .await
+    .map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn eth_sendRawTransactionSync(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    params: RequestParams<'_>,
+) -> Result<Box<RawValue>, JsonRpcError> {
+    // Require both chain_state and txpool_bridge_client
+    let chain_state = app_state.chain_state.as_ref().method_not_supported()?;
+    let params = serde_json::from_str(params.get()).invalid_params()?;
+
+    monad_eth_sendRawTransactionSync(
+        &app_state.txpool_bridge_client,
+        chain_state,
+        params,
+        app_state.chain_id,
+        app_state.allow_unprotected_txs,
+        app_state.eth_send_raw_transaction_sync_default_timeout_ms,
+        app_state.eth_send_raw_transaction_sync_max_timeout_ms,
     )
     .await
     .map(serialize_result)?
@@ -906,6 +930,7 @@ enabled_methods!(
     debug_traceTransaction,
     eth_call,
     eth_sendRawTransaction,
+    eth_sendRawTransactionSync,
     eth_createAccessList,
     eth_getLogs,
     eth_getTransactionByHash,

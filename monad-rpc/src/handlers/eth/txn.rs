@@ -22,11 +22,12 @@ use alloy_rpc_types::{Filter, Log, Receipt, TransactionReceipt};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, Triedb, TxEnvelopeWithSender};
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::de::{self, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 use tracing::{debug, error, trace, warn};
 
 use crate::{
-    chainstate::ChainState,
+    chainstate::{ChainState, ChainStateError},
     eth_json_types::{
         BlockTagOrHash, BlockTags, EthHash, MonadLog, MonadTransaction, MonadTransactionReceipt,
         Quantity, UnformattedData,
@@ -204,14 +205,22 @@ pub async fn monad_eth_sendRawTransaction(
     allow_unprotected_txs: bool,
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_sendRawTransaction: {params:?}");
-    let Some(tx_inflight_guard) = txpool_bridge_client.acquire_tx_inflight_guard() else {
-        warn!("txpool overloaded");
-        return Err(JsonRpcError::custom(
-            "overloaded, try again later".to_owned(),
-        ));
-    };
 
-    match TxEnvelope::decode(&mut &params.hex_tx.0[..]) {
+    let tx = validate_and_decode_tx(&params.hex_tx.0, chain_id, allow_unprotected_txs)?;
+
+    let tx_hash = *tx.tx_hash();
+    debug!(name = "sendRawTransaction", txn_hash = ?tx_hash);
+    submit_to_txpool(txpool_bridge_client, tx).await?;
+
+    Ok(tx_hash.to_string())
+}
+
+fn validate_and_decode_tx(
+    hex_tx: &[u8],
+    chain_id: u64,
+    allow_unprotected_txs: bool,
+) -> Result<TxEnvelope, JsonRpcError> {
+    match TxEnvelope::decode(&mut &hex_tx[..]) {
         Ok(tx) => {
             // drop pre EIP-155 transactions if disallowed by the rpc (for user protection purposes)
             if !allow_unprotected_txs && tx.chain_id().is_none() {
@@ -226,46 +235,175 @@ pub async fn monad_eth_sendRawTransaction(
                 }
             }
 
-            let hash = *tx.tx_hash();
-            debug!(name = "sendRawTransaction", txn_hash = ?hash);
-
-            let (tx_status_send, tx_status_recv) = tokio::sync::oneshot::channel::<TxStatus>();
-
-            if let Err(err) = txpool_bridge_client.try_send(tx, tx_status_send) {
-                error!(
-                    ?err,
-                    "txpool bridge try_send error after acquiring tx_inflight_guard"
-                );
-                return Err(JsonRpcError::internal_error(
-                    "overloaded, try again later".to_owned(),
-                ));
-            }
-
-            match tokio::time::timeout(Duration::from_secs(1), tx_status_recv).await {
-                Ok(Ok(tx_status)) => match tx_status {
-                    TxStatus::Evicted { reason: _ } => {
-                        return Err(JsonRpcError::custom("rejected".to_string()))
-                    }
-                    TxStatus::Dropped { reason } => {
-                        return Err(JsonRpcError::custom(reason.as_user_string()))
-                    }
-                    TxStatus::Tracked | TxStatus::Committed => return Ok(hash.to_string()),
-                    TxStatus::Unknown => {
-                        error!("txpool bridge sent unknown status");
-                    }
-                },
-                Ok(Err(_)) | Err(_) => {
-                    warn!("txpool not responding");
-                }
-            }
-
-            return Err(JsonRpcError::custom("txpool not responding".to_string()));
+            Ok(tx)
         }
         Err(e) => {
             debug!(?e, "eth txn decode failed");
             Err(JsonRpcError::txn_decode_error())
         }
     }
+}
+
+async fn submit_to_txpool(
+    txpool_bridge_client: &EthTxPoolBridgeClient,
+    tx: TxEnvelope,
+) -> Result<(), JsonRpcError> {
+    let Some(tx_inflight_guard) = txpool_bridge_client.acquire_tx_inflight_guard() else {
+        warn!("txpool overloaded");
+        return Err(JsonRpcError::custom(
+            "overloaded, try again later".to_owned(),
+        ));
+    };
+
+    let (tx_status_send, tx_status_recv) = tokio::sync::oneshot::channel::<TxStatus>();
+
+    if let Err(err) = txpool_bridge_client.try_send(tx, tx_status_send) {
+        error!(
+            ?err,
+            "txpool bridge try_send error after acquiring tx_inflight_guard"
+        );
+        return Err(JsonRpcError::internal_error(
+            "overloaded, try again later".to_owned(),
+        ));
+    }
+
+    match tokio::time::timeout(Duration::from_secs(1), tx_status_recv).await {
+        Ok(Ok(tx_status)) => match tx_status {
+            TxStatus::Evicted { reason: _ } => {
+                return Err(JsonRpcError::custom("rejected".to_string()))
+            }
+            TxStatus::Dropped { reason } => {
+                return Err(JsonRpcError::custom(reason.as_user_string()))
+            }
+            TxStatus::Tracked | TxStatus::Committed => return Ok(()),
+            TxStatus::Unknown => {
+                error!("txpool bridge sent unknown status");
+            }
+        },
+        Ok(Err(_)) | Err(_) => {
+            warn!("txpool not responding");
+        }
+    }
+
+    Err(JsonRpcError::custom("txpool not responding".to_string()))
+}
+
+#[derive(Debug, schemars::JsonSchema)]
+pub struct MonadEthSendRawTransactionSyncParams(UnformattedData, Option<u64>);
+
+impl<'de> Deserialize<'de> for MonadEthSendRawTransactionSyncParams {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ParamsVisitor;
+
+        impl<'de> Visitor<'de> for ParamsVisitor {
+            type Value = MonadEthSendRawTransactionSyncParams;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("an array [hex_tx, timeout_ms?]")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let hex_tx = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let timeout_ms = seq.next_element()?.flatten();
+
+                Ok(MonadEthSendRawTransactionSyncParams(hex_tx, timeout_ms))
+            }
+        }
+
+        deserializer.deserialize_seq(ParamsVisitor)
+    }
+}
+
+impl MonadEthSendRawTransactionSyncParams {
+    fn hex_tx(&self) -> &UnformattedData {
+        &self.0
+    }
+
+    fn timeout_ms(&self) -> Option<u64> {
+        self.1
+    }
+}
+
+/// Polls for transaction receipt with timeout
+async fn poll_for_receipt<T: Triedb>(
+    chain_state: &ChainState<T>,
+    tx_hash: FixedBytes<32>,
+    timeout_ms: u64,
+    poll_interval_ms: u64,
+) -> Result<TransactionReceipt, JsonRpcError> {
+    let start_time = tokio::time::Instant::now();
+    let timeout = Duration::from_millis(timeout_ms);
+    let poll_interval = Duration::from_millis(poll_interval_ms);
+
+    loop {
+        match chain_state.get_transaction_receipt(*tx_hash).await {
+            Ok(receipt) => return Ok(receipt),
+            Err(ChainStateError::ResourceNotFound) => {
+                // Not found yet, check timeout
+                if start_time.elapsed() >= timeout {
+                    // EIP-7966: Error code 4 with tx hash in data
+                    return Err(JsonRpcError::tx_sync_timeout(
+                        tx_hash.to_string(),
+                        timeout_ms,
+                    ));
+                }
+
+                tokio::time::sleep(poll_interval).await;
+            }
+            Err(ChainStateError::Archive(e)) => {
+                return Err(JsonRpcError::internal_error(format!("Archive error: {e}")));
+            }
+            Err(ChainStateError::Triedb(e)) => {
+                return Err(JsonRpcError::internal_error(format!("Triedb error: {e}")));
+            }
+        }
+    }
+}
+
+#[rpc(
+    method = "eth_sendRawTransactionSync",
+    ignore = "txpool_bridge_client,chain_state,chain_id,allow_unprotected_txs,eth_send_raw_transaction_sync_default_timeout_ms,eth_send_raw_transaction_sync_max_timeout_ms"
+)]
+#[allow(non_snake_case)]
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn monad_eth_sendRawTransactionSync<T: Triedb>(
+    txpool_bridge_client: &EthTxPoolBridgeClient,
+    chain_state: &ChainState<T>,
+    params: MonadEthSendRawTransactionSyncParams,
+    chain_id: u64,
+    allow_unprotected_txs: bool,
+    eth_send_raw_transaction_sync_default_timeout_ms: u64,
+    eth_send_raw_transaction_sync_max_timeout_ms: u64,
+) -> JsonRpcResult<MonadTransactionReceipt> {
+    trace!("monad_eth_sendRawTransactionSync: {params:?}");
+
+    let timeout_ms = params
+        .timeout_ms()
+        .filter(|&t| t > 0 && t <= eth_send_raw_transaction_sync_max_timeout_ms)
+        .unwrap_or(eth_send_raw_transaction_sync_default_timeout_ms);
+
+    let tx = validate_and_decode_tx(&params.hex_tx().0, chain_id, allow_unprotected_txs).map_err(
+        |e| match e.code {
+            -32603 => JsonRpcError::tx_sync_unready(),
+            _ => e,
+        },
+    )?;
+
+    let tx_hash = *tx.tx_hash();
+    debug!(name = "sendRawTransactionSync", txn_hash = ?tx_hash);
+    submit_to_txpool(txpool_bridge_client, tx).await?;
+
+    let receipt = poll_for_receipt(chain_state, tx_hash, timeout_ms, 100).await?;
+
+    Ok(MonadTransactionReceipt(receipt))
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -370,8 +508,13 @@ mod tests {
     use alloy_signer_local::PrivateKeySigner;
     use monad_triedb_utils::{mock_triedb::MockTriedb, triedb_env::Account};
 
-    use super::{monad_eth_sendRawTransaction, MonadEthSendRawTransactionParams};
-    use crate::{eth_json_types::UnformattedData, txpool::EthTxPoolBridgeClient};
+    use super::{
+        monad_eth_sendRawTransaction, monad_eth_sendRawTransactionSync,
+        MonadEthSendRawTransactionParams, MonadEthSendRawTransactionSyncParams,
+    };
+    use crate::{
+        chainstate::ChainState, eth_json_types::UnformattedData, txpool::EthTxPoolBridgeClient,
+    };
 
     fn serialize_tx(tx: (impl Encodable + Encodable2718)) -> UnformattedData {
         let mut rlp_encoded_tx = Vec::new();
@@ -443,6 +586,67 @@ mod tests {
                 monad_eth_sendRawTransaction(&EthTxPoolBridgeClient::for_testing(), case, 1, true)
                     .await
                     .is_err(),
+                "Expected error for case: {:?}",
+                idx + 1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn eth_send_raw_transaction_sync() {
+        let mut triedb = MockTriedb::default();
+        let sender = FixedBytes::<32>::from([1u8; 32]);
+        let signer = PrivateKeySigner::from_bytes(&sender).unwrap();
+
+        triedb.set_account(
+            signer.address().0.into(),
+            Account {
+                nonce: 10,
+                ..Default::default()
+            },
+        );
+
+        // Create a mock ChainState (needed for the sync method)
+        let chain_state = ChainState::new(None, triedb, None);
+
+        // Test the same validation failures as eth_sendRawTransaction
+        // to ensure both methods have consistent validation
+        let expected_failures = [
+            MonadEthSendRawTransactionSyncParams(
+                serialize_tx(make_tx(sender, 1000, 1000, 21_000, 11, 1337)), // invalid chain id
+                Some(2000),
+            ),
+            MonadEthSendRawTransactionSyncParams(
+                serialize_tx(make_tx(sender, 1000, 1000, 1_000, 11, 1)), // intrinsic gas too low
+                Some(2000),
+            ),
+            MonadEthSendRawTransactionSyncParams(
+                serialize_tx(make_tx(sender, 1000, 1000, 400_000_000_000, 11, 1)), // gas too high
+                Some(2000),
+            ),
+            MonadEthSendRawTransactionSyncParams(
+                serialize_tx(make_tx(sender, 1000, 1000, 21_000, 1, 1)), // nonce too low
+                Some(2000),
+            ),
+            MonadEthSendRawTransactionSyncParams(
+                serialize_tx(make_tx(sender, 1000, 12000, 21_000, 11, 1)), // max priority fee too high
+                Some(2000),
+            ),
+        ];
+
+        for (idx, case) in expected_failures.into_iter().enumerate() {
+            assert!(
+                monad_eth_sendRawTransactionSync(
+                    &EthTxPoolBridgeClient::for_testing(),
+                    &chain_state,
+                    case,
+                    1,
+                    true,
+                    2000,
+                    30000,
+                )
+                .await
+                .is_err(),
                 "Expected error for case: {:?}",
                 idx + 1
             );
