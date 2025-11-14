@@ -43,7 +43,7 @@ impl<'a> EthTxPoolEventTracker<'a> {
         }
     }
 
-    pub fn insert(&mut self, tx: &Recovered<TxEnvelope>, owned: bool) {
+    pub fn insert(&mut self, address: Address, tx_hash: TxHash, owned: bool) {
         if owned {
             self.metrics.insert_owned_txs.fetch_add(1, Ordering::SeqCst);
         } else {
@@ -52,45 +52,25 @@ impl<'a> EthTxPoolEventTracker<'a> {
                 .fetch_add(1, Ordering::SeqCst);
         }
 
-        self.events.insert(
-            *tx.tx_hash(),
-            EthTxPoolEventType::Insert {
-                address: tx.signer(),
-                owned,
-            },
-        );
+        self.events
+            .insert(tx_hash, EthTxPoolEventType::Insert { address, owned });
     }
 
     pub fn replace(
         &mut self,
-        address: &Address,
+        address: Address,
         old_tx_hash: TxHash,
         new_tx_hash: TxHash,
         new_owned: bool,
     ) {
-        if new_owned {
-            self.metrics.insert_owned_txs.fetch_add(1, Ordering::SeqCst);
-        } else {
-            self.metrics
-                .insert_forwarded_txs
-                .fetch_add(1, Ordering::SeqCst);
-        }
-
-        self.events.insert(
+        self.drop(
             old_tx_hash,
-            EthTxPoolEventType::Drop {
-                reason: EthTxPoolDropReason::ReplacedByHigherPriority {
-                    replacement: new_tx_hash,
-                },
+            EthTxPoolDropReason::ReplacedByHigherPriority {
+                replacement: new_tx_hash,
             },
         );
-        self.events.insert(
-            new_tx_hash,
-            EthTxPoolEventType::Insert {
-                address: *address,
-                owned: new_owned,
-            },
-        );
+
+        self.insert(address, new_tx_hash, new_owned);
     }
 
     pub fn drop(&mut self, tx_hash: TxHash, reason: EthTxPoolDropReason) {
