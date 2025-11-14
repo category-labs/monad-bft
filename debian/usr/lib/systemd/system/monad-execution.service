@@ -9,8 +9,7 @@ ExecStart=/usr/local/bin/monad \
     --db /dev/triedb \
     --block_db /home/monad/monad-bft/ledger \
     --statesync /home/monad/monad-bft/statesync.sock \
-    --ro_sq_thread_cpu 1 \
-    --sq_thread_cpu 2 \
+    --sq_thread_cpu 1 \
     --log_level INFO
 EnvironmentFile=-/home/monad/.env
 Restart=no
