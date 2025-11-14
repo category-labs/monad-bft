@@ -274,7 +274,7 @@ where
                     self.forwarding_manager
                         .as_mut()
                         .project()
-                        .schedule_egress_txs(&mut self.pool);
+                        .add_egress_pool_txs(&mut self.pool);
                 }
                 TxPoolCommand::CreateProposal {
                     node_id,
@@ -552,7 +552,7 @@ where
             forwarding_manager
                 .as_mut()
                 .project()
-                .add_egress_txs(inserted_txs.iter());
+                .try_add_egress_immediate_txs(inserted_txs.iter());
 
             metrics.update(executor_metrics);
             ipc.as_mut().broadcast_tx_events(ipc_events);
