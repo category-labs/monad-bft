@@ -326,6 +326,12 @@ pub struct WorkloadGroup {
 
     /// Number of concurrent websocket connections to use for spamming rpc and websocket
     pub num_ws_connections: usize,
+
+    /// Percentage of transactions the workload should drop at random before sending (0-100).
+    pub drop_percentage: f64,
+
+    /// Percentage of EIP-1559 transactions to convert to legacy transactions.
+    pub convert_eip1559_to_legacy: f64,
 }
 
 impl Default for WorkloadGroup {
@@ -338,6 +344,8 @@ impl Default for WorkloadGroup {
             spam_rpc_ws: false,
             compare_rpc_ws: false,
             num_ws_connections: 4,
+            drop_percentage: 0.0,
+            convert_eip1559_to_legacy: 0.0,
         }
     }
 }

@@ -174,6 +174,14 @@ pub struct CliConfig {
     #[arg(long, global = true)]
     pub random_priority_fee_range: Option<String>,
 
+    /// Percentage of transactions to drop after generation (0-100)
+    #[arg(long, global = true)]
+    pub drop_percentage: Option<f64>,
+
+    /// Percentage of EIP-1559 transactions to convert to legacy after mutation (0-100)
+    #[arg(long, global = true)]
+    pub convert_eip1559_to_legacy_percentage: Option<f64>,
+
     /// Override for native contract address
     #[arg(long, global = true)]
     pub native_contract: Option<String>,
@@ -337,12 +345,20 @@ impl From<CliConfig> for Config {
 
 impl From<CliConfig> for WorkloadGroup {
     fn from(value: CliConfig) -> Self {
-        WorkloadGroup {
+        let mut workload = WorkloadGroup {
             // Effectively infinite runtime
             runtime_minutes: 100_000_000_000.0,
-            traffic_gens: vec![value.into()],
+            traffic_gens: vec![value.clone().into()],
             ..Default::default()
+        };
+
+        if let Some(drop_percentage) = value.drop_percentage {
+            workload.drop_percentage = drop_percentage.clamp(0.0, 100.0);
         }
+        if let Some(convert_percentage) = value.convert_eip1559_to_legacy_percentage {
+            workload.convert_eip1559_to_legacy = convert_percentage.clamp(0.0, 100.0);
+        }
+        workload
     }
 }
 
