@@ -15,6 +15,7 @@
 
 use std::{
     collections::VecDeque,
+    num::NonZeroU32,
     pin::Pin,
     task::{Context, Poll, Waker},
     time::Duration,
@@ -22,6 +23,7 @@ use std::{
 
 use alloy_consensus::TxEnvelope;
 use bytes::Bytes;
+use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
 use monad_chain_config::{
     execution_revision::ExecutionChainParams, revision::ChainRevision, ChainConfig,
 };
@@ -32,15 +34,18 @@ use monad_eth_txpool::{max_eip2718_encoded_length, EthTxPool};
 use monad_eth_types::ExtractEthAddress;
 use monad_state_backend::StateBackend;
 use monad_validator::signature_collection::SignatureCollection;
+use nonzero_ext::nonzero;
 use pin_project::pin_project;
 use tracing::{debug, error};
-
-const EGRESS_MIN_COMMITTED_SEQ_NUM_DIFF: u64 = 5;
-const EGRESS_MAX_RETRIES: usize = 3;
 
 const INGRESS_CHUNK_MAX_SIZE: usize = 128;
 const INGRESS_CHUNK_INTERVAL_MS: u64 = 8;
 const INGRESS_MAX_SIZE: usize = 8 * 1024;
+
+const EGRESS_MIN_COMMITTED_SEQ_NUM_DIFF: u64 = 5;
+const EGRESS_MAX_RETRIES: usize = 3;
+/// Default set to 32 Mbps, raptorcast redundancy of 3 => 100 Mbps
+const EGRESS_RATE_LIMIT_BYTES_PER_SECOND: NonZeroU32 = nonzero!(32u32 * 1024u32 * 1024u32 / 8u32);
 
 pub fn egress_max_size_bytes(execution_params: &ExecutionChainParams) -> usize {
     max_eip2718_encoded_length(execution_params)
@@ -55,6 +60,7 @@ pub struct EthTxPoolForwardingManager {
 
     egress: VecDeque<Bytes>,
     egress_waker: Option<Waker>,
+    egress_bytes_rate_limit: DefaultDirectRateLimiter,
 }
 
 impl Default for EthTxPoolForwardingManager {
@@ -71,6 +77,9 @@ impl Default for EthTxPoolForwardingManager {
 
             egress: VecDeque::default(),
             egress_waker: None,
+            egress_bytes_rate_limit: RateLimiter::direct(Quota::per_second(
+                EGRESS_RATE_LIMIT_BYTES_PER_SECOND,
+            )),
         }
     }
 }
@@ -197,14 +206,49 @@ impl EthTxPoolForwardingManagerProjected<'_> {
         }
     }
 
-    pub fn add_egress_txs<'a>(&mut self, txs: impl Iterator<Item = &'a TxEnvelope>) {
+    fn apply_egress_rate_limits(
+        egress_bytes_rate_limit: &mut DefaultDirectRateLimiter,
+        tx: &TxEnvelope,
+    ) -> bool {
+        let Ok(bytes_nonzero) = NonZeroU32::try_from(tx.eip2718_encoded_length() as u32) else {
+            error!(
+                ?tx,
+                "txpool forwarding manager encountered tx with zero eip2718_encoded_length"
+            );
+            return false;
+        };
+
+        match egress_bytes_rate_limit.check_n(bytes_nonzero) {
+            Err(err) => {
+                error!(
+                    ?tx,
+                    ?err,
+                    "txpool forwarding manager encountered tx larger than egress_bytes_rate_limit"
+                );
+
+                false
+            }
+            Ok(Err(_)) => false,
+            Ok(Ok(())) => true,
+        }
+    }
+
+    pub fn try_add_egress_immediate_txs<'pool>(
+        &mut self,
+        txs: impl Iterator<Item = &'pool TxEnvelope>,
+    ) {
         let Self {
             egress,
             egress_waker,
+            egress_bytes_rate_limit,
             ..
         } = self;
 
-        egress.extend(txs.map(alloy_rlp::encode).map(Into::into));
+        egress.extend(
+            txs.take_while(|tx| Self::apply_egress_rate_limits(egress_bytes_rate_limit, tx))
+                .map(alloy_rlp::encode)
+                .map(Into::into),
+        );
 
         if egress.is_empty() {
             return;
@@ -215,7 +259,7 @@ impl EthTxPoolForwardingManagerProjected<'_> {
         }
     }
 
-    pub fn schedule_egress_txs<ST, SCT, SBT, CCT, CRT>(
+    pub fn add_egress_pool_txs<ST, SCT, SBT, CCT, CRT>(
         &mut self,
         pool: &mut EthTxPool<ST, SCT, SBT, CCT, CRT>,
     ) where
@@ -226,13 +270,33 @@ impl EthTxPoolForwardingManagerProjected<'_> {
         CCT: ChainConfig<CRT>,
         CRT: ChainRevision,
     {
-        let Some(forwardable_txs) =
-            pool.get_forwardable_txs::<EGRESS_MIN_COMMITTED_SEQ_NUM_DIFF, EGRESS_MAX_RETRIES>()
-        else {
+        let Some(forwardable_txs) = pool.get_forwardable_txs() else {
             return;
         };
 
-        self.add_egress_txs(forwardable_txs);
+        let Self {
+            egress,
+            egress_waker,
+            egress_bytes_rate_limit,
+            ..
+        } = self;
+
+        egress.extend(
+            forwardable_txs
+                .take_forwardable_while::<EGRESS_MIN_COMMITTED_SEQ_NUM_DIFF, EGRESS_MAX_RETRIES>(
+                    |tx| Self::apply_egress_rate_limits(*egress_bytes_rate_limit, tx),
+                )
+                .map(alloy_rlp::encode)
+                .map(Into::into),
+        );
+
+        if egress.is_empty() {
+            return;
+        }
+
+        if let Some(waker) = egress_waker.take() {
+            waker.wake();
+        }
     }
 }
 
@@ -525,7 +589,7 @@ mod test {
         forwarding_manager
             .as_mut()
             .project()
-            .add_egress_txs(egress_txs.iter());
+            .try_add_egress_immediate_txs(egress_txs.iter());
 
         let Poll::Ready(first_batch) = forwarding_manager
             .as_mut()
@@ -612,7 +676,7 @@ mod test {
             forwarding_manager
                 .as_mut()
                 .project()
-                .add_egress_txs([&tx1, &tx2, &tx3].into_iter());
+                .try_add_egress_immediate_txs([&tx1, &tx2, &tx3].into_iter());
 
             let Poll::Ready(first_batch) = forwarding_manager
                 .as_mut()
