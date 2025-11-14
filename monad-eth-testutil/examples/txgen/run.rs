@@ -31,7 +31,10 @@ use serde::{Deserialize, Serialize};
 use crate::{
     config::{Config, DeployedContract, TrafficGen},
     generators::make_generator,
-    prelude::*,
+    prelude::{
+        rpc_request_gen::{RpcWalletSpam, RpcWsCompare},
+        *,
+    },
     report::Report,
     shared::{
         ecmul::ECMul, eip7702::EIP7702, erc20::ERC20, eth_json_rpc::EthJsonRpc, uniswap::Uniswap,
@@ -110,6 +113,38 @@ async fn run_workload_group(
 
     // Shared tasks for all workers in the workload group
     let mut tasks = FuturesUnordered::new();
+
+    if workload_group.spam_rpc_ws {
+        let spammer = RpcWalletSpam::new(
+            read_client.clone(),
+            config.ws_url().expect("WS URL is not valid"),
+            workload_group.num_ws_connections,
+        );
+        let shutdown_clone = Arc::clone(&shutdown);
+        tasks.push(
+            critical_task(
+                "Spammer",
+                tokio::spawn(async move { spammer.run(shutdown_clone).await }),
+            )
+            .boxed(),
+        );
+    }
+
+    if workload_group.compare_rpc_ws {
+        let compare_rpc_ws = RpcWsCompare::new(
+            read_client.clone(),
+            config.ws_url().expect("WS URL is not valid"),
+        );
+        let shutdown_clone = Arc::clone(&shutdown);
+        tasks.push(
+            critical_task(
+                "Compare RPC WS",
+                tokio::spawn(async move { compare_rpc_ws.run(shutdown_clone).await }),
+            )
+            .boxed(),
+        );
+    }
+
     // Deployed contract for each traffic gen
     let mut deployed_contracts = Vec::new();
     for traffic_gen in &workload_group.traffic_gens {
