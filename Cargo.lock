@@ -5071,6 +5071,7 @@ dependencies = [
 name = "monad-dataplane"
 version = "0.1.0"
 dependencies = [
+ "byte-unit",
  "bytes",
  "clap 4.5.47",
  "env_logger 0.10.2",
@@ -5085,6 +5086,7 @@ dependencies = [
  "rand 0.8.5",
  "rstest",
  "socket2 0.5.10",
+ "thiserror 1.0.69",
  "tokio",
  "tracing",
  "tracing-subscriber",

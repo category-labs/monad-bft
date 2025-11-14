@@ -16,17 +16,19 @@ env_logger = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
 governor = { workspace = true }
+io-uring = { workspace = true }
 libc = { workspace = true }
 monoio = { workspace = true }
 rand = { workspace = true }
 socket2 = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 zerocopy = { workspace = true }
 
 [dev-dependencies]
+byte-unit = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
-io-uring = { workspace = true }
 ntest = { workspace = true }
 rstest = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }

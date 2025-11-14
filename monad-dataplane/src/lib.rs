@@ -39,10 +39,17 @@ pub(crate) mod ban_expiry;
 pub(crate) mod buffer_ext;
 pub mod tcp;
 pub mod udp;
+pub(crate) mod uring;
 
 pub struct UdpSocketConfig {
     pub socket_addr: SocketAddr,
     pub label: String,
+}
+
+pub struct UringConfig {
+    pub num_readers: usize,
+    pub batch_size: usize,
+    pub use_ringbuf: bool,
 }
 
 pub struct DataplaneBuilder {
@@ -51,9 +58,12 @@ pub struct DataplaneBuilder {
     /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
     udp_up_bandwidth_mbps: u64,
     udp_buffer_size: Option<usize>,
+    udp_max_write_size: usize,
     tcp_config: TcpConfig,
     ban_duration: Duration,
     udp_sockets: Vec<UdpSocketConfig>,
+    uring_config: Option<UringConfig>,
+    socket_readers: usize,
 }
 
 impl DataplaneBuilder {
@@ -62,6 +72,7 @@ impl DataplaneBuilder {
             local_addr: *local_addr,
             udp_up_bandwidth_mbps: up_bandwidth_mbps,
             udp_buffer_size: None,
+            udp_max_write_size: 65535,
             trusted_addresses: vec![],
             tcp_config: TcpConfig {
                 rate_limit: TcpRateLimit {
@@ -71,13 +82,20 @@ impl DataplaneBuilder {
                 connections_limit: 10000,
                 per_ip_connections_limit: 100,
             },
-            ban_duration: Duration::from_secs(5 * 60), // 5 minutes
+            ban_duration: Duration::from_secs(5 * 60),
             udp_sockets: vec![],
+            uring_config: None,
+            socket_readers: 128,
         }
     }
 
     pub fn with_udp_buffer_size(mut self, buffer_size: usize) -> Self {
         self.udp_buffer_size = Some(buffer_size);
+        self
+    }
+
+    pub fn with_udp_max_write_size(mut self, max_write_size: usize) -> Self {
+        self.udp_max_write_size = max_write_size;
         self
     }
 
@@ -104,15 +122,50 @@ impl DataplaneBuilder {
         self
     }
 
+    pub fn with_socket_readers(mut self, count: usize) -> Self {
+        assert!(count > 0, "socket_readers must be greater than 0");
+        self.socket_readers = count;
+        self
+    }
+
+    pub fn enable_so_reuseport(mut self, num_readers: usize) -> Self {
+        assert!(
+            num_readers > 0 && num_readers <= 16,
+            "num_readers must be between 1 and 16"
+        );
+        self.uring_config = Some(UringConfig {
+            num_readers,
+            batch_size: 128,
+            use_ringbuf: false,
+        });
+        self
+    }
+
+    pub fn uring_udp_ringbuf(mut self, enabled: bool) -> Self {
+        if enabled {
+            assert!(
+                self.uring_config.is_some(),
+                "uring_udp_ringbuf requires enable_so_reuseport to be called first"
+            );
+            if let Some(ref mut config) = self.uring_config {
+                config.use_ringbuf = true;
+            }
+        }
+        self
+    }
+
     pub fn build(self) -> Dataplane {
         let DataplaneBuilder {
             local_addr,
             udp_up_bandwidth_mbps: up_bandwidth_mbps,
             udp_buffer_size,
+            udp_max_write_size,
             trusted_addresses: trusted,
             tcp_config,
             ban_duration,
             udp_sockets,
+            uring_config,
+            socket_readers,
         } = self;
 
         let mut seen_labels = std::collections::HashSet::new();
@@ -183,6 +236,9 @@ impl DataplaneBuilder {
                                 udp_egress_rx,
                                 up_bandwidth_mbps,
                                 udp_buffer_size,
+                                uring_config,
+                                socket_readers,
+                                udp_max_write_size,
                             );
 
                             ready_clone.store(true, Ordering::Release);
@@ -301,6 +357,7 @@ impl UdpSocketWriter {
             payload,
             stride,
             priority: UdpPriority::Regular,
+            msg_type: udp::UdpMessageType::Direct,
         });
 
         match result {
@@ -575,6 +632,7 @@ impl BroadcastMsg {
             payload: payload.clone(),
             stride,
             priority,
+            msg_type: udp::UdpMessageType::Broadcast,
         })
     }
 }
@@ -602,6 +660,7 @@ impl UnicastMsg {
             payload,
             stride,
             priority,
+            msg_type: udp::UdpMessageType::Direct,
         })
     }
 }
@@ -630,6 +689,7 @@ pub(crate) struct UdpMsg {
     pub(crate) payload: Bytes,
     pub(crate) stride: u16,
     pub(crate) priority: UdpPriority,
+    pub(crate) msg_type: udp::UdpMessageType,
 }
 
 const TCP_INGRESS_CHANNEL_SIZE: usize = 1024;

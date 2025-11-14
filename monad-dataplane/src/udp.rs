@@ -23,31 +23,70 @@ use std::{
 
 use bytes::BytesMut;
 use futures::future::join_all;
+use monad_types::UdpPriority;
 use monoio::{net::udp::UdpSocket, spawn, time};
+use thiserror::Error;
 use tokio::sync::mpsc;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use super::{RecvUdpMsg, UdpMsg};
 use crate::buffer_ext::SocketBufferExt;
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum UdpMessageType {
+    Broadcast,
+    Direct,
+}
+
+const PRIORITY_QUEUE_BYTES_CAPACITY: usize = 100 * 1024 * 1024;
+
+#[derive(Error, Debug)]
+#[error("priority queue capacity exceeded: priority={priority:?} current={current_bytes} capacity={capacity_bytes}")]
+struct QueueCapacityError {
+    priority: UdpPriority,
+    current_bytes: usize,
+    capacity_bytes: usize,
+}
+
 struct PriorityQueues {
     queues: [VecDeque<UdpMsg>; 2],
+    current_bytes: [usize; 2],
+    capacity_bytes: usize,
 }
 
 impl PriorityQueues {
     fn new() -> Self {
+        Self::with_bytes_capacity(PRIORITY_QUEUE_BYTES_CAPACITY)
+    }
+
+    fn with_bytes_capacity(capacity_bytes: usize) -> Self {
         Self {
             queues: [VecDeque::new(), VecDeque::new()],
+            current_bytes: [0, 0],
+            capacity_bytes,
         }
     }
 
-    fn push(&mut self, msg: UdpMsg) {
-        self.queues[msg.priority as usize].push_back(msg);
+    fn try_push(&mut self, msg: UdpMsg) -> Result<(), QueueCapacityError> {
+        let msg_bytes = msg.payload.len();
+        let priority_idx = msg.priority as usize;
+        if self.current_bytes[priority_idx] + msg_bytes > self.capacity_bytes {
+            return Err(QueueCapacityError {
+                priority: msg.priority,
+                current_bytes: self.current_bytes[priority_idx],
+                capacity_bytes: self.capacity_bytes,
+            });
+        }
+        self.current_bytes[priority_idx] += msg_bytes;
+        self.queues[priority_idx].push_back(msg);
+        Ok(())
     }
 
     fn pop_highest_priority(&mut self) -> Option<UdpMsg> {
-        for queue in self.queues.iter_mut() {
+        for (priority_idx, queue) in self.queues.iter_mut().enumerate() {
             if let Some(msg) = queue.pop_front() {
+                self.current_bytes[priority_idx] =
+                    self.current_bytes[priority_idx].saturating_sub(msg.payload.len());
                 return Some(msg);
             }
         }
@@ -130,25 +169,98 @@ pub(crate) fn spawn_tasks(
     udp_egress_rx: mpsc::Receiver<UdpMsg>,
     up_bandwidth_mbps: u64,
     buffer_size: Option<usize>,
+    uring_config: Option<crate::UringConfig>,
+    socket_readers: usize,
+    max_write_size: usize,
 ) {
     let mut tx_sockets = Vec::new();
 
-    for (socket_id, socket_addr, label, ingress_tx) in socket_configs {
-        let (rx, tx) = create_socket_pair(socket_addr, buffer_size);
-        spawn(rx_single_socket(rx, ingress_tx));
-        trace!(socket_id, label = %label, ?socket_addr, "created socket");
-        tx_sockets.push(tx);
+    if let Some(uring_cfg) = uring_config {
+        use std::collections::HashMap;
+
+        let uring_configs: Vec<crate::uring::reader::SocketConfig> = socket_configs
+            .iter()
+            .map(
+                |(socket_id, socket_addr, label, _)| crate::uring::reader::SocketConfig {
+                    socket_id: *socket_id,
+                    socket_addr: *socket_addr,
+                    label: label.clone(),
+                },
+            )
+            .collect();
+
+        let tx_map: HashMap<usize, mpsc::Sender<RecvUdpMsg>> = socket_configs
+            .iter()
+            .map(|(socket_id, _, _, ingress_tx)| (*socket_id, ingress_tx.clone()))
+            .collect();
+
+        let fds = crate::uring::reader::spawn(
+            uring_configs,
+            move |socket_id, msg| {
+                tx_map
+                    .get(&socket_id)
+                    .expect("valid socket_id")
+                    .blocking_send(msg)
+                    .map_err(|e| {
+                        warn!(socket_id, error = %e, "failed to send message to ingress channel");
+                    })
+            },
+            uring_cfg.num_readers,
+            uring_cfg.batch_size,
+            buffer_size,
+            uring_cfg.use_ringbuf,
+        );
+
+        for ((socket_id, socket_addr, label, _), fd) in socket_configs.into_iter().zip(fds) {
+            let tx = UdpSocket::from_std(unsafe { std::net::UdpSocket::from_raw_fd(fd) })
+                .expect("failed to create tx socket from fd");
+            trace!(socket_id, label = %label, ?socket_addr, "created socket with io_uring");
+            tx_sockets.push(tx);
+        }
+    } else {
+        for (socket_id, socket_addr, label, ingress_tx) in socket_configs {
+            let socket = std::net::UdpSocket::bind(socket_addr).unwrap();
+            let monoio_socket = UdpSocket::from_std(socket).unwrap();
+            configure_socket(&monoio_socket, buffer_size);
+            let raw_fd = monoio_socket.as_raw_fd();
+
+            let tx_fd = unsafe { libc::dup(raw_fd) };
+            if tx_fd < 0 {
+                panic!(
+                    "failed to duplicate socket fd for tx: {}",
+                    Error::last_os_error()
+                );
+            }
+            let tx =
+                UdpSocket::from_std(unsafe { std::net::UdpSocket::from_raw_fd(tx_fd) }).unwrap();
+
+            for _ in 0..socket_readers {
+                let rx_fd = unsafe { libc::dup(raw_fd) };
+                if rx_fd < 0 {
+                    panic!(
+                        "failed to duplicate socket fd for rx: {}",
+                        Error::last_os_error()
+                    );
+                }
+                let rx_clone =
+                    unsafe { UdpSocket::from_std(std::net::UdpSocket::from_raw_fd(rx_fd)) }
+                        .unwrap();
+                spawn(rx_single_socket(rx_clone, ingress_tx.clone()));
+            }
+
+            std::mem::forget(monoio_socket);
+
+            trace!(socket_id, label = %label, ?socket_addr, readers = socket_readers, "created socket");
+            tx_sockets.push(tx);
+        }
     }
 
-    spawn(tx(tx_sockets, udp_egress_rx, up_bandwidth_mbps));
-}
-
-fn create_socket_pair(addr: SocketAddr, buffer_size: Option<usize>) -> (UdpSocket, UdpSocket) {
-    let rx = UdpSocket::bind(addr).unwrap();
-    configure_socket(&rx, buffer_size);
-    let tx =
-        UdpSocket::from_std(unsafe { std::net::UdpSocket::from_raw_fd(rx.as_raw_fd()) }).unwrap();
-    (rx, tx)
+    spawn(tx(
+        tx_sockets,
+        udp_egress_rx,
+        up_bandwidth_mbps,
+        max_write_size,
+    ));
 }
 
 async fn rx_single_socket(socket: UdpSocket, udp_ingress_tx: mpsc::Sender<RecvUdpMsg>) {
@@ -183,13 +295,21 @@ async fn tx(
     tx_sockets: Vec<UdpSocket>,
     mut udp_egress_rx: mpsc::Receiver<UdpMsg>,
     up_bandwidth_mbps: u64,
+    max_write_size: usize,
 ) {
     let mut next_transmit = Instant::now();
 
     let mut priority_queues = PriorityQueues::new();
 
-    let max_batch_bytes = max_write_size_for_segment_size(DEFAULT_SEGMENT_SIZE) as usize;
-    let mut send_futures = Vec::with_capacity(MAX_AGGREGATED_SEGMENTS as usize);
+    let max_batch_bytes = max_write_size;
+    let max_segments =
+        (max_write_size / DEFAULT_SEGMENT_SIZE as usize).min(MAX_AGGREGATED_SEGMENTS as usize);
+    let mut send_futures = Vec::with_capacity(max_segments);
+
+    let mut total_bytes_sent = 0u64;
+    let mut total_packets_sent = 0u64;
+    let mut last_log = Instant::now();
+    let log_interval = Duration::from_secs(1);
 
     loop {
         let now = Instant::now();
@@ -221,7 +341,7 @@ async fn tx(
 
         while !priority_queues.is_empty()
             && total_bytes < max_batch_bytes
-            && batch_count < MAX_AGGREGATED_SEGMENTS as usize
+            && batch_count < max_segments
         {
             let mut msg = priority_queues.pop_highest_priority().unwrap();
             let chunk_size = msg
@@ -231,7 +351,9 @@ async fn tx(
                 .min(max_batch_bytes);
 
             if chunk_size + total_bytes > max_batch_bytes {
-                priority_queues.push(msg);
+                if let Err(err) = priority_queues.try_push(msg) {
+                    warn!(?err, "failed to re-queue message");
+                }
                 break;
             }
 
@@ -244,7 +366,9 @@ async fn tx(
             let socket = tx_sockets.get(socket_id).expect("valid socket_id");
 
             if !msg.payload.is_empty() {
-                priority_queues.push(msg);
+                if let Err(err) = priority_queues.try_push(msg) {
+                    warn!(?err, "failed to re-queue message with remaining payload");
+                }
             }
 
             trace!(
@@ -292,6 +416,27 @@ async fn tx(
         }
 
         if total_bytes > 0 {
+            total_bytes_sent += total_bytes as u64;
+            total_packets_sent += batch_count as u64;
+
+            let now = Instant::now();
+            if now.duration_since(last_log) >= log_interval {
+                let elapsed = now.duration_since(last_log).as_secs_f64();
+                let packets_per_sec = total_packets_sent as f64 / elapsed;
+                let mbps = (total_bytes_sent as f64 * 8.0) / elapsed / 1_000_000.0;
+
+                info!(
+                    packets_sent = total_packets_sent,
+                    packets_per_sec = format!("{:.0}", packets_per_sec),
+                    mbps = format!("{:.2}", mbps),
+                    "dataplane tx throughput"
+                );
+
+                total_bytes_sent = 0;
+                total_packets_sent = 0;
+                last_log = now;
+            }
+
             next_transmit +=
                 Duration::from_nanos((total_bytes as u64) * 8 * 1000 / up_bandwidth_mbps);
         }
@@ -305,7 +450,9 @@ async fn fill_message_queues(
     while priority_queues.is_empty() || !udp_egress_rx.is_empty() {
         match udp_egress_rx.recv().await {
             Some(udp_msg) => {
-                priority_queues.push(udp_msg);
+                if let Err(err) = priority_queues.try_push(udp_msg) {
+                    warn!(?err, "priority queue capacity exceeded, dropping message");
+                }
             }
             None => return Err(()),
         }
@@ -313,18 +460,62 @@ async fn fill_message_queues(
     Ok(())
 }
 
-const MAX_AGGREGATED_WRITE_SIZE: u16 = 65535 - IPV4_HDR_SIZE - UDP_HDR_SIZE;
 const MAX_AGGREGATED_SEGMENTS: u16 = 128;
 
-fn max_write_size_for_segment_size(segment_size: u16) -> u16 {
-    (MAX_AGGREGATED_WRITE_SIZE / segment_size).min(MAX_AGGREGATED_SEGMENTS) * segment_size
-}
-
-// This is very very ugly, but there is no other way to figure this out.
 fn is_eafnosupport(err: &Error) -> bool {
     const EAFNOSUPPORT: &str = "Address family not supported by protocol";
 
     let err = format!("{}", err);
 
     err.len() >= EAFNOSUPPORT.len() && &err[0..EAFNOSUPPORT.len()] == EAFNOSUPPORT
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    use bytes::Bytes;
+    use monad_types::UdpPriority;
+
+    use super::*;
+
+    fn create_test_msg(priority: UdpPriority, payload_size: usize) -> UdpMsg {
+        UdpMsg {
+            socket_id: 0,
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080),
+            payload: Bytes::from(vec![0u8; payload_size]),
+            stride: 1024,
+            priority,
+            msg_type: UdpMessageType::Broadcast,
+        }
+    }
+
+    #[test]
+    fn test_priority_queue_capacity() {
+        let mut queue = PriorityQueues::with_bytes_capacity(1000);
+
+        assert!(queue
+            .try_push(create_test_msg(UdpPriority::High, 800))
+            .is_ok());
+        assert!(queue
+            .try_push(create_test_msg(UdpPriority::Regular, 800))
+            .is_ok());
+
+        assert!(queue
+            .try_push(create_test_msg(UdpPriority::High, 300))
+            .is_err());
+        assert!(queue
+            .try_push(create_test_msg(UdpPriority::Regular, 300))
+            .is_err());
+
+        let popped = queue.pop_highest_priority();
+        assert_eq!(popped.unwrap().priority, UdpPriority::High);
+
+        assert!(queue
+            .try_push(create_test_msg(UdpPriority::High, 500))
+            .is_ok());
+        assert!(queue
+            .try_push(create_test_msg(UdpPriority::Regular, 300))
+            .is_err());
+    }
 }
