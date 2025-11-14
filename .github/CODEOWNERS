@@ -1,8 +1,8 @@
 * @omegablitz @ariqchowdhury @michael-yxchen
 
-/monad-archive/ @JoeHowarth
-/monad-rpc/ @JoeHowarth
-/monad-eth-testutil/ @JoeHowarth
+/monad-archive/ @JoeHowarth @omegablitz @ariqchowdhury @michael-yxchen
+/monad-rpc/ @JoeHowarth @omegablitz @ariqchowdhury @michael-yxchen
+/monad-eth-testutil/ @JoeHowarth @omegablitz @ariqchowdhury @michael-yxchen
 
 /debian/ @mhumesf @dhogaivannan @alexpotato @rtsaimonad @Yb2411 @omegablitz @ariqchowdhury @michael-yxchen @bhuan
 /docker/builder/ @mhumesf @dhogaivannan @alexpotato @rtsaimonad @Yb2411 @omegablitz @ariqchowdhury @michael-yxchen @bhuan
