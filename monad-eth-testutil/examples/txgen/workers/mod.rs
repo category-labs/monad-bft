@@ -28,12 +28,14 @@ pub mod gen_harness;
 pub mod metrics;
 pub mod refresher;
 pub mod rpc_sender;
+pub mod transform;
 
 pub use committed_tx_watcher::*;
 pub use gen_harness::*;
 pub use metrics::*;
 pub use refresher::*;
 pub use rpc_sender::*;
+pub use transform::*;
 
 pub const BATCH_SIZE: usize = 500;
 

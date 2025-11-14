@@ -18,13 +18,11 @@ use std::sync::{
     Mutex,
 };
 
-use super::*;
-use crate::{
-    config::GenMode,
-    generators::{mutate_eip1559_transaction, native_transfer_priority_fee},
-    prelude::*,
-    shared::eip7702::mutate_eip7702_transaction,
+use super::{
+    transform::{transform_batch, TransformOptions},
+    *,
 };
+use crate::{config::GenMode, generators::native_transfer_priority_fee, prelude::*};
 
 pub trait Generator {
     // todo: come up with a way to mint too
@@ -74,7 +72,7 @@ pub struct GeneratorHarness {
     pub priority_fee: Option<u128>,
     pub random_priority_fee_range: Option<(u128, u128)>,
 
-    pub mutation_percentage: f64,
+    pub transform_opts: TransformOptions,
 
     pub shutdown: Arc<AtomicBool>,
 }
@@ -95,7 +93,7 @@ impl GeneratorHarness {
         set_tx_gas_limit: Option<u64>,
         priority_fee: Option<u128>,
         random_priority_fee_range: Option<(u128, u128)>,
-        mutation_percentage: f64,
+        transform_opts: TransformOptions,
         shutdown: Arc<AtomicBool>,
     ) -> Self {
         Self {
@@ -114,7 +112,7 @@ impl GeneratorHarness {
             set_tx_gas_limit,
             priority_fee,
             random_priority_fee_range,
-            mutation_percentage: mutation_percentage.clamp(0.0, 100.0),
+            transform_opts,
             shutdown,
         }
     }
@@ -187,12 +185,7 @@ impl GeneratorHarness {
                 None
             };
 
-            // Apply mutation if configured
-            let txs = if self.mutation_percentage > 0.0 {
-                self.mutate_transactions(txs)
-            } else {
-                txs
-            };
+            let txs = transform_batch(txs, &self.transform_opts);
 
             let accts_with_txs = AccountsWithTxs {
                 accts: Accounts { accts, root },
@@ -219,51 +212,5 @@ impl GeneratorHarness {
             debug!(num_txs, "Gen pushed txs to rpc sender");
         }
         warn!("GeneratorHarness shutting down");
-    }
-
-    fn mutate_transactions(
-        &self,
-        txs: Vec<(TxEnvelope, Address, PrivateKey)>,
-    ) -> Vec<(TxEnvelope, Address, PrivateKey)> {
-        if txs.is_empty() || self.mutation_percentage <= 0.0 {
-            return txs;
-        }
-
-        let mut rng = rand::thread_rng();
-        let mut mutated = Vec::with_capacity(txs.len());
-        let mut mutation_count = 0;
-
-        for tx_triple in txs {
-            let random_value = rng.gen_range(0.0..100.0);
-
-            if random_value < self.mutation_percentage {
-                mutated.push(self.mutate_transaction(&tx_triple));
-                mutation_count += 1;
-            } else {
-                mutated.push(tx_triple);
-            }
-        }
-
-        debug!(
-            total_txs = mutated.len(),
-            mutated_txs = mutation_count,
-            mutation_percentage = self.mutation_percentage,
-            "Mutated transactions in batch"
-        );
-
-        mutated
-    }
-
-    fn mutate_transaction(
-        &self,
-        tx_triple: &(TxEnvelope, Address, PrivateKey),
-    ) -> (TxEnvelope, Address, PrivateKey) {
-        let (tx, addr, original_key) = tx_triple;
-        let mutated_tx = match tx {
-            TxEnvelope::Eip7702(_) => mutate_eip7702_transaction(tx, original_key),
-            TxEnvelope::Eip1559(_) => mutate_eip1559_transaction(tx, original_key),
-            _ => tx.clone(),
-        };
-        (mutated_tx, *addr, original_key.clone())
     }
 }

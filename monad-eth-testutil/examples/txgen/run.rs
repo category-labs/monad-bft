@@ -36,6 +36,7 @@ use crate::{
     shared::{
         ecmul::ECMul, eip7702::EIP7702, erc20::ERC20, eth_json_rpc::EthJsonRpc, uniswap::Uniswap,
     },
+    workers::transform::TransformOptions,
 };
 
 /// Runs the txgen for the given config
@@ -231,6 +232,11 @@ fn run_traffic_gen(
     });
 
     let generator = make_generator(traffic_gen, deployed_contract.clone())?;
+    let transform_opts = TransformOptions::new(
+        workload_group.mutation_percentage,
+        workload_group.drop_percentage,
+        workload_group.convert_eip1559_to_legacy,
+    );
     let gen = GeneratorHarness::new(
         generator,
         refresh_rx,
@@ -246,7 +252,7 @@ fn run_traffic_gen(
         config.set_tx_gas_limit,
         config.priority_fee,
         config.random_priority_fee_range,
-        workload_group.mutation_percentage,
+        transform_opts,
         Arc::clone(shutdown),
     );
 
