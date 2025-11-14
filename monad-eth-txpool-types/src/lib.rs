@@ -15,8 +15,11 @@
 
 use std::collections::HashSet;
 
+use alloy_consensus::TxEnvelope;
 use alloy_primitives::{Address, TxHash};
 use serde::{Deserialize, Serialize};
+
+pub const DEFAULT_TX_PRIORITY: u64 = 0x1000;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EthTxPoolEvent {
@@ -27,7 +30,11 @@ pub struct EthTxPoolEvent {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum EthTxPoolEventType {
     /// The tx was inserted into the txpool.
-    Insert { address: Address, owned: bool },
+    Insert {
+        address: Address,
+        owned: bool,
+        tx: TxEnvelope,
+    },
 
     /// The tx was committed and is thus finalized.
     Commit,

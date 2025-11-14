@@ -163,12 +163,7 @@ impl TrackedTxList {
                 limit_tracker.add_tx(&tx);
                 limit_tracker.remove_tx(existing_tx);
 
-                event_tracker.replace(
-                    tx.signer_ref(),
-                    existing_tx.hash(),
-                    tx.hash(),
-                    tx.is_owned(),
-                );
+                event_tracker.replace(tx.signer_ref(), existing_tx.hash(), tx.raw(), tx.is_owned());
 
                 entry.insert((tx, event_tracker.now));
 
