@@ -16,4 +16,5 @@
 pub mod bft_archive_worker;
 pub mod block_archive_worker;
 pub mod file_checkpointer;
+pub mod generic_folder_archiver;
 pub mod index_worker;
