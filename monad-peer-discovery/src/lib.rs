@@ -31,6 +31,7 @@ use monad_crypto::{
 use monad_executor::ExecutorMetrics;
 use monad_executor_glue::PeerEntry;
 use monad_types::{Epoch, NodeId, Round};
+use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
 pub mod discovery;
@@ -47,7 +48,8 @@ pub enum PortTag {
     UDP = 1,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, RlpEncodable, RlpDecodable, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Port {
     pub tag: u8,
     pub port: u16,
@@ -70,7 +72,8 @@ impl Port {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct WireNameRecordV1 {
     pub ip: Ipv4Addr,
     pub port: u16,
@@ -112,7 +115,8 @@ impl WireNameRecordV1 {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct PortList<const N: usize>(ArrayVec<Port, N>);
 
 impl<const N: usize> Encodable for PortList<N> {
@@ -182,7 +186,8 @@ impl<const N: usize> PortList<N> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct WireNameRecordV2 {
     pub ip: Ipv4Addr,
     pub ports: PortList<8>,
@@ -256,13 +261,15 @@ impl WireNameRecordV2 {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 enum VersionedNameRecord {
     V1(WireNameRecordV1),
     V2(WireNameRecordV2),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct NameRecord {
     record: VersionedNameRecord,
 }
@@ -384,7 +391,9 @@ impl Decodable for NameRecord {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Capability {}
 
-#[derive(Debug, Clone, PartialEq, RlpEncodable, RlpDecodable, Eq)]
+#[derive(Debug, Clone, PartialEq, RlpEncodable, RlpDecodable, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[serde(bound = "ST: CertificateSignatureRecoverable")]
 pub struct MonadNameRecord<ST: CertificateSignatureRecoverable> {
     pub name_record: NameRecord,
     pub signature: ST,

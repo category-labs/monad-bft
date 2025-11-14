@@ -17,6 +17,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     marker::PhantomData,
     net::{IpAddr, SocketAddr, ToSocketAddrs},
+    path::PathBuf,
     process,
     sync::Arc,
     time::{Duration, Instant},
@@ -171,6 +172,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         locked_epoch_validators.clone(),
         current_epoch,
         current_round,
+        node_state.persisted_peers_path,
     );
 
     let statesync_threshold: usize = node_state.node_config.statesync_threshold.into();
@@ -507,6 +509,7 @@ fn build_raptorcast_router<ST, SCT, M, OM>(
     locked_epoch_validators: Vec<ValidatorSetDataWithEpoch<SCT>>,
     current_epoch: Epoch,
     current_round: Round,
+    persisted_peers_path: PathBuf,
 ) -> MultiRouter<ST, M, OM, MonadEvent<ST, SCT, ExecutionProtocolType>, PeerDiscovery<ST>>
 where
     ST: CertificateSignatureRecoverable,
@@ -657,6 +660,7 @@ where
         enable_publisher: node_config.fullnode_raptorcast.enable_publisher,
         enable_client: node_config.fullnode_raptorcast.enable_client,
         rng: ChaCha8Rng::from_entropy(),
+        persisted_peers_path,
     };
 
     MultiRouter::new(

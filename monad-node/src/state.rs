@@ -69,6 +69,7 @@ pub struct NodeState {
     pub otel_endpoint_interval: Option<(String, Duration)>,
     pub pprof: String,
     pub reload_handle: Box<dyn TracingReload>,
+    pub persisted_peers_path: PathBuf,
 }
 
 impl NodeState {
@@ -92,6 +93,7 @@ impl NodeState {
             record_metrics_interval_seconds,
             pprof,
             manytrace_socket,
+            persisted_peers_path,
         } = Cli::from_arg_matches_mut(&mut cmd.get_matches_mut())?;
 
         let (reload_handle, _agent) = NodeState::setup_tracing(manytrace_socket)?;
@@ -196,6 +198,7 @@ impl NodeState {
             otel_endpoint_interval,
             pprof,
             reload_handle,
+            persisted_peers_path,
         })
     }
 
