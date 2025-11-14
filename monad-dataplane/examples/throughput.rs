@@ -1,10 +1,8 @@
 use std::{
-    hint::black_box,
-    mem,
     net::{SocketAddr, UdpSocket},
     os::unix::io::AsRawFd,
     sync::{
-        atomic::{AtomicU16, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
         Arc,
     },
     thread,
@@ -13,8 +11,12 @@ use std::{
 
 use bytes::BytesMut;
 use clap::{Parser, Subcommand};
-use futures::stream::{FuturesUnordered, StreamExt};
+use futures::{
+    executor::block_on,
+    stream::{FuturesUnordered, StreamExt},
+};
 use io_uring::{opcode, types, IoUring};
+use monad_dataplane::{DataplaneBuilder, UdpSocketConfig};
 use monoio::{net::udp::UdpSocket as MonoioUdpSocket, IoUringDriver, RuntimeBuilder};
 use tokio::sync::mpsc;
 use tracing::info;
@@ -42,7 +44,8 @@ struct RecvBuffer {
 
 impl RecvBuffer {
     fn new() -> Self {
-        let mut buf = Self {
+        use std::mem;
+        Self {
             buffer: [0u8; 1500],
             addr: unsafe { mem::zeroed() },
             iov: libc::iovec {
@@ -50,20 +53,11 @@ impl RecvBuffer {
                 iov_len: 0,
             },
             msg: unsafe { mem::zeroed() },
-        };
-
-        buf.iov.iov_base = buf.buffer.as_mut_ptr() as *mut _;
-        buf.iov.iov_len = buf.buffer.len();
-
-        buf.msg.msg_name = &mut buf.addr as *mut _ as *mut _;
-        buf.msg.msg_namelen = mem::size_of::<libc::sockaddr_storage>() as u32;
-        buf.msg.msg_iov = &mut buf.iov as *mut _;
-        buf.msg.msg_iovlen = 1;
-
-        buf
+        }
     }
 
     fn reset(&mut self) {
+        use std::mem;
         self.iov.iov_base = self.buffer.as_mut_ptr() as *mut _;
         self.iov.iov_len = self.buffer.len();
 
@@ -89,18 +83,30 @@ enum Command {
         #[arg(help = "target address to send packets to")]
         target: String,
 
-        #[arg(long, default_value = "1", help = "number of concurrent sender threads")]
+        #[arg(
+            long,
+            default_value = "1",
+            help = "number of concurrent sender threads"
+        )]
         writers: usize,
 
         #[arg(long, default_value = "1", help = "packet size in bytes")]
         packet_size: usize,
 
-        #[arg(long, default_value = "32", help = "burst size (number of packets per GSO send)")]
+        #[arg(
+            long,
+            default_value = "32",
+            help = "burst size (number of packets per GSO send)"
+        )]
         burst_size: usize,
     },
     #[command(alias = "r", about = "run udp reader")]
     Reader {
-        #[arg(long, default_value = "0.0.0.0:19999", help = "bind address for receiver")]
+        #[arg(
+            long,
+            default_value = "0.0.0.0:19999",
+            help = "bind address for receiver"
+        )]
         bind_addr: String,
 
         #[command(subcommand)]
@@ -112,22 +118,65 @@ enum Command {
 enum ReaderMode {
     #[command(alias = "n", about = "native mode - print throughput in receiver task")]
     Native,
-    #[command(alias = "c", about = "channel mode - send to channel and print throughput after receiving")]
+    #[command(
+        alias = "c",
+        about = "channel mode - send to channel and print throughput after receiving"
+    )]
     Channel,
-    #[command(alias = "b", about = "batch mode - spawn multiple recv futures concurrently")]
+    #[command(
+        alias = "b",
+        about = "batch mode - spawn multiple recv futures concurrently"
+    )]
     Batch {
-        #[arg(long, default_value = "64", help = "number of concurrent recv operations")]
+        #[arg(
+            long,
+            default_value = "64",
+            help = "number of concurrent recv operations"
+        )]
         batch_size: usize,
     },
     #[command(alias = "u", about = "io_uring mode - use io_uring directly")]
     Uring {
-        #[arg(long, default_value = "128", help = "number of concurrent recv operations")]
+        #[arg(
+            long,
+            default_value = "128",
+            help = "number of concurrent recv operations"
+        )]
         batch_size: usize,
     },
-    #[command(alias = "r", about = "registered buffer ring mode - use io_uring with registered buffer rings")]
+    #[command(
+        alias = "r",
+        about = "registered buffer ring mode - use io_uring with registered buffer rings"
+    )]
     Ring {
         #[arg(long, default_value = "256", help = "number of buffers in the ring")]
         buf_count: usize,
+        #[arg(
+            short = 'n',
+            long,
+            default_value = "4",
+            help = "number of reuseport reader threads (1-16)"
+        )]
+        num_readers: usize,
+    },
+    #[command(
+        alias = "p",
+        about = "SO_REUSEPORT mode - spawn multiple threads with SO_REUSEPORT and io_uring"
+    )]
+    Reuseport {
+        #[arg(
+            short = 'n',
+            long,
+            default_value = "4",
+            help = "number of reader threads (1-16)"
+        )]
+        num_readers: usize,
+        #[arg(
+            long,
+            default_value = "128",
+            help = "number of concurrent recv operations per thread"
+        )]
+        batch_size: usize,
     },
 }
 
@@ -158,7 +207,14 @@ fn main() {
                 ReaderMode::Channel => run_channel(bind_addr),
                 ReaderMode::Batch { batch_size } => run_batch(bind_addr, batch_size),
                 ReaderMode::Uring { batch_size } => run_uring(bind_addr, batch_size),
-                ReaderMode::Ring { buf_count } => run_ring(bind_addr, buf_count),
+                ReaderMode::Ring {
+                    buf_count,
+                    num_readers,
+                } => run_ring(bind_addr, num_readers, buf_count),
+                ReaderMode::Reuseport {
+                    num_readers,
+                    batch_size,
+                } => run_reuseport(bind_addr, num_readers, batch_size),
             }
         }
     }
@@ -254,55 +310,52 @@ fn run_writer(target_addr: SocketAddr, num_writers: usize, packet_size: usize, b
 }
 
 fn run_native(bind_addr: SocketAddr) {
-    RuntimeBuilder::<IoUringDriver>::new()
-        .build()
-        .expect("failed to build monoio runtime")
-        .block_on(async move {
-            let socket = MonoioUdpSocket::bind(bind_addr).expect("failed to bind socket");
-            let local_addr = socket.local_addr().expect("failed to get local addr");
+    info!(addr = %bind_addr, "starting native dataplane (without SO_REUSEPORT)");
 
-            info!(addr = %local_addr, "socket ready");
+    let mut dataplane = DataplaneBuilder::new(&bind_addr, 10_000)
+        .extend_udp_sockets(vec![UdpSocketConfig {
+            socket_addr: bind_addr,
+            label: "bench".to_string(),
+        }])
+        .build();
 
-            monoio::spawn(async move {
-                let mut msgs_received = 0u64;
-                let mut bytes_received = 0u64;
-                let mut last_log = Instant::now();
-                let log_interval = Duration::from_secs(1);
+    dataplane
+        .block_until_ready(Duration::from_secs(5))
+        .then_some(())
+        .expect("dataplane not ready");
 
-                loop {
-                    let buf = BytesMut::with_capacity(1500);
-                    match socket.recv_from(buf).await {
-                        (Ok((len, _src_addr)), _buf) => {
-                            msgs_received += 1;
-                            bytes_received += len as u64;
+    let mut udp_socket = dataplane
+        .take_udp_socket_handle("bench")
+        .expect("failed to get bench socket");
 
-                            let now = Instant::now();
-                            if now.duration_since(last_log) >= log_interval {
-                                let elapsed = now.duration_since(last_log).as_secs_f64();
-                                let msgs_per_sec = msgs_received as f64 / elapsed;
-                                let mbps = (bytes_received as f64 * 8.0) / elapsed / 1_000_000.0;
+    let mut msgs_received = 0u64;
+    let mut bytes_received = 0u64;
+    let mut last_log = Instant::now();
+    let log_interval = Duration::from_secs(1);
 
-                                info!(
-                                    msgs_received = msgs_received,
-                                    msgs_per_sec = format!("{:.0}", msgs_per_sec),
-                                    mbps = format!("{:.2}", mbps),
-                                    "throughput stats"
-                                );
+    loop {
+        let msg = block_on(udp_socket.recv());
+        msgs_received += 1;
+        bytes_received += msg.payload.len() as u64;
 
-                                msgs_received = 0;
-                                bytes_received = 0;
-                                last_log = now;
-                            }
-                        }
-                        (Err(e), _) => {
-                            eprintln!("recv error: {}", e);
-                            break;
-                        }
-                    }
-                }
-            })
-            .await;
-        });
+        let now = Instant::now();
+        if now.duration_since(last_log) >= log_interval {
+            let elapsed = now.duration_since(last_log).as_secs_f64();
+            let msgs_per_sec = msgs_received as f64 / elapsed;
+            let mbps = (bytes_received as f64 * 8.0) / elapsed / 1_000_000.0;
+
+            info!(
+                msgs_received = msgs_received,
+                msgs_per_sec = format!("{:.0}", msgs_per_sec),
+                mbps = format!("{:.2}", mbps),
+                "native throughput stats"
+            );
+
+            msgs_received = 0;
+            bytes_received = 0;
+            last_log = now;
+        }
+    }
 }
 
 fn run_channel(bind_addr: SocketAddr) {
@@ -339,30 +392,26 @@ fn run_channel(bind_addr: SocketAddr) {
             let mut last_log = Instant::now();
             let log_interval = Duration::from_secs(1);
 
-            loop {
-                if let Some((len, _src_addr)) = rx.recv().await {
-                    msgs_received += 1;
-                    bytes_received += len as u64;
+            while let Some((len, _src_addr)) = rx.recv().await {
+                msgs_received += 1;
+                bytes_received += len as u64;
 
-                    let now = Instant::now();
-                    if now.duration_since(last_log) >= log_interval {
-                        let elapsed = now.duration_since(last_log).as_secs_f64();
-                        let msgs_per_sec = msgs_received as f64 / elapsed;
-                        let mbps = (bytes_received as f64 * 8.0) / elapsed / 1_000_000.0;
+                let now = Instant::now();
+                if now.duration_since(last_log) >= log_interval {
+                    let elapsed = now.duration_since(last_log).as_secs_f64();
+                    let msgs_per_sec = msgs_received as f64 / elapsed;
+                    let mbps = (bytes_received as f64 * 8.0) / elapsed / 1_000_000.0;
 
-                        info!(
-                            msgs_received = msgs_received,
-                            msgs_per_sec = format!("{:.0}", msgs_per_sec),
-                            mbps = format!("{:.2}", mbps),
-                            "channel throughput stats"
-                        );
+                    info!(
+                        msgs_received = msgs_received,
+                        msgs_per_sec = format!("{:.0}", msgs_per_sec),
+                        mbps = format!("{:.2}", mbps),
+                        "channel throughput stats"
+                    );
 
-                        msgs_received = 0;
-                        bytes_received = 0;
-                        last_log = now;
-                    }
-                } else {
-                    break;
+                    msgs_received = 0;
+                    bytes_received = 0;
+                    last_log = now;
                 }
             }
         });
@@ -440,13 +489,17 @@ fn run_uring(bind_addr: SocketAddr, batch_size: usize) {
 
     let mut buffers: Vec<RecvBuffer> = (0..batch_size).map(|_| RecvBuffer::new()).collect();
 
+    for buffer in &mut buffers {
+        buffer.reset();
+    }
+
     let mut msgs_received = 0u64;
     let mut bytes_received = 0u64;
     let mut last_log = Instant::now();
     let log_interval = Duration::from_secs(1);
 
-    for i in 0..batch_size {
-        let msg_ptr = &mut buffers[i].msg as *mut libc::msghdr;
+    for (i, buffer) in buffers.iter_mut().enumerate() {
+        let msg_ptr = &mut buffer.msg as *mut libc::msghdr;
 
         let recv_e = opcode::RecvMsg::new(types::Fd(fd), msg_ptr)
             .build()
@@ -511,84 +564,26 @@ fn run_uring(bind_addr: SocketAddr, batch_size: usize) {
     }
 }
 
-fn run_ring(bind_addr: SocketAddr, buf_count: usize) {
-    use io_uring::register::Probe;
+fn run_ring(bind_addr: SocketAddr, num_readers: usize, _buf_count: usize) {
+    info!(addr = %bind_addr, num_readers, "starting dataplane with ringbuf mode");
 
-    let socket = UdpSocket::bind(bind_addr).expect("failed to bind socket");
-    let local_addr = socket.local_addr().expect("failed to get local addr");
-    let fd = socket.as_raw_fd();
+    let mut dataplane = DataplaneBuilder::new(&bind_addr, 10_000)
+        .enable_so_reuseport(num_readers)
+        .uring_udp_ringbuf(true)
+        .extend_udp_sockets(vec![UdpSocketConfig {
+            socket_addr: bind_addr,
+            label: "bench".to_string(),
+        }])
+        .build();
 
-    info!(addr = %local_addr, buf_count = buf_count, "socket ready with registered buffer ring");
+    dataplane
+        .block_until_ready(Duration::from_secs(5))
+        .then_some(())
+        .expect("dataplane not ready");
 
-    let mut ring = IoUring::new(256).expect("failed to create io_uring");
-
-    let mut probe = Probe::new();
-    ring.submitter().register_probe(&mut probe).expect("failed to register probe");
-    
-    if !probe.is_supported(opcode::RecvMulti::CODE) {
-        eprintln!("RecvMulti not supported on this kernel (requires 6.0+)");
-        return;
-    }
-
-    let buf_group_id = 0xbeef;
-    let ring_entries = buf_count.next_power_of_two() as u16;
-    let buf_len = 1500;
-
-    let entry_size = mem::size_of::<types::BufRingEntry>();
-    let ring_size = entry_size * ring_entries as usize;
-
-    let ring_mem = unsafe {
-        libc::mmap(
-            std::ptr::null_mut(),
-            ring_size,
-            libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_ANONYMOUS | libc::MAP_SHARED | libc::MAP_POPULATE,
-            -1,
-            0,
-        )
-    };
-
-    if ring_mem == libc::MAP_FAILED {
-        eprintln!("mmap failed");
-        return;
-    }
-
-    let buf_ring_ptr = ring_mem as *mut types::BufRingEntry;
-
-    let mut buffers: Vec<Vec<u8>> = (0..buf_count)
-        .map(|_| vec![0u8; buf_len])
-        .collect();
-
-    for (bid, buf) in buffers.iter_mut().enumerate() {
-        let ring_idx = (bid as u16) & (ring_entries - 1);
-        let entry = unsafe { &mut *buf_ring_ptr.add(ring_idx as usize) };
-        entry.set_addr(buf.as_mut_ptr() as u64);
-        entry.set_len(buf_len as u32);
-        entry.set_bid(bid as u16);
-    }
-
-    let shared_tail = unsafe { types::BufRingEntry::tail(buf_ring_ptr) } as *const AtomicU16;
-    unsafe {
-        (*shared_tail).store(buf_count as u16, Ordering::Release);
-    }
-
-    unsafe {
-        ring.submitter()
-            .register_buf_ring_with_flags(buf_ring_ptr as u64, ring_entries, buf_group_id, 0)
-            .expect("failed to register buffer ring");
-    }
-
-    info!("registered buffer ring with {} buffers", buf_count);
-
-    let recv_e = opcode::RecvMulti::new(types::Fd(fd), buf_group_id)
-        .build()
-        .user_data(0x99);
-
-    unsafe {
-        ring.submission().push(&recv_e).expect("failed to push");
-    }
-
-    ring.submit().expect("failed to submit");
+    let mut udp_socket = dataplane
+        .take_udp_socket_handle("bench")
+        .expect("failed to get bench socket");
 
     let mut msgs_received = 0u64;
     let mut bytes_received = 0u64;
@@ -596,78 +591,78 @@ fn run_ring(bind_addr: SocketAddr, buf_count: usize) {
     let log_interval = Duration::from_secs(1);
 
     loop {
-        match ring.submit_and_wait(1) {
-            Ok(_) => {}
-            Err(e) => {
-                eprintln!("submit_and_wait error: {}", e);
-                break;
-            }
+        let msg = block_on(udp_socket.recv());
+        msgs_received += 1;
+        bytes_received += msg.payload.len() as u64;
+
+        let now = Instant::now();
+        if now.duration_since(last_log) >= log_interval {
+            let elapsed = now.duration_since(last_log).as_secs_f64();
+            let msgs_per_sec = msgs_received as f64 / elapsed;
+            let mbps = (bytes_received as f64 * 8.0) / elapsed / 1_000_000.0;
+
+            info!(
+                num_readers,
+                msgs_received = msgs_received,
+                msgs_per_sec = format!("{:.0}", msgs_per_sec),
+                mbps = format!("{:.2}", mbps),
+                "ringbuf throughput stats"
+            );
+
+            msgs_received = 0;
+            bytes_received = 0;
+            last_log = now;
         }
+    }
+}
 
-        let cqes: Vec<_> = ring.completion().collect();
+fn run_reuseport(bind_addr: SocketAddr, num_readers: usize, _batch_size: usize) {
+    info!(addr = %bind_addr, num_readers, "starting dataplane with SO_REUSEPORT");
 
-        for cqe in cqes {
-            let result = cqe.result();
+    let mut dataplane = DataplaneBuilder::new(&bind_addr, 10_000)
+        .enable_so_reuseport(num_readers)
+        .extend_udp_sockets(vec![UdpSocketConfig {
+            socket_addr: bind_addr,
+            label: "bench".to_string(),
+        }])
+        .build();
 
-            if result > 0 {
-                msgs_received += 1;
-                bytes_received += result as u64;
+    dataplane
+        .block_until_ready(Duration::from_secs(5))
+        .then_some(())
+        .expect("dataplane not ready");
 
-                let bid = io_uring::cqueue::buffer_select(cqe.flags()).unwrap();
+    let mut udp_socket = dataplane
+        .take_udp_socket_handle("bench")
+        .expect("failed to get bench socket");
 
-                let data_len = result as usize;
-                let mut owned_buf = BytesMut::with_capacity(data_len);
-                unsafe {
-                    owned_buf.set_len(data_len);
-                    std::ptr::copy_nonoverlapping(
-                        buffers[bid as usize].as_ptr(),
-                        owned_buf.as_mut_ptr(),
-                        data_len,
-                    );
-                }
-                black_box(owned_buf);
+    let mut msgs_received = 0u64;
+    let mut bytes_received = 0u64;
+    let mut last_log = Instant::now();
+    let log_interval = Duration::from_secs(1);
 
-                let ring_idx = bid & (ring_entries - 1);
-                let entry = unsafe { &mut *buf_ring_ptr.add(ring_idx as usize) };
-                entry.set_addr(buffers[bid as usize].as_mut_ptr() as u64);
-                entry.set_len(buf_len as u32);
-                entry.set_bid(bid);
+    loop {
+        let msg = block_on(udp_socket.recv());
+        msgs_received += 1;
+        bytes_received += msg.payload.len() as u64;
 
-                let local_tail = unsafe { (*shared_tail).load(Ordering::Acquire) };
-                unsafe {
-                    (*shared_tail).store(local_tail.wrapping_add(1), Ordering::Release);
-                }
-            } else if result < 0 && result != -libc::ENOBUFS {
-                eprintln!("recv error: {}", std::io::Error::from_raw_os_error(-result));
-            }
+        let now = Instant::now();
+        if now.duration_since(last_log) >= log_interval {
+            let elapsed = now.duration_since(last_log).as_secs_f64();
+            let msgs_per_sec = msgs_received as f64 / elapsed;
+            let mbps = (bytes_received as f64 * 8.0) / elapsed / 1_000_000.0;
 
-            if !io_uring::cqueue::more(cqe.flags()) {
-                let recv_e = opcode::RecvMulti::new(types::Fd(fd), buf_group_id)
-                    .build()
-                    .user_data(0x99);
+            info!(
+                num_readers,
+                msgs_received = msgs_received,
+                msgs_per_sec = format!("{:.0}", msgs_per_sec),
+                mbps = format!("{:.2}", mbps),
+                "reuseport throughput stats"
+            );
 
-                unsafe {
-                    ring.submission().push(&recv_e).expect("failed to push");
-                }
-            }
-
-            let now = Instant::now();
-            if now.duration_since(last_log) >= log_interval {
-                let elapsed = now.duration_since(last_log).as_secs_f64();
-                let msgs_per_sec = msgs_received as f64 / elapsed;
-                let mbps = (bytes_received as f64 * 8.0) / elapsed / 1_000_000.0;
-
-                info!(
-                    msgs_received = msgs_received,
-                    msgs_per_sec = format!("{:.0}", msgs_per_sec),
-                    mbps = format!("{:.2}", mbps),
-                    "ringbuf throughput stats"
-                );
-
-                msgs_received = 0;
-                bytes_received = 0;
-                last_log = now;
-            }
+            msgs_received = 0;
+            bytes_received = 0;
+            last_log = now;
         }
     }
 }

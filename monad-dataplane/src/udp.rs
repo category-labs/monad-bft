@@ -130,14 +130,59 @@ pub(crate) fn spawn_tasks(
     udp_egress_rx: mpsc::Receiver<UdpMsg>,
     up_bandwidth_mbps: u64,
     buffer_size: Option<usize>,
+    uring_config: Option<crate::UringConfig>,
 ) {
     let mut tx_sockets = Vec::new();
 
-    for (socket_id, socket_addr, label, ingress_tx) in socket_configs {
-        let (rx, tx) = create_socket_pair(socket_addr, buffer_size);
-        spawn(rx_single_socket(rx, ingress_tx));
-        trace!(socket_id, label = %label, ?socket_addr, "created socket");
-        tx_sockets.push(tx);
+    if let Some(uring_cfg) = uring_config {
+        use std::collections::HashMap;
+
+        let uring_configs: Vec<crate::uring::reader::SocketConfig> = socket_configs
+            .iter()
+            .map(
+                |(socket_id, socket_addr, label, _)| crate::uring::reader::SocketConfig {
+                    socket_id: *socket_id,
+                    socket_addr: *socket_addr,
+                    label: label.clone(),
+                },
+            )
+            .collect();
+
+        let tx_map: HashMap<usize, mpsc::Sender<RecvUdpMsg>> = socket_configs
+            .iter()
+            .map(|(socket_id, _, _, ingress_tx)| (*socket_id, ingress_tx.clone()))
+            .collect();
+
+        let fds = crate::uring::reader::spawn(
+            uring_configs,
+            move |socket_id, msg| {
+                tx_map
+                    .get(&socket_id)
+                    .expect("valid socket_id")
+                    .blocking_send(msg)
+                    .map_err(|e| {
+                        warn!(socket_id, error = %e, "failed to send message to ingress channel");
+                    })
+            },
+            uring_cfg.num_readers,
+            uring_cfg.batch_size,
+            buffer_size,
+            uring_cfg.use_ringbuf,
+        );
+
+        for ((socket_id, socket_addr, label, _), fd) in socket_configs.into_iter().zip(fds) {
+            let tx = UdpSocket::from_std(unsafe { std::net::UdpSocket::from_raw_fd(fd) })
+                .expect("failed to create tx socket from fd");
+            trace!(socket_id, label = %label, ?socket_addr, "created socket with io_uring");
+            tx_sockets.push(tx);
+        }
+    } else {
+        for (socket_id, socket_addr, label, ingress_tx) in socket_configs {
+            let (rx, tx) = create_socket_pair(socket_addr, buffer_size);
+            spawn(rx_single_socket(rx, ingress_tx));
+            trace!(socket_id, label = %label, ?socket_addr, "created socket");
+            tx_sockets.push(tx);
+        }
     }
 
     spawn(tx(tx_sockets, udp_egress_rx, up_bandwidth_mbps));

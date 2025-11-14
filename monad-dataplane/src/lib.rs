@@ -39,10 +39,17 @@ pub(crate) mod ban_expiry;
 pub(crate) mod buffer_ext;
 pub mod tcp;
 pub mod udp;
+pub(crate) mod uring;
 
 pub struct UdpSocketConfig {
     pub socket_addr: SocketAddr,
     pub label: String,
+}
+
+pub struct UringConfig {
+    pub num_readers: usize,
+    pub batch_size: usize,
+    pub use_ringbuf: bool,
 }
 
 pub struct DataplaneBuilder {
@@ -54,6 +61,7 @@ pub struct DataplaneBuilder {
     tcp_config: TcpConfig,
     ban_duration: Duration,
     udp_sockets: Vec<UdpSocketConfig>,
+    uring_config: Option<UringConfig>,
 }
 
 impl DataplaneBuilder {
@@ -71,8 +79,9 @@ impl DataplaneBuilder {
                 connections_limit: 10000,
                 per_ip_connections_limit: 100,
             },
-            ban_duration: Duration::from_secs(5 * 60), // 5 minutes
+            ban_duration: Duration::from_secs(5 * 60),
             udp_sockets: vec![],
+            uring_config: None,
         }
     }
 
@@ -104,6 +113,32 @@ impl DataplaneBuilder {
         self
     }
 
+    pub fn enable_so_reuseport(mut self, num_readers: usize) -> Self {
+        assert!(
+            num_readers > 0 && num_readers <= 16,
+            "num_readers must be between 1 and 16"
+        );
+        self.uring_config = Some(UringConfig {
+            num_readers,
+            batch_size: 128,
+            use_ringbuf: false,
+        });
+        self
+    }
+
+    pub fn uring_udp_ringbuf(mut self, enabled: bool) -> Self {
+        if enabled {
+            assert!(
+                self.uring_config.is_some(),
+                "uring_udp_ringbuf requires enable_so_reuseport to be called first"
+            );
+            if let Some(ref mut config) = self.uring_config {
+                config.use_ringbuf = true;
+            }
+        }
+        self
+    }
+
     pub fn build(self) -> Dataplane {
         let DataplaneBuilder {
             local_addr,
@@ -113,6 +148,7 @@ impl DataplaneBuilder {
             tcp_config,
             ban_duration,
             udp_sockets,
+            uring_config,
         } = self;
 
         let mut seen_labels = std::collections::HashSet::new();
@@ -183,6 +219,7 @@ impl DataplaneBuilder {
                                 udp_egress_rx,
                                 up_bandwidth_mbps,
                                 udp_buffer_size,
+                                uring_config,
                             );
 
                             ready_clone.store(true, Ordering::Release);
