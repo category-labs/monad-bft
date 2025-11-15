@@ -27,9 +27,10 @@ use monad_validator::{
     },
     validator_mapping::ValidatorMapping,
 };
+use serde::{Deserialize, Serialize};
 use tracing::{error, warn};
 
-#[derive(Clone, Debug, PartialEq, Eq, RlpDecodable, RlpEncodable)]
+#[derive(Clone, Debug, PartialEq, Eq, RlpDecodable, RlpEncodable, Serialize, Deserialize)]
 pub struct MultiSig<S> {
     pub sigs: Vec<S>,
 }

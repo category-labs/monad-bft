@@ -288,6 +288,10 @@ where
         self.pacemaker.get_current_round()
     }
 
+    pub fn get_high_certificate(&self) -> &RoundCertificate<ST, SCT, EPT> {
+        self.pacemaker.high_certificate()
+    }
+
     #[must_use]
     pub fn request_blocks_if_missing_ancestor(
         &mut self,
