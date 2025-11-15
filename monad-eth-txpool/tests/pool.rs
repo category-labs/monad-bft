@@ -30,6 +30,7 @@ use monad_chain_config::{revision::MockChainRevision, ChainConfig, MockChainConf
 use monad_consensus_types::{
     block::{BlockPolicy, GENESIS_TIMESTAMP},
     block_validator::BlockValidator,
+    metrics::Metrics,
     payload::RoundSignature,
 };
 use monad_crypto::{
@@ -345,6 +346,7 @@ fn run_custom_iter<const N: usize>(
                     block.body().clone(),
                     Some(&block.get_author().pubkey()),
                     &MockChainConfig::DEFAULT,
+                    &mut Metrics::default(),
                 )
                 .unwrap();
 

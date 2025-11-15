@@ -5138,7 +5138,6 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-testutil",
- "monad-eth-txpool-types",
  "monad-eth-types",
  "monad-state-backend",
  "monad-system-calls",
@@ -5148,6 +5147,7 @@ dependencies = [
  "monad-validator",
  "proptest",
  "rstest",
+ "serde",
  "sorted_vector_map",
  "test-case",
  "tracing",
@@ -5346,6 +5346,7 @@ name = "monad-eth-txpool-types"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "monad-eth-block-policy",
  "serde",
 ]
 

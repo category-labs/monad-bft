@@ -23,9 +23,10 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{
-    compute_txn_max_gas_cost, compute_txn_max_value, validation::static_validate_transaction,
+    compute_txn_max_gas_cost, compute_txn_max_value,
+    validation::{static_validate_transaction, StaticValidationError},
 };
-use monad_eth_txpool_types::{EthTxPoolDropReason, TransactionError};
+use monad_eth_txpool_types::EthTxPoolDropReason;
 use monad_eth_types::EthExecutionProtocol;
 use monad_system_calls::{validator::SystemTransactionValidator, SYSTEM_SENDER_ETH_ADDRESS};
 use monad_tfm::base_fee::{MIN_BASE_FEE, PRE_TFM_BASE_FEE};
@@ -72,7 +73,9 @@ impl ValidEthTransaction {
         if tx.eip2718_encoded_length() > max_eip2718_encoded_length(execution_params) {
             return Err((
                 tx,
-                EthTxPoolDropReason::NotWellFormed(TransactionError::EncodedLengthLimitExceeded),
+                EthTxPoolDropReason::NotWellFormed(
+                    StaticValidationError::EncodedLengthLimitExceeded,
+                ),
             ));
         }
 
@@ -112,7 +115,7 @@ impl ValidEthTransaction {
                     return Err((
                         tx,
                         EthTxPoolDropReason::NotWellFormed(
-                            TransactionError::AuthorizationListLengthLimitExceeded,
+                            StaticValidationError::AuthorizationListLengthLimitExceeded,
                         ),
                     ));
                 }
@@ -161,7 +164,7 @@ impl ValidEthTransaction {
         chain_id: u64,
         chain_params: &ChainParams,
         execution_params: &ExecutionChainParams,
-    ) -> Result<(), TransactionError> {
+    ) -> Result<(), StaticValidationError> {
         static_validate_transaction(&self.tx, chain_id, chain_params, execution_params)
     }
 

@@ -1446,6 +1446,7 @@ where
                         // this is because these blocks are already committed by majority
                         None,
                         &self.consensus_config.chain_config,
+                        &mut self.metrics,
                     )
                     .expect("majority committed invalid block")
             })
