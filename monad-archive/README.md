@@ -45,6 +45,35 @@ independently scalable and fault-tolerant.
 - Enables detailed dashboarding and alerting
 - Can determine if any binaries in the system are unhealthy without needing to ssh to each box
 
+### Configuration
+
+`monad-archiver` accepts a `--config path/to/config.toml` flag that loads the
+same struct as the CLI. Any explicit CLI arguments override corresponding entries
+from the file, so a minimal invocation can look like:
+
+```sh
+monad-archiver --config /etc/monad/archiver.toml --start-block 12
+```
+
+Example TOML (match the CLI flags 1:1):
+
+```toml
+max_blocks_per_iteration = 100
+max_concurrent_blocks = 20
+
+[block_data_source]
+type = "aws"
+bucket = "source-bucket"
+
+[archive_sink]
+type = "mongodb"
+url = "mongodb://mongo:27017"
+db = "archive"
+```
+
+When `--config` is omitted you can still supply all values purely via CLI flags
+just as before.
+
 ## Terms:
 
 - **Archive-Backed RPC**: rpc configured to read from an ArchiveDB instead of local TrieDB for historical queries
