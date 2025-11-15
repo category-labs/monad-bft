@@ -27,14 +27,15 @@ use monad_chain_config::{
     ChainConfig, MockChainConfig,
 };
 use monad_consensus_types::{
-    block::{BlockPolicyError, ConsensusBlockHeader, ProposedExecutionInputs},
+    block::{ConsensusBlockHeader, ProposedExecutionInputs},
     payload::RoundSignature,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{
-    timestamp_ns_to_secs, EthBlockPolicy, EthBlockPolicyBlockValidator, EthValidatedBlock,
+    error::EthBlockPolicyError, timestamp_ns_to_secs, EthBlockPolicy, EthBlockPolicyBlockValidator,
+    EthValidatedBlock,
 };
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason, EthTxPoolSnapshot};
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ExtractEthAddress, ProposedEthHeader};
@@ -283,7 +284,7 @@ where
         block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
         state_backend: &SBT,
         chain_config: &CCT,
-    ) -> Result<ProposedExecutionInputs<EthExecutionProtocol>, BlockPolicyError> {
+    ) -> Result<ProposedExecutionInputs<EthExecutionProtocol>, EthBlockPolicyError> {
         info!(
             ?proposed_seq_num,
             ?tx_limit,
@@ -613,7 +614,7 @@ where
         block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
         state_backend: &SBT,
         chain_config: &CCT,
-    ) -> Result<Vec<Recovered<TxEnvelope>>, BlockPolicyError> {
+    ) -> Result<Vec<Recovered<TxEnvelope>>, EthBlockPolicyError> {
         let _timer = DropTimer::start(Duration::ZERO, |elapsed| {
             debug!(?elapsed, "txpool create_proposal");
         });
@@ -689,7 +690,7 @@ where
             base_fee,
             &self.chain_revision,
             &self.execution_revision,
-        )?;
+        );
 
         let proposal = sequencer.build_proposal(
             tx_limit,

@@ -258,7 +258,6 @@ where
                         BlockPolicy::<ST, SCT, EthExecutionProtocol, SBT, CCT, CRT>::update_committed_block(
                             &mut self.block_policy,
                             &committed_block,
-                            &self.chain_config,
                         );
 
                         self.preload_manager
@@ -428,7 +427,6 @@ where
                     BlockPolicy::<ST, SCT, EthExecutionProtocol, SBT, CCT, CRT>::reset(
                         &mut self.block_policy,
                         last_delay_committed_blocks.iter().collect(),
-                        &self.chain_config,
                     );
 
                     self.pool.reset(
