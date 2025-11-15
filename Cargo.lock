@@ -4858,6 +4858,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-retry",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "url",

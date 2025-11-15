@@ -15,7 +15,6 @@
 
 #![allow(async_fn_in_trait)]
 
-use clap::Parser;
 use monad_archive::{
     cli::set_source_and_sink_metrics,
     prelude::*,
