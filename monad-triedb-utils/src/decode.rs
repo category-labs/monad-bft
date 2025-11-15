@@ -13,9 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_primitives::{B256, U256};
+use alloy_primitives::U256;
 use alloy_rlp::Decodable;
-use monad_eth_types::EthAccount;
+use monad_eth_types::{AccountCodeOrHash, EthAccount};
 use tracing::warn;
 
 pub fn rlp_decode_account(account_rlp: Vec<u8>) -> Option<EthAccount> {
@@ -47,24 +47,22 @@ pub fn rlp_decode_account(account_rlp: Vec<u8>) -> Option<EthAccount> {
         return None;
     };
 
-    let is_delegated = false;
-    let code_hash = if buf.is_empty() {
-        None
-    } else {
-        match <[u8; 32]>::decode(&mut buf) {
-            Ok(x) => Some(x),
-            Err(e) => {
-                warn!("rlp code_hash decode failed: {:?}", e);
-                return None;
-            }
+    let code_or_hash = match AccountCodeOrHash::decode(&mut buf) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(
+                "inline code or hash decode failed: {:?}, buffer: {:?}",
+                e, buf
+            );
+            return None;
         }
     };
 
     Some(EthAccount {
         nonce,
         balance,
-        code_hash: code_hash.map(B256::from),
-        is_delegated,
+        code_or_hash,
+        is_delegated: false,
     })
 }
 

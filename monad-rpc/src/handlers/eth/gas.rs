@@ -21,6 +21,7 @@ use std::{
 use alloy_consensus::{Header, Transaction as _, TxEnvelope};
 use alloy_primitives::{Address, TxKind, U256, U64};
 use alloy_rpc_types::FeeHistory;
+use monad_eth_types::AccountCodeOrHash;
 use monad_ethcall::{CallResult, EthCallExecutor, MonadTracer, StateOverrideSet};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb};
@@ -319,7 +320,7 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
         let to = txn.to().unwrap();
         if let Ok(acct) = triedb_env.get_account(block_key, to.into()).await {
             // If the account has no code, then execute the call with gas limit 21000
-            if acct.code_hash == [0; 32]
+            if matches!(acct.code_or_hash, AccountCodeOrHash::IsEmpty(()))
                 && matches!(
                     eth_call_provider
                         .eth_call(txn.clone(), Some(eth_call_executor.clone()))
