@@ -59,6 +59,9 @@ pub struct Cli {
     pub otel_endpoint: Option<String>,
 
     #[arg(long)]
+    pub otel_replica_name_override: Option<String>,
+
+    #[arg(long)]
     pub max_compute_threads: Option<usize>,
 }
 
