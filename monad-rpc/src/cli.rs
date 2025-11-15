@@ -40,6 +40,10 @@ pub struct Cli {
     #[arg(long)]
     pub node_config: PathBuf,
 
+    /// Set the number of worker threads for the RPC server
+    #[arg(long, default_value_t = 2)]
+    pub worker_threads: usize,
+
     /// Enable the WebSocket server
     #[arg(long, default_value_t = false)]
     pub ws_enabled: bool,

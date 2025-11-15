@@ -409,7 +409,7 @@ async fn main() -> std::io::Result<()> {
         })
         .bind((args.rpc_addr, args.rpc_port))?
         .shutdown_timeout(1)
-        .workers(2)
+        .workers(args.worker_threads)
         .run(),
         None => HttpServer::new(move || {
             App::new()
@@ -421,7 +421,7 @@ async fn main() -> std::io::Result<()> {
         })
         .bind((args.rpc_addr, args.rpc_port))?
         .shutdown_timeout(1)
-        .workers(2)
+        .workers(args.worker_threads)
         .run(),
     };
 
