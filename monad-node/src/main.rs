@@ -333,7 +333,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
 
     let builder = MonadStateBuilder {
         validator_set_factory: ValidatorSetFactory::default(),
-        leader_election: WeightedRoundRobin::new(node_state.chain_config.get_staking_activation()),
+        leader_election: WeightedRoundRobin::default(),
         block_validator: EthBlockValidator::default(),
         block_policy: create_block_policy(),
         state_backend,

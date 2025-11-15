@@ -1374,7 +1374,7 @@ mod test {
                     .get_val_set(&epoch)
                     .unwrap()
                     .get_members();
-                let leader = self.election.get_leader(round, epoch, validators).pubkey();
+                let leader = self.election.get_leader(round, validators).pubkey();
                 let (leader_key, leader_certkey) = self
                     .keys
                     .iter()

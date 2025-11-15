@@ -395,8 +395,7 @@ where
                 .val_epoch_map
                 .get_val_set(&epoch)
                 .expect("validator set exists for local epoch");
-            self.election
-                .get_leader(round, epoch, validator_set.get_members())
+            self.election.get_leader(round, validator_set.get_members())
         };
 
         let timeout_round = self.consensus.pacemaker.get_current_round();
@@ -482,9 +481,9 @@ where
         // author, leader, round checks
         let pacemaker_round = self.consensus.pacemaker.get_current_round();
         let proposal_round = p.proposal_round;
-        let expected_leader =
-            self.election
-                .get_leader(proposal_round, epoch, validator_set.get_members());
+        let expected_leader = self
+            .election
+            .get_leader(proposal_round, validator_set.get_members());
         if proposal_round > pacemaker_round || author != expected_leader {
             debug!(
                 ?pacemaker_round,
@@ -563,9 +562,9 @@ where
             .val_epoch_map
             .get_val_set(&epoch)
             .expect("proposal message was verified");
-        let block_round_leader =
-            self.election
-                .get_leader(block_round, epoch, validator_set.get_members());
+        let block_round_leader = self
+            .election
+            .get_leader(block_round, validator_set.get_members());
         if block_author != block_round_leader {
             return None;
         }
@@ -726,9 +725,9 @@ where
             // Note that this try_propose is superfluous because process_qc calls it internally
             cmds.extend(self.try_propose());
 
-            let vote_round_leader =
-                self.election
-                    .get_leader(vote_round, epoch, validator_set.get_members());
+            let vote_round_leader = self
+                .election
+                .get_leader(vote_round, validator_set.get_members());
             if self.nodeid == &vote_round_leader {
                 // Note that if we're also the leader of (vote_round + 1), we'll send QC(r) in
                 // both AdvanceRound(QC(r)) and Proposal(r+1). This is fine, as AdvanceRound(r)
@@ -870,9 +869,9 @@ where
         // author, leader, round checks
         let pacemaker_round = self.consensus.pacemaker.get_current_round();
         let round = round_recovery.round;
-        let expected_leader =
-            self.election
-                .get_leader(pacemaker_round, epoch, validator_set.get_members());
+        let expected_leader = self
+            .election
+            .get_leader(pacemaker_round, validator_set.get_members());
         if round != pacemaker_round || author != expected_leader {
             debug!(
                 ?pacemaker_round,
@@ -1024,7 +1023,7 @@ where
                             .get_val_set(&epoch)
                             .expect("looked up leader for invalid round");
                         self.election
-                            .get_leader(current_round, epoch, validator_set.get_members())
+                            .get_leader(current_round, validator_set.get_members())
                     };
                     cmds.push(ConsensusCommand::Publish {
                         target: RouterTarget::PointToPoint(leader),
@@ -1137,8 +1136,7 @@ where
                 .val_epoch_map
                 .get_val_set(&epoch)
                 .expect("looked up leader for invalid round");
-            self.election
-                .get_leader(round, epoch, validator_set.get_members())
+            self.election.get_leader(round, validator_set.get_members())
         };
         // leader for next round must be known
         let next_leader = get_leader(round + Round(1));
@@ -1609,9 +1607,7 @@ where
             todo!("handle non-existent validatorset for next round epoch");
         };
 
-        let leader = &self
-            .election
-            .get_leader(round, epoch, validator_set.get_members());
+        let leader = &self.election.get_leader(round, validator_set.get_members());
         trace!(?round, ?leader, "try propose");
 
         // check that self is leader
@@ -1862,9 +1858,9 @@ where
                     todo!("handle non-existent validatorset for next k round epoch");
                 };
 
-                let leader =
-                    self.election
-                        .get_leader(round, epoch, next_validator_set.get_members());
+                let leader = self
+                    .election
+                    .get_leader(round, next_validator_set.get_members());
 
                 (leader, round)
             })
@@ -3597,7 +3593,6 @@ mod test {
             .expect("epoch exists");
         let next_leader = env.election.get_leader(
             Round(11),
-            epoch,
             env.val_epoch_map.get_val_set(&epoch).unwrap().get_members(),
         );
         let mut leader_index = 0;
@@ -3823,7 +3818,6 @@ mod test {
             .expect("epoch exists");
         let next_leader = env.election.get_leader(
             Round(missing_round + 1),
-            epoch,
             env.val_epoch_map.get_val_set(&epoch).unwrap().get_members(),
         );
         let mut leader_index = 0;
@@ -3932,7 +3926,6 @@ mod test {
         let epoch = env.epoch_manager.get_epoch(Round(4)).expect("epoch exists");
         let invalid_author = env.election.get_leader(
             Round(4),
-            epoch,
             env.val_epoch_map.get_val_set(&epoch).unwrap().get_members(),
         );
         assert!(invalid_author != node.nodeid);
