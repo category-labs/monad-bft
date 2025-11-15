@@ -31,8 +31,13 @@ impl MerkleProof {
         let num_leaves = 2_u16.checked_pow(siblings.len() as u32)?;
         let tree_len = 2_u16.checked_mul(num_leaves)?.checked_sub(1)?;
         let tree_leaf_start_idx = tree_len - num_leaves;
+        let leaf_idx = u16::from(leaf_idx);
+        if leaf_idx >= num_leaves {
+            return None;
+        }
+
         Some(Self {
-            tree_leaf_idx: tree_leaf_start_idx + u16::from(leaf_idx),
+            tree_leaf_idx: tree_leaf_start_idx + leaf_idx,
             siblings,
         })
     }
@@ -149,7 +154,7 @@ fn sibling_idx(idx: usize) -> Option<usize> {
 mod tests {
     use monad_crypto::hasher::{Hasher, HasherType};
 
-    use crate::MerkleTree;
+    use crate::{MerkleProof, MerkleTree};
 
     #[test]
     fn test_proof() {
@@ -169,7 +174,8 @@ mod tests {
                 h.hash()
             };
             for (leaf_idx, leaf) in leaves.iter().enumerate() {
-                let proof = tree.proof(leaf_idx.try_into().unwrap());
+                let leaf_idx = leaf_idx as u8;
+                let proof = tree.proof(leaf_idx);
                 let computed_root = proof.compute_root(leaf).unwrap();
                 // test that computed root matches
                 assert_eq!(tree.root(), &computed_root);
@@ -177,6 +183,36 @@ mod tests {
                 // test that forged leaf does not yield matching root
                 let computed_root_fake = proof.compute_root(&fake_leaf).unwrap();
                 assert_ne!(tree.root(), &computed_root_fake);
+
+                let siblings = proof.siblings();
+                // test proof reconstruction
+                let reconstructed_proof =
+                    MerkleProof::new_from_leaf_idx(siblings.into(), leaf_idx).unwrap();
+                assert_eq!(
+                    &reconstructed_proof.compute_root(leaf).unwrap(),
+                    &computed_root
+                );
+
+                // test proof reconstruction with overflowed leaf_idx
+                let max_leaf_idx = num_leaves.next_power_of_two();
+                assert!(MerkleProof::new_from_leaf_idx(siblings.into(), max_leaf_idx).is_none());
+                assert!(
+                    MerkleProof::new_from_leaf_idx(siblings.into(), max_leaf_idx - 1).is_some()
+                );
+
+                // test proof reconstruction with incorrect leaf_idx
+                let bad_leaf_idx = if num_leaves == 1 {
+                    continue;
+                } else {
+                    // shuffle leaf idx
+                    leaf_idx.wrapping_add(1) % num_leaves
+                };
+                let bad_reconstructed_proof =
+                    MerkleProof::new_from_leaf_idx(siblings.into(), bad_leaf_idx).unwrap();
+                assert_ne!(
+                    &bad_reconstructed_proof.compute_root(leaf).unwrap(),
+                    &computed_root
+                );
             }
         }
     }
