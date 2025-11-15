@@ -15,7 +15,21 @@
 
 use alloy_consensus::{Transaction, TxEnvelope};
 use monad_chain_config::{execution_revision::ExecutionChainParams, revision::ChainParams};
-use monad_eth_txpool_types::TransactionError;
+use serde::{Deserialize, Serialize};
+
+// allow for more fine grain debugging if needed
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StaticValidationError {
+    InvalidChainId,
+    MaxPriorityFeeTooHigh,
+    InitCodeLimitExceeded,
+    EncodedLengthLimitExceeded,
+    GasLimitTooLow,
+    GasLimitTooHigh,
+    UnsupportedTransactionType,
+    AuthorizationListEmpty,
+    AuthorizationListLengthLimitExceeded,
+}
 
 /// Stateless helper function to check validity of an Ethereum transaction
 pub fn static_validate_transaction(
@@ -23,9 +37,9 @@ pub fn static_validate_transaction(
     chain_id: u64,
     chain_params: &ChainParams,
     execution_chain_params: &ExecutionChainParams,
-) -> Result<(), TransactionError> {
+) -> Result<(), StaticValidationError> {
     if tx.is_eip4844() {
-        return Err(TransactionError::UnsupportedTransactionType);
+        return Err(StaticValidationError::UnsupportedTransactionType);
     }
 
     TfmValidator::validate(tx, chain_params, execution_chain_params)?;
@@ -61,16 +75,16 @@ impl TfmValidator {
         tx: &TxEnvelope,
         chain_params: &ChainParams,
         execution_chain_params: &ExecutionChainParams,
-    ) -> Result<(), TransactionError> {
+    ) -> Result<(), StaticValidationError> {
         if execution_chain_params.tfm_enabled {
             // tfm-specific gating
             if tx.gas_limit() > TFM_MAX_GAS_LIMIT {
-                return Err(TransactionError::GasLimitTooHigh);
+                return Err(StaticValidationError::GasLimitTooHigh);
             }
         }
 
         if tx.gas_limit() > chain_params.proposal_gas_limit {
-            return Err(TransactionError::GasLimitTooHigh);
+            return Err(StaticValidationError::GasLimitTooHigh);
         }
 
         Ok(())
@@ -79,15 +93,15 @@ impl TfmValidator {
 
 struct YellowPaperValidation;
 impl YellowPaperValidation {
-    fn validate(tx: &TxEnvelope) -> Result<(), TransactionError> {
+    fn validate(tx: &TxEnvelope) -> Result<(), StaticValidationError> {
         Self::intrinsic_gas_validation(tx)
     }
 
-    fn intrinsic_gas_validation(tx: &TxEnvelope) -> Result<(), TransactionError> {
+    fn intrinsic_gas_validation(tx: &TxEnvelope) -> Result<(), StaticValidationError> {
         // YP eq. 62 - intrinsic gas validation
         let intrinsic_gas = compute_intrinsic_gas(tx);
         if tx.gas_limit() < intrinsic_gas {
-            return Err(TransactionError::GasLimitTooLow);
+            return Err(StaticValidationError::GasLimitTooLow);
         }
         Ok(())
     }
@@ -95,24 +109,24 @@ impl YellowPaperValidation {
 
 struct EthHomesteadForkValidation;
 impl EthHomesteadForkValidation {
-    fn validate(tx: &TxEnvelope, chain_id: u64) -> Result<(), TransactionError> {
+    fn validate(tx: &TxEnvelope, chain_id: u64) -> Result<(), StaticValidationError> {
         Self::eip_2(tx)?;
         Self::eip_155(tx, chain_id)
     }
 
-    fn eip_2(tx: &TxEnvelope) -> Result<(), TransactionError> {
+    fn eip_2(tx: &TxEnvelope) -> Result<(), StaticValidationError> {
         // verify that s is in the lower half of the curve
         if tx.signature().normalize_s().is_some() {
-            return Err(TransactionError::UnsupportedTransactionType);
+            return Err(StaticValidationError::UnsupportedTransactionType);
         }
         Ok(())
     }
 
-    fn eip_155(tx: &TxEnvelope, chain_id: u64) -> Result<(), TransactionError> {
+    fn eip_155(tx: &TxEnvelope, chain_id: u64) -> Result<(), StaticValidationError> {
         // We still allow legacy transactions without chain_id specified to pass through
         if let Some(tx_chain_id) = tx.chain_id() {
             if tx_chain_id != chain_id {
-                return Err(TransactionError::InvalidChainId);
+                return Err(StaticValidationError::InvalidChainId);
             }
         }
         Ok(())
@@ -121,14 +135,14 @@ impl EthHomesteadForkValidation {
 
 struct EthLondonForkValidation;
 impl EthLondonForkValidation {
-    fn validate(tx: &TxEnvelope) -> Result<(), TransactionError> {
+    fn validate(tx: &TxEnvelope) -> Result<(), StaticValidationError> {
         Self::eip_1559(tx)
     }
 
-    fn eip_1559(tx: &TxEnvelope) -> Result<(), TransactionError> {
+    fn eip_1559(tx: &TxEnvelope) -> Result<(), StaticValidationError> {
         if let Some(max_priority_fee) = tx.max_priority_fee_per_gas() {
             if max_priority_fee > tx.max_fee_per_gas() {
-                return Err(TransactionError::MaxPriorityFeeTooHigh);
+                return Err(StaticValidationError::MaxPriorityFeeTooHigh);
             }
         }
         Ok(())
@@ -140,18 +154,18 @@ impl EthShanghaiForkValidation {
     fn validate(
         tx: &TxEnvelope,
         execution_chain_params: &ExecutionChainParams,
-    ) -> Result<(), TransactionError> {
+    ) -> Result<(), StaticValidationError> {
         Self::eip_3860(tx, execution_chain_params)
     }
 
     fn eip_3860(
         tx: &TxEnvelope,
         execution_chain_params: &ExecutionChainParams,
-    ) -> Result<(), TransactionError> {
+    ) -> Result<(), StaticValidationError> {
         // max init_code is (2 * max_code_size)
         let max_init_code_size: usize = 2 * execution_chain_params.max_code_size;
         if tx.kind().is_create() && tx.input().len() > max_init_code_size {
-            return Err(TransactionError::InitCodeLimitExceeded);
+            return Err(StaticValidationError::InitCodeLimitExceeded);
         }
         Ok(())
     }
@@ -162,7 +176,7 @@ impl EthPragueForkValidation {
     fn validate(
         tx: &TxEnvelope,
         execution_chain_params: &ExecutionChainParams,
-    ) -> Result<(), TransactionError> {
+    ) -> Result<(), StaticValidationError> {
         if execution_chain_params.prague_enabled {
             Self::eip_7623(tx)?;
         }
@@ -171,10 +185,10 @@ impl EthPragueForkValidation {
         Ok(())
     }
 
-    fn eip_7623(tx: &TxEnvelope) -> Result<(), TransactionError> {
+    fn eip_7623(tx: &TxEnvelope) -> Result<(), StaticValidationError> {
         let floor_data_gas = compute_floor_data_gas(tx);
         if tx.gas_limit() < floor_data_gas {
-            return Err(TransactionError::GasLimitTooLow);
+            return Err(StaticValidationError::GasLimitTooLow);
         }
         Ok(())
     }
@@ -182,22 +196,22 @@ impl EthPragueForkValidation {
     fn eip_7702(
         tx: &TxEnvelope,
         execution_chain_params: &ExecutionChainParams,
-    ) -> Result<(), TransactionError> {
+    ) -> Result<(), StaticValidationError> {
         if !tx.is_eip7702() {
             return Ok(());
         }
 
         if !execution_chain_params.prague_enabled {
-            return Err(TransactionError::UnsupportedTransactionType);
+            return Err(StaticValidationError::UnsupportedTransactionType);
         }
 
         match tx.authorization_list() {
             Some(auth_list) => {
                 if auth_list.is_empty() {
-                    return Err(TransactionError::AuthorizationListEmpty);
+                    return Err(StaticValidationError::AuthorizationListEmpty);
                 }
             }
-            None => return Err(TransactionError::AuthorizationListEmpty),
+            None => return Err(StaticValidationError::AuthorizationListEmpty),
         }
 
         Ok(())
@@ -312,7 +326,10 @@ mod test {
             &chain_params_with_gas_limit(TFM_MAX_GAS_LIMIT + 2),
             MonadExecutionRevision::LATEST.execution_chain_params(),
         );
-        assert!(matches!(result, Err(TransactionError::GasLimitTooHigh)));
+        assert!(matches!(
+            result,
+            Err(StaticValidationError::GasLimitTooHigh)
+        ));
 
         // transaction with gas limit higher than block gas limit
         let tx_gas_limit_too_high = TxEip1559 {
@@ -334,7 +351,10 @@ mod test {
             &chain_params_with_gas_limit(TFM_MAX_GAS_LIMIT - 2),
             MonadExecutionRevision::LATEST.execution_chain_params(),
         );
-        assert!(matches!(result, Err(TransactionError::GasLimitTooHigh)));
+        assert!(matches!(
+            result,
+            Err(StaticValidationError::GasLimitTooHigh)
+        ));
 
         // pre EIP-155 transaction with no chain id is allowed
         let tx_no_chain_id = TxLegacy {
@@ -375,7 +395,7 @@ mod test {
             MockChainRevision::DEFAULT.chain_params,
             MonadExecutionRevision::LATEST.execution_chain_params(),
         );
-        assert!(matches!(result, Err(TransactionError::InvalidChainId)));
+        assert!(matches!(result, Err(StaticValidationError::InvalidChainId)));
 
         // contract deployment transaction with input data larger than 2 * max_code_size (initcode limit)
         let input = vec![
@@ -406,7 +426,7 @@ mod test {
         );
         assert!(matches!(
             result,
-            Err(TransactionError::InitCodeLimitExceeded)
+            Err(StaticValidationError::InitCodeLimitExceeded)
         ));
 
         // transaction with larger max priority fee than max fee per gas
@@ -431,7 +451,7 @@ mod test {
         );
         assert!(matches!(
             result,
-            Err(TransactionError::MaxPriorityFeeTooHigh)
+            Err(StaticValidationError::MaxPriorityFeeTooHigh)
         ));
 
         // transaction with gas limit lower than intrinsic gas
@@ -454,7 +474,7 @@ mod test {
             MockChainRevision::DEFAULT.chain_params,
             MonadExecutionRevision::LATEST.execution_chain_params(),
         );
-        assert!(matches!(result, Err(TransactionError::GasLimitTooLow)));
+        assert!(matches!(result, Err(StaticValidationError::GasLimitTooLow)));
 
         // transaction with gas limit lower than floor data gas
         // floor data gas is 21000 + (zero byte * 10) + (non-zero byte * 40)
@@ -477,7 +497,7 @@ mod test {
             MockChainRevision::DEFAULT.chain_params,
             MonadExecutionRevision::LATEST.execution_chain_params(),
         );
-        assert!(matches!(result, Err(TransactionError::GasLimitTooLow)));
+        assert!(matches!(result, Err(StaticValidationError::GasLimitTooLow)));
     }
 
     #[test]

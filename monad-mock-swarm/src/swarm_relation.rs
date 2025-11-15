@@ -194,18 +194,7 @@ impl SwarmRelation for DebugSwarmRelation {
         Self::ExecutionProtocolType,
     >;
 
-    type BlockValidator = Box<
-        dyn BlockValidator<
-                Self::SignatureType,
-                Self::SignatureCollectionType,
-                Self::ExecutionProtocolType,
-                Self::BlockPolicyType,
-                Self::StateBackendType,
-                Self::ChainConfigType,
-                Self::ChainRevisionType,
-            > + Send
-            + Sync,
-    >;
+    type BlockValidator = MockValidator;
     type ValidatorSetTypeFactory =
         BoxedValidatorSetTypeFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = Box<

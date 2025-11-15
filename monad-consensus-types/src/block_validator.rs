@@ -29,24 +29,12 @@ use monad_validator::signature_collection::{SignatureCollection, SignatureCollec
 
 use crate::{
     block::{
-        BlockPolicy, ConsensusBlockHeader, ConsensusFullBlock, PassthruBlockPolicy,
-        PassthruWrappedBlock,
+        BlockPolicy, ConsensusBlockHeader, ConsensusFullBlock, ConsensusFullBlockError,
+        PassthruBlockPolicy, PassthruWrappedBlock,
     },
+    metrics::Metrics,
     payload::ConsensusBlockBody,
 };
-
-// TODO these are eth-specific types... we could make these an associated type of BlockValidator if
-// we care enough
-#[derive(Debug)]
-pub enum BlockValidationError {
-    SystemTxnError,
-    TxnError,
-    RandaoError,
-    HeaderError,
-    PayloadError,
-    HeaderPayloadMismatchError,
-    TimestampError,
-}
 
 #[auto_impl(Box)]
 pub trait BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>
@@ -59,6 +47,8 @@ where
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
+    type BlockValidationError: Debug;
+
     // TODO it would be less jank if the BLS pubkey was included in the block payload.
     //
     // It's weird that we need to pass in the expected author's BLS pubkey just to validate the
@@ -75,11 +65,25 @@ where
         body: ConsensusBlockBody<EPT>,
         author_pubkey: Option<&SignatureCollectionPubKeyType<SCT>>,
         chain_config: &CCT,
-    ) -> Result<BPT::ValidatedBlock, BlockValidationError>;
+        metrics: &mut Metrics,
+    ) -> Result<BPT::ValidatedBlock, Self::BlockValidationError>;
 }
 
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub struct MockValidator;
+
+#[derive(Debug)]
+pub enum MockBlockValidationError {
+    HeaderPayloadMismatch,
+}
+
+impl From<ConsensusFullBlockError> for MockBlockValidationError {
+    fn from(value: ConsensusFullBlockError) -> Self {
+        match value {
+            ConsensusFullBlockError::HeaderPayloadMismatch => Self::HeaderPayloadMismatch,
+        }
+    }
+}
 
 impl<ST, SCT, EPT>
     BlockValidator<
@@ -96,12 +100,15 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
+    type BlockValidationError = MockBlockValidationError;
+
     fn validate(
         &self,
         header: ConsensusBlockHeader<ST, SCT, EPT>,
         body: ConsensusBlockBody<EPT>,
         _author_pubkey: Option<&SignatureCollectionPubKeyType<SCT>>,
         _chain_config: &MockChainConfig,
+        _metrics: &mut Metrics,
     ) -> Result<
         <PassthruBlockPolicy as BlockPolicy<
             ST,
@@ -111,7 +118,7 @@ where
             MockChainConfig,
             MockChainRevision,
         >>::ValidatedBlock,
-        BlockValidationError,
+        Self::BlockValidationError,
     > {
         let full_block = ConsensusFullBlock::new(header, body)?;
         Ok(PassthruWrappedBlock(full_block))
