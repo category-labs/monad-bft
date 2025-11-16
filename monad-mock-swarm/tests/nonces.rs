@@ -66,6 +66,9 @@ mod test {
     use monad_validator::{
         simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory,
     };
+    use rand::Rng;
+    use rand_chacha::{rand_core::SeedableRng, ChaChaRng};
+    use seq_macro::seq;
     use tracing::info;
 
     pub struct EthSwarm;
@@ -367,6 +370,74 @@ mod test {
             swarm.states().keys().cloned().collect_vec(),
             expected_txns
         ));
+
+        swarm_ledger_verification(&swarm, 2);
+    }
+
+    seq!(N in 0..512 {
+        #[test]
+        fn test_rand_nonces_7702_~N() {
+            rand_nonces_7702(N);
+        }
+
+    });
+
+    fn rand_nonces_7702(seed: u64) {
+        let test_sender = B256::repeat_byte(0xA);
+        let sender_7702 = B256::repeat_byte(0xBu8);
+        let mut swarm = generate_eth_swarm(
+            2,
+            vec![
+                secret_to_eth_address(test_sender),
+                secret_to_eth_address(sender_7702),
+            ],
+            |_| ByzantineConfig::default(),
+        );
+        let node_ids = swarm.states().keys().copied().collect_vec();
+        let node_1_id = node_ids[0];
+
+        // step until nodes are ready to receive txs (post statesync)
+        while swarm
+            .step_until(&mut UntilTerminator::new().until_block(1))
+            .is_some()
+        {}
+
+        // make a list of nonces, create txns or auths from those nonces, send
+        let mut rng = ChaChaRng::seed_from_u64(seed);
+
+        let nonces: Vec<u64> = (0..10).map(|_| rng.gen_range(1..=10)).collect();
+        let mut txns = Vec::new();
+        let mut auths = Vec::new();
+
+        for nonce in nonces {
+            if rng.gen_bool(0.5) {
+                txns.push(make_legacy_tx(test_sender, BASE_FEE, GAS_LIMIT, nonce, 10));
+            } else {
+                auths.push(make_signed_authorization(
+                    test_sender,
+                    secret_to_eth_address(B256::repeat_byte(0x1u8)),
+                    nonce,
+                ));
+            }
+        }
+
+        let txn1 = make_legacy_tx(test_sender, BASE_FEE, GAS_LIMIT, 0, 10);
+        swarm.send_transaction(node_1_id, alloy_rlp::encode(&txn1).into());
+
+        let txn2 = make_eip7702_tx(sender_7702, BASE_FEE, 1, 1_000_000, 1, auths, 0);
+        swarm.send_transaction(node_1_id, alloy_rlp::encode(&txn2).into());
+
+        while swarm
+            .step_until(&mut UntilTerminator::new().until_block(10))
+            .is_some()
+        {}
+
+        let mut verifier = MockSwarmVerifier::default().tick_range(
+            happy_path_tick_by_block(10, CONSENSUS_DELTA),
+            CONSENSUS_DELTA,
+        );
+        verifier.metrics_happy_path(&node_ids, &swarm);
+        assert!(verifier.verify(&swarm));
 
         swarm_ledger_verification(&swarm, 2);
     }
