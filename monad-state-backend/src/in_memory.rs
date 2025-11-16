@@ -263,6 +263,7 @@ where
                             continue;
                         }
                         auth_account_entry.nonce += 1;
+                        auth_account_entry.is_delegated = true;
                     };
                 }
             }
