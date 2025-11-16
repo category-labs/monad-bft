@@ -38,7 +38,7 @@ use monad_state::{MonadMessage, VerifiedMonadMessage};
 use monad_state_backend::{InMemoryState, InMemoryStateInner};
 use monad_testutil::swarm::make_state_configs;
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID};
-use monad_types::{Balance, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
+use monad_types::{NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_updaters::{
     ledger::{MockLedger, MockableLedger},
     statesync::MockStateSyncExecutor,
@@ -325,7 +325,7 @@ fn forkpoint_restart_one(
         SimpleRoundRobin::default,
         EthBlockValidator::default,
         || EthBlockPolicy::new(GENESIS_SEQ_NUM, state_root_delay.0),
-        || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
+        || InMemoryStateInner::genesis(state_root_delay),
         state_root_delay,
         delta,               // delta
         chain_config,        // chain config
@@ -350,7 +350,7 @@ fn forkpoint_restart_one(
             SimpleRoundRobin::default,
             EthBlockValidator::default,
             create_block_policy,
-            || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
+            || InMemoryStateInner::genesis(state_root_delay),
             state_root_delay,    // execution_delay
             delta,               // delta
             chain_config,        // chain config
@@ -365,7 +365,7 @@ fn forkpoint_restart_one(
             SimpleRoundRobin::default,
             EthBlockValidator::default,
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, state_root_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
+            || InMemoryStateInner::genesis(state_root_delay),
             state_root_delay,    // execution_delay
             delta,               // delta
             chain_config,        // chain config
@@ -635,7 +635,7 @@ fn forkpoint_restart_below_all(
         SimpleRoundRobin::default,
         EthBlockValidator::default,
         || EthBlockPolicy::new(GENESIS_SEQ_NUM, state_root_delay.0),
-        || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
+        || InMemoryStateInner::genesis(state_root_delay),
         state_root_delay,    // execution_delay
         delta,               // delta
         chain_config,        // chain config
@@ -673,7 +673,7 @@ fn forkpoint_restart_below_all(
             SimpleRoundRobin::default,
             EthBlockValidator::default,
             create_block_policy,
-            || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
+            || InMemoryStateInner::genesis(state_root_delay),
             state_root_delay,    // execution_delay
             delta,               // delta
             chain_config,        // chain config
@@ -685,7 +685,7 @@ fn forkpoint_restart_below_all(
             SimpleRoundRobin::default,
             EthBlockValidator::default,
             create_block_policy,
-            || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
+            || InMemoryStateInner::genesis(state_root_delay),
             state_root_delay,    // execution_delay
             delta,               // delta
             chain_config,        // chain config
