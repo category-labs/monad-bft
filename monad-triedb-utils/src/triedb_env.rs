@@ -381,10 +381,13 @@ fn populate_cache(
             Arc::new(()),
         );
 
-        tx_receiver.map(|maybe_tx| match maybe_tx {
+        tx_receiver.map(move |maybe_tx| match maybe_tx {
             Ok(Some(rlp_transactions)) => parse_rlp_entries(rlp_transactions),
             Ok(None) => {
-                error!("Error traversing db");
+                error!(
+                    ?block_key,
+                    "Error traversing db while populating triedb cache txs"
+                );
                 Err(String::from("error traversing db"))
             }
             Err(e) => {
@@ -410,10 +413,13 @@ fn populate_cache(
             Arc::new(()),
         );
 
-        receipt_receiver.map(|maybe_receipts| match maybe_receipts {
+        receipt_receiver.map(move |maybe_receipts| match maybe_receipts {
             Ok(Some(rlp_receipts)) => parse_rlp_entries(rlp_receipts),
             Ok(None) => {
-                error!("Error traversing db");
+                error!(
+                    ?block_key,
+                    "Error traversing db while populating triedb cache receipts"
+                );
                 Err(String::from("error traversing db"))
             }
             Err(e) => {
@@ -823,7 +829,7 @@ impl TriedbEnv {
         match receiver.await {
             Ok(Some(entries)) => parser(entries),
             Ok(None) => {
-                error!("Error traversing db");
+                error!("Error traversing db while traversing triedb result");
                 Err(String::from("error traversing db"))
             }
             Err(e) => {
