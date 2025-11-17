@@ -98,7 +98,7 @@ impl PriorityQueues {
     }
 }
 
-pub const DEFAULT_MTU: u16 = ETHERNET_MTU;
+pub const DEFAULT_MTU: u16 = monad_types::DEFAULT_MTU;
 
 const IPV4_HDR_SIZE: u16 = 20;
 const UDP_HDR_SIZE: u16 = 8;
@@ -107,9 +107,7 @@ pub const fn segment_size_for_mtu(mtu: u16) -> u16 {
 }
 
 pub const DEFAULT_SEGMENT_SIZE: u16 = segment_size_for_mtu(DEFAULT_MTU);
-
-const ETHERNET_MTU: u16 = 1500;
-pub const ETHERNET_SEGMENT_SIZE: u16 = segment_size_for_mtu(ETHERNET_MTU);
+pub const ETHERNET_SEGMENT_SIZE: u16 = segment_size_for_mtu(monad_types::ETHERNET_MTU);
 
 fn configure_socket(socket: &UdpSocket, buffer_size: Option<usize>) {
     if let Some(size) = buffer_size {

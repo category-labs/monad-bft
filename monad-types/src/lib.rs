@@ -35,6 +35,9 @@ use zerocopy::IntoBytes;
 pub const GENESIS_SEQ_NUM: SeqNum = SeqNum(0);
 pub const GENESIS_ROUND: Round = Round(0);
 
+pub const ETHERNET_MTU: u16 = 1500;
+pub const DEFAULT_MTU: u16 = ETHERNET_MTU;
+
 const PROTOCOL_VERSION: u32 = 1;
 
 const CLIENT_MAJOR_VERSION: u16 = 0;

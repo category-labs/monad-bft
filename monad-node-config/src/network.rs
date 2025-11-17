@@ -15,6 +15,7 @@
 
 use std::net::Ipv4Addr;
 
+use monad_types::DEFAULT_MTU;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -48,10 +49,8 @@ pub struct NodeNetworkConfig {
     pub tcp_rate_limit_burst: u32,
 }
 
-// When running in docker with vpnkit, the maximum safe MTU is 1480, as per:
-// https://github.com/moby/vpnkit/tree/v0.5.0/src/hostnet/slirp.ml#L17-L18
 fn default_mtu() -> u16 {
-    1480
+    DEFAULT_MTU
 }
 
 fn default_buffer_size() -> Option<usize> {
