@@ -43,7 +43,7 @@ use monad_dataplane::{
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
-    ControlPanelEvent, GetFullNodes, GetPeers, Message, MonadEvent, PeerEntry, RouterCommand,
+    ControlPanelEvent, GetFullNodes, GetPeers, DumpStateRaptorcast, Message, MonadEvent, PeerEntry, RouterCommand,
 };
 use monad_node_config::{FullNodeConfig, FullNodeRaptorCastConfig};
 use monad_peer_discovery::{
@@ -54,6 +54,7 @@ use monad_peer_discovery::{
 };
 use monad_types::{DropTimer, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, UdpPriority};
 use monad_validator::signature_collection::SignatureCollection;
+use serde_json::{Value};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, debug_span, error, trace, warn};
 use udp::GroupId;
@@ -119,6 +120,7 @@ where
 pub enum PeerManagerResponse<ST: CertificateSignatureRecoverable> {
     PeerList(Vec<PeerEntry<ST>>),
     FullNodes(Vec<NodeId<CertificateSignaturePubKey<ST>>>),
+    DumpStateRaptorcast(serde_json::Value),
 }
 
 pub enum RaptorCastEvent<E, ST: CertificateSignatureRecoverable> {
@@ -675,6 +677,16 @@ where
                 } => {
                     self.dedicated_full_nodes.list = dedicated_full_nodes;
                 }
+                RouterCommand::DumpStateRaptorcast => {
+                    let jsn = serde_json::Value::default();
+                    self.pending_events
+                        .push_back(RaptorCastEvent::PeerManagerResponse(
+                            PeerManagerResponse::DumpStateRaptorcast(jsn),
+                        ));
+                    if let Some(waker) = self.waker.take() {
+                        waker.wake();
+                    }
+                }
             }
         }
     }
@@ -1026,6 +1038,9 @@ where
                     ),
                     PeerManagerResponse::FullNodes(full_nodes) => MonadEvent::ControlPanelEvent(
                         ControlPanelEvent::GetFullNodes(GetFullNodes::Response(full_nodes)),
+                    ),
+                    PeerManagerResponse::DumpStateRaptorcast(jsn) => MonadEvent::ControlPanelEvent(
+                        ControlPanelEvent::DumpStateRaptorcast(DumpStateRaptorcast::Response(jsn)),
                     ),
                 }
             }

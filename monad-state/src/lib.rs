@@ -55,7 +55,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor_glue::{
     BlockSyncEvent, ClearMetrics, Command, ConfigEvent, ConfigFileCommand, ConfigReloadCommand,
-    ConsensusEvent, ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers,
+    ConsensusEvent, ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers, DumpStateRaptorcast,
     LedgerCommand, MempoolEvent, Message, MonadEvent, ReadCommand, ReloadConfig, RouterCommand,
     StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest, TxPoolCommand,
     ValSetCommand, ValidatorEvent, WriteCommand,
@@ -1228,6 +1228,16 @@ where
                     ReloadConfig::Response(resp) => {
                         vec![Command::ControlPanelCommand(ControlPanelCommand::Write(
                             WriteCommand::ReloadConfig(ReloadConfig::Response(resp)),
+                        ))]
+                    }
+                },
+                ControlPanelEvent::DumpStateRaptorcast(req_resp) => match req_resp {
+                    DumpStateRaptorcast::Request => {
+                        vec![Command::RouterCommand(RouterCommand::DumpStateRaptorcast)]
+                    }
+                    DumpStateRaptorcast::Response(resp) => {
+                        vec![Command::ControlPanelCommand(ControlPanelCommand::Read(
+                            ReadCommand::DumpStateRaptorcast(DumpStateRaptorcast::Response(resp)),
                         ))]
                     }
                 },

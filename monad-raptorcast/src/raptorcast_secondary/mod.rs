@@ -14,11 +14,11 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, VecDeque},
     marker::PhantomData,
     pin::{pin, Pin},
     sync::{Arc, Mutex},
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
     time::Duration,
 };
 
@@ -41,6 +41,7 @@ use monad_types::{DropTimer, Epoch, NodeId};
 use publisher::Publisher;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
+use serde_json::json;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, error, trace, warn};
 
@@ -50,7 +51,7 @@ use crate::{
     packet::{RetrofitResult as _, UdpMessageBatcher},
     udp::GroupId,
     util::{BuildTarget, FullNodes, Group, Redundancy},
-    OwnedMessageBuilder, RaptorCastEvent, UNICAST_MSG_BATCH_SIZE,
+    OwnedMessageBuilder, RaptorCastEvent, PeerManagerResponse, UNICAST_MSG_BATCH_SIZE,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -89,6 +90,10 @@ where
     message_builder: OwnedMessageBuilder<ST, PD>,
 
     channel_from_primary: UnboundedReceiver<FullNodesGroupMessage<ST>>,
+
+    pending_events: VecDeque<RaptorCastEvent<M::Event, ST>>,
+    waker: Option<Waker>,
+
     #[expect(unused)]
     metrics: ExecutorMetrics,
     _phantom: PhantomData<(OM, SE, M)>,
@@ -160,6 +165,8 @@ where
             dataplane_writer,
             peer_discovery_driver,
             channel_from_primary,
+            pending_events: Default::default(),
+            waker: None,
             metrics: Default::default(),
             _phantom: PhantomData,
         }
@@ -421,6 +428,25 @@ where
                         .build_into(&outbound_message, &build_target, &mut sink)
                         .unwrap_log_on_error(&outbound_message, &build_target);
                 }
+
+                Self::Command::DumpStateRaptorcast => {
+                    let mut jsn_map = serde_json::Map::new();
+                    //jsn_map.insert("version".to_string(), serde_json::Value::String("v1.0".to_string()));
+                    jsn_map.insert("version".to_string(), json!(1));
+                    let role = match &self.role {
+                        Role::Client(_) => "client",
+                        Role::Publisher(_) => "publisher",
+                    }.to_string();
+                    jsn_map.insert("role".to_string(), json!(role));
+                    let jsn = serde_json::Value::Object(jsn_map);
+                    self.pending_events
+                        .push_back(RaptorCastEvent::PeerManagerResponse(
+                            PeerManagerResponse::DumpStateRaptorcast(jsn),
+                        ));
+                    if let Some(waker) = self.waker.take() {
+                        waker.wake();
+                    }
+                }
             }
         }
     }
@@ -448,6 +474,16 @@ where
     // we don't need to handle any receive here and this is just to satisfy traits
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
+
+        if let Some(waker) = this.waker.as_mut() {
+            waker.clone_from(cx.waker());
+        } else {
+            this.waker = Some(cx.waker().clone());
+        }
+
+        if let Some(event) = this.pending_events.pop_front() {
+            return Poll::Ready(Some(event.into()));
+        }
 
         let inbound_grp_msg = match pin!(this.channel_from_primary.recv()).poll(cx) {
             Poll::Ready(Some(inbound_grp_msg)) => inbound_grp_msg,

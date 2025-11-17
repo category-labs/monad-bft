@@ -5443,6 +5443,7 @@ dependencies = [
  "monad-types",
  "monad-validator",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -5760,6 +5761,7 @@ dependencies = [
  "rand_distr",
  "rstest",
  "serde",
+ "serde_json",
  "thiserror 1.0.69",
  "tikv-jemallocator",
  "tokio",
