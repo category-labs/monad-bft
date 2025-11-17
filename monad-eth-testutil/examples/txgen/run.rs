@@ -376,7 +376,7 @@ async fn verify_contract_code(client: &ReqwestClient, addr: Address) -> Result<b
 
 #[derive(Deserialize, Serialize)]
 struct DeployedContractFile {
-    erc20: Option<Address>,
+    erc20: Option<Vec<Address>>,
     ecmul: Option<Address>,
     uniswap: Option<Uniswap>,
     eip7702: Option<Address>,
@@ -401,46 +401,68 @@ async fn load_or_deploy_contracts(
     match contract_to_ensure {
         RequiredContract::None => Ok(DeployedContract::None),
         RequiredContract::ERC20 => {
+            let required_count = traffic_gen.erc20_contract_count().max(1);
+
             // Check CLI override first
             if let Some(addr_str) = &config.erc20_contract {
                 if let Ok(addr) = addr_str.parse::<Address>() {
                     if verify_contract_code(client, addr).await? {
                         info!("Using ERC20 contract from CLI: {}", addr);
-                        return Ok(DeployedContract::ERC20(ERC20 { addr }));
+                        return Ok(DeployedContract::ERC20(vec![ERC20 { addr }]));
                     } else {
                         warn!("ERC20 contract from CLI has no code, falling back to auto-deploy");
                     }
                 }
             }
 
+            let mut existing_contracts = Vec::new();
             match open_deployed_contracts_file(PATH) {
                 Ok(DeployedContractFile {
-                    erc20: Some(erc20), ..
+                    erc20: Some(erc20_addrs),
+                    ..
                 }) => {
-                    if verify_contract_code(client, erc20).await? {
-                        info!("Contract loaded from file validated");
-                        return Ok(DeployedContract::ERC20(ERC20 { addr: erc20 }));
+                    for addr in erc20_addrs {
+                        if verify_contract_code(client, addr).await? {
+                            existing_contracts.push(ERC20 { addr });
+                        } else {
+                            warn!("Contract {} from file not found on chain, skipping", addr);
+                        }
                     }
-                    warn!(
-                        "Contract loaded from file not found on chain, deploying new contract..."
-                    );
+
+                    if !existing_contracts.is_empty() {
+                        info!(
+                            "Loaded {} ERC20 contract(s) from file",
+                            existing_contracts.len()
+                        );
+                    }
                 }
                 Err(e) => info!("Failed to load deployed contracts file, {e}"),
-                _ => info!("Contract not in deployed contracts file"),
+                _ => info!("No ERC20 contracts in deployed contracts file"),
             }
 
-            // if not found, deploy new contract
-            let erc20 = ERC20::deploy(
-                &deployer,
-                client,
-                max_fee_per_gas,
-                chain_id,
-                config.gas_limit_contract_deployment,
-            )
-            .await?;
+            // Deploy additional contracts if needed
+            let mut all_contracts = existing_contracts;
+            while all_contracts.len() < required_count {
+                info!(
+                    "Deploying ERC20 contract {} of {}",
+                    all_contracts.len() + 1,
+                    required_count
+                );
+                let erc20 = ERC20::deploy(
+                    &deployer,
+                    client,
+                    max_fee_per_gas,
+                    chain_id,
+                    config.gas_limit_contract_deployment,
+                )
+                .await?;
+                all_contracts.push(erc20);
+            }
 
+            // Save all contracts to file
+            let addrs: Vec<Address> = all_contracts.iter().map(|c| c.addr).collect();
             let deployed = DeployedContractFile {
-                erc20: Some(erc20.addr),
+                erc20: Some(addrs),
                 ecmul: None,
                 uniswap: None,
                 eip7702: None,
@@ -448,7 +470,8 @@ async fn load_or_deploy_contracts(
             };
 
             write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
-            Ok(DeployedContract::ERC20(erc20))
+            info!("Using {} ERC20 contract(s)", all_contracts.len());
+            Ok(DeployedContract::ERC20(all_contracts))
         }
         RequiredContract::ECMUL => {
             match open_deployed_contracts_file(PATH) {
@@ -628,9 +651,11 @@ async fn write_and_verify_deployed_contracts(
     path: &str,
     dc: &DeployedContractFile,
 ) -> Result<()> {
-    if let Some(addr) = dc.erc20 {
-        if !verify_contract_code(client, addr).await? {
-            bail!("Failed to verify freshly deployed ERC20 contract");
+    if let Some(addrs) = &dc.erc20 {
+        for addr in addrs {
+            if !verify_contract_code(client, *addr).await? {
+                bail!("Failed to verify freshly deployed contract: {}", addr);
+            }
         }
     }
     if let Some(addr) = dc.ecmul {

@@ -13,12 +13,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use crate::{prelude::*, shared::erc20::ERC20};
+use crate::{generators::ERC20Pool, prelude::*};
 
 pub struct HighCallDataTxGenerator {
     pub(crate) recipient_keys: KeyPool,
     pub(crate) tx_per_sender: usize,
-    pub erc20: Option<ERC20>,
+    pub erc20_pool: ERC20Pool,
 }
 
 impl Generator for HighCallDataTxGenerator {
@@ -32,15 +32,7 @@ impl Generator for HighCallDataTxGenerator {
         for sender in accts {
             for _ in 0..self.tx_per_sender {
                 let to = self.recipient_keys.next_addr();
-
-                let tx = high_calldata_erc20_call(
-                    sender,
-                    self.erc20
-                        .as_ref()
-                        .expect("No ERC20 contract found, but tx_type is erc20"),
-                    ctx,
-                );
-
+                let tx = high_calldata_erc20_call(sender, self.erc20_pool.next_contract(), ctx);
                 txs.push((tx, to, sender.key.clone()));
             }
         }
@@ -51,7 +43,7 @@ impl Generator for HighCallDataTxGenerator {
 
 pub fn high_calldata_erc20_call(
     from: &mut SimpleAccount,
-    erc20: &ERC20,
+    erc20: &crate::shared::erc20::ERC20,
     ctx: &GenCtx,
 ) -> TxEnvelope {
     let max_fee_per_gas = ctx.base_fee * 2;

@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 use duplicates::DuplicateTxGenerator;
@@ -64,48 +66,64 @@ pub fn make_generator(
 ) -> Result<Box<dyn Generator + Send + Sync>> {
     let recipient_keys = KeyPool::new(traffic_gen.recipients, traffic_gen.recipient_seed);
     let tx_per_sender = traffic_gen.tx_per_sender();
+
+    let gen_tx_type = |tx_type: TxType, contract_count: usize| -> Result<GenTxType> {
+        match tx_type {
+            TxType::Native => Ok(GenTxType::Native),
+            TxType::ERC20 => Ok(GenTxType::ERC20(ERC20Pool::from_deployed_contract(
+                deployed_contract.clone(),
+                contract_count,
+            )?)),
+        }
+    };
+
     Ok(match &traffic_gen.gen_mode {
         GenMode::NullGen => Box::new(NullGen),
         GenMode::FewToMany(config) => Box::new(CreateAccountsGenerator {
             recipient_keys,
-            tx_type: config.tx_type,
-            erc20: deployed_contract.erc20().ok(),
+            tx_type: gen_tx_type(config.tx_type, config.contract_count)?,
             tx_per_sender,
         }),
         GenMode::ManyToMany(config) => Box::new(ManyToManyGenerator {
             recipient_keys,
-            tx_type: config.tx_type,
             tx_per_sender,
-            erc20: deployed_contract.erc20().ok(),
+            tx_type: gen_tx_type(config.tx_type, config.contract_count)?,
         }),
         GenMode::Duplicates => Box::new(DuplicateTxGenerator {
             recipient_keys,
             tx_per_sender,
             random_priority_fee: false,
-            tx_type: TxType::Native,
-            erc20: None,
+            tx_type: GenTxType::Native,
         }),
         GenMode::RandomPriorityFee(config) => Box::new(DuplicateTxGenerator {
             recipient_keys,
             tx_per_sender,
             random_priority_fee: true,
-            tx_type: config.tx_type,
-            erc20: deployed_contract.erc20().ok(),
+            tx_type: gen_tx_type(config.tx_type, config.contract_count)?,
         }),
-        GenMode::HighCallData => Box::new(HighCallDataTxGenerator {
+        GenMode::HighCallData(config) => Box::new(HighCallDataTxGenerator {
             recipient_keys,
             tx_per_sender,
-            erc20: deployed_contract.erc20().ok(),
+            erc20_pool: ERC20Pool::from_deployed_contract(
+                deployed_contract,
+                config.contract_count,
+            )?,
         }),
-        GenMode::NonDeterministicStorage => Box::new(NonDeterministicStorageTxGenerator {
+        GenMode::NonDeterministicStorage(config) => Box::new(NonDeterministicStorageTxGenerator {
             recipient_keys,
             tx_per_sender,
-            erc20: deployed_contract.erc20()?,
+            erc20_pool: ERC20Pool::from_deployed_contract(
+                deployed_contract,
+                config.contract_count,
+            )?,
         }),
-        GenMode::StorageDeletes => Box::new(StorageDeletesTxGenerator {
+        GenMode::StorageDeletes(config) => Box::new(StorageDeletesTxGenerator {
             recipient_keys,
             tx_per_sender,
-            erc20: deployed_contract.erc20()?,
+            erc20_pool: ERC20Pool::from_deployed_contract(
+                deployed_contract,
+                config.contract_count,
+            )?,
         }),
         GenMode::SelfDestructs => Box::new(SelfDestructTxGenerator {
             tx_per_sender,
@@ -156,16 +174,69 @@ pub fn make_generator(
             tx_per_sender,
             config.authorizations_per_tx,
         )),
-        GenMode::ExtremeValues => Box::new(ExtremeValuesGenerator::new(
+        GenMode::ExtremeValues(config) => Box::new(ExtremeValuesGenerator::new(
             recipient_keys,
             tx_per_sender,
-            deployed_contract.erc20()?,
+            ERC20Pool::from_deployed_contract(deployed_contract, config.contract_count)?,
         )),
         GenMode::NftSale => Box::new(NftSaleGenerator {
             nft_sale: deployed_contract.nft_sale()?,
             tx_per_sender,
         }),
     })
+}
+
+pub enum GenTxType {
+    Native,
+    ERC20(ERC20Pool),
+}
+
+pub struct ERC20Pool {
+    pool: Vec<ERC20>,
+    index: AtomicUsize,
+}
+
+impl ERC20Pool {
+    pub fn new(erc20s: Vec<ERC20>) -> Result<Self> {
+        if erc20s.is_empty() {
+            return Err(eyre::eyre!("ERC20 pool is empty"));
+        }
+        Ok(Self {
+            pool: erc20s,
+            index: AtomicUsize::new(0),
+        })
+    }
+
+    pub fn from_deployed_contract(
+        deployed_contract: DeployedContract,
+        contract_count: usize,
+    ) -> Result<Self> {
+        let mut erc20s = deployed_contract.erc20()?;
+        if erc20s.len() < contract_count {
+            return Err(eyre::eyre!(
+                "Not enough ERC20 contracts deployed: {} < {}",
+                erc20s.len(),
+                contract_count
+            ));
+        }
+        erc20s.resize(
+            contract_count,
+            ERC20 {
+                addr: Address::ZERO,
+            },
+        );
+        Self::new(erc20s)
+    }
+}
+
+impl ERC20Pool {
+    pub fn next_contract(&self) -> &ERC20 {
+        let index = self.index.load(Ordering::Acquire);
+        let erc20 = self.pool.get(index).expect("ERC20 pool is empty");
+        self.index
+            .store((index + 1) % self.pool.len(), Ordering::Release);
+        erc20
+    }
 }
 
 struct NullGen;
@@ -279,7 +350,9 @@ pub fn erc20_transfer(
         .native_bal
         .checked_sub(U256::from(400_000 * max_fee_per_gas))
         .unwrap_or(U256::ZERO); // todo: wire gas correctly, see above comment
-    from.erc20_bal = from.erc20_bal.checked_sub(amt).unwrap_or(U256::ZERO);
+
+    let balance = from.erc20_balances.entry(erc20.addr).or_insert(U256::ZERO);
+    *balance = balance.checked_sub(amt).unwrap_or(U256::ZERO);
     tx
 }
 
@@ -301,7 +374,10 @@ pub fn erc20_mint(from: &mut SimpleAccount, erc20: &ERC20, ctx: &GenCtx) -> TxEn
         .native_bal
         .checked_sub(U256::from(400_000 * max_fee_per_gas))
         .unwrap_or(U256::ZERO); // todo: wire gas correctly, see above comment
-    from.erc20_bal += U256::from(10_u128.pow(30)); // todo: current erc20 impl just mints a constant
+
+    let mint_amount = U256::from(10_u128.pow(30)); // todo: current erc20 impl just mints a constant
+    let balance = from.erc20_balances.entry(erc20.addr).or_insert(U256::ZERO);
+    *balance += mint_amount;
     tx
 }
 
