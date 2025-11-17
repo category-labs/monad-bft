@@ -54,6 +54,8 @@ impl<T: std::fmt::Debug> std::fmt::Debug for QuorumCertificate<T> {
     }
 }
 
+#[expect(unused)]
+#[derive(Debug)]
 pub enum QCConditionUnmet<SCT: SignatureCollection> {
     // failed creating signature collection
     SignatureCollectionError(

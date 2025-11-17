@@ -5510,9 +5510,7 @@ mod test {
             // solicit no endorsements for round r using TC(r-1), make
             // TC(r-1) the high_certificate for entering round r.
             let round = prev_round + Round(1);
-            let leader = env_ctx
-                .election
-                .get_leader(round, val_set.get_members());
+            let leader = env_ctx.election.get_leader(round, val_set.get_members());
             let round_recovery = RoundRecoveryMessage {
                 epoch,
                 round,
@@ -5613,9 +5611,7 @@ mod test {
 
         // Construct TC_1(r-1), which is used to solicit NE from validators
         let round = prev_round + Round(1);
-        let leader = env_ctx
-            .election
-            .get_leader(round, val_set.get_members());
+        let leader = env_ctx.election.get_leader(round, val_set.get_members());
         let (tc1, rec) = {
             let timeouts = &timeouts[..(timeouts.len() - 2)]; // pick some N >= 2f+1
             let tc = TimeoutCertificate::new(epoch, prev_round, timeouts, &val_mapping)
@@ -5718,5 +5714,572 @@ mod test {
 
             _ => unreachable!(),
         }
+    }
+
+    mod pure {
+        // Test utilities for testing consensus with a static
+        // validator set with default execution, block validation,
+        // state, etc.
+
+        use alloy_consensus::BlockHeader;
+        use monad_consensus::validation::signing::Verified;
+        use monad_consensus_types::{tip::ConsensusTip, voting::Vote};
+        use monad_crypto::{certificate_signature::CertificateSignaturePubKey, NopKeyPair};
+        use monad_testutil::builder::{self, Signable as _};
+        use monad_types::{Epoch, Round};
+        use monad_validator::{
+            signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+            validator_set::ValidatorSetType,
+        };
+
+        use super::{
+            Balance, BlockPolicyType, BlockValidatorType, ConsensusBlockBody,
+            ConsensusBlockBodyInner, EthBlockBody, EthBlockPolicy, EthBlockValidator,
+            EthExecutionProtocol, InMemoryStateInner, LeaderElection as _, ProposedEthHeader,
+            SeqNum, SimpleRoundRobin, StateBackendType, ValidatorSetFactory, BASE_FEE,
+            CHAIN_PARAMS, EMPTY_OMMER_ROOT_HASH, EMPTY_TRANSACTIONS, EMPTY_WITHDRAWALS,
+            GENESIS_SEQ_NUM,
+        };
+        use crate::{
+            test::{BASE_FEE_MOMENT, BASE_FEE_TREND},
+            timestamp::BlockTimestamp,
+        };
+
+        const EXECUTION_DELAY: SeqNum = SeqNum::MAX;
+
+        type ST = super::SignatureType;
+        type PT = CertificateSignaturePubKey<ST>;
+        type SCT = super::SignatureCollectionType;
+        type VTF = super::ValidatorSetFactory<PT>;
+        type LT = super::SimpleRoundRobin<PT>;
+        type EPT = super::EthExecutionProtocol;
+
+        type EnvContext = super::EnvContext<ST, SCT, VTF, LT>;
+        type NodeContext = super::NodeContext<
+            ST,
+            SCT,
+            BlockPolicyType,
+            StateBackendType,
+            BlockValidatorType,
+            VTF,
+            LT,
+        >;
+        type ProposalTemplate = builder::ProposalTemplate<ST, SCT, EthExecutionProtocol>;
+        type BlockTemplate = builder::BlockTemplate<ST, SCT, EthExecutionProtocol>;
+        type ProposalMessage = super::ProposalMessage<ST, SCT, EthExecutionProtocol>;
+        type RoundSignature = super::RoundSignature<<SCT as SignatureCollection>::SignatureType>;
+        type NodeId = super::NodeId<PT>;
+        type ConsensusBlockHeader = super::ConsensusBlockHeader<ST, SCT, EPT>;
+        type QuorumCertificate = super::QuorumCertificate<SCT>;
+
+        pub struct Context {
+            pub env: EnvContext,
+            pub nodes: Vec<NodeContext>,
+        }
+
+        pub trait NodeRef {
+            fn to_index(&self, nodes: &[NodeContext]) -> Option<usize>;
+        }
+        impl NodeRef for usize {
+            fn to_index(&self, nodes: &[NodeContext]) -> Option<usize> {
+                (0..nodes.len()).contains(self).then_some(*self)
+            }
+        }
+        impl NodeRef for &NodeId {
+            fn to_index(&self, nodes: &[NodeContext]) -> Option<usize> {
+                nodes.iter().position(|n| n.nodeid == **self)
+            }
+        }
+
+        impl Context {
+            pub fn setup(num_states: usize) -> Self {
+                let (env, nodes) = super::setup(
+                    num_states as u32,
+                    ValidatorSetFactory::default(),
+                    SimpleRoundRobin::default(),
+                    || EthBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY.0),
+                    || InMemoryStateInner::genesis(Balance::MAX, EXECUTION_DELAY),
+                    EthBlockValidator::default,
+                    EXECUTION_DELAY,
+                );
+
+                let mut ctx = Self { env, nodes };
+                // ensures that the freshly proposed block has timestamp of at least 1.
+                ctx.advance_local_timestamps(1, &ctx.all_nodes());
+                ctx
+            }
+
+            // not possible now because these fields are not Clone
+            // pub fn fork(&self) -> Self {
+            //     Self {
+            //         env: self.env.clone(),
+            //         nodes: self.nodes.clone(),
+            //     }
+            // }
+
+            pub fn get_epoch(&self, round: Round) -> Epoch {
+                self.env
+                    .epoch_manager
+                    .get_epoch(round)
+                    .expect("must return epoch")
+            }
+
+            pub fn author(&self, proposal: &ProposalMessage) -> NodeId {
+                let round = proposal.proposal_round;
+                self.get_leader(round)
+            }
+
+            pub fn get_leader(&self, round: Round) -> NodeId {
+                let epoch = self.get_epoch(round);
+                let val_set = self
+                    .env
+                    .val_epoch_map
+                    .get_val_set(&epoch)
+                    .expect("validator set not ready for epoch");
+                self.env.election.get_leader(round, val_set.get_members())
+            }
+
+            pub fn node_id(&self, node_index: usize) -> &NodeId {
+                &self
+                    .nodes
+                    .get(node_index)
+                    .expect("node index overflow")
+                    .nodeid
+            }
+            pub fn node_index(&self, node_id: &NodeId) -> usize {
+                self.nodes
+                    .iter()
+                    .position(|n| n.nodeid == *node_id)
+                    .expect("node not found")
+            }
+            pub fn node_keypair(&self, node: impl NodeRef) -> &NopKeyPair {
+                let node_idx = node.to_index(&self.nodes).expect("node not found");
+                &self.nodes[node_idx].keypair
+            }
+
+            pub fn init_proposal(&self) -> ProposalTemplate {
+                let qc = QuorumCertificate::genesis_qc();
+                let mut proposal = self.partial_proposal_from_qc(qc);
+
+                let block = proposal.block.as_mut().expect("block must be present");
+                let round = Round(1);
+                let seq_num = GENESIS_SEQ_NUM + SeqNum(1);
+                let base_fee = builder::BaseFee::genesis().next(CHAIN_PARAMS.proposal_gas_limit, 0);
+                self.fill_default_block(block, round, seq_num, base_fee);
+
+                self.fix_sig(&mut proposal);
+                debug_assert!(proposal.is_complete());
+                proposal
+            }
+
+            pub fn next_proposal(&self, parent: &ProposalMessage) -> ProposalTemplate {
+                let qc = self.get_qc(&parent, &self.all_nodes());
+                let mut proposal = self.partial_proposal_from_qc(qc);
+
+                let block = proposal.block.as_mut().expect("block must be present");
+                let round = parent.proposal_round + Round(1);
+                let seq_num = parent.tip.block_header.seq_num + SeqNum(1);
+                let parent_base_fee: builder::BaseFee = (&parent.tip.block_header).into();
+                let base_fee = parent_base_fee.next(CHAIN_PARAMS.proposal_gas_limit, 0);
+                self.fill_default_block(block, round, seq_num, base_fee);
+
+                self.fix_sig(&mut proposal);
+                debug_assert!(proposal.is_complete());
+                proposal
+            }
+
+            // missing base_fee, block details, signatures
+            pub fn partial_proposal_from_qc(&self, qc: QuorumCertificate) -> ProposalTemplate {
+                let round = qc.get_round() + Round(1);
+                let epoch = self.get_epoch(round);
+                let proposal_kind = builder::ProposalKind::<ST, SCT, EPT>::from_qc(qc);
+                let mut proposal = ProposalTemplate::new(proposal_kind);
+                proposal.proposal_round.set(round);
+                proposal.proposal_epoch.set(epoch);
+                debug_assert!(!proposal.is_complete());
+                proposal
+            }
+
+            pub fn verify(&self, proposal: ProposalMessage) -> Verified<ST, ProposalMessage> {
+                let round = proposal.proposal_round;
+                let leader = self.get_leader(round);
+                let keypair = self.node_keypair(&leader);
+                Verified::new(proposal, keypair)
+            }
+
+            pub fn validate_proposal(
+                &self,
+                proposal: &ProposalMessage,
+            ) -> Result<(), monad_consensus_types::validation::Error> {
+                use monad_consensus::validation::certificate_cache::CertificateCache;
+                proposal.validate(
+                    &mut CertificateCache::default(),
+                    &self.env.epoch_manager,
+                    &self.env.val_epoch_map,
+                    &self.env.election,
+                )?;
+                Ok(())
+            }
+
+            pub fn advance_local_timestamps(
+                &mut self,
+                delta: i128,
+                nodes: &[impl NodeRef],
+            ) -> u128 {
+                use std::collections::HashSet;
+
+                // return the largest timestamp
+                let node_indices: HashSet<_> = nodes
+                    .iter()
+                    .map(|n| n.to_index(&self.nodes).expect("invalid node"))
+                    .collect();
+
+                assert!(!node_indices.is_empty());
+
+                let mut max = 0;
+                for (i, node) in self.nodes.iter_mut().enumerate() {
+                    let ts = node.block_timestamp.get_current_time();
+                    let new_ts = ts.checked_add_signed(delta).expect("ts overflow");
+                    node.block_timestamp.update_time(new_ts);
+                    max = max.max(new_ts);
+                }
+
+                max
+            }
+
+            pub fn all_nodes(&self) -> Vec<usize> {
+                (0..self.nodes.len()).collect()
+            }
+
+            pub fn get_qc(
+                &self,
+                proposal: &ProposalMessage,
+                voters: &[impl NodeRef],
+            ) -> QuorumCertificate {
+                use std::collections::HashSet;
+                let vote = Vote {
+                    id: proposal.tip.block_header.get_id(),
+                    round: proposal.proposal_round,
+                    epoch: proposal.proposal_epoch,
+                };
+
+                let voter_indices: HashSet<_> = voters
+                    .iter()
+                    .map(|v| v.to_index(&self.nodes).expect("invalid voter"))
+                    .collect();
+
+                let mut sigs = vec![];
+                for (i, node) in self.nodes.iter().enumerate() {
+                    if !voter_indices.contains(&i) {
+                        continue;
+                    }
+
+                    let sig = vote.sign_with(&node.cert_keypair).into_inner();
+                    sigs.push((node.nodeid.clone(), sig));
+                }
+
+                let epoch = proposal.proposal_epoch;
+                let val_mapping = self
+                    .env
+                    .val_epoch_map
+                    .get_cert_pubkeys(&epoch)
+                    .expect("valset defined for epoch");
+                let val_set = self
+                    .env
+                    .val_epoch_map
+                    .get_val_set(&epoch)
+                    .expect("valset defined for epoch");
+
+                QuorumCertificate::try_form(vote, sigs, val_mapping, val_set)
+                    .expect("QC should form")
+            }
+
+            pub fn fix_sig(&self, proposal: &mut ProposalTemplate) {
+                // sign tip.block.round and block_body_id
+                let block = proposal.block.as_mut().expect("block must be set");
+                self.fix_block_sig(block);
+
+                let author = block.author.as_ref().expect("author must be set");
+                let author_idx = self.node_index(&author);
+                let author_keypair = &self.nodes[author_idx].keypair;
+                proposal.sign_block(author_keypair);
+            }
+
+            pub fn fix_block_sig(&self, block: &mut BlockTemplate) {
+                let author = block.author.as_ref().expect("author must be set");
+                let author_idx = self.node_index(&author);
+                let author_cert_keypair = &self.nodes[author_idx].cert_keypair;
+
+                block.sign_round(author_cert_keypair);
+
+                let mix_hash = block
+                    .round_signature
+                    .as_ref()
+                    .expect("round signature must be set")
+                    .get_hash()
+                    .0;
+                let exec_input = block
+                    .execution_inputs
+                    .as_mut()
+                    .expect("exec_input must be set");
+                exec_input.mix_hash = mix_hash;
+            }
+
+            pub fn fill_default_block(
+                &self,
+                block: &mut BlockTemplate,
+                round: Round,
+                seq_num: SeqNum,
+                base_fee: builder::BaseFee,
+            ) {
+                let epoch = self.get_epoch(round);
+                let author = self.get_leader(round);
+                block.author.set(author);
+
+                let author_idx = self.node_index(&author);
+                let author_node = &self.nodes[author_idx];
+
+                let timestamp = author_node.block_timestamp.get_current_time();
+                block.timestamp_ns.set(timestamp);
+
+                block.block_round.set(round);
+                block.sign_round(self.node_keypair(&author));
+                block.seq_num.set(seq_num);
+                block.epoch.set(epoch);
+                block.base_fee.set(base_fee);
+
+                self.fill_execution(block);
+                debug_assert!(block.is_complete());
+            }
+
+            pub fn fill_execution(&self, block: &mut BlockTemplate) {
+                let timestamp = block
+                    .timestamp_ns
+                    .as_ref()
+                    .expect("must set block timestamp before filling execution data");
+                let round_sig = block
+                    .round_signature
+                    .as_ref()
+                    .expect("must set round signature before filling execution data")
+                    .clone();
+                let seq_num = block
+                    .seq_num
+                    .as_ref()
+                    .expect("must set block seq_num before filling execution data");
+
+                let body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
+                    execution_body: EthBlockBody::default(),
+                });
+                let inputs = Self::create_execution_inputs(*seq_num, *timestamp, round_sig);
+                let results = vec![];
+
+                block.body.set(body);
+                block.execution_inputs.set(inputs);
+                block.delayed_execution_results.set(results);
+            }
+
+            fn create_execution_inputs(
+                seq_num: SeqNum,
+                timestamp_ns: u128,
+                round_signature: RoundSignature,
+            ) -> ProposedEthHeader {
+                ProposedEthHeader {
+                    transactions_root: *EMPTY_TRANSACTIONS,
+                    ommers_hash: *EMPTY_OMMER_ROOT_HASH,
+                    withdrawals_root: *EMPTY_WITHDRAWALS,
+                    beneficiary: Default::default(),
+                    difficulty: 0,
+                    number: seq_num.0,
+                    gas_limit: CHAIN_PARAMS.proposal_gas_limit,
+                    timestamp: (timestamp_ns / 1_000_000_000) as u64,
+                    mix_hash: round_signature.get_hash().0,
+                    nonce: [0_u8; 8],
+                    extra_data: [0_u8; 32],
+                    base_fee_per_gas: BASE_FEE,
+                    blob_gas_used: 0,
+                    excess_blob_gas: 0,
+                    parent_beacon_block_root: [0_u8; 32],
+                    requests_hash: Some([0_u8; 32]),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_tip_consistent() {
+        use pure::Context;
+        init_logging();
+
+        let mut ctx = Context::setup(2);
+
+        let mut proposal_template = ctx.init_proposal();
+        let proposal = proposal_template.make().expect("should build proposal");
+        let round = proposal.proposal_round;
+
+        let non_author = NodeId::new(get_key::<SignatureType>(42).pubkey());
+
+        // reject tip if its signature does not match the author
+        for node in &mut ctx.nodes {
+            let _commands = node
+                .wrapped_state()
+                .handle_proposal_message(non_author, proposal.clone());
+
+            assert!(node.consensus_state.safety.maybe_high_tip().is_none())
+        }
+
+        // reject tip if author is not leader
+        let leader = ctx.get_leader(round);
+        let leader_idx = ctx.node_index(&leader);
+        let non_leader_idx = (leader_idx + 1) % ctx.nodes.len();
+        let non_leader = *ctx.node_id(non_leader_idx);
+
+        let block = proposal_template.block.as_mut().expect("block exists");
+        block.author.set(non_leader);
+        ctx.fix_sig(&mut proposal_template);
+        let proposal = proposal_template.make().expect("should build proposal");
+
+        for node in &mut ctx.nodes {
+            let _commands = node
+                .wrapped_state()
+                .handle_proposal_message(non_leader, proposal.clone());
+
+            assert!(node.consensus_state.safety.maybe_high_tip().is_none())
+        }
+
+        // if author is leader, accept tip
+        let block = proposal_template.block.as_mut().expect("block exists");
+        block.author.set(leader);
+        ctx.fix_sig(&mut proposal_template);
+        let proposal = proposal_template.make().expect("should build proposal");
+
+        for node in &mut ctx.nodes {
+            let _commands = node
+                .wrapped_state()
+                .handle_proposal_message(leader, proposal.clone());
+
+            assert!(node.consensus_state.safety.maybe_high_tip().is_some())
+        }
+    }
+
+    #[test]
+    fn tip_must_have_correct_qc() {
+        use pure::Context;
+        init_logging();
+
+        let mut ctx = Context::setup(2);
+
+        let proposal_1 = ctx.init_proposal().make().expect("valid proposal");
+        assert!(ctx.validate_proposal(&proposal_1).is_ok())
+
+        // advance to next round
+        let author = ctx.author(&proposal_1);
+        for node in &mut ctx.nodes {
+            let _commands = node
+                .wrapped_state()
+                .handle_proposal_message(author, proposal_1.clone());
+            assert!(node.consensus_state.safety.maybe_high_tip().is_some())
+        }
+        ctx.advance_local_timestamps(1, &ctx.all_nodes());
+
+        let proposal_2 = ctx
+            .next_proposal(&proposal_1)
+            .make()
+            .expect("valid proposal");
+        let author = ctx.author(&proposal_2);
+
+        // advance to next round
+        assert_eq!(ctx.validate_proposal(&proposal_2), Ok(()));
+        for node in &mut ctx.nodes {
+            let _commands = node
+                .wrapped_state()
+                .handle_proposal_message(author, proposal_2.clone());
+            assert!(node.consensus_state.safety.maybe_high_tip().is_some());
+            let tip = node.consensus_state.safety.maybe_high_tip().unwrap();
+            assert!(tip.block_header.block_round == proposal_2.proposal_round);
+        }
+        ctx.advance_local_timestamps(1, &ctx.all_nodes());
+
+        // Scenario: Proposal(r) contains QC(r-2)
+        let mut proposal_3 = ctx.next_proposal(&proposal_2);
+        let qc_1 = ctx.get_qc(&proposal_1, &ctx.all_nodes());
+        let block = proposal_3.block.as_mut().expect("must have block");
+        block.qc.set(qc_1); // Specify proposal(r) with QC(r-2)
+        ctx.fix_sig(&mut proposal_3);
+        let proposal_3 = proposal_3.make().expect("should make proposal");
+        assert!(ctx.validate_proposal(&proposal_3).is_err());
+
+        let author = ctx.author(&proposal_3);
+        for node in &mut ctx.nodes {
+            let _commands = node
+                .wrapped_state()
+                .handle_proposal_message(author, proposal_3.clone());
+
+            // the tip remain unchanged on invalid message
+            assert!(node.consensus_state.safety.maybe_high_tip().is_some());
+            let tip = node.consensus_state.safety.maybe_high_tip().unwrap();
+            assert!(tip.block_header.block_round != proposal_3.proposal_round);
+        }
+
+        // Scenario: Proposal_2(r) contains QC(r) on a Proposal_1(r)
+        let mut proposal_3_hidden = ctx
+            .next_proposal(&proposal_2)
+            .make()
+            .expect("valid proposal"); // Proposal_1(r)
+        assert!(ctx.validate_proposal(&proposal_3_hidden).is_ok());
+
+        let qc_3 = ctx.get_qc(&proposal_3_hidden, &ctx.all_nodes()); // QC(r) is valid
+        let mut proposal_3 = ctx.next_proposal(&proposal_2); // Proposal_2(r)
+        let block = proposal_3.block.as_mut().expect("must have block");
+        block.qc.set(qc_3.clone());
+        ctx.fix_sig(&mut proposal_3);
+        let proposal_3 = proposal_3.make().expect("should make proposal");
+        assert!(ctx.validate_proposal(&proposal_3).is_err());
+
+        let author = ctx.author(&proposal_3);
+        for node in &mut ctx.nodes {
+            let _commands = node
+                .wrapped_state()
+                .handle_proposal_message(author, proposal_3.clone());
+
+            // the proposal shouldn't extend high_tip because of
+            // mismatched QC round
+            assert!(node.consensus_state.safety.maybe_high_tip().is_none());
+
+            // QC(r) is valid, therefore validators still register it as
+            // the high certificate to advanced to round r+1.
+            let high_qc_round = node
+                .consensus_state
+                .pacemaker
+                .high_certificate()
+                .qc()
+                .get_round();
+            assert_eq!(high_qc_round, qc_3.get_round());
+
+            // Note: despite that the validators have advanced into
+            // round r+1, they have never yet seen a valid block for
+            // round r.
+
+            // Proposal(r-1).block is coherent.
+            let block_id_2 = proposal_3_hidden.tip.block_header.get_parent_id();
+            assert!(node.consensus_state.blocktree().is_coherent(&block_id_2));
+
+            // Proposal(r).block is considered incoherent because the
+            // validator never seen it? Is this expected? The
+            // validators has certainly seen the QC on this block.
+            let block_id_3_hidden = proposal_3_hidden.tip.block_header.get_id();
+            assert!(!node
+                .consensus_state
+                .blocktree()
+                .is_coherent(&block_id_3_hidden));
+
+            // Tampered Proposal(r).block is incohrent.
+            let block_id_3 = proposal_3.tip.block_header.get_id();
+            assert!(!node.consensus_state.blocktree().is_coherent(&block_id_3));
+        }
+    }
+
+    #[allow(unused)]
+    fn init_logging() {
+        tracing_subscriber::fmt().init();
     }
 }

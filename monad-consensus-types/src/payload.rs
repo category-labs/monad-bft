@@ -26,23 +26,27 @@ use serde::{Deserialize, Serialize};
 
 /// randao_reveal uses a proposer's public key to contribute randomness
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodableWrapper, RlpDecodableWrapper, Serialize)]
-pub struct RoundSignature<CST: CertificateSignature>(CST);
+pub struct RoundSignature<ST: CertificateSignature>(ST);
 
-impl<CST: CertificateSignature> RoundSignature<CST> {
+impl<ST: CertificateSignature> RoundSignature<ST> {
     /// TODO should this incorporate parent_block_id to increase "randomness"?
-    pub fn new(round: Round, keypair: &CST::KeyPairType) -> Self {
+    pub fn new(round: Round, keypair: &ST::KeyPairType) -> Self {
         let encoded_round = alloy_rlp::encode(round);
-        Self(CST::sign::<signing_domain::RoundSignature>(
+        Self(ST::sign::<signing_domain::RoundSignature>(
             &encoded_round,
             keypair,
         ))
     }
 
+    pub fn from_raw(sig: ST) -> Self {
+        Self(sig)
+    }
+
     pub fn verify(
         &self,
         round: Round,
-        pubkey: &CertificateSignaturePubKey<CST>,
-    ) -> Result<(), CST::Error> {
+        pubkey: &CertificateSignaturePubKey<ST>,
+    ) -> Result<(), ST::Error> {
         let encoded_round = alloy_rlp::encode(round);
         self.0
             .verify::<signing_domain::RoundSignature>(&encoded_round, pubkey)

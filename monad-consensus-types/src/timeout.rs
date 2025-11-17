@@ -523,6 +523,10 @@ where
         })
     }
 
+    pub fn has_no_tip(&self) -> bool {
+        matches!(self.high_extend, HighExtend::Qc(_))
+    }
+
     pub fn try_into_no_tip_certificate(self) -> Option<NoTipCertificate<SCT>> {
         match self.high_extend {
             HighExtend::Qc(high_qc) => Some(NoTipCertificate {
