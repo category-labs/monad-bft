@@ -574,26 +574,26 @@ mod tests {
         // Test the same validation failures as eth_sendRawTransaction
         // to ensure both methods have consistent validation
         let expected_failures = [
-            MonadEthSendRawTransactionSyncParams(
-                serialize_tx(make_tx(sender, 1000, 1000, 21_000, 11, 1337)), // invalid chain id
-                Some(2000),
-            ),
-            MonadEthSendRawTransactionSyncParams(
-                serialize_tx(make_tx(sender, 1000, 1000, 1_000, 11, 1)), // intrinsic gas too low
-                Some(2000),
-            ),
-            MonadEthSendRawTransactionSyncParams(
-                serialize_tx(make_tx(sender, 1000, 1000, 400_000_000_000, 11, 1)), // gas too high
-                Some(2000),
-            ),
-            MonadEthSendRawTransactionSyncParams(
-                serialize_tx(make_tx(sender, 1000, 1000, 21_000, 1, 1)), // nonce too low
-                Some(2000),
-            ),
-            MonadEthSendRawTransactionSyncParams(
-                serialize_tx(make_tx(sender, 1000, 12000, 21_000, 11, 1)), // max priority fee too high
-                Some(2000),
-            ),
+            MonadEthSendRawTransactionSyncParams {
+                hex_tx: serialize_tx(make_tx(sender, 1000, 1000, 21_000, 11, 1337)), // invalid chain id
+                timeout_ms: Some(2000),
+            },
+            MonadEthSendRawTransactionSyncParams {
+                hex_tx: serialize_tx(make_tx(sender, 1000, 1000, 1_000, 11, 1)), // intrinsic gas too low
+                timeout_ms: Some(2000),
+            },
+            MonadEthSendRawTransactionSyncParams {
+                hex_tx: serialize_tx(make_tx(sender, 1000, 1000, 400_000_000_000, 11, 1)), // gas too high
+                timeout_ms: Some(2000),
+            },
+            MonadEthSendRawTransactionSyncParams {
+                hex_tx: serialize_tx(make_tx(sender, 1000, 1000, 21_000, 1, 1)), // nonce too low
+                timeout_ms: Some(2000),
+            },
+            MonadEthSendRawTransactionSyncParams {
+                hex_tx: serialize_tx(make_tx(sender, 1000, 12000, 21_000, 11, 1)), // max priority fee too high
+                timeout_ms: Some(2000),
+            },
         ];
 
         for (idx, case) in expected_failures.into_iter().enumerate() {
