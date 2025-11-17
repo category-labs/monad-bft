@@ -288,19 +288,10 @@ async fn submit_to_txpool(
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct MonadEthSendRawTransactionSyncParams(
-    UnformattedData,
-    #[serde(default)] Option<u64>,
-);
-
-impl MonadEthSendRawTransactionSyncParams {
-    fn hex_tx(&self) -> &UnformattedData {
-        &self.0
-    }
-
-    fn timeout_ms(&self) -> Option<u64> {
-        self.1
-    }
+pub struct MonadEthSendRawTransactionSyncParams {
+    hex_tx: UnformattedData,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
 }
 
 /// Polls for transaction receipt with timeout
@@ -357,11 +348,11 @@ pub async fn monad_eth_sendRawTransactionSync<T: Triedb>(
     trace!("monad_eth_sendRawTransactionSync: {params:?}");
 
     let timeout_ms = params
-        .timeout_ms()
+        .timeout_ms
         .filter(|&t| t > 0 && t <= eth_send_raw_transaction_sync_max_timeout_ms)
         .unwrap_or(eth_send_raw_transaction_sync_default_timeout_ms);
 
-    let tx = validate_and_decode_tx(&params.hex_tx().0, chain_id, allow_unprotected_txs).map_err(
+    let tx = validate_and_decode_tx(&params.hex_tx.0, chain_id, allow_unprotected_txs).map_err(
         |e| match e.code {
             -32603 => JsonRpcError::tx_sync_unready(),
             _ => e,
