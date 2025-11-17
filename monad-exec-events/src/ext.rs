@@ -14,10 +14,14 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use monad_event::{EventDescriptor, EventDescriptorRead};
+#[cfg(feature = "event-capture")]
+use monad_event_capture::EventCapturePayload;
 
-#[cfg(feature = "event-ring")]
+#[cfg(any(feature = "event-ring", feature = "event-capture"))]
 use crate::ffi;
 use crate::{ffi::monad_c_bytes32, ExecEventDecoder, ExecEventType};
+#[cfg(feature = "event-capture")]
+use crate::{ExecEventCaptureDescriptor, ExecEventCaptureEventIter};
 #[cfg(feature = "event-ring")]
 use crate::{ExecEventReader, ExecEventRing, ExecEventRingDescriptor};
 
@@ -45,6 +49,29 @@ impl<'buf> ExecEventDescriptorExt for ExecEventRingDescriptor<'buf> {
             raw_event_ring.with_inner(|c_event_ring| {
                 ffi::monad_event_ring_get_block_id(c_event_ring, c_event_descriptor)
             })
+        })
+    }
+}
+
+#[cfg(feature = "event-capture")]
+impl<'buf> ExecEventDescriptorExt for ExecEventCaptureDescriptor<'buf> {
+    fn get_block_number(&self) -> Option<u64> {
+        self.with_raw(|c_event_descriptor, raw_payload| {
+            ffi::monad_event_capture_event_iter_get_block_number(
+                raw_payload.event_section,
+                c_event_descriptor,
+                raw_payload.payload,
+            )
+        })
+    }
+
+    fn get_block_id(&self) -> Option<monad_c_bytes32> {
+        self.with_raw(|c_event_descriptor, raw_payload| {
+            ffi::monad_event_capture_event_iter_get_block_id(
+                raw_payload.event_section,
+                c_event_descriptor,
+                raw_payload.payload,
+            )
         })
     }
 }
@@ -123,6 +150,51 @@ impl<'buf> ExecEventReaderExt<&'buf ExecEventRing> for ExecEventReader<'buf> {
         self.with_raw(|c_event_ring_iter| {
             ffi::monad_event_ring_iter_block_id_prev(
                 c_event_ring_iter,
+                block_id,
+                filter.map_or(ffi::MONAD_EXEC_NONE, ExecEventType::as_c_event_type),
+            )
+        })
+    }
+}
+
+#[cfg(feature = "event-capture")]
+impl<'section> ExecEventReaderExt<EventCapturePayload<'section>>
+    for ExecEventCaptureEventIter<'section>
+{
+    fn consensus_prev(
+        &mut self,
+        filter: Option<ExecEventType>,
+    ) -> Option<ExecEventCaptureDescriptor<'section>> {
+        self.with_raw(|c_event_capture_event_iter| {
+            ffi::monad_event_capture_event_iter_consensus_prev(
+                c_event_capture_event_iter,
+                filter.map_or(ffi::MONAD_EXEC_NONE, ExecEventType::as_c_event_type),
+            )
+        })
+    }
+
+    fn block_number_prev(
+        &mut self,
+        block_number: u64,
+        filter: Option<ExecEventType>,
+    ) -> Option<ExecEventCaptureDescriptor<'section>> {
+        self.with_raw(|c_event_capture_event_iter| {
+            ffi::monad_event_capture_event_iter_block_number_prev(
+                c_event_capture_event_iter,
+                block_number,
+                filter.map_or(ffi::MONAD_EXEC_NONE, ExecEventType::as_c_event_type),
+            )
+        })
+    }
+
+    fn block_id_prev(
+        &mut self,
+        block_id: &monad_c_bytes32,
+        filter: Option<ExecEventType>,
+    ) -> Option<ExecEventCaptureDescriptor<'section>> {
+        self.with_raw(|c_event_capture_event_iter| {
+            ffi::monad_event_capture_event_iter_block_id_prev(
+                c_event_capture_event_iter,
                 block_id,
                 filter.map_or(ffi::MONAD_EXEC_NONE, ExecEventType::as_c_event_type),
             )

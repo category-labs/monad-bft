@@ -6,6 +6,7 @@ edition = "2021"
 
 [dependencies]
 monad-event = { workspace = true }
+monad-event-capture = { workspace = true, optional = true }
 monad-event-ring = { workspace = true, optional = true }
 
 alloy-consensus = { workspace = true, optional = true }
@@ -37,6 +38,7 @@ strum = { workspace = true }
 [features]
 default = []
 alloy = ["dep:alloy-consensus", "dep:alloy-eips", "dep:alloy-primitives", "dep:alloy-rpc-types"]
+event-capture = ["dep:monad-event-capture"]
 event-ring = ["dep:monad-event-ring"]
 
 [[bench]]

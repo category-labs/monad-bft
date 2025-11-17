@@ -62,16 +62,24 @@ mod bindings {
     #[cfg(not(feature = "event-ring"))]
     type monad_event_ring_iter = ();
 
+    #[cfg(feature = "event-capture")]
+    use ::monad_event_capture::ffi::{monad_evcap_event_iter, monad_evcap_event_section};
+
+    #[cfg(not(feature = "event-capture"))]
     type monad_evcap_event_iter = ();
+    #[cfg(not(feature = "event-capture"))]
     type monad_evcap_event_section = ();
+
     type monad_evsrc_any = ();
     type monad_evsrc_any_iter = ();
 
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
 
-#[cfg(feature = "event-ring")]
+#[cfg(any(feature = "event-ring", feature = "event-capture"))]
 use ::monad_event::ffi::monad_event_descriptor;
+#[cfg(feature = "event-capture")]
+use ::monad_event_capture::ffi::{monad_evcap_event_iter, monad_evcap_event_section};
 #[cfg(feature = "event-ring")]
 use ::monad_event_ring::ffi::{monad_event_ring, monad_event_ring_iter};
 
@@ -87,6 +95,26 @@ pub(crate) fn monad_event_ring_get_block_number(
             c_event_ring,
             c_event_descriptor,
             std::ptr::null(),
+            &mut block_number,
+        )
+    };
+
+    success.then_some(block_number)
+}
+
+#[cfg(feature = "event-capture")]
+pub(crate) fn monad_event_capture_event_iter_get_block_number(
+    c_event_capture_event_section: &monad_evcap_event_section,
+    c_event_descriptor: &monad_event_descriptor,
+    payload: &[u8],
+) -> Option<u64> {
+    let mut block_number = 0;
+
+    let success = unsafe {
+        self::bindings::monad_exec_get_block_number_c(
+            c_event_capture_event_section,
+            c_event_descriptor,
+            payload.as_ptr() as *const std::os::raw::c_void,
             &mut block_number,
         )
     };
@@ -113,6 +141,26 @@ pub(crate) fn monad_event_ring_get_block_id(
     success.then_some(block_id)
 }
 
+#[cfg(feature = "event-capture")]
+pub(crate) fn monad_event_capture_event_iter_get_block_id(
+    c_event_capture_event_section: &monad_evcap_event_section,
+    c_event_descriptor: &monad_event_descriptor,
+    payload: &[u8],
+) -> Option<monad_c_bytes32> {
+    let mut block_id: monad_c_bytes32 = unsafe { std::mem::zeroed() };
+
+    let success = unsafe {
+        self::bindings::monad_exec_get_block_id_c(
+            c_event_capture_event_section,
+            c_event_descriptor,
+            payload.as_ptr() as *const std::os::raw::c_void,
+            &mut block_id,
+        )
+    };
+
+    success.then_some(block_id)
+}
+
 #[cfg(feature = "event-ring")]
 pub(crate) fn monad_event_ring_iter_consensus_prev(
     c_event_iterator: &mut monad_event_ring_iter,
@@ -130,6 +178,33 @@ pub(crate) fn monad_event_ring_iter_consensus_prev(
     };
 
     success.then_some(c_event_descriptor)
+}
+
+#[cfg(feature = "event-capture")]
+pub(crate) fn monad_event_capture_event_iter_consensus_prev<'reader>(
+    c_event_capture_event_iter: &mut monad_evcap_event_iter,
+    c_exec_event_filter: monad_exec_event_type,
+) -> Option<(monad_event_descriptor, &'reader [u8])> {
+    let mut c_event_descriptor: monad_event_descriptor = unsafe { std::mem::zeroed() };
+    let mut c_payload: *const std::os::raw::c_void = std::ptr::null();
+
+    let success = unsafe {
+        self::bindings::monad_exec_iter_consensus_prev_ci(
+            c_event_capture_event_iter,
+            c_exec_event_filter,
+            &mut c_event_descriptor,
+            &mut c_payload,
+        )
+    };
+
+    success.then(|| {
+        (c_event_descriptor, unsafe {
+            std::slice::from_raw_parts(
+                c_payload as *const u8,
+                c_event_descriptor.payload_size as usize,
+            )
+        })
+    })
 }
 
 #[cfg(feature = "event-ring")]
@@ -153,6 +228,35 @@ pub(crate) fn monad_event_ring_iter_block_number_prev(
     success.then_some(c_event_descriptor)
 }
 
+#[cfg(feature = "event-capture")]
+pub(crate) fn monad_event_capture_event_iter_block_number_prev<'reader>(
+    c_event_capture_event_iter: &mut monad_evcap_event_iter,
+    block_number: u64,
+    c_exec_event_filter: monad_exec_event_type,
+) -> Option<(monad_event_descriptor, &'reader [u8])> {
+    let mut c_event_descriptor: monad_event_descriptor = unsafe { std::mem::zeroed() };
+    let mut c_payload: *const std::os::raw::c_void = std::ptr::null();
+
+    let success = unsafe {
+        self::bindings::monad_exec_iter_block_number_prev_ci(
+            c_event_capture_event_iter,
+            block_number,
+            c_exec_event_filter,
+            &mut c_event_descriptor,
+            &mut c_payload,
+        )
+    };
+
+    success.then(|| {
+        (c_event_descriptor, unsafe {
+            std::slice::from_raw_parts(
+                c_payload as *const u8,
+                c_event_descriptor.payload_size as usize,
+            )
+        })
+    })
+}
+
 #[cfg(feature = "event-ring")]
 pub(crate) fn monad_event_ring_iter_block_id_prev(
     c_event_iterator: &mut monad_event_ring_iter,
@@ -172,6 +276,35 @@ pub(crate) fn monad_event_ring_iter_block_id_prev(
     };
 
     success.then_some(c_event_descriptor)
+}
+
+#[cfg(feature = "event-capture")]
+pub(crate) fn monad_event_capture_event_iter_block_id_prev<'reader>(
+    c_event_capture_event_iter: &mut monad_evcap_event_iter,
+    block_id: &monad_c_bytes32,
+    c_exec_event_filter: monad_exec_event_type,
+) -> Option<(monad_event_descriptor, &'reader [u8])> {
+    let mut c_event_descriptor: monad_event_descriptor = unsafe { std::mem::zeroed() };
+    let mut c_payload: *const std::os::raw::c_void = std::ptr::null();
+
+    let success = unsafe {
+        self::bindings::monad_exec_iter_block_id_prev_ci(
+            c_event_capture_event_iter,
+            block_id,
+            c_exec_event_filter,
+            &mut c_event_descriptor,
+            &mut c_payload,
+        )
+    };
+
+    success.then(|| {
+        (c_event_descriptor, unsafe {
+            std::slice::from_raw_parts(
+                c_payload as *const u8,
+                c_event_descriptor.payload_size as usize,
+            )
+        })
+    })
 }
 
 #[cfg(feature = "event-ring")]

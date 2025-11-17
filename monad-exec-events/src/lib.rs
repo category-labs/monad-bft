@@ -86,6 +86,8 @@
 //! [`CommitStateBlockBuilder`] which produces a block along with its current commit state every time
 //! the block's commit state changes. See [`CommitStateBlockBuilder`] for more details.
 
+#[cfg(feature = "event-capture")]
+use monad_event_capture::{EventCaptureEventIter, EventCapturePayload};
 #[cfg(feature = "event-ring")]
 use monad_event_ring::{EventReader, EventRing, SnapshotEventRing};
 
@@ -114,3 +116,12 @@ pub type ExecEventReader<'ring> = EventReader<'ring, ExecEventDecoder>;
 /// A type alias for an event descriptor produced by an execution event ring.
 pub type ExecEventRingDescriptor<'buf> =
     monad_event::EventDescriptor<&'buf ExecEventRing, ExecEventDecoder>;
+
+#[cfg(feature = "event-capture")]
+/// TODO: docs
+pub type ExecEventCaptureEventIter<'section> = EventCaptureEventIter<'section, ExecEventDecoder>;
+
+#[cfg(feature = "event-capture")]
+/// TODO: docs
+pub type ExecEventCaptureDescriptor<'section> =
+    monad_event::EventDescriptor<EventCapturePayload<'section>, ExecEventDecoder>;

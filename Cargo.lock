@@ -5441,6 +5441,7 @@ dependencies = [
  "itertools 0.10.5",
  "lazy_static",
  "monad-event",
+ "monad-event-capture",
  "monad-event-ring",
  "ratatui",
  "serde",
