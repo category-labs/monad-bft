@@ -377,12 +377,12 @@ where
     ST: CertificateSignatureRecoverable,
 {
     full_nodes_accepted: FullNodesST<ST>,
+    full_nodes_rejected: FullNodesST<ST>,
 
     // Pre-randomized permutation of always_ask_full_nodes[] + peer_disc_full_nodes[]
     // Stays const once created.
     full_nodes_candidates: FullNodesST<ST>,
-    num_invites_sent: usize,     // also an index into full_nodes_candidates[]
-    num_invites_rejected: usize, // just for debug info for now
+    num_invites_sent: usize, // also an index into full_nodes_candidates[]
 
     start_round: Round, // inclusive
     end_round: Round,   // exclusive
@@ -405,6 +405,7 @@ where
             .field("candidates", &self.full_nodes_candidates.list.len())
             .field("invited", &self.num_invites_sent)
             .field("accepted", &self.full_nodes_accepted.list.len())
+            .field("rejected", &self.full_nodes_rejected.list.len())
             .finish()
     }
 }
@@ -423,9 +424,9 @@ where
     ) -> Self {
         let mut new_group = Self {
             full_nodes_accepted: FullNodes::default(),
+            full_nodes_rejected: FullNodes::default(),
             full_nodes_candidates: always_ask_full_nodes.clone(),
             num_invites_sent: 0,
-            num_invites_rejected: 0,
             start_round,
             end_round: start_round + round_span,
             next_invite_tp: TimePoint::MIN,
@@ -551,6 +552,15 @@ where
             );
             return;
         }
+        if self.full_nodes_rejected.list.contains(&candidate) {
+            warn!(
+                ?candidate,
+                ?self,
+                "Ignoring duplicate response from FullNode who \
+                has already rejected an invite from RaptorCastSecondary group",
+            );
+            return;
+        }
         if accepted {
             self.full_nodes_accepted.list.push(candidate);
             debug!(
@@ -559,7 +569,7 @@ where
                 "RaptorCastSecondary group invite accepted by, for group",
             );
         } else {
-            self.num_invites_rejected += 1;
+            self.full_nodes_rejected.list.push(candidate);
             debug!(
                 ?candidate,
                 ?self,
@@ -2188,6 +2198,127 @@ mod tests {
                 group_msg,
                 dump_pub_sched(&v0_fsm)
             );
+        }
+    }
+
+    // cargo test -p monad-raptorcast raptorcast_secondary::tests::reject_and_accept_counter -- --nocapture
+    #[test]
+    fn reject_and_accept_counter() {
+        enable_tracer();
+        let sched_cfg = GroupSchedulingConfig {
+            max_group_size: 3,
+            round_span: Round(5),
+            invite_lookahead: Round(8),
+            max_invite_wait: Round(2),
+            deadline_round_dist: Round(3),
+            init_empty_round_span: Round(7),
+        };
+
+        let v0_node_id = nid(0);
+
+        let mut v0_fsm: Publisher<ST> = Publisher::new(
+            v0_node_id,
+            RaptorCastConfigSecondaryPublisher {
+                full_nodes_prioritized: vec![nid(10), nid(11)],
+                group_scheduling: sched_cfg,
+            },
+            ChaCha8Rng::seed_from_u64(42),
+        );
+
+        // Peer discovery gives us some new full-nodes to chose from.
+        v0_fsm.upsert_peer_disc_full_nodes(FullNodes::new(vec![
+            nid(12),
+            nid(13),
+            nid(14),
+            nid(15),
+        ]));
+
+        let (group_msg, invitees) = v0_fsm
+            .enter_round_and_step_until(Round(1))
+            .expect("FSM should have returned invites to be sent");
+
+        if let FullNodesGroupMessage::PrepareGroup(invite_msg) = group_msg {
+            assert_eq!(invite_msg.start_round, Round(8));
+            assert_eq!(invite_msg.end_round, Round(13));
+            assert_eq!(invite_msg.max_group_size, 3);
+            assert_eq!(invite_msg.validator_id, nid(0));
+            assert_eq!(invitees.list.len(), 3);
+            assert!(equal_node_vec(&invitees.list, &node_ids_vec![10, 11, 12]));
+        } else {
+            panic!(
+                "Expected FullNodesGroupMessage::PrepareGroup, got: {:?}\n\
+                publisher v0: {}",
+                group_msg,
+                dump_pub_sched(&v0_fsm)
+            );
+        }
+
+        //----------------------------------------------------------------------
+        // 1st group nid_10, nid_11: accept. nid_12: reject
+        //----------------------------------------------------------------------
+
+        let response = make_invite_response(nid(0), nid(10), true, Round(8), &sched_cfg);
+        v0_fsm.on_candidate_response(response);
+
+        let response = make_invite_response(nid(0), nid(11), true, Round(8), &sched_cfg);
+        v0_fsm.on_candidate_response(response);
+
+        // A reject from node 12
+        let response = make_invite_response(nid(0), nid(12), false, Round(8), &sched_cfg);
+        v0_fsm.on_candidate_response(response);
+
+        //----------------------------------------------------------------------
+        // 1st group invites t1
+        //----------------------------------------------------------------------
+        let (group_msg, invitees) = v0_fsm
+            .enter_round_and_step_until(Round(3))
+            .expect("FSM should have returned invites to be sent");
+
+        // Verify that it is an invite message the FSM wants to send
+        if let FullNodesGroupMessage::PrepareGroup(invite_msg) = group_msg {
+            assert_eq!(invite_msg.start_round, Round(8));
+            assert_eq!(invite_msg.end_round, Round(13));
+            assert_eq!(invite_msg.max_group_size, 3);
+            assert_eq!(invite_msg.validator_id, nid(0));
+            // Verify that only 1 more invite is sent, and that its for node 14
+            assert_eq!(invitees.list.len(), 1);
+            assert!(equal_node_vec(&invitees.list, &node_ids_vec![14]));
+        } else {
+            panic!(
+                "Expected FullNodesGroupMessage::PrepareGroup, got: {:?}\n\
+                publisher v0: {}",
+                group_msg,
+                dump_pub_sched(&v0_fsm)
+            );
+        }
+        // Check that the publisher is aware of of who has rejected the invite
+        if let Some(group) = v0_fsm.group_schedule.get(&Round(8)) {
+            assert_eq!(group.full_nodes_accepted.list.len(), 2);
+            assert_eq!(group.full_nodes_rejected.list.len(), 1);
+            assert!(equal_node_vec(
+                &group.full_nodes_rejected.list,
+                &node_ids_vec![12]
+            ));
+        } else {
+            panic!("Expected a group to be scheduled for round 8");
+        }
+
+        //----------------------------------------------------------------------
+        // Node 12 now sends an accept after already have sent a reject
+        //----------------------------------------------------------------------
+        let bogus_response = make_invite_response(nid(0), nid(12), true, Round(8), &sched_cfg);
+        v0_fsm.on_candidate_response(bogus_response);
+
+        // Verify that the publisher does not change accept/reject states
+        if let Some(group) = v0_fsm.group_schedule.get(&Round(8)) {
+            assert_eq!(group.full_nodes_accepted.list.len(), 2);
+            assert_eq!(group.full_nodes_rejected.list.len(), 1);
+            assert!(equal_node_vec(
+                &group.full_nodes_rejected.list,
+                &node_ids_vec![12]
+            ));
+        } else {
+            panic!("Expected a group to be scheduled for round 8");
         }
     }
 }
