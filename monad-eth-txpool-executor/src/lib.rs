@@ -543,7 +543,7 @@ where
             };
 
             let mut inserted_addresses = HashSet::<Address>::default();
-            let mut inserted_txs = Vec::default();
+            let mut immediately_forwardable_txs = Vec::default();
 
             pool.insert_txs(
                 &mut EthTxPoolEventTracker::new(&metrics.pool, &mut ipc_events),
@@ -553,7 +553,10 @@ where
                 recovered_txs,
                 |tx| {
                     inserted_addresses.insert(tx.signer());
-                    inserted_txs.push(tx.raw().tx().clone());
+
+                    if tx.is_owned_and_forwardable() {
+                        immediately_forwardable_txs.push(tx.raw().tx().clone());
+                    }
                 },
             );
 
@@ -562,7 +565,7 @@ where
             forwarding_manager
                 .as_mut()
                 .project()
-                .add_egress_txs(inserted_txs.iter());
+                .add_egress_txs(immediately_forwardable_txs.iter());
 
             metrics.update(executor_metrics);
             ipc.as_mut().broadcast_tx_events(ipc_events);
