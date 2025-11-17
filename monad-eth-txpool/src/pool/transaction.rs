@@ -261,6 +261,16 @@ impl ValidEthTransaction {
         }
     }
 
+    pub fn is_owned_and_forwardable(&self) -> bool {
+        match &self.kind {
+            PoolTransactionKind::Owned {
+                priority,
+                extra_data: _,
+            } => priority <= &DEFAULT_TX_PRIORITY,
+            PoolTransactionKind::Forwarded => false,
+        }
+    }
+
     pub fn has_higher_priority(&self, other: &Self, _base_fee: u64) -> bool {
         // Note: When considering whether a tx has higher priority than another (and thus should
         // replace it), we do not enforce a minimum gas fee bump. This behavior deviates from
@@ -294,7 +304,7 @@ impl ValidEthTransaction {
         last_commit_seq_num: SeqNum,
         last_commit_base_fee: u64,
     ) -> Option<&TxEnvelope> {
-        if !self.is_owned() {
+        if !self.is_owned_and_forwardable() {
             return None;
         }
 
