@@ -221,16 +221,33 @@ pub enum CliGenMode {
 impl From<CliGenMode> for GenMode {
     fn from(value: CliGenMode) -> Self {
         match value {
-            CliGenMode::FewToMany { tx_type } => GenMode::FewToMany(FewToManyConfig { tx_type }),
-            CliGenMode::ManyToMany { tx_type } => GenMode::ManyToMany(ManyToManyConfig { tx_type }),
+            CliGenMode::FewToMany { tx_type } => GenMode::FewToMany(FewToManyConfig {
+                tx_type,
+                contract_count: 1,
+            }),
+            CliGenMode::ManyToMany { tx_type } => GenMode::ManyToMany(ManyToManyConfig {
+                tx_type,
+                contract_count: 1,
+            }),
             CliGenMode::Duplicates => GenMode::Duplicates,
             CliGenMode::RandomPriorityFee { tx_type } => {
-                GenMode::RandomPriorityFee(RandomPriorityFeeConfig { tx_type })
+                GenMode::RandomPriorityFee(RandomPriorityFeeConfig {
+                    tx_type,
+                    contract_count: 1,
+                })
             }
-            CliGenMode::HighCallData => GenMode::HighCallData,
+            CliGenMode::HighCallData => {
+                GenMode::HighCallData(HighCallDataConfig { contract_count: 1 })
+            }
             CliGenMode::SelfDestructs => GenMode::SelfDestructs,
-            CliGenMode::NonDeterministicStorage => GenMode::NonDeterministicStorage,
-            CliGenMode::StorageDeletes => GenMode::StorageDeletes,
+            CliGenMode::NonDeterministicStorage => {
+                GenMode::NonDeterministicStorage(NonDeterministicStorageConfig {
+                    contract_count: 1,
+                })
+            }
+            CliGenMode::StorageDeletes => {
+                GenMode::StorageDeletes(StorageDeletesConfig { contract_count: 1 })
+            }
             CliGenMode::NullGen => GenMode::NullGen,
             CliGenMode::ECMul => GenMode::ECMul,
             CliGenMode::Uniswap => GenMode::Uniswap,

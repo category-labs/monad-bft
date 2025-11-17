@@ -20,7 +20,8 @@ use crate::{
 
 pub struct StorageDeletesTxGenerator {
     pub recipient_keys: KeyPool,
-    pub erc20: ERC20,
+    pub erc20_pool: Option<Vec<ERC20>>,
+    pub erc20_index: usize,
     pub tx_per_sender: usize,
 }
 
@@ -42,8 +43,15 @@ impl Generator for StorageDeletesTxGenerator {
                 let from = &mut accts[idx];
                 let to = self.recipient_keys.next_addr();
 
+                let erc20_pool = self
+                    .erc20_pool
+                    .as_ref()
+                    .expect("No ERC20 contract found, but tx_type is erc20");
+                let erc20 = erc20_pool[self.erc20_index % erc20_pool.len()];
+                self.erc20_index = (self.erc20_index + 1) % erc20_pool.len();
+
                 let tx = if rng.gen_bool(0.3) {
-                    self.erc20.construct_tx(
+                    erc20.construct_tx(
                         from,
                         IERC20::resetCall { addr: to },
                         ctx.base_fee,
@@ -52,17 +60,21 @@ impl Generator for StorageDeletesTxGenerator {
                         ctx.priority_fee,
                     )
                 } else {
-                    self.erc20.construct_tx(
+                    let amount = U256::from(10);
+                    let tx = erc20.construct_tx(
                         from,
                         IERC20::transferCall {
                             recipient: to,
-                            amount: U256::from(10),
+                            amount,
                         },
                         ctx.base_fee,
                         ctx.chain_id,
                         ctx.set_tx_gas_limit,
                         ctx.priority_fee,
-                    )
+                    );
+                    let balance = from.erc20_balances.entry(erc20.addr).or_insert(U256::ZERO);
+                    *balance = balance.checked_sub(amount).unwrap_or(U256::ZERO);
+                    tx
                 };
 
                 txs.push((tx, to, from.key.clone()));

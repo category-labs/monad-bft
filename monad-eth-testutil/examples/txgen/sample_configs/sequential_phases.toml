@@ -43,7 +43,7 @@ senders = 500
 erc20_balance_of = false
 sender_group_size = 50
 tx_per_sender = 20
-gen_mode = "non_deterministic_storage"
+gen_mode.non_deterministic_storage = {}
 
 [[workload_groups]]
 name = "duplicates"

@@ -41,7 +41,7 @@
           "senders": 500,
           "erc20_balance_of": false,
           "gen_mode": {
-            "non_deterministic_storage": null
+            "non_deterministic_storage": {}
           },
           "sender_group_size": 50,
           "tx_per_sender": 20

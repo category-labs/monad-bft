@@ -151,10 +151,10 @@ impl TrafficGen {
             GenMode::ManyToMany(..) => 10,
             GenMode::Duplicates => 10,
             GenMode::RandomPriorityFee(..) => 10,
-            GenMode::HighCallData => 10,
+            GenMode::HighCallData(..) => 10,
             GenMode::SelfDestructs => 10,
-            GenMode::NonDeterministicStorage => 10,
-            GenMode::StorageDeletes => 10,
+            GenMode::NonDeterministicStorage(..) => 10,
+            GenMode::StorageDeletes(..) => 10,
             GenMode::NullGen => 0,
             GenMode::ECMul => 10,
             GenMode::Uniswap => 10,
@@ -165,7 +165,7 @@ impl TrafficGen {
             GenMode::SystemKeyNormalRandomPriorityFee => 500,
             GenMode::EIP7702Reuse(..) => 10,
             GenMode::EIP7702Create(..) => 10,
-            GenMode::ExtremeValues => 10,
+            GenMode::ExtremeValues(..) => 10,
         }
     }
 
@@ -178,11 +178,11 @@ impl TrafficGen {
             GenMode::ManyToMany(..) => 100,
             GenMode::Duplicates => 100,
             GenMode::RandomPriorityFee(..) => 100,
-            GenMode::NonDeterministicStorage => 100,
-            GenMode::StorageDeletes => 100,
+            GenMode::NonDeterministicStorage(..) => 100,
+            GenMode::StorageDeletes(..) => 100,
             GenMode::NullGen => 10,
             GenMode::SelfDestructs => 10,
-            GenMode::HighCallData => 10,
+            GenMode::HighCallData(..) => 10,
             GenMode::ECMul => 10,
             GenMode::Uniswap => 20,
             GenMode::ReserveBalance => 100,
@@ -192,7 +192,7 @@ impl TrafficGen {
             GenMode::SystemKeyNormalRandomPriorityFee => 1,
             GenMode::EIP7702Reuse(..) => 10,
             GenMode::EIP7702Create(..) => 10,
-            GenMode::ExtremeValues => 10,
+            GenMode::ExtremeValues(..) => 10,
         }
     }
 
@@ -205,11 +205,11 @@ impl TrafficGen {
             GenMode::ManyToMany(..) => 2500,
             GenMode::Duplicates => 2500,
             GenMode::RandomPriorityFee(..) => 2500,
-            GenMode::NonDeterministicStorage => 2500,
-            GenMode::StorageDeletes => 2500,
+            GenMode::NonDeterministicStorage(..) => 2500,
+            GenMode::StorageDeletes(..) => 2500,
             GenMode::NullGen => 100,
             GenMode::SelfDestructs => 100,
-            GenMode::HighCallData => 100,
+            GenMode::HighCallData(..) => 100,
             GenMode::ECMul => 100,
             GenMode::Uniswap => 200,
             GenMode::ReserveBalance => 2500,
@@ -219,7 +219,7 @@ impl TrafficGen {
             GenMode::SystemKeyNormalRandomPriorityFee => 1,
             GenMode::EIP7702Reuse(..) => 100,
             GenMode::EIP7702Create(..) => 100,
-            GenMode::ExtremeValues => 100,
+            GenMode::ExtremeValues(..) => 100,
         }
     }
 
@@ -234,15 +234,15 @@ impl TrafficGen {
                 TxType::ERC20 => ERC20,
                 TxType::Native => None,
             },
-            GenMode::Duplicates => ERC20,
+            GenMode::Duplicates => None,
             GenMode::RandomPriorityFee(config) => match config.tx_type {
                 TxType::ERC20 => ERC20,
                 TxType::Native => None,
             },
-            GenMode::HighCallData => ERC20,
+            GenMode::HighCallData(..) => ERC20,
             GenMode::SelfDestructs => None,
-            GenMode::NonDeterministicStorage => ERC20,
-            GenMode::StorageDeletes => ERC20,
+            GenMode::NonDeterministicStorage(..) => ERC20,
+            GenMode::StorageDeletes(..) => ERC20,
             GenMode::NullGen => None,
             GenMode::ECMul => ECMUL,
             GenMode::Uniswap => Uniswap,
@@ -253,7 +253,38 @@ impl TrafficGen {
             GenMode::SystemKeyNormalRandomPriorityFee => None,
             GenMode::EIP7702Reuse(..) => EIP7702,
             GenMode::EIP7702Create(..) => EIP7702,
-            GenMode::ExtremeValues => ERC20,
+            GenMode::ExtremeValues(..) => ERC20,
+        }
+    }
+
+    pub fn erc20_contract_count(&self) -> usize {
+        match &self.gen_mode {
+            GenMode::FewToMany(config) => {
+                if matches!(config.tx_type, TxType::ERC20) {
+                    config.contract_count
+                } else {
+                    0
+                }
+            }
+            GenMode::ManyToMany(config) => {
+                if matches!(config.tx_type, TxType::ERC20) {
+                    config.contract_count
+                } else {
+                    0
+                }
+            }
+            GenMode::RandomPriorityFee(config) => {
+                if matches!(config.tx_type, TxType::ERC20) {
+                    config.contract_count
+                } else {
+                    0
+                }
+            }
+            GenMode::HighCallData(config) => config.contract_count,
+            GenMode::NonDeterministicStorage(config) => config.contract_count,
+            GenMode::StorageDeletes(config) => config.contract_count,
+            GenMode::ExtremeValues(config) => config.contract_count,
+            _ => 0,
         }
     }
 }
@@ -383,6 +414,7 @@ impl Default for TrafficGen {
             erc20_balance_of: false,
             gen_mode: GenMode::FewToMany(FewToManyConfig {
                 tx_type: TxType::ERC20,
+                contract_count: 1,
             }),
             sender_group_size: None,
             tx_per_sender: None,
@@ -401,16 +433,26 @@ pub enum RequiredContract {
 #[derive(Debug, Clone)]
 pub enum DeployedContract {
     None,
-    ERC20(ERC20),
+    ERC20(Vec<ERC20>),
     ECMUL(ECMul),
     Uniswap(Uniswap),
     EIP7702(EIP7702),
 }
 
 impl DeployedContract {
-    pub fn erc20(self) -> Result<ERC20> {
+    pub fn erc20(self) -> Result<Vec<ERC20>> {
         match self {
-            Self::ERC20(erc20) => Ok(erc20),
+            Self::ERC20(erc20s) => Ok(erc20s),
+            _ => bail!("Expected erc20, found {:?}", &self),
+        }
+    }
+
+    pub fn erc20_first(self) -> Result<ERC20> {
+        match self {
+            Self::ERC20(erc20s) => erc20s
+                .first()
+                .copied()
+                .ok_or_else(|| eyre::eyre!("No ERC20 contracts available")),
             _ => bail!("Expected erc20, found {:?}", &self),
         }
     }
@@ -448,10 +490,10 @@ pub enum GenMode {
     #[serde(rename = "eip7702_create")]
     EIP7702Create(EIP7702CreateConfig),
     RandomPriorityFee(RandomPriorityFeeConfig),
-    HighCallData,
+    HighCallData(HighCallDataConfig),
     SelfDestructs,
-    NonDeterministicStorage,
-    StorageDeletes,
+    NonDeterministicStorage(NonDeterministicStorageConfig),
+    StorageDeletes(StorageDeletesConfig),
     NullGen,
     #[serde(rename = "ecmul")]
     ECMul,
@@ -462,25 +504,114 @@ pub enum GenMode {
     SystemSpam(SystemSpamConfig),
     SystemKeyNormal,
     SystemKeyNormalRandomPriorityFee,
-    ExtremeValues,
+    ExtremeValues(ExtremeValuesConfig),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FewToManyConfig {
     #[serde(default = "default_tx_type")]
     pub tx_type: TxType,
+    #[serde(default = "default_contract_count")]
+    pub contract_count: usize,
+}
+
+impl Default for FewToManyConfig {
+    fn default() -> Self {
+        Self {
+            tx_type: default_tx_type(),
+            contract_count: default_contract_count(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ManyToManyConfig {
     #[serde(default = "default_tx_type")]
     pub tx_type: TxType,
+    #[serde(default = "default_contract_count")]
+    pub contract_count: usize,
+}
+
+impl Default for ManyToManyConfig {
+    fn default() -> Self {
+        Self {
+            tx_type: default_tx_type(),
+            contract_count: default_contract_count(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RandomPriorityFeeConfig {
     #[serde(default = "default_tx_type_native")]
     pub tx_type: TxType,
+    #[serde(default = "default_contract_count")]
+    pub contract_count: usize,
+}
+
+impl Default for RandomPriorityFeeConfig {
+    fn default() -> Self {
+        Self {
+            tx_type: default_tx_type_native(),
+            contract_count: default_contract_count(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HighCallDataConfig {
+    #[serde(default = "default_contract_count")]
+    pub contract_count: usize,
+}
+
+impl Default for HighCallDataConfig {
+    fn default() -> Self {
+        Self {
+            contract_count: default_contract_count(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NonDeterministicStorageConfig {
+    #[serde(default = "default_contract_count")]
+    pub contract_count: usize,
+}
+
+impl Default for NonDeterministicStorageConfig {
+    fn default() -> Self {
+        Self {
+            contract_count: default_contract_count(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageDeletesConfig {
+    #[serde(default = "default_contract_count")]
+    pub contract_count: usize,
+}
+
+impl Default for StorageDeletesConfig {
+    fn default() -> Self {
+        Self {
+            contract_count: default_contract_count(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExtremeValuesConfig {
+    #[serde(default = "default_contract_count")]
+    pub contract_count: usize,
+}
+
+impl Default for ExtremeValuesConfig {
+    fn default() -> Self {
+        Self {
+            contract_count: default_contract_count(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -557,6 +688,10 @@ fn default_tx_type_native() -> TxType {
     TxType::Native
 }
 
+fn default_contract_count() -> usize {
+    1
+}
+
 #[derive(Deserialize, Clone, Copy, Debug, Serialize, PartialEq, Eq, clap::ValueEnum)]
 pub enum TxType {
     #[serde(rename = "erc20")]
@@ -600,11 +735,12 @@ mod tests {
             config.workload_groups[0].traffic_gens[0].gen_mode,
             GenMode::FewToMany(FewToManyConfig {
                 tx_type: TxType::ERC20,
+                contract_count: 1,
             })
         );
         assert_eq!(
             config.workload_groups[1].traffic_gens[0].gen_mode,
-            GenMode::NonDeterministicStorage
+            GenMode::NonDeterministicStorage(NonDeterministicStorageConfig::default())
         );
         assert_eq!(
             config.workload_groups[2].traffic_gens[0].gen_mode,

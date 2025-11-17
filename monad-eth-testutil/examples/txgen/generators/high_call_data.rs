@@ -18,7 +18,8 @@ use crate::{prelude::*, shared::erc20::ERC20};
 pub struct HighCallDataTxGenerator {
     pub(crate) recipient_keys: KeyPool,
     pub(crate) tx_per_sender: usize,
-    pub erc20: Option<ERC20>,
+    pub erc20_pool: Option<Vec<ERC20>>,
+    pub erc20_index: usize,
 }
 
 impl Generator for HighCallDataTxGenerator {
@@ -35,9 +36,10 @@ impl Generator for HighCallDataTxGenerator {
 
                 let tx = high_calldata_erc20_call(
                     sender,
-                    self.erc20
+                    self.erc20_pool
                         .as_ref()
                         .expect("No ERC20 contract found, but tx_type is erc20"),
+                    &mut self.erc20_index,
                     ctx,
                 );
 
@@ -51,9 +53,12 @@ impl Generator for HighCallDataTxGenerator {
 
 pub fn high_calldata_erc20_call(
     from: &mut SimpleAccount,
-    erc20: &ERC20,
+    erc20_pool: &[ERC20],
+    erc20_index: &mut usize,
     ctx: &GenCtx,
 ) -> TxEnvelope {
+    let erc20 = erc20_pool[*erc20_index % erc20_pool.len()];
+    *erc20_index = (*erc20_index + 1) % erc20_pool.len();
     let max_fee_per_gas = ctx.base_fee * 2;
     let input = vec![0u8; 1 << 15];
     let tx = crate::shared::erc20::make_tx(

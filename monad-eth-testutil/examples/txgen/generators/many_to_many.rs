@@ -13,14 +13,15 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use super::{erc20_transfer, native_transfer};
+use super::{erc20_transfer_with_pool, native_transfer};
 use crate::{config::TxType, prelude::*, shared::erc20::ERC20};
 
 pub struct ManyToManyGenerator {
     pub recipient_keys: KeyPool,
     pub tx_per_sender: usize,
     pub tx_type: TxType,
-    pub erc20: Option<ERC20>,
+    pub erc20_pool: Option<Vec<ERC20>>,
+    pub erc20_index: usize,
 }
 
 impl Generator for ManyToManyGenerator {
@@ -41,13 +42,14 @@ impl Generator for ManyToManyGenerator {
                 let to = self.recipient_keys.next_addr(); // change sampling strategy?
 
                 let tx = match self.tx_type {
-                    TxType::ERC20 => erc20_transfer(
+                    TxType::ERC20 => erc20_transfer_with_pool(
                         sender,
                         to,
                         U256::from(10),
-                        self.erc20
+                        self.erc20_pool
                             .as_ref()
                             .expect("No ERC20 contract found, but tx_type is erc20"),
+                        &mut self.erc20_index,
                         ctx,
                     ),
                     TxType::Native => native_transfer(sender, to, U256::from(10), ctx),

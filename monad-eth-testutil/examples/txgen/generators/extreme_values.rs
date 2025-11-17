@@ -21,7 +21,8 @@ use crate::{prelude::*, shared::erc20::ERC20};
 pub struct ExtremeValuesGenerator {
     pub recipient_keys: KeyPool,
     pub tx_per_sender: usize,
-    pub erc20: ERC20,
+    pub erc20_pool: Option<Vec<ERC20>>,
+    pub erc20_index: usize,
     pub current_combination: usize,
     pub combinations: Vec<ExtremeValueCombination>,
 }
@@ -37,12 +38,17 @@ pub struct ExtremeValueCombination {
 }
 
 impl ExtremeValuesGenerator {
-    pub fn new(recipient_keys: KeyPool, tx_per_sender: usize, erc20: ERC20) -> Self {
+    pub fn new(
+        recipient_keys: KeyPool,
+        tx_per_sender: usize,
+        erc20_pool: Option<Vec<ERC20>>,
+    ) -> Self {
         let combinations = Self::generate_extreme_combinations();
         Self {
             recipient_keys,
             tx_per_sender,
-            erc20,
+            erc20_pool,
+            erc20_index: 0,
             current_combination: 0,
             combinations,
         }
@@ -129,8 +135,13 @@ impl Generator for ExtremeValuesGenerator {
                 let to = self.recipient_keys.next_addr();
 
                 let native_tx = self.create_native_transaction(sender, to, combination, ctx);
-                let erc20_tx =
-                    self.create_erc20_transaction(sender, to, combination, &self.erc20, ctx);
+                let erc20_pool = self
+                    .erc20_pool
+                    .as_ref()
+                    .expect("No ERC20 contract found, but tx_type is erc20");
+                let erc20 = erc20_pool[self.erc20_index % erc20_pool.len()];
+                self.erc20_index = (self.erc20_index + 1) % erc20_pool.len();
+                let erc20_tx = self.create_erc20_transaction(sender, to, combination, &erc20, ctx);
 
                 txs.push((native_tx, to, sender.key.clone()));
                 txs.push((erc20_tx, to, sender.key.clone()));
@@ -193,10 +204,12 @@ impl ExtremeValuesGenerator {
             .native_bal
             .checked_sub(gas_cost)
             .unwrap_or(U256::ZERO);
-        sender.erc20_bal = sender
-            .erc20_bal
-            .checked_sub(combination.value)
-            .unwrap_or(U256::ZERO);
+
+        let balance = sender
+            .erc20_balances
+            .entry(erc20.addr)
+            .or_insert(U256::ZERO);
+        *balance = balance.checked_sub(combination.value).unwrap_or(U256::ZERO);
 
         tx
     }
