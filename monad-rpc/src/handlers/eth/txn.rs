@@ -22,8 +22,10 @@ use alloy_rpc_types::{Filter, Log, Receipt, TransactionReceipt};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, Triedb, TxEnvelopeWithSender};
 use schemars::JsonSchema;
-use serde::de::{self, SeqAccess, Visitor};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{
+    de::{self, SeqAccess, Visitor},
+    Deserialize, Deserializer, Serialize,
+};
 use tracing::{debug, error, trace, warn};
 
 use crate::{
