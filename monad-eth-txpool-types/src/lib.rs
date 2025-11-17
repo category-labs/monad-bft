@@ -16,6 +16,7 @@
 use std::collections::HashSet;
 
 use alloy_primitives::{Address, TxHash};
+use monad_eth_block_policy::validation::StaticValidationError;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -39,23 +40,9 @@ pub enum EthTxPoolEventType {
     Evict { reason: EthTxPoolEvictReason },
 }
 
-// allow for more fine grain debugging if needed
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TransactionError {
-    InvalidChainId,
-    MaxPriorityFeeTooHigh,
-    InitCodeLimitExceeded,
-    EncodedLengthLimitExceeded,
-    GasLimitTooLow,
-    GasLimitTooHigh,
-    UnsupportedTransactionType,
-    AuthorizationListEmpty,
-    AuthorizationListLengthLimitExceeded,
-}
-
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EthTxPoolDropReason {
-    NotWellFormed(TransactionError),
+    NotWellFormed(StaticValidationError),
     InvalidSignature,
     NonceTooLow,
     FeeTooLow,
@@ -77,15 +64,26 @@ impl EthTxPoolDropReason {
     pub fn as_user_string(&self) -> String {
         match self {
             EthTxPoolDropReason::NotWellFormed(err) => match err {
-                TransactionError::InvalidChainId => "Invalid chain ID",
-                TransactionError::MaxPriorityFeeTooHigh => "Max priority fee too high",
-                TransactionError::InitCodeLimitExceeded => "Init code size limit exceeded",
-                TransactionError::EncodedLengthLimitExceeded => "Encoded length limit exceeded",
-                TransactionError::GasLimitTooLow => "Gas limit too low",
-                TransactionError::GasLimitTooHigh => "Exceeds transaction gas limit",
-                TransactionError::UnsupportedTransactionType => "Unsupported transaction type",
-                TransactionError::AuthorizationListEmpty => "EIP7702 authorization list empty",
-                TransactionError::AuthorizationListLengthLimitExceeded => {
+                StaticValidationError::InvalidChainId { .. } => "Invalid chain ID",
+                StaticValidationError::MaxPriorityOverMaxFee { .. } => "Max priority fee too high",
+                StaticValidationError::InitCodeLimitExceeded { .. } => {
+                    "Init code size limit exceeded"
+                }
+                StaticValidationError::EncodedLengthLimitExceeded => {
+                    "Encoded length limit exceeded"
+                }
+                StaticValidationError::GasLimitUnderFloorDataGas { .. } => "Gas limit too low",
+                StaticValidationError::GasLimitUnderIntrinsicGas { .. } => "Gas limit too low",
+                StaticValidationError::GasLimitOverTFMGasLimit { .. } => {
+                    "Exceeds transaction gas limit"
+                }
+                StaticValidationError::GasLimitOverProposalGasLimit { .. } => {
+                    "Exceeds transaction gas limit"
+                }
+                StaticValidationError::InvalidSignature => "Invalid transaction signature",
+                StaticValidationError::UnsupportedTransactionType => "Unsupported transaction type",
+                StaticValidationError::AuthorizationListEmpty => "EIP7702 authorization list empty",
+                StaticValidationError::AuthorizationListLengthLimitExceeded => {
                     "EIP7702 authorization list length limit exceeded"
                 }
             },

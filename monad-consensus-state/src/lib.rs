@@ -35,7 +35,7 @@ use monad_consensus_types::{
     block::{
         BlockPolicy, BlockRange, ConsensusBlockHeader, ConsensusFullBlock, OptimisticPolicyCommit,
     },
-    block_validator::{BlockValidationError, BlockValidator},
+    block_validator::BlockValidator,
     checkpoint::{Checkpoint, LockedEpoch, RootInfo},
     metrics::Metrics,
     no_endorsement::{FreshProposalCertificate, NoEndorsement},
@@ -583,74 +583,16 @@ where
             body,
             Some(author_pubkey),
             &self.config.chain_config,
+            self.metrics,
         ) {
             Ok(block) => block,
-            Err(BlockValidationError::SystemTxnError) => {
+            Err(err) => {
                 warn!(
                     ?block_round,
                     ?block_author,
                     ?seq_num,
-                    "dropping proposal, system transaction validation failed"
-                );
-                self.metrics.consensus_events.failed_txn_validation += 1;
-                return None;
-            }
-            Err(BlockValidationError::TxnError) => {
-                warn!(
-                    ?block_round,
-                    ?block_author,
-                    ?seq_num,
-                    "dropping proposal, transaction validation failed"
-                );
-                self.metrics.consensus_events.failed_txn_validation += 1;
-                return None;
-            }
-            Err(BlockValidationError::RandaoError) => {
-                warn!(
-                    ?block_round,
-                    ?block_author,
-                    ?seq_num,
-                    "dropping proposal, randao validation failed"
-                );
-                self.metrics
-                    .consensus_events
-                    .failed_verify_randao_reveal_sig += 1;
-                return None;
-            }
-            Err(BlockValidationError::HeaderPayloadMismatchError) => {
-                // TODO: this is malicious behaviour?
-                warn!(
-                    ?block_round,
-                    ?block_author,
-                    ?seq_num,
-                    "dropping proposal, header payload mismatch"
-                );
-                return None;
-            }
-            Err(BlockValidationError::PayloadError) => {
-                warn!(
-                    ?block_round,
-                    ?block_author,
-                    ?seq_num,
-                    "dropping proposal, payload validation failed"
-                );
-                return None;
-            }
-            Err(BlockValidationError::HeaderError) => {
-                warn!(
-                    ?block_round,
-                    ?block_author,
-                    ?seq_num,
-                    "dropping proposal, header validation failed"
-                );
-                return None;
-            }
-            Err(BlockValidationError::TimestampError) => {
-                warn!(
-                    ?block_round,
-                    ?block_author,
-                    ?seq_num,
-                    "dropping proposal, timestamp validation failed"
+                    ?err,
+                    "dropping proposal, block validation failed"
                 );
                 return None;
             }

@@ -36,7 +36,6 @@ use monad_validator::signature_collection::SignatureCollection;
 use serde::Serialize;
 
 use crate::{
-    block_validator::BlockValidationError,
     checkpoint::RootInfo,
     payload::{ConsensusBlockBody, ConsensusBlockBodyId, RoundSignature},
     quorum_certificate::QuorumCertificate,
@@ -533,6 +532,11 @@ where
 {
 }
 
+#[derive(Debug)]
+pub enum ConsensusFullBlockError {
+    HeaderPayloadMismatch,
+}
+
 impl<ST, SCT, EPT> ConsensusFullBlock<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -542,9 +546,9 @@ where
     pub fn new(
         header: ConsensusBlockHeader<ST, SCT, EPT>,
         body: ConsensusBlockBody<EPT>,
-    ) -> Result<Self, BlockValidationError> {
+    ) -> Result<Self, ConsensusFullBlockError> {
         if body.get_id() != header.block_body_id {
-            return Err(BlockValidationError::HeaderPayloadMismatchError);
+            return Err(ConsensusFullBlockError::HeaderPayloadMismatch);
         }
         Ok(Self { header, body })
     }

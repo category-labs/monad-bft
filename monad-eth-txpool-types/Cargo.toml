@@ -9,5 +9,7 @@ edition = "2021"
 bench = false
 
 [dependencies]
+monad-eth-block-policy = { workspace = true }
+
 alloy-primitives = { workspace = true }
 serde = { workspace = true }

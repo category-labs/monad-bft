@@ -31,6 +31,7 @@ use monad_consensus_types::{
     block::{BlockPolicy, ConsensusBlockHeader},
     block_validator::BlockValidator,
     checkpoint::RootInfo,
+    metrics::Metrics,
     payload::{ConsensusBlockBody, ConsensusBlockBodyId, ConsensusBlockBodyInner, RoundSignature},
     quorum_certificate::QuorumCertificate,
 };
@@ -490,7 +491,14 @@ fn create_test_blocks(
             NopStateBackend,
             MonadChainConfig,
             MonadChainRevision,
-        >::validate(&validator, header, body, None, chain_config)
+        >::validate(
+            &validator,
+            header,
+            body,
+            None,
+            chain_config,
+            &mut Metrics::default(),
+        )
         .unwrap();
 
         info!(

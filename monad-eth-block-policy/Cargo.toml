@@ -12,7 +12,6 @@ bench = false
 monad-chain-config = { workspace = true }
 monad-consensus-types = { workspace = true }
 monad-crypto = { workspace = true }
-monad-eth-txpool-types = { workspace = true }
 monad-eth-types = { workspace = true }
 monad-state-backend = { workspace = true }
 monad-system-calls = { workspace = true }
@@ -24,6 +23,7 @@ alloy-consensus = { workspace = true }
 alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true }
 itertools = { workspace = true }
+serde = { workspace = true }
 sorted_vector_map = { workspace = true }
 tracing = { workspace = true }
 

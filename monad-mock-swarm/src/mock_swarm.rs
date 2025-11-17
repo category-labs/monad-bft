@@ -238,6 +238,7 @@ where
             ExecutionProtocolType = <DebugSwarmRelation as SwarmRelation>::ExecutionProtocolType,
             TransportMessage = <DebugSwarmRelation as SwarmRelation>::TransportMessage,
             BlockPolicyType = <DebugSwarmRelation as SwarmRelation>::BlockPolicyType,
+            BlockValidator = <DebugSwarmRelation as SwarmRelation>::BlockValidator,
             StateBackendType = <DebugSwarmRelation as SwarmRelation>::StateBackendType,
             ChainConfigType = <DebugSwarmRelation as SwarmRelation>::ChainConfigType,
             ChainRevisionType = <DebugSwarmRelation as SwarmRelation>::ChainRevisionType,
