@@ -32,7 +32,7 @@ use monad_wal::reader::{events_iter_in_range, events_iter_raw, WALReader, WALRea
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 #[derive(Parser, Debug)]
-#[command(long_about = "\
+#[command(name = "wal2json", version = monad_version::version!(), long_about = "\
 Selected timestamp formats
   excerpt from https://docs.rs/dateparser/latest/dateparser/index.html#accepted-date-formats
 

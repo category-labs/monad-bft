@@ -37,6 +37,7 @@ monad-triedb-utils = { workspace = true }
 monad-types = { workspace = true }
 monad-updaters = { workspace = true, features = ["monad-triedb", "tokio"] }
 monad-validator = { workspace = true }
+monad-version = { workspace = true }
 monad-wal = { workspace = true }
 
 agent = { workspace = true }
@@ -62,6 +63,9 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 workspace = true
 features = ["profiling", "stats", "unprefixed_malloc_on_supported_platforms", "background_threads"]
 optional = true
+
+[build-dependencies]
+monad-version = { workspace = true }
 
 [dev-dependencies]
 monad-block-persist = { workspace = true }

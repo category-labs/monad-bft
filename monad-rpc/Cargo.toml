@@ -35,6 +35,7 @@ monad-tracing-timing = { workspace = true }
 monad-triedb-utils = { workspace = true }
 monad-types = { workspace = true }
 monad-pprof = { workspace = true }
+monad-version = { workspace = true }
 
 actix = { workspace = true }
 agent = { workspace = true }
@@ -87,6 +88,9 @@ features = [
     "background_threads",
 ]
 optional = true
+
+[build-dependencies]
+monad-version = { workspace = true }
 
 [dev-dependencies]
 monad-eth-testutil = { workspace = true }

@@ -13,6 +13,9 @@ monad-types = { workspace = true }
 
 bytes = { workspace = true }
 
+[build-dependencies]
+monad-version = { workspace = true }
+
 [dev-dependencies]
 monad-bls = { workspace = true }
 monad-crypto = { workspace = true }
@@ -20,6 +23,7 @@ monad-eth-types = { workspace = true }
 monad-executor-glue = { workspace = true }
 monad-secp = { workspace = true }
 monad-types = { workspace = true }
+monad-version = { workspace = true }
 
 clap = { workspace = true, features = ["derive"] }
 criterion = { workspace = true }

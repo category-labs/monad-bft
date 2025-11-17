@@ -31,7 +31,7 @@ pub mod kdf_module;
 pub mod keystore;
 
 #[derive(Parser)]
-#[command(name = "monad-keystore", about, long_about = None)]
+#[command(name = "monad-keystore", about, long_about = None, version = monad_version::version!())]
 struct Args {
     #[command(subcommand)]
     mode: Commands,

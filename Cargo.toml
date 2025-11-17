@@ -83,6 +83,7 @@ monad-twins-utils = { path = "./monad-twins/utils" }
 monad-types = { path = "./monad-types" }
 monad-updaters = { path = "./monad-updaters" }
 monad-validator = { path = "./monad-validator" }
+monad-version = { path = "./monad-version" }
 monad-wal = { path = "./monad-wal" }
 
 actix = "0.13"

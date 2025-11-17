@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use clap::Parser;
 
 #[derive(Debug, Parser)]
-#[command(name = "monad-node", about, long_about = None)]
+#[command(name = "monad-rpc", about, long_about = None, version = monad_version::version!())]
 pub struct Cli {
     /// Set the mempool ipc path
     #[arg(long)]

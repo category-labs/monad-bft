@@ -33,7 +33,7 @@ fn parse_priority_fee_range(range_str: &str) -> Option<(u128, u128)> {
 }
 
 #[derive(Debug, Parser, Clone)]
-#[command(name = "monad-node", about, long_about = None)]
+#[command(name = "txgen", about, long_about = None, version = monad_version::version!())]
 pub struct CliConfig {
     /// Path to the config file to use instead of the cli args
     #[arg(long, global = true)]

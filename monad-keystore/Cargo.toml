@@ -16,6 +16,7 @@ bench = false
 monad-bls = { workspace = true }
 monad-crypto = { workspace = true }
 monad-secp = { workspace = true }
+monad-version = { workspace = true }
 
 aes = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
@@ -29,6 +30,9 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 unicode-normalization = { workspace = true }
 zeroize = { workspace = true }
+
+[build-dependencies]
+monad-version = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

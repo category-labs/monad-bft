@@ -5237,6 +5237,7 @@ dependencies = [
  "monad-tfm",
  "monad-types",
  "monad-validator",
+ "monad-version",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
@@ -5457,6 +5458,7 @@ dependencies = [
  "monad-bls",
  "monad-crypto",
  "monad-secp",
+ "monad-version",
  "pbkdf2 0.12.2",
  "rand 0.8.5",
  "rstest",
@@ -5596,6 +5598,7 @@ dependencies = [
  "monad-types",
  "monad-updaters",
  "monad-validator",
+ "monad-version",
  "monad-wal",
  "opentelemetry",
  "opentelemetry-otlp",
@@ -5840,6 +5843,7 @@ dependencies = [
  "monad-tracing-timing",
  "monad-triedb-utils",
  "monad-types",
+ "monad-version",
  "notify",
  "opentelemetry",
  "opentelemetry-otlp",
@@ -6239,6 +6243,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-version"
+version = "0.1.0"
+
+[[package]]
 name = "monad-wal"
 version = "0.1.0"
 dependencies = [
@@ -6253,6 +6261,7 @@ dependencies = [
  "monad-executor-glue",
  "monad-secp",
  "monad-types",
+ "monad-version",
  "rayon",
  "serde_json",
  "tempfile",

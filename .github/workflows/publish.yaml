@@ -66,9 +66,13 @@ jobs:
             type=ref,event=branch
             type=sha,prefix=
 
-      - name: Set Git Tag Version
-        if: ${{ matrix.dockerfile.name == 'monad-bft' || matrix.dockerfile.name == 'monad-rpc' }}
-        run: echo "GIT_TAG_VERSION=$(git describe --tags --always)" >> $GITHUB_ENV
+      - name: Set Git Version Info
+        run: |
+          echo "GIT_TAG_VERSION=$(git describe --tags --always)" >> $GITHUB_ENV
+          echo "GIT_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
+          echo "GIT_BRANCH=$(git branch --show-current)" >> $GITHUB_ENV
+          echo "GIT_TAG=$(git describe --tags --exact-match HEAD 2>/dev/null || echo '')" >> $GITHUB_ENV
+          echo "GIT_MODIFIED=false" >> $GITHUB_ENV
 
       - name: Setup Docker Buildx
         id: setup-buildx
@@ -100,6 +104,10 @@ jobs:
           build-args: |
             GIT_COMMIT_HASH=${{ env.GIT_COMMIT_HASH }}
             GIT_TAG_VERSION=${{ env.GIT_TAG_VERSION }}
+            GIT_COMMIT=${{ env.GIT_COMMIT }}
+            GIT_BRANCH=${{ env.GIT_BRANCH }}
+            GIT_TAG=${{ env.GIT_TAG }}
+            GIT_MODIFIED=${{ env.GIT_MODIFIED }}
             CC=gcc-15
             CXX=g++-15
             CMAKE_BUILD_TYPE=RelWithDebInfo
