@@ -25,7 +25,10 @@ use monad_types::{ExecutionProtocol, Round};
 use serde::{Deserialize, Serialize};
 
 /// randao_reveal uses a proposer's public key to contribute randomness
-#[derive(Debug, Clone, PartialEq, Eq, RlpEncodableWrapper, RlpDecodableWrapper, Serialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, RlpEncodableWrapper, RlpDecodableWrapper, Serialize, Deserialize,
+)]
+#[serde(bound(serialize = "", deserialize = ""))]
 pub struct RoundSignature<CST: CertificateSignature>(CST);
 
 impl<CST: CertificateSignature> RoundSignature<CST> {
