@@ -34,7 +34,8 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{
-    timestamp_ns_to_secs, EthBlockPolicy, EthBlockPolicyBlockValidator, EthValidatedBlock,
+    compute_txn_max_gas_cost, timestamp_ns_to_secs, EthBlockPolicy, EthBlockPolicyBlockValidator,
+    EthValidatedBlock,
 };
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason, EthTxPoolSnapshot};
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ExtractEthAddress, ProposedEthHeader};
@@ -207,7 +208,7 @@ where
                     .get(tx.signer_ref())
                     .is_none_or(|account_balance_state| {
                         account_balance_state.balance
-                            < last_commit_base_fee.saturating_mul(tx.gas_limit())
+                            < compute_txn_max_gas_cost(tx.raw(), last_commit_base_fee)
                     })
                 {
                     event_tracker.drop(tx.hash(), EthTxPoolDropReason::InsufficientBalance);
