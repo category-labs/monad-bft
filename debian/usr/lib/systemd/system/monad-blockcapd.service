@@ -1,0 +1,16 @@
+[Unit]
+Description="Service file for Monad blockcapd (local exec events capture writer)"
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/monad-blockcapd ${BLOCKCAPD_ROOT_DIR}
+EnvironmentFile=-/home/monad/.env
+Restart=no
+User=monad
+Group=monad
+ProtectKernelModules=no
+ProtectKernelLogs=no
+
+[Install]
+WantedBy=multi-user.target
