@@ -4865,6 +4865,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-block-capture"
+version = "0.1.0"
+dependencies = [
+ "bindgen 0.71.1",
+ "clap 4.5.47",
+ "criterion",
+ "itertools 0.10.5",
+ "libc",
+ "monad-event",
+ "monad-event-capture",
+ "monad-exec-events",
+]
+
+[[package]]
 name = "monad-block-persist"
 version = "0.1.0"
 dependencies = [

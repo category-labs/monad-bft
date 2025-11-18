@@ -24,6 +24,7 @@ ignored = [
 
 [workspace.dependencies]
 monad-archive = { path = "./monad-archive" }
+monad-block-capture = { path = "./monad-block-capture" }
 monad-block-persist = { path = "./monad-block-persist" }
 monad-blocksync = { path = "./monad-blocksync" }
 monad-blocktree = { path = "./monad-blocktree" }

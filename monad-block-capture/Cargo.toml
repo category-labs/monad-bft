@@ -1,0 +1,21 @@
+[package]
+name = "monad-block-capture"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+monad-event-capture = { workspace = true }
+monad-exec-events = { workspace = true }
+
+libc = { workspace = true }
+
+[dev-dependencies]
+monad-event = { workspace = true }
+monad-exec-events = { workspace = true, features = ["alloy", "event-capture"] }
+
+clap = { workspace = true, features = ["derive"] }
+criterion = { workspace = true }
+itertools = { workspace = true }
+
+[build-dependencies]
+bindgen = { workspace = true }
