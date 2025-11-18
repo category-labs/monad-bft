@@ -23,4 +23,17 @@ if [ -n "$NEW_FILES" ]; then
 else
     echo "No new files detected. Skipping deletion of ledger files."
 fi
+
+if [ -d "$BLOCKCAPD_ROOT_DIR" ] && [ "${BLOCKCAPD_MAX_GB:-0}" -ne "0" ]; then
+  BLOCKCAPD_MAX_BYTES=$((BLOCKCAPD_MAX_GB * 1024 * 1024 * 1024))
+
+  # while the total size of the archive is greater than allowed, delete the
+  # oldest subdirectory (group of 10,000 capture files)
+  while [ "$(du -sb "$BLOCKCAPD_ROOT_DIR" | awk '{print $1}')" -gt "$BLOCKCAPD_MAX_BYTES" ]; do
+    OLDEST_SUBDIR=$(find "$BLOCKCAPD_ROOT_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' \
+           | sort -n | head -1 | cut -d' ' -f2-)
+    [ -n "$OLDEST_SUBDIR" ] && rm -rf "$OLDEST_SUBDIR"
+  done
+fi
+
 exit 0
