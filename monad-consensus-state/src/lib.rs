@@ -1237,12 +1237,12 @@ where
 
         // update vote_state round
         // it's ok if not leader for round; we will never propose
-        self.consensus
-            .vote_state
-            .start_new_round(self.consensus.pacemaker.get_current_round());
-        self.consensus
-            .no_endorsement_state
-            .start_new_round(self.consensus.pacemaker.get_current_round());
+        let round = self.consensus.pacemaker.get_current_round();
+        self.consensus.vote_state.start_new_round(round);
+        self.consensus.no_endorsement_state.start_new_round(round);
+
+        let round_leader = self.lookup_leader(round);
+        debug!(?round, ?round_leader, "leader for round");
 
         cmds.extend(self.try_propose());
 
@@ -1281,6 +1281,10 @@ where
                     )
                 }),
         );
+        let round = self.consensus.pacemaker.get_current_round();
+        let round_leader = self.lookup_leader(round);
+        debug!(?round, ?round_leader, "leader for round");
+
         cmds.extend(self.try_propose());
         cmds
     }
@@ -1881,6 +1885,15 @@ where
         self.compute_upcoming_leader_round_pairs::<false, NUM_LEADERS_FORWARD_TXS>()
             .filter_map(|(nodeid, _)| (nodeid != *self.nodeid).then_some(nodeid))
             .unique()
+    }
+
+    fn lookup_leader(&self, round: Round) -> Option<NodeId<CertificateSignaturePubKey<ST>>> {
+        let epoch = self.epoch_manager.get_epoch(round)?;
+        let validator_set = self.val_epoch_map.get_val_set(&epoch)?;
+        Some(
+            self.election
+                .get_leader(round, epoch, validator_set.get_members()),
+        )
     }
 }
 
