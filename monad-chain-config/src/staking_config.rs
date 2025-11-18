@@ -81,6 +81,9 @@ pub const MONAD_TESTNET_STAKING_CONFIG: MonadStakingConfig = MonadStakingConfig 
 pub const MONAD_MAINNET_STAKING_CONFIG: MonadStakingConfig = MonadStakingConfig {
     staking_activation: Epoch(675),
 
-    block_reward_v_one: BlockRewardConfig::unused(),
+    block_reward_v_one: BlockRewardConfig {
+        block_reward_activation: Epoch(747),
+        block_reward_mon: 25,
+    },
     block_reward_v_two: BlockRewardConfig::unused(),
 };
