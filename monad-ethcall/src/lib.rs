@@ -54,6 +54,7 @@ impl EthCallExecutor {
         low_pool_config: PoolConfig,
         high_pool_config: PoolConfig,
         block_pool_config: PoolConfig,
+        tx_exec_num_fibers: u32,
         node_lru_max_mem: u64,
         triedb_path: &Path,
     ) -> Self {
@@ -67,6 +68,7 @@ impl EthCallExecutor {
                 low_pool_config,
                 high_pool_config,
                 block_pool_config,
+                tx_exec_num_fibers,
                 node_lru_max_mem,
                 dbpath.as_c_str().as_ptr(),
             )
