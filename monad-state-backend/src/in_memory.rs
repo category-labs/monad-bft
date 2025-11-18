@@ -293,7 +293,7 @@ where
                 Some(EthAccount {
                     nonce: *nonce,
                     balance: self.max_account_balance,
-                    code_hash: None,
+                    code_or_hash: Default::default(),
                     is_delegated: false,
                 })
             })
