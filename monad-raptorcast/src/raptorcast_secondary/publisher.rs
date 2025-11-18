@@ -1506,6 +1506,7 @@ mod tests {
                 invite_future_dist_min: Round(1),
                 invite_future_dist_max: Round(100),
                 invite_accept_heartbeat: Duration::from_secs(10),
+                prioritized_upstream: vec![],
             },
         );
         let mut group_map = MockGroupMap::new(nid(10), clt_rx);
@@ -1635,6 +1636,7 @@ mod tests {
                 invite_future_dist_min: Round(1),
                 invite_future_dist_max: Round(100),
                 invite_accept_heartbeat: Duration::from_secs(10),
+                prioritized_upstream: vec![],
             },
         );
         let mut group_map = MockGroupMap::new(nid(10), clt_rx);
@@ -1778,6 +1780,7 @@ mod tests {
                 invite_future_dist_min: Round(1),
                 invite_future_dist_max: Round(100),
                 invite_accept_heartbeat: Duration::from_secs(10),
+                prioritized_upstream: vec![],
             },
         );
         let mut group_map = MockGroupMap::new(nid(me), clt_rx);

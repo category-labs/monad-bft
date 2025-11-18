@@ -177,6 +177,7 @@ where
         ConfigEvent::ConfigUpdate(ConfigUpdate {
             dedicated_full_nodes,
             prioritized_full_nodes,
+            prioritized_upstream: node_config.fullnode_raptorcast.prioritized_upstream,
             blocksync_override_peers,
         })
     }
