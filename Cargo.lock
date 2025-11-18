@@ -4911,6 +4911,7 @@ dependencies = [
  "monad-testutil",
  "monad-types",
  "monad-validator",
+ "tracing",
 ]
 
 [[package]]

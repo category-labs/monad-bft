@@ -20,7 +20,7 @@ use std::{
 
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::{
-    block::{BlockPolicy, BlockPolicyError, BlockRange, ConsensusBlockHeader},
+    block::{BlockPolicy, BlockRange, ConsensusBlockHeader},
     checkpoint::RootInfo,
     metrics::Metrics,
     payload::{ConsensusBlockBody, ConsensusBlockBodyId},
@@ -29,9 +29,10 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_state_backend::{StateBackend, StateBackendError};
+use monad_state_backend::StateBackend;
 use monad_types::{BlockId, ExecutionProtocol, Round, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
+use tracing::debug;
 
 use crate::tree::{BlockTreeEntry, Tree};
 
@@ -279,6 +280,7 @@ where
                 self.root.info,
                 state_backend,
                 chain_config,
+                metrics,
             ) {
                 Ok(()) => {
                     let next_block = next_block.clone();
@@ -298,24 +300,8 @@ where
                             .cloned(),
                     );
                 }
-                Err(BlockPolicyError::StateBackendError(StateBackendError::NotAvailableYet)) => {
-                    metrics.consensus_events.rx_execution_lagging += 1;
-                }
-                Err(BlockPolicyError::ExecutionResultMismatch) => {
-                    metrics.consensus_events.rx_bad_state_root += 1;
-                }
-                Err(BlockPolicyError::BaseFeeError) => {
-                    metrics.consensus_events.rx_base_fee_error += 1;
-                }
-                Err(
-                    BlockPolicyError::BlockPolicyBlockValidatorError(_)
-                    | BlockPolicyError::BlockNotCoherent
-                    | BlockPolicyError::Eip7702Error
-                    | BlockPolicyError::TimestampError
-                    | BlockPolicyError::StateBackendError(StateBackendError::NeverAvailable)
-                    | BlockPolicyError::SystemTransactionError,
-                ) => {
-                    // TODO add metrics
+                Err(err) => {
+                    debug!(?err, block_id =? next_block.get_id(), block_seq_num =? next_block.get_seq_num(), "block failed coherency check");
                 }
             }
         }

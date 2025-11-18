@@ -421,6 +421,7 @@ fn test_runner(
             root_info,
             &state_backend,
             &chain_config,
+            &mut Metrics::default(),
         );
 
         if expect_coherent {
