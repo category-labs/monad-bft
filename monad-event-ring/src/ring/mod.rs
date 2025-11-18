@@ -15,7 +15,9 @@
 
 use std::marker::PhantomData;
 
-use monad_event::{EventDecoder, EventDescriptorRead, RawEventDescriptor, RawEventDescriptorInfo};
+use monad_event::{
+    EventDecoder, EventDescriptorRead, RawEventDescriptor, RawEventDescriptorInfo, Result,
+};
 
 pub use self::{raw::RawEventRing, snapshot::SnapshotEventRing};
 use crate::{
@@ -61,10 +63,10 @@ where
     D: EventDecoder,
 {
     /// Synchronously creates a new event ring from the provided path.
-    pub fn new(path: impl AsRef<EventRingPath>) -> Result<Self, String> {
+    pub fn new(path: impl AsRef<EventRingPath>) -> Result<Self> {
         use std::os::fd::AsRawFd;
 
-        let file = path.as_ref().open().map_err(|err| err.to_string())?;
+        let file = path.as_ref().open()?;
 
         let raw = RawEventRing::mmap_from_fd(
             libc::PROT_READ,
@@ -80,7 +82,7 @@ where
         Self::new_from_raw(raw)
     }
 
-    pub(crate) fn new_from_raw(raw: RawEventRing) -> Result<Self, String> {
+    pub(crate) fn new_from_raw(raw: RawEventRing) -> Result<Self> {
         raw.check_type::<D>()
             .map(|()| Self::new_from_raw_unchecked(raw))
     }

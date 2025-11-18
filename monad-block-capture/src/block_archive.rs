@@ -13,6 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use monad_event::Result;
 use monad_event_capture::EventCaptureReader;
 
 use crate::ffi::{
@@ -25,7 +26,7 @@ pub struct BlockCaptureBlockArchive {
 }
 
 impl BlockCaptureBlockArchive {
-    pub fn new(dir: &std::fs::File) -> Result<Self, String> {
+    pub fn new(dir: &std::fs::File) -> Result<Self> {
         use std::os::fd::AsRawFd;
 
         let inner = monad_block_capture_block_archive_open(dir.as_raw_fd(), "todo")?;
@@ -33,7 +34,7 @@ impl BlockCaptureBlockArchive {
         Ok(Self { inner })
     }
 
-    pub fn open_block(&self, block_number: u64) -> Result<EventCaptureReader, String> {
+    pub fn open_block(&self, block_number: u64) -> Result<EventCaptureReader> {
         let c_event_capture_reader =
             monad_block_capture_block_archive_open_block(self.inner, block_number)?;
 

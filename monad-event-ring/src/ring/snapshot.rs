@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use monad_event::EventDecoder;
+use monad_event::{EventDecoder, Result};
 
 use super::{raw::RawEventRing, DecodedEventRing, EventRing, RawEventReader};
 use crate::{ffi, EventReader, EventRingPath};
@@ -43,15 +43,18 @@ where
     pub fn new_from_zstd_path(
         path: impl AsRef<EventRingPath>,
         max_size: Option<usize>,
-    ) -> Result<Self, String> {
-        let file = path.as_ref().open().map_err(|err| err.to_string())?;
+    ) -> Result<Self> {
+        let file = path.as_ref().open()?;
 
         let error_name = path.as_ref().as_error_name();
 
         let Some(decompressed_file) =
             ffi::monad_event_decompress_snapshot_fd(&file, max_size, &error_name)?
         else {
-            return Err(format!("{error_name} is not an event ring snapshot"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{error_name} is not an event ring snapshot"),
+            ));
         };
 
         Self::new_from_decompressed_file(decompressed_file, &error_name)
@@ -66,22 +69,22 @@ where
         name: impl AsRef<str>,
         zstd_bytes: &[u8],
         max_size: Option<usize>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self> {
         let name = name.as_ref();
 
         let Some(decompressed_file) =
             ffi::monad_event_decompress_snapshot_mem(zstd_bytes, max_size, name)?
         else {
-            return Err(format!("{name} is not an event ring snapshot"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{name} is not an event ring snapshot"),
+            ));
         };
 
         Self::new_from_decompressed_file(decompressed_file, name)
     }
 
-    fn new_from_decompressed_file(
-        file: std::fs::File,
-        name: impl AsRef<str>,
-    ) -> Result<Self, String> {
+    fn new_from_decompressed_file(file: std::fs::File, name: impl AsRef<str>) -> Result<Self> {
         use std::os::fd::{AsRawFd, IntoRawFd};
 
         let snapshot_off: libc::off_t = 0;

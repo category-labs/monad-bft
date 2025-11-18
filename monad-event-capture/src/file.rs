@@ -15,6 +15,8 @@
 
 use std::{fs::File, path::Path};
 
+use monad_event::Result;
+
 use crate::EventCaptureReader;
 
 pub struct EventCaptureFile {
@@ -28,7 +30,7 @@ impl EventCaptureFile {
         Ok(Self { file })
     }
 
-    pub fn create_reader(&self) -> Result<EventCaptureReader, String> {
+    pub fn create_reader(&self) -> Result<EventCaptureReader> {
         EventCaptureReader::new(&self.file)
     }
 }

@@ -25,3 +25,6 @@ pub mod ffi;
 
 mod decoder;
 mod descriptor;
+
+/// A type alias for results produces by monad event libraries.
+pub type Result<T> = std::io::Result<T>;

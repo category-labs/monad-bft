@@ -43,7 +43,12 @@ fn main() {
         let mut event_capture_reader = loop {
             match block_archive.open_block(block_number) {
                 Ok(event_capture_reader) => break event_capture_reader,
-                Err(err) => panic!("{err:#?}"),
+                Err(err) => match err.kind() {
+                    std::io::ErrorKind::NotFound => {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                    _ => panic!("{err:#?}"),
+                },
             }
         };
 

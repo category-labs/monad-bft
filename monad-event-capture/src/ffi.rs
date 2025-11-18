@@ -33,10 +33,13 @@ mod bindings {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
 
-use ::monad_event::ffi::{monad_event_content_type, monad_event_descriptor};
+use ::monad_event::{
+    ffi::{monad_event_content_type, monad_event_descriptor},
+    Result,
+};
 
 #[inline]
-fn get_last_evcap_reader_error(r: libc::c_int) -> Result<(), String> {
+fn get_last_evcap_reader_error(r: libc::c_int) -> Result<()> {
     if r == 0 {
         return Ok(());
     }
@@ -47,18 +50,20 @@ fn get_last_evcap_reader_error(r: libc::c_int) -> Result<(), String> {
             .unwrap_or("Invalid UTF-8 in monad_evcap_reader_get_last_error")
     };
 
-    Err(String::from(err_str))
+    let err = std::io::Error::from_raw_os_error(r);
+
+    Err(std::io::Error::new(err.kind(), err_str))
 }
 
 #[inline]
-fn error_name_to_cstring(str_ref: impl AsRef<str>) -> Result<CString, String> {
-    CString::new(str_ref.as_ref()).map_err(|nul_err| nul_err.to_string())
+fn error_name_to_cstring(str_ref: impl AsRef<str>) -> Result<CString> {
+    Ok(CString::new(str_ref.as_ref())?)
 }
 
 pub(crate) fn monad_evcap_reader_create(
     file: &impl std::os::fd::AsRawFd,
     error_name: &str,
-) -> Result<&'static mut monad_evcap_reader, String> {
+) -> Result<&'static mut monad_evcap_reader> {
     let mut c_evcap_reader: *mut monad_evcap_reader = std::ptr::null_mut();
 
     let error_name_cstring = error_name_to_cstring(error_name)?;
@@ -80,9 +85,7 @@ pub(crate) unsafe fn monad_evcap_reader_destroy(evcap_reader: &mut monad_evcap_r
     }
 }
 
-pub(crate) fn monad_evcap_reader_refresh(
-    evcap_reader: &mut monad_evcap_reader,
-) -> Result<bool, String> {
+pub(crate) fn monad_evcap_reader_refresh(evcap_reader: &mut monad_evcap_reader) -> Result<bool> {
     let mut invalidated = false;
 
     let r = unsafe { self::bindings::monad_evcap_reader_refresh(evcap_reader, &mut invalidated) };
@@ -122,7 +125,7 @@ pub(crate) fn monad_evcap_reader_check_schema(
     ring_magic: &[u8],
     content_type: monad_event_content_type,
     schema_hash: &[u8],
-) -> Result<(), String> {
+) -> Result<()> {
     let r = unsafe {
         self::bindings::monad_evcap_reader_check_schema(
             evcap_reader,
@@ -138,7 +141,7 @@ pub(crate) fn monad_evcap_reader_check_schema(
 pub(crate) fn monad_evcap_event_section_open(
     evcap_reader: &monad_evcap_reader,
     section_desc: &monad_evcap_section_desc,
-) -> Result<monad_evcap_event_section, String> {
+) -> Result<monad_evcap_event_section> {
     let mut evcap_event_section: monad_evcap_event_section = unsafe { std::mem::zeroed() };
 
     let r = unsafe {
@@ -212,7 +215,9 @@ pub(crate) fn monad_evcap_event_section_copy_seqno(
                 )
             });
         }
-        _ => panic!("ffi::monad_evcap_event_section_copy_seqno produced event_descriptor and payload ptr where only one is non-null")
+        _ => panic!(
+            "ffi::monad_evcap_event_section_copy_seqno produced event_descriptor and payload ptr where only one is non-null"
+        ),
     }
 
     (evcap_read_result, event_descriptor, payload)
@@ -255,7 +260,9 @@ pub(crate) unsafe fn monad_evcap_event_iter_next<'reader>(
                 )
             });
         }
-        _ => panic!("ffi::monad_evcap_event_iter_next produced event_descriptor and payload ptr where only one is non-null")
+        _ => panic!(
+            "ffi::monad_evcap_event_iter_next produced event_descriptor and payload ptr where only one is non-null"
+        ),
     }
 
     (evcap_read_result, event_descriptor, payload)
@@ -298,7 +305,9 @@ pub(crate) fn monad_evcap_event_iter_prev(
                 )
             });
         }
-        _ => panic!("ffi::monad_evcap_event_iter_prev produced event_descriptor and payload ptr where only one is non-null")
+        _ => panic!(
+            "ffi::monad_evcap_event_iter_prev produced event_descriptor and payload ptr where only one is non-null"
+        ),
     }
 
     (evcap_read_result, event_descriptor, payload)
@@ -341,7 +350,9 @@ pub(crate) fn monad_evcap_event_iter_copy(
                 )
             });
         }
-        _ => panic!("ffi::monad_evcap_event_iter_copy produced event_descriptor and payload ptr where only one is non-null")
+        _ => panic!(
+            "ffi::monad_evcap_event_iter_copy produced event_descriptor and payload ptr where only one is non-null"
+        ),
     }
 
     (evcap_read_result, event_descriptor, payload)

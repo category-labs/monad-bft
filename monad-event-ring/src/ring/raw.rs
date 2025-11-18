@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use monad_event::EventDecoder;
+use monad_event::{EventDecoder, Result};
 
 use crate::ffi::{
     monad_event_ring, monad_event_ring_check_content_type, monad_event_ring_mmap,
@@ -33,7 +33,7 @@ impl RawEventRing {
         ring_fd: libc::c_int,
         ring_offset: libc::off_t,
         error_name: &str,
-    ) -> Result<Self, String> {
+    ) -> Result<Self> {
         monad_event_ring_mmap(
             mmap_prot,
             mmap_extra_flags,
@@ -44,7 +44,7 @@ impl RawEventRing {
         .map(|inner| Self { inner })
     }
 
-    pub(crate) fn check_type<D>(&self) -> Result<(), String>
+    pub(crate) fn check_type<D>(&self) -> Result<()>
     where
         D: EventDecoder,
     {

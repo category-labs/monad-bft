@@ -30,10 +30,11 @@ mod bindings {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
 
+use ::monad_event::Result;
 use ::monad_event_capture::ffi::{monad_evcap_reader, monad_evcap_section_desc};
 
 #[inline]
-fn get_last_bcap_library_error(r: libc::c_int) -> Result<(), String> {
+fn get_last_bcap_library_error(r: libc::c_int) -> Result<()> {
     if r == 0 {
         return Ok(());
     }
@@ -44,18 +45,20 @@ fn get_last_bcap_library_error(r: libc::c_int) -> Result<(), String> {
             .unwrap_or("Invalid UTF-8 in monad_bcap_get_last_error")
     };
 
-    Err(String::from(err_str))
+    let err = std::io::Error::from_raw_os_error(r);
+
+    Err(std::io::Error::new(err.kind(), err_str))
 }
 
 #[inline]
-fn error_name_to_cstring(str_ref: impl AsRef<str>) -> Result<CString, String> {
-    CString::new(str_ref.as_ref()).map_err(|nul_err| nul_err.to_string())
+fn error_name_to_cstring(str_ref: impl AsRef<str>) -> Result<CString> {
+    Ok(CString::new(str_ref.as_ref())?)
 }
 
 pub(crate) fn monad_block_capture_block_archive_open(
     dirfd: libc::c_int,
     error_name: &str,
-) -> Result<&'static mut monad_bcap_block_archive, String> {
+) -> Result<&'static mut monad_bcap_block_archive> {
     let mut c_block_capture_block_archive: *mut monad_bcap_block_archive = std::ptr::null_mut();
 
     let error_name_cstring = error_name_to_cstring(error_name)?;
@@ -80,7 +83,7 @@ pub(crate) fn monad_block_capture_block_archive_close(
 pub(crate) fn monad_block_capture_block_archive_open_block(
     c_block_capture_block_archive: &monad_bcap_block_archive,
     block_number: u64,
-) -> Result<&'static mut monad_evcap_reader, String> {
+) -> Result<&'static mut monad_evcap_reader> {
     let mut c_event_capture_reader: *mut monad_evcap_reader = std::ptr::null_mut();
     let mut c_evcap_section_desc: *const monad_evcap_section_desc = unsafe { std::mem::zeroed() };
 

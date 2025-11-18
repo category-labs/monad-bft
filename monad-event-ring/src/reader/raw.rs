@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use monad_event::{ffi::monad_event_descriptor, RawEventDescriptor};
+use monad_event::{ffi::monad_event_descriptor, RawEventDescriptor, Result};
 
 use crate::{
     ffi::{
@@ -31,7 +31,7 @@ pub(crate) struct RawEventReader<'ring> {
 }
 
 impl<'ring> RawEventReader<'ring> {
-    pub(crate) fn new(event_ring: &'ring RawEventRing) -> Result<Self, String> {
+    pub(crate) fn new(event_ring: &'ring RawEventRing) -> Result<Self> {
         let inner = monad_event_ring_iterator_init(&event_ring.inner)?;
 
         Ok(Self { inner, event_ring })

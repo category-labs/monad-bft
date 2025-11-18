@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use monad_event::Result;
+
 use crate::{
     ffi::{
         self, monad_evcap_reader, monad_evcap_reader_create, monad_evcap_reader_destroy,
@@ -27,7 +29,7 @@ pub struct EventCaptureReader {
 }
 
 impl EventCaptureReader {
-    pub(crate) fn new(file: &std::fs::File) -> Result<Self, String> {
+    pub(crate) fn new(file: &std::fs::File) -> Result<Self> {
         let inner = monad_evcap_reader_create(file, "todo")?;
 
         Ok(Self {

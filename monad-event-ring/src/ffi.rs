@@ -38,10 +38,13 @@ mod bindings {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
 
-use ::monad_event::ffi::{monad_event_content_type, monad_event_descriptor};
+use ::monad_event::{
+    ffi::{monad_event_content_type, monad_event_descriptor},
+    Result,
+};
 
 #[inline]
-fn get_last_ring_library_error(r: libc::c_int) -> Result<(), String> {
+fn get_last_ring_library_error(r: libc::c_int) -> Result<()> {
     if r == 0 {
         return Ok(());
     }
@@ -52,12 +55,14 @@ fn get_last_ring_library_error(r: libc::c_int) -> Result<(), String> {
             .unwrap_or("Invalid UTF-8 in monad_event_ring_get_last_error")
     };
 
-    Err(String::from(err_str))
+    let err = std::io::Error::from_raw_os_error(r);
+
+    Err(std::io::Error::new(err.kind(), err_str))
 }
 
 #[inline]
-fn error_name_to_cstring(str_ref: impl AsRef<str>) -> Result<CString, String> {
-    CString::new(str_ref.as_ref()).map_err(|nul_err| nul_err.to_string())
+fn error_name_to_cstring(str_ref: impl AsRef<str>) -> Result<CString> {
+    Ok(CString::new(str_ref.as_ref())?)
 }
 
 pub(crate) fn monad_event_ring_mmap(
@@ -66,7 +71,7 @@ pub(crate) fn monad_event_ring_mmap(
     ring_fd: libc::c_int,
     ring_offset: libc::off_t,
     error_name: &str,
-) -> Result<monad_event_ring, String> {
+) -> Result<monad_event_ring> {
     let mut c_event_ring: monad_event_ring = unsafe { std::mem::zeroed() };
 
     let error_name_cstring = error_name_to_cstring(error_name)?;
@@ -89,7 +94,7 @@ pub(crate) fn monad_event_ring_check_content_type(
     c_event_ring: &monad_event_ring,
     c_event_content_type: monad_event_content_type,
     schema_hash: &[u8; 32],
-) -> Result<(), String> {
+) -> Result<()> {
     let r = unsafe {
         self::bindings::monad_event_ring_check_content_type(
             c_event_ring,
@@ -109,7 +114,7 @@ pub(crate) fn monad_event_ring_unmap(c_event_ring: &mut monad_event_ring) {
 
 pub(crate) fn monad_event_ring_iterator_init(
     c_event_ring: &monad_event_ring,
-) -> Result<monad_event_ring_iter, String> {
+) -> Result<monad_event_ring_iter> {
     let mut c_event_iterator: monad_event_ring_iter = unsafe { std::mem::zeroed() };
 
     let r = unsafe {
@@ -162,41 +167,40 @@ pub(crate) fn monad_event_ring_payload_check(
     unsafe { self::bindings::monad_event_ring_payload_check(c_event_ring, c_event_descriptor) }
 }
 
-pub(crate) fn monad_event_resolve_ring_path(input: impl AsRef<Path>) -> Result<PathBuf, String> {
+pub(crate) fn monad_event_resolve_ring_path(input: impl AsRef<Path>) -> Result<PathBuf> {
     monad_event_resolve_ring_path_with_basepath(Option::<PathBuf>::None, input)
 }
 
 pub(crate) fn monad_event_resolve_ring_path_with_basepath(
     default_path: Option<impl AsRef<Path>>,
     input: impl AsRef<Path>,
-) -> Result<PathBuf, String> {
+) -> Result<PathBuf> {
     let default_path = match &default_path {
-        Some(default_path) => Some(default_path.as_ref().to_str().ok_or(format!(
-            "cannot extract path bytes from `{:?}`",
-            input.as_ref()
-        ))?),
+        Some(default_path) => Some(default_path.as_ref().to_str().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidFilename,
+                format!("cannot extract path bytes from `{:?}`", input.as_ref()),
+            )
+        })?),
         None => None,
     };
 
-    let input = input.as_ref().to_str().ok_or(format!(
-        "cannot extract path bytes from `{:?}`",
-        input.as_ref()
+    let input = input.as_ref().to_str().ok_or(std::io::Error::new(
+        std::io::ErrorKind::InvalidFilename,
+        format!("cannot extract path bytes from `{:?}`", input.as_ref()),
     ))?;
 
     _monad_event_resolve_ring_path(default_path, input)
 }
 
 #[inline]
-fn _monad_event_resolve_ring_path(
-    default_path: Option<&str>,
-    input: &str,
-) -> Result<PathBuf, String> {
+fn _monad_event_resolve_ring_path(default_path: Option<&str>, input: &str) -> Result<PathBuf> {
     let opt_default_path_cstring = match default_path {
-        Some(default_path) => Some(CString::new(default_path).map_err(|e| e.to_string())?),
+        Some(default_path) => Some(CString::new(default_path)?),
         None => None,
     };
 
-    let input_cstring = CString::new(input).map_err(|e| e.to_string())?;
+    let input_cstring = CString::new(input)?;
 
     let mut pathbuf_cstr_bytes = vec![0u8; libc::PATH_MAX as usize];
 
@@ -211,14 +215,12 @@ fn _monad_event_resolve_ring_path(
 
     get_last_ring_library_error(r)?;
 
-    let pathbuf_cstr = match CStr::from_bytes_until_nul(pathbuf_cstr_bytes.as_slice()) {
-        Ok(cstr) => cstr,
-        Err(err) => return Err(err.to_string()),
-    };
+    let pathbuf_cstr = CStr::from_bytes_until_nul(pathbuf_cstr_bytes.as_slice())
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidFilename, err.to_string()))?;
 
     let pathbuf_str = pathbuf_cstr
         .to_str()
-        .map_err(|utf_err| utf_err.to_string())?;
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidFilename, err.to_string()))?;
 
     Ok(PathBuf::from(pathbuf_str))
 }
@@ -226,7 +228,7 @@ fn _monad_event_resolve_ring_path(
 pub(crate) fn monad_event_is_snapshot_file(
     file: &std::fs::File,
     error_name: impl AsRef<str>,
-) -> Result<bool, String> {
+) -> Result<bool> {
     let mut is_snapshot = false;
 
     let error_name_cstring = error_name_to_cstring(error_name)?;
@@ -246,7 +248,7 @@ pub(crate) fn monad_event_decompress_snapshot_fd(
     file: &std::fs::File,
     max_size: Option<usize>,
     error_name: impl AsRef<str>,
-) -> Result<Option<std::fs::File>, String> {
+) -> Result<Option<std::fs::File>> {
     let error_name_cstring = error_name_to_cstring(error_name)?;
 
     let mut fd: libc::c_int = -1;
@@ -267,7 +269,7 @@ pub(crate) fn monad_event_decompress_snapshot_mem(
     bytes: &[u8],
     max_size: Option<usize>,
     error_name: impl AsRef<str>,
-) -> Result<Option<std::fs::File>, String> {
+) -> Result<Option<std::fs::File>> {
     let error_name_cstring = error_name_to_cstring(error_name)?;
 
     let mut fd: libc::c_int = -1;
@@ -285,10 +287,7 @@ pub(crate) fn monad_event_decompress_snapshot_mem(
     handle_error_and_produce_file(fd, r)
 }
 
-fn handle_error_and_produce_file(
-    fd: libc::c_int,
-    r: libc::c_int,
-) -> Result<Option<std::fs::File>, String> {
+fn handle_error_and_produce_file(fd: libc::c_int, r: libc::c_int) -> Result<Option<std::fs::File>> {
     get_last_ring_library_error(r)?;
 
     if fd == -1 {

@@ -18,7 +18,7 @@ use std::{ffi::CStr, path::PathBuf, time::Duration};
 use chrono::{DateTime, Local, TimeZone};
 use clap::Parser;
 use lazy_static::lazy_static;
-use monad_event::EventDescriptorInfo;
+use monad_event::{EventDescriptorInfo, Result};
 use monad_event_ring::{DecodedEventRing, EventNextResult, EventPayloadResult, EventRingPath};
 use monad_exec_events::{
     ffi::{g_monad_exec_event_metadata, DEFAULT_FILE_NAME, MONAD_EXEC_EVENT_COUNT},
@@ -126,7 +126,7 @@ enum OpenEventRing {
 }
 
 impl OpenEventRing {
-    fn new(event_ring_path: EventRingPath) -> Result<Self, String> {
+    fn new(event_ring_path: EventRingPath) -> Result<Self> {
         if event_ring_path.is_snapshot_file()? {
             let snapshot = ExecSnapshotEventRing::new_from_zstd_path(event_ring_path, None)?;
             Ok(OpenEventRing::Snapshot(snapshot))
