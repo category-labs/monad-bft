@@ -69,6 +69,9 @@ pub struct NodeState {
     pub otel_endpoint_interval: Option<(String, Duration)>,
     pub pprof: String,
     pub reload_handle: Box<dyn TracingReload>,
+    // should be kept as long as node is alive, tracing listener is stopped when handle is dropped
+    #[allow(unused)]
+    manytrace_agent: Option<agent::Agent>,
 }
 
 impl NodeState {
@@ -94,7 +97,7 @@ impl NodeState {
             manytrace_socket,
         } = Cli::from_arg_matches_mut(&mut cmd.get_matches_mut())?;
 
-        let (reload_handle, _agent) = NodeState::setup_tracing(manytrace_socket)?;
+        let (reload_handle, agent) = NodeState::setup_tracing(manytrace_socket)?;
 
         let keystore_password = keystore_password.as_deref().unwrap_or("");
 
@@ -196,6 +199,7 @@ impl NodeState {
             otel_endpoint_interval,
             pprof,
             reload_handle,
+            manytrace_agent: agent,
         })
     }
 
