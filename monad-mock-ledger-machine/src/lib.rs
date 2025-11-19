@@ -56,6 +56,8 @@ use monad_eth_types::EthBlockBody;
 use monad_executor_glue::LedgerCommand;
 use monad_ledger::MonadBlockFileLedger;
 
+pub mod faucet;
+
 type SignatureType = SecpSignature;
 
 type SignatureCollectionType = BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>;
