@@ -24,12 +24,14 @@ use monad_chain_config::ChainConfig;
 use monad_chain_config::MonadChainConfig;
 use monad_consensus_types::block::{OptimisticCommit, GENESIS_TIMESTAMP};
 use monad_consensus_types::block_validator::BlockValidator;
+use monad_consensus_types::metrics;
 use monad_consensus_types::payload::RoundSignature;
 use monad_consensus_types::voting::Vote;
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_crypto::signing_domain;
 use monad_eth_block_policy::timestamp_ns_to_secs;
 use monad_eth_block_policy::EthBlockPolicy;
+use monad_eth_block_validator::error::EthBlockValidationError;
 use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_types::EthExecutionProtocol;
 use monad_eth_types::ProposedEthHeader;
@@ -218,13 +220,17 @@ impl MonadMockLedgerMachine {
             StateBackendType,
             MonadChainConfig,
             MonadChainRevision,
+            BlockValidationError = EthBlockValidationError,
         > = &EthBlockValidator::default();
+
+        let mut validator_metrics = metrics::Metrics::default();
         let _ = validator
             .validate(
                 consensus_full_block.header().clone(),
                 consensus_full_block.body().clone(),
                 None,
                 &chain_config,
+                &mut validator_metrics
             )
             .expect("valid block");
 
