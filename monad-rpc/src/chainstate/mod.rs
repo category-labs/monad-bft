@@ -682,48 +682,47 @@ impl<T: Triedb> ChainState<T> {
 
         let filtered_params = FilteredParams::new(Some(filter.clone()));
 
-        let block_range = from_block..=to_block;
-
-        let triedb_stream = stream::iter(block_range)
+        let stream_with_triedb = stream::iter(from_block..=to_block)
             .map(|block_num| {
                 async move {
                     let block_key = self.triedb_env.get_block_key(SeqNum(block_num)).ok_or(
                         JsonRpcError::internal_error("missing block in db in range".to_owned()),
                     )?;
-                    if let Some(header) = self
+
+                    let Some(header) = self
                         .triedb_env
                         .get_block_header(block_key)
                         .await
                         .map_err(JsonRpcError::internal_error)?
-                    {
-                        if filter_match(header.header.logs_bloom) {
-                            // try fetching from triedb
-                            if let Ok(transactions) =
-                                self.triedb_env.get_transactions(block_key).await
-                            {
-                                let bloom_receipts = self
-                                    .triedb_env
-                                    .get_receipts(block_key)
-                                    .await
-                                    .map_err(JsonRpcError::internal_error)?;
-                                // successfully fetched from triedb
-                                Ok(Either::Left((header, transactions, bloom_receipts)))
-                            } else {
-                                // header exists but not transactions, block is statesynced
-                                // pass block number to try for archive
-                                Ok(Either::Right(block_num))
-                            }
-                        } else {
-                            Ok(Either::Left((header, vec![], vec![])))
-                        }
-                    } else {
-                        Ok(Either::Right(block_num)) // pass block number to try for archive
+                    else {
+                        // pass block number to try for archive
+                        return Ok(Either::Right(block_num));
+                    };
+
+                    if !filter_match(header.header.logs_bloom) {
+                        return Ok(Either::Left((header, vec![], vec![])));
                     }
+
+                    // try fetching from triedb
+                    let Ok(transactions) = self.triedb_env.get_transactions(block_key).await else {
+                        // header exists but not transactions, block is statesynced
+                        // pass block number to try for archive
+                        return Ok(Either::Right(block_num));
+                    };
+
+                    let receipts = self
+                        .triedb_env
+                        .get_receipts(block_key)
+                        .await
+                        .map_err(JsonRpcError::internal_error)?;
+
+                    // successfully fetched from triedb
+                    Ok(Either::Left((header, transactions, receipts)))
                 }
             })
             .buffered(10);
 
-        let data = triedb_stream
+        let stream_with_archive = stream_with_triedb
             .map(|result| {
                 async move {
                     match result {
@@ -742,19 +741,14 @@ impl<T: Triedb> ChainState<T> {
                     }
                 }
             })
-            .buffered(100)
-            .try_collect::<Vec<_>>()
-            .await?;
+            .buffered(100);
 
-        let receipt_logs = data
-            .iter()
-            .map(|(header, transactions, bloom_receipts)| {
-                block_receipts(
-                    transactions.to_vec(),
-                    bloom_receipts.to_vec(),
-                    &header.header,
-                    header.hash,
-                )
+        let data = stream_with_archive.try_collect::<Vec<_>>().await?;
+
+        let logs = data
+            .into_iter()
+            .map(|(header, transactions, receipts)| {
+                block_receipts(transactions, receipts, &header.header, header.hash)
             })
             .flatten_ok()
             .map_ok(|receipt| {
@@ -780,9 +774,10 @@ impl<T: Triedb> ChainState<T> {
             .collect::<Result<Vec<_>, _>>()?;
 
         if dry_run_get_logs_index {
-            let non_indexed =
-                HashSet::from_iter(receipt_logs.iter().map(|monad_log| &monad_log.0).cloned());
             if let Some(archive_reader) = self.archive_reader.clone() {
+                let non_indexed =
+                    HashSet::from_iter(logs.iter().map(|monad_log| &monad_log.0).cloned());
+
                 tokio::spawn(async move {
                     if let Err(e) = check_dry_run_get_logs_index(
                         archive_reader,
@@ -799,7 +794,7 @@ impl<T: Triedb> ChainState<T> {
             }
         }
 
-        Ok(receipt_logs)
+        Ok(logs)
     }
 }
 
