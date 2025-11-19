@@ -1,0 +1,29 @@
+[Unit]
+Description="Service file for Monad execution events archive uploader"
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/monad-archiver \
+    --additional-dirs-to-archive ${BLOCKCAPD_ROOT_DIR} \
+    --unsafe-disable-normal-archiving \
+    --block-data-source "aws dummy" \
+    --archive-sink "aws ${BLOCKCAPD_S3_BUCKET}" \
+    --skip-connectivity-check \
+    --otel-endpoint ${OTEL_ENDPOINT} \
+    --otel-replica-name-override "exec-events-archiver-%H"
+EnvironmentFile=-/home/monad/.env
+Environment="RUST_LOG=debug,h2=warn,tower=warn"
+Restart=no
+User=monad
+Group=monad
+LimitNOFILE=1048576
+# Hugemem configs below
+LimitMEMLOCK=infinity
+MemoryDenyWriteExecute=false
+#SystemCallFilter=~@memlock
+ProtectKernelModules=no
+ProtectKernelLogs=no
+
+[Install]
+WantedBy=multi-user.target
