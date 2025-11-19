@@ -690,6 +690,8 @@ mod tests {
             logs_max_block_range: 1000,
             eth_call_provider_gas_limit: u64::MAX,
             eth_estimate_gas_provider_gas_limit: u64::MAX,
+            eth_send_raw_transaction_sync_default_timeout_ms: 2_000,
+            eth_send_raw_transaction_sync_max_timeout_ms: 10_000,
             dry_run_get_logs_index: false,
             use_eth_get_logs_index: false,
             max_finalized_block_cache_len: 200,

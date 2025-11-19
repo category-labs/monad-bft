@@ -381,6 +381,28 @@ impl JsonRpcError {
         }
     }
 
+    /// EIP-7966 errors
+    pub fn tx_sync_timeout(tx_hash: String, timeout_ms: u64) -> Self {
+        Self {
+            code: 4,
+            message: format!(
+                "Transaction receipt not available within {}ms timeout",
+                timeout_ms
+            ),
+            data: Some(serde_json::json!({
+                "hash": tx_hash
+            })),
+        }
+    }
+
+    pub fn tx_sync_unready() -> Self {
+        Self {
+            code: 5,
+            message: "The transaction is not ready to be processed".into(),
+            data: None,
+        }
+    }
+
     pub fn eth_call_error(message: String, data: Option<String>) -> Self {
         Self {
             code: -32603,
