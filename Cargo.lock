@@ -5505,6 +5505,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-mock-ledger-machine"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-primitives",
+ "alloy-signer",
+ "alloy-signer-local",
+ "itertools 0.10.5",
+ "monad-bls",
+ "monad-chain-config",
+ "monad-consensus-types",
+ "monad-crypto",
+ "monad-eth-block-policy",
+ "monad-eth-block-validator",
+ "monad-eth-types",
+ "monad-executor",
+ "monad-executor-glue",
+ "monad-ledger",
+ "monad-secp",
+ "monad-state-backend",
+ "monad-tfm",
+ "monad-types",
+ "monad-validator",
+]
+
+[[package]]
 name = "monad-mock-swarm"
 version = "0.1.0"
 dependencies = [
