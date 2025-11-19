@@ -1,4 +1,5 @@
 use monad_mock_ledger_machine::MonadMockLedgerMachine;
+use monad_mock_ledger_machine::faucet::Faucet;
 
 use monad_chain_config::execution_revision::MonadExecutionRevision;
 use monad_chain_config::revision::MonadChainRevision;
@@ -48,9 +49,11 @@ fn main() {
         proposer_private_key,
     );
 
-    // Propose block 1 (without transactions):
+    let mut faucet = Faucet::new();
+
+    // Propose block 1 (funding 3 test accounts from a faucet):
     machine.propose(
-        /* txs: */ vec![],
+        /* txs: */ vec![faucet.fund([1u8; 32]), faucet.fund([2u8; 32]), faucet.fund([3u8; 32]),],
         /* base_fee: */ 100_000_000_000,
         /* base_fee_trend: */ 0,
         /* base_fee_moment: */ 0,
