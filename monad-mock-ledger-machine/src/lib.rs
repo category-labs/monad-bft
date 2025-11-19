@@ -36,9 +36,6 @@ use monad_eth_types::ProposedEthHeader;
 use monad_executor::Executor;
 use monad_secp::{KeyPair, PubKey, SecpSignature};
 use monad_state_backend::InMemoryState;
-use monad_tfm::base_fee::GENESIS_BASE_FEE;
-use monad_tfm::base_fee::GENESIS_BASE_FEE_MOMENT;
-use monad_tfm::base_fee::GENESIS_BASE_FEE_TREND;
 use monad_types::GENESIS_ROUND;
 use monad_types::{Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_validator::signature_collection::SignatureCollection;
@@ -156,9 +153,7 @@ impl MonadMockLedgerMachine {
         let timestamp_seconds = timestamp_ns_to_secs(self.timestamp);
 
         let header = ProposedEthHeader {
-            transactions_root: *calculate_transaction_root(
-                &body.transactions,
-            ),
+            transactions_root: *calculate_transaction_root(&body.transactions),
             ommers_hash: *EMPTY_OMMER_ROOT_HASH,
             withdrawals_root: *EMPTY_WITHDRAWALS,
             beneficiary: beneficiary.into(),

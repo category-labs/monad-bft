@@ -1,5 +1,5 @@
-use monad_mock_ledger_machine::MonadMockLedgerMachine;
 use monad_mock_ledger_machine::faucet::Faucet;
+use monad_mock_ledger_machine::MonadMockLedgerMachine;
 
 use monad_chain_config::{MonadChainConfig, MONAD_DEVNET_CHAIN_ID};
 
@@ -37,26 +37,30 @@ fn main() {
     let proposer_private_key = [1u8; 32];
 
     // Build the mock ledger state machine:
-    let mut machine = MonadMockLedgerMachine::new(
-        chain_config,
-        ledger_path,
-        proposer_private_key,
-    );
+    let mut machine = MonadMockLedgerMachine::new(chain_config, ledger_path, proposer_private_key);
 
     let mut faucet = Faucet::new();
 
+    let user1 = [1u8; 32];
+    let user2 = [2u8; 32];
+    let user3 = [3u8; 32];
+
     // Propose block 1 (funding 3 test accounts from a faucet):
     machine.propose(
-        /* txs: */ vec![faucet.fund([1u8; 32]), faucet.fund([2u8; 32]), faucet.fund([3u8; 32]),],
+        /* txs: */ vec![faucet.fund(user1), faucet.fund(user2), faucet.fund(user3)],
         /* base_fee: */ 100_000_000_000,
         /* base_fee_trend: */ 0,
         /* base_fee_moment: */ 0,
         /* beneficiary: */ [0u8; 20],
     );
 
-    // Propose block 2 (with one transaction):
+    // Propose block 2 (with two transactions from the same sender):
     machine.propose(
-        /* txs: */ vec![get_dummy_tx_eip1559([1u8; 32], 0)],
+        /* txs: */
+        vec![
+            get_dummy_tx_eip1559(user1, 0),
+            get_dummy_tx_eip1559(user1, 1),
+        ],
         /* base_fee: */ 100_000_000_000,
         /* base_fee_trend: */ 0,
         /* base_fee_moment: */ 0,
@@ -66,8 +70,8 @@ fn main() {
     // Finalize block 1:
     machine.finalize();
 
-    // Propose block 3 (with three transaction):
-    let tx0 = get_dummy_tx_eip1559([1u8; 32], 1);
+    // Propose block 3 (with three transactions from different senders):
+    let tx0 = get_dummy_tx_eip1559([1u8; 32], 2);
     let tx1 = get_dummy_tx_eip1559([2u8; 32], 0);
     let tx2 = get_dummy_tx_eip1559([3u8; 32], 0);
     machine.propose(
