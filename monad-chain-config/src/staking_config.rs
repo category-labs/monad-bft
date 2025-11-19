@@ -59,10 +59,13 @@ pub const MONAD_DEVNET_STAKING_CONFIG: MonadStakingConfig = MonadStakingConfig {
     staking_activation: Epoch(2),
 
     block_reward_v_one: BlockRewardConfig {
-        block_reward_activation: Epoch(3),
+        block_reward_activation: Epoch(5),
         block_reward_mon: 1,
     },
-    block_reward_v_two: BlockRewardConfig::unused(),
+    block_reward_v_two: BlockRewardConfig {
+        block_reward_activation: Epoch(8),
+        block_reward_mon: 25,
+    },
 };
 
 pub const MONAD_TESTNET_STAKING_CONFIG: MonadStakingConfig = MonadStakingConfig {
