@@ -19,3 +19,5 @@ test-keys
 /venv
 /logs
 **/proptest-regressions/
+/reports
+deployed_contracts.json
