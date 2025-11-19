@@ -18,9 +18,9 @@ use alloy_consensus::proofs::calculate_transaction_root;
 use alloy_consensus::TxEnvelope;
 use alloy_consensus::EMPTY_OMMER_ROOT_HASH;
 use monad_bls::{BlsKeyPair, BlsSignatureCollection};
-use monad_chain_config::execution_revision::MonadExecutionRevision;
 use monad_chain_config::revision::ChainRevision;
 use monad_chain_config::revision::MonadChainRevision;
+use monad_chain_config::ChainConfig;
 use monad_chain_config::MonadChainConfig;
 use monad_consensus_types::block::{OptimisticCommit, GENESIS_TIMESTAMP};
 use monad_consensus_types::block_validator::BlockValidator;
@@ -76,8 +76,6 @@ fn node_id_from_private_key(mut node_private_key: [u8; 32]) -> NodeId<PubKey> {
 }
 
 pub struct MonadMockLedgerMachine {
-    execution_revision: MonadExecutionRevision,
-    chain_revision: MonadChainRevision,
     chain_config: MonadChainConfig,
     timestamp: u128,
     epoch: Epoch,
@@ -91,15 +89,11 @@ pub struct MonadMockLedgerMachine {
 
 impl MonadMockLedgerMachine {
     pub fn new(
-        execution_revision: MonadExecutionRevision,
-        chain_revision: MonadChainRevision,
         chain_config: MonadChainConfig,
         ledger_path: PathBuf,
         proposer_private_key: [u8; 32],
     ) -> MonadMockLedgerMachine {
         MonadMockLedgerMachine {
-            execution_revision,
-            chain_revision,
             chain_config,
             timestamp: GENESIS_TIMESTAMP,
             epoch: Epoch(0),
@@ -110,15 +104,6 @@ impl MonadMockLedgerMachine {
             unfinalized_blocks: VecDeque::default(),
             qc: QuorumCertificate::genesis_qc(),
         }
-    }
-
-    pub fn switch_execution_revision(&mut self, r: MonadExecutionRevision) {
-        self.execution_revision = r;
-    }
-
-    pub fn switch_chain_config(&mut self, r: MonadChainRevision, c: MonadChainConfig) {
-        self.chain_revision = r;
-        self.chain_config = c;
     }
 
     pub fn inc_round(&mut self, n: u64) {
@@ -145,7 +130,6 @@ impl MonadMockLedgerMachine {
         base_fee: u64,
         base_fee_trend: u64,
         base_fee_moment: u64,
-        tx_limit: usize,
         beneficiary: [u8; 20],
     ) {
         let round_sig = self.round_signature();
@@ -159,7 +143,8 @@ impl MonadMockLedgerMachine {
         };
 
         let maybe_request_hash = if self
-            .execution_revision
+            .chain_config
+            .get_execution_chain_revision(self.round.0)
             .execution_chain_params()
             .prague_enabled
         {
@@ -179,7 +164,11 @@ impl MonadMockLedgerMachine {
             beneficiary: beneficiary.into(),
             difficulty: 0,
             number: self.seq_num.0,
-            gas_limit: self.chain_revision.chain_params().proposal_gas_limit,
+            gas_limit: self
+                .chain_config
+                .get_chain_revision(self.round)
+                .chain_params()
+                .proposal_gas_limit,
             timestamp: timestamp_seconds,
             mix_hash: round_sig.get_hash().0,
             nonce: [0_u8; 8],

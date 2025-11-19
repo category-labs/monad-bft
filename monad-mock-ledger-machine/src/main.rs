@@ -1,8 +1,6 @@
 use monad_mock_ledger_machine::MonadMockLedgerMachine;
 use monad_mock_ledger_machine::faucet::Faucet;
 
-use monad_chain_config::execution_revision::MonadExecutionRevision;
-use monad_chain_config::revision::MonadChainRevision;
 use monad_chain_config::{MonadChainConfig, MONAD_DEVNET_CHAIN_ID};
 
 use alloy_consensus::SignableTransaction;
@@ -34,16 +32,12 @@ fn get_dummy_tx_eip1559(sender: [u8; 32], nonce: u64) -> TxEnvelope {
 }
 
 fn main() {
-    let execution_revision = MonadExecutionRevision::V_FOUR;
-    let chain_revision = MonadChainRevision::V_0_11_0;
     let chain_config = MonadChainConfig::new(MONAD_DEVNET_CHAIN_ID, None).unwrap();
     let ledger_path = "/tmp/ledger".into();
     let proposer_private_key = [1u8; 32];
 
     // Build the mock ledger state machine:
     let mut machine = MonadMockLedgerMachine::new(
-        execution_revision,
-        chain_revision,
         chain_config,
         ledger_path,
         proposer_private_key,
@@ -57,7 +51,6 @@ fn main() {
         /* base_fee: */ 100_000_000_000,
         /* base_fee_trend: */ 0,
         /* base_fee_moment: */ 0,
-        /* tx_limit: */ 128,
         /* beneficiary: */ [0u8; 20],
     );
 
@@ -67,7 +60,6 @@ fn main() {
         /* base_fee: */ 100_000_000_000,
         /* base_fee_trend: */ 0,
         /* base_fee_moment: */ 0,
-        /* tx_limit: */ 128,
         /* beneficiary: */ [0u8; 20],
     );
 
@@ -83,7 +75,6 @@ fn main() {
         /* base_fee: */ 100_000_000_000,
         /* base_fee_trend: */ 0,
         /* base_fee_moment: */ 0,
-        /* tx_limit: */ 128,
         /* beneficiary: */ [0u8; 20],
     );
 
