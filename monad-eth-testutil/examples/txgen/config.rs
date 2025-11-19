@@ -21,7 +21,7 @@ use url::Url;
 
 use crate::{
     prelude::*,
-    shared::{ecmul::ECMul, eip7702::EIP7702, erc20::ERC20, uniswap::Uniswap},
+    shared::{ecmul::ECMul, eip7702::EIP7702, erc20::ERC20, nft_sale::NftSale, uniswap::Uniswap},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -166,6 +166,7 @@ impl TrafficGen {
             GenMode::EIP7702Reuse(..) => 10,
             GenMode::EIP7702Create(..) => 10,
             GenMode::ExtremeValues => 10,
+            GenMode::NftSale => 10,
         }
     }
 
@@ -193,6 +194,7 @@ impl TrafficGen {
             GenMode::EIP7702Reuse(..) => 10,
             GenMode::EIP7702Create(..) => 10,
             GenMode::ExtremeValues => 10,
+            GenMode::NftSale => 10,
         }
     }
 
@@ -220,6 +222,7 @@ impl TrafficGen {
             GenMode::EIP7702Reuse(..) => 100,
             GenMode::EIP7702Create(..) => 100,
             GenMode::ExtremeValues => 100,
+            GenMode::NftSale => 2500,
         }
     }
 
@@ -254,6 +257,7 @@ impl TrafficGen {
             GenMode::EIP7702Reuse(..) => EIP7702,
             GenMode::EIP7702Create(..) => EIP7702,
             GenMode::ExtremeValues => ERC20,
+            GenMode::NftSale => NftSale,
         }
     }
 }
@@ -396,6 +400,7 @@ pub enum RequiredContract {
     ECMUL,
     Uniswap,
     EIP7702,
+    NftSale,
 }
 
 #[derive(Debug, Clone)]
@@ -405,6 +410,7 @@ pub enum DeployedContract {
     ECMUL(ECMul),
     Uniswap(Uniswap),
     EIP7702(EIP7702),
+    NftSale(NftSale),
 }
 
 impl DeployedContract {
@@ -435,6 +441,13 @@ impl DeployedContract {
             _ => bail!("Expected eip7702, found {:?}", &self),
         }
     }
+
+    pub fn nft_sale(self) -> Result<NftSale> {
+        match self {
+            Self::NftSale(nft_sale) => Ok(nft_sale),
+            _ => bail!("Expected nft sale, found {:?}", &self),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -463,6 +476,8 @@ pub enum GenMode {
     SystemKeyNormal,
     SystemKeyNormalRandomPriorityFee,
     ExtremeValues,
+    #[serde(rename = "nft_sale")]
+    NftSale,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

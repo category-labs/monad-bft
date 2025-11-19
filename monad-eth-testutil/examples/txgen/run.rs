@@ -37,7 +37,8 @@ use crate::{
     },
     report::Report,
     shared::{
-        ecmul::ECMul, eip7702::EIP7702, erc20::ERC20, eth_json_rpc::EthJsonRpc, uniswap::Uniswap,
+        ecmul::ECMul, eip7702::EIP7702, erc20::ERC20, eth_json_rpc::EthJsonRpc, nft_sale::NftSale,
+        uniswap::Uniswap,
     },
 };
 
@@ -379,6 +380,7 @@ struct DeployedContractFile {
     ecmul: Option<Address>,
     uniswap: Option<Address>,
     eip7702: Option<Address>,
+    nft_sale: Option<Address>,
 }
 
 async fn load_or_deploy_contracts(
@@ -442,6 +444,7 @@ async fn load_or_deploy_contracts(
                 ecmul: None,
                 uniswap: None,
                 eip7702: None,
+                nft_sale: None,
             };
 
             write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
@@ -479,6 +482,7 @@ async fn load_or_deploy_contracts(
                 ecmul: Some(ecmul.addr),
                 uniswap: None,
                 eip7702: None,
+                nft_sale: None,
             };
 
             write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
@@ -517,6 +521,7 @@ async fn load_or_deploy_contracts(
                 ecmul: None,
                 uniswap: Some(uniswap.addr),
                 eip7702: None,
+                nft_sale: None,
             };
 
             write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
@@ -555,10 +560,55 @@ async fn load_or_deploy_contracts(
                 ecmul: None,
                 uniswap: None,
                 eip7702: Some(eip7702.addr),
+                nft_sale: None,
             };
 
             write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
             Ok(DeployedContract::EIP7702(eip7702))
+        }
+        RequiredContract::NftSale => {
+            match open_deployed_contracts_file(PATH) {
+                Ok(DeployedContractFile {
+                    nft_sale: Some(nft_sale),
+                    ..
+                }) => {
+                    if verify_contract_code(client, nft_sale).await? {
+                        let current_price = NftSale::get_current_price(client, nft_sale).await?;
+
+                        info!("Contract loaded from file validated");
+                        return Ok(DeployedContract::NftSale(NftSale {
+                            addr: nft_sale,
+                            current_sale_price: current_price,
+                        }));
+                    }
+                    warn!(
+                        "Contract loaded from file not found on chain, deploying new contract..."
+                    );
+                }
+                Err(e) => info!("Failed to load deployed contracts file, {e}"),
+                _ => info!("Contract not in deployed contracts file"),
+            }
+
+            // if not found, deploy new contract
+            let nft_sale = NftSale::deploy(
+                &deployer,
+                client,
+                max_fee_per_gas,
+                chain_id,
+                config.gas_limit_contract_deployment,
+            )
+            .await?;
+
+            let deployed = DeployedContractFile {
+                erc20: None,
+                ecmul: None,
+                uniswap: None,
+                eip7702: None,
+                nft_sale: Some(nft_sale.addr),
+            };
+
+            write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
+            Ok(DeployedContract::NftSale(nft_sale))
         }
     }
 }
