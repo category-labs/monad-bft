@@ -188,26 +188,24 @@ pub fn map_block_receipts<R>(
         ))?;
     }
 
-    let mut prev_receipt = None;
+    let mut cumulative_gas_used = 0u128;
 
     Ok(transactions
-        .iter()
+        .into_iter()
         .zip(receipts)
         .enumerate()
         .map(|(tx_index, (tx, receipt))| {
-            let prev_receipt = prev_receipt.replace(receipt.to_owned());
-            let gas_used = if let Some(prev_receipt) = &prev_receipt {
-                receipt.receipt.cumulative_gas_used() - prev_receipt.receipt.cumulative_gas_used()
-            } else {
-                receipt.receipt.cumulative_gas_used()
-            };
+            let new_cumulative_gas_used = receipt.receipt.cumulative_gas_used();
+
+            let tx_gas_used = new_cumulative_gas_used - cumulative_gas_used;
+            cumulative_gas_used = new_cumulative_gas_used;
 
             let parsed_receipt = parse_tx_receipt(
                 block_header.base_fee_per_gas,
                 Some(block_header.timestamp),
                 block_hash,
-                tx.to_owned(),
-                gas_used,
+                tx,
+                tx_gas_used,
                 receipt,
                 block_num,
                 tx_index as u64,
