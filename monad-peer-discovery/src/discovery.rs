@@ -30,6 +30,9 @@ use rand::{RngCore, seq::IteratorRandom};
 use rand_chacha::ChaCha8Rng;
 use tracing::{debug, info, trace, warn};
 
+use monad_types::{deserialize_pubkey, serialize_pubkey};
+use serde::{Deserialize, Serialize};
+
 use crate::{
     MonadNameRecord, NameRecord, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryCommand,
     PeerDiscoveryEvent, PeerDiscoveryMessage, PeerDiscoveryMetricsCommand,
@@ -191,6 +194,22 @@ pub struct PeerDiscoveryBuilder<ST: CertificateSignatureRecoverable> {
     pub persisted_peers_path: PathBuf,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+#[serde(bound = "ST: CertificateSignatureRecoverable")]
+pub struct PersistedPeers<ST: CertificateSignatureRecoverable> {
+    pub address: String,
+
+    pub record_seq_num: u64,
+
+    #[serde(serialize_with = "serialize_pubkey::<_, CertificateSignaturePubKey<ST>>")]
+    #[serde(deserialize_with = "deserialize_pubkey::<_, CertificateSignaturePubKey<ST>>")]
+    pub secp256k1_pubkey: CertificateSignaturePubKey<ST>,
+
+    #[serde(bound = "ST: CertificateSignatureRecoverable")]
+    pub name_record_sig: ST,
+}
+
 impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDiscoveryBuilder<ST> {
     type PeerDiscoveryAlgoType = PeerDiscovery<ST>;
 
@@ -272,42 +291,47 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
                     cmds.extend(cmds_from_insert);
                 }
             });
-
-        // Attempt to load persisted peers from JSON file and restore into pending queue
+/*
         match std::fs::read_to_string(&state.persisted_peers_path) {
             Ok(contents) => {
-                match toml::from_str::<
-                    BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<ST>>,
-                >(&contents)
-                {
+                match toml::from_str::<Vec<PersistedPeers<ST>>>(&contents) {
                     Ok(loaded) => {
                         debug!(path =? state.persisted_peers_path, loaded_len = loaded.len(), "loaded persisted peers");
-                        for (peer_id, name_record) in loaded.into_iter() {
-                            if peer_id == state.self_id {
-                                continue;
-                            }
+                        for persisted in loaded.into_iter() {
+                            match persisted.address.parse::<SocketAddrV4>() {
+                                Ok(addr) => {
+                                    let peer_id = NodeId::new(persisted.secp256k1_pubkey);
+                                    if peer_id == state.self_id {
+                                        continue;
+                                    }
 
-                            match name_record.recover_pubkey() {
-                                Ok(recovered) if recovered == peer_id => {}
-                                _ => {
-                                    warn!(
-                                        ?peer_id,
-                                        "skipping persisted peer with invalid signature"
-                                    );
-                                    continue;
-                                }
-                            }
+                                    let name_record = MonadNameRecord {
+                                        name_record: NameRecord::new(*addr.ip(), addr.port(), persisted.record_seq_num),
+                                        signature: persisted.name_record_sig,
+                                    };
 
-                            match state.insert_peer_to_pending(peer_id, name_record) {
-                                Ok(cmds_from_insert) => {
-                                    cmds.extend(cmds_from_insert);
-                                    debug!(?peer_id, "inserted persisted peer");
+                                    // verify signature matches stored pubkey
+                                    match name_record.recover_pubkey() {
+                                        Ok(recovered) if recovered == peer_id => {
+                                            match state.insert_peer_to_pending(peer_id, name_record) {
+                                                Ok(cmds_from_insert) => {
+                                                    cmds.extend(cmds_from_insert);
+                                                    debug!(?peer_id, "inserted persisted peer");
+                                                }
+                                                Err(err) => {
+                                                    warn!(?err, ?peer_id, "skipping persisted peer due to IP/validation error");
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                        _ => {
+                                            warn!(?peer_id, "skipping persisted peer with invalid signature");
+                                            continue;
+                                        }
+                                    }
                                 }
                                 Err(err) => {
-                                    warn!(
-                                        ?err,
-                                        "skipping persisted peer due to IP/validation error"
-                                    );
+                                    warn!(path =? state.persisted_peers_path, ?err, "invalid persisted peer address, skipping");
                                     continue;
                                 }
                             }
@@ -322,6 +346,56 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
                 debug!(path =? state.persisted_peers_path, ?err, "Skipped loading persisted peers");
             }
         }
+*/
+        // Attempt to load persisted peers from JSON file and restore into pending queue
+        //match std::fs::read_to_string(&state.persisted_peers_path) {
+        //    Ok(contents) => {
+        //        match toml::from_str::<
+        //            BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<ST>>,
+        //        >(&contents)
+        //        {
+        //            Ok(loaded) => {
+        //                debug!(path =? state.persisted_peers_path, loaded_len = loaded.len(), "loaded persisted peers");
+        //                for (peer_id, name_record) in loaded.into_iter() {
+        //                    if peer_id == state.self_id {
+        //                        continue;
+        //                    }
+//
+        //                    match name_record.recover_pubkey() {
+        //                        Ok(recovered) if recovered == peer_id => {}
+        //                        _ => {
+        //                            warn!(
+        //                                ?peer_id,
+        //                                "skipping persisted peer with invalid signature"
+        //                            );
+        //                            continue;
+        //                        }
+        //                    }
+//
+        //                    match state.insert_peer_to_pending(peer_id, name_record) {
+        //                        Ok(cmds_from_insert) => {
+        //                            cmds.extend(cmds_from_insert);
+        //                            debug!(?peer_id, "inserted persisted peer");
+        //                        }
+        //                        Err(err) => {
+        //                            warn!(
+        //                                ?err,
+        //                                "skipping persisted peer due to IP/validation error"
+        //                            );
+        //                            continue;
+        //                        }
+        //                    }
+        //                }
+        //            }
+        //            Err(err) => {
+        //                warn!(path =? state.persisted_peers_path, ?err, "failed to deserialize persisted peers");
+        //            }
+        //        }
+        //    }
+        //    Err(err) => {
+        //        debug!(path =? state.persisted_peers_path, ?err, "Skipped loading persisted peers");
+        //    }
+        //}
 
         state.persist_peers(); // Early test before timer cycle
 
@@ -666,21 +740,39 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
     }
 
     fn persist_peers(&self) {
+
         // Persist both routing_info and pending_queue to TOML file
-        let mut routing_info = self.routing_info.clone();
+        let mut persisted: Vec<PersistedPeers<ST>> = self
+            .routing_info
+            .iter()
+            .map(|(peer_id, name_record)| PersistedPeers {
+                address: name_record.udp_address().to_string(),
+                record_seq_num: name_record.seq(),
+                secp256k1_pubkey: peer_id.pubkey(),
+                name_record_sig: name_record.signature.clone(),
+            })
+            .collect();
         for (peer_id, conn_info) in self.pending_queue.iter() {
-            routing_info.insert(*peer_id, conn_info.name_record.clone());
+            persisted.push( PersistedPeers {
+                address: conn_info.name_record.udp_address().to_string(),
+                record_seq_num: conn_info.name_record.seq(),
+                secp256k1_pubkey: peer_id.pubkey(),
+                name_record_sig: conn_info.name_record.signature.clone(),
+            });
         }
-        match toml::to_string(&routing_info) {
+
+        info!(?persisted, "stuff");
+
+        match toml::to_string(&persisted) {
             Ok(serialized) => {
-                if let Err(e) = std::fs::write(&self.persisted_peers_path, serialized) {
-                    warn!(path =? self.persisted_peers_path, ?e, "failed to persist peers");
+                if let Err(error) = std::fs::write(&self.persisted_peers_path, serialized) {
+                    warn!(path =? self.persisted_peers_path, ?error, "failed to persist peers");
                 } else {
-                    debug!(path =? self.persisted_peers_path, routing_len =? self.routing_info.len(), "persisted peers to disk (initial)");
+                    debug!(path =? self.persisted_peers_path, persisted_len = persisted.len(), "persisted peers to disk");
                 }
             }
-            Err(err) => {
-                warn!(path =? self.persisted_peers_path, ?err, "failed to serialize peers");
+            Err(error) => {
+                warn!(path =? self.persisted_peers_path, ?error, "failed to serialize persisted peers");
             }
         }
     }
@@ -1632,6 +1724,8 @@ mod tests {
     use monad_types::NodeId;
     use rand::SeedableRng;
     use test_case::test_case;
+    use tracing_subscriber::fmt::format::FmtSpan;
+    use std::{cmp::min, io, sync::Once, time::Duration};
 
     use super::*;
     use crate::NameRecord;
@@ -2528,4 +2622,49 @@ mod tests {
         let selected_peers = state.select_peers_to_lookup_from();
         assert_eq!(selected_peers.len(), 3);
     }
+
+    static TRACING_ONCE_SETUP: Once = Once::new();
+
+    fn enable_tracer() {
+        TRACING_ONCE_SETUP.call_once(|| {
+            tracing_subscriber::fmt::fmt()
+                .with_max_level(tracing::Level::ERROR)
+                .with_writer(io::stdout)
+                .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+                .with_span_events(FmtSpan::CLOSE)
+                .init();
+        });
+    }
+
+    #[test]
+    fn test_persisted_peers() {
+        enable_tracer();
+        let keys = create_keys::<SignatureType>(4);
+        let peer0 = &keys[0];
+        let peer1 = &keys[1];
+        let peer1_pubkey = NodeId::new(peer1.pubkey());
+        let peer2 = &keys[2];
+        let peer2_pubkey = NodeId::new(peer2.pubkey());
+        let peer3 = &keys[3];
+        let peer3_pubkey = NodeId::new(peer3.pubkey());
+
+        //let mut state = generate_test_state(peer0, vec![peer1, peer2, peer3]);
+        let mut state = generate_test_state(peer0, vec![peer1]);
+
+        state.persist_peers();
+
+        state.min_num_peers = 0;
+        state.max_num_peers = 1;
+        state
+            .epoch_validators
+            .insert(Epoch(1), BTreeSet::from([peer1_pubkey]));
+        state.pinned_full_nodes.insert(peer2_pubkey);
+
+        // prune nodes, but validators and pinned full nodes are not pruned even if above max number of peers
+        state.refresh();
+        assert!(state.routing_info.contains_key(&peer1_pubkey));
+        assert!(state.routing_info.contains_key(&peer2_pubkey));
+        assert!(!state.routing_info.contains_key(&peer3_pubkey));
+    }
+
 }
