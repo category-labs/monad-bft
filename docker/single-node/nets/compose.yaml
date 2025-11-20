@@ -74,7 +74,7 @@ services:
       --node-config /monad/config/node.toml
       --forkpoint-config /monad/config/forkpoint.genesis.toml
       --validators-path /monad/config/validators.toml
-      --persisted-peers-path /monad/peers.toml
+      --persisted-peers-path /monad/config/peers.toml
       --statesync-ipc-path /monad/statesync.sock
       --wal-path /monad/wal
       --mempool-ipc-path /monad/mempool.sock
