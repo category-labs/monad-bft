@@ -5171,6 +5171,7 @@ dependencies = [
  "monad-crypto",
  "monad-eth-block-policy",
  "monad-eth-testutil",
+ "monad-eth-txpool",
  "monad-eth-types",
  "monad-secp",
  "monad-state-backend",

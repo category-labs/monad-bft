@@ -39,6 +39,7 @@ use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSig
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_testutil::{recover_tx, secret_to_eth_address, S1, S2};
+use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, EthHeader, ProposedEthHeader};
 use monad_state_backend::NopStateBackend;
 use monad_testutil::signing::MockSignatures;
@@ -48,6 +49,14 @@ use tracing::info;
 type TestBlockPolicy = EthBlockPolicy<
     NopSignature,
     MockSignatures<NopSignature>,
+    MonadChainConfig,
+    MonadChainRevision,
+>;
+
+type TestTxPool = EthTxPool<
+    NopSignature,
+    MockSignatures<NopSignature>,
+    NopStateBackend,
     MonadChainConfig,
     MonadChainRevision,
 >;
@@ -397,6 +406,131 @@ fn test_multiple_non_emptying_different_blocks_sufficient() {
     test_runner(chain_config, block_policy, state_backend, txs, true);
 }
 
+fn create_test_txpool(chain_config: &MonadChainConfig) -> TestTxPool {
+    TestTxPool::new(
+        None,                               // max_addresses
+        None,                               // max_txs
+        None,                               // max_eip2718_bytes
+        None,                               // soft_evict_addresses_watermark
+        std::time::Duration::from_secs(60), // soft_tx_expiry
+        std::time::Duration::from_secs(60), // hard_tx_expiry
+        chain_config.chain_id(),
+        chain_config.get_chain_revision(GENESIS_ROUND),
+        chain_config.get_execution_chain_revision(0), // genesis timestamp
+        true,                                         // do_local_insert
+    )
+}
+
+fn check_txpool_coherency(
+    chain_config: &MonadChainConfig,
+    extending_blocks: &[EthValidatedBlock<NopSignature, MockSignatures<NopSignature>>],
+    block_under_test: &EthValidatedBlock<NopSignature, MockSignatures<NopSignature>>,
+    state_backend: &NopStateBackend,
+    root_info: RootInfo,
+) {
+    let mut block_policy = TestBlockPolicy::new(GENESIS_SEQ_NUM, 3);
+
+    let mut txpool = create_test_txpool(chain_config);
+    let metrics = EthTxPoolMetrics::default();
+    let mut ipc_events = BTreeMap::default();
+    let mut event_tracker = EthTxPoolEventTracker::new(&metrics, &mut ipc_events);
+
+    // insert extending blocks to txpool
+    for extending_block in extending_blocks.iter() {
+        txpool.update_committed_block(&mut event_tracker, chain_config, extending_block.clone());
+        <TestBlockPolicy as BlockPolicy<
+            NopSignature,
+            MockSignatures<NopSignature>,
+            EthExecutionProtocol,
+            NopStateBackend,
+            MonadChainConfig,
+            MonadChainRevision,
+        >>::update_committed_block(&mut block_policy, extending_block, chain_config);
+    }
+
+    // insert transactions of the incoming block into txpool
+    let block_txs: Vec<Recovered<TxEnvelope>> = block_under_test
+        .validated_txns
+        .iter()
+        .map(|vtx| vtx.tx.clone())
+        .collect();
+    if !block_txs.is_empty() {
+        txpool.insert_txs(
+            &mut event_tracker,
+            &block_policy,
+            state_backend,
+            chain_config,
+            block_txs,
+            false,
+            |_tx| {},
+        );
+    }
+
+    // create proposal
+    let base_fee = block_under_test.header().base_fee.unwrap_or(0);
+    let timestamp_ns = block_under_test.header().timestamp_ns;
+    let beneficiary: [u8; 20] = block_under_test
+        .header()
+        .execution_inputs
+        .beneficiary
+        .into();
+    let seq_num = block_under_test.header().seq_num;
+    let round = block_under_test.header().block_round;
+    let proposal = txpool
+        .create_proposal(
+            &mut event_tracker,
+            block_under_test.header().epoch,
+            round,
+            seq_num,
+            base_fee,
+            5000,
+            200_000_000,
+            2_000_000,
+            beneficiary,
+            timestamp_ns,
+            block_under_test.header().author,
+            block_under_test.header().round_signature.clone(),
+            extending_blocks.to_vec(),
+            &block_policy,
+            state_backend,
+            chain_config,
+        )
+        .unwrap();
+
+    info!(
+        "Txpool created proposal with {} txs for seq_num {:?}",
+        proposal.body.transactions.len(),
+        block_under_test.header().seq_num
+    );
+
+    let txs = proposal
+        .body
+        .transactions
+        .iter()
+        .cloned()
+        .map(recover_tx)
+        .collect::<Vec<Recovered<TxEnvelope>>>();
+    let block_policy = TestBlockPolicy::new(GENESIS_SEQ_NUM, 3);
+    let created_block = create_test_block_helper(
+        chain_config,
+        &block_policy,
+        round,
+        seq_num,
+        txs,
+        extending_blocks,
+    );
+
+    block_policy
+        .check_coherency(
+            &created_block,
+            extending_blocks.iter().collect(),
+            root_info,
+            state_backend,
+            chain_config,
+        )
+        .expect("Txpool created proposal that failed coherency check");
+}
+
 fn test_runner(
     chain_config: MonadChainConfig,
     block_policy: TestBlockPolicy,
@@ -427,6 +561,15 @@ fn test_runner(
             result.unwrap();
         } else {
             assert!(result.is_err());
+
+            // check that the same block produced by txpool is coherent
+            check_txpool_coherency(
+                &chain_config,
+                extending,
+                block_under_test,
+                &state_backend,
+                root_info,
+            );
         }
     } else {
         panic!("test did nothing, are inputs correct?");
@@ -459,47 +602,9 @@ fn create_test_blocks(
         let round = GENESIS_ROUND + Round(i);
         let seq_num = GENESIS_SEQ_NUM + SeqNum(i);
         let tx = txs.get(&seq_num).cloned().unwrap_or_default();
-        let body = create_block_body_helper(tx);
-        let body_id = body.get_id();
-        let txns_root = calculate_transaction_root(&body.execution_body.transactions).0;
 
-        let timestamp = seq_num.0 as u128;
-        let base_fees = block_policy
-            .compute_base_fee::<EthValidatedBlock<NopSignature, MockSignatures<NopSignature>>>(
-                &blocks,
-                chain_config,
-                timestamp,
-            )
-            .unwrap();
-        let header = create_block_header_helper(
-            round,
-            seq_num,
-            timestamp,
-            body_id,
-            txns_root,
-            base_fees,
-            chain_config.get_chain_revision(round).chain_params(),
-        );
-
-        let validator: EthBlockValidator<NopSignature, MockSignatures<NopSignature>> =
-            EthBlockValidator::default();
-        let validated_block = BlockValidator::<
-            NopSignature,
-            MockSignatures<NopSignature>,
-            EthExecutionProtocol,
-            TestBlockPolicy,
-            NopStateBackend,
-            MonadChainConfig,
-            MonadChainRevision,
-        >::validate(
-            &validator,
-            header,
-            body,
-            None,
-            chain_config,
-            &mut Metrics::default(),
-        )
-        .unwrap();
+        let validated_block =
+            create_test_block_helper(chain_config, block_policy, round, seq_num, tx, &blocks);
 
         info!(
             "adding seq_num {:?} : block_id {:?}",
@@ -571,6 +676,57 @@ fn create_block_header_helper(
         Some(base_trend),
         Some(base_moment),
     )
+}
+
+fn create_test_block_helper(
+    chain_config: &MonadChainConfig,
+    block_policy: &TestBlockPolicy,
+    round: Round,
+    seq_num: SeqNum,
+    txs: Vec<Recovered<TxEnvelope>>,
+    blocks: &[EthValidatedBlock<NopSignature, MockSignatures<NopSignature>>],
+) -> EthValidatedBlock<NopSignature, MockSignatures<NopSignature>> {
+    let body = create_block_body_helper(txs);
+    let body_id = body.get_id();
+    let txns_root = calculate_transaction_root(&body.execution_body.transactions).0;
+
+    let timestamp = seq_num.0 as u128;
+    let base_fees = block_policy
+        .compute_base_fee::<EthValidatedBlock<NopSignature, MockSignatures<NopSignature>>>(
+            blocks,
+            chain_config,
+            timestamp,
+        )
+        .unwrap();
+    let header = create_block_header_helper(
+        round,
+        seq_num,
+        timestamp,
+        body_id,
+        txns_root,
+        base_fees,
+        chain_config.get_chain_revision(round).chain_params(),
+    );
+
+    let validator: EthBlockValidator<NopSignature, MockSignatures<NopSignature>> =
+        EthBlockValidator::default();
+    BlockValidator::<
+        NopSignature,
+        MockSignatures<NopSignature>,
+        EthExecutionProtocol,
+        TestBlockPolicy,
+        NopStateBackend,
+        MonadChainConfig,
+        MonadChainRevision,
+    >::validate(
+        &validator,
+        header,
+        body,
+        None,
+        chain_config,
+        &mut Metrics::default(),
+    )
+    .unwrap()
 }
 
 fn make_test_tx(
