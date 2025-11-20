@@ -65,6 +65,7 @@ pub struct NodeState {
     pub statesync_ipc_path: PathBuf,
     pub statesync_sq_thread_cpu: Option<u32>,
     pub triedb_path: PathBuf,
+    pub persisted_peers_path: PathBuf,
 
     pub otel_endpoint_interval: Option<(String, Duration)>,
     pub pprof: String,
@@ -72,7 +73,6 @@ pub struct NodeState {
     // should be kept as long as node is alive, tracing listener is stopped when handle is dropped
     #[allow(unused)]
     manytrace_agent: Option<agent::Agent>,
-    pub persisted_peers_path: PathBuf,
 }
 
 impl NodeState {
