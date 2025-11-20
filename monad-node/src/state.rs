@@ -72,6 +72,7 @@ pub struct NodeState {
     // should be kept as long as node is alive, tracing listener is stopped when handle is dropped
     #[allow(unused)]
     manytrace_agent: Option<agent::Agent>,
+    pub persisted_peers_path: PathBuf,
 }
 
 impl NodeState {
@@ -95,6 +96,7 @@ impl NodeState {
             record_metrics_interval_seconds,
             pprof,
             manytrace_socket,
+            persisted_peers_path,
         } = Cli::from_arg_matches_mut(&mut cmd.get_matches_mut())?;
 
         let (reload_handle, agent) = NodeState::setup_tracing(manytrace_socket)?;
@@ -200,6 +202,7 @@ impl NodeState {
             pprof,
             reload_handle,
             manytrace_agent: agent,
+            persisted_peers_path,
         })
     }
 

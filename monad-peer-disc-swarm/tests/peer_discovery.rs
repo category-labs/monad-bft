@@ -218,6 +218,7 @@ fn setup_keys_and_swarm_builder(
                         enable_publisher: secondary_raptorcast_enabled,
                         enable_client: secondary_raptorcast_enabled,
                         rng: ChaCha8Rng::seed_from_u64(123456), // fixed seed for reproducibility
+                        persisted_peers_path: Default::default(),
                     },
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
                         .build(),
@@ -396,6 +397,7 @@ fn test_update_name_record() {
             enable_publisher: false,
             enable_client: false,
             rng: ChaCha8Rng::seed_from_u64(123456),
+            persisted_peers_path: Default::default(),
         },
         router_scheduler: NoSerRouterConfig::new(node_ids.iter().cloned().collect()).build(),
         seed: 1,
