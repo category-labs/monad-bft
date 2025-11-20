@@ -55,17 +55,29 @@ use monad_eth_types::EthBlockBody;
 use monad_executor_glue::LedgerCommand;
 use monad_ledger::MonadBlockFileLedger;
 
-pub mod faucet;
-
 type SignatureType = SecpSignature;
 
 type SignatureCollectionType = BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>;
 
 type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
 
-type Ledger = MonadBlockFileLedger<SignatureType, SignatureCollectionType>;
+type LedgerType = MonadBlockFileLedger<SignatureType, SignatureCollectionType>;
 
-type Block = ConsensusFullBlock<SignatureType, SignatureCollectionType, EthExecutionProtocol>;
+type BlockType = ConsensusFullBlock<SignatureType, SignatureCollectionType, EthExecutionProtocol>;
+
+type BlockPolicyType =
+    EthBlockPolicy<SignatureType, SignatureCollectionType, MonadChainConfig, MonadChainRevision>;
+
+type ValidatorType = dyn BlockValidator<
+    SignatureType,
+    SignatureCollectionType,
+    EthExecutionProtocol,
+    BlockPolicyType,
+    StateBackendType,
+    MonadChainConfig,
+    MonadChainRevision,
+    BlockValidationError = EthBlockValidationError,
+>;
 
 fn node_id_from_private_key(mut node_private_key: [u8; 32]) -> NodeId<PubKey> {
     let node_keypair = KeyPair::from_bytes(&mut node_private_key).unwrap();
@@ -80,9 +92,9 @@ pub struct MonadMockLedgerMachine {
     epoch: Epoch,
     round: Round,
     seq_num: SeqNum,
-    ledger: Ledger,
+    ledger: LedgerType,
     proposer_node_id: NodeId<PubKey>,
-    unfinalized_blocks: VecDeque<Block>,
+    unfinalized_blocks: VecDeque<BlockType>,
     qc: QuorumCertificate<SignatureCollectionType>,
 }
 
@@ -98,7 +110,7 @@ impl MonadMockLedgerMachine {
             epoch: Epoch(0),
             round: GENESIS_ROUND,
             seq_num: GENESIS_SEQ_NUM + SeqNum(1),
-            ledger: Ledger::new(ledger_path),
+            ledger: LedgerType::new(ledger_path),
             proposer_node_id: node_id_from_private_key(proposer_private_key),
             unfinalized_blocks: VecDeque::default(),
             qc: QuorumCertificate::genesis_qc(),
@@ -152,8 +164,6 @@ impl MonadMockLedgerMachine {
             None
         };
 
-        let timestamp_seconds = timestamp_ns_to_secs(self.timestamp);
-
         let header = ProposedEthHeader {
             transactions_root: *calculate_transaction_root(&body.transactions),
             ommers_hash: *EMPTY_OMMER_ROOT_HASH,
@@ -166,7 +176,7 @@ impl MonadMockLedgerMachine {
                 .get_chain_revision(self.round)
                 .chain_params()
                 .proposal_gas_limit,
-            timestamp: timestamp_seconds,
+            timestamp: timestamp_ns_to_secs(self.timestamp),
             mix_hash: round_sig.get_hash().0,
             nonce: [0_u8; 8],
             extra_data: [0_u8; 32],
@@ -177,18 +187,12 @@ impl MonadMockLedgerMachine {
             requests_hash: maybe_request_hash,
         };
 
-        let consensus_block_body_inner: ConsensusBlockBodyInner<EthExecutionProtocol> =
-            ConsensusBlockBodyInner {
-                execution_body: body,
-            };
-        let consensus_block_body: ConsensusBlockBody<EthExecutionProtocol> =
-            ConsensusBlockBody::new(consensus_block_body_inner);
+        let consensus_block_body_inner = ConsensusBlockBodyInner {
+            execution_body: body,
+        };
+        let consensus_block_body = ConsensusBlockBody::new(consensus_block_body_inner);
 
-        let consensus_block_header: ConsensusBlockHeader<
-            SignatureType,
-            SignatureCollectionType,
-            EthExecutionProtocol,
-        > = ConsensusBlockHeader {
+        let consensus_block_header = ConsensusBlockHeader {
             block_round: self.round,
             epoch: self.epoch,
             qc: self.qc.clone(),
@@ -206,23 +210,7 @@ impl MonadMockLedgerMachine {
 
         let consensus_full_block =
             ConsensusFullBlock::new(consensus_block_header, consensus_block_body).unwrap();
-
-        let validator: &dyn BlockValidator<
-            SignatureType,
-            SignatureCollectionType,
-            EthExecutionProtocol,
-            EthBlockPolicy<
-                SignatureType,
-                SignatureCollectionType,
-                MonadChainConfig,
-                MonadChainRevision,
-            >,
-            StateBackendType,
-            MonadChainConfig,
-            MonadChainRevision,
-            BlockValidationError = EthBlockValidationError,
-        > = &EthBlockValidator::default();
-
+        let validator: &ValidatorType = &EthBlockValidator::default();
         let mut validator_metrics = metrics::Metrics::default();
         let _ = validator
             .validate(
@@ -230,7 +218,7 @@ impl MonadMockLedgerMachine {
                 consensus_full_block.body().clone(),
                 None,
                 &chain_config,
-                &mut validator_metrics
+                &mut validator_metrics,
             )
             .expect("valid block");
 
@@ -261,11 +249,7 @@ impl MonadMockLedgerMachine {
             .unfinalized_blocks
             .pop_front()
             .expect("unfinalized block");
-        let optimistic_commit: OptimisticCommit<
-            SignatureType,
-            SignatureCollectionType,
-            EthExecutionProtocol,
-        > = OptimisticCommit::Finalized(consensus_full_block);
+        let optimistic_commit = OptimisticCommit::Finalized(consensus_full_block);
         let ledger_command = LedgerCommand::LedgerCommit(optimistic_commit);
         self.ledger.exec(vec![ledger_command]);
     }

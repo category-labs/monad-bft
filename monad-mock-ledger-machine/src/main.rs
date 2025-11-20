@@ -1,4 +1,3 @@
-use monad_mock_ledger_machine::faucet::Faucet;
 use monad_mock_ledger_machine::MonadMockLedgerMachine;
 
 use monad_chain_config::{MonadChainConfig, MONAD_DEVNET_CHAIN_ID};
@@ -12,6 +11,8 @@ use alloy_primitives::TxKind;
 use alloy_primitives::U256;
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
+
+mod faucet;
 
 fn get_dummy_tx_eip1559(sender: [u8; 32], nonce: u64) -> TxEnvelope {
     let tx = TxEip1559 {
@@ -39,7 +40,7 @@ fn main() {
     // Build the mock ledger state machine:
     let mut machine = MonadMockLedgerMachine::new(chain_config, ledger_path, proposer_private_key);
 
-    let mut faucet = Faucet::new();
+    let mut faucet = faucet::Faucet::new();
 
     let user1 = [1u8; 32];
     let user2 = [2u8; 32];
