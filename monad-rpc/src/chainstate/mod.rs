@@ -979,7 +979,12 @@ fn parse_block_content(
 
         BlockTransactions::Full(txs)
     } else {
-        BlockTransactions::Hashes(transactions.iter().map(|tx| *tx.tx.tx_hash()).collect())
+        BlockTransactions::Hashes(
+            transactions
+                .into_iter()
+                .map(|tx| *tx.tx.tx_hash())
+                .collect(),
+        )
     };
 
     // NOTE: no withdrawals currently in monad-bft

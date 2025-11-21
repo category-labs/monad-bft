@@ -450,7 +450,7 @@ pub async fn monad_debug_traceBlockByHash<T: Triedb>(
             {
                 let tx_ids = block.body.transactions().map(|tx| *tx.tx.tx_hash());
 
-                for (call_frame, tx_id) in call_frames.iter().zip(tx_ids) {
+                for (call_frame, tx_id) in call_frames.into_iter().zip(tx_ids) {
                     let rlp_call_frame = &mut call_frame.as_slice();
                     let Some(traces) = decode_call_frame(
                         triedb_env,
@@ -516,7 +516,7 @@ pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
                 let tx_ids = block.body.transactions().map(|tx| *tx.tx.tx_hash());
 
                 // TODO: parallelize this with stream + buffered + try_collect
-                for (call_frame, tx_id) in call_frames.iter().zip(tx_ids) {
+                for (call_frame, tx_id) in call_frames.into_iter().zip(tx_ids) {
                     let rlp_call_frame = &mut call_frame.as_slice();
                     let Some(traces) =
                         decode_call_frame(triedb_env, rlp_call_frame, block_key, &params.tracer)
@@ -598,7 +598,7 @@ async fn get_call_frames_from_triedb<T: Triedb>(
         .map_err(JsonRpcError::internal_error)?;
 
     let tx_ids = transactions
-        .iter()
+        .into_iter()
         .map(|tx| *tx.tx.tx_hash())
         .collect::<Vec<_>>();
 
@@ -607,7 +607,7 @@ async fn get_call_frames_from_triedb<T: Triedb>(
         .await
         .map_err(JsonRpcError::internal_error)?;
 
-    for (call_frame, tx_id) in call_frames.iter().zip(tx_ids.into_iter()) {
+    for (call_frame, tx_id) in call_frames.into_iter().zip(tx_ids.into_iter()) {
         let rlp_call_frame = &mut call_frame.as_slice();
         let Some(traces) = decode_call_frame(triedb_env, rlp_call_frame, block_key, tracer).await?
         else {
@@ -738,23 +738,21 @@ async fn include_code_output<T: Triedb>(
 
 async fn build_call_tree(
     nodes: Vec<CallFrame>,
-) -> JsonRpcResult<
-    Option<
-        // FIXME why Rc<RefCell<_>> ?
-        std::rc::Rc<std::cell::RefCell<MonadCallFrame>>,
-    >,
-> {
-    if nodes.is_empty() {
-        return Ok(None);
-    }
+) -> JsonRpcResult<Option<Rc<RefCell<MonadCallFrame>>>> {
+    let mut nodes = nodes.into_iter();
 
-    let root = Rc::new(RefCell::new(MonadCallFrame::from(nodes[0].clone())));
+    let Some(root) = nodes.next() else {
+        return Ok(None);
+    };
+
+    let root = Rc::new(RefCell::new(MonadCallFrame::from(root)));
     let mut stack = vec![Rc::clone(&root)];
 
-    for value in nodes.into_iter().skip(1) {
+    for value in nodes {
         let depth = value.depth.to::<usize>();
         let new_node = Rc::new(RefCell::new(MonadCallFrame::from(value)));
-        while let Some(last) = stack.last() {
+
+        while let Some(last) = stack.last_mut() {
             if last.borrow().depth < depth {
                 last.borrow_mut().calls.push(Rc::clone(&new_node));
                 break;

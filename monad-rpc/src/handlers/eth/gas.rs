@@ -536,17 +536,19 @@ fn calculate_fee_history_rewards(
     block_gas_used: u64,
     percentiles: Option<&Vec<f64>>,
 ) -> Vec<u128> {
-    if percentiles.is_none() {
+    let Some(percentiles) = percentiles else {
         return vec![];
-    }
+    };
 
     if transactions.is_empty() {
-        return vec![0; percentiles.unwrap().len()];
+        return vec![0; percentiles.len()];
     }
+
+    let transactions_len = transactions.len();
 
     // Get the reward and gas used for each transaction using receipt.
     let gas_and_rewards = transactions
-        .iter()
+        .into_iter()
         .zip(receipts)
         .map(|(tx, receipt)| {
             let gas_used = receipt.gas_used;
@@ -560,14 +562,14 @@ fn calculate_fee_history_rewards(
     let mut cumulative_gas_used: u128 = 0;
     let mut rewards = Vec::new();
 
-    for pct in percentiles.unwrap() {
+    for pct in percentiles {
         let gas_threshold = (block_gas_used as f64 * pct / 100.0).round() as u128;
-        while cumulative_gas_used < gas_threshold && idx < transactions.len() {
+        while cumulative_gas_used < gas_threshold && idx < transactions_len {
             cumulative_gas_used += gas_and_rewards[idx].0;
             idx += 1;
         }
         // Clamp idx to valid range
-        let reward_idx = idx.min(transactions.len() - 1);
+        let reward_idx = idx.min(transactions_len - 1);
         rewards.push(gas_and_rewards[reward_idx].1);
     }
 

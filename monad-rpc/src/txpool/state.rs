@@ -207,7 +207,7 @@ impl EthTxPoolBridgeState {
                 continue;
             };
 
-            let _ = tx_status_send.send(o.0.clone());
+            let _ = tx_status_send.send(o.0);
         }
     }
 

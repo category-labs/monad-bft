@@ -105,7 +105,7 @@ impl EthTxPoolDropReason {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EthTxPoolEvictReason {
     Expired,
 }

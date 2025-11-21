@@ -126,10 +126,11 @@ pub async fn ws_handler(
         if let Some(metrics) = &app_state.metrics {
             metrics.record_websocket_connection(-1);
 
-            subscriptions.iter().for_each(|(_, subs)| {
+            subscriptions.into_iter().for_each(|(_, subs)| {
                 metrics.record_websocket_topic(-(subs.len() as i64));
             });
         }
+
         drop(permit);
     });
 

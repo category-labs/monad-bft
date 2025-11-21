@@ -146,9 +146,9 @@ impl ChainStateBuffer {
             };
 
             if let Some((_, evicted_block)) = self.by_height.remove(&evicted_block_height) {
-                match &evicted_block.transactions {
+                match evicted_block.transactions {
                     alloy_rpc_types::BlockTransactions::Full(v) => {
-                        v.iter().for_each(|tx| {
+                        v.into_iter().for_each(|tx| {
                             let id = tx.inner.tx_hash();
                             self.transactions.remove(&FixedData(id.0));
                         });
