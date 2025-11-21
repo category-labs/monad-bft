@@ -39,6 +39,7 @@ monad-updaters = { workspace = true, features = ["monad-triedb", "tokio"] }
 monad-validator = { workspace = true }
 monad-version = { workspace = true }
 monad-wal = { workspace = true }
+monad-wireauth = { workspace = true }
 
 agent = { workspace = true }
 alloy-rlp = { workspace = true }

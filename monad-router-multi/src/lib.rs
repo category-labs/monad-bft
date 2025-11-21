@@ -27,7 +27,7 @@ use futures::{Stream, StreamExt};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_dataplane::{DataplaneBuilder, UdpSocketWriter};
+use monad_dataplane::DataplaneBuilder;
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{Message, RouterCommand};
 use monad_node_config::{FullNodeConfig, FullNodeIdentityConfig};
@@ -35,30 +35,33 @@ use monad_peer_discovery::{
     driver::PeerDiscoveryDriver, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder,
 };
 use monad_raptorcast::{
+    auth::AuthenticationProtocol,
     config::{
         GroupSchedulingConfig, RaptorCastConfig, RaptorCastConfigSecondary,
         RaptorCastConfigSecondaryClient, RaptorCastConfigSecondaryPublisher,
         SecondaryRaptorCastMode,
     },
     raptorcast_secondary::{
-        group_message::FullNodesGroupMessage, RaptorCastSecondary, SecondaryRaptorCastModeConfig,
+        group_message::FullNodesGroupMessage, RaptorCastSecondary, SecondaryOutboundMessage,
+        SecondaryRaptorCastModeConfig,
     },
     util::Group,
-    RaptorCast, RaptorCastEvent, RAPTORCAST_SOCKET,
+    RaptorCast, RaptorCastEvent, AUTHENTICATED_RAPTORCAST_SOCKET, RAPTORCAST_SOCKET,
 };
 use monad_types::{Epoch, NodeId};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 pub use tracing::{debug, error, info, warn, Level};
 
 //==============================================================================
-pub struct MultiRouter<ST, M, OM, SE, PD>
+pub struct MultiRouter<ST, M, OM, SE, PD, AP>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
     OM: Encodable + Into<M> + Clone,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
+    AP: AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
 {
-    rc_primary: RaptorCast<ST, M, OM, SE, PD>,
+    rc_primary: RaptorCast<ST, M, OM, SE, PD, AP>,
     rc_secondary: Option<RaptorCastSecondary<ST, M, OM, SE, PD>>,
 
     // raptorcast config is stored for future role change
@@ -67,18 +70,18 @@ where
     current_epoch: Epoch,
     epoch_validators: BTreeMap<Epoch, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
 
-    dp_writer: UdpSocketWriter,
     shared_pdd: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
 
     phantom: PhantomData<(OM, SE)>,
 }
 
-impl<ST, M, OM, SE, PD> MultiRouter<ST, M, OM, SE, PD>
+impl<ST, M, OM, SE, PD, AP> MultiRouter<ST, M, OM, SE, PD, AP>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
     OM: Encodable + Into<M> + Clone,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
+    AP: AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
 {
     pub fn new<B>(
         self_node_id: NodeId<CertificateSignaturePubKey<ST>>,
@@ -87,6 +90,7 @@ where
         peer_discovery_builder: B,
         current_epoch: Epoch,
         epoch_validators: BTreeMap<Epoch, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
+        auth_protocol: AP,
     ) -> Self
     where
         B: PeerDiscoveryAlgoBuilder<PeerDiscoveryAlgoType = PD>,
@@ -99,19 +103,21 @@ where
         assert!(dp.block_until_ready(Duration::from_secs(1)));
 
         let (tcp_socket, mut udp_dataplane, control) = dp.split();
-        let udp_socket = udp_dataplane
+        let authenticated_socket = udp_dataplane.take_socket(AUTHENTICATED_RAPTORCAST_SOCKET);
+        let non_authenticated_socket = udp_dataplane
             .take_socket(RAPTORCAST_SOCKET)
             .expect("raptorcast socket");
-        let udp_writer_secondary = udp_socket.writer().clone();
 
         let (tcp_reader, tcp_writer) = tcp_socket.split();
 
-        // Create a channel between primary and secondary raptorcast instances.
+        // Create channels between primary and secondary raptorcast instances.
         // Fundamentally this is needed because, while both can send, only the
         // primary can receive data from the network.
         let (send_net_messages, recv_net_messages) =
             unbounded_channel::<FullNodesGroupMessage<ST>>();
         let (send_group_infos, recv_group_infos) = unbounded_channel::<Group<ST>>();
+        let (send_outbound_to_primary, recv_outbound_from_secondary) =
+            unbounded_channel::<SecondaryOutboundMessage<ST>>();
 
         // Determine initial secondary raptorcast role
         let is_current_epoch_validator = epoch_validators
@@ -130,10 +136,10 @@ where
         let rc_secondary = Self::build_secondary(
             cfg.clone(),
             secondary_mode,
-            udp_writer_secondary.clone(),
             shared_pdd.clone(),
             recv_net_messages,
             send_group_infos,
+            send_outbound_to_primary,
             current_epoch,
         );
 
@@ -142,12 +148,18 @@ where
             secondary_mode,
             tcp_reader,
             tcp_writer,
-            udp_socket,
+            authenticated_socket,
+            non_authenticated_socket,
             control,
             shared_pdd.clone(),
             current_epoch,
+            auth_protocol,
         );
-        rc_primary.bind_channel_to_secondary_raptorcast(send_net_messages, recv_group_infos);
+        rc_primary.bind_channel_to_secondary_raptorcast(
+            send_net_messages,
+            recv_group_infos,
+            recv_outbound_from_secondary,
+        );
 
         Self {
             rc_primary,
@@ -156,7 +168,6 @@ where
             current_epoch,
             epoch_validators,
             self_node_id,
-            dp_writer: udp_writer_secondary,
             shared_pdd,
             phantom: PhantomData,
         }
@@ -173,20 +184,25 @@ where
         let (send_net_messages, recv_net_messages) =
             unbounded_channel::<FullNodesGroupMessage<ST>>();
         let (send_group_infos, recv_group_infos) = unbounded_channel::<Group<ST>>();
+        let (send_outbound_to_primary, recv_outbound_from_secondary) =
+            unbounded_channel::<SecondaryOutboundMessage<ST>>();
 
         let is_dynamic = matches!(new_role, SecondaryRaptorCastModeConfig::Client);
         // we first need to update is_dynamic_full_node before binding the channels
         self.rc_primary.set_is_dynamic_full_node(is_dynamic);
-        self.rc_primary
-            .bind_channel_to_secondary_raptorcast(send_net_messages, recv_group_infos);
+        self.rc_primary.bind_channel_to_secondary_raptorcast(
+            send_net_messages,
+            recv_group_infos,
+            recv_outbound_from_secondary,
+        );
 
         let rc_secondary = Self::build_secondary(
             self.rc_config.clone(),
             new_role,
-            self.dp_writer.clone(),
             self.shared_pdd.clone(),
             recv_net_messages,
             send_group_infos,
+            send_outbound_to_primary,
             current_epoch,
         );
         self.rc_secondary = rc_secondary;
@@ -195,10 +211,10 @@ where
     fn build_secondary(
         cfg: RaptorCastConfig<ST>,
         mode: SecondaryRaptorCastModeConfig,
-        udp_writer: UdpSocketWriter,
         shared_pdd: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
         recv_net_messages: UnboundedReceiver<FullNodesGroupMessage<ST>>,
         send_group_infos: UnboundedSender<Group<ST>>,
+        channel_to_primary_outbound: UnboundedSender<SecondaryOutboundMessage<ST>>,
         current_epoch: Epoch,
     ) -> Option<RaptorCastSecondary<ST, M, OM, SE, PD>> {
         let secondary_instance: RaptorCastConfigSecondary<ST> = match mode {
@@ -253,10 +269,10 @@ where
             _ => Some(RaptorCastSecondary::new(
                 cfg,
                 secondary_instance.mode,
-                udp_writer,
                 shared_pdd,
                 recv_net_messages,
                 send_group_infos,
+                channel_to_primary_outbound,
                 current_epoch,
             )),
         }
@@ -264,13 +280,14 @@ where
 }
 
 //==============================================================================
-impl<ST, M, OM, SE, PD> Executor for MultiRouter<ST, M, OM, SE, PD>
+impl<ST, M, OM, SE, PD, AP> Executor for MultiRouter<ST, M, OM, SE, PD, AP>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
     OM: Encodable + Into<M> + Clone,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
-    RaptorCast<ST, M, OM, SE, PD>: Unpin,
+    AP: AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+    RaptorCast<ST, M, OM, SE, PD, AP>: Unpin,
 {
     type Command = RouterCommand<ST, OM>;
 
@@ -425,14 +442,15 @@ where
 }
 
 //==============================================================================
-impl<ST, M, OM, E, PD> Stream for MultiRouter<ST, M, OM, E, PD>
+impl<ST, M, OM, E, PD, AP> Stream for MultiRouter<ST, M, OM, E, PD, AP>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
     OM: Encodable + Into<M> + Clone,
     E: From<RaptorCastEvent<M::Event, ST>>,
     Self: Unpin,
-    RaptorCast<ST, M, OM, E, PD>: Unpin,
+    AP: AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+    RaptorCast<ST, M, OM, E, PD, AP>: Unpin,
     RaptorCastSecondary<ST, M, OM, E, PD>: Unpin,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     PeerDiscoveryDriver<PD>: Unpin,
