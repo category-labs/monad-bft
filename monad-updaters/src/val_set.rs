@@ -148,17 +148,15 @@ where
     type Command = ValSetCommand;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
-        let mut wake = false;
-
         for command in commands {
             match command {
                 ValSetCommand::NotifyFinalized(seq_num) => {
                     self.jank_update_valset(seq_num);
-                    wake = true;
                 }
             }
         }
-        if wake {
+
+        if self.ready() {
             if let Some(waker) = self.waker.take() {
                 waker.wake()
             };
@@ -186,23 +184,19 @@ where
             return Poll::Pending;
         }
 
-        let event = if let Some(next_val_data) = this.next_val_data.take() {
-            Poll::Ready(Some(MonadEvent::ValidatorEvent(
+        if let Some(next_val_data) = this.next_val_data.take() {
+            return Poll::Ready(Some(MonadEvent::ValidatorEvent(
                 monad_executor_glue::ValidatorEvent::<SCT>::UpdateValidators(next_val_data),
-            )))
-        } else {
-            Poll::Pending
-        };
+            )));
+        }
 
-        if this.waker.is_none() {
+        if let Some(waker) = this.waker.as_mut() {
+            waker.clone_from(cx.waker());
+        } else {
             this.waker = Some(cx.waker().clone());
         }
 
-        if this.ready() {
-            this.waker.take().unwrap().wake();
-        }
-
-        event
+        Poll::Pending
     }
 }
 
@@ -319,17 +313,15 @@ where
     type Command = ValSetCommand;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
-        let mut wake = false;
-
         for command in commands {
             match command {
                 ValSetCommand::NotifyFinalized(seq_num) => {
                     self.jank_update_valset(seq_num);
-                    wake = true;
                 }
             }
         }
-        if wake {
+
+        if self.ready() {
             if let Some(waker) = self.waker.take() {
                 waker.wake()
             };
@@ -353,22 +345,18 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
-        let event = if let Some(next_val_data) = this.next_val_data.take() {
-            Poll::Ready(Some(MonadEvent::ValidatorEvent(
+        if let Some(next_val_data) = this.next_val_data.take() {
+            return Poll::Ready(Some(MonadEvent::ValidatorEvent(
                 monad_executor_glue::ValidatorEvent::<SCT>::UpdateValidators(next_val_data),
-            )))
-        } else {
-            Poll::Pending
-        };
+            )));
+        }
 
-        if this.waker.is_none() {
+        if let Some(waker) = this.waker.as_mut() {
+            waker.clone_from(cx.waker());
+        } else {
             this.waker = Some(cx.waker().clone());
         }
 
-        if this.ready() {
-            this.waker.take().unwrap().wake();
-        }
-
-        event
+        Poll::Pending
     }
 }
