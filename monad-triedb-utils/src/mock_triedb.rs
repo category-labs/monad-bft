@@ -103,7 +103,7 @@ impl Triedb for MockTriedb {
         ready(Ok("0x0".to_string()))
     }
 
-    fn get_code(
+    fn get_code_db(
         &self,
         _block_key: BlockKey,
         _code_hash: EthCodeHash,

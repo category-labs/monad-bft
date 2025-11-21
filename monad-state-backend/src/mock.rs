@@ -49,7 +49,7 @@ where
                 Some(EthAccount {
                     balance: self.balances.get(address).cloned().unwrap_or_default(),
                     nonce: self.nonces.get(address).cloned().unwrap_or_default(),
-                    code_hash: None,
+                    code_or_hash: Default::default(),
                     is_delegated: false,
                 })
             })

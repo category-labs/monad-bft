@@ -16,4 +16,5 @@ alloy-consensus = { workspace = true, features = ["serde"] }
 alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true, features = ["serde"] }
 alloy-rlp = { workspace = true, features = ["derive"] }
+tracing = { workspace = true }
 serde = { workspace = true }

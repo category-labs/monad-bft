@@ -25,6 +25,7 @@ jemallocator = ["tikv-jemallocator", "monad-pprof/jemallocator"]
 monad-archive = { workspace = true }
 monad-chain-config = { workspace = true }
 monad-eth-txpool-ipc = { workspace = true }
+monad-eth-types = { workspace = true }
 monad-eth-txpool-types = { workspace = true }
 monad-ethcall = { workspace = true }
 monad-event-ring = { workspace = true }
