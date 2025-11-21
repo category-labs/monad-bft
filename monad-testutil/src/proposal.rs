@@ -147,7 +147,6 @@ where
                     == election
                         .get_leader(
                             self.round,
-                            epoch,
                             val_epoch_map.get_val_set(&epoch).unwrap().get_members(),
                         )
                         .pubkey()

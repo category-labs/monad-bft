@@ -78,7 +78,6 @@ impl<PT: PubKey> LeaderElection for FakeLeaderElection<PT> {
     fn get_leader(
         &self,
         _round: Round,
-        _epoch: Epoch,
         _validators: &std::collections::BTreeMap<NodeId<Self::NodeIdPubKey>, monad_types::Stake>,
     ) -> NodeId<Self::NodeIdPubKey> {
         self.0

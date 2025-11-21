@@ -18,7 +18,7 @@ use std::{collections::BTreeMap, marker::PhantomData};
 use alloy_primitives::U256;
 use itertools::Itertools;
 use monad_crypto::certificate_signature::PubKey;
-use monad_types::{Epoch, NodeId, Round, Stake};
+use monad_types::{NodeId, Round, Stake};
 use rand::Rng;
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
 
@@ -26,61 +26,15 @@ use crate::leader_election::LeaderElection;
 
 #[derive(Clone)]
 pub struct WeightedRoundRobin<PT: PubKey> {
-    staking_activation: Epoch,
-
     _phantom: PhantomData<PT>,
 }
 
-impl<PT: PubKey> WeightedRoundRobin<PT> {
-    pub fn new(staking_activation: Epoch) -> Self {
+impl<PT: PubKey> Default for WeightedRoundRobin<PT> {
+    fn default() -> Self {
         Self {
-            staking_activation,
-
             _phantom: PhantomData,
         }
     }
-}
-
-fn randomize(x: u64, m: u64) -> u64 {
-    let mut gen = ChaCha20Rng::seed_from_u64(x);
-    gen.gen_range(0..m)
-}
-
-fn generate_random_validator_u64<PT: PubKey>(
-    round: Round,
-    validators: Vec<(&NodeId<PT>, &Stake)>,
-) -> NodeId<PT> {
-    let mut total_stakes = 0_u64;
-    let stake_bounds = validators
-        .iter()
-        .filter_map(|&(node_id, stake)| {
-            // Panics if stake is too big
-            let stake_u64 = stake.0.to::<u64>();
-            if stake_u64 > 0 {
-                total_stakes = total_stakes
-                    .checked_add(stake_u64)
-                    .expect("total stake <= u64::MAX");
-                Some((node_id, total_stakes))
-            } else {
-                None
-            }
-        })
-        .collect_vec();
-    if stake_bounds.is_empty() {
-        panic!("no validator has positive stake");
-    }
-
-    let stake_index = randomize(round.0, total_stakes);
-    let upper_bound = stake_bounds
-        .binary_search_by(|&(_, stake_bound)| {
-            if stake_bound > stake_index {
-                std::cmp::Ordering::Greater
-            } else {
-                std::cmp::Ordering::Less
-            }
-        })
-        .unwrap_err();
-    *stake_bounds[upper_bound].0
 }
 
 pub fn randomize_256_with_rng(gen: &mut impl Rng, m: U256) -> U256 {
@@ -135,19 +89,10 @@ impl<PT: PubKey> LeaderElection for WeightedRoundRobin<PT> {
     /// # Panics
     /// Panics if `validators.is_empty()` or if `validators` does not contain an element whose stake is > 0, because
     /// there is no sensible choice for leader in either of those cases.
-    fn get_leader(
-        &self,
-        round: Round,
-        epoch: Epoch,
-        validators: &BTreeMap<NodeId<PT>, Stake>,
-    ) -> NodeId<PT> {
-        if epoch < self.staking_activation {
-            generate_random_validator_u64(round, validators.iter().collect_vec())
-        } else {
-            let mut gen = ChaCha20Rng::seed_from_u64(round.0);
-            let randomizer = |total_stake| randomize_256_with_rng(&mut gen, total_stake);
-            generate_random_validator_with_randomizer(validators.iter().collect_vec(), randomizer)
-        }
+    fn get_leader(&self, round: Round, validators: &BTreeMap<NodeId<PT>, Stake>) -> NodeId<PT> {
+        let mut gen = ChaCha20Rng::seed_from_u64(round.0);
+        let randomizer = |total_stake| randomize_256_with_rng(&mut gen, total_stake);
+        generate_random_validator_with_randomizer(validators.iter().collect_vec(), randomizer)
     }
 }
 
@@ -167,7 +112,7 @@ mod tests {
     #[test_case(vec![('A', U256::from(10)), ('B', U256::from(2)), ('C', U256::from(3))]; "test big stake")]
     fn test_weighted_round_robin(validator_set: Vec<(char, U256)>) {
         let num_iterations = 10000_u64;
-        let l = WeightedRoundRobin::new(Epoch(1));
+        let l = WeightedRoundRobin::default();
         let total_stakes = validator_set
             .iter()
             .filter_map(|(_, stake)| {
@@ -205,7 +150,7 @@ mod tests {
             .collect();
 
         for i in 0..num_iterations {
-            let leader = l.get_leader(Round(i), Epoch(1), &validator_set);
+            let leader = l.get_leader(Round(i), &validator_set);
             let index = validator_set.keys().position(|k| k == &leader).unwrap();
             num_picked[index] += 1;
         }
@@ -223,45 +168,6 @@ mod tests {
                 assert!(num_picked[index] > *expected - 150);
                 assert!(num_picked[index] < *expected + 150);
             }
-        }
-    }
-
-    #[test]
-    fn test_equivalent_leader_schedule() {
-        let stakes = vec![('A', 1), ('B', 2), ('C', 3), ('D', 4)];
-        let expected_schedule = vec![
-            'A', 'D', 'C', 'D', 'C', 'D', 'D', 'A', 'D', 'A', 'D', 'C', 'C', 'B', 'D', 'D', 'C',
-            'B', 'B', 'D', 'D', 'A', 'C', 'B', 'C', 'A', 'B', 'D', 'C', 'D', 'D', 'B', 'D', 'D',
-            'D', 'A', 'D', 'A', 'D', 'D', 'D', 'B', 'C', 'D', 'C', 'A', 'A', 'C', 'B', 'B', 'D',
-            'C', 'C', 'B', 'C', 'B', 'D', 'B', 'B', 'B', 'D', 'A', 'C', 'C', 'B', 'C', 'C', 'C',
-            'A', 'D', 'D', 'D', 'A', 'C', 'C', 'C', 'C', 'D', 'B', 'A', 'D', 'D', 'D', 'D', 'C',
-            'A', 'D', 'D', 'A', 'C', 'D', 'B', 'B', 'D', 'A', 'C', 'C', 'C', 'C', 'C', 'B', 'B',
-            'D', 'C', 'C', 'C', 'C', 'D', 'A', 'C', 'C', 'B', 'B', 'D', 'B', 'D', 'D', 'C', 'D',
-            'C', 'B', 'C', 'C', 'A', 'D', 'B', 'D', 'B', 'C', 'C', 'D', 'C', 'D', 'C', 'D', 'D',
-            'C', 'D', 'D', 'B', 'C', 'D', 'C', 'A', 'D', 'D', 'D', 'B', 'A', 'C', 'D', 'D', 'D',
-            'D', 'B', 'D', 'C', 'D', 'B', 'D', 'B', 'D', 'D', 'C', 'B', 'C', 'D', 'B', 'D', 'C',
-            'D', 'C', 'C', 'C', 'C', 'A', 'C', 'D', 'D', 'B', 'C', 'C', 'B', 'C', 'B', 'B', 'A',
-            'C', 'B', 'D', 'C', 'C', 'C', 'C', 'C', 'C', 'A', 'C', 'A', 'D', 'D', 'D', 'D', 'D',
-            'B', 'D', 'D', 'C', 'C', 'C', 'D', 'D', 'C', 'C', 'C', 'D', 'C', 'A', 'B', 'D', 'C',
-            'D', 'B', 'D', 'B', 'D', 'B', 'A', 'C', 'C', 'D', 'D', 'C', 'B', 'B', 'D', 'D', 'C',
-            'D', 'C', 'A', 'D', 'B', 'D', 'A', 'C', 'D', 'B', 'D', 'A',
-        ];
-
-        let validator_set = stakes
-            .into_iter()
-            .map(|(validator, stake)| {
-                (
-                    NodeId::new(NopPubKey::from_bytes(&[validator as u8; 32]).unwrap()),
-                    Stake(U256::from(stake)),
-                )
-            })
-            .collect();
-
-        let leader_election = WeightedRoundRobin::new(Epoch(2));
-        for (round, expected_leader) in expected_schedule.into_iter().enumerate() {
-            let leader = leader_election.get_leader(Round(round as u64), Epoch(1), &validator_set);
-            let leader_char = leader.pubkey().bytes()[0] as char;
-            assert_eq!(expected_leader, leader_char);
         }
     }
 }
