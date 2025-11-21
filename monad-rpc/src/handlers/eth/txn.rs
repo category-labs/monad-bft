@@ -153,13 +153,14 @@ fn schema_for_filter(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema
 
 #[rpc(
     method = "eth_getLogs",
-    ignore = "max_block_range,use_eth_get_logs_index,dry_run_get_logs_index,max_finalized_block_cache_len"
+    ignore = "max_response_size,max_block_range,use_eth_get_logs_index,dry_run_get_logs_index,max_finalized_block_cache_len"
 )]
 #[allow(non_snake_case)]
 /// Returns an array of all logs matching filter with given id.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn monad_eth_getLogs<T: Triedb>(
     chain_state: &ChainState<T>,
+    max_response_size: u32,
     max_block_range: u64,
     p: MonadEthGetLogsParams,
     use_eth_get_logs_index: bool,
@@ -173,6 +174,7 @@ pub async fn monad_eth_getLogs<T: Triedb>(
     let logs = chain_state
         .get_logs(
             filters,
+            max_response_size,
             max_block_range,
             use_eth_get_logs_index,
             dry_run_get_logs_index,

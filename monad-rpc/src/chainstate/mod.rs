@@ -565,6 +565,7 @@ impl<T: Triedb> ChainState<T> {
     pub async fn get_logs(
         &self,
         filter: Filter,
+        max_response_size: u32,
         max_block_range: u64,
         use_eth_get_logs_index: bool,
         dry_run_get_logs_index: bool,
@@ -743,18 +744,23 @@ impl<T: Triedb> ChainState<T> {
             })
             .buffered(100);
 
-        let data = stream_with_archive.try_collect::<Vec<_>>().await?;
+        let logs_stream = stream_with_archive.flat_map(|result| {
+            result
+                .and_then(|(header, transactions, receipts)| {
+                    block_receipts(transactions, receipts, &header.header, header.hash)
+                })
+                .map(|receipts| {
+                    futures::stream::iter(receipts.into_iter().map(Result::Ok).collect_vec())
+                })
+                .unwrap_or_else(|err| futures::stream::iter(vec![Err(err)]))
+        });
 
-        let logs = data
-            .into_iter()
-            .map(|(header, transactions, receipts)| {
-                block_receipts(transactions, receipts, &header.header, header.hash)
-            })
-            .flatten_ok()
-            .map_ok(|receipt| transaction_receipt_to_logs_iter(receipt, &filtered_params))
-            .flatten_ok()
-            .map_ok(MonadLog)
-            .collect::<Result<Vec<_>, _>>()?;
+        let logs = try_collect_logs_stream_with_heuristic_response_limit(
+            max_response_size,
+            &filtered_params,
+            logs_stream,
+        )
+        .await??;
 
         if dry_run_get_logs_index {
             if let Some(archive_reader) = self.archive_reader.clone() {
@@ -779,6 +785,35 @@ impl<T: Triedb> ChainState<T> {
 
         Ok(logs)
     }
+}
+
+async fn try_collect_logs_stream_with_heuristic_response_limit<E>(
+    max_response_size: u32,
+    filtered_params: &FilteredParams,
+    mut stream: impl Stream<Item = Result<TransactionReceipt, E>> + Unpin,
+) -> JsonRpcResult<Result<Vec<MonadLog>, E>> {
+    let mut heuristic_response_size = 0u64;
+
+    let mut logs = Vec::default();
+
+    while let Some(result) = stream.next().await {
+        match result {
+            Err(err) => return Ok(Err(err)),
+            Ok(receipt) => {
+                for log in transaction_receipt_to_logs_iter(receipt, filtered_params) {
+                    heuristic_response_size += compute_heuristic_log_len(&log) as u64;
+
+                    if heuristic_response_size > max_response_size as u64 {
+                        return Err(JsonRpcError::max_size_exceeded());
+                    }
+
+                    logs.push(MonadLog(log));
+                }
+            }
+        }
+    }
+
+    Ok(Ok(logs))
 }
 
 fn transaction_receipt_to_logs_iter<'a>(
@@ -1115,6 +1150,22 @@ async fn get_receipt_from_triedb<T: Triedb>(
     }
 }
 
+const HEURISTIC_SMALLEST_LOG_RESPONSE: &str = r#"{"logIndex":"0x0","removed":false,"blockNumber":"0x0","blockHash":"0x0000000000000000000000000000000000000000000000000000000000000000","transactionHash":"0x0000000000000000000000000000000000000000000000000000000000000000","transactionIndex":"0x0","address":"0x0000000000000000000000000000000000000000","data":"0x0","topics": []}"#;
+
+fn compute_heuristic_log_len(log: &Log) -> usize {
+    HEURISTIC_SMALLEST_LOG_RESPONSE.len()
+        + log.data().data.len()
+        + (log.inner.data.topics().len()
+            * (
+                // enclosing double quotes
+                2
+                // 0x
+                + 2
+                // 32 bytes hex encoded -> 64 bytes
+                + 64
+            ))
+}
+
 #[cfg(test)]
 mod tests {
     use alloy_eips::BlockNumberOrTag;
@@ -1249,7 +1300,7 @@ mod tests {
             ..Default::default()
         };
         let logs = chain_state
-            .get_logs(filter, 1, false, false, 1)
+            .get_logs(filter, u32::MAX, 1, false, false, 1)
             .await
             .unwrap();
         assert!(!logs.is_empty());
@@ -1259,7 +1310,7 @@ mod tests {
             ..Default::default()
         };
         let logs = chain_state
-            .get_logs(filter, 1, false, false, 1)
+            .get_logs(filter, u32::MAX, 1, false, false, 1)
             .await
             .unwrap();
         assert!(!logs.is_empty());

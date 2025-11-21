@@ -429,6 +429,10 @@ impl JsonRpcError {
             data: None,
         }
     }
+
+    pub fn max_size_exceeded() -> Self {
+        Self::custom("response exceed size limit".to_string())
+    }
 }
 
 pub fn archive_to_jsonrpc_error<'a, A: Into<std::borrow::Cow<'a, str>>>(
