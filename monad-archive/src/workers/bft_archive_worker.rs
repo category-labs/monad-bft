@@ -21,14 +21,14 @@ use std::{
 
 use futures::stream::{self, StreamExt};
 
-use crate::prelude::*;
-
-const BFT_BLOCK_PREFIX: &str = "bft_block/";
-const BFT_BLOCK_HEADER_EXTENSION: &str = ".header";
-const BFT_BLOCK_BODY_EXTENSION: &str = ".body";
-
-const BFT_BLOCK_HEADER_FILE_PATH: &str = "headers/";
-const BFT_BLOCK_BODY_FILE_PATH: &str = "bodies/";
+use crate::{
+    model::bft_archive_store::{
+        BftArchiveStore, BftObject, BftObjectKind, BFT_BLOCK_BODY_EXTENSION,
+        BFT_BLOCK_BODY_FILE_PATH, BFT_BLOCK_HEADER_EXTENSION, BFT_BLOCK_HEADER_FILE_PATH,
+        BFT_BLOCK_PREFIX,
+    },
+    prelude::*,
+};
 
 // Number of concurrent uploads
 const UPLOAD_CONCURRENCY: usize = 10;
@@ -70,7 +70,7 @@ pub async fn bft_block_archive_worker(
         info!("Scanning for BFT blocks to upload...");
 
         let result = archive_bft_blocks(
-            store.clone(),
+            BftArchiveStore::new(store.clone()),
             &mut known_in_s3,
             headers_path.clone(),
             bodies_path.clone(),
@@ -87,19 +87,19 @@ pub async fn bft_block_archive_worker(
 }
 
 async fn archive_bft_blocks(
-    store: KVStoreErased,
-    known_in_s3: &mut HashSet<String>,
+    store: BftArchiveStore,
+    known_in_store: &mut HashSet<String>,
     headers_path: PathBuf,
     bodies_path: PathBuf,
     metrics: &Metrics,
     min_age: Option<Duration>,
 ) -> Result<()> {
-    // 1) Build a single map of local keys to paths.
-    let mut local: HashMap<String, PathBuf> = HashMap::new();
+    // 1) Build a list of local objects (headers + bodies).
+    let mut local_objects: Vec<BftObject> = Vec::new();
     if let Err(e) = add_dir_to_local_map(
-        &mut local,
+        &mut local_objects,
         &headers_path,
-        BFT_BLOCK_HEADER_EXTENSION,
+        BftObjectKind::Header,
         metrics,
         min_age,
     )
@@ -108,9 +108,9 @@ async fn archive_bft_blocks(
         error!(?e, ?headers_path, "Failed to read headers directory");
     }
     if let Err(e) = add_dir_to_local_map(
-        &mut local,
+        &mut local_objects,
         &bodies_path,
-        BFT_BLOCK_BODY_EXTENSION,
+        BftObjectKind::Body,
         metrics,
         min_age,
     )
@@ -119,27 +119,31 @@ async fn archive_bft_blocks(
         error!(?e, ?bodies_path, "Failed to read bodies directory");
     }
 
-    if local.is_empty() {
+    if local_objects.is_empty() {
         debug!("No local BFT files found this tick");
         return Ok(());
     }
 
     // 2) GC: drop known keys that no longer exist locally (memory hygiene only).
-    known_in_s3.retain(|k| local.contains_key(k));
+    let local_keys: HashSet<String> = local_objects.iter().map(|o| o.key()).collect();
+    known_in_store.retain(|k| local_keys.contains(k));
 
-    // Remove keys that are already known to be in S3
-    local.retain(|k, _| !known_in_s3.contains(k));
+    // Remove objects that are already known to be in S3
+    let to_process: Vec<BftObject> = local_objects
+        .into_iter()
+        .filter(|o| !known_in_store.contains(&o.key()))
+        .collect();
 
     // 3) Process files concurrently using streams
-    stream::iter(local.into_iter())
-        .map(|(key, path)| {
+    stream::iter(to_process.into_iter())
+        .map(|obj| {
             let store = store.clone();
             let metrics = metrics.clone();
             async move {
-                match process_single_file(store, &key, &path, &metrics).await {
-                    Ok(x) => x,
+                match store.ensure(&obj, &metrics).await {
+                    Ok(_) => Some(obj.key()),
                     Err(e) => {
-                        error!(?e, ?key, ?path, "Failed to process BFT block");
+                        error!(?e, key=?obj.key(), path=?obj.path(), "Failed to process BFT block");
                         metrics.inc_counter(MetricNames::BFT_BLOCK_FILES_FAILED_TO_PROCESS);
                         None
                     }
@@ -149,7 +153,7 @@ async fn archive_bft_blocks(
         .buffer_unordered(UPLOAD_CONCURRENCY)
         .for_each(|x| {
             if let Some(key) = x {
-                known_in_s3.insert(key);
+                known_in_store.insert(key);
             }
             futures::future::ready(())
         })
@@ -158,40 +162,11 @@ async fn archive_bft_blocks(
     Ok(())
 }
 
-async fn process_single_file(
-    store: KVStoreErased,
-    key: &str,
-    path: &PathBuf,
-    metrics: &Metrics,
-) -> Result<Option<String>> {
-    // Check if file exists in S3
-    if s3_exists_key(&store, key).await? {
-        metrics.inc_counter(MetricNames::BFT_BLOCK_FILES_ALREADY_IN_S3);
-        // Already exists, mark as known and skip
-        return Ok(Some(key.to_string()));
-    }
-
-    // Need to upload; read file then put
-    let bytes = tokio::fs::read(&path)
-        .await
-        .wrap_err("Failed to read local BFT file")?;
-
-    store
-        .put(&key, bytes)
-        .await
-        .wrap_err("Failed to upload BFT block")?;
-    metrics.inc_counter(MetricNames::BFT_BLOCK_FILES_UPLOADED);
-
-    info!(key, ?path, "Uploaded BFT block");
-    // Return the key so it can be added to the known set
-    Ok(Some(key.to_string()))
-}
-
 /// Add all files from `dir` into `out` as S3 keys -> local paths.
 async fn add_dir_to_local_map(
-    out: &mut HashMap<String, PathBuf>,
+    out: &mut Vec<BftObject>,
     dir: &Path,
-    ext: &str,
+    kind: BftObjectKind,
     metrics: &Metrics,
     min_age: Option<Duration>,
 ) -> Result<()> {
@@ -239,18 +214,11 @@ async fn add_dir_to_local_map(
                 continue;
             }
         };
-        let key = format!("{BFT_BLOCK_PREFIX}{fname_str}{ext}");
-        out.insert(key, entry.path());
+        out.push(BftObject::new(kind, fname_str.to_string(), entry.path()));
         metrics.inc_counter(MetricNames::BFT_BLOCK_FILES_DISCOVERED);
     }
 
     Ok(())
-}
-
-/// Poor-man's exists: list with the exact key as prefix and look for an exact match.
-async fn s3_exists_key(store: &impl KVStore, key: &str) -> Result<bool> {
-    let objs = store.scan_prefix(key).await?;
-    Ok(objs.iter().any(|k| k == key))
 }
 
 #[cfg(test)]
@@ -259,12 +227,19 @@ mod tests {
     use tokio::fs;
 
     use super::*;
-    use crate::kvstore::memory::MemoryStorage;
+    use crate::{kvstore::memory::MemoryStorage, model::bft_archive_store::BftArchiveStore};
+
+    /// Poor-man's exists: list with the exact key as prefix and look for an exact match.
+    async fn s3_exists_key(store: &impl KVStore, key: &str) -> Result<bool> {
+        let objs = store.scan_prefix(key).await?;
+        Ok(objs.iter().any(|k| k == key))
+    }
 
     #[tokio::test]
     async fn test_archive_bft_blocks_uploads_new_files() {
         // Setup
         let store: KVStoreErased = MemoryStorage::new("test").into();
+        let facade = BftArchiveStore::new(store.clone());
         let mut known_in_s3 = HashSet::new();
 
         let ledger_dir = tempdir().unwrap();
@@ -285,7 +260,7 @@ mod tests {
 
         // Run archive
         archive_bft_blocks(
-            store.clone(),
+            facade.clone(),
             &mut known_in_s3,
             headers_path.clone(),
             bodies_path.clone(),
@@ -325,6 +300,7 @@ mod tests {
     async fn test_archive_bft_blocks_skips_known_files() {
         // Setup
         let store: KVStoreErased = MemoryStorage::new("test").into();
+        let facade = BftArchiveStore::new(store.clone());
         let mut known_in_s3 = HashSet::new();
 
         let ledger_dir = tempdir().unwrap();
@@ -345,7 +321,7 @@ mod tests {
 
         // Run archive
         archive_bft_blocks(
-            store.clone(),
+            facade.clone(),
             &mut known_in_s3,
             headers_path.clone(),
             bodies_path.clone(),
@@ -363,6 +339,7 @@ mod tests {
     async fn test_archive_bft_blocks_discovers_existing_files() {
         // Setup
         let store: KVStoreErased = MemoryStorage::new("test").into();
+        let facade = BftArchiveStore::new(store.clone());
         let mut known_in_s3 = HashSet::new();
 
         let ledger_dir = tempdir().unwrap();
@@ -386,7 +363,7 @@ mod tests {
 
         // Run archive
         archive_bft_blocks(
-            store.clone(),
+            facade.clone(),
             &mut known_in_s3,
             headers_path.clone(),
             bodies_path.clone(),
@@ -416,6 +393,7 @@ mod tests {
     async fn test_archive_bft_blocks_gc_removes_deleted_files() {
         // Setup
         let store: KVStoreErased = MemoryStorage::new("test").into();
+        let facade = BftArchiveStore::new(store.clone());
         let mut known_in_s3 = HashSet::new();
 
         let ledger_dir = tempdir().unwrap();
@@ -440,7 +418,7 @@ mod tests {
 
         // Run archive
         archive_bft_blocks(
-            store.clone(),
+            facade.clone(),
             &mut known_in_s3,
             headers_path.clone(),
             bodies_path.clone(),
@@ -461,13 +439,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_add_dir_to_local_map_handles_missing_dir() {
-        let mut local = HashMap::new();
+        let mut local: Vec<BftObject> = Vec::new();
         let missing_path = PathBuf::from("/nonexistent/path");
 
         // Should succeed with empty result
-        add_dir_to_local_map(&mut local, &missing_path, ".test", &Metrics::none(), None)
-            .await
-            .unwrap();
+        add_dir_to_local_map(
+            &mut local,
+            &missing_path,
+            BftObjectKind::Header,
+            &Metrics::none(),
+            None,
+        )
+        .await
+        .unwrap();
 
         assert!(local.is_empty());
     }
@@ -475,7 +459,7 @@ mod tests {
     #[tokio::test]
     async fn test_add_dir_to_local_map_builds_correct_keys() {
         let dir = tempdir().unwrap();
-        let mut local = HashMap::new();
+        let mut local: Vec<BftObject> = Vec::new();
 
         // Create test files
         fs::write(dir.path().join("file1"), b"content1")
@@ -489,24 +473,35 @@ mod tests {
         fs::create_dir(dir.path().join("subdir")).await.unwrap();
 
         // Add to map
-        add_dir_to_local_map(&mut local, dir.path(), ".ext", &Metrics::none(), None)
-            .await
-            .unwrap();
+        add_dir_to_local_map(
+            &mut local,
+            dir.path(),
+            BftObjectKind::Header,
+            &Metrics::none(),
+            None,
+        )
+        .await
+        .unwrap();
 
         // Verify correct keys were created
         assert_eq!(local.len(), 2);
-        assert!(local.contains_key(&format!("{BFT_BLOCK_PREFIX}file1.ext")));
-        assert!(local.contains_key(&format!("{BFT_BLOCK_PREFIX}file2.ext")));
+        let keys: HashSet<String> = local.iter().map(|o| o.key()).collect();
+        assert!(keys.contains(&format!(
+            "{BFT_BLOCK_PREFIX}file1{}",
+            crate::model::bft_archive_store::BFT_BLOCK_HEADER_EXTENSION
+        )));
+        assert!(keys.contains(&format!(
+            "{BFT_BLOCK_PREFIX}file2{}",
+            crate::model::bft_archive_store::BFT_BLOCK_HEADER_EXTENSION
+        )));
 
-        // Verify paths are correct
-        assert_eq!(
-            local[&format!("{BFT_BLOCK_PREFIX}file1.ext")],
-            dir.path().join("file1")
-        );
-        assert_eq!(
-            local[&format!("{BFT_BLOCK_PREFIX}file2.ext")],
-            dir.path().join("file2")
-        );
+        // Verify paths are correct (by matching on names)
+        let mut by_name = std::collections::HashMap::new();
+        for o in &local {
+            by_name.insert(o.name().to_string(), o.path().to_path_buf());
+        }
+        assert_eq!(by_name["file1"], dir.path().join("file1"));
+        assert_eq!(by_name["file2"], dir.path().join("file2"));
     }
 
     #[tokio::test]

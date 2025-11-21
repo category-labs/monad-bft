@@ -1,3 +1,4 @@
 faults.json
 .*
 !/.gitignore
+test_ledger/**/*
