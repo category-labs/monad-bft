@@ -565,6 +565,7 @@ impl<T: Triedb> ChainState<T> {
     pub async fn get_logs(
         &self,
         filter: Filter,
+        max_response_size: u32,
         max_block_range: u64,
         use_eth_get_logs_index: bool,
         dry_run_get_logs_index: bool,
@@ -672,7 +673,12 @@ impl<T: Triedb> ChainState<T> {
             )
             .await
             {
-                Ok(logs) => match try_collect_logs_stream(logs).await? {
+                Ok(logs) => match try_collect_logs_stream_with_heuristic_response_limit(
+                    max_response_size,
+                    logs,
+                )
+                .await?
+                {
                     Ok(logs) => return Ok(logs),
                     Err(err) => {
                         debug!(?err, "Error getting logs from log stream with index. Falling back to unindexed method.");
@@ -768,7 +774,9 @@ impl<T: Triedb> ChainState<T> {
             })
         });
 
-        let logs = try_collect_logs_stream(logs_stream).await??;
+        let logs =
+            try_collect_logs_stream_with_heuristic_response_limit(max_response_size, logs_stream)
+                .await??;
 
         if dry_run_get_logs_index {
             if let Some(archive_reader) = self.archive_reader.clone() {
@@ -796,10 +804,13 @@ impl<T: Triedb> ChainState<T> {
     }
 }
 
-async fn try_collect_logs_stream<E>(
+async fn try_collect_logs_stream_with_heuristic_response_limit<E>(
+    max_response_size: u32,
     stream: impl Stream<Item = Result<impl IntoIterator<Item = Log>, E>>,
 ) -> JsonRpcResult<Result<Vec<MonadLog>, E>> {
     let mut stream = std::pin::pin!(stream);
+
+    let mut heuristic_response_size = 0u64;
 
     let mut response_logs = Vec::<MonadLog>::default();
 
@@ -807,7 +818,14 @@ async fn try_collect_logs_stream<E>(
         match result {
             Err(err) => return Ok(Err(err)),
             Ok(logs) => {
-                response_logs.extend(logs.into_iter().map(MonadLog));
+                response_logs.extend(logs.into_iter().map(|log| {
+                    heuristic_response_size += compute_heuristic_log_len(&log) as u64;
+                    MonadLog(log)
+                }));
+
+                if heuristic_response_size > max_response_size as u64 {
+                    return Err(JsonRpcError::max_size_exceeded());
+                }
             }
         }
     }
@@ -1207,19 +1225,94 @@ async fn get_receipt_from_triedb<T: Triedb>(
     }
 }
 
+const HEURISTIC_SMALLEST_LOG_RESPONSE: &str = r#"{"address":"0x0000000000000000000000000000000000000000","blockHash":,"blockNumber":,"data":"0x","logIndex":,"removed":,"topics":[],"transactionHash":,"transactionIndex":}"#;
+
+fn compute_heuristic_fixed_bytes_len<const N: usize>(value: Option<FixedBytes<N>>) -> usize {
+    value
+        .map(|_| {
+            // enclosing double quotes
+            2
+                // 0x
+                + 2
+                // bytes hex encoded
+               + 2 * N
+        })
+        .unwrap_or(
+            // null
+            4,
+        )
+}
+fn compute_heuristic_int_len(value: Option<u64>) -> usize {
+    value
+        .map(|index| {
+            let bits = (64 - index.leading_zeros()) as usize;
+
+            // enclosing double quotes
+            2
+                // 0x
+                + 2
+                // value hex encoded
+                + ((bits + 3) / 4).max(1)
+        })
+        .unwrap_or(
+            // null
+            4,
+        )
+}
+
+fn compute_heuristic_bool_len(value: bool) -> usize {
+    if value {
+        4
+    } else {
+        5
+    }
+}
+
+fn compute_heuristic_log_len(log: &Log) -> usize {
+    HEURISTIC_SMALLEST_LOG_RESPONSE.len()
+        + compute_heuristic_fixed_bytes_len(log.block_hash)
+        + compute_heuristic_int_len(log.block_number)
+        + log
+            .block_timestamp
+            .map(|t| "\"blockTimestamp\":,".len() + compute_heuristic_int_len(Some(t)))
+            .unwrap_or_default()
+        + 2 * log.inner.data.data.len()
+        + compute_heuristic_int_len(log.log_index)
+        + compute_heuristic_bool_len(log.removed)
+        + (
+            // topic data
+            log.inner.data.topics().len()
+            * (
+                // enclosing double quotes
+                2
+                // 0x
+                + 2
+                // 32 bytes hex encoded -> 64 bytes
+                + 64
+            )
+            // topic data comma separators
+            + log.inner.data.topics().len().saturating_sub(1)
+        )
+        + compute_heuristic_fixed_bytes_len(log.transaction_hash)
+        + compute_heuristic_int_len(log.transaction_index)
+}
+
 #[cfg(test)]
 mod tests {
     use alloy_eips::BlockNumberOrTag;
+    use alloy_primitives::{Address, LogData};
     use alloy_rpc_types::{Filter, FilterBlockOption};
+    use arbitrary::Unstructured;
     use monad_archive::{
         kvstore::WritePolicy,
         prelude::{ArchiveReader, BlockDataArchive, IndexReaderImpl, TxIndexArchiver},
         test_utils::{mock_block, mock_rx, mock_tx, MemoryStorage},
     };
     use monad_triedb_utils::mock_triedb::MockTriedb;
+    use proptest::{prelude::Strategy, proptest};
 
     use crate::{
-        chainstate::ChainState,
+        chainstate::{compute_heuristic_log_len, ChainState},
         eth_json_types::{BlockTagOrHash, BlockTags, FixedData, Quantity},
     };
 
@@ -1345,7 +1438,7 @@ mod tests {
             ..Default::default()
         };
         let logs = chain_state
-            .get_logs(filter, 1, false, false, 1)
+            .get_logs(filter, u32::MAX, 1, false, false, 1)
             .await
             .unwrap();
         assert!(!logs.is_empty());
@@ -1355,9 +1448,54 @@ mod tests {
             ..Default::default()
         };
         let logs = chain_state
-            .get_logs(filter, 1, false, false, 1)
+            .get_logs(filter, u32::MAX, 1, false, false, 1)
             .await
             .unwrap();
         assert!(!logs.is_empty());
+    }
+
+    #[test]
+    fn test_heuristic_log_len_empty() {
+        let log = alloy_rpc_types::Log {
+            inner: alloy_primitives::Log {
+                address: Address::default(),
+                data: LogData::empty(),
+            },
+            ..Default::default()
+        };
+
+        let heuristic_log_len = compute_heuristic_log_len(&log);
+
+        let serialized_log = serde_json::to_string(&log).unwrap();
+
+        assert_eq!(
+            heuristic_log_len,
+            serialized_log.len(),
+            "Heuristic log len does not match! Serialized log: {serialized_log:?}"
+        );
+    }
+
+    fn arbitrary_log() -> impl Strategy<Value = alloy_rpc_types::Log> {
+        proptest::collection::vec(proptest::prelude::any::<u8>(), 0..256).prop_filter_map(
+            "invalid arbitrary",
+            |bytes| {
+                let mut u = Unstructured::new(&bytes);
+                u.arbitrary().ok()
+            },
+        )
+    }
+
+    proptest! {
+        #[test]
+        fn proptest_heuristic_log_len(log in arbitrary_log()) {
+            let heuristic_log_len = compute_heuristic_log_len(&log);
+
+            let serialized_log = serde_json::to_string(&log).unwrap();
+
+            assert_eq!(
+                heuristic_log_len, serialized_log.len(),
+                "Heuristic log len does not match! Serialized log: {serialized_log:?}"
+            );
+        }
     }
 }
