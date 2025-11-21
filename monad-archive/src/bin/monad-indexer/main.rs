@@ -13,7 +13,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use clap::Parser;
 use eyre::bail;
 use monad_archive::{
     cli::set_source_and_sink_metrics, model::logs_index::LogsIndexArchiver, prelude::*,

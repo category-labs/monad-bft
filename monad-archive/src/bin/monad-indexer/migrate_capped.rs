@@ -247,7 +247,9 @@ async fn ensure_disk_space(
 
     // Ensure we have valid filesystem stats
     if fs_total == 0 {
-        bail!("Unable to get filesystem stats (fsTotal=0). MongoDB must be configured with proper filesystem access.");
+        bail!(
+            "Unable to get filesystem stats (fsTotal=0). MongoDB must be configured with proper filesystem access."
+        );
     }
 
     if fs_free < need {
