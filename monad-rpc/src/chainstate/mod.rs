@@ -751,24 +751,7 @@ impl<T: Triedb> ChainState<T> {
                 block_receipts(transactions, receipts, &header.header, header.hash)
             })
             .flatten_ok()
-            .map_ok(|receipt| {
-                let logs = match receipt.inner {
-                    alloy_consensus::ReceiptEnvelope::Legacy(receipt_with_bloom)
-                    | alloy_consensus::ReceiptEnvelope::Eip2930(receipt_with_bloom)
-                    | alloy_consensus::ReceiptEnvelope::Eip1559(receipt_with_bloom)
-                    | alloy_consensus::ReceiptEnvelope::Eip4844(receipt_with_bloom)
-                    | alloy_consensus::ReceiptEnvelope::Eip7702(receipt_with_bloom) => {
-                        receipt_with_bloom.receipt.logs
-                    }
-                    _ => unreachable!(),
-                };
-
-                logs.into_iter().filter(|log: &Log| {
-                    !(filtered_params.filter.is_some()
-                        && (!filtered_params.filter_address(&log.address())
-                            || !filtered_params.filter_topics(log.topics())))
-                })
-            })
+            .map_ok(|receipt| transaction_receipt_to_logs_iter(receipt, &filtered_params))
             .flatten_ok()
             .map_ok(MonadLog)
             .collect::<Result<Vec<_>, _>>()?;
@@ -796,6 +779,28 @@ impl<T: Triedb> ChainState<T> {
 
         Ok(logs)
     }
+}
+
+fn transaction_receipt_to_logs_iter<'a>(
+    receipt: TransactionReceipt,
+    filtered_params: &'a FilteredParams,
+) -> impl Iterator<Item = Log> + 'a {
+    let logs = match receipt.inner {
+        alloy_consensus::ReceiptEnvelope::Legacy(receipt_with_bloom)
+        | alloy_consensus::ReceiptEnvelope::Eip2930(receipt_with_bloom)
+        | alloy_consensus::ReceiptEnvelope::Eip1559(receipt_with_bloom)
+        | alloy_consensus::ReceiptEnvelope::Eip4844(receipt_with_bloom)
+        | alloy_consensus::ReceiptEnvelope::Eip7702(receipt_with_bloom) => {
+            receipt_with_bloom.receipt.logs
+        }
+        _ => unreachable!(),
+    };
+
+    logs.into_iter().filter(|log: &Log| {
+        !(filtered_params.filter.is_some()
+            && (!filtered_params.filter_address(&log.address())
+                || !filtered_params.filter_topics(log.topics())))
+    })
 }
 
 async fn fetch_from_archive(
@@ -945,19 +950,7 @@ async fn get_logs_with_index(
 
     Ok(potential_matches
         .into_iter()
-        .flat_map(|receipt| {
-            receipt
-                .inner
-                .logs()
-                .iter()
-                .filter(|log: &&Log| {
-                    !(filtered_params.filter.is_some()
-                        && (!filtered_params.filter_address(&log.address())
-                            || !filtered_params.filter_topics(log.topics())))
-                })
-                .cloned()
-                .collect::<Vec<_>>()
-        })
+        .flat_map(|receipt| transaction_receipt_to_logs_iter(receipt, &filtered_params))
         .collect())
 }
 
