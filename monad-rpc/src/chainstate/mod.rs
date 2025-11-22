@@ -941,17 +941,18 @@ async fn get_logs_with_index(
     to_block: u64,
     filter: &Filter,
 ) -> monad_archive::prelude::Result<Vec<Log>> {
-    let potential_matches = get_receipts_stream_using_index(reader, from_block, to_block, filter)
-        .await?
-        .try_collect::<Vec<_>>()
-        .await?;
-
     let filtered_params = FilteredParams::new(Some(filter.clone()));
 
-    Ok(potential_matches
-        .into_iter()
-        .flat_map(|receipt| transaction_receipt_to_logs_iter(receipt, &filtered_params))
-        .collect())
+    get_receipts_stream_using_index(reader, from_block, to_block, filter)
+        .await?
+        .map_ok(|receipt| {
+            futures::stream::iter(
+                transaction_receipt_to_logs_iter(receipt, &filtered_params).map(Result::Ok),
+            )
+        })
+        .try_flatten()
+        .try_collect::<Vec<_>>()
+        .await
 }
 
 fn parse_block_content(
