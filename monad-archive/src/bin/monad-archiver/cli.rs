@@ -68,6 +68,10 @@ pub struct Cli {
     #[serde(default)]
     pub unsafe_skip_bad_blocks: bool,
 
+    #[serde(default)]
+    /// If set, archiver will require traces to be present for all blocks
+    pub require_traces: bool,
+
     /// Path to folder containing bft blocks
     /// If set, archiver will upload these files to blob store provided in archive_sink
     pub bft_block_path: Option<PathBuf>,
@@ -158,6 +162,7 @@ impl Cli {
             otel_endpoint,
             otel_replica_name_override,
             skip_connectivity_check,
+            require_traces,
         } = overrides;
 
         Ok(Self {
@@ -193,6 +198,7 @@ impl Cli {
             otel_endpoint,
             otel_replica_name_override,
             skip_connectivity_check: skip_connectivity_check.unwrap_or(false),
+            require_traces: require_traces.unwrap_or(false),
         })
     }
 
@@ -309,6 +315,10 @@ struct CliArgs {
     #[arg(long, action = ArgAction::SetTrue)]
     unsafe_skip_bad_blocks: bool,
 
+    /// If set, archiver will require traces to be present for all blocks
+    #[arg(long)]
+    require_traces: bool,
+
     /// Path to folder containing bft blocks
     /// If set, archiver will upload these files to blob store provided in archive_sink
     #[arg(long)]
@@ -392,6 +402,7 @@ impl CliArgs {
             otel_replica_name_override,
             skip_connectivity_check,
             unsafe_disable_normal_archiving,
+            require_traces,
         } = self;
 
         let overrides = CliOverrides {
@@ -417,6 +428,7 @@ impl CliArgs {
             otel_replica_name_override,
             skip_connectivity_check: bool_override(skip_connectivity_check),
             unsafe_disable_normal_archiving: bool_override(unsafe_disable_normal_archiving),
+            require_traces: bool_override(require_traces),
         };
 
         (config, overrides)
@@ -433,6 +445,7 @@ struct CliOverrides {
     start_block: Option<u64>,
     stop_block: Option<u64>,
     unsafe_skip_bad_blocks: Option<bool>,
+    require_traces: Option<bool>,
     bft_block_path: Option<PathBuf>,
     bft_block_poll_freq_secs: Option<u64>,
     bft_block_min_age_secs: Option<u64>,

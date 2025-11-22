@@ -19,8 +19,10 @@ use monad_archive::{
     cli::set_source_and_sink_metrics,
     prelude::*,
     workers::{
-        bft_archive_worker::bft_block_archive_worker, block_archive_worker::archive_worker,
-        file_checkpointer::file_checkpoint_worker, generic_folder_archiver::recursive_dir_archiver,
+        bft_archive_worker::bft_block_archive_worker,
+        block_archive_worker::{archive_worker, ArchiveWorkerOpts},
+        file_checkpointer::file_checkpoint_worker,
+        generic_folder_archiver::recursive_dir_archiver,
     },
 };
 use tokio::task::JoinHandle;
@@ -123,16 +125,21 @@ async fn main() -> Result<()> {
         worker_handles.push(handle);
     }
 
+    let archive_worker_opts = ArchiveWorkerOpts {
+        max_blocks_per_iteration: args.max_blocks_per_iteration,
+        max_concurrent_blocks: args.max_concurrent_blocks,
+        start_block: args.start_block,
+        stop_block: args.stop_block,
+        unsafe_skip_bad_blocks: args.unsafe_skip_bad_blocks,
+        require_traces: args.require_traces,
+    };
+
     if !args.unsafe_disable_normal_archiving {
         tokio::spawn(archive_worker(
             block_data_source,
             fallback_block_data_source,
             archive_writer,
-            args.max_blocks_per_iteration,
-            args.max_concurrent_blocks,
-            args.start_block,
-            args.stop_block,
-            args.unsafe_skip_bad_blocks,
+            archive_worker_opts,
             metrics,
         ))
         .await?;

@@ -32,6 +32,7 @@ use crate::{model::logs_index::LogsIndexArchiver, prelude::*};
 /// * `poll_frequency` - How often to check for new blocks
 pub async fn index_worker(
     block_data_reader: impl BlockDataReader + Sync + Send,
+    fallback_block_data_source: Option<impl BlockDataReader + Sync + Send>,
     indexer: TxIndexArchiver,
     log_index: Option<LogsIndexArchiver>,
     max_blocks_per_iteration: u64,
@@ -91,6 +92,7 @@ pub async fn index_worker(
 
         let latest_indexed = index_blocks(
             &block_data_reader,
+            &fallback_block_data_source,
             &indexer,
             log_index.as_ref(),
             start_block..=end_block,
@@ -109,6 +111,7 @@ pub async fn index_worker(
 
 async fn index_blocks(
     block_data_reader: &(impl BlockDataReader + Send),
+    fallback_block_data_source: &Option<(impl BlockDataReader + Send)>,
     indexer: &TxIndexArchiver,
     log_index: Option<&LogsIndexArchiver>,
     block_range: RangeInclusive<u64>,
@@ -119,7 +122,15 @@ async fn index_blocks(
 
     let res: Result<usize, u64> = futures::stream::iter(block_range.clone())
         .map(|block_num: u64| async move {
-            match handle_block(block_data_reader, indexer, log_index, block_num).await {
+            match handle_block(
+                block_data_reader,
+                fallback_block_data_source,
+                indexer,
+                log_index,
+                block_num,
+            )
+            .await
+            {
                 Ok(num_txs) => Ok(num_txs),
                 Err(e) => {
                     error!("Failed to handle block: {e:?}");
@@ -156,6 +167,7 @@ async fn index_blocks(
 
 async fn handle_block(
     block_data_reader: &(impl BlockDataReader + Send),
+    fallback_block_data_source: &Option<(impl BlockDataReader + Send)>,
     tx_index_archiver: &TxIndexArchiver,
     log_index: Option<&LogsIndexArchiver>,
     block_num: u64,
@@ -165,9 +177,25 @@ async fn handle_block(
         receipts,
         traces,
         offsets,
-    } = block_data_reader
+    } = match block_data_reader
         .get_block_data_with_offsets(block_num)
-        .await?;
+        .await
+    {
+        Ok(data) => data,
+        Err(e) => match fallback_block_data_source {
+            Some(fallback) => {
+                warn!(?e, block_num, "Failed to get block data with offsets from main source for block {block_num}, trying fallback source");
+                fallback
+                .get_block_data_with_offsets(block_num)
+                .await
+                .wrap_err_with(|| format!(
+                        "Failed to get block data with offsets from fallback source for block {block_num}"
+                    )
+                )?
+            }
+            None => return Err(e),
+        },
+    };
 
     let num_txs = block.body.transactions.len();
     info!(num_txs, block_num, "Indexing block...");
@@ -254,6 +282,8 @@ mod tests {
     use super::*;
     use crate::kvstore::memory::MemoryStorage;
 
+    const NO_FALLBACK: Option<BlockDataReaderErased> = Option::<BlockDataReaderErased>::None;
+
     fn mock_tx_with_input_len(salt: u64, input_len: usize) -> TxEnvelopeWithSender {
         let tx = TxEip1559 {
             nonce: salt,
@@ -337,6 +367,7 @@ mod tests {
         // Start worker that should process until block 2, then stop at missing block 3
         let worker_handle = tokio::spawn(index_worker(
             reader.clone(),
+            NO_FALLBACK,
             index_archiver.clone(),
             None,
             3, // max_blocks_per_iteration
@@ -408,6 +439,7 @@ mod tests {
         // Start worker in separate task
         let worker_handle = tokio::spawn(index_worker(
             reader.clone(),
+            NO_FALLBACK,
             index_archiver.clone(),
             None,
             3, // max_blocks_per_iteration
@@ -483,6 +515,7 @@ mod tests {
         // Start the worker in a separate task since it runs indefinitely
         let worker_handle = tokio::spawn(index_worker(
             reader.clone(),
+            NO_FALLBACK,
             index_archiver.clone(),
             None,
             3, // max_blocks_per_iteration
@@ -535,6 +568,7 @@ mod tests {
 
         let result = index_blocks(
             &reader,
+            &NO_FALLBACK,
             &index_archiver,
             None,
             block_range,
@@ -583,6 +617,7 @@ mod tests {
 
         let result = index_blocks(
             &reader,
+            &NO_FALLBACK,
             &index_archiver,
             None,
             block_range,
@@ -629,7 +664,7 @@ mod tests {
             .unwrap();
 
         // Test handle_block
-        let num_txs = handle_block(&reader, &index_archiver, None, block_num)
+        let num_txs = handle_block(&reader, &NO_FALLBACK, &index_archiver, None, block_num)
             .await
             .unwrap();
         assert_eq!(num_txs, 1);
@@ -670,7 +705,7 @@ mod tests {
             .unwrap();
 
         // Test handle_block
-        let num_txs = handle_block(&reader, &index_archiver, None, block_num)
+        let num_txs = handle_block(&reader, &NO_FALLBACK, &index_archiver, None, block_num)
             .await
             .unwrap();
         assert_eq!(num_txs, 1);
@@ -704,7 +739,7 @@ mod tests {
         reader.archive_traces(traces, block_num).await.unwrap();
 
         // Test handle_block
-        let num_txs = handle_block(&reader, &index_archiver, None, block_num)
+        let num_txs = handle_block(&reader, &NO_FALLBACK, &index_archiver, None, block_num)
             .await
             .unwrap();
 
@@ -734,7 +769,7 @@ mod tests {
             .unwrap();
 
         // Test handle_block
-        let num_txs = handle_block(&reader, &index_archiver, None, block_num)
+        let num_txs = handle_block(&reader, &NO_FALLBACK, &index_archiver, None, block_num)
             .await
             .unwrap();
 
@@ -764,8 +799,49 @@ mod tests {
         reader.archive_traces(traces, block_num).await.unwrap();
 
         // Should fail since block is missing
-        let result = handle_block(&reader, &index_archiver, None, block_num).await;
+        let result = handle_block(&reader, &NO_FALLBACK, &index_archiver, None, block_num).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_handle_block_missing_block_with_fallback() {
+        let (reader, index_archiver) = memory_sink_source();
+        let (fallback_reader, _) = memory_sink_source();
+        let block_num = 10;
+
+        // Only store receipts and traces, omit block
+        let receipts = vec![mock_rx()];
+        let traces = vec![vec![]];
+        reader
+            .archive_receipts(receipts.clone(), block_num)
+            .await
+            .unwrap();
+        reader
+            .archive_traces(traces.clone(), block_num)
+            .await
+            .unwrap();
+
+        // Fallback has everything
+        let block = mock_block(block_num, vec![mock_tx(123)]);
+        fallback_reader.archive_block(block).await.unwrap();
+        fallback_reader
+            .archive_receipts(receipts, block_num)
+            .await
+            .unwrap();
+        fallback_reader
+            .archive_traces(traces, block_num)
+            .await
+            .unwrap();
+
+        let result = handle_block(
+            &reader,
+            &Some(fallback_reader),
+            &index_archiver,
+            None,
+            block_num,
+        )
+        .await;
+        assert!(result.is_ok());
     }
 
     #[tokio::test]
@@ -780,7 +856,7 @@ mod tests {
         reader.archive_block(block).await.unwrap();
         reader.archive_traces(traces, block_num).await.unwrap();
 
-        let result = handle_block(&reader, &index_archiver, None, block_num).await;
+        let result = handle_block(&reader, &NO_FALLBACK, &index_archiver, None, block_num).await;
         assert!(result.is_err());
     }
 
@@ -796,7 +872,7 @@ mod tests {
         reader.archive_block(block).await.unwrap();
         reader.archive_receipts(receipts, block_num).await.unwrap();
 
-        let result = handle_block(&reader, &index_archiver, None, block_num).await;
+        let result = handle_block(&reader, &NO_FALLBACK, &index_archiver, None, block_num).await;
         assert!(result.is_err());
     }
 
@@ -815,7 +891,7 @@ mod tests {
         reader.archive_receipts(receipts, block_num).await.unwrap();
         reader.archive_traces(traces, block_num).await.unwrap();
 
-        let result = handle_block(&reader, &index_archiver, None, block_num).await;
+        let result = handle_block(&reader, &NO_FALLBACK, &index_archiver, None, block_num).await;
         assert!(result.is_err());
     }
 
@@ -834,7 +910,7 @@ mod tests {
         reader.archive_receipts(receipts, block_num).await.unwrap();
         reader.archive_traces(traces, block_num).await.unwrap();
 
-        let result = handle_block(&reader, &index_archiver, None, block_num).await;
+        let result = handle_block(&reader, &NO_FALLBACK, &index_archiver, None, block_num).await;
         assert!(result.is_err());
     }
 
@@ -853,7 +929,7 @@ mod tests {
         reader.archive_receipts(receipts, block_num).await.unwrap();
         reader.archive_traces(traces, block_num).await.unwrap();
 
-        let result = handle_block(&reader, &index_archiver, None, block_num).await;
+        let result = handle_block(&reader, &NO_FALLBACK, &index_archiver, None, block_num).await;
         assert!(result.is_err());
     }
 }

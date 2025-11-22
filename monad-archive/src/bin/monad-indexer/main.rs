@@ -57,6 +57,11 @@ async fn run_indexer(args: cli::Cli) -> Result<()> {
     set_source_and_sink_metrics(&args.archive_sink, &args.block_data_source, &metrics);
 
     let block_data_reader = args.block_data_source.build(&metrics).await?;
+    // Optional fallback
+    let fallback_block_data_source = match args.fallback_block_data_source {
+        Some(source) => Some(source.build(&metrics).await?),
+        None => None,
+    };
     let tx_index_archiver = args
         .archive_sink
         .build_index_archive(&metrics, args.max_inline_encoded_len)
@@ -87,6 +92,7 @@ async fn run_indexer(args: cli::Cli) -> Result<()> {
     // tokio main should not await futures directly, so we spawn a worker
     tokio::spawn(index_worker(
         block_data_reader,
+        fallback_block_data_source,
         tx_index_archiver,
         log_index_archiver,
         args.max_blocks_per_iteration,

@@ -25,30 +25,40 @@ use tracing::{error, info, warn};
 
 use crate::prelude::*;
 
+pub struct ArchiveWorkerOpts {
+    /// Maximum number of blocks to process in one iteration
+    pub max_blocks_per_iteration: u64,
+    /// Maximum number of blocks to process concurrently
+    pub max_concurrent_blocks: usize,
+    /// Optional block number to start archiving from
+    pub start_block: Option<u64>,
+    /// Optional block number to stop archiving at
+    pub stop_block: Option<u64>,
+    /// If set, archiver will skip blocks that fail to archive
+    pub unsafe_skip_bad_blocks: bool,
+    /// If set, archiver will require traces to be present for all blocks
+    pub require_traces: bool,
+}
+
 /// Main worker that archives block data from the execution database to durable storage.
 /// Continuously polls for new blocks and archives their data.
-///
-/// # Arguments
-/// * `block_data_source` - Source to read block data from (typically triedb)
-/// * `archive_writer` - Archive to write block data to (typically S3)
-/// * `max_blocks_per_iteration` - Maximum number of blocks to process in one iteration
-/// * `max_concurrent_blocks` - Maximum number of blocks to process concurrently
-/// * `start_block_override` - Optional block number to start archiving from
-/// * `stop_block_override` - Optional block number to stop archiving at
-/// * `metrics` - Metrics collection interface
 pub async fn archive_worker(
     block_data_source: (impl BlockDataReader + Sync),
     fallback_source: Option<(impl BlockDataReader + Sync)>,
     archive_writer: BlockDataArchive,
-    max_blocks_per_iteration: u64,
-    max_concurrent_blocks: usize,
-    mut start_block_override: Option<u64>,
-    stop_block_override: Option<u64>,
-    unsafe_skip_bad_blocks: bool,
+    opts: ArchiveWorkerOpts,
     metrics: Metrics,
 ) {
+    let ArchiveWorkerOpts {
+        max_blocks_per_iteration,
+        max_concurrent_blocks,
+        mut start_block,
+        stop_block: stop_block_override,
+        unsafe_skip_bad_blocks,
+        require_traces,
+    } = opts;
     // initialize starting block using either override or stored latest
-    let mut start_block = match start_block_override.take() {
+    let mut start_block = match start_block.take() {
         Some(start_block) => start_block,
         None => {
             let latest_uploaded = archive_writer
@@ -107,6 +117,7 @@ pub async fn archive_worker(
             &metrics,
             max_concurrent_blocks,
             unsafe_skip_bad_blocks,
+            require_traces,
         )
         .await;
 
@@ -126,12 +137,22 @@ async fn archive_blocks(
     metrics: &Metrics,
     concurrency: usize,
     unsafe_skip_bad_blocks: bool,
+    require_traces: bool,
 ) -> u64 {
     let start = Instant::now();
 
     let res: Result<(), u64> = futures::stream::iter(range.clone())
         .map(|block_num: u64| async move {
-            match archive_block(reader, fallback_reader, block_num, archiver, metrics).await {
+            match archive_block(
+                reader,
+                fallback_reader,
+                block_num,
+                archiver,
+                require_traces,
+                metrics,
+            )
+            .await
+            {
                 Ok(_) => Ok(()),
                 Err(e) => {
                     if unsafe_skip_bad_blocks {
@@ -172,6 +193,7 @@ async fn archive_block(
     fallback: &Option<impl BlockDataReader>,
     block_num: u64,
     archiver: &BlockDataArchive,
+    require_traces: bool,
     metrics: &Metrics,
 ) -> Result<()> {
     let mut num_txs = None;
@@ -240,6 +262,9 @@ async fn archive_block(
     // Failing to archive traces is not a critical error, so we log and continue.
     if let Err(e) = traces {
         metrics.inc_counter(MetricNames::BLOCK_ARCHIVE_WORKER_TRACES_FAILED);
+        if require_traces {
+            return Err(e.wrap_err("Archiver requires traces to be present for all blocks"));
+        }
         error!(
             block_num,
             "Failed to archive traces for block {block_num}. Continuing... Cause: {e:?}"
@@ -334,6 +359,31 @@ mod tests {
             .unwrap();
     }
 
+    async fn mock_source_without_traces(
+        archive: &BlockDataArchive,
+        data: impl IntoIterator<Item = (Block, BlockReceipts)>,
+    ) {
+        let mut max_block_num = u64::MIN;
+        for (block, receipts) in data {
+            let block_num = block.header.number;
+
+            if block_num > max_block_num {
+                max_block_num = block_num;
+            }
+
+            archive.archive_block(block.clone()).await.unwrap();
+            archive
+                .archive_receipts(receipts.clone(), block_num)
+                .await
+                .unwrap();
+        }
+
+        archive
+            .update_latest(max_block_num, LatestKind::Uploaded)
+            .await
+            .unwrap();
+    }
+
     fn memory_sink_source() -> (BlockDataArchive, BlockDataArchive) {
         let source: KVStoreErased = MemoryStorage::new("source").into();
         let reader = BlockDataArchive::new(source);
@@ -365,6 +415,7 @@ mod tests {
             &Some(fallback_reader),
             block_num,
             &archiver,
+            false,
             &metrics::Metrics::none(),
         )
         .await;
@@ -396,6 +447,7 @@ mod tests {
             &None::<BlockDataReaderErased>,
             block_num,
             &archiver,
+            false,
             &metrics::Metrics::none(),
         )
         .await;
@@ -436,6 +488,7 @@ mod tests {
             &archiver,
             &metrics::Metrics::none(),
             3,
+            false,
             false,
         )
         .await;
@@ -481,6 +534,7 @@ mod tests {
             &metrics::Metrics::none(),
             3,
             false,
+            false,
         )
         .await;
 
@@ -489,5 +543,75 @@ mod tests {
             archiver.get_latest(LatestKind::Uploaded).await.unwrap(),
             Some(end_of_first_chunk)
         );
+    }
+
+    #[tokio::test]
+    async fn archive_block_without_traces_allowed() {
+        let (reader, archiver) = memory_sink_source();
+
+        let block_num = 42;
+        let block = mock_block(block_num, vec![mock_tx()]);
+        let receipts = vec![mock_rx()];
+
+        mock_source_without_traces(&reader, [(block.clone(), receipts.clone())]).await;
+        assert!(reader.get_block_traces(block_num).await.is_err());
+
+        let res = archive_block(
+            &reader,
+            &None::<BlockDataReaderErased>,
+            block_num,
+            &archiver,
+            false,
+            &metrics::Metrics::none(),
+        )
+        .await;
+
+        assert!(res.is_ok());
+        assert_eq!(
+            archiver.get_block_by_number(block_num).await.unwrap(),
+            block
+        );
+        assert_eq!(
+            archiver.get_block_receipts(block_num).await.unwrap(),
+            receipts
+        );
+        assert!(archiver.get_block_traces(block_num).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn archive_block_without_traces_requires_traces() {
+        let (reader, archiver) = memory_sink_source();
+
+        let block_num = 43;
+        let block = mock_block(block_num, vec![mock_tx()]);
+        let receipts = vec![mock_rx()];
+
+        mock_source_without_traces(&reader, [(block.clone(), receipts.clone())]).await;
+        assert!(reader.get_block_traces(block_num).await.is_err());
+
+        let res = archive_block(
+            &reader,
+            &None::<BlockDataReaderErased>,
+            block_num,
+            &archiver,
+            true,
+            &metrics::Metrics::none(),
+        )
+        .await;
+
+        assert!(res.is_err());
+        let err = res.unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("Archiver requires traces to be present for all blocks"));
+        assert_eq!(
+            archiver.get_block_by_number(block_num).await.unwrap(),
+            block
+        );
+        assert_eq!(
+            archiver.get_block_receipts(block_num).await.unwrap(),
+            receipts
+        );
+        assert!(archiver.get_block_traces(block_num).await.is_err());
     }
 }
