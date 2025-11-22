@@ -25,7 +25,7 @@ use alloy_rpc_types::{
     Block, BlockTransactions, Filter, FilterBlockOption, FilteredParams, Header, Log, Transaction,
     TransactionReceipt,
 };
-use futures::{stream, StreamExt, TryStreamExt};
+use futures::{stream, Stream, StreamExt, TryStreamExt};
 use itertools::{Either, Itertools};
 use monad_archive::{
     model::BlockDataReader,
@@ -884,12 +884,15 @@ async fn check_dry_run_get_logs_index(
     Ok(())
 }
 
-async fn get_logs_with_index(
-    reader: &ArchiveReader,
+async fn get_receipts_stream_using_index<'a>(
+    reader: &'a ArchiveReader,
     from_block: u64,
     to_block: u64,
-    filter: &Filter,
-) -> monad_archive::prelude::Result<Vec<Log>> {
+    filter: &'a Filter,
+) -> Result<
+    impl Stream<Item = monad_archive::prelude::Result<TransactionReceipt>> + 'a,
+    monad_archive::prelude::Report,
+> {
     let log_index = reader
         .log_index
         .as_ref()
@@ -908,19 +911,13 @@ async fn get_logs_with_index(
         );
     }
 
-    let filtered_params = FilteredParams::new(Some(filter.clone()));
-
-    // Note: we an limit returned (and queried!) data by using `query_logs_index_streamed`
+    // Note: we can limit returned (and queried!) data by using `query_logs_index_streamed`
     // and take_while we're under the response size limit
-    let potential_matches = log_index
+    Ok(log_index
         .query_logs(from_block, to_block, filter.address.iter(), &filter.topics)
-        .await?;
-    let potential_matches = potential_matches.try_collect::<Vec<_>>().await?;
-
-    Ok(potential_matches
-        .into_iter()
-        .flat_map(|tx_data| {
-            let receipt = parse_tx_receipt(
+        .await?
+        .map_ok(|tx_data| {
+            parse_tx_receipt(
                 tx_data.header_subset.base_fee_per_gas,
                 Some(tx_data.header_subset.block_timestamp),
                 tx_data.header_subset.block_hash,
@@ -929,7 +926,26 @@ async fn get_logs_with_index(
                 tx_data.receipt,
                 tx_data.header_subset.block_number,
                 tx_data.header_subset.tx_index,
-            );
+            )
+        }))
+}
+
+async fn get_logs_with_index(
+    reader: &ArchiveReader,
+    from_block: u64,
+    to_block: u64,
+    filter: &Filter,
+) -> monad_archive::prelude::Result<Vec<Log>> {
+    let potential_matches = get_receipts_stream_using_index(reader, from_block, to_block, filter)
+        .await?
+        .try_collect::<Vec<_>>()
+        .await?;
+
+    let filtered_params = FilteredParams::new(Some(filter.clone()));
+
+    Ok(potential_matches
+        .into_iter()
+        .flat_map(|receipt| {
             receipt
                 .inner
                 .logs()
