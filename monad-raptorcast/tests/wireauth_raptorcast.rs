@@ -1,3 +1,5 @@
+mod common;
+
 use std::{
     collections::HashMap,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
@@ -8,6 +10,7 @@ use std::{
 
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use bytes::{Bytes, BytesMut};
+use common::{find_tcp_free_port, find_udp_free_port};
 use futures_util::StreamExt;
 use itertools::Itertools;
 use monad_crypto::certificate_signature::{
@@ -35,11 +38,6 @@ fn init_tracing() {
 
 fn keypair(seed: u8) -> KeyPair {
     KeyPair::from_bytes(&mut [seed; 32]).unwrap()
-}
-
-fn find_free_port() -> u16 {
-    let socket = std::net::UdpSocket::bind("127.0.0.1:0").expect("failed to bind");
-    socket.local_addr().expect("failed to get addr").port()
 }
 
 #[derive(Clone, Copy, RlpEncodable, RlpDecodable)]
@@ -115,6 +113,7 @@ struct ValidatorInfo {
     keypair: Arc<KeyPair>,
     nodeid: NodeId<CertificateSignaturePubKey<SecpSignature>>,
     pubkey: monad_secp::PubKey,
+    tcp_addr: SocketAddrV4,
     auth_addr: SocketAddrV4,
     non_auth_addr: SocketAddrV4,
 }
@@ -124,12 +123,14 @@ impl ValidatorInfo {
         let kp = keypair(seed);
         let nodeid = NodeId::new(kp.pubkey());
         let pubkey = kp.pubkey();
-        let auth_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_free_port());
-        let non_auth_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_free_port());
+        let tcp_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_tcp_free_port());
+        let auth_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_udp_free_port());
+        let non_auth_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_udp_free_port());
         Self {
             keypair: Arc::new(kp),
             nodeid,
             pubkey,
+            tcp_addr,
             auth_addr,
             non_auth_addr,
         }
@@ -139,7 +140,7 @@ impl ValidatorInfo {
         let name_record = if with_auth {
             NameRecord::new_with_authentication(
                 Ipv4Addr::new(127, 0, 0, 1),
-                8000 + (self.nodeid.pubkey().bytes()[0] as u16),
+                self.tcp_addr.port(),
                 self.non_auth_addr.port(),
                 self.auth_addr.port(),
                 1,
@@ -179,6 +180,7 @@ fn create_raptorcast_config(
 }
 
 fn create_dataplane(
+    tcp_addr: SocketAddrV4,
     auth_addr: SocketAddrV4,
     non_auth_addr: SocketAddrV4,
 ) -> (
@@ -187,7 +189,7 @@ fn create_dataplane(
     monad_dataplane::UdpSocketHandle,
     monad_dataplane::DataplaneControl,
 ) {
-    let dp = monad_dataplane::DataplaneBuilder::new(&SocketAddr::V4(auth_addr), UP_BANDWIDTH_MBPS)
+    let dp = monad_dataplane::DataplaneBuilder::new(&SocketAddr::V4(tcp_addr), UP_BANDWIDTH_MBPS)
         .extend_udp_sockets(vec![
             monad_dataplane::UdpSocketConfig {
                 socket_addr: SocketAddr::V4(auth_addr),
@@ -241,6 +243,7 @@ fn create_peer_discovery(
 
 fn spawn_noop_validator(
     keypair: Arc<KeyPair>,
+    tcp_addr: SocketAddrV4,
     auth_addr: SocketAddrV4,
     non_auth_addr: SocketAddrV4,
     known_addresses: HashMap<NodeId<CertificateSignaturePubKey<SecpSignature>>, SocketAddrV4>,
@@ -256,7 +259,7 @@ fn spawn_noop_validator(
     tokio::task::spawn_local(async move {
         let shared_pd = create_peer_discovery(known_addresses, name_records);
         let (tcp_socket, _authenticated_socket, non_authenticated_socket, control) =
-            create_dataplane(auth_addr, non_auth_addr);
+            create_dataplane(tcp_addr, auth_addr, non_auth_addr);
         let (tcp_reader, tcp_writer) = tcp_socket.split();
         let config = create_raptorcast_config(keypair);
         let auth_protocol = monad_raptorcast::auth::NoopAuthProtocol::new();
@@ -307,6 +310,7 @@ fn spawn_noop_validator(
 
 fn spawn_wireauth_validator(
     keypair: Arc<KeyPair>,
+    tcp_addr: SocketAddrV4,
     auth_addr: SocketAddrV4,
     non_auth_addr: SocketAddrV4,
     known_addresses: HashMap<NodeId<CertificateSignaturePubKey<SecpSignature>>, SocketAddrV4>,
@@ -323,7 +327,7 @@ fn spawn_wireauth_validator(
     tokio::task::spawn_local(async move {
         let shared_pd = create_peer_discovery(known_addresses, name_records);
         let (tcp_socket, authenticated_socket, non_authenticated_socket, control) =
-            create_dataplane(auth_addr, non_auth_addr);
+            create_dataplane(tcp_addr, auth_addr, non_auth_addr);
         let (tcp_reader, tcp_writer) = tcp_socket.split();
         let config = create_raptorcast_config(keypair.clone());
         let wireauth_config = monad_wireauth::Config::default();
@@ -470,6 +474,7 @@ async fn run_test_scenario(num_auth_nodes: usize, routing_type: RoutingType, mes
                     .collect();
                 spawn_wireauth_validator(
                     v.keypair.clone(),
+                    v.tcp_addr,
                     v.auth_addr,
                     v.non_auth_addr,
                     known_addresses.clone(),
@@ -479,6 +484,7 @@ async fn run_test_scenario(num_auth_nodes: usize, routing_type: RoutingType, mes
             } else {
                 spawn_noop_validator(
                     v.keypair.clone(),
+                    v.tcp_addr,
                     v.auth_addr,
                     v.non_auth_addr,
                     known_addresses.clone(),

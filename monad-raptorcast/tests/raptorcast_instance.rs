@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+mod common;
+
 use std::{
     collections::{BTreeMap, HashMap},
     io::ErrorKind,
@@ -24,6 +26,7 @@ use std::{
 
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use bytes::{Bytes, BytesMut};
+use common::find_udp_free_port;
 use futures_util::StreamExt;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
@@ -55,9 +58,9 @@ type PubKeyType = CertificateSignaturePubKey<SignatureType>;
 // A previous version of the R10 managed decoder did not handle this correctly and would panic.
 #[test]
 pub fn different_symbol_sizes() {
-    let tx_addr = SocketAddr::from(([127, 0, 0, 1], find_free_port()));
-    let rx_addr = SocketAddr::from(([127, 0, 0, 1], find_free_port()));
-    let rebroadcast_addr = SocketAddr::from(([127, 0, 0, 1], find_free_port()));
+    let tx_addr = SocketAddr::from(([127, 0, 0, 1], find_udp_free_port()));
+    let rx_addr = SocketAddr::from(([127, 0, 0, 1], find_udp_free_port()));
+    let rebroadcast_addr = SocketAddr::from(([127, 0, 0, 1], find_udp_free_port()));
 
     let (tx_nodeid, tx_keypair, rx_nodeid, known_addresses) =
         set_up_test(&tx_addr, &rx_addr, Some(&rebroadcast_addr));
@@ -135,8 +138,8 @@ pub fn different_symbol_sizes() {
 // of buffer indices in the decoder and panic the decoder.
 #[test]
 pub fn buffer_count_overflow() {
-    let tx_addr = SocketAddr::from(([127, 0, 0, 1], find_free_port()));
-    let rx_addr = SocketAddr::from(([127, 0, 0, 1], find_free_port()));
+    let tx_addr = SocketAddr::from(([127, 0, 0, 1], find_udp_free_port()));
+    let rx_addr = SocketAddr::from(([127, 0, 0, 1], find_udp_free_port()));
 
     let (tx_nodeid, tx_keypair, rx_nodeid, known_addresses) = set_up_test(&tx_addr, &rx_addr, None);
 
@@ -186,8 +189,8 @@ pub fn buffer_count_overflow() {
 // which would then call .step_by(0) on (0..0), which panics.
 #[test]
 pub fn zero_sized_packet() {
-    let tx_addr = SocketAddr::from(([127, 0, 0, 1], find_free_port()));
-    let rx_addr = SocketAddr::from(([127, 0, 0, 1], find_free_port()));
+    let tx_addr = SocketAddr::from(([127, 0, 0, 1], find_udp_free_port()));
+    let rx_addr = SocketAddr::from(([127, 0, 0, 1], find_udp_free_port()));
 
     let (_tx_nodeid, _tx_keypair, _rx_nodeid, _known_addresses) =
         set_up_test(&tx_addr, &rx_addr, None);
@@ -208,9 +211,9 @@ pub fn zero_sized_packet() {
 // exactly once.
 #[test]
 pub fn valid_rebroadcast() {
-    let tx_addr = SocketAddr::from(([127, 0, 0, 1], find_free_port()));
-    let rx_addr = SocketAddr::from(([127, 0, 0, 1], find_free_port()));
-    let rebroadcast_addr = SocketAddr::from(([127, 0, 0, 1], find_free_port()));
+    let tx_addr = SocketAddr::from(([127, 0, 0, 1], find_udp_free_port()));
+    let rx_addr = SocketAddr::from(([127, 0, 0, 1], find_udp_free_port()));
+    let rebroadcast_addr = SocketAddr::from(([127, 0, 0, 1], find_udp_free_port()));
 
     let (tx_nodeid, tx_keypair, rx_nodeid, known_addresses) =
         set_up_test(&tx_addr, &rx_addr, Some(&rebroadcast_addr));
@@ -270,14 +273,6 @@ pub fn valid_rebroadcast() {
 }
 
 static ONCE_SETUP: Once = Once::new();
-
-fn find_free_port() -> u16 {
-    let socket = UdpSocket::bind("127.0.0.1:0").expect("failed to bind to ephemeral port");
-    socket
-        .local_addr()
-        .expect("failed to get local addr")
-        .port()
-}
 
 #[cfg(test)]
 pub fn set_up_test(
@@ -506,15 +501,15 @@ async fn publish_to_full_nodes() {
     // 1. Set up nodes
     let validator_keypair = keypair(1);
     let validator_nodeid = NodeId::new(validator_keypair.pubkey());
-    let validator_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_free_port());
+    let validator_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_udp_free_port());
 
     let full_node1_keypair = keypair(2);
     let full_node1_id = NodeId::new(full_node1_keypair.pubkey());
-    let full_node1_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_free_port());
+    let full_node1_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_udp_free_port());
 
     let full_node2_keypair = keypair(3);
     let full_node2_id = NodeId::new(full_node2_keypair.pubkey());
-    let full_node2_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_free_port());
+    let full_node2_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_udp_free_port());
 
     let known_addresses: HashMap<NodeId<PubKeyType>, SocketAddrV4> = [
         (validator_nodeid, validator_addr),
@@ -588,7 +583,7 @@ async fn publish_to_full_nodes() {
 async fn delete_expired_groups() {
     let node_keypair = keypair(1);
     let node_id = NodeId::new(node_keypair.pubkey());
-    let node_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_free_port());
+    let node_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_udp_free_port());
 
     let mut raptorcast = setup_raptorcast_service(node_keypair, node_addr, &HashMap::new());
     raptorcast.exec(vec![RouterCommand::UpdateCurrentRound(Epoch(1), Round(1))]);
@@ -642,8 +637,8 @@ async fn delete_expired_groups() {
 
 #[tokio::test]
 async fn test_priority_messages() {
-    let tx_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_free_port());
-    let rx_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_free_port());
+    let tx_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_udp_free_port());
+    let rx_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_udp_free_port());
 
     let mut tx_secret = [1u8; 32];
     let mut rx_secret = [2u8; 32];
@@ -753,9 +748,10 @@ async fn test_priority_messages() {
 
 #[tokio::test]
 async fn test_raptorcast_forwarding_priority() {
-    let validator1_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_free_port());
-    let validator2_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_free_port());
-    let validator_fullnode_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_free_port());
+    let validator1_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_udp_free_port());
+    let validator2_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_udp_free_port());
+    let validator_fullnode_addr =
+        SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_udp_free_port());
 
     let mut validator1_secret = [1u8; 32];
     let mut validator2_secret = [2u8; 32];
