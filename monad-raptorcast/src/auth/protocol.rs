@@ -29,7 +29,7 @@ pub trait AuthenticationProtocol {
         &mut self,
         packet: &mut [u8],
         remote_addr: SocketAddr,
-    ) -> Result<Option<(Bytes, Self::PublicKey)>, Self::Error>;
+    ) -> Result<Option<(Bytes, Option<Self::PublicKey>)>, Self::Error>;
 
     fn encrypt_by_public_key(
         &mut self,
@@ -107,7 +107,7 @@ impl AuthenticationProtocol for WireAuthProtocol {
         &mut self,
         packet: &mut [u8],
         remote_addr: SocketAddr,
-    ) -> Result<Option<(Bytes, Self::PublicKey)>, Self::Error> {
+    ) -> Result<Option<(Bytes, Option<Self::PublicKey>)>, Self::Error> {
         match Packet::try_from(packet).map_err(|e| e.with_addr(remote_addr))? {
             Packet::Control(control_packet) => {
                 self.api.dispatch_control(control_packet, remote_addr)?;
@@ -117,7 +117,7 @@ impl AuthenticationProtocol for WireAuthProtocol {
                 let (plaintext, public_key) = self.api.decrypt(data_packet, remote_addr)?;
                 Ok(Some((
                     Bytes::copy_from_slice(plaintext.as_ref()),
-                    public_key,
+                    Some(public_key),
                 )))
             }
         }
@@ -185,11 +185,11 @@ impl AuthenticationProtocol for WireAuthProtocol {
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
 pub struct NoopHeader;
 
-pub struct NoopAuthProtocol<P: PubKey> {
+pub struct NoAuth<P: PubKey> {
     _phantom: std::marker::PhantomData<P>,
 }
 
-impl<P: PubKey> NoopAuthProtocol<P> {
+impl<P: PubKey> NoAuth<P> {
     pub fn new() -> Self {
         Self {
             _phantom: std::marker::PhantomData,
@@ -197,13 +197,13 @@ impl<P: PubKey> NoopAuthProtocol<P> {
     }
 }
 
-impl<P: PubKey> Default for NoopAuthProtocol<P> {
+impl<P: PubKey> Default for NoAuth<P> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<P: PubKey> AuthenticationProtocol for NoopAuthProtocol<P> {
+impl<P: PubKey> AuthenticationProtocol for NoAuth<P> {
     type PublicKey = P;
     type Error = std::convert::Infallible;
     type Header = NoopHeader;
@@ -225,9 +225,8 @@ impl<P: PubKey> AuthenticationProtocol for NoopAuthProtocol<P> {
         &mut self,
         packet: &mut [u8],
         _remote_addr: SocketAddr,
-    ) -> Result<Option<(Bytes, Self::PublicKey)>, Self::Error> {
-        let dummy_pubkey: P = unsafe { std::mem::zeroed() };
-        Ok(Some((Bytes::copy_from_slice(packet), dummy_pubkey)))
+    ) -> Result<Option<(Bytes, Option<Self::PublicKey>)>, Self::Error> {
+        Ok(Some((Bytes::copy_from_slice(packet), None)))
     }
 
     fn encrypt_by_public_key(

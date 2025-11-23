@@ -7,12 +7,20 @@ use std::{
 };
 
 use bytes::{Bytes, BytesMut};
-use monad_dataplane::{RecvUdpMsg, UdpSocketHandle, UnicastMsg};
+use monad_dataplane::{UdpSocketHandle, UnicastMsg};
 use monad_executor::{ExecutorMetrics, ExecutorMetricsChain};
 use monad_types::UdpPriority;
 use tokio::time::Sleep;
 use tracing::{trace, warn};
 use zerocopy::IntoBytes;
+
+#[derive(Clone)]
+pub struct AuthRecvMsg<P> {
+    pub src_addr: SocketAddr,
+    pub payload: Bytes,
+    pub stride: u16,
+    pub auth_public_key: Option<P>,
+}
 
 use super::{
     metrics::{
@@ -121,7 +129,7 @@ where
         TimerFuture { handle: self }
     }
 
-    pub async fn recv(&mut self) -> Result<RecvUdpMsg, AP::Error> {
+    pub async fn recv(&mut self) -> Result<AuthRecvMsg<AP::PublicKey>, AP::Error> {
         if let Some(authenticated) = &mut self.authenticated {
             tokio::select! {
                 result = authenticated.recv() => {
@@ -132,14 +140,24 @@ where
                 },
                 msg = self.non_authenticated.recv() => {
                     self.metrics[GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ] += msg.payload.len() as u64;
-                    Ok(msg)
+                    Ok(AuthRecvMsg {
+                        src_addr: msg.src_addr,
+                        payload: msg.payload,
+                        stride: msg.stride,
+                        auth_public_key: None,
+                    })
                 },
             }
         } else {
             let msg = self.non_authenticated.recv().await;
             self.metrics[GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ] +=
                 msg.payload.len() as u64;
-            Ok(msg)
+            Ok(AuthRecvMsg {
+                src_addr: msg.src_addr,
+                payload: msg.payload,
+                stride: msg.stride,
+                auth_public_key: None,
+            })
         }
     }
 
@@ -206,7 +224,7 @@ where
         }
     }
 
-    pub async fn recv(&mut self) -> Result<RecvUdpMsg, AP::Error> {
+    pub async fn recv(&mut self) -> Result<AuthRecvMsg<AP::PublicKey>, AP::Error> {
         loop {
             let message = self.socket.recv().await;
 
@@ -215,11 +233,12 @@ where
                 .auth_protocol
                 .dispatch(&mut packet_buf, message.src_addr)
             {
-                Ok(Some((plaintext, _public_key))) => {
-                    return Ok(RecvUdpMsg {
+                Ok(Some((plaintext, public_key))) => {
+                    return Ok(AuthRecvMsg {
                         src_addr: message.src_addr,
                         payload: plaintext,
                         stride: message.stride,
+                        auth_public_key: public_key,
                     })
                 }
                 Ok(None) => {
