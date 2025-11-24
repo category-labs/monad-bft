@@ -21,7 +21,7 @@ use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 const DEFAULT_COMMAND_BUFFER_SIZE: usize = 1024;
 const DEFAULT_EVENT_BUFFER_SIZE: usize = 1024;
 
-pub struct TokioTaskUpdater<C, E>
+pub struct EthTxPoolExecutorClient<C, E>
 where
     C: Send + 'static,
     E: Send + 'static,
@@ -34,7 +34,7 @@ where
     event_rx: tokio::sync::mpsc::Receiver<E>,
 }
 
-impl<C, E> TokioTaskUpdater<C, E>
+impl<C, E> EthTxPoolExecutorClient<C, E>
 where
     C: Send + 'static,
     E: Send + 'static,
@@ -84,20 +84,20 @@ where
 
     fn verify_handle_liveness(&self) {
         if self.handle.is_finished() {
-            panic!("ThreadUpdater handle terminated!");
+            panic!("EthTxPoolExecutorClient handle terminated!");
         }
 
         if self.command_tx.is_closed() {
-            panic!("ThreadUpdater command_rx dropped!");
+            panic!("EthTxPoolExecutorClient command_rx dropped!");
         }
 
         if self.event_rx.is_closed() {
-            panic!("ThreadUpdater event_tx dropped!");
+            panic!("EthTxPoolExecutorClient event_tx dropped!");
         }
     }
 }
 
-impl<C, E> Executor for TokioTaskUpdater<C, E>
+impl<C, E> Executor for EthTxPoolExecutorClient<C, E>
 where
     C: Send + 'static,
     E: Send + 'static,
@@ -109,7 +109,7 @@ where
 
         self.command_tx
             .try_send(commands)
-            .expect("executor is lagging")
+            .expect("EthTxPoolExecutorClient executor is lagging")
     }
 
     fn metrics(&self) -> ExecutorMetricsChain {
@@ -117,7 +117,7 @@ where
     }
 }
 
-impl<C, E> Stream for TokioTaskUpdater<C, E>
+impl<C, E> Stream for EthTxPoolExecutorClient<C, E>
 where
     C: Send + 'static,
     E: Send + 'static,

@@ -27,7 +27,7 @@ use monad_crypto::NopSignature;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, secret_to_eth_address, S1};
 use monad_eth_txpool_executor::{
-    forward::egress_max_size_bytes, EthTxPoolExecutor, EthTxPoolIpcConfig, TokioTaskUpdater,
+    forward::egress_max_size_bytes, EthTxPoolExecutor, EthTxPoolExecutorClient, EthTxPoolIpcConfig,
 };
 use monad_eth_txpool_ipc::EthTxPoolIpcClient;
 use monad_eth_txpool_types::EthTxPoolSnapshot;
@@ -46,7 +46,7 @@ type BlockPolicyType =
     EthBlockPolicy<SignatureType, SignatureCollectionType, MockChainConfig, MockChainRevision>;
 
 async fn setup_txpool_executor_with_client() -> (
-    TokioTaskUpdater<
+    EthTxPoolExecutorClient<
         TxPoolCommand<
             SignatureType,
             SignatureCollectionType,

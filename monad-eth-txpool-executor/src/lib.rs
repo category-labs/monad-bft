@@ -46,19 +46,19 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tokio::{sync::mpsc, time::Instant};
 use tracing::{debug, debug_span, error, info, trace_span, warn};
 
+pub use self::{client::EthTxPoolExecutorClient, ipc::EthTxPoolIpcConfig};
 use self::{
     forward::EthTxPoolForwardingManager, ipc::EthTxPoolIpcServer,
     metrics::EthTxPoolExecutorMetrics, preload::EthTxPoolPreloadManager,
     reset::EthTxPoolResetTrigger,
 };
-pub use self::{ipc::EthTxPoolIpcConfig, task::TokioTaskUpdater};
 
+mod client;
 pub mod forward;
 mod ipc;
 mod metrics;
 mod preload;
 mod reset;
-mod task;
 
 pub struct EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
 where
@@ -109,7 +109,7 @@ where
         execution_timestamp_s: u64,
         do_local_insert: bool,
     ) -> io::Result<
-        TokioTaskUpdater<
+        EthTxPoolExecutorClient<
             TxPoolCommand<
                 ST,
                 SCT,
@@ -131,7 +131,7 @@ where
 
         metrics.update(&mut executor_metrics);
 
-        Ok(TokioTaskUpdater::new(
+        Ok(EthTxPoolExecutorClient::new(
             {
                 let metrics = metrics.clone();
 
