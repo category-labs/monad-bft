@@ -14,7 +14,6 @@ monad-chain-config = { workspace = true }
 monad-consensus = { workspace = true }
 monad-consensus-types = { workspace = true }
 monad-crypto = { workspace = true }
-monad-eth-types = { workspace = true }
 monad-executor = { workspace = true }
 monad-executor-glue = { workspace = true }
 monad-multi-sig = { workspace = true }
@@ -53,6 +52,7 @@ serde_json = { workspace = true }
 test-case = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+monad-eth-types = { workspace = true }
 
 [[bench]]
 name = "two_node_benchmark"

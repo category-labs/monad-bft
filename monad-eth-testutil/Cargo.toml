@@ -26,7 +26,6 @@ alloy-primitives = { workspace = true }
 alloy-signer = { workspace = true }
 alloy-signer-local = { workspace = true }
 rand = { workspace = true }
-tokio-tungstenite = { workspace = true, features = ["native-tls"]}
 
 [build-dependencies]
 monad-version = { workspace = true }
@@ -69,3 +68,4 @@ tracing-subscriber = { workspace = true, features = [
 ] }
 url = { workspace = true }
 monad-version = { workspace = true }
+tokio-tungstenite = { workspace = true, features = ["native-tls"]}
