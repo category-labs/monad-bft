@@ -92,8 +92,8 @@ impl<ST, SCT, SBT, CCT, CRT> EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend<ST, SCT> + Send + 'static,
     CertificateSignaturePubKey<ST>: ExtractEthAddress,
+    SBT: StateBackend<ST, SCT> + Send + 'static,
     CCT: ChainConfig<CRT> + Send + 'static,
     CRT: ChainRevision + Send + 'static,
     Self: Unpin,
@@ -108,20 +108,7 @@ where
         round: Round,
         execution_timestamp_s: u64,
         do_local_insert: bool,
-    ) -> io::Result<
-        EthTxPoolExecutorClient<
-            TxPoolCommand<
-                ST,
-                SCT,
-                EthExecutionProtocol,
-                EthBlockPolicy<ST, SCT, CCT, CRT>,
-                SBT,
-                CCT,
-                CRT,
-            >,
-            MonadEvent<ST, SCT, EthExecutionProtocol>,
-        >,
-    > {
+    ) -> io::Result<EthTxPoolExecutorClient<ST, SCT, SBT, CCT, CRT>> {
         let ipc = Box::pin(EthTxPoolIpcServer::new(ipc_config)?);
 
         let (events_tx, events) = mpsc::unbounded_channel();

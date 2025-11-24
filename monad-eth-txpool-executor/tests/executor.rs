@@ -31,7 +31,6 @@ use monad_eth_txpool_executor::{
 };
 use monad_eth_txpool_ipc::EthTxPoolIpcClient;
 use monad_eth_txpool_types::EthTxPoolSnapshot;
-use monad_eth_types::EthExecutionProtocol;
 use monad_executor::Executor;
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
@@ -42,21 +41,14 @@ use monad_types::{Balance, SeqNum, GENESIS_ROUND, GENESIS_SEQ_NUM};
 type SignatureType = NopSignature;
 type SignatureCollectionType = MockSignatures<SignatureType>;
 type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
-type BlockPolicyType =
-    EthBlockPolicy<SignatureType, SignatureCollectionType, MockChainConfig, MockChainRevision>;
 
 async fn setup_txpool_executor_with_client() -> (
     EthTxPoolExecutorClient<
-        TxPoolCommand<
-            SignatureType,
-            SignatureCollectionType,
-            EthExecutionProtocol,
-            BlockPolicyType,
-            StateBackendType,
-            MockChainConfig,
-            MockChainRevision,
-        >,
-        MonadEvent<SignatureType, SignatureCollectionType, EthExecutionProtocol>,
+        SignatureType,
+        SignatureCollectionType,
+        StateBackendType,
+        MockChainConfig,
+        MockChainRevision,
     >,
     EthTxPoolIpcClient,
 ) {

@@ -16,31 +16,76 @@
 use std::{future::Future, pin::Pin};
 
 use futures::Stream;
+use monad_chain_config::{revision::ChainRevision, ChainConfig};
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
+use monad_eth_block_policy::EthBlockPolicy;
+use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
+use monad_executor_glue::{MonadEvent, TxPoolCommand};
+use monad_secp::ExtractEthAddress;
+use monad_state_backend::StateBackend;
+use monad_validator::signature_collection::SignatureCollection;
 
 const DEFAULT_COMMAND_BUFFER_SIZE: usize = 1024;
 const DEFAULT_EVENT_BUFFER_SIZE: usize = 1024;
 
-pub struct EthTxPoolExecutorClient<C, E>
+pub struct EthTxPoolExecutorClient<ST, SCT, SBT, CCT, CRT>
 where
-    C: Send + 'static,
-    E: Send + 'static,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
+    SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     handle: tokio::task::JoinHandle<()>,
     metrics: ExecutorMetrics,
     update_metrics: Box<dyn Fn(&mut ExecutorMetrics)>,
 
-    command_tx: tokio::sync::mpsc::Sender<Vec<C>>,
-    event_rx: tokio::sync::mpsc::Receiver<E>,
+    command_tx: tokio::sync::mpsc::Sender<
+        Vec<
+            TxPoolCommand<
+                ST,
+                SCT,
+                EthExecutionProtocol,
+                EthBlockPolicy<ST, SCT, CCT, CRT>,
+                SBT,
+                CCT,
+                CRT,
+            >,
+        >,
+    >,
+    event_rx: tokio::sync::mpsc::Receiver<MonadEvent<ST, SCT, EthExecutionProtocol>>,
 }
 
-impl<C, E> EthTxPoolExecutorClient<C, E>
+impl<ST, SCT, SBT, CCT, CRT> EthTxPoolExecutorClient<ST, SCT, SBT, CCT, CRT>
 where
-    C: Send + 'static,
-    E: Send + 'static,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
+    SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     pub fn new<F>(
-        updater: impl FnOnce(tokio::sync::mpsc::Receiver<Vec<C>>, tokio::sync::mpsc::Sender<E>) -> F
+        updater: impl FnOnce(
+                tokio::sync::mpsc::Receiver<
+                    Vec<
+                        TxPoolCommand<
+                            ST,
+                            SCT,
+                            EthExecutionProtocol,
+                            EthBlockPolicy<ST, SCT, CCT, CRT>,
+                            SBT,
+                            CCT,
+                            CRT,
+                        >,
+                    >,
+                >,
+                tokio::sync::mpsc::Sender<MonadEvent<ST, SCT, EthExecutionProtocol>>,
+            ) -> F
             + Send
             + 'static,
         update_metrics: Box<dyn Fn(&mut ExecutorMetrics) + Send + 'static>,
@@ -57,7 +102,22 @@ where
     }
 
     pub fn new_with_buffer_sizes<F>(
-        updater: impl FnOnce(tokio::sync::mpsc::Receiver<Vec<C>>, tokio::sync::mpsc::Sender<E>) -> F
+        updater: impl FnOnce(
+                tokio::sync::mpsc::Receiver<
+                    Vec<
+                        TxPoolCommand<
+                            ST,
+                            SCT,
+                            EthExecutionProtocol,
+                            EthBlockPolicy<ST, SCT, CCT, CRT>,
+                            SBT,
+                            CCT,
+                            CRT,
+                        >,
+                    >,
+                >,
+                tokio::sync::mpsc::Sender<MonadEvent<ST, SCT, EthExecutionProtocol>>,
+            ) -> F
             + Send
             + 'static,
         update_metrics: Box<dyn Fn(&mut ExecutorMetrics) + Send + 'static>,
@@ -97,12 +157,24 @@ where
     }
 }
 
-impl<C, E> Executor for EthTxPoolExecutorClient<C, E>
+impl<ST, SCT, SBT, CCT, CRT> Executor for EthTxPoolExecutorClient<ST, SCT, SBT, CCT, CRT>
 where
-    C: Send + 'static,
-    E: Send + 'static,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
+    SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
-    type Command = C;
+    type Command = TxPoolCommand<
+        ST,
+        SCT,
+        EthExecutionProtocol,
+        EthBlockPolicy<ST, SCT, CCT, CRT>,
+        SBT,
+        CCT,
+        CRT,
+    >;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         self.verify_handle_liveness();
@@ -117,12 +189,16 @@ where
     }
 }
 
-impl<C, E> Stream for EthTxPoolExecutorClient<C, E>
+impl<ST, SCT, SBT, CCT, CRT> Stream for EthTxPoolExecutorClient<ST, SCT, SBT, CCT, CRT>
 where
-    C: Send + 'static,
-    E: Send + 'static,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
+    SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
-    type Item = E;
+    type Item = MonadEvent<ST, SCT, EthExecutionProtocol>;
 
     fn poll_next(
         self: Pin<&mut Self>,
