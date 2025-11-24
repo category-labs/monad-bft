@@ -41,24 +41,24 @@ use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
 use monad_types::{DropTimer, Round};
-use monad_updaters::TokioTaskUpdater;
 use monad_validator::signature_collection::SignatureCollection;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tokio::{sync::mpsc, time::Instant};
 use tracing::{debug, debug_span, error, info, trace_span, warn};
 
-pub use self::ipc::EthTxPoolIpcConfig;
 use self::{
     forward::EthTxPoolForwardingManager, ipc::EthTxPoolIpcServer,
     metrics::EthTxPoolExecutorMetrics, preload::EthTxPoolPreloadManager,
     reset::EthTxPoolResetTrigger,
 };
+pub use self::{ipc::EthTxPoolIpcConfig, task::TokioTaskUpdater};
 
 pub mod forward;
 mod ipc;
 mod metrics;
 mod preload;
 mod reset;
+mod task;
 
 pub struct EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
 where

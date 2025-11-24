@@ -27,7 +27,7 @@ use monad_crypto::NopSignature;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, secret_to_eth_address, S1};
 use monad_eth_txpool_executor::{
-    forward::egress_max_size_bytes, EthTxPoolExecutor, EthTxPoolIpcConfig,
+    forward::egress_max_size_bytes, EthTxPoolExecutor, EthTxPoolIpcConfig, TokioTaskUpdater,
 };
 use monad_eth_txpool_ipc::EthTxPoolIpcClient;
 use monad_eth_txpool_types::EthTxPoolSnapshot;
@@ -38,7 +38,6 @@ use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner}
 use monad_testutil::signing::MockSignatures;
 use monad_tfm::base_fee::MIN_BASE_FEE;
 use monad_types::{Balance, SeqNum, GENESIS_ROUND, GENESIS_SEQ_NUM};
-use monad_updaters::TokioTaskUpdater;
 
 type SignatureType = NopSignature;
 type SignatureCollectionType = MockSignatures<SignatureType>;

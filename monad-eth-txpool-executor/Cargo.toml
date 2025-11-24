@@ -23,7 +23,6 @@ monad-secp = { workspace = true }
 monad-state-backend = { workspace = true }
 monad-tfm = { workspace = true }
 monad-types = { workspace = true }
-monad-updaters = { workspace = true, features = ["tokio"] }
 monad-validator = { workspace = true }
 
 alloy-consensus = { workspace = true }
