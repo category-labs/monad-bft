@@ -72,6 +72,8 @@ pub mod raptorcast_secondary;
 pub mod udp;
 pub mod util;
 
+pub(crate) mod metrics;
+
 const SIGNATURE_SIZE: usize = 65;
 
 // Number of chunks to aggregate into udp messages before sending to
@@ -681,6 +683,7 @@ where
         ExecutorMetricsChain::default()
             .push(self.metrics.as_ref())
             .push(self.peer_discovery_metrics.as_ref())
+            .push(self.udp_state.metrics().executor_metrics())
     }
 }
 

@@ -36,6 +36,7 @@ pub use crate::packet::build_messages;
 use crate::{
     decoding::{DecoderCache, DecodingContext, TryDecodeError, TryDecodeStatus},
     message::MAX_MESSAGE_SIZE,
+    metrics::UdpStateMetrics,
     packet::{assembler::HEADER_LEN, PacketLayout},
     util::{
         compute_hash, unix_ts_ms_now, AppMessageHash, BroadcastMode, EpochValidators, HexBytes,
@@ -110,6 +111,8 @@ pub(crate) struct UdpState<ST: CertificateSignatureRecoverable> {
     decoder_cache: DecoderCache<CertificateSignaturePubKey<ST>>,
 
     signature_cache: LruCache<[u8; HEADER_LEN + 20], NodeId<CertificateSignaturePubKey<ST>>>,
+
+    metrics: UdpStateMetrics,
 }
 
 impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
@@ -120,7 +123,13 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
 
             decoder_cache: DecoderCache::default(),
             signature_cache: LruCache::new(SIGNATURE_CACHE_SIZE),
+
+            metrics: UdpStateMetrics::new(),
         }
+    }
+
+    pub fn metrics(&self) -> &UdpStateMetrics {
+        &self.metrics
     }
 
     /// Given a RecvUdpMsg, emits all decoded messages while rebroadcasting as necessary
@@ -286,6 +295,12 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 }) => {
                     // TODO: cap rebroadcast symbols based on some multiple of esis.
                     try_rebroadcast_symbol();
+
+                    if let Some(mode) = parsed_message.maybe_broadcast_mode {
+                        self.metrics
+                            .record_broadcast_latency(mode, parsed_message.unix_ts_ms);
+                    }
+
                     messages.push((author, app_message));
                 }
             }

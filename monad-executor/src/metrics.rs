@@ -18,6 +18,8 @@ use std::{
     ops::{Index, IndexMut},
 };
 
+use hdrhistogram::Histogram as HdrHistogram;
+
 #[derive(Default, Debug, Clone)]
 pub struct ExecutorMetrics(HashMap<&'static str, u64>);
 
@@ -66,5 +68,63 @@ impl<'a> ExecutorMetricsChain<'a> {
             .into_iter()
             .flat_map(|metrics| metrics.0.clone().into_iter())
             .collect()
+    }
+}
+
+/// A wrapper around hdrhistogram for computing latency percentiles.
+///
+/// Percentiles method take on order of 1us and nearly constant time even for larger histograms.
+pub struct Histogram {
+    histogram: HdrHistogram<u64>,
+}
+
+impl Histogram {
+    pub fn new(high: u64, sigfig: u8) -> Result<Self, hdrhistogram::CreationError> {
+        Ok(Self {
+            histogram: HdrHistogram::new_with_bounds(1, high, sigfig)?,
+        })
+    }
+
+    pub fn record(&mut self, value: u64) -> Result<(), hdrhistogram::RecordError> {
+        self.histogram.record(value)
+    }
+
+    pub fn p50(&self) -> u64 {
+        self.histogram.value_at_quantile(0.5)
+    }
+
+    pub fn p90(&self) -> u64 {
+        self.histogram.value_at_quantile(0.9)
+    }
+
+    pub fn p99(&self) -> u64 {
+        self.histogram.value_at_quantile(0.99)
+    }
+
+    pub fn count(&self) -> u64 {
+        self.histogram.len()
+    }
+
+    pub fn clear(&mut self) {
+        self.histogram.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_histogram() {
+        let mut hist = Histogram::new(1_000_000, 3).unwrap();
+
+        for i in 1..=100 {
+            hist.record(i * 100).unwrap();
+        }
+
+        assert_eq!(hist.count(), 100);
+        assert!(hist.p50() >= 5000 && hist.p50() <= 5100);
+        assert!(hist.p90() >= 9000 && hist.p90() <= 9100);
+        assert!(hist.p99() >= 9900 && hist.p99() <= 10000);
     }
 }
