@@ -30,6 +30,8 @@ use crate::{
 pub enum LatestKind {
     Uploaded,
     Indexed,
+    UploadedAsyncBackfill,
+    IndexedAsyncBackfill,
 }
 
 #[derive(Clone)]
@@ -204,9 +206,9 @@ impl ArchiveReader {
 }
 
 impl IndexReader for ArchiveReader {
-    async fn get_latest_indexed(&self) -> Result<Option<u64>> {
+    async fn get_latest_indexed(&self, async_backfill: bool) -> Result<Option<u64>> {
         self.index_executor
-            .execute(|idx| idx.get_latest_indexed())
+            .execute(|idx| idx.get_latest_indexed(async_backfill))
             .await
     }
 

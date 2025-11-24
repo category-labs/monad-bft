@@ -35,6 +35,11 @@ pub struct Cli {
     #[arg(long, value_parser = clap::value_parser!(ArchiveArgs))]
     pub archive_sink: ArchiveArgs,
 
+    /// If set, indexer will perform an asynchronous backfill of the index
+    /// This allows a second indexer to backfill a range while the first indexer is running
+    #[arg(long, default_value_t = false)]
+    pub async_backfill: bool,
+
     #[arg(long, default_value_t = 50)]
     pub max_blocks_per_iteration: u64,
 

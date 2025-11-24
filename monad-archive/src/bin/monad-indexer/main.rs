@@ -86,7 +86,7 @@ async fn run_indexer(args: cli::Cli) -> Result<()> {
 
     // for testing
     if args.reset_index {
-        tx_index_archiver.update_latest_indexed(0).await?;
+        tx_index_archiver.update_latest_indexed(0, false).await?;
     }
 
     // tokio main should not await futures directly, so we spawn a worker
@@ -101,6 +101,7 @@ async fn run_indexer(args: cli::Cli) -> Result<()> {
         args.start_block,
         args.stop_block,
         Duration::from_millis(500),
+        args.async_backfill,
     ))
     .await
     .map_err(Into::into)

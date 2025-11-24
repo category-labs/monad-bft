@@ -72,6 +72,15 @@ pub struct Cli {
     /// If set, archiver will require traces to be present for all blocks
     pub require_traces: bool,
 
+    #[serde(default)]
+    /// If set, archiver will only archive traces
+    pub traces_only: bool,
+
+    #[serde(default)]
+    /// If set, archiver will perform an asynchronous backfill of the archive
+    /// This allows a second archiver to backfill a range while the first archiver is running
+    pub async_backfill: bool,
+
     /// Path to folder containing bft blocks
     /// If set, archiver will upload these files to blob store provided in archive_sink
     pub bft_block_path: Option<PathBuf>,
@@ -163,6 +172,8 @@ impl Cli {
             otel_replica_name_override,
             skip_connectivity_check,
             require_traces,
+            traces_only,
+            async_backfill,
         } = overrides;
 
         Ok(Self {
@@ -199,6 +210,8 @@ impl Cli {
             otel_replica_name_override,
             skip_connectivity_check: skip_connectivity_check.unwrap_or(false),
             require_traces: require_traces.unwrap_or(false),
+            traces_only: traces_only.unwrap_or(false),
+            async_backfill: async_backfill.unwrap_or(false),
         })
     }
 
@@ -319,6 +332,13 @@ struct CliArgs {
     #[arg(long)]
     require_traces: bool,
 
+    /// If set, archiver will only archive traces
+    #[arg(long, action = ArgAction::SetTrue)]
+    traces_only: bool,
+
+    #[arg(long, action = ArgAction::SetTrue)]
+    async_backfill: bool,
+
     /// Path to folder containing bft blocks
     /// If set, archiver will upload these files to blob store provided in archive_sink
     #[arg(long)]
@@ -403,6 +423,8 @@ impl CliArgs {
             skip_connectivity_check,
             unsafe_disable_normal_archiving,
             require_traces,
+            traces_only,
+            async_backfill,
         } = self;
 
         let overrides = CliOverrides {
@@ -429,6 +451,8 @@ impl CliArgs {
             skip_connectivity_check: bool_override(skip_connectivity_check),
             unsafe_disable_normal_archiving: bool_override(unsafe_disable_normal_archiving),
             require_traces: bool_override(require_traces),
+            traces_only: bool_override(traces_only),
+            async_backfill: bool_override(async_backfill),
         };
 
         (config, overrides)
@@ -446,6 +470,8 @@ struct CliOverrides {
     stop_block: Option<u64>,
     unsafe_skip_bad_blocks: Option<bool>,
     require_traces: Option<bool>,
+    traces_only: Option<bool>,
+    async_backfill: Option<bool>,
     bft_block_path: Option<PathBuf>,
     bft_block_poll_freq_secs: Option<u64>,
     bft_block_min_age_secs: Option<u64>,
@@ -535,6 +561,8 @@ mod tests {
             otel_endpoint = "http://otel"
             otel_replica_name_override = "special"
             skip_connectivity_check = true
+            require_traces = true
+            traces_only = true
 
             [block_data_source]
             type = "aws"
@@ -577,6 +605,8 @@ mod tests {
         assert_eq!(cli.otel_endpoint.as_deref(), Some("http://otel"));
         assert_eq!(cli.otel_replica_name_override.as_deref(), Some("special"));
         assert!(cli.skip_connectivity_check);
+        assert!(cli.require_traces);
+        assert!(cli.traces_only);
 
         match &cli.block_data_source {
             BlockDataReaderArgs::Aws(args) => {

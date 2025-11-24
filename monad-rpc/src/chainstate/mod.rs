@@ -896,7 +896,7 @@ async fn get_logs_with_index(
         .wrap_err("Log index reader not present")?;
 
     let latest_indexed_tx = reader
-        .get_latest_indexed()
+        .get_latest_indexed(false)
         .await?
         .wrap_err("Latest indexed tx not found")?;
 

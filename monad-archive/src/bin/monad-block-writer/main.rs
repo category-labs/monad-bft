@@ -141,11 +141,11 @@ async fn main() -> Result<()> {
         // Collect failed blocks for retry
         for result in results {
             match result {
-                Ok((block_num, Ok(()))) => {
+                Ok((_block_num, Ok(()))) => {
                     // Success - no retry needed
                 }
                 Ok((block_num, Err(e))) => {
-                    error!("Failed to process block {}: {:?}", block_num, e);
+                    error!("Failed to process block {block_num}: {e:?}");
                     if attempt < max_retries {
                         failed_blocks.push(block_num);
                     } else {

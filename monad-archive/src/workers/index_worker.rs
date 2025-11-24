@@ -29,6 +29,8 @@ use crate::{model::logs_index::LogsIndexArchiver, prelude::*};
 /// * `metrics` - Metrics collection interface
 /// * `start_block_override` - Optional block number to start indexing from
 /// * `stop_block_override` - Optional block number to stop indexing at
+/// * `async_backfill` - If set, indexer will perform an asynchronous backfill of the index
+///    This allows a second indexer to backfill a range while the first indexer is running
 /// * `poll_frequency` - How often to check for new blocks
 pub async fn index_worker(
     block_data_reader: impl BlockDataReader + Sync + Send,
@@ -41,13 +43,14 @@ pub async fn index_worker(
     start_block_override: Option<u64>,
     stop_block_override: Option<u64>,
     poll_frequency: Duration,
+    async_backfill: bool,
 ) {
     // initialize starting block using either override or stored latest
     let mut start_block = match start_block_override {
         Some(start_block) => start_block,
         None => {
             let mut latest = indexer
-                .get_latest_indexed()
+                .get_latest_indexed(async_backfill)
                 .await
                 .unwrap_or(Some(0))
                 .unwrap_or(0);
@@ -98,6 +101,7 @@ pub async fn index_worker(
             start_block..=end_block,
             max_concurrent_blocks,
             &metrics,
+            async_backfill,
         )
         .await;
 
@@ -117,6 +121,7 @@ async fn index_blocks(
     block_range: RangeInclusive<u64>,
     concurrency: usize,
     metrics: &Metrics,
+    async_backfill: bool,
 ) -> u64 {
     let start = Instant::now();
 
@@ -159,7 +164,7 @@ async fn index_blocks(
     metrics.counter(MetricNames::TXS_INDEXED, num_txs_indexed as u64);
 
     if new_latest_indexed != 0 {
-        checkpoint_latest(indexer, new_latest_indexed).await;
+        checkpoint_latest(indexer, new_latest_indexed, async_backfill).await;
     }
 
     new_latest_indexed
@@ -261,8 +266,11 @@ async fn handle_block(
     Ok(num_txs)
 }
 
-async fn checkpoint_latest(archiver: &TxIndexArchiver, block_num: u64) {
-    match archiver.update_latest_indexed(block_num).await {
+async fn checkpoint_latest(archiver: &TxIndexArchiver, block_num: u64, async_backfill: bool) {
+    match archiver
+        .update_latest_indexed(block_num, async_backfill)
+        .await
+    {
         Ok(()) => info!(block_num, "Set latest indexed checkpoint"),
         Err(e) => error!(block_num, "Failed to set latest indexed block: {e:?}"),
     }
@@ -362,7 +370,10 @@ mod tests {
         }
 
         reader.update_latest(5, LatestKind::Uploaded).await.unwrap();
-        index_archiver.update_latest_indexed(0).await.unwrap();
+        index_archiver
+            .update_latest_indexed(0, false)
+            .await
+            .unwrap();
 
         // Start worker that should process until block 2, then stop at missing block 3
         let worker_handle = tokio::spawn(index_worker(
@@ -376,13 +387,18 @@ mod tests {
             None,
             Some(5),
             Duration::from_micros(1),
+            false,
         ));
 
         // Small delay to let worker process initial blocks
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Verify we stopped at block 2
-        let latest_indexed = index_archiver.get_latest_indexed().await.unwrap().unwrap();
+        let latest_indexed = index_archiver
+            .get_latest_indexed(false)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(latest_indexed, 2);
 
         // Now add the missing block 3
@@ -399,7 +415,11 @@ mod tests {
         worker_handle.await.unwrap();
 
         // Verify all blocks were eventually indexed
-        let final_indexed = index_archiver.get_latest_indexed().await.unwrap().unwrap();
+        let final_indexed = index_archiver
+            .get_latest_indexed(false)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(final_indexed, 5);
 
         // Verify all transactions were indexed properly
@@ -434,7 +454,10 @@ mod tests {
         // Set initial latest
         reader.update_latest(5, LatestKind::Uploaded).await.unwrap();
         // Set indexer's starting point
-        index_archiver.update_latest_indexed(0).await.unwrap();
+        index_archiver
+            .update_latest_indexed(0, false)
+            .await
+            .unwrap();
 
         // Start worker in separate task
         let worker_handle = tokio::spawn(index_worker(
@@ -448,6 +471,7 @@ mod tests {
             None,
             Some(10), // Stop at block 10
             Duration::from_micros(1),
+            false,
         ));
 
         // Small delay to let worker start processing initial blocks
@@ -475,7 +499,11 @@ mod tests {
         worker_handle.await.unwrap();
 
         // Verify all blocks were indexed
-        let latest_indexed = index_archiver.get_latest_indexed().await.unwrap().unwrap();
+        let latest_indexed = index_archiver
+            .get_latest_indexed(false)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(latest_indexed, 10);
 
         // Verify each block's transaction was indexed
@@ -510,7 +538,10 @@ mod tests {
         // Set up latest block in source
         reader.update_latest(5, LatestKind::Uploaded).await.unwrap();
         // Set indexer's starting point
-        index_archiver.update_latest_indexed(0).await.unwrap();
+        index_archiver
+            .update_latest_indexed(0, false)
+            .await
+            .unwrap();
 
         // Start the worker in a separate task since it runs indefinitely
         let worker_handle = tokio::spawn(index_worker(
@@ -524,13 +555,18 @@ mod tests {
             None,    // start_block_override
             Some(5), // stop_block_override - make it finite for testing
             Duration::from_micros(1),
+            false,
         ));
 
         // Wait for worker to complete
         worker_handle.await.unwrap();
 
         // Verify all blocks were indexed
-        let latest_indexed = index_archiver.get_latest_indexed().await.unwrap().unwrap();
+        let latest_indexed = index_archiver
+            .get_latest_indexed(false)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(latest_indexed, 5);
 
         // Verify each block's transactions were indexed
@@ -574,13 +610,18 @@ mod tests {
             block_range,
             2, // concurrency
             &Metrics::none(),
+            false,
         )
         .await;
 
         assert_eq!(result, 15);
 
         // Verify checkpoint was created at block 10
-        let checkpoint = index_archiver.get_latest_indexed().await.unwrap().unwrap();
+        let checkpoint = index_archiver
+            .get_latest_indexed(false)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(checkpoint, 15);
 
         // Verify all transactions were indexed
@@ -623,6 +664,7 @@ mod tests {
             block_range,
             2, // concurrency
             &Metrics::none(),
+            false,
         )
         .await;
         // Should return the last successful block before error
@@ -637,7 +679,11 @@ mod tests {
         }
 
         // Verify latest indexed checkpoint is correct
-        let latest = index_archiver.get_latest_indexed().await.unwrap().unwrap();
+        let latest = index_archiver
+            .get_latest_indexed(false)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(latest, 1);
     }
 

@@ -132,6 +132,8 @@ async fn main() -> Result<()> {
         stop_block: args.stop_block,
         unsafe_skip_bad_blocks: args.unsafe_skip_bad_blocks,
         require_traces: args.require_traces,
+        traces_only: args.traces_only,
+        async_backfill: args.async_backfill,
     };
 
     if !args.unsafe_disable_normal_archiving {

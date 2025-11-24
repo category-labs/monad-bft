@@ -44,7 +44,7 @@ impl Deref for TxIndexArchiver {
 
 pub trait IndexReader {
     async fn resolve_from_bytes(&self, bytes: &[u8]) -> Result<TxIndexedData>;
-    async fn get_latest_indexed(&self) -> Result<Option<u64>>;
+    async fn get_latest_indexed(&self, async_backfill: bool) -> Result<Option<u64>>;
     async fn get_tx_indexed_data(&self, tx_hash: &TxHash) -> Result<Option<TxIndexedData>>;
     async fn get_tx_indexed_data_bulk(
         &self,
@@ -100,8 +100,14 @@ impl IndexReader for IndexReaderImpl {
         repr.convert(&self.block_data_reader).await
     }
 
-    async fn get_latest_indexed(&self) -> Result<Option<u64>> {
-        self.block_data_reader.get_latest(LatestKind::Indexed).await
+    async fn get_latest_indexed(&self, async_backfill: bool) -> Result<Option<u64>> {
+        if async_backfill {
+            self.block_data_reader
+                .get_latest(LatestKind::IndexedAsyncBackfill)
+                .await
+        } else {
+            self.block_data_reader.get_latest(LatestKind::Indexed).await
+        }
     }
 
     /// Prefer get_tx, get_receipt, get_trace where possible to avoid unecessary network calls
@@ -187,10 +193,16 @@ impl TxIndexArchiver {
         }
     }
 
-    pub async fn update_latest_indexed(&self, block_num: u64) -> Result<()> {
-        self.block_data_archive
-            .update_latest(block_num, LatestKind::Indexed)
-            .await
+    pub async fn update_latest_indexed(&self, block_num: u64, async_backfill: bool) -> Result<()> {
+        if async_backfill {
+            self.block_data_archive
+                .update_latest(block_num, LatestKind::IndexedAsyncBackfill)
+                .await
+        } else {
+            self.block_data_archive
+                .update_latest(block_num, LatestKind::Indexed)
+                .await
+        }
     }
 
     pub async fn index_block(
