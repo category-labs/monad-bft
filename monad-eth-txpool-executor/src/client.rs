@@ -15,7 +15,9 @@
 
 use std::{future::Future, pin::Pin};
 
+use bytes::Bytes;
 use futures::Stream;
+use itertools::{Either, Itertools};
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -26,9 +28,20 @@ use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MonadEvent, TxPoolCommand};
 use monad_secp::ExtractEthAddress;
 use monad_state_backend::StateBackend;
+use monad_types::NodeId;
 use monad_validator::signature_collection::SignatureCollection;
+use tracing::warn;
+
+pub struct ForwardedTxs<SCT>
+where
+    SCT: SignatureCollection,
+{
+    pub sender: NodeId<SCT::NodeIdPubKey>,
+    pub txs: Vec<Bytes>,
+}
 
 const DEFAULT_COMMAND_BUFFER_SIZE: usize = 1024;
+const DEFAULT_FORWARDED_BUFFER_SIZE: usize = 1024;
 const DEFAULT_EVENT_BUFFER_SIZE: usize = 1024;
 
 pub struct EthTxPoolExecutorClient<ST, SCT, SBT, CCT, CRT>
@@ -57,6 +70,7 @@ where
             >,
         >,
     >,
+    forwarded_tx: tokio::sync::mpsc::Sender<Vec<ForwardedTxs<SCT>>>,
     event_rx: tokio::sync::mpsc::Receiver<MonadEvent<ST, SCT, EthExecutionProtocol>>,
 }
 
@@ -84,6 +98,7 @@ where
                         >,
                     >,
                 >,
+                tokio::sync::mpsc::Receiver<Vec<ForwardedTxs<SCT>>>,
                 tokio::sync::mpsc::Sender<MonadEvent<ST, SCT, EthExecutionProtocol>>,
             ) -> F
             + Send
@@ -97,6 +112,7 @@ where
             updater,
             update_metrics,
             DEFAULT_COMMAND_BUFFER_SIZE,
+            DEFAULT_FORWARDED_BUFFER_SIZE,
             DEFAULT_EVENT_BUFFER_SIZE,
         )
     }
@@ -116,21 +132,24 @@ where
                         >,
                     >,
                 >,
+                tokio::sync::mpsc::Receiver<Vec<ForwardedTxs<SCT>>>,
                 tokio::sync::mpsc::Sender<MonadEvent<ST, SCT, EthExecutionProtocol>>,
             ) -> F
             + Send
             + 'static,
         update_metrics: Box<dyn Fn(&mut ExecutorMetrics) + Send + 'static>,
         command_buffer_size: usize,
+        forwarded_buffer_size: usize,
         event_buffer_size: usize,
     ) -> Self
     where
         F: Future<Output = ()> + Send + 'static,
     {
         let (command_tx, command_rx) = tokio::sync::mpsc::channel(command_buffer_size);
+        let (forwarded_tx, forwarded_rx) = tokio::sync::mpsc::channel(forwarded_buffer_size);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(event_buffer_size);
 
-        let handle = tokio::spawn(updater(command_rx, event_tx));
+        let handle = tokio::spawn(updater(command_rx, forwarded_rx, event_tx));
 
         Self {
             handle,
@@ -138,6 +157,7 @@ where
             update_metrics,
 
             command_tx,
+            forwarded_tx,
             event_rx,
         }
     }
@@ -149,6 +169,10 @@ where
 
         if self.command_tx.is_closed() {
             panic!("EthTxPoolExecutorClient command_rx dropped!");
+        }
+
+        if self.forwarded_tx.is_closed() {
+            panic!("EthTxPoolExecutorClient forwarded_rx dropped!");
         }
 
         if self.event_rx.is_closed() {
@@ -179,9 +203,28 @@ where
     fn exec(&mut self, commands: Vec<Self::Command>) {
         self.verify_handle_liveness();
 
-        self.command_tx
-            .try_send(commands)
-            .expect("EthTxPoolExecutorClient executor is lagging")
+        let (commands, forwarded): (Vec<Self::Command>, Vec<ForwardedTxs<SCT>>) =
+            commands.into_iter().partition_map(|command| match command {
+                TxPoolCommand::InsertForwardedTxs { sender, txs } => {
+                    Either::Right(ForwardedTxs { sender, txs })
+                }
+                command => Either::Left(command),
+            });
+
+        if !commands.is_empty() {
+            self.command_tx
+                .try_send(commands)
+                .expect("EthTxPoolExecutorClient executor is lagging")
+        }
+
+        if !forwarded.is_empty() {
+            if let Err(err) = self.forwarded_tx.try_send(forwarded) {
+                warn!(
+                    ?err,
+                    "txpool executor client forwarded channel full, dropping forwarded txs"
+                );
+            }
+        }
     }
 
     fn metrics(&self) -> ExecutorMetricsChain {

@@ -48,7 +48,7 @@ use tracing::{debug, debug_span, error, info, trace_span, warn};
 
 pub use self::{client::EthTxPoolExecutorClient, ipc::EthTxPoolIpcConfig};
 use self::{
-    forward::EthTxPoolForwardingManager, ipc::EthTxPoolIpcServer,
+    client::ForwardedTxs, forward::EthTxPoolForwardingManager, ipc::EthTxPoolIpcServer,
     metrics::EthTxPoolExecutorMetrics, preload::EthTxPoolPreloadManager,
     reset::EthTxPoolResetTrigger,
 };
@@ -122,7 +122,7 @@ where
             {
                 let metrics = metrics.clone();
 
-                move |command_rx, event_tx| {
+                move |command_rx, forwarded_rx, event_tx| {
                     let pool = EthTxPool::new(
                         None,
                         None,
@@ -155,7 +155,7 @@ where
 
                         _phantom: PhantomData,
                     }
-                    .run(command_rx, event_tx)
+                    .run(command_rx, forwarded_rx, event_tx)
                 }
             },
             Box::new(move |executor_metrics: &mut ExecutorMetrics| {
@@ -179,6 +179,7 @@ where
                 >,
             >,
         >,
+        mut forwarded_rx: mpsc::Receiver<Vec<ForwardedTxs<SCT>>>,
         event_tx: mpsc::Sender<MonadEvent<ST, SCT, EthExecutionProtocol>>,
     ) {
         use futures::StreamExt;
@@ -207,7 +208,64 @@ where
                         break;
                     }
                 }
+
+                result = forwarded_rx.recv() => {
+                    let Some(forwarded_txs) = result else {
+                        warn!("forwarded channel was dropped, shutting down txpool executor");
+                        break;
+                    };
+
+                    self.process_forwarded_txs(forwarded_txs);
+                }
             }
+        }
+    }
+}
+
+impl<ST, SCT, SBT, CCT, CRT> EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    SBT: StateBackend<ST, SCT>,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
+{
+    fn process_forwarded_txs(&mut self, forwarded_txs: Vec<ForwardedTxs<SCT>>) {
+        for ForwardedTxs { sender, txs } in forwarded_txs {
+            let _span = debug_span!("processing forwarded txs").entered();
+            debug!(
+                ?sender,
+                num_txs = txs.len(),
+                "txpool executor received forwarded txs"
+            );
+
+            let mut num_invalid_bytes = 0;
+
+            let txs = txs
+                .into_iter()
+                .filter_map(|raw_tx| {
+                    if let Ok(tx) = TxEnvelope::decode(&mut raw_tx.as_ref()) {
+                        Some(tx)
+                    } else {
+                        num_invalid_bytes += 1;
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            self.metrics
+                .reject_forwarded_invalid_bytes
+                .fetch_add(num_invalid_bytes, Ordering::SeqCst);
+
+            if num_invalid_bytes != 0 {
+                tracing::warn!(?sender, ?num_invalid_bytes, "invalid forwarded txs");
+            }
+
+            self.forwarding_manager
+                .as_mut()
+                .project()
+                .add_ingress_txs(txs);
         }
     }
 }
@@ -356,39 +414,8 @@ where
                     }
                 }
                 TxPoolCommand::InsertForwardedTxs { sender, txs } => {
-                    let _span = debug_span!("insert forwarded txs").entered();
-                    debug!(
-                        ?sender,
-                        num_txs = txs.len(),
-                        "txpool executor received forwarded txs"
-                    );
-
-                    let mut num_invalid_bytes = 0;
-
-                    let txs = txs
-                        .into_iter()
-                        .filter_map(|raw_tx| {
-                            if let Ok(tx) = TxEnvelope::decode(&mut raw_tx.as_ref()) {
-                                Some(tx)
-                            } else {
-                                num_invalid_bytes += 1;
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>();
-
-                    self.metrics
-                        .reject_forwarded_invalid_bytes
-                        .fetch_add(num_invalid_bytes, Ordering::SeqCst);
-
-                    if num_invalid_bytes != 0 {
-                        tracing::warn!(?sender, ?num_invalid_bytes, "invalid forwarded txs");
-                    }
-
-                    self.forwarding_manager
-                        .as_mut()
-                        .project()
-                        .add_ingress_txs(txs);
+                    // This will never happen because we separate out these commands in `EthTxPoolExecutorClient`.
+                    error!("txpool executor received InsertForwardedTxs command over command rx");
                 }
                 TxPoolCommand::EnterRound {
                     epoch: _,
