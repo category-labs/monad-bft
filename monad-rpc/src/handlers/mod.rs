@@ -42,6 +42,7 @@ use self::{
             monad_eth_estimateGas, monad_eth_feeHistory, monad_eth_gasPrice,
             monad_eth_maxPriorityFeePerGas,
         },
+        simulate::monad_simulate_v1,
         txn::{
             monad_eth_getLogs, monad_eth_getTransactionByBlockHashAndIndex,
             monad_eth_getTransactionByBlockNumberAndIndex, monad_eth_getTransactionByHash,
