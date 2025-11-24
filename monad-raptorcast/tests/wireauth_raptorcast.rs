@@ -155,10 +155,18 @@ impl ValidatorInfo {
 fn create_raptorcast_config(
     keypair: Arc<KeyPair>,
 ) -> monad_raptorcast::config::RaptorCastConfig<SecpSignature> {
+    create_raptorcast_config_with_rate_limit(keypair, 10_000)
+}
+
+fn create_raptorcast_config_with_rate_limit(
+    keypair: Arc<KeyPair>,
+    sig_verification_rate_limit: u32,
+) -> monad_raptorcast::config::RaptorCastConfig<SecpSignature> {
     monad_raptorcast::config::RaptorCastConfig {
         shared_key: keypair,
         mtu: monad_dataplane::udp::DEFAULT_MTU,
         udp_message_max_age_ms: u64::MAX,
+        sig_verification_rate_limit,
         primary_instance: Default::default(),
         secondary_instance: monad_node_config::FullNodeRaptorCastConfig {
             enable_publisher: false,
@@ -262,7 +270,7 @@ fn spawn_noop_validator(
             create_dataplane(tcp_addr, auth_addr, non_auth_addr);
         let (tcp_reader, tcp_writer) = tcp_socket.split();
         let config = create_raptorcast_config(keypair);
-        let auth_protocol = monad_raptorcast::auth::NoopAuthProtocol::new();
+        let auth_protocol = monad_raptorcast::auth::NoAuth::new();
 
         let mut validator_rc = monad_raptorcast::RaptorCast::<
             SecpSignature,
@@ -567,6 +575,245 @@ async fn run_test_scenario(num_auth_nodes: usize, routing_type: RoutingType, mes
             }
         }
     }
+}
+
+fn spawn_wireauth_validator_with_rate_limit(
+    keypair: Arc<KeyPair>,
+    tcp_addr: SocketAddrV4,
+    auth_addr: SocketAddrV4,
+    non_auth_addr: SocketAddrV4,
+    known_addresses: HashMap<NodeId<CertificateSignaturePubKey<SecpSignature>>, SocketAddrV4>,
+    name_records: HashMap<
+        NodeId<CertificateSignaturePubKey<SecpSignature>>,
+        MonadNameRecord<SecpSignature>,
+    >,
+    peers_to_check: Vec<(SocketAddrV4, monad_secp::PubKey)>,
+    sig_verification_rate_limit: u32,
+) -> ValidatorChannels {
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+
+    tokio::task::spawn_local(async move {
+        let shared_pd = create_peer_discovery(known_addresses, name_records);
+        let (tcp_socket, authenticated_socket, non_authenticated_socket, control) =
+            create_dataplane(tcp_addr, auth_addr, non_auth_addr);
+        let (tcp_reader, tcp_writer) = tcp_socket.split();
+        let config =
+            create_raptorcast_config_with_rate_limit(keypair.clone(), sig_verification_rate_limit);
+        let wireauth_config = monad_wireauth::Config::default();
+        let auth_protocol =
+            monad_raptorcast::auth::WireAuthProtocol::new(wireauth_config, &keypair);
+
+        let mut validator_rc = monad_raptorcast::RaptorCast::<
+            SecpSignature,
+            MockMessage,
+            MockMessage,
+            MockEvent<CertificateSignaturePubKey<SecpSignature>>,
+            monad_peer_discovery::mock::NopDiscovery<SecpSignature>,
+            _,
+        >::new(
+            config,
+            monad_raptorcast::raptorcast_secondary::SecondaryRaptorCastModeConfig::None,
+            tcp_reader,
+            tcp_writer,
+            Some(authenticated_socket),
+            non_authenticated_socket,
+            control,
+            shared_pd,
+            Epoch(0),
+            auth_protocol,
+        );
+
+        let mut cmd_rx = cmd_rx;
+        let check_connections = !peers_to_check.is_empty();
+        let mut ready_tx = Some(ready_tx);
+        let mut check_interval = tokio::time::interval(Duration::from_millis(100));
+
+        loop {
+            tokio::select! {
+                Some(cmd) = cmd_rx.recv() => {
+                    validator_rc.exec(vec![cmd]);
+                }
+                Some(event) = validator_rc.next() => {
+                    if event_tx.send(event).is_err() {
+                        break;
+                    }
+                }
+                _ = check_interval.tick(), if check_connections => {
+                    if let Some(tx) = ready_tx.take() {
+                        let all_connected = peers_to_check.iter().all(|(addr, pubkey)| {
+                            validator_rc.is_connected_to(&SocketAddr::V4(*addr), pubkey)
+                        });
+
+                        if all_connected {
+                            let _ = tx.send(());
+                        } else {
+                            ready_tx = Some(tx);
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    ValidatorChannels {
+        cmd_tx,
+        event_rx,
+        ready_rx,
+    }
+}
+
+async fn test_rate_limiting_basic() {
+    const NUM_TEST_NODES: usize = 3;
+    const RATE_LIMIT: u32 = 10;
+    const MESSAGE_SIZE: usize = 1_000;
+
+    let validator_infos: Vec<_> = (1..=NUM_TEST_NODES as u8).map(ValidatorInfo::new).collect();
+
+    let name_records: HashMap<_, _> = validator_infos
+        .iter()
+        .map(|v| (v.nodeid, v.create_name_record(true)))
+        .collect();
+
+    let known_addresses: HashMap<_, _> = validator_infos
+        .iter()
+        .map(|v| (v.nodeid, v.non_auth_addr))
+        .collect();
+
+    let peers_for_check: Vec<_> = validator_infos
+        .iter()
+        .map(|v| (v.auth_addr, v.pubkey))
+        .collect();
+
+    let validators: Vec<_> = validator_infos
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            let peers = peers_for_check
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, p)| *p)
+                .collect();
+            spawn_wireauth_validator_with_rate_limit(
+                v.keypair.clone(),
+                v.tcp_addr,
+                v.auth_addr,
+                v.non_auth_addr,
+                known_addresses.clone(),
+                name_records.clone(),
+                peers,
+                RATE_LIMIT,
+            )
+        })
+        .collect();
+
+    let epoch = Epoch(0);
+    // first 2 nodes are validators
+    let validator_set: Vec<_> = validator_infos
+        .iter()
+        .take(2)
+        .map(|v| (v.nodeid, Stake::ONE))
+        .collect();
+
+    let (cmd_txs, ready_rxs, mut event_rxs): (Vec<_>, Vec<_>, Vec<_>) = validators
+        .into_iter()
+        .map(|v| (v.cmd_tx, v.ready_rx, v.event_rx))
+        .multiunzip();
+
+    let cmd_tx_refs: Vec<_> = cmd_txs.iter().collect();
+    let mut event_rx_refs: Vec<_> = event_rxs.iter_mut().collect();
+
+    establish_connections(
+        &cmd_tx_refs,
+        ready_rxs,
+        epoch,
+        validator_set,
+        &mut event_rx_refs,
+    )
+    .await;
+
+    // drain any setup messages
+    for event_rx in event_rxs.iter_mut() {
+        while event_rx.try_recv().is_ok() {}
+    }
+
+    // point-to-point messages from validator 0 to validator 1
+    let sender_idx = 0;
+    let receiver_idx = 1;
+    let sender_nodeid = validator_infos[sender_idx].nodeid;
+
+    for i in 0..11 {
+        let message = MockMessage::new(1000 + i, MESSAGE_SIZE);
+        cmd_txs[sender_idx]
+            .send(RouterCommand::Publish {
+                target: monad_types::RouterTarget::PointToPoint(
+                    validator_infos[receiver_idx].nodeid,
+                ),
+                message,
+            })
+            .unwrap();
+
+        let event = tokio::time::timeout(MESSAGE_TIMEOUT, event_rxs[receiver_idx].recv())
+            .await
+            .unwrap_or_else(|_| panic!("timeout waiting for p2p message {} from validator", i))
+            .expect("channel closed");
+
+        let MockEvent((from, msg_id)) = event;
+        assert_eq!(from, sender_nodeid);
+        assert_eq!(msg_id, 1000 + i);
+    }
+
+    // send point-to-point messages from non-validator (node 2) to validator (node 0)
+    let non_validator_idx = 2;
+    let validator_receiver_idx = 0;
+    let non_validator_nodeid = validator_infos[non_validator_idx].nodeid;
+
+    for i in 1..11 {
+        let message = MockMessage::new(2000 + i, MESSAGE_SIZE);
+        cmd_txs[non_validator_idx]
+            .send(RouterCommand::Publish {
+                target: monad_types::RouterTarget::PointToPoint(
+                    validator_infos[validator_receiver_idx].nodeid,
+                ),
+                message,
+            })
+            .unwrap();
+
+        if i < 10 {
+            // first 9 messages from non-validator should succeed
+            let event =
+                tokio::time::timeout(MESSAGE_TIMEOUT, event_rxs[validator_receiver_idx].recv())
+                    .await
+                    .unwrap_or_else(|_| {
+                        panic!("timeout waiting for p2p message {} from non-validator", i)
+                    })
+                    .expect("channel closed");
+
+            let MockEvent((from, msg_id)) = event;
+            assert_eq!(from, non_validator_nodeid);
+            assert_eq!(msg_id, 2000 + i);
+        } else {
+            // 10th message from non-validator should be rate limited
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            match event_rxs[validator_receiver_idx].try_recv() {
+                Ok(_) => panic!("11th message from non-validator should have been rate limited"),
+                Err(_) => {
+                    // Expected - message was rate limited
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_rate_limiting_p2p() {
+    init_tracing();
+
+    tokio::task::LocalSet::new()
+        .run_until(test_rate_limiting_basic())
+        .await;
 }
 
 #[rstest]

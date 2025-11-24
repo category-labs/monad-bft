@@ -207,7 +207,11 @@ where
 
             current_epoch,
 
-            udp_state: udp::UdpState::new(self_id, config.udp_message_max_age_ms),
+            udp_state: udp::UdpState::new(
+                self_id,
+                config.udp_message_max_age_ms,
+                config.sig_verification_rate_limit,
+            ),
 
             tcp_reader,
             tcp_writer,
@@ -517,14 +521,7 @@ pub fn new_defaulted_raptorcast_for_tests<ST, M, OM, SE>(
     local_addr: SocketAddr,
     known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4>,
     shared_key: Arc<ST::KeyPairType>,
-) -> RaptorCast<
-    ST,
-    M,
-    OM,
-    SE,
-    NopDiscovery<ST>,
-    auth::NoopAuthProtocol<CertificateSignaturePubKey<ST>>,
->
+) -> RaptorCast<ST, M, OM, SE, NopDiscovery<ST>, auth::NoAuth<CertificateSignaturePubKey<ST>>>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
@@ -561,6 +558,7 @@ where
         shared_key,
         mtu: DEFAULT_MTU,
         udp_message_max_age_ms: u64::MAX, // No timestamp validation for tests
+        sig_verification_rate_limit: 10_000,
         primary_instance: Default::default(),
         secondary_instance: FullNodeRaptorCastConfig {
             enable_publisher: false,
@@ -581,7 +579,7 @@ where
     };
     let pd = PeerDiscoveryDriver::new(peer_discovery_builder);
     let shared_pd = Arc::new(Mutex::new(pd));
-    let auth_protocol = auth::NoopAuthProtocol::new();
+    let auth_protocol = auth::NoAuth::new();
     RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>, _>::new(
         config,
         SecondaryRaptorCastModeConfig::None,
@@ -637,6 +635,7 @@ where
         shared_key: shared_key.clone(),
         mtu: DEFAULT_MTU,
         udp_message_max_age_ms: u64::MAX,
+        sig_verification_rate_limit: 10_000,
         primary_instance: Default::default(),
         secondary_instance: FullNodeRaptorCastConfig {
             enable_publisher: false,
@@ -897,6 +896,7 @@ where
         ExecutorMetricsChain::default()
             .push(self.metrics.as_ref())
             .push(self.peer_discovery_metrics.as_ref())
+            .push(self.udp_state.metrics())
             .chain(self.dual_socket.metrics())
     }
 }

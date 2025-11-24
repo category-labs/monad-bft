@@ -39,9 +39,8 @@ use monad_peer_discovery::{
     mock::{NopDiscovery, NopDiscoveryBuilder},
 };
 use monad_raptorcast::{
-    auth::NoopAuthProtocol, config::RaptorCastConfig,
-    raptorcast_secondary::SecondaryRaptorCastModeConfig, RaptorCast,
-    AUTHENTICATED_RAPTORCAST_SOCKET, RAPTORCAST_SOCKET,
+    auth::NoAuth, config::RaptorCastConfig, raptorcast_secondary::SecondaryRaptorCastModeConfig,
+    RaptorCast, AUTHENTICATED_RAPTORCAST_SOCKET, RAPTORCAST_SOCKET,
 };
 use monad_state::{Forkpoint, MonadMessage, MonadState, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::InMemoryState;
@@ -183,14 +182,14 @@ where
                     .expect("raptorcast socket");
                 let (tcp_reader, tcp_writer) = tcp_socket.split();
 
-                let auth_protocol = NoopAuthProtocol::new();
+                let auth_protocol = NoAuth::new();
                 Updater::boxed(RaptorCast::<
                     ST,
                     MonadMessage<ST, SCT, MockExecutionProtocol>,
                     VerifiedMonadMessage<ST, SCT, MockExecutionProtocol>,
                     MonadEvent<ST, SCT, MockExecutionProtocol>,
                     NopDiscovery<ST>,
-                    NoopAuthProtocol<CertificateSignaturePubKey<ST>>,
+                    NoAuth<CertificateSignaturePubKey<ST>>,
                 >::new(
                     cfg,
                     SecondaryRaptorCastModeConfig::None,

@@ -16,3 +16,10 @@
 pub const GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED: &str =
     "monad.raptorcast.total_messages_received";
 pub const GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS: &str = "monad.raptorcast.total_recv_errors";
+
+pub const GAUGE_RAPTORCAST_DECODING_CACHE_SIGNATURE_VERIFICATIONS_ATTEMPTED: &str =
+    "monad.raptorcast.decoding_cache.signature_verifications_attempted";
+pub const GAUGE_RAPTORCAST_DECODING_CACHE_SIGNATURE_VERIFICATIONS_RATE_LIMITED: &str =
+    "monad.raptorcast.decoding_cache.signature_verifications_rate_limited";
+pub const GAUGE_RAPTORCAST_DECODING_CACHE_NEW_MESSAGES_INSERTED: &str =
+    "monad.raptorcast.decoding_cache.new_messages_inserted";

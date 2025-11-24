@@ -466,7 +466,7 @@ fn setup_raptorcast_service(
     MockMessage,
     MockEvent<CertificateSignaturePubKey<SignatureType>>,
     NopDiscovery<SignatureType>,
-    monad_raptorcast::auth::NoopAuthProtocol<CertificateSignaturePubKey<SignatureType>>,
+    monad_raptorcast::auth::NoAuth<CertificateSignaturePubKey<SignatureType>>,
 > {
     new_defaulted_raptorcast_for_tests::<
         SignatureType,
