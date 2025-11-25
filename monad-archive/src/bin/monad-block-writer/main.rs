@@ -230,23 +230,27 @@ async fn run(
                 let mut fs = fs.clone();
                 let semaphore = concurrent_block_semaphore.clone();
 
-                tokio::spawn(async move {
-                    if !flat_dir {
-                        fs = fs
-                            .with_prefix(format!("{}M/", current_block / 1_000_000))
+                async move {
+                    tokio::spawn(async move {
+                        if !flat_dir {
+                            fs = fs
+                                .with_prefix(format!("{}M/", current_block / 1_000_000))
+                                .await
+                                .wrap_err("Failed to create prefix for block")
+                                .map_err(|e| (current_block, e))?;
+                        }
+                        let _permit = semaphore
+                            .acquire()
                             .await
-                            .wrap_err("Failed to create prefix for block")
-                            .map_err(|e| (current_block, e))?;
-                    }
-                    let _permit = semaphore
-                        .acquire()
-                        .await
-                        .expect("Got permit to execute a new block");
+                            .expect("Got permit to execute a new block");
 
-                    process_block(&reader, current_block, &fs)
-                        .await
-                        .map_err(|e| (current_block, e))
-                })
+                        process_block(&reader, current_block, &fs)
+                            .await
+                            .map_err(|e| (current_block, e))
+                    })
+                    .await
+                    .map_err(|e| (current_block, e))
+                }
             })
             .collect();
 
@@ -260,17 +264,11 @@ async fn run(
                 }
                 Ok(Err((block_num, e))) => {
                     error!("Failed to process block {}: {:?}", block_num, e);
-                    if attempt < max_retries {
-                        failed_blocks.push(block_num);
-                    } else {
-                        error!(
-                            "Block {} failed after {} retries, giving up",
-                            block_num, max_retries
-                        );
-                    }
+                    failed_blocks.push(block_num);
                 }
-                Err(e) => {
-                    error!("Join error: {:?}", e);
+                Err((block_num, e)) => {
+                    error!("Task panicked for block {}: {:?}", block_num, e);
+                    failed_blocks.push(block_num);
                 }
             }
         }
