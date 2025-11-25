@@ -60,7 +60,7 @@ use crate::{
             MonadDebugTraceBlockByHashParams, MonadDebugTraceBlockByNumberParams,
             MonadDebugTraceTransactionParams,
         },
-        eth::call::monad_createAccessList,
+        eth::{call::monad_createAccessList, simulate::MonadSimulateParams},
     },
     jsonrpc::{
         JsonRpcError, JsonRpcResultExt, Request, RequestParams, RequestWrapper, Response,
@@ -404,6 +404,39 @@ async fn eth_call(
     }
 
     result.map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn eth_simulateV1(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    params: RequestParams<'_>,
+) -> Result<Box<RawValue>, JsonRpcError> {
+    let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+    let Some(ref eth_call_executor) = app_state.eth_call_executor else {
+        return Err(JsonRpcError::method_not_supported());
+    };
+
+    // acquire the concurrent requests permit
+    let _permit = match app_state.rate_limiter.try_acquire() {
+        Ok(permit) => permit,
+        Err(_) => {
+            return Err(JsonRpcError::internal_error(
+                "eth_simulateV1 concurrent requests limit".into(),
+            ));
+        }
+    };
+
+    let params = serde_json::from_str(params.get()).invalid_params()?;
+
+    monad_simulate_v1(
+        triedb_env,
+        eth_call_executor.clone(),
+        app_state.chain_id,
+        params,
+    )
+    .await
+    .map(serialize_result)?
 }
 
 #[allow(non_snake_case)]
@@ -943,6 +976,7 @@ enabled_methods!(
     debug_traceCall,
     debug_traceTransaction,
     eth_call,
+    eth_simulateV1,
     eth_sendRawTransaction,
     eth_sendRawTransactionSync,
     eth_createAccessList,

@@ -1,37 +1,28 @@
-use alloy_primitives::{Address, U256, U64};
-use monad_ethcall::StateOverrideSet;
+use std::sync::Arc;
+
+use alloy_consensus::TxEnvelope;
+use monad_ethcall::{
+    eth_simulate_v1, BlockOverride, EthCallExecutor, SimulateResult, StateOverrideSet,
+    SuccessSimulateResult,
+};
+use monad_triedb_utils::triedb_env::{
+    BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb, TriedbPath,
+};
+use monad_types::{BlockId, Hash, SeqNum};
 use serde::Deserialize;
+use serde_json::value::RawValue;
 
 use crate::{
-    eth_json_types::{BlockTagOrHash, EthHash},
-    handlers::eth::call::CallRequest,
-    jsonrpc::JsonRpcResult,
+    eth_json_types::BlockTagOrHash,
+    handlers::eth::{block::get_block_key_from_tag_or_hash, call::CallRequest},
+    jsonrpc::{JsonRpcError, JsonRpcResult},
 };
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MonadBlockOverrides {
-    #[serde(default)]
-    pub number: Option<U64>,
-    #[serde(default)]
-    pub time: Option<U64>,
-    #[serde(default)]
-    pub gas_limit: Option<U256>,
-    #[serde(default)]
-    pub fee_recipient: Option<Address>,
-    #[serde(default)]
-    pub prev_randao: Option<EthHash>,
-    #[serde(default)]
-    pub base_fee_per_gas: Option<U256>,
-    #[serde(default)]
-    pub blob_base_fee: Option<U256>,
-}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MonadBlockStateCall {
     #[serde(default)]
-    pub block_overrides: MonadBlockOverrides,
+    pub block_overrides: BlockOverride,
     #[serde(default)]
     pub state_overrides: StateOverrideSet,
     pub calls: Vec<CallRequest>,
@@ -53,8 +44,61 @@ pub struct MonadSimulateParams {
     pub block: BlockTagOrHash,
 }
 
-pub async fn monad_simulate_v1(_params: MonadSimulateParams) -> JsonRpcResult<String> {
-    todo!();
+pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
+    triedb_env: &T,
+    eth_call_executor: Arc<EthCallExecutor>,
+    chain_id: u64,
+    params: MonadSimulateParams,
+) -> JsonRpcResult<Box<RawValue>> {
+    let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block).await?;
+
+    let calls: Vec<Vec<TxEnvelope>> = vec![vec![]];
+
+    let mut header = match triedb_env
+        .get_block_header(block_key)
+        .await
+        .map_err(JsonRpcError::internal_error)?
+    {
+        Some(header) => header,
+        None => return Err(JsonRpcError::block_not_found()),
+    };
+
+    let (block_number, block_id) = match block_key {
+        BlockKey::Finalized(FinalizedBlockKey(SeqNum(n))) => (n, None),
+        BlockKey::Proposed(ProposedBlockKey(SeqNum(n), BlockId(Hash(id)))) => (n, Some(id)),
+    };
+
+    let overrides: Vec<_> = params
+        .simulation
+        .block_state_calls
+        .iter()
+        .map(|call| (&call.block_overrides, &call.state_overrides))
+        .collect();
+
+    let result = eth_simulate_v1(
+        chain_id,
+        &calls,
+        header.header,
+        block_number,
+        block_id,
+        eth_call_executor,
+        &overrides,
+    )
+    .await;
+
+    match result {
+        SimulateResult::Success(SuccessSimulateResult { output_data, .. }) => {
+            let v: serde_cbor::Value = serde_cbor::from_slice(&output_data)
+                .map_err(|e| JsonRpcError::internal_error(format!("CBOR decode error: {}", e)))?;
+            serde_json::value::to_raw_value(&v).map_err(|e| {
+                JsonRpcError::internal_error(format!("json serialization error: {}", e))
+            })
+        }
+
+        SimulateResult::Failure(error) => {
+            Err(JsonRpcError::eth_call_error(error.message, error.data))
+        }
+    }
 }
 
 #[cfg(test)]
