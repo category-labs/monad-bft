@@ -820,6 +820,9 @@ async fn try_collect_logs_stream_with_heuristic_response_limit<E>(
 ) -> JsonRpcResult<Result<Vec<MonadLog>, E>> {
     let mut stream = std::pin::pin!(stream);
 
+    const EXTRAPOLATION_CHECK_MIN_RESPONSE_SIZE: u64 = 4 * 1024 * 1024;
+    const EXTRAPOLATION_CHECK_MIN_BLOCKS: u64 = 100;
+
     let num_blocks = to_block + 1 - from_block;
 
     let mut processed_blocks = 0u64;
@@ -861,6 +864,23 @@ async fn try_collect_logs_stream_with_heuristic_response_limit<E>(
 
                 if heuristic_response_size > max_response_size as u64 {
                     return Err(JsonRpcError::max_size_exceeded());
+                }
+
+                if heuristic_response_size >= EXTRAPOLATION_CHECK_MIN_RESPONSE_SIZE
+                    || processed_blocks >= EXTRAPOLATION_CHECK_MIN_BLOCKS
+                {
+                    let extrapolated_heuristic_size = heuristic_response_size
+                        .saturating_mul(num_blocks)
+                        .saturating_div(processed_blocks);
+
+                    let heuristic_max_response_size = (max_response_size as u64 * 2)
+                        - (max_response_size as u64)
+                            .saturating_mul(processed_blocks)
+                            .saturating_div(num_blocks);
+
+                    if extrapolated_heuristic_size > heuristic_max_response_size {
+                        return Err(JsonRpcError::max_size_exceeded());
+                    }
                 }
             }
         }
