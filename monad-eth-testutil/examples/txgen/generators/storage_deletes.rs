@@ -13,15 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use crate::{
-    prelude::*,
-    shared::erc20::{ERC20, IERC20},
-};
+use crate::{generators::ERC20Pool, prelude::*, shared::erc20::IERC20};
 
 pub struct StorageDeletesTxGenerator {
     pub recipient_keys: KeyPool,
-    pub erc20_pool: Option<Vec<ERC20>>,
-    pub erc20_index: usize,
+    pub erc20_pool: ERC20Pool,
     pub tx_per_sender: usize,
 }
 
@@ -42,13 +38,7 @@ impl Generator for StorageDeletesTxGenerator {
             for &idx in &idxs {
                 let from = &mut accts[idx];
                 let to = self.recipient_keys.next_addr();
-
-                let erc20_pool = self
-                    .erc20_pool
-                    .as_ref()
-                    .expect("No ERC20 contract found, but tx_type is erc20");
-                let erc20 = erc20_pool[self.erc20_index % erc20_pool.len()];
-                self.erc20_index = (self.erc20_index + 1) % erc20_pool.len();
+                let erc20 = self.erc20_pool.next_contract();
 
                 let tx = if rng.gen_bool(0.3) {
                     erc20.construct_tx(
