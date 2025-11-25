@@ -676,6 +676,8 @@ impl<T: Triedb> ChainState<T> {
                 Ok(logs) => {
                     match try_collect_logs_stream_with_heuristic_response_limit(
                         max_response_size,
+                        from_block,
+                        to_block,
                         logs,
                     )
                     .await?
@@ -765,17 +767,24 @@ impl<T: Triedb> ChainState<T> {
             result.and_then(|(header, transactions, receipts)| {
                 block_receipts(transactions, receipts, &header.header, header.hash).map(
                     |receipts| {
-                        receipts.into_iter().flat_map(|receipt| {
-                            transaction_receipt_to_logs_iter(receipt, &filtered_params)
-                        })
+                        (
+                            header.header.number,
+                            receipts.into_iter().flat_map(|receipt| {
+                                transaction_receipt_to_logs_iter(receipt, &filtered_params)
+                            }),
+                        )
                     },
                 )
             })
         });
 
-        let logs =
-            try_collect_logs_stream_with_heuristic_response_limit(max_response_size, logs_stream)
-                .await??;
+        let logs = try_collect_logs_stream_with_heuristic_response_limit(
+            max_response_size,
+            from_block,
+            to_block,
+            logs_stream,
+        )
+        .await??;
 
         if dry_run_get_logs_index {
             if let Some(archive_reader) = self.archive_reader.clone() {
@@ -805,10 +814,15 @@ impl<T: Triedb> ChainState<T> {
 
 async fn try_collect_logs_stream_with_heuristic_response_limit<E>(
     max_response_size: u32,
-    stream: impl Stream<Item = Result<impl IntoIterator<Item = Log>, E>>,
+    from_block: u64,
+    to_block: u64,
+    stream: impl Stream<Item = Result<(u64, impl IntoIterator<Item = Log>), E>>,
 ) -> JsonRpcResult<Result<Vec<MonadLog>, E>> {
     let mut stream = std::pin::pin!(stream);
 
+    let num_blocks = to_block + 1 - from_block;
+
+    let mut processed_blocks = 0u64;
     let mut heuristic_response_size = 0u64;
 
     let mut response_logs = Vec::<MonadLog>::default();
@@ -816,7 +830,30 @@ async fn try_collect_logs_stream_with_heuristic_response_limit<E>(
     while let Some(result) = stream.next().await {
         match result {
             Err(err) => return Ok(Err(err)),
-            Ok(logs) => {
+            Ok((block_number, logs)) => {
+                if block_number != from_block.saturating_add(processed_blocks) {
+                    error!(
+                        ?from_block,
+                        ?processed_blocks,
+                        ?block_number,
+                        "logs stream block numbers inconsistent"
+                    );
+                    return Err(JsonRpcError::internal_error(format!("Logs out of order")));
+                }
+
+                processed_blocks += 1;
+
+                if processed_blocks > num_blocks {
+                    error!(
+                        ?from_block,
+                        ?processed_blocks,
+                        ?block_number,
+                        ?num_blocks,
+                        "logs stream block number exceeded range"
+                    );
+                    return Err(JsonRpcError::internal_error(format!("Logs out of range")));
+                }
+
                 response_logs.extend(logs.into_iter().map(|log| {
                     heuristic_response_size += compute_heuristic_log_len(&log) as u64;
                     MonadLog(log)
@@ -915,7 +952,7 @@ async fn check_dry_run_get_logs_index(
         .await
         .wrap_err("Error getting logs with index")?
         .into_iter()
-        .flatten(),
+        .flat_map(|(_, logs)| logs.into_iter()),
     );
 
     let group_by = |mut map: HashMap<_, _>, log: &Log| {
@@ -1041,15 +1078,18 @@ async fn try_create_logs_stream_using_index<'a>(
     filter: &'a Filter,
     filtered_params: &'a FilteredParams,
 ) -> monad_archive::prelude::Result<
-    impl Stream<Item = monad_archive::prelude::Result<impl Iterator<Item = Log> + 'a>> + 'a,
+    impl Stream<Item = monad_archive::prelude::Result<(u64, impl Iterator<Item = Log> + 'a)>> + 'a,
 > {
     Ok(
         get_receipts_stream_using_index(reader, from_block, to_block, filter)
             .await?
-            .map_ok(move |(_, receipts)| {
-                receipts.into_iter().flat_map(move |receipt| {
-                    transaction_receipt_to_logs_iter(receipt, filtered_params)
-                })
+            .map_ok(move |(block_number, receipts)| {
+                (
+                    block_number,
+                    receipts.into_iter().flat_map(move |receipt| {
+                        transaction_receipt_to_logs_iter(receipt, filtered_params)
+                    }),
+                )
             }),
     )
 }
