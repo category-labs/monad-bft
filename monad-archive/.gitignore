@@ -1,3 +1,5 @@
 faults.json
 .*
 !/.gitignore
+
+tmp/

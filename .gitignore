@@ -9,6 +9,8 @@
 /docker/devnet/monad/config/forkpoint.toml
 
 test-keys
+.claude
+AGENTS.md
 .vscode
 *.swp
 .idea

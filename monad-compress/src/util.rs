@@ -39,6 +39,12 @@ impl BoundedWriter {
     }
 }
 
+impl From<BoundedWriter> for Vec<u8> {
+    fn from(value: BoundedWriter) -> Self {
+        value.vec
+    }
+}
+
 impl From<BoundedWriter> for Bytes {
     fn from(value: BoundedWriter) -> Self {
         value.vec.into()
