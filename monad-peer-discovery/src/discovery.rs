@@ -1273,6 +1273,23 @@ where
             }
         }
 
+        // for full nodes, do an open discovery every refresh period to discover any validator name records update
+        if self.self_role == PeerDiscoveryRole::FullNodeNone
+            || self.self_role == PeerDiscoveryRole::FullNodeClient
+        {
+            if let Some(validators) = self.epoch_validators.get(&self.current_epoch) {
+                if let Some(peer) = chosen_peers.last() {
+                    if let Some(random_validator) = validators.iter().choose(&mut self.rng) {
+                        trace!(
+                            ?random_validator,
+                            "full node sending open discovery to random validator"
+                        );
+                        cmds.extend(self.send_peer_lookup_request(*peer, *random_validator, true));
+                    }
+                }
+            }
+        }
+
         // if self is a full node, try to connect to a few current validators if not already connected
         // collect metrics
         if self.self_role == PeerDiscoveryRole::FullNodeClient {
@@ -2144,7 +2161,7 @@ mod tests {
         // should send peer lookup request to peer1
         let cmds = state.refresh();
         let lookup_requests = extract_lookup_requests(cmds);
-        assert_eq!(lookup_requests.len(), 1);
+        assert_eq!(lookup_requests.len(), 2);
         let receiver = state
             .outstanding_lookup_requests
             .get(&lookup_requests[0].lookup_id)
@@ -2390,7 +2407,7 @@ mod tests {
         // do not look for upstream validator if running as None in secondary raptorcast
         state.self_role = PeerDiscoveryRole::FullNodeNone;
         let cmds = state.refresh();
-        assert_eq!(cmds.len(), 3); // 2 timer commands and 1 metrics command
+        assert_eq!(cmds.len(), 5); // 2 peer look commands (unrelated to test case), 2 timer commands and 1 metrics command
 
         // look for upstream validator if running as a Client in secondary raptorcast
         state.self_role = PeerDiscoveryRole::FullNodeClient;
