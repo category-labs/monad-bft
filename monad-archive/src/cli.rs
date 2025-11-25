@@ -95,6 +95,13 @@ pub fn set_source_and_sink_metrics(
                 vec![opentelemetry::KeyValue::new("sink_store_type", "mongodb")],
             );
         }
+        ArchiveArgs::Fs(_) => {
+            metrics.periodic_gauge_with_attrs(
+                MetricNames::SINK_STORE_TYPE,
+                3,
+                vec![opentelemetry::KeyValue::new("sink_store_type", "fs")],
+            );
+        }
     }
 
     match source {
@@ -110,6 +117,13 @@ pub fn set_source_and_sink_metrics(
                 MetricNames::SOURCE_STORE_TYPE,
                 2,
                 vec![opentelemetry::KeyValue::new("source_store_type", "mongodb")],
+            );
+        }
+        BlockDataReaderArgs::Fs(_) => {
+            metrics.periodic_gauge_with_attrs(
+                MetricNames::SOURCE_STORE_TYPE,
+                4,
+                vec![opentelemetry::KeyValue::new("source_store_type", "fs")],
             );
         }
         BlockDataReaderArgs::Triedb(_) => {
@@ -157,12 +171,14 @@ pub enum BlockDataReaderArgs {
     Aws(AwsCliArgs),
     Triedb(TrieDbCliArgs),
     MongoDb(MongoDbCliArgs),
+    Fs(FsCliArgs),
 }
 
 #[derive(Debug, Clone, Serialize, Eq, PartialEq, Hash)]
 pub enum ArchiveArgs {
     Aws(AwsCliArgs),
     MongoDb(MongoDbCliArgs),
+    Fs(FsCliArgs),
 }
 
 impl FromStr for BlockDataReaderArgs {
@@ -176,6 +192,7 @@ impl FromStr for BlockDataReaderArgs {
             "aws" => Aws(AwsCliArgs::parse(args)?),
             "triedb" => Triedb(TrieDbCliArgs::parse(args)?),
             "mongodb" => MongoDb(MongoDbCliArgs::parse(args)?),
+            "fs" => Fs(FsCliArgs::parse(args)?),
             _ => {
                 bail!("Unrecognized storage args variant: {storage_type}");
             }
@@ -193,6 +210,7 @@ impl FromStr for ArchiveArgs {
         Ok(match storage_type.to_lowercase().as_str() {
             "aws" => Aws(AwsCliArgs::parse(args)?),
             "mongodb" => MongoDb(MongoDbCliArgs::parse(args)?),
+            "fs" => Fs(FsCliArgs::parse(args)?),
             _ => {
                 bail!("Unrecognized storage args variant: {storage_type}");
             }
@@ -234,6 +252,10 @@ impl BlockDataReaderArgs {
                 MongoDbStorage::new_block_store(&args.url, &args.db, metrics.clone()).await?,
             )
             .into(),
+            Fs(fs_args) => {
+                BlockDataArchive::new(FsStorage::new(fs_args.block_store_path(), metrics.clone())?)
+                    .into()
+            }
         })
     }
 
@@ -245,6 +267,7 @@ impl BlockDataReaderArgs {
             MongoDb(mongo_db_cli_args) => {
                 format!("{}:{}", mongo_db_cli_args.url, mongo_db_cli_args.db)
             }
+            Fs(fs_cli_args) => fs_cli_args.path.to_string_lossy().into_owned(),
         }
     }
 }
@@ -260,6 +283,9 @@ impl ArchiveArgs {
                 MongoDbStorage::new_block_store(&args.url, &args.db, metrics.clone())
                     .await?
                     .into()
+            }
+            ArchiveArgs::Fs(args) => {
+                FsStorage::new(args.block_store_path(), metrics.clone())?.into()
             }
         };
         Ok(BlockDataArchive::new(store))
@@ -290,6 +316,10 @@ impl ArchiveArgs {
                 MongoDbStorage::new_index_store(&args.url, &args.db, metrics.clone())
                     .await?
                     .into(),
+            ),
+            ArchiveArgs::Fs(args) => (
+                FsStorage::new(args.block_store_path(), metrics.clone())?.into(),
+                FsStorage::new(args.index_store_path(), metrics.clone())?.into(),
             ),
         };
         Ok(TxIndexArchiver::new(
@@ -322,6 +352,10 @@ impl ArchiveArgs {
                     .await?
                     .into(),
             ),
+            ArchiveArgs::Fs(args) => (
+                FsStorage::new(args.block_store_path(), metrics.clone())?.into(),
+                FsStorage::new(args.index_store_path(), metrics.clone())?.into(),
+            ),
         };
         let bdr = BlockDataReaderErased::from(BlockDataArchive::new(blob));
         Ok(ArchiveReader::new(
@@ -336,6 +370,7 @@ impl ArchiveArgs {
         match self {
             ArchiveArgs::Aws(aws_cli_args) => aws_cli_args.bucket.clone(),
             ArchiveArgs::MongoDb(mongo_db_cli_args) => mongo_db_cli_args.db.clone(),
+            ArchiveArgs::Fs(fs_cli_args) => fs_cli_args.path.to_string_lossy().into_owned(),
         }
     }
 }
@@ -361,6 +396,7 @@ fn parse_block_data_reader_args<E: de::Error>(value: JsonValue) -> Result<BlockD
                 .map(BlockDataReaderArgs::Triedb),
             "mongodb" => deserialize_variant(cfg, "mongodb block_data_source")
                 .map(BlockDataReaderArgs::MongoDb),
+            "fs" => deserialize_variant(cfg, "fs block_data_source").map(BlockDataReaderArgs::Fs),
             other => Err(E::custom(format!(
                 "unsupported block_data_source type '{other}'",
             ))),
@@ -373,6 +409,7 @@ fn parse_block_data_reader_args<E: de::Error>(value: JsonValue) -> Result<BlockD
                 .map(BlockDataReaderArgs::Triedb),
             "MongoDb" => deserialize_variant(cfg, "MongoDb block_data_source")
                 .map(BlockDataReaderArgs::MongoDb),
+            "Fs" => deserialize_variant(cfg, "Fs block_data_source").map(BlockDataReaderArgs::Fs),
             other => Err(E::custom(format!(
                 "unsupported block_data_source variant '{other}'",
             ))),
@@ -396,6 +433,7 @@ fn parse_archive_args<E: de::Error>(value: JsonValue) -> Result<ArchiveArgs, E> 
         |ty, cfg| match ty.as_str() {
             "aws" => deserialize_variant(cfg, "aws archive_sink").map(ArchiveArgs::Aws),
             "mongodb" => deserialize_variant(cfg, "mongodb archive_sink").map(ArchiveArgs::MongoDb),
+            "fs" => deserialize_variant(cfg, "fs archive_sink").map(ArchiveArgs::Fs),
             other => Err(E::custom(format!(
                 "unsupported archive_sink type '{other}'",
             ))),
@@ -403,6 +441,7 @@ fn parse_archive_args<E: de::Error>(value: JsonValue) -> Result<ArchiveArgs, E> 
         |variant, cfg| match variant.as_str() {
             "Aws" => deserialize_variant(cfg, "Aws archive_sink").map(ArchiveArgs::Aws),
             "MongoDb" => deserialize_variant(cfg, "MongoDb archive_sink").map(ArchiveArgs::MongoDb),
+            "Fs" => deserialize_variant(cfg, "Fs archive_sink").map(ArchiveArgs::Fs),
             other => Err(E::custom(format!(
                 "unsupported archive_sink variant '{other}'",
             ))),
@@ -647,6 +686,32 @@ impl MongoDbCliArgs {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
+pub struct FsCliArgs {
+    pub path: PathBuf,
+}
+
+impl FsCliArgs {
+    pub fn parse(s: &str) -> Result<Self> {
+        let (positional, mut kv) = parse_str_positional_and_kv(s)?;
+        Ok(Self {
+            path: kv
+                .remove("path")
+                .or_else(|| positional.first().cloned())
+                .map(PathBuf::from)
+                .ok_or_eyre("storage args missing path")?,
+        })
+    }
+
+    pub fn block_store_path(&self) -> PathBuf {
+        self.path.join("blocks")
+    }
+
+    pub fn index_store_path(&self) -> PathBuf {
+        self.path.join("index")
+    }
+}
+
 // Parse a string into a list of positional arguments and a map of key-value pairs.
 // Example: "aws s3://bucket/path --concurrency 10" -> (["aws", "s3://bucket/path"], {"concurrency": "10"})
 fn parse_str_positional_and_kv(s: &str) -> Result<(Vec<String>, HashMap<String, String>)> {
@@ -685,7 +750,7 @@ fn parse_str_positional_and_kv(s: &str) -> Result<(Vec<String>, HashMap<String, 
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
+    use std::{path::PathBuf, str::FromStr};
 
     use super::*;
 
@@ -774,6 +839,36 @@ mod tests {
     }
 
     #[test]
+    fn fs_fromstr_block_reader() {
+        let args = BlockDataReaderArgs::from_str("fs /tmp/archive").unwrap();
+        match args {
+            BlockDataReaderArgs::Fs(fs_args) => {
+                assert_eq!(fs_args.path, PathBuf::from("/tmp/archive"));
+                assert_eq!(
+                    fs_args.block_store_path(),
+                    PathBuf::from("/tmp/archive/blocks")
+                );
+                assert_eq!(
+                    fs_args.index_store_path(),
+                    PathBuf::from("/tmp/archive/index")
+                );
+            }
+            _ => panic!("expected Fs variant"),
+        }
+    }
+
+    #[test]
+    fn fs_fromstr_archive() {
+        let args = ArchiveArgs::from_str("fs /tmp/archive").unwrap();
+        match args {
+            ArchiveArgs::Fs(fs_args) => {
+                assert_eq!(fs_args.path, PathBuf::from("/tmp/archive"));
+            }
+            _ => panic!("expected Fs variant"),
+        }
+    }
+
+    #[test]
     fn mongodb_fromstr_ignores_deprecated_capped_size_arg() {
         // Third positional numeric should be ignored with a warning
         let a = BlockDataReaderArgs::from_str("mongodb mongodb://host:27017 mydb 10").unwrap();
@@ -856,5 +951,8 @@ mod tests {
 
         let mongo = ArchiveArgs::from_str("mongodb mongodb://h:27017 mydb").unwrap();
         assert_eq!(mongo.replica_name(), "mydb");
+
+        let local = ArchiveArgs::from_str("fs /tmp/archive").unwrap();
+        assert_eq!(local.replica_name(), "/tmp/archive");
     }
 }

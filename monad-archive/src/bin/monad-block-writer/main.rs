@@ -21,17 +21,17 @@ use clap::Parser;
 use futures::future::join_all;
 use monad_archive::prelude::*;
 use monad_compress::{brotli::BrotliCompression, CompressionAlgo};
-use tokio::{fs, sync::Semaphore};
+use tokio::sync::Semaphore;
 use tracing::Level;
 
 mod cli;
 
 async fn process_block(
-    aws_reader: &ArchiveReader,
+    reader: &BlockDataReaderErased,
     current_block: u64,
-    dest_path: &std::path::Path,
+    fs: &FsStorage,
 ) -> Result<()> {
-    let block = aws_reader
+    let block = reader
         .get_block_by_number(current_block)
         .await
         .wrap_err("Failed to get blocks from archiver")?;
@@ -51,50 +51,156 @@ async fn process_block(
         },
     };
 
-    let mut block_rlp = Vec::new();
-    ethereum_block.encode(&mut block_rlp);
+    let compressed_block: Vec<u8> = {
+        let mut block_rlp = Vec::new();
+        ethereum_block.encode(&mut block_rlp);
 
-    let mut compressed_writer =
-        monad_compress::util::BoundedWriter::new((block_rlp.len().saturating_mul(2)) as u32);
-    BrotliCompression::default()
-        .compress(&block_rlp, &mut compressed_writer)
-        .map_err(|e| eyre::eyre!("Brotli compression failed: {}", e))?;
-    let compressed_block: bytes::Bytes = compressed_writer.into();
+        let mut compressed_writer =
+            monad_compress::util::BoundedWriter::new((block_rlp.len().saturating_mul(2)) as u32);
+        BrotliCompression::default()
+            .compress(&block_rlp, &mut compressed_writer)
+            .map_err(|e| eyre::eyre!("Brotli compression failed: {}", e))?;
 
-    let output_path = dest_path.join(current_block.to_string());
-    fs::write(&output_path, &compressed_block)
+        compressed_writer.into()
+    };
+
+    let key = current_block.to_string();
+    fs.put(&key, compressed_block)
         .await
-        .wrap_err("Failed to write to file")?;
+        .wrap_err_with(|| format!("Failed to write block {current_block} to file"))?;
 
-    info!("Wrote block {} to {:?}", current_block, output_path);
+    info!(
+        "Wrote block {} to {}",
+        current_block,
+        fs.key_path(&key)?.to_string_lossy()
+    );
     Ok(())
 }
 
-#[tokio::main(flavor = "multi_thread")]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     let args = cli::Cli::parse();
     info!(?args, "Cli Arguments: ");
 
-    let concurrent_block_semaphore = Arc::new(Semaphore::new(args.concurrency));
+    let shared_args = args.mode.shared();
 
-    let url = "https://abc.com"; // dummy proxy url
-    let api_key = "";
-    let aws_reader =
-        ArchiveReader::init_aws_reader(args.bucket.clone(), args.region.clone(), url, api_key, 1)
-            .await?;
+    let dest_path = shared_args.dest_path.clone();
+    let max_retries = shared_args.max_retries;
 
-    let aws_reader = Arc::new(aws_reader);
-    let dest_path = args.dest_path.clone();
-    let max_retries = args.max_retries;
+    let concurrent_block_semaphore = Arc::new(Semaphore::new(shared_args.concurrency));
+    let reader = shared_args
+        .block_data_source
+        .build(&Metrics::none())
+        .await?;
+    let fs = FsStorage::new(dest_path.clone(), Metrics::none())?;
 
+    match args.mode {
+        cli::Mode::WriteRange(ref write_range_args) => {
+            tokio::spawn(run(
+                concurrent_block_semaphore,
+                reader,
+                fs,
+                max_retries,
+                write_range_args.start_block,
+                write_range_args.stop_block,
+                shared_args.flat_dir,
+            ))
+            .await??;
+        }
+        cli::Mode::Stream(ref stream_args) => {
+            if let Some(start_block) = stream_args.start_block {
+                set_latest_block(&fs, start_block).await?;
+            }
+
+            loop {
+                let mut start = get_latest_block(&fs).await?;
+                if start != 0 {
+                    start += 1; // We already processed this block, so start from the next one
+                }
+
+                let Some(mut stop) = reader.get_latest(LatestKind::Uploaded).await? else {
+                    bail!("No latest block found, cannot stream. Quitting...");
+                };
+
+                if start >= stop {
+                    info!(
+                        "No new blocks to process, sleeping for {} seconds",
+                        stream_args.sleep_secs
+                    );
+                    tokio::time::sleep(Duration::from_secs_f64(stream_args.sleep_secs)).await;
+                    continue;
+                }
+                stop = stop.min(start + 1_000_000);
+                let last_block = match tokio::spawn(run(
+                    concurrent_block_semaphore.clone(),
+                    reader.clone(),
+                    fs.clone(),
+                    max_retries,
+                    start,
+                    stop,
+                    shared_args.flat_dir,
+                ))
+                .await
+                {
+                    Ok(Ok(last_block)) => last_block,
+                    Ok(Err(e)) => {
+                        error!("Failed to process blocks: {:?}", e);
+                        continue;
+                    }
+                    Err(e) => {
+                        error!("Task panicked: {:?}", e);
+                        continue;
+                    }
+                };
+
+                set_latest_block(&fs, last_block).await?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn get_latest_block(fs: &FsStorage) -> Result<u64> {
+    let latest = fs.get("latest").await?;
+    match latest {
+        Some(bytes) => {
+            let latest = String::from_utf8(bytes.to_vec())?;
+            latest
+                .parse::<u64>()
+                .wrap_err("Failed to parse latest block")
+        }
+        None => {
+            fs.put("latest", b"0".to_vec()).await?;
+            Ok(0)
+        }
+    }
+}
+
+async fn set_latest_block(fs: &FsStorage, block: u64) -> Result<()> {
+    fs.put("latest", block.to_string().as_bytes().to_vec())
+        .await
+        .wrap_err("Failed to set latest block")?;
+    Ok(())
+}
+
+async fn run(
+    concurrent_block_semaphore: Arc<Semaphore>,
+    reader: BlockDataReaderErased,
+    fs: FsStorage,
+    max_retries: u32,
+    start_block: u64,
+    stop_block: u64,
+    flat_dir: bool,
+) -> Result<u64> {
     let mut failed_blocks: Vec<u64> = Vec::new();
 
     for attempt in 0..=max_retries {
         let blocks_to_process = if attempt == 0 {
             // First attempt: process all blocks
-            (args.start_block..=args.stop_block).collect::<Vec<_>>()
+            (start_block..=stop_block).collect::<Vec<_>>()
         } else {
             // Retry: only process failed blocks
             if failed_blocks.is_empty() {
@@ -120,19 +226,31 @@ async fn main() -> Result<()> {
         let join_handles: Vec<_> = blocks_to_process
             .into_iter()
             .map(|current_block| {
-                let aws_reader = Arc::clone(&aws_reader);
-                let dest_path = dest_path.clone();
+                let reader = reader.clone();
+                let mut fs = fs.clone();
                 let semaphore = concurrent_block_semaphore.clone();
 
-                tokio::spawn(async move {
-                    let _permit = semaphore
-                        .acquire()
-                        .await
-                        .expect("Got permit to execute a new block");
+                async move {
+                    tokio::spawn(async move {
+                        if !flat_dir {
+                            fs = fs
+                                .with_prefix(format!("{}M/", current_block / 1_000_000))
+                                .await
+                                .wrap_err("Failed to create prefix for block")
+                                .map_err(|e| (current_block, e))?;
+                        }
+                        let _permit = semaphore
+                            .acquire()
+                            .await
+                            .expect("Got permit to execute a new block");
 
-                    let result = process_block(&aws_reader, current_block, &dest_path).await;
-                    (current_block, result)
-                })
+                        process_block(&reader, current_block, &fs)
+                            .await
+                            .map_err(|e| (current_block, e))
+                    })
+                    .await
+                    .map_err(|e| (current_block, e))
+                }
             })
             .collect();
 
@@ -141,22 +259,16 @@ async fn main() -> Result<()> {
         // Collect failed blocks for retry
         for result in results {
             match result {
-                Ok((_block_num, Ok(()))) => {
+                Ok(Ok(())) => {
                     // Success - no retry needed
                 }
-                Ok((block_num, Err(e))) => {
-                    error!("Failed to process block {block_num}: {e:?}");
-                    if attempt < max_retries {
-                        failed_blocks.push(block_num);
-                    } else {
-                        error!(
-                            "Block {} failed after {} retries, giving up",
-                            block_num, max_retries
-                        );
-                    }
+                Ok(Err((block_num, e))) => {
+                    error!("Failed to process block {}: {:?}", block_num, e);
+                    failed_blocks.push(block_num);
                 }
-                Err(e) => {
-                    error!("Join error: {:?}", e);
+                Err((block_num, e)) => {
+                    error!("Task panicked for block {}: {:?}", block_num, e);
+                    failed_blocks.push(block_num);
                 }
             }
         }
@@ -171,5 +283,155 @@ async fn main() -> Result<()> {
         ));
     }
 
-    Ok(())
+    Ok(stop_block)
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy_consensus::Block as AlloyBlock;
+    use alloy_rlp::Decodable;
+    use monad_archive::test_utils::{mock_block, mock_rx, mock_tx, MemoryStorage};
+    use monad_compress::util::BoundedWriter;
+
+    use super::*;
+
+    async fn setup_source_archive(blocks: &[Block]) -> BlockDataReaderErased {
+        let store = MemoryStorage::new("test-source");
+        let archive = BlockDataArchive::new(store);
+
+        for block in blocks {
+            archive.archive_block(block.clone()).await.unwrap();
+
+            let receipts: Vec<ReceiptWithLogIndex> = block
+                .body
+                .transactions
+                .iter()
+                .enumerate()
+                .map(|(i, _)| mock_rx(10, (i + 1) as u128 * 21000))
+                .collect();
+            archive
+                .archive_receipts(receipts, block.header.number)
+                .await
+                .unwrap();
+
+            let traces: Vec<Vec<u8>> = block
+                .body
+                .transactions
+                .iter()
+                .map(|_| vec![1, 2, 3])
+                .collect();
+            archive
+                .archive_traces(traces, block.header.number)
+                .await
+                .unwrap();
+        }
+
+        if let Some(last) = blocks.last() {
+            archive
+                .update_latest(last.header.number, LatestKind::Uploaded)
+                .await
+                .unwrap();
+        }
+
+        BlockDataReaderErased::BlockDataArchive(archive)
+    }
+
+    #[tokio::test]
+    async fn test_write_range_flat_dir() {
+        let blocks: Vec<Block> = (0..5).map(|i| mock_block(i, vec![mock_tx(i)])).collect();
+
+        let reader = setup_source_archive(&blocks).await;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let fs = FsStorage::new(temp_dir.path(), Metrics::none()).unwrap();
+        let semaphore = Arc::new(Semaphore::new(2));
+
+        let last_block = run(semaphore, reader, fs.clone(), 3, 0, 4, true)
+            .await
+            .unwrap();
+
+        assert_eq!(last_block, 4);
+
+        // Verify all blocks were written
+        for i in 0..5 {
+            let key = i.to_string();
+            let compressed_data = fs.get(&key).await.unwrap().expect("Block should exist");
+
+            // Decompress and verify we can decode the block
+            let mut decompressed = BoundedWriter::new(1024 * 1024);
+            BrotliCompression::default()
+                .decompress(&compressed_data, &mut decompressed)
+                .unwrap();
+            let decompressed: Vec<u8> = decompressed.into();
+
+            let decoded = AlloyBlock::<alloy_consensus::TxEnvelope, Header>::decode(
+                &mut decompressed.as_slice(),
+            )
+            .unwrap();
+            assert_eq!(decoded.header.number, i);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_write_range_with_prefix_dirs() {
+        // Create blocks that span two prefix directories (0/ and 1/)
+        let blocks: Vec<Block> = vec![
+            mock_block(999_999, vec![mock_tx(999_999)]),
+            mock_block(1_000_000, vec![mock_tx(1_000_000)]),
+            mock_block(1_000_001, vec![mock_tx(1_000_001)]),
+        ];
+
+        let reader = setup_source_archive(&blocks).await;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let fs = FsStorage::new(temp_dir.path(), Metrics::none()).unwrap();
+        let semaphore = Arc::new(Semaphore::new(2));
+
+        let last_block = run(semaphore, reader, fs, 3, 999_999, 1_000_001, false)
+            .await
+            .unwrap();
+
+        assert_eq!(last_block, 1_000_001);
+
+        // Verify blocks are in correct prefix directories
+        let path_0 = temp_dir.path().join("0M/999999");
+        let path_1a = temp_dir.path().join("1M/1000000");
+        let path_1b = temp_dir.path().join("1M/1000001");
+
+        assert!(path_0.exists(), "Block 999999 should be in 0M/ directory");
+        assert!(path_1a.exists(), "Block 1000000 should be in 1M/ directory");
+        assert!(path_1b.exists(), "Block 1000001 should be in 1M/ directory");
+    }
+
+    #[tokio::test]
+    async fn test_run_returns_stop_block_on_success() {
+        let blocks: Vec<Block> = (10..15).map(|i| mock_block(i, vec![mock_tx(i)])).collect();
+
+        let reader = setup_source_archive(&blocks).await;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let fs = FsStorage::new(temp_dir.path(), Metrics::none()).unwrap();
+        let semaphore = Arc::new(Semaphore::new(4));
+
+        let last_block = run(semaphore, reader, fs, 0, 10, 14, true).await.unwrap();
+
+        assert_eq!(last_block, 14);
+    }
+
+    #[tokio::test]
+    async fn test_run_succeeds_with_valid_range() {
+        // Create blocks 0-4 and process all of them
+        let blocks: Vec<Block> = (0..5).map(|i| mock_block(i, vec![mock_tx(i)])).collect();
+
+        let reader = setup_source_archive(&blocks).await;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let fs = FsStorage::new(temp_dir.path(), Metrics::none()).unwrap();
+        let semaphore = Arc::new(Semaphore::new(2));
+
+        let result = run(semaphore, reader, fs, 0, 0, 4, true).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 4);
+    }
 }

@@ -28,6 +28,7 @@ pub struct Cli {
 
     /// If reading from --block-data-source fails, attempts to read from
     /// this optional fallback
+    #[arg(long, value_parser = clap::value_parser!(BlockDataReaderArgs))]
     pub fallback_block_data_source: Option<BlockDataReaderArgs>,
 
     /// Where archive data is written to
