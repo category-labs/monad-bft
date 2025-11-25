@@ -349,6 +349,9 @@ pub struct WorkloadGroup {
     /// mutated txn will have one of its fields modified, but there may be more.
     pub mutation_percentage: f64,
 
+    // Run an rpc request generator that acts as a block indexer
+    pub indexer: bool,
+
     /// Spam rpc and websocket with wallet workflow requests and compare the responses
     pub spam_rpc_ws: bool,
 
@@ -372,6 +375,7 @@ impl Default for WorkloadGroup {
             name: "default".to_string(),
             traffic_gens: vec![],
             mutation_percentage: 0.0,
+            indexer: false,
             spam_rpc_ws: false,
             compare_rpc_ws: false,
             num_ws_connections: 4,
