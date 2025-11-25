@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use alloy_primitives::Uint;
 use alloy_rlp::Encodable;
 use alloy_rpc_types::{Block, FilterChanges, TransactionReceipt};
@@ -60,55 +62,67 @@ impl CommittedTxWatcher {
         }
     }
 
-    pub async fn run(mut self) {
-        while let Some(block) = self.blockstream.next().await {
-            let block = match block {
-                Ok(b) => b,
-                Err(e) => {
-                    warn!("Blockstream returned error: {e}");
+    pub async fn run(mut self, shutdown: Arc<AtomicBool>) {
+        while !shutdown.load(Ordering::Relaxed) {
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                    // Check shutdown periodically
                     continue;
                 }
-            };
+                block_result = self.blockstream.next() => {
+                    let Some(block) = block_result else {
+                        break;
+                    };
+                    let block = match block {
+                        Ok(b) => b,
+                        Err(e) => {
+                            warn!("Blockstream returned error: {e}");
+                            continue;
+                        }
+                    };
 
-            let mut ours = 0;
-            for hash in block.transactions.hashes() {
-                if self.sent_txs.remove(&hash).is_some() {
-                    ours += 1;
-                }
-            }
-
-            self.metrics.total_committed_txs.fetch_add(ours, SeqCst);
-
-            let now = Instant::now();
-            self.sent_txs.retain(|_, v| *v + self.delay > now);
-
-            if self.use_receipts || self.use_receipts_by_block {
-                // prefer by block
-                if !self.use_receipts_by_block {
-                    if let Err(e) = Self::receipts_for_block_slow(
-                        self.client.clone(),
-                        self.metrics.clone(),
-                        &block,
-                    )
-                    .await
-                    {
-                        error!("Failed to get receipts for block: {e}");
+                    let mut ours = 0;
+                    for hash in block.transactions.hashes() {
+                        if self.sent_txs.remove(&hash).is_some() {
+                            ours += 1;
+                        }
                     }
-                } else if let Err(e) =
-                    Self::receipts_for_block(self.client.clone(), self.metrics.clone(), &block)
-                        .await
-                {
-                    error!("Failed to get receipts for block: {e}");
-                }
-            }
-            if self.use_get_logs {
-                if let Err(e) =
-                    Self::logs_for_block(self.client.clone(), self.metrics.clone(), &block).await
-                {
-                    error!("Failed to get logs for block: {e}");
+
+                    self.metrics.total_committed_txs.fetch_add(ours, SeqCst);
+
+                    let now = Instant::now();
+                    self.sent_txs.retain(|_, v| *v + self.delay > now);
+
+                    if self.use_receipts || self.use_receipts_by_block {
+                        // prefer by block
+                        if !self.use_receipts_by_block {
+                            if let Err(e) = Self::receipts_for_block_slow(
+                                self.client.clone(),
+                                self.metrics.clone(),
+                                &block,
+                            )
+                            .await
+                            {
+                                error!("Failed to get receipts for block: {e}");
+                            }
+                        } else if let Err(e) =
+                            Self::receipts_for_block(self.client.clone(), self.metrics.clone(), &block)
+                                .await
+                        {
+                            error!("Failed to get receipts for block: {e}");
+                        }
+                    }
+                    if self.use_get_logs {
+                        if let Err(e) =
+                            Self::logs_for_block(self.client.clone(), self.metrics.clone(), &block).await
+                        {
+                            error!("Failed to get logs for block: {e}");
+                        }
+                    }
                 }
             }
         }
+        warn!("CommittedTxWatcher shutting down");
     }
 
     async fn logs_for_block(

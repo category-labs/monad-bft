@@ -202,7 +202,7 @@ async fn run_workload_group(
     tasks.push(
         helper_task(
             "CommittedTx Watcher",
-            tokio::spawn(committed_tx_watcher.run()),
+            tokio::spawn(committed_tx_watcher.run(Arc::clone(&shutdown))),
             Arc::clone(&shutdown),
         )
         .boxed(),
