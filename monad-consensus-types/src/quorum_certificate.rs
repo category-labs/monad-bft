@@ -22,8 +22,10 @@ use monad_types::*;
 use monad_validator::{
     signature_collection::{
         deserialize_signature_collection, serialize_signature_collection, SignatureCollection,
+        SignatureCollectionKeyPairType,
     },
     validator_mapping::ValidatorMapping,
+    validator_set::{ValidatorSet, ValidatorSetType as _},
 };
 use serde::{Deserialize, Serialize};
 
@@ -50,6 +52,20 @@ impl<T: std::fmt::Debug> std::fmt::Debug for QuorumCertificate<T> {
             .field("sigs", &self.signatures)
             .finish_non_exhaustive()
     }
+}
+
+pub enum QCConditionUnmet<SCT: SignatureCollection> {
+    // failed creating signature collection
+    SignatureCollectionError(
+        monad_validator::signature_collection::SignatureCollectionError<
+            SCT::NodeIdPubKey,
+            SCT::SignatureType,
+        >,
+    ),
+    // voters not accounting for >2/3 total stakes
+    InsufficientVotes,
+    // duplicate voter
+    ValidatorSetError(monad_validator::validator_set::ValidatorSetError<SCT::NodeIdPubKey>),
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -99,6 +115,33 @@ impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
             info: vote,
             signatures: sigs,
         }
+    }
+
+    #[expect(unused)]
+    pub fn try_form(
+        vote: Vote,
+        sigs: Vec<(NodeId<SCT::NodeIdPubKey>, SCT::SignatureType)>,
+        validator_mapping: &ValidatorMapping<
+            SCT::NodeIdPubKey,
+            SignatureCollectionKeyPairType<SCT>,
+        >,
+        validator_set: &ValidatorSet<SCT::NodeIdPubKey>,
+    ) -> Result<Self, QCConditionUnmet<SCT>> {
+        let voters = sigs.iter().map(|(node_id, _)| *node_id).collect::<Vec<_>>();
+        let has_majority_votes = validator_set
+            .has_super_majority_votes(&voters)
+            .map_err(QCConditionUnmet::ValidatorSetError)?;
+
+        if !has_majority_votes {
+            return Err(QCConditionUnmet::InsufficientVotes);
+        }
+
+        let msg = alloy_rlp::encode(vote);
+        let sigcol =
+            SCT::new::<monad_crypto::signing_domain::Vote>(sigs, validator_mapping, msg.as_ref())
+                .map_err(QCConditionUnmet::SignatureCollectionError)?;
+
+        Ok(Self::new(vote, sigcol))
     }
 
     /// returns a committable block_id if the commit rule passes

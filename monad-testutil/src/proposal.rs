@@ -21,6 +21,7 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::ConsensusBlockHeader,
+    no_endorsement::FreshProposalCertificate,
     payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
     quorum_certificate::QuorumCertificate,
     timeout::{HighExtend, HighTipRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
@@ -111,6 +112,7 @@ where
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     >(
         &mut self,
+        fpc: Option<FreshProposalCertificate<SCT>>,
         keys: &[ST::KeyPairType],
         certkeys: &[SignatureCollectionKeyPairType<SCT>],
         epoch_manager: &EpochManager,
@@ -131,11 +133,18 @@ where
                 &self.high_qc_block_header,
             )
         } else {
-            // entering new round from qc
-            self.round += Round(1);
-            self.epoch = epoch_manager.get_epoch(self.round).expect("epoch exists");
             (&self.qc, self.qc_seq_num, &self.qc_block_header)
         };
+
+        if self.last_tc.is_some() && fpc.is_some() {
+            // Entering new round with TC and FPC (fresh proposal)
+            self.round += Round(1);
+        } else if self.last_tc.is_none() {
+            // Entering new round with QC
+            self.round += Round(1);
+        }
+        self.epoch = epoch_manager.get_epoch(self.round).expect("epoch exists");
+
         self.timestamp += 1;
 
         let (leader_key, leader_certkey) = keys
@@ -213,11 +222,7 @@ where
         let proposal = ProposalMessage {
             proposal_epoch: self.epoch,
             proposal_round: self.round,
-            tip: ConsensusTip::new(
-                leader_key,
-                block_header,
-                None, // FIXME
-            ),
+            tip: ConsensusTip::new(leader_key, block_header, fpc),
             block_body,
             last_round_tc: self.last_tc.clone(),
         };
@@ -337,5 +342,9 @@ where
             SCT::new::<signing_domain::Vote>(sigs, validator_mapping, msg.as_ref()).unwrap();
 
         QuorumCertificate::new(vote, sigcol)
+    }
+
+    pub fn set_last_tc(&mut self, tc: TimeoutCertificate<ST, SCT, EPT>) {
+        self.last_tc = Some(tc);
     }
 }

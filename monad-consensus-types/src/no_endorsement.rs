@@ -14,8 +14,14 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
-use monad_types::{Epoch, Round};
-use monad_validator::signature_collection::SignatureCollection;
+use monad_crypto::signing_domain;
+use monad_types::{Epoch, NodeId, Round};
+use monad_validator::{
+    signature_collection::{
+        SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
+    },
+    validator_mapping::ValidatorMapping,
+};
 use serde::Serialize;
 
 use crate::timeout::NoTipCertificate;
@@ -36,6 +42,29 @@ pub struct NoEndorsementCertificate<SCT: SignatureCollection> {
     pub msg: NoEndorsement,
 
     pub signatures: SCT,
+}
+
+impl<SCT: SignatureCollection> NoEndorsementCertificate<SCT> {
+    pub fn new(msg: NoEndorsement, signatures: SCT) -> Self {
+        Self { msg, signatures }
+    }
+
+    pub fn from_nes(
+        ne: NoEndorsement,
+        sigs: impl Iterator<Item = (NodeId<SCT::NodeIdPubKey>, SCT::SignatureType)>,
+        validator_mapping: &ValidatorMapping<
+            SCT::NodeIdPubKey,
+            SignatureCollectionKeyPairType<SCT>,
+        >,
+    ) -> Result<Self, SignatureCollectionError<SCT::NodeIdPubKey, SCT::SignatureType>> {
+        let no_endorsement_enc = alloy_rlp::encode(&ne);
+        SCT::new::<signing_domain::NoEndorsement>(
+            sigs,
+            validator_mapping,
+            no_endorsement_enc.as_ref(),
+        )
+        .map(|sigcol| Self::new(ne, sigcol))
+    }
 }
 
 #[derive(PartialEq, Eq, Clone, Debug, Serialize)]
