@@ -41,6 +41,8 @@ pub mod bindings {
 
 pub use bindings::monad_executor_pool_config as PoolConfig;
 
+use crate::bindings::{add_override_address, monad_state_override};
+
 #[derive(Debug)]
 pub struct EthCallExecutor {
     eth_call_executor: *mut bindings::monad_executor,
@@ -169,6 +171,24 @@ pub struct RevertCallResult {
     pub trace: Vec<u8>,
 }
 
+#[derive(Clone, Debug)]
+pub enum SimulateResult {
+    Success(SuccessSimulateResult),
+    Failure(FailureSimulateResult),
+}
+
+#[derive(Clone, Debug)]
+pub struct SuccessSimulateResult {
+    pub output_data: Vec<u8>,
+}
+
+#[derive(Clone, Debug)]
+pub struct FailureSimulateResult {
+    pub error_code: EthCallResult,
+    pub message: String,
+    pub data: Option<String>,
+}
+
 pub struct SenderContext {
     sender: Sender<*mut monad_executor_result>,
 }
@@ -189,37 +209,9 @@ pub unsafe extern "C" fn eth_call_submit_callback(
 
 pub type StateOverrideSet = HashMap<Address, StateOverrideObject>;
 
-pub async fn eth_call(
-    chain_id: u64,
-    transaction: TxEnvelope,
-    block_header: Header,
-    sender: Address,
-    block_number: u64,
-    block_id: Option<[u8; 32]>,
-    eth_call_executor: Arc<EthCallExecutor>,
-    state_override_set: &StateOverrideSet,
-    tracer: MonadTracer,
-    gas_specified: bool,
-) -> CallResult {
-    // upper bound gas limit of transaction to block gas limit to prevent abuse of eth_call
-    if transaction.gas_limit() > block_header.gas_limit {
-        return CallResult::Failure(FailureCallResult {
-            error_code: EthCallResult::OtherError,
-            message: "gas limit too high".into(),
-            data: None,
-        });
-    }
-
-    let mut rlp_encoded_tx = vec![];
-    transaction.encode_2718(&mut rlp_encoded_tx);
-
-    let mut rlp_encoded_block_header = vec![];
-    block_header.encode(&mut rlp_encoded_block_header);
-
-    let mut rlp_encoded_sender = vec![];
-    sender.encode(&mut rlp_encoded_sender);
-
+unsafe fn bind_state_override(state_override_set: &StateOverrideSet) -> *mut monad_state_override {
     let override_ctx = unsafe { bindings::monad_state_override_create() };
+
     for (addr, obj) in state_override_set {
         let addr: &[u8] = addr.as_slice();
 
@@ -289,6 +281,41 @@ pub async fn eth_call(
             }
         }
     }
+
+    override_ctx
+}
+
+pub async fn eth_call(
+    chain_id: u64,
+    transaction: TxEnvelope,
+    block_header: Header,
+    sender: Address,
+    block_number: u64,
+    block_id: Option<[u8; 32]>,
+    eth_call_executor: Arc<EthCallExecutor>,
+    state_override_set: &StateOverrideSet,
+    tracer: MonadTracer,
+    gas_specified: bool,
+) -> CallResult {
+    // upper bound gas limit of transaction to block gas limit to prevent abuse of eth_call
+    if transaction.gas_limit() > block_header.gas_limit {
+        return CallResult::Failure(FailureCallResult {
+            error_code: EthCallResult::OtherError,
+            message: "gas limit too high".into(),
+            data: None,
+        });
+    }
+
+    let mut rlp_encoded_tx = vec![];
+    transaction.encode_2718(&mut rlp_encoded_tx);
+
+    let mut rlp_encoded_block_header = vec![];
+    block_header.encode(&mut rlp_encoded_block_header);
+
+    let mut rlp_encoded_sender = vec![];
+    sender.encode(&mut rlp_encoded_sender);
+
+    let override_ctx = unsafe { bind_state_override(state_override_set) };
 
     let chain_config = match chain_id {
         ETHEREUM_MAINNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_ETHEREUM_MAINNET,
@@ -583,6 +610,49 @@ pub async fn eth_trace_block_or_transaction(
 
         call_result
     }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<U64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time: Option<U64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gas_limit: Option<U256>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_recipient: Option<Address>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_randao: Option<B256>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_fee_per_gas: Option<U256>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob_base_fee: Option<U256>,
+}
+
+pub async fn eth_simulate_v1(
+    chain_id: u64,
+    calls: &Vec<Vec<TxEnvelope>>,
+    block_header: Header,
+    block_number: u64,
+    block_id: Option<[u8; 32]>,
+    eth_call_executor: Arc<EthCallExecutor>,
+    overrides: &[(&BlockOverride, &StateOverrideSet)],
+) -> SimulateResult {
+    let mut rlp_encoded_txns = vec![];
+    calls.encode(&mut rlp_encoded_txns);
+
+    let state_overrides: Vec<*mut monad_state_override> = overrides
+        .iter()
+        .map(|(_, state_override)| unsafe { bind_state_override(state_override) })
+        .collect();
+
+    SimulateResult::Failure(FailureSimulateResult {
+        error_code: EthCallResult::OtherError,
+        message: "not implemented".into(),
+        data: None,
+    })
 }
 
 #[cfg(test)]
