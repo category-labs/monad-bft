@@ -15,16 +15,17 @@
 
 #![allow(async_fn_in_trait)]
 
-use monad_archive::{
-    cli::set_source_and_sink_metrics,
-    prelude::*,
-    workers::{
-        bft_archive_worker::bft_block_archive_worker,
-        block_archive_worker::{archive_worker, ArchiveWorkerOpts},
-        file_checkpointer::file_checkpoint_worker,
-        generic_folder_archiver::recursive_dir_archiver,
-    },
-};
+use monad_archive::{cli::set_source_and_sink_metrics, prelude::*};
+
+mod bft_archive_worker;
+mod block_archive_worker;
+mod file_checkpointer;
+mod generic_folder_archiver;
+
+use bft_archive_worker::bft_block_archive_worker;
+use block_archive_worker::{archive_worker, ArchiveWorkerOpts};
+use file_checkpointer::file_checkpoint_worker;
+use generic_folder_archiver::recursive_dir_archiver;
 use tokio::task::JoinHandle;
 use tracing::Level;
 

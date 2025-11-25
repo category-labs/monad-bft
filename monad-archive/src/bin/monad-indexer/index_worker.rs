@@ -14,8 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use alloy_primitives::hex::ToHexExt;
-
-use crate::{model::logs_index::LogsIndexArchiver, prelude::*};
+use monad_archive::{model::logs_index::LogsIndexArchiver, prelude::*};
 
 /// Main worker that indexes transaction data from blocks into a searchable format.
 /// Continuously polls for new blocks and indexes their transactions.
@@ -285,10 +284,10 @@ mod tests {
     use alloy_primitives::{Bloom, Log, B256, U256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
+    use monad_archive::kvstore::memory::MemoryStorage;
     use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 
     use super::*;
-    use crate::kvstore::memory::MemoryStorage;
 
     const NO_FALLBACK: Option<BlockDataReaderErased> = Option::<BlockDataReaderErased>::None;
 

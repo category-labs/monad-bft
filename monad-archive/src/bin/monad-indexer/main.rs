@@ -17,8 +17,11 @@ use clap::Parser;
 use eyre::bail;
 use monad_archive::{
     cli::set_source_and_sink_metrics, model::logs_index::LogsIndexArchiver, prelude::*,
-    workers::index_worker::index_worker,
 };
+
+mod index_worker;
+
+use index_worker::index_worker;
 use tracing::{info, Level};
 
 use crate::{migrate_capped::migrate_to_uncapped, migrate_logs::run_migrate_logs};

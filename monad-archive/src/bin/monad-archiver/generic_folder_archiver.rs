@@ -16,8 +16,7 @@
 use std::{collections::VecDeque, ffi::OsStr, fs::Metadata, path::Path, time::SystemTime};
 
 use futures::stream;
-
-use crate::prelude::*;
+use monad_archive::prelude::*;
 
 // Number of concurrent uploads
 const UPLOAD_CONCURRENCY: usize = 10;
@@ -390,11 +389,11 @@ fn gc_dir_state(dir_states: &mut HashMap<PathBuf, DirCacheEntry>, ttl: Duration)
 
 #[cfg(test)]
 mod tests {
+    use monad_archive::kvstore::memory::MemoryStorage;
     use tempfile::tempdir;
     use tokio::fs;
 
     use super::*;
-    use crate::kvstore::memory::MemoryStorage;
 
     #[tokio::test]
     async fn test_archive_dir_uploads_new_files() {

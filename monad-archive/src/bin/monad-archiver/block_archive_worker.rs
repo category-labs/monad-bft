@@ -20,10 +20,9 @@ use std::{
 
 use eyre::Result;
 use futures::{join, StreamExt, TryStreamExt};
+use monad_archive::prelude::*;
 use tokio::time::sleep;
 use tracing::{error, info, warn};
-
-use crate::prelude::*;
 
 pub struct ArchiveWorkerOpts {
     /// Maximum number of blocks to process in one iteration
@@ -313,10 +312,10 @@ mod tests {
     use alloy_primitives::{Bloom, Log, B256, U256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
+    use monad_archive::{kvstore::memory::MemoryStorage, metrics, test_utils::mock_block};
     use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 
     use super::*;
-    use crate::{kvstore::memory::MemoryStorage, metrics, test_utils::mock_block};
 
     fn mock_tx() -> TxEnvelopeWithSender {
         let tx = TxEip1559 {

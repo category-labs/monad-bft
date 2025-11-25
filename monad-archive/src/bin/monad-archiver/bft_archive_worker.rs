@@ -20,8 +20,7 @@ use std::{
 };
 
 use futures::stream::{self, StreamExt};
-
-use crate::prelude::*;
+use monad_archive::prelude::*;
 
 const BFT_BLOCK_PREFIX: &str = "bft_block/";
 const BFT_BLOCK_HEADER_EXTENSION: &str = ".header";
@@ -255,11 +254,11 @@ async fn s3_exists_key(store: &impl KVStore, key: &str) -> Result<bool> {
 
 #[cfg(test)]
 mod tests {
+    use monad_archive::kvstore::memory::MemoryStorage;
     use tempfile::tempdir;
     use tokio::fs;
 
     use super::*;
-    use crate::kvstore::memory::MemoryStorage;
 
     #[tokio::test]
     async fn test_archive_bft_blocks_uploads_new_files() {

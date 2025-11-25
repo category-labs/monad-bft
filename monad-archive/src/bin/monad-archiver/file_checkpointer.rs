@@ -15,7 +15,7 @@
 
 use std::path::PathBuf;
 
-use crate::prelude::*;
+use monad_archive::prelude::*;
 
 /// Worker that periodically saves files to durable storage.
 /// Reads files from disk and uploads them with timestamps.
@@ -63,10 +63,10 @@ fn get_timestamp() -> String {
 mod tests {
     use std::io::Write;
 
+    use monad_archive::kvstore::memory::MemoryStorage;
     use tempfile::NamedTempFile;
 
     use super::*;
-    use crate::kvstore::memory::MemoryStorage;
 
     #[tokio::test]
     async fn test_read_and_upload() -> Result<()> {
