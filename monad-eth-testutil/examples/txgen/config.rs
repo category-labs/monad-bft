@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::str::FromStr;
+use std::{collections::HashSet, str::FromStr};
 
 use eyre::bail;
 use serde::{Deserialize, Serialize};
@@ -349,23 +349,14 @@ pub struct WorkloadGroup {
     /// mutated txn will have one of its fields modified, but there may be more.
     pub mutation_percentage: f64,
 
-    // Run an rpc request generator that acts as a block indexer
-    pub indexer: bool,
-
-    /// Spam rpc and websocket with wallet workflow requests and compare the responses
-    pub spam_rpc_ws: bool,
-
-    /// Compare block headers returned from rpc and websocket
-    pub compare_rpc_ws: bool,
-
-    /// Number of concurrent websocket connections to use for spamming rpc and websocket
-    pub num_ws_connections: usize,
-
     /// Percentage of transactions the workload should drop at random before sending (0-100).
     pub drop_percentage: f64,
 
     /// Percentage of EIP-1559 transactions to convert to legacy transactions.
     pub convert_eip1559_to_legacy: f64,
+
+    /// RPC request generator configuration
+    pub rpc_generator: RpcRequestGeneratorConfig,
 }
 
 impl Default for WorkloadGroup {
@@ -375,12 +366,9 @@ impl Default for WorkloadGroup {
             name: "default".to_string(),
             traffic_gens: vec![],
             mutation_percentage: 0.0,
-            indexer: false,
-            spam_rpc_ws: false,
-            compare_rpc_ws: false,
-            num_ws_connections: 4,
             drop_percentage: 0.0,
             convert_eip1559_to_legacy: 0.0,
+            rpc_generator: RpcRequestGeneratorConfig::default(),
         }
     }
 }
@@ -435,6 +423,49 @@ impl Default for TrafficGen {
             sender_group_size: None,
             tx_per_sender: None,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum RpcWorkflowMode {
+    /// Block indexer workflow
+    Indexer,
+    /// Spam RPC and WebSocket with wallet workflow requests and compare responses
+    SpamRpcWs,
+    /// Compare block headers returned from RPC and WebSocket
+    CompareRpcWs,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct RpcRequestGeneratorConfig {
+    pub enabled_workflows: HashSet<RpcWorkflowMode>,
+
+    /// Number of requests to index per block
+    pub requests_per_block: usize,
+
+    /// Number of concurrent websocket connections to use for spamming rpc and websocket
+    pub num_ws_connections: usize,
+}
+
+impl Default for RpcRequestGeneratorConfig {
+    fn default() -> Self {
+        Self {
+            enabled_workflows: HashSet::new(),
+            requests_per_block: 10,
+            num_ws_connections: 4,
+        }
+    }
+}
+
+impl RpcRequestGeneratorConfig {
+    pub fn is_enabled(&self) -> bool {
+        !self.enabled_workflows.is_empty()
+    }
+
+    pub fn has_workflow(&self, mode: RpcWorkflowMode) -> bool {
+        self.enabled_workflows.contains(&mode)
     }
 }
 

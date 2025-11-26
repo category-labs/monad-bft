@@ -29,7 +29,7 @@ use futures::{future::try_join_all, stream::FuturesUnordered, FutureExt};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    config::{Config, DeployedContract, TrafficGen},
+    config::{Config, DeployedContract, RpcWorkflowMode, TrafficGen},
     generators::make_generator,
     prelude::{
         rpc_request_gen::{RpcRequestGenerator, RpcWsCompare},
@@ -116,11 +116,14 @@ async fn run_workload_group(
     // Shared tasks for all workers in the workload group
     let mut tasks = FuturesUnordered::new();
 
-    if workload_group.indexer {
+    let rpc_config = &workload_group.rpc_generator;
+
+    if rpc_config.has_workflow(RpcWorkflowMode::Indexer) {
         let indexer = RpcRequestGenerator::new(
             read_client.clone(),
             config.ws_url().expect("WS URL is not valid"),
-            workload_group.num_ws_connections,
+            rpc_config.requests_per_block,
+            rpc_config.num_ws_connections,
         );
         let shutdown_clone = Arc::clone(&shutdown);
         tasks.push(
@@ -132,11 +135,12 @@ async fn run_workload_group(
         );
     }
 
-    if workload_group.spam_rpc_ws {
+    if rpc_config.has_workflow(RpcWorkflowMode::SpamRpcWs) {
         let spammer = RpcRequestGenerator::new(
             read_client.clone(),
             config.ws_url().expect("WS URL is not valid"),
-            workload_group.num_ws_connections,
+            rpc_config.requests_per_block,
+            rpc_config.num_ws_connections,
         );
         let shutdown_clone = Arc::clone(&shutdown);
         tasks.push(
@@ -148,7 +152,7 @@ async fn run_workload_group(
         );
     }
 
-    if workload_group.compare_rpc_ws {
+    if rpc_config.has_workflow(RpcWorkflowMode::CompareRpcWs) {
         let compare_rpc_ws = RpcWsCompare::new(
             read_client.clone(),
             config.ws_url().expect("WS URL is not valid"),

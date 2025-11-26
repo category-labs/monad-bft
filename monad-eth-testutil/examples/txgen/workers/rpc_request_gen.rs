@@ -126,15 +126,22 @@ struct BlockIndexError {
 pub struct RpcRequestGenerator {
     rpc_client: ReqwestClient,
     ws_url: Url,
+    requests_per_block: usize,
     // number of concurrent websocket connections
     num_connections: usize,
 }
 
 impl RpcRequestGenerator {
-    pub fn new(rpc_client: ReqwestClient, ws_url: Url, num_connections: usize) -> Self {
+    pub fn new(
+        rpc_client: ReqwestClient,
+        ws_url: Url,
+        requests_per_block: usize,
+        num_connections: usize,
+    ) -> Self {
         Self {
             rpc_client,
             ws_url,
+            requests_per_block,
             num_connections,
         }
     }
@@ -340,6 +347,7 @@ impl RpcRequestGenerator {
     async fn index_block(
         client: ReqwestClient,
         block_number: BlockNumber,
+        requests_per_block: usize,
         result_sender: tokio::sync::mpsc::Sender<
             Result<(BlockNumber, Vec<Address>), BlockIndexError>,
         >,
@@ -351,8 +359,6 @@ impl RpcRequestGenerator {
                 return;
             }
         };
-
-        let requests_per_block = 10;
 
         let uniq_addrs = if !block.transactions.is_empty() {
             // generate requests for block receipts and traces
@@ -377,7 +383,7 @@ impl RpcRequestGenerator {
                             }
                         }
                     }
-                    Ok(receipts.pop().unwrap())
+                    receipts.pop().ok_or(())
                 },
                 async {
                     let mut futures = (0..requests_per_block)
@@ -399,7 +405,7 @@ impl RpcRequestGenerator {
                             }
                         }
                     }
-                    Ok(logs.pop().unwrap())
+                    logs.pop().ok_or(())
                 },
                 async {
                     let mut futures = (0..requests_per_block)
@@ -427,7 +433,7 @@ impl RpcRequestGenerator {
                             }
                         }
                     }
-                    Ok(traces.pop().unwrap())
+                    traces.pop().ok_or(())
                 },
                 async {
                     let mut futures = (0..requests_per_block)
@@ -455,7 +461,7 @@ impl RpcRequestGenerator {
                             }
                         }
                     }
-                    Ok(traces.pop().unwrap())
+                    traces.pop().ok_or(())
                 },
             );
             let receipts = match receipts_results {
@@ -495,17 +501,20 @@ impl RpcRequestGenerator {
                 ?block_number,
                 ?duration,
                 ?num_addr,
-                "eth_getBalance, eth_call and debug_traceTransaction"
+                "eth_getBalance and debug_traceTransaction"
             );
             addrs.into_iter().unique().collect()
         } else {
             Vec::new()
         };
-        
-        assert!(result_sender
+
+        if result_sender
             .send(Ok((block_number, uniq_addrs)))
             .await
-            .is_ok());
+            .is_err()
+        {
+            warn!(?block_number, "Failed to send block index result");
+        }
     }
 
     // Call rpc and rpc on a websocket connection using common wallet workflow requests.
@@ -751,7 +760,7 @@ impl RpcRequestGenerator {
                     debug!(from=index_from, to=index_to, "index range");
 
                     for block_number in index_from..=index_to {
-                        RpcRequestGenerator::index_block(self.rpc_client.clone(), block_number, index_done_sender.clone()).await;
+                        RpcRequestGenerator::index_block(self.rpc_client.clone(), block_number, self.requests_per_block, index_done_sender.clone()).await;
                     }
                 }
 
@@ -981,12 +990,24 @@ impl TipRefresher {
     }
 
     async fn run(mut self) {
-        self.tip = self
-            .client
-            .request_noparams::<U64>("eth_blockNumber")
-            .map_resp(|res| res.to())
-            .await
-            .unwrap();
+        loop {
+            let resp = self
+                .client
+                .request_noparams::<U64>("eth_blockNumber")
+                .map_resp(|res| res.to())
+                .await;
+
+            match resp {
+                Ok(tip) => {
+                    self.tip = tip;
+                    break;
+                }
+                Err(_) => {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+        }
+
         loop {
             let resp = self
                 .client
