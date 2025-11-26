@@ -1,5 +1,6 @@
 ---
 source: monad-peer-discovery/src/lib.rs
+assertion_line: 1131
 expression: "hex::encode(&encoded)"
 ---
-"d7840a00002acfc480822328c401822329c40282232a8064"
+"dc840a00002ad4c480822328c401822329c40282232ac40382232b8064"

@@ -13,6 +13,7 @@ monad-bls = { workspace = true, optional = true }
 monad-consensus-types = { workspace = true }
 monad-crypto = { workspace = true }
 monad-eth-types = { workspace = true }
+monad-executor-glue = { workspace = true }
 monad-secp = { workspace = true, optional = true }
 monad-types = { workspace = true }
 

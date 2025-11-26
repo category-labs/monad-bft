@@ -5651,6 +5651,7 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-types",
+ "monad-executor-glue",
  "monad-secp",
  "monad-types",
  "serde",

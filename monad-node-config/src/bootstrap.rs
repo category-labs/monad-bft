@@ -13,9 +13,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::net::SocketAddrV4;
+
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_executor_glue::PeerEntry;
 use monad_types::{deserialize_pubkey, serialize_pubkey};
 use serde::{Deserialize, Serialize};
 
@@ -43,4 +46,38 @@ pub struct NodeBootstrapPeerConfig<ST: CertificateSignatureRecoverable> {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_port: Option<u16>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_tcp_port: Option<u16>,
+}
+
+impl<ST, T> From<T> for NodeBootstrapPeerConfig<ST>
+where
+    ST: CertificateSignatureRecoverable,
+    T: AsRef<PeerEntry<ST>>,
+{
+    fn from(peer: T) -> Self {
+        let peer = peer.as_ref();
+        Self {
+            address: peer.addr.to_string(),
+            secp256k1_pubkey: peer.pubkey,
+            name_record_sig: peer.signature,
+            record_seq_num: peer.record_seq_num,
+            auth_port: peer.auth_port,
+            auth_tcp_port: peer.auth_tcp_port,
+        }
+    }
+}
+
+impl<ST: CertificateSignatureRecoverable> NodeBootstrapPeerConfig<ST> {
+    pub fn with_resolved_addr(&self, addr: SocketAddrV4) -> PeerEntry<ST> {
+        PeerEntry {
+            pubkey: self.secp256k1_pubkey,
+            addr,
+            signature: self.name_record_sig,
+            record_seq_num: self.record_seq_num,
+            auth_port: self.auth_port,
+            auth_tcp_port: self.auth_tcp_port,
+        }
+    }
 }
