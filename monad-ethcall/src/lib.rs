@@ -640,13 +640,42 @@ pub async fn eth_simulate_v1(
     eth_call_executor: Arc<EthCallExecutor>,
     overrides: &[(&BlockOverride, &StateOverrideSet)],
 ) -> SimulateResult {
+    assert_eq!(calls.len(), overrides.len());
+
     let mut rlp_encoded_txns = vec![];
     calls.encode(&mut rlp_encoded_txns);
+
+    let chain_config = match chain_id {
+        ETHEREUM_MAINNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_ETHEREUM_MAINNET,
+        MONAD_DEVNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_DEVNET,
+        MONAD_TESTNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_TESTNET,
+        MONAD_MAINNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_MAINNET,
+        _ => {
+            return SimulateResult::Failure(FailureSimulateResult {
+                error_code: EthCallResult::OtherError,
+                message: "unsupported chain id".to_string(),
+                data: Some(chain_id.to_string()),
+            });
+        }
+    };
 
     let state_overrides: Vec<*mut monad_state_override> = overrides
         .iter()
         .map(|(_, state_override)| unsafe { bind_state_override(state_override) })
         .collect();
+
+    unsafe {
+        bindings::monad_executor_eth_simulate_submit(
+            eth_call_executor.eth_call_executor,
+            chain_config,
+            calls.len(),
+            rlp_encoded_txns.as_ptr(),
+            rlp_encoded_txns.len(),
+            *state_overrides.as_ptr(),
+            Some(eth_call_submit_callback),
+            std::ptr::null_mut(),
+        );
+    }
 
     SimulateResult::Failure(FailureSimulateResult {
         error_code: EthCallResult::OtherError,
