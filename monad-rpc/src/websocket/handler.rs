@@ -674,7 +674,7 @@ mod tests {
             EventServer::start_for_testing_with_delay(snapshot, Duration::from_secs(1));
 
         let app_state = MonadRpcResources {
-            txpool_bridge_client: EthTxPoolBridgeClient::for_testing(),
+            txpool_bridge_client: Some(EthTxPoolBridgeClient::for_testing()),
             triedb_reader: None,
             eth_call_executor: None,
             eth_call_executor_fibers: 64,

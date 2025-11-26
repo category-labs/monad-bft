@@ -21,8 +21,9 @@ use clap::Parser;
 #[command(name = "monad-rpc", about, long_about = None, version = monad_version::version!())]
 pub struct Cli {
     /// Set the mempool ipc path
+    /// If not set, the tx pool will be disabled.
     #[arg(long)]
-    pub ipc_path: PathBuf,
+    pub ipc_path: Option<PathBuf>,
 
     /// Set the monad triedb path
     #[arg(long)]

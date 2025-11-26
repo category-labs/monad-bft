@@ -411,9 +411,12 @@ async fn eth_sendRawTransaction(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
+    let Some(txpool_bridge_client) = &app_state.txpool_bridge_client else {
+        return Err(JsonRpcError::method_not_supported());
+    };
     let params = serde_json::from_str(params.get()).invalid_params()?;
     monad_eth_sendRawTransaction(
-        &app_state.txpool_bridge_client,
+        txpool_bridge_client,
         params,
         app_state.chain_id,
         app_state.allow_unprotected_txs,
@@ -428,12 +431,16 @@ async fn eth_sendRawTransactionSync(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
+    let Some(txpool_bridge_client) = &app_state.txpool_bridge_client else {
+        return Err(JsonRpcError::method_not_supported());
+    };
+
     // Require both chain_state and txpool_bridge_client
     let chain_state = app_state.chain_state.as_ref().method_not_supported()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
 
     monad_eth_sendRawTransactionSync(
-        &app_state.txpool_bridge_client,
+        txpool_bridge_client,
         chain_state,
         params,
         app_state.chain_id,
@@ -841,8 +848,11 @@ async fn txpool_statusByHash(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
+    let Some(txpool_bridge_client) = &app_state.txpool_bridge_client else {
+        return Err(JsonRpcError::method_not_supported());
+    };
     let params = serde_json::from_str(params.get()).invalid_params()?;
-    monad_txpool_statusByHash(&app_state.txpool_bridge_client, params)
+    monad_txpool_statusByHash(txpool_bridge_client, params)
         .await
         .map(serialize_result)?
 }
@@ -853,8 +863,11 @@ async fn txpool_statusByAddress(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
+    let Some(txpool_bridge_client) = &app_state.txpool_bridge_client else {
+        return Err(JsonRpcError::method_not_supported());
+    };
     let params = serde_json::from_str(params.get()).invalid_params()?;
-    monad_txpool_statusByAddress(&app_state.txpool_bridge_client, params)
+    monad_txpool_statusByAddress(txpool_bridge_client, params)
         .await
         .map(serialize_result)?
 }
