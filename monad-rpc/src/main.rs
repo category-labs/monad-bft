@@ -66,6 +66,13 @@ pub static malloc_conf: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0
 async fn main() -> std::io::Result<()> {
     let args = Cli::parse();
 
+    if args.disable_tx_pool {
+        if args.ipc_path.is_some() {
+            panic!("Cannot use --disable-tx-pool with --ipc-path");
+        }
+        warn!("Running without tx pool. This means that the node will not be able to send transactions.");
+    }
+
     let node_config: MonadNodeConfig = toml::from_str(&std::fs::read_to_string(&args.node_config)?)
         .expect("node toml parse error");
 
@@ -130,29 +137,36 @@ async fn main() -> std::io::Result<()> {
 
     MONAD_RPC_VERSION.map(|v| info!("starting monad-rpc with version {}", v));
 
-    // Wait for bft to be in a ready state before starting the RPC server.
-    // Bft will bind to the ipc socket after state syncing.
-    let ipc_path = args.ipc_path;
+    let (txpool_bridge_client, txpool_bridge_handle) = if args.disable_tx_pool {
+        (None, None)
+    } else {
+        // Wait for bft to be in a ready state before starting the RPC server.
+        // Bft will bind to the ipc socket after state syncing.
+        let ipc_path = args
+            .ipc_path
+            .expect("ipc path is required when tx pool is not disabled");
 
-    let mut print_message_timer = tokio::time::interval(Duration::from_secs(60));
-    let mut retry_timer = tokio::time::interval(Duration::from_secs(1));
-    let (txpool_bridge_client, _txpool_bridge_handle) = loop {
-        tokio::select! {
-            _ = print_message_timer.tick() => {
-                info!("Waiting for statesync to complete");
-            }
-            _= retry_timer.tick() => {
-                match EthTxPoolBridge::start(&ipc_path).await  {
-                    Ok((client, handle)) => {
-                        info!("Statesync complete, starting RPC server");
-                        break (client, handle)
-                    },
-                    Err(e) => {
-                        debug!("caught error: {e}, retrying");
-                    },
+        let mut print_message_timer = tokio::time::interval(Duration::from_secs(60));
+        let mut retry_timer = tokio::time::interval(Duration::from_secs(1));
+        let (txpool_bridge_client, _txpool_bridge_handle) = loop {
+            tokio::select! {
+                _ = print_message_timer.tick() => {
+                    info!("Waiting for statesync to complete");
                 }
-            },
-        }
+                _= retry_timer.tick() => {
+                    match EthTxPoolBridge::start(&ipc_path).await  {
+                        Ok((client, handle)) => {
+                            info!("Statesync complete, starting RPC server");
+                            break (client, handle)
+                        },
+                        Err(e) => {
+                            debug!("caught error: {e}, retrying");
+                        },
+                    }
+                },
+            }
+        };
+        (Some(txpool_bridge_client), Some(_txpool_bridge_handle))
     };
 
     let triedb_env = args.triedb_path.clone().as_deref().map(|path| {
@@ -473,7 +487,7 @@ mod tests {
     async fn init_server(
     ) -> impl Service<Request, Response = ServiceResponse<impl MessageBody>, Error = Error> {
         let app_state = MonadRpcResources {
-            txpool_bridge_client: EthTxPoolBridgeClient::for_testing(),
+            txpool_bridge_client: Some(EthTxPoolBridgeClient::for_testing()),
             triedb_reader: None,
             eth_call_executor: None,
             eth_call_executor_fibers: 64,

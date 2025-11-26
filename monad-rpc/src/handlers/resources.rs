@@ -34,7 +34,7 @@ use crate::{
 
 #[derive(Clone)]
 pub struct MonadRpcResources {
-    pub txpool_bridge_client: EthTxPoolBridgeClient,
+    pub txpool_bridge_client: Option<EthTxPoolBridgeClient>,
     pub triedb_reader: Option<TriedbEnv>,
     pub eth_call_executor: Option<Arc<EthCallExecutor>>,
     pub eth_call_executor_fibers: usize,
@@ -62,7 +62,7 @@ pub struct MonadRpcResources {
 
 impl MonadRpcResources {
     pub fn new(
-        txpool_bridge_client: EthTxPoolBridgeClient,
+        txpool_bridge_client: Option<EthTxPoolBridgeClient>,
         triedb_reader: Option<TriedbEnv>,
         eth_call_executor: Option<Arc<EthCallExecutor>>,
         eth_call_executor_fibers: usize,

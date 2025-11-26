@@ -22,7 +22,12 @@ use clap::Parser;
 pub struct Cli {
     /// Set the mempool ipc path
     #[arg(long)]
-    pub ipc_path: PathBuf,
+    pub ipc_path: Option<PathBuf>,
+
+    /// Disable the tx pool
+    /// Cannot be used with --ipc-path
+    #[arg(long)]
+    pub disable_tx_pool: bool,
 
     /// Set the monad triedb path
     #[arg(long)]
