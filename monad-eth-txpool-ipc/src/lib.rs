@@ -28,12 +28,9 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tracing::warn;
 
+const SOCKET_SEND_TIMEOUT_MS: u64 = 1_000;
+
 pub struct EthTxPoolIpcStream {
-    // It's really ugly to emulate Sink for a Framed<UnixStream, ...> in a sync
-    // context, so the next best option is to have the stream live on a tokio
-    // thread for now ...
-    // TODO(andr-dev): Remove tokio_util and write a custom sync framer/codec
-    // implementation simlar to LengthDelimnitedCodec
     tx: mpsc::Sender<Vec<EthTxPoolEvent>>,
     rx: ReceiverStream<TxEnvelope>,
 
@@ -100,7 +97,20 @@ impl EthTxPoolIpcStream {
 
                     let events = bincode::serialize(&events).expect("txpool events are serializable");
 
-                    stream.send(events.into()).await?;
+                    match tokio::time::timeout(
+                        std::time::Duration::from_millis(SOCKET_SEND_TIMEOUT_MS),
+                        stream.send(events.into())
+                    ).await {
+                        Ok(Ok(())) => continue,
+                        Ok(Err(err)) => {
+                            warn!(?err, "EthTxPoolIpcStream socket error, disconnecting");
+                            break;
+                        },
+                        Err(elapsed) => {
+                            warn!(?elapsed, "EthTxPoolIpcStream socket timed out, disconnecting");
+                            break;
+                        },
+                    }
                 }
             }
         }
