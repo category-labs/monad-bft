@@ -16,23 +16,27 @@
 #[global_allocator]
 static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+#[allow(non_upper_case_globals)]
+#[export_name = "malloc_conf"]
+pub static malloc_conf: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:16,prof_leak:true\0";
+
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     env,
     net::{SocketAddr, SocketAddrV4},
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use byte_unit::Byte;
 use clap::{Parser, Subcommand};
 use eyre::Result;
-use futures_util::StreamExt;
+use futures_util::{FutureExt, StreamExt};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_dataplane::DataplaneBuilder;
-use monad_executor::Executor;
+use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{Message, RouterCommand};
 use monad_node_config::{fullnode_raptorcast::FullNodeRaptorCastConfig, FullNodeConfig};
 use monad_peer_discovery::{
@@ -43,10 +47,12 @@ use monad_peer_discovery::{
 use monad_raptorcast::{
     config::{RaptorCastConfig, RaptorCastConfigPrimary},
     raptorcast_secondary::SecondaryRaptorCastModeConfig,
-    RaptorCast, RaptorCastEvent, RAPTORCAST_SOCKET,
+    RaptorCast, RaptorCastEvent, AUTHENTICATED_RAPTORCAST_SOCKET, RAPTORCAST_SOCKET,
 };
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{Deserializable, Epoch, NodeId, RouterTarget, Serializable, Stake};
+use opentelemetry::metrics::MeterProvider;
+use opentelemetry_otlp::{MetricExporter, WithExportConfig};
 use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
 use tracing_subscriber::EnvFilter;
@@ -85,6 +91,15 @@ enum Commands {
             help = "node index (0-based). can be overwritten by NODE_INDEX env variable"
         )]
         index: Option<usize>,
+        #[arg(long, help = "opentelemetry otlp endpoint for metrics export")]
+        otel_endpoint: Option<String>,
+        #[arg(
+            long,
+            value_parser = parse_duration,
+            default_value = "10s",
+            help = "interval for recording metrics"
+        )]
+        metrics_interval: Duration,
     },
     #[command(
         about = "run as producer (sends and receives messages). if NODE_INDEX env variable is set, it overwrites --index"
@@ -103,6 +118,15 @@ enum Commands {
         interval: Duration,
         #[arg(long, value_parser = parse_size)]
         size: usize,
+        #[arg(long, help = "opentelemetry otlp endpoint for metrics export")]
+        otel_endpoint: Option<String>,
+        #[arg(
+            long,
+            value_parser = parse_duration,
+            default_value = "10s",
+            help = "interval for recording metrics"
+        )]
+        metrics_interval: Duration,
     },
     Generate {
         #[arg(long)]
@@ -145,6 +169,8 @@ struct ParticipantConfig {
     tcp_addr: SocketAddrV4,
     #[serde(with = "socket_addr_v4_serde")]
     udp_addr: SocketAddrV4,
+    #[serde(with = "socket_addr_v4_serde")]
+    authenticated_udp_addr: SocketAddrV4,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -274,6 +300,130 @@ fn setup_tracing() {
         .init();
 }
 
+#[derive(Default)]
+struct LatencyMetrics {
+    total_messages_received: u64,
+    total_messages_sent: u64,
+    last_latency_us: u64,
+    min_latency_us: u64,
+    max_latency_us: u64,
+    total_latency_sum_us: u64,
+}
+
+impl LatencyMetrics {
+    fn new() -> Self {
+        Self {
+            total_messages_received: 0,
+            total_messages_sent: 0,
+            last_latency_us: 0,
+            min_latency_us: u64::MAX,
+            max_latency_us: 0,
+            total_latency_sum_us: 0,
+        }
+    }
+
+    fn record_received(&mut self, latency_ns: u64) {
+        let latency_us = latency_ns / 1_000;
+        self.total_messages_received += 1;
+        self.last_latency_us = latency_us;
+        self.min_latency_us = self.min_latency_us.min(latency_us);
+        self.max_latency_us = self.max_latency_us.max(latency_us);
+        self.total_latency_sum_us += latency_us;
+    }
+
+    fn record_sent(&mut self) {
+        self.total_messages_sent += 1;
+    }
+
+    fn avg_latency_us(&self) -> u64 {
+        if self.total_messages_received > 0 {
+            self.total_latency_sum_us / self.total_messages_received
+        } else {
+            0
+        }
+    }
+
+    fn metrics(&self) -> Vec<(&'static str, u64)> {
+        vec![
+            (GAUGE_LATENCY_LAST_US, self.last_latency_us),
+            (
+                GAUGE_LATENCY_MIN_US,
+                if self.min_latency_us == u64::MAX {
+                    0
+                } else {
+                    self.min_latency_us
+                },
+            ),
+            (GAUGE_LATENCY_MAX_US, self.max_latency_us),
+            (GAUGE_LATENCY_AVG_US, self.avg_latency_us()),
+            (GAUGE_MESSAGES_RECEIVED, self.total_messages_received),
+            (GAUGE_MESSAGES_SENT, self.total_messages_sent),
+        ]
+    }
+}
+
+const GAUGE_LATENCY_LAST_US: &str = "raptorcast.latency.last_us";
+const GAUGE_LATENCY_MIN_US: &str = "raptorcast.latency.min_us";
+const GAUGE_LATENCY_MAX_US: &str = "raptorcast.latency.max_us";
+const GAUGE_LATENCY_AVG_US: &str = "raptorcast.latency.avg_us";
+const GAUGE_MESSAGES_RECEIVED: &str = "raptorcast.messages.received";
+const GAUGE_MESSAGES_SENT: &str = "raptorcast.messages.sent";
+const GAUGE_UPTIME_US: &str = "raptorcast.uptime_us";
+
+fn send_metrics(
+    meter: &opentelemetry::metrics::Meter,
+    gauge_cache: &mut HashMap<&'static str, opentelemetry::metrics::Gauge<u64>>,
+    latency_metrics: &LatencyMetrics,
+    raptorcast_metrics: ExecutorMetricsChain,
+    process_start: &Instant,
+) {
+    for (k, v) in latency_metrics
+        .metrics()
+        .into_iter()
+        .chain(raptorcast_metrics.into_inner())
+        .chain(std::iter::once((
+            GAUGE_UPTIME_US,
+            process_start.elapsed().as_micros() as u64,
+        )))
+    {
+        let gauge = gauge_cache
+            .entry(k)
+            .or_insert_with(|| meter.u64_gauge(k).build());
+        gauge.record(v, &[]);
+    }
+}
+
+fn build_otel_meter_provider(
+    otel_endpoint: &str,
+    service_name: String,
+    interval: Duration,
+) -> Result<opentelemetry_sdk::metrics::SdkMeterProvider> {
+    let exporter = MetricExporter::builder()
+        .with_tonic()
+        .with_timeout(interval * 2)
+        .with_endpoint(otel_endpoint)
+        .build()?;
+
+    let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(exporter)
+        .with_interval(interval / 2)
+        .build();
+
+    let attrs = vec![opentelemetry::KeyValue::new(
+        opentelemetry_semantic_conventions::resource::SERVICE_NAME,
+        service_name,
+    )];
+
+    let provider_builder = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
+        .with_reader(reader)
+        .with_resource(
+            opentelemetry_sdk::Resource::builder_empty()
+                .with_attributes(attrs)
+                .build(),
+        );
+
+    Ok(provider_builder.build())
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     async_main().await
@@ -289,14 +439,38 @@ async fn async_main() -> Result<()> {
             cluster,
             cluster_size,
             index,
-        } => run_consumer(cluster, cluster_size, index).await,
+            otel_endpoint,
+            metrics_interval,
+        } => {
+            run_consumer(
+                cluster,
+                cluster_size,
+                index,
+                otel_endpoint,
+                metrics_interval,
+            )
+            .await
+        }
         Commands::Producer {
             cluster,
             cluster_size,
             index,
             interval,
             size,
-        } => run_producer(cluster, cluster_size, index, interval, size).await,
+            otel_endpoint,
+            metrics_interval,
+        } => {
+            run_producer(
+                cluster,
+                cluster_size,
+                index,
+                interval,
+                size,
+                otel_endpoint,
+                metrics_interval,
+            )
+            .await
+        }
         Commands::Generate {
             output,
             count,
@@ -313,12 +487,14 @@ fn get_node_index(index_arg: Option<usize>) -> Result<usize> {
         let parsed = env_index
             .parse::<usize>()
             .map_err(|_| eyre::eyre!("NODE_INDEX must be a valid number"))?;
+        let zero_based = parsed.saturating_sub(1);
         tracing::info!(
-            node_index = parsed,
+            node_index = zero_based,
+            raw_env_value = parsed,
             source = "NODE_INDEX env variable",
-            "using node index from environment"
+            "using node index from environment (converted from 1-based to 0-based)"
         );
-        parsed
+        zero_based
     } else if let Some(index) = index_arg {
         tracing::info!(
             node_index = index,
@@ -342,6 +518,7 @@ struct NodeSetup {
         MockMessage,
         <MockMessage as Message>::Event,
         NopDiscovery<SignatureType>,
+        monad_raptorcast::auth::WireAuthProtocol,
     >,
     node_id: NodeId<CertificateSignaturePubKey<SignatureType>>,
     tcp_addr: SocketAddrV4,
@@ -397,8 +574,13 @@ fn setup_node(
         let participant_pubkey = participant_keypair.pubkey();
         let node_id = NodeId::new(participant_pubkey);
 
-        let name_record =
-            NameRecord::new(*participant.udp_addr.ip(), participant.udp_addr.port(), 0);
+        let name_record = NameRecord::new_with_authentication(
+            *participant.tcp_addr.ip(),
+            participant.tcp_addr.port(),
+            participant.udp_addr.port(),
+            participant.authenticated_udp_addr.port(),
+            0,
+        );
         let monad_name_record =
             MonadNameRecord::<SignatureType>::new(name_record, &participant_keypair);
 
@@ -406,21 +588,37 @@ fn setup_node(
         epoch_validators.insert(node_id, Stake::ONE);
     }
 
-    let udp_addr = SocketAddr::V4(my_config.udp_addr);
+    let bind_ip = std::net::Ipv4Addr::new(0, 0, 0, 0);
+    let tcp_addr = SocketAddr::V4(SocketAddrV4::new(bind_ip, my_config.tcp_addr.port()));
+    let authenticated_udp_addr = SocketAddr::V4(SocketAddrV4::new(
+        bind_ip,
+        my_config.authenticated_udp_addr.port(),
+    ));
+    let non_authenticated_addr =
+        SocketAddr::V4(SocketAddrV4::new(bind_ip, my_config.udp_addr.port()));
 
-    let dataplane = DataplaneBuilder::new(&udp_addr, UDP_BW)
-        .extend_udp_sockets(vec![monad_dataplane::UdpSocketConfig {
-            socket_addr: udp_addr,
-            label: RAPTORCAST_SOCKET.to_string(),
-        }])
+    let dataplane = DataplaneBuilder::new(&tcp_addr, UDP_BW)
+        .extend_udp_sockets(vec![
+            monad_dataplane::UdpSocketConfig {
+                socket_addr: authenticated_udp_addr,
+                label: AUTHENTICATED_RAPTORCAST_SOCKET.to_string(),
+            },
+            monad_dataplane::UdpSocketConfig {
+                socket_addr: non_authenticated_addr,
+                label: RAPTORCAST_SOCKET.to_string(),
+            },
+        ])
         .build();
     assert!(dataplane.block_until_ready(Duration::from_secs(2)));
 
     let (tcp_socket, mut udp_dataplane, dataplane_control) = dataplane.split();
     let (tcp_reader, tcp_writer) = tcp_socket.split();
-    let udp_socket = udp_dataplane
+    let authenticated_socket = udp_dataplane
+        .take_socket(AUTHENTICATED_RAPTORCAST_SOCKET)
+        .expect("authenticated socket not found");
+    let non_authenticated_socket = udp_dataplane
         .take_socket(RAPTORCAST_SOCKET)
-        .expect("raptorcast socket not found");
+        .expect("non-authenticated socket not found");
 
     let mut known_addresses = std::collections::HashMap::new();
     for (node_id, record) in &routing_info {
@@ -429,13 +627,16 @@ fn setup_node(
 
     let noop_builder = NopDiscoveryBuilder {
         known_addresses,
-        name_records: routing_info.clone().into_iter().collect(),
+        name_records: routing_info.into_iter().collect(),
         pd: std::marker::PhantomData,
     };
 
     let pd = PeerDiscoveryDriver::new(noop_builder);
 
     let keypair_arc = Arc::new(keypair);
+    let wireauth_config = monad_wireauth::Config::default();
+    let auth_protocol =
+        monad_raptorcast::auth::WireAuthProtocol::new(wireauth_config, keypair_arc.clone());
 
     let mut raptorcast = RaptorCast::<
         SignatureType,
@@ -443,15 +644,18 @@ fn setup_node(
         MockMessage,
         <MockMessage as Message>::Event,
         NopDiscovery<SignatureType>,
+        monad_raptorcast::auth::WireAuthProtocol,
     >::new(
         create_raptorcast_config(keypair_arc),
         SecondaryRaptorCastModeConfig::None,
         tcp_reader,
         tcp_writer,
-        udp_socket,
+        Some(authenticated_socket),
+        non_authenticated_socket,
         dataplane_control,
         Arc::new(std::sync::Mutex::new(pd)),
         Epoch(0),
+        auth_protocol,
     );
 
     raptorcast.exec(vec![RouterCommand::AddEpochValidatorSet {
@@ -466,7 +670,7 @@ fn setup_node(
         raptorcast,
         node_id: my_node_id,
         tcp_addr: my_config.tcp_addr,
-        udp_addr,
+        udp_addr: authenticated_udp_addr,
     })
 }
 
@@ -476,6 +680,8 @@ async fn run_producer(
     index_arg: Option<usize>,
     interval: Duration,
     size: usize,
+    otel_endpoint: Option<String>,
+    metrics_interval: Duration,
 ) -> Result<()> {
     let node_index = get_node_index(index_arg)?;
     let NodeSetup {
@@ -491,8 +697,33 @@ async fn run_producer(
         udp_addr = ?udp_addr,
         interval = ?interval,
         message_size = size,
+        otel_endpoint = ?otel_endpoint,
         "started producer node"
     );
+
+    let (maybe_otel_meter_provider, mut maybe_metrics_ticker) = otel_endpoint
+        .map(|endpoint| {
+            let provider = build_otel_meter_provider(
+                &endpoint,
+                format!("raptorcast_producer_{}", node_index),
+                metrics_interval,
+            )
+            .expect("failed to build otel provider");
+
+            let mut timer = tokio::time::interval(metrics_interval);
+            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+            (provider, timer)
+        })
+        .unzip();
+
+    let maybe_otel_meter = maybe_otel_meter_provider
+        .as_ref()
+        .map(|provider| provider.meter("raptorcast_latency"));
+
+    let mut gauge_cache = HashMap::new();
+    let process_start = Instant::now();
+    let mut metrics = LatencyMetrics::new();
 
     let mut interval_timer = tokio::time::interval(interval);
     loop {
@@ -505,6 +736,9 @@ async fn run_producer(
                         .as_nanos() as u64;
                     let latency_ns = now - message.timestamp;
                     let latency_ms = latency_ns as f64 / 1_000_000.0;
+
+                    metrics.record_received(latency_ns);
+
                     tracing::info!(
                         from = ?from,
                         latency_ms = latency_ms,
@@ -519,10 +753,22 @@ async fn run_producer(
                     target: RouterTarget::Raptorcast(Epoch(0)),
                     message,
                 }]);
+
+                metrics.record_sent();
+
                 tracing::info!(
                     message_size = size,
                     "sent broadcast message"
                 );
+            }
+            _ = match &mut maybe_metrics_ticker {
+                Some(ticker) => ticker.tick().boxed(),
+                None => futures_util::future::pending().boxed(),
+            } => {
+                let otel_meter = maybe_otel_meter.as_ref().expect("otel_endpoint must have been set");
+                let raptorcast_metrics = raptorcast.metrics();
+                send_metrics(otel_meter, &mut gauge_cache, &metrics, raptorcast_metrics, &process_start);
+                tracing::debug!("exported metrics");
             }
         }
     }
@@ -532,6 +778,8 @@ async fn run_consumer(
     cluster_path: String,
     cluster_size: Option<usize>,
     index_arg: Option<usize>,
+    otel_endpoint: Option<String>,
+    metrics_interval: Duration,
 ) -> Result<()> {
     let node_index = get_node_index(index_arg)?;
     let NodeSetup {
@@ -545,8 +793,33 @@ async fn run_consumer(
         node_id = ?node_id,
         tcp_addr = ?tcp_addr,
         udp_addr = ?udp_addr,
+        otel_endpoint = ?otel_endpoint,
         "started consumer node"
     );
+
+    let (maybe_otel_meter_provider, mut maybe_metrics_ticker) = otel_endpoint
+        .map(|endpoint| {
+            let provider = build_otel_meter_provider(
+                &endpoint,
+                format!("raptorcast_consumer_{}", node_index),
+                metrics_interval,
+            )
+            .expect("failed to build otel provider");
+
+            let mut timer = tokio::time::interval(metrics_interval);
+            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+            (provider, timer)
+        })
+        .unzip();
+
+    let maybe_otel_meter = maybe_otel_meter_provider
+        .as_ref()
+        .map(|provider| provider.meter("raptorcast_latency"));
+
+    let mut gauge_cache = HashMap::new();
+    let process_start = Instant::now();
+    let mut metrics = LatencyMetrics::new();
 
     loop {
         tokio::select! {
@@ -558,6 +831,9 @@ async fn run_consumer(
                         .as_nanos() as u64;
                     let latency_ns = now - message.timestamp;
                     let latency_ms = latency_ns as f64 / 1_000_000.0;
+
+                    metrics.record_received(latency_ns);
+
                     tracing::info!(
                         from = ?from,
                         latency_ms = latency_ms,
@@ -568,6 +844,15 @@ async fn run_consumer(
             }
             _ = tokio::time::sleep(Duration::from_secs(1)) => {
                 tracing::trace!("heartbeat");
+            }
+            _ = match &mut maybe_metrics_ticker {
+                Some(ticker) => ticker.tick().boxed(),
+                None => futures_util::future::pending().boxed(),
+            } => {
+                let otel_meter = maybe_otel_meter.as_ref().expect("otel_endpoint must have been set");
+                let raptorcast_metrics = raptorcast.metrics();
+                send_metrics(otel_meter, &mut gauge_cache, &metrics, raptorcast_metrics, &process_start);
+                tracing::debug!("exported metrics");
             }
         }
     }
@@ -595,6 +880,7 @@ fn generate_config(output_path: String, count: usize, base_ip: String, port: u16
             private_key: privkey,
             tcp_addr: SocketAddrV4::new(node_ip, port),
             udp_addr: SocketAddrV4::new(node_ip, port),
+            authenticated_udp_addr: SocketAddrV4::new(node_ip, port + 1),
         };
         participants.push(participant);
     }

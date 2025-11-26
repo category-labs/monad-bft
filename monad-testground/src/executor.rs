@@ -39,8 +39,9 @@ use monad_peer_discovery::{
     mock::{NopDiscovery, NopDiscoveryBuilder},
 };
 use monad_raptorcast::{
-    config::RaptorCastConfig, raptorcast_secondary::SecondaryRaptorCastModeConfig, RaptorCast,
-    RAPTORCAST_SOCKET,
+    auth::NoopAuthProtocol, config::RaptorCastConfig,
+    raptorcast_secondary::SecondaryRaptorCastModeConfig, RaptorCast,
+    AUTHENTICATED_RAPTORCAST_SOCKET, RAPTORCAST_SOCKET,
 };
 use monad_state::{Forkpoint, MonadMessage, MonadState, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::InMemoryState;
@@ -155,37 +156,52 @@ where
                 let pdd = PeerDiscoveryDriver::new(peer_discovery_builder);
                 let shared_peer_discovery_driver = Arc::new(Mutex::new(pdd));
 
+                let auth_socket_addr =
+                    SocketAddr::new(config.local_addr.ip(), config.local_addr.port() + 1);
                 let dataplane_builder = DataplaneBuilder::new(&config.local_addr, 1_000)
                     .with_udp_buffer_size(62_500_000)
-                    .extend_udp_sockets(vec![UdpSocketConfig {
-                        socket_addr: config.local_addr,
-                        label: RAPTORCAST_SOCKET.to_string(),
-                    }]);
+                    .extend_udp_sockets(vec![
+                        UdpSocketConfig {
+                            socket_addr: auth_socket_addr,
+                            label: AUTHENTICATED_RAPTORCAST_SOCKET.to_string(),
+                        },
+                        UdpSocketConfig {
+                            socket_addr: config.local_addr,
+                            label: RAPTORCAST_SOCKET.to_string(),
+                        },
+                    ]);
 
                 let dp = dataplane_builder.build();
                 assert!(dp.block_until_ready(Duration::from_secs(1)));
 
                 let (tcp_socket, mut udp_dataplane, control) = dp.split();
-                let udp_socket = udp_dataplane
+                let authenticated_socket = udp_dataplane
+                    .take_socket(AUTHENTICATED_RAPTORCAST_SOCKET)
+                    .expect("authenticated raptorcast socket");
+                let non_authenticated_socket = udp_dataplane
                     .take_socket(RAPTORCAST_SOCKET)
                     .expect("raptorcast socket");
                 let (tcp_reader, tcp_writer) = tcp_socket.split();
 
+                let auth_protocol = NoopAuthProtocol::new();
                 Updater::boxed(RaptorCast::<
                     ST,
                     MonadMessage<ST, SCT, MockExecutionProtocol>,
                     VerifiedMonadMessage<ST, SCT, MockExecutionProtocol>,
                     MonadEvent<ST, SCT, MockExecutionProtocol>,
                     NopDiscovery<ST>,
+                    NoopAuthProtocol<CertificateSignaturePubKey<ST>>,
                 >::new(
                     cfg,
                     SecondaryRaptorCastModeConfig::None,
                     tcp_reader,
                     tcp_writer,
-                    udp_socket,
+                    Some(authenticated_socket),
+                    non_authenticated_socket,
                     control,
                     shared_peer_discovery_driver,
                     Epoch(0),
+                    auth_protocol,
                 ))
             }
         },

@@ -960,12 +960,12 @@ mod tests {
 
     fn enable_tracer() {
         TRACING_ONCE_SETUP.call_once(|| {
-            tracing_subscriber::fmt::fmt()
+            let _ = tracing_subscriber::fmt::fmt()
                 .with_max_level(tracing::Level::ERROR)
                 .with_writer(io::stdout)
                 .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
                 .with_span_events(FmtSpan::CLOSE)
-                .init();
+                .try_init();
         });
     }
 

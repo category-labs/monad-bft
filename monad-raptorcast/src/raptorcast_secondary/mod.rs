@@ -19,7 +19,6 @@ use std::{
     pin::{pin, Pin},
     sync::{Arc, Mutex},
     task::{Context, Poll},
-    time::Duration,
 };
 
 mod client;
@@ -33,11 +32,10 @@ use group_message::FullNodesGroupMessage;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_dataplane::{udp::segment_size_for_mtu, UdpSocketWriter};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, PeerEntry, RouterCommand};
 use monad_peer_discovery::{driver::PeerDiscoveryDriver, PeerDiscoveryAlgo, PeerDiscoveryEvent};
-use monad_types::{DropTimer, Epoch, NodeId};
+use monad_types::{Epoch, NodeId};
 use publisher::Publisher;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
@@ -47,10 +45,9 @@ use tracing::{debug, error, trace, warn};
 use crate::{
     config::{RaptorCastConfig, SecondaryRaptorCastMode},
     message::OutboundRouterMessage,
-    packet::{RetrofitResult as _, UdpMessageBatcher},
     udp::GroupId,
-    util::{BuildTarget, FullNodes, Group, Redundancy},
-    OwnedMessageBuilder, RaptorCastEvent, UNICAST_MSG_BATCH_SIZE,
+    util::{FullNodes, Group},
+    RaptorCastEvent,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -58,6 +55,20 @@ pub enum SecondaryRaptorCastModeConfig {
     Client,
     Publisher,
     None, // Disables secondary raptorcast
+}
+
+#[derive(Debug, Clone)]
+pub enum SecondaryOutboundMessage<ST: CertificateSignatureRecoverable> {
+    SendSingle {
+        msg_bytes: bytes::Bytes,
+        dest: NodeId<CertificateSignaturePubKey<ST>>,
+        group_id: GroupId,
+    },
+    SendToGroup {
+        msg_bytes: bytes::Bytes,
+        group: Group<ST>,
+        group_id: GroupId,
+    },
 }
 
 // It's possible to switch role during runtime
@@ -83,11 +94,10 @@ where
 
     curr_epoch: Epoch,
 
-    udp_writer: UdpSocketWriter,
     peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
-    message_builder: OwnedMessageBuilder<ST, PD>,
 
     channel_from_primary: UnboundedReceiver<FullNodesGroupMessage<ST>>,
+    channel_to_primary_outbound: UnboundedSender<SecondaryOutboundMessage<ST>>,
     #[expect(unused)]
     metrics: ExecutorMetrics,
     _phantom: PhantomData<(OM, SE, M)>,
@@ -103,10 +113,10 @@ where
     pub fn new(
         config: RaptorCastConfig<ST>,
         secondary_mode: SecondaryRaptorCastMode<ST>,
-        udp_writer: UdpSocketWriter,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
         channel_from_primary: UnboundedReceiver<FullNodesGroupMessage<ST>>,
         channel_to_primary: UnboundedSender<Group<ST>>,
+        channel_to_primary_outbound: UnboundedSender<SecondaryOutboundMessage<ST>>,
         current_epoch: Epoch,
     ) -> Self {
         let node_id = NodeId::new(config.shared_key.pubkey());
@@ -128,37 +138,14 @@ where
             ),
         };
 
-        let raptor10_redundancy = config
-            .secondary_instance
-            .raptor10_fullnode_redundancy_factor;
-        trace!(
-            self_id =? node_id, mtu =? config.mtu, ?raptor10_redundancy,
-            "RaptorCastSecondary::new()",
-        );
-
-        if raptor10_redundancy < 1f32 {
-            panic!(
-                "Configuration value raptor10_redundancy must be equal or greater than 1, \
-                but got {}. This is a bug in the configuration for the secondary instance.",
-                raptor10_redundancy
-            );
-        }
-        let redundancy = Redundancy::from_f32(raptor10_redundancy)
-            .expect("secondary raptor10_redundancy doesn't fit");
-
-        let message_builder =
-            OwnedMessageBuilder::new(config.shared_key, peer_discovery_driver.clone())
-                .segment_size(segment_size_for_mtu(config.mtu))
-                .group_id(GroupId::Primary(current_epoch))
-                .redundancy(redundancy);
+        trace!(self_id =? node_id, "RaptorCastSecondary::new()");
 
         Self {
             role,
             curr_epoch: current_epoch,
-            message_builder,
-            udp_writer,
             peer_discovery_driver,
             channel_from_primary,
+            channel_to_primary_outbound,
             metrics: Default::default(),
             _phantom: PhantomData,
         }
@@ -167,7 +154,7 @@ where
     fn send_single_msg(
         &self,
         group_msg: FullNodesGroupMessage<ST>,
-        dest_node: &NodeId<CertificateSignaturePubKey<ST>>,
+        dest_node: NodeId<CertificateSignaturePubKey<ST>>,
     ) {
         trace!(
             ?dest_node,
@@ -179,25 +166,19 @@ where
         let msg_bytes = match router_msg.try_serialize() {
             Ok(msg) => msg,
             Err(err) => {
-                error!(?err, "failed to serialize a message");
+                error!(?err, "failed to serialize message from secondary");
                 return;
             }
         };
 
-        let _timer = DropTimer::start(Duration::from_millis(10), |elapsed| {
-            warn!(
-                ?elapsed,
-                app_msg_len = msg_bytes.len(),
-                "long time to build message"
-            )
-        });
-        let mut sink = UdpMessageBatcher::new(UNICAST_MSG_BATCH_SIZE, |rc_chunks| {
-            self.udp_writer.write_unicast(rc_chunks)
-        });
-        let build_target = BuildTarget::<ST>::PointToPoint(dest_node);
-        self.message_builder
-            .build_into(&msg_bytes, &build_target, &mut sink)
-            .unwrap_log_on_error(&msg_bytes, &build_target);
+        let outbound = SecondaryOutboundMessage::SendSingle {
+            msg_bytes,
+            dest: dest_node,
+            group_id: GroupId::Primary(self.curr_epoch),
+        };
+        if let Err(err) = self.channel_to_primary_outbound.send(outbound) {
+            error!(?err, "failed to send message to primary");
+        }
     }
 
     fn send_group_msg(
@@ -210,13 +191,9 @@ where
             ?group_msg,
             "RaptorCastSecondary send_group_msg"
         );
-        let _timer = DropTimer::start(Duration::from_millis(100), |elapsed| {
-            warn!(?elapsed, "long time to send_group_msg")
-        });
         let group_msg = self.try_fill_name_records(group_msg, &dest_node_ids);
-        // Can udp_write_broadcast() be used? Optimize later
         for nid in dest_node_ids.list {
-            self.send_single_msg(group_msg.clone(), &nid);
+            self.send_single_msg(group_msg.clone(), nid);
         }
     }
 
@@ -317,7 +294,6 @@ where
                             "RaptorCastSecondary UpdateCurrentRound (Publisher)"
                         );
                         self.curr_epoch = epoch;
-                        self.message_builder.set_group_id(GroupId::Primary(epoch));
                         // The publisher needs to be periodically informed about new nodes out there,
                         // so that it can randomize when creating new groups.
                         let full_nodes = self
@@ -358,11 +334,7 @@ where
                     round,
                     message,
                 } => {
-                    let _timer = DropTimer::start(Duration::from_millis(20), |elapsed| {
-                        warn!(?elapsed, "long time to publish message")
-                    });
-
-                    let curr_group: &Group<ST> = match &mut self.role {
+                    let curr_group: Group<ST> = match &mut self.role {
                         Role::Client(_) => {
                             continue;
                         }
@@ -371,7 +343,7 @@ where
                                 Some(group) => {
                                     trace!(?group, size_excl_self =? group.size_excl_self(),
                                         "RaptorCastSecondary PublishToFullNodes");
-                                    group
+                                    group.clone()
                                 }
                                 None => {
                                     trace!("RaptorCastSecondary PublishToFullNodes; group: NONE");
@@ -386,8 +358,6 @@ where
                         continue;
                     }
 
-                    let build_target = BuildTarget::FullNodeRaptorCast(curr_group);
-
                     let outbound_message = match OutboundRouterMessage::<OM, ST>::AppMessage(
                         message,
                     )
@@ -395,27 +365,19 @@ where
                     {
                         Ok(msg) => msg,
                         Err(err) => {
-                            error!(?err, "failed to serialize a message");
+                            error!(?err, "failed to serialize message from secondary");
                             continue;
                         }
                     };
 
-                    let _timer = DropTimer::start(Duration::from_millis(10), |elapsed| {
-                        warn!(
-                            ?elapsed,
-                            app_msg_len = outbound_message.len(),
-                            "long time to build message"
-                        )
-                    });
-                    let mut sink = UdpMessageBatcher::new(UNICAST_MSG_BATCH_SIZE, |rc_chunks| {
-                        self.udp_writer.write_unicast(rc_chunks)
-                    });
-
-                    self.message_builder
-                        .prepare()
-                        .group_id(GroupId::Secondary(round))
-                        .build_into(&outbound_message, &build_target, &mut sink)
-                        .unwrap_log_on_error(&outbound_message, &build_target);
+                    let outbound = SecondaryOutboundMessage::SendToGroup {
+                        msg_bytes: outbound_message,
+                        group: curr_group,
+                        group_id: GroupId::Secondary(round),
+                    };
+                    if let Err(err) = self.channel_to_primary_outbound.send(outbound) {
+                        error!(?err, "failed to send message to primary");
+                    }
                 }
             }
         }
@@ -514,7 +476,7 @@ where
                 {
                     // Send back a response to the validator
                     trace!("RaptorCastSecondary sending back response for group message");
-                    this.send_single_msg(response_msg, &validator_id);
+                    this.send_single_msg(response_msg, validator_id);
                 }
             }
         }

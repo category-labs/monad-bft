@@ -1412,30 +1412,18 @@ where
         debug!(?peers, "updating peers");
 
         let mut cmds = Vec::new();
-
         for peer in peers {
             let node_id = NodeId::new(peer.pubkey);
-
-            // verify signature of name record
-            let name_record = MonadNameRecord {
-                name_record: NameRecord::new(
-                    *peer.addr.ip(),
-                    peer.addr.port(),
-                    peer.record_seq_num,
-                ),
-                signature: peer.signature,
-            };
-            let verified = name_record
-                .recover_pubkey()
-                .is_ok_and(|recovered_node_id| recovered_node_id == node_id);
-            if verified {
-                match self.insert_peer_to_pending(node_id, name_record) {
+            match (&peer).try_into() {
+                Ok(name_record) => match self.insert_peer_to_pending(node_id, name_record) {
                     Ok(cmds_from_insert) => cmds.extend(cmds_from_insert),
                     Err(_) => continue,
+                },
+                Err(e) => {
+                    warn!(?e, ?node_id, "invalid name record, dropping record...");
+                    continue;
                 }
-            } else {
-                warn!(?node_id, "invalid name record signature");
-            }
+            };
         }
 
         cmds

@@ -152,6 +152,12 @@ impl KeyPair {
     }
 }
 
+impl AsRef<KeyPair> for KeyPair {
+    fn as_ref(&self) -> &KeyPair {
+        self
+    }
+}
+
 impl PubKey {
     /// Deserialize public key from bytes
     /// Can be compressed OR uncompressed pubkey

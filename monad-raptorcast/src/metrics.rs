@@ -17,6 +17,10 @@ use monad_executor::{ExecutorMetrics, Histogram};
 
 use crate::util::unix_ts_ms_now;
 
+pub const GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED: &str =
+    "monad.raptorcast.total_messages_received";
+pub const GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS: &str = "monad.raptorcast.total_recv_errors";
+
 pub const PRIMARY_BROADCAST_LATENCY_P50_MS: &str =
     "monad.bft.raptorcast.udp.primary_broadcast_latency_p50_ms";
 pub const PRIMARY_BROADCAST_LATENCY_P90_MS: &str =

@@ -40,12 +40,12 @@ use crate::{
     state::State,
 };
 
-pub struct API<C: Context> {
+pub struct API<C: Context, K: AsRef<monad_secp::KeyPair> = monad_secp::KeyPair> {
     state: State,
     timers: BTreeSet<(Duration, SessionIndex)>,
     packet_queue: VecDeque<(SocketAddr, Bytes)>,
     config: Config,
-    local_static_key: monad_secp::KeyPair,
+    local_static_key: K,
     // Cached compressed public key to avoid recomputing when logging
     local_serialized_public: CompressedPublicKey,
     cookies: Cookies,
@@ -55,10 +55,10 @@ pub struct API<C: Context> {
     last_tick: Option<Duration>,
 }
 
-impl<C: Context> API<C> {
+impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
     /// Creates a new API instance, it should be created for an individual socket.
-    pub fn new(config: Config, local_static_key: monad_secp::KeyPair, mut context: C) -> Self {
-        let local_static_public = local_static_key.pubkey();
+    pub fn new(config: Config, local_static_key: K, mut context: C) -> Self {
+        let local_static_public = local_static_key.as_ref().pubkey();
         let cookies = Cookies::new(
             context.rng(),
             local_static_public,
@@ -303,7 +303,7 @@ impl<C: Context> API<C> {
             duration_since_start,
             &self.config,
             reservation.index(),
-            &self.local_static_key,
+            self.local_static_key.as_ref(),
             remote_static_key,
             remote_addr,
             cookie,
@@ -360,10 +360,13 @@ impl<C: Context> API<C> {
         handshake_packet: &mut HandshakeInitiation,
         remote_addr: SocketAddr,
     ) -> Result<()> {
-        crate::protocol::crypto::verify_mac1(handshake_packet, &self.local_static_key.pubkey())
-            .inspect_err(|_| {
-                self.metrics[GAUGE_WIREAUTH_ERROR_MAC1_VERIFICATION_FAILED] += 1;
-            })?;
+        crate::protocol::crypto::verify_mac1(
+            handshake_packet,
+            &self.local_static_key.as_ref().pubkey(),
+        )
+        .inspect_err(|_| {
+            self.metrics[GAUGE_WIREAUTH_ERROR_MAC1_VERIFICATION_FAILED] += 1;
+        })?;
 
         if !self.is_under_load(
             remote_addr,
@@ -377,11 +380,10 @@ impl<C: Context> API<C> {
         let duration_since_start = self.context.duration_since_start();
 
         let validated_init =
-            ResponderState::validate_init(&self.local_static_key, handshake_packet).inspect_err(
-                |_| {
+            ResponderState::validate_init(self.local_static_key.as_ref(), handshake_packet)
+                .inspect_err(|_| {
                     self.metrics[GAUGE_WIREAUTH_ERROR_HANDSHAKE_INIT_VALIDATION] += 1;
-                },
-            )?;
+                })?;
 
         let remote_key = validated_init.remote_public_key;
         if self
@@ -548,7 +550,7 @@ impl<C: Context> API<C> {
     ) -> Result<()> {
         // The initiator is transitioned into transport in 2 stages.
         // All validators and other fallible actions must be done before removing the initiator from state.
-        crate::protocol::crypto::verify_mac1(response, &self.local_static_key.pubkey())
+        crate::protocol::crypto::verify_mac1(response, &self.local_static_key.as_ref().pubkey())
             .inspect_err(|_| {
                 self.metrics[GAUGE_WIREAUTH_ERROR_MAC1_VERIFICATION_FAILED] += 1;
             })?;
@@ -571,7 +573,7 @@ impl<C: Context> API<C> {
             })?;
 
         let validated_response = initiator
-            .validate_response(&self.config, &self.local_static_key, response)
+            .validate_response(&self.config, self.local_static_key.as_ref(), response)
             .inspect_err(|_| {
                 self.metrics[GAUGE_WIREAUTH_ERROR_HANDSHAKE_RESPONSE_VALIDATION] += 1;
             })?;

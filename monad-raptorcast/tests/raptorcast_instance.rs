@@ -13,10 +13,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+mod common;
+
 use std::{
     collections::{BTreeMap, HashMap},
     io::ErrorKind,
-    net::{SocketAddr, SocketAddrV4, UdpSocket},
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket},
     num::ParseIntError,
     sync::{Arc, Once},
     time::Duration,
@@ -24,6 +26,7 @@ use std::{
 
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use bytes::{Bytes, BytesMut};
+use common::find_udp_free_port;
 use futures_util::StreamExt;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
@@ -36,7 +39,7 @@ use monad_peer_discovery::mock::NopDiscovery;
 use monad_raptorcast::{
     new_defaulted_raptorcast_for_tests,
     packet::build_messages,
-    raptorcast_secondary::group_message::FullNodesGroupMessage,
+    raptorcast_secondary::{group_message::FullNodesGroupMessage, SecondaryOutboundMessage},
     udp::{GroupId, MAX_REDUNDANCY},
     util::{BuildTarget, EpochValidators, Group, Redundancy},
     RaptorCast, RaptorCastEvent,
@@ -55,9 +58,9 @@ type PubKeyType = CertificateSignaturePubKey<SignatureType>;
 // A previous version of the R10 managed decoder did not handle this correctly and would panic.
 #[test]
 pub fn different_symbol_sizes() {
-    let tx_addr = "127.0.0.1:10000".parse().unwrap();
-    let rx_addr = "127.0.0.1:10001".parse().unwrap();
-    let rebroadcast_addr = "127.0.0.1:10002".parse().unwrap();
+    let tx_addr = SocketAddr::from(([127, 0, 0, 1], find_udp_free_port()));
+    let rx_addr = SocketAddr::from(([127, 0, 0, 1], find_udp_free_port()));
+    let rebroadcast_addr = SocketAddr::from(([127, 0, 0, 1], find_udp_free_port()));
 
     let (tx_nodeid, tx_keypair, rx_nodeid, known_addresses) =
         set_up_test(&tx_addr, &rx_addr, Some(&rebroadcast_addr));
@@ -68,7 +71,7 @@ pub fn different_symbol_sizes() {
 
     let rebroadcast_socket = UdpSocket::bind(rebroadcast_addr).unwrap();
     rebroadcast_socket
-        .set_read_timeout(Some(Duration::from_millis(100)))
+        .set_read_timeout(Some(Duration::from_millis(200)))
         .unwrap();
 
     // Generate differently-sized encoded symbols that look like they are part of the same
@@ -117,7 +120,7 @@ pub fn different_symbol_sizes() {
     }
 
     // Wait for RaptorCast instance to catch up.
-    std::thread::sleep(Duration::from_millis(100));
+    std::thread::sleep(Duration::from_millis(200));
 
     // Verify that the rebroadcast target receives the first symbol.
     let _ = rebroadcast_socket.recv(&mut []).unwrap();
@@ -135,8 +138,8 @@ pub fn different_symbol_sizes() {
 // of buffer indices in the decoder and panic the decoder.
 #[test]
 pub fn buffer_count_overflow() {
-    let tx_addr = "127.0.0.1:10003".parse().unwrap();
-    let rx_addr = "127.0.0.1:10004".parse().unwrap();
+    let tx_addr = SocketAddr::from(([127, 0, 0, 1], find_udp_free_port()));
+    let rx_addr = SocketAddr::from(([127, 0, 0, 1], find_udp_free_port()));
 
     let (tx_nodeid, tx_keypair, rx_nodeid, known_addresses) = set_up_test(&tx_addr, &rx_addr, None);
 
@@ -186,8 +189,8 @@ pub fn buffer_count_overflow() {
 // which would then call .step_by(0) on (0..0), which panics.
 #[test]
 pub fn zero_sized_packet() {
-    let tx_addr = "127.0.0.1:10007".parse().unwrap();
-    let rx_addr = "127.0.0.1:10008".parse().unwrap();
+    let tx_addr = SocketAddr::from(([127, 0, 0, 1], find_udp_free_port()));
+    let rx_addr = SocketAddr::from(([127, 0, 0, 1], find_udp_free_port()));
 
     let (_tx_nodeid, _tx_keypair, _rx_nodeid, _known_addresses) =
         set_up_test(&tx_addr, &rx_addr, None);
@@ -208,9 +211,9 @@ pub fn zero_sized_packet() {
 // exactly once.
 #[test]
 pub fn valid_rebroadcast() {
-    let tx_addr = "127.0.0.1:10009".parse().unwrap();
-    let rx_addr = "127.0.0.1:10010".parse().unwrap();
-    let rebroadcast_addr = "127.0.0.1:10011".parse().unwrap();
+    let tx_addr = SocketAddr::from(([127, 0, 0, 1], find_udp_free_port()));
+    let rx_addr = SocketAddr::from(([127, 0, 0, 1], find_udp_free_port()));
+    let rebroadcast_addr = SocketAddr::from(([127, 0, 0, 1], find_udp_free_port()));
 
     let (tx_nodeid, tx_keypair, rx_nodeid, known_addresses) =
         set_up_test(&tx_addr, &rx_addr, Some(&rebroadcast_addr));
@@ -463,6 +466,7 @@ fn setup_raptorcast_service(
     MockMessage,
     MockEvent<CertificateSignaturePubKey<SignatureType>>,
     NopDiscovery<SignatureType>,
+    monad_raptorcast::auth::NoopAuthProtocol<CertificateSignaturePubKey<SignatureType>>,
 > {
     new_defaulted_raptorcast_for_tests::<
         SignatureType,
@@ -497,15 +501,15 @@ async fn publish_to_full_nodes() {
     // 1. Set up nodes
     let validator_keypair = keypair(1);
     let validator_nodeid = NodeId::new(validator_keypair.pubkey());
-    let validator_addr = "127.0.0.1:10020".parse().unwrap();
+    let validator_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_udp_free_port());
 
     let full_node1_keypair = keypair(2);
     let full_node1_id = NodeId::new(full_node1_keypair.pubkey());
-    let full_node1_addr = "127.0.0.1:10021".parse().unwrap();
+    let full_node1_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_udp_free_port());
 
     let full_node2_keypair = keypair(3);
     let full_node2_id = NodeId::new(full_node2_keypair.pubkey());
-    let full_node2_addr = "127.0.0.1:10022".parse().unwrap();
+    let full_node2_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_udp_free_port());
 
     let known_addresses: HashMap<NodeId<PubKeyType>, SocketAddrV4> = [
         (validator_nodeid, validator_addr),
@@ -579,7 +583,7 @@ async fn publish_to_full_nodes() {
 async fn delete_expired_groups() {
     let node_keypair = keypair(1);
     let node_id = NodeId::new(node_keypair.pubkey());
-    let node_addr = "127.0.0.1:10030".parse().unwrap();
+    let node_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_udp_free_port());
 
     let mut raptorcast = setup_raptorcast_service(node_keypair, node_addr, &HashMap::new());
     raptorcast.exec(vec![RouterCommand::UpdateCurrentRound(Epoch(1), Round(1))]);
@@ -587,8 +591,14 @@ async fn delete_expired_groups() {
     // setup
     let (send_net_messages, _) = unbounded_channel::<FullNodesGroupMessage<SignatureType>>();
     let (send_group_infos, recv_group_infos) = unbounded_channel::<Group<SignatureType>>();
+    let (_, recv_outbound_from_secondary) =
+        unbounded_channel::<SecondaryOutboundMessage<SignatureType>>();
     raptorcast.set_is_dynamic_full_node(true);
-    raptorcast.bind_channel_to_secondary_raptorcast(send_net_messages, recv_group_infos);
+    raptorcast.bind_channel_to_secondary_raptorcast(
+        send_net_messages,
+        recv_group_infos,
+        recv_outbound_from_secondary,
+    );
 
     // populate raptorcast group
     let group = Group::new_fullnode_group(
@@ -627,8 +637,8 @@ async fn delete_expired_groups() {
 
 #[tokio::test]
 async fn test_priority_messages() {
-    let tx_addr: SocketAddrV4 = "127.0.0.1:11000".parse().unwrap();
-    let rx_addr: SocketAddrV4 = "127.0.0.1:11001".parse().unwrap();
+    let tx_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_udp_free_port());
+    let rx_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_udp_free_port());
 
     let mut tx_secret = [1u8; 32];
     let mut rx_secret = [2u8; 32];
@@ -738,9 +748,10 @@ async fn test_priority_messages() {
 
 #[tokio::test]
 async fn test_raptorcast_forwarding_priority() {
-    let validator1_addr: SocketAddrV4 = "127.0.0.1:12000".parse().unwrap();
-    let validator2_addr: SocketAddrV4 = "127.0.0.1:12001".parse().unwrap();
-    let validator_fullnode_addr: SocketAddrV4 = "127.0.0.1:12002".parse().unwrap();
+    let validator1_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_udp_free_port());
+    let validator2_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_udp_free_port());
+    let validator_fullnode_addr =
+        SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_udp_free_port());
 
     let mut validator1_secret = [1u8; 32];
     let mut validator2_secret = [2u8; 32];
