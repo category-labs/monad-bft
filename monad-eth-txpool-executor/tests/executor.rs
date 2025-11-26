@@ -178,3 +178,56 @@ async fn test_ipc_tx_forwarding_pacing() {
 
     assert!(txpool_executor.poll_next_unpin(&mut cx).is_pending());
 }
+
+#[tokio::test]
+async fn test_ipc_full() {
+    let (mut txpool_executor, mut ipc_client) = setup_txpool_executor_with_client().await;
+
+    let mut cx = Context::from_waker(noop_waker_ref());
+
+    assert!(txpool_executor.poll_next_unpin(&mut cx).is_pending());
+
+    for nonce in 0.. {
+        let tx = make_legacy_tx(
+            S1,
+            MIN_BASE_FEE.into(),
+            30_000_000,
+            nonce as u64,
+            256 * 1024,
+        );
+
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            ipc_client.send(EthTxPoolIpcTx::new_with_default_priority(tx, vec![])),
+        )
+        .await
+        {
+            Ok(Ok(())) => continue,
+            Ok(Err(err)) => panic!("send failed: {err:#?}"),
+            Err(_) => break,
+        }
+    }
+
+    // IPC socket is full on send side
+
+    assert!(txpool_executor
+        .poll_next_unpin(&mut cx)
+        .map(|result| result.unwrap())
+        .is_ready());
+
+    while let Poll::Ready(result) = txpool_executor.poll_next_unpin(&mut cx) {
+        assert!(result.is_some());
+    }
+
+    let tx = make_legacy_tx(S1, MIN_BASE_FEE.into(), 30_000_000, 0 as u64, 0);
+
+    // IPC socket send succeeds
+
+    let () = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        ipc_client.send(EthTxPoolIpcTx::new_with_default_priority(tx, vec![])),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+}
