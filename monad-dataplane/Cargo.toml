@@ -21,6 +21,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 zerocopy = { workspace = true }
+strum = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
 ntest = { workspace = true }

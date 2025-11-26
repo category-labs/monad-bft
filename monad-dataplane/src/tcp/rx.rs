@@ -35,8 +35,8 @@ use tracing::{debug, enabled, trace, warn, Level};
 use zerocopy::FromBytes;
 
 use super::{
-    message_timeout, RecvTcpMsg, TcpConfig, TcpControl, TcpControlMsg, TcpMsgHdr, HEADER_MAGIC,
-    HEADER_VERSION, TCP_MESSAGE_LENGTH_LIMIT,
+    message_timeout, RecvTcpMsg, TcpConfig, TcpConnectionId, TcpControl, TcpControlMsg, TcpMsgHdr,
+    HEADER_MAGIC, HEADER_VERSION, TCP_MESSAGE_LENGTH_LIMIT,
 };
 use crate::{
     addrlist::{Addrlist, Status},
@@ -168,6 +168,7 @@ struct RxStateInner {
 }
 
 pub(crate) async fn task(
+    socket: crate::TcpSocketType,
     tcp_config: TcpConfig,
     tcp_control_map: TcpControl,
     addrlist: Arc<Addrlist>,
@@ -187,6 +188,7 @@ pub(crate) async fn task(
             Ok((tcp_stream, addr)) => match rx_state.apply_limits(addr.ip()) {
                 Ok(conn_state) => {
                     spawn(task_connection(
+                        socket,
                         rate_limit.new_rate_limiter(),
                         tcp_control_map.clone(),
                         conn_state,
@@ -214,6 +216,7 @@ pub(crate) async fn task(
 }
 
 async fn task_connection(
+    socket: crate::TcpSocketType,
     rate_limiter: RateLimiter,
     tcp_control_map: TcpControl,
     _rx_state: ConnectionToken,
@@ -222,7 +225,13 @@ async fn task_connection(
     mut tcp_stream: TcpStream,
     tcp_ingress_tx: mpsc::Sender<RecvTcpMsg>,
 ) {
-    let mut control_rx = tcp_control_map.register((addr.ip(), addr.port(), conn_id));
+    let id = TcpConnectionId {
+        ip: addr.ip(),
+        port: addr.port(),
+        conn_id,
+        socket,
+    };
+    let mut control_rx = tcp_control_map.register(id);
     let mut message_id: u64 = 0;
     loop {
         select! {
@@ -264,7 +273,7 @@ async fn task_connection(
             }
         }
     }
-    tcp_control_map.unregister(&(addr.ip(), addr.port(), conn_id));
+    tcp_control_map.unregister(&id);
     trace!(
         conn_id,
         ?addr,

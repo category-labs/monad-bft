@@ -33,7 +33,9 @@ use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
-use monad_dataplane::DataplaneBuilder;
+use monad_dataplane::{
+    DataplaneBuilder, TcpSocketConfig, TcpSocketType, UdpSocketConfig, UdpSocketType,
+};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig};
@@ -49,10 +51,7 @@ use monad_peer_discovery::{
     MonadNameRecord, NameRecord,
 };
 use monad_pprof::start_pprof_server;
-use monad_raptorcast::{
-    config::{RaptorCastConfig, RaptorCastConfigPrimary},
-    RAPTORCAST_SOCKET,
-};
+use monad_raptorcast::config::{RaptorCastConfig, RaptorCastConfigPrimary};
 use monad_router_multi::MultiRouter;
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::StateBackendThreadClient;
@@ -542,7 +541,7 @@ where
 
     let network_config = node_config.network;
 
-    let mut dp_builder = DataplaneBuilder::new(&bind_address, network_config.max_mbps.into());
+    let mut dp_builder = DataplaneBuilder::new(network_config.max_mbps.into());
     if let Some(buffer_size) = network_config.buffer_size {
         dp_builder = dp_builder.with_udp_buffer_size(buffer_size);
     }
@@ -555,9 +554,13 @@ where
             network_config.tcp_rate_limit_rps,
             network_config.tcp_rate_limit_burst,
         )
-        .extend_udp_sockets(vec![monad_dataplane::UdpSocketConfig {
+        .extend_udp_sockets(vec![UdpSocketConfig {
             socket_addr: bind_address,
-            label: RAPTORCAST_SOCKET.to_string(),
+            socket: UdpSocketType::Original,
+        }])
+        .extend_tcp_sockets(vec![TcpSocketConfig {
+            socket_addr: bind_address,
+            socket: TcpSocketType::Original,
         }]);
 
     let self_id = NodeId::new(identity.pubkey());

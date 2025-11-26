@@ -17,6 +17,7 @@ use std::{
     collections::BTreeMap,
     net::{IpAddr, SocketAddr},
     num::NonZeroU32,
+    ops::RangeBounds,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -65,20 +66,23 @@ pub(crate) fn spawn_tasks(
     cfg: TcpConfig,
     tcp_control_map: TcpControl,
     addrlist: Arc<Addrlist>,
-    local_addr: SocketAddr,
-    tcp_ingress_tx: mpsc::Sender<RecvTcpMsg>,
+    socket_configs: Vec<(super::TcpSocketType, SocketAddr, mpsc::Sender<RecvTcpMsg>)>,
     tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>,
 ) {
-    let opts = ListenerOpts::new().reuse_addr(true);
-    let tcp_listener = TcpListener::bind_with_config(local_addr, &opts).unwrap();
+    for (socket, socket_addr, ingress_tx) in socket_configs {
+        let opts = ListenerOpts::new().reuse_addr(true);
+        let tcp_listener = TcpListener::bind_with_config(socket_addr, &opts).unwrap();
 
-    spawn(rx::task(
-        cfg,
-        tcp_control_map,
-        addrlist,
-        tcp_listener,
-        tcp_ingress_tx,
-    ));
+        spawn(rx::task(
+            socket,
+            cfg,
+            tcp_control_map.clone(),
+            addrlist.clone(),
+            tcp_listener,
+            ingress_tx,
+        ));
+        trace!(socket = %socket, ?socket_addr, "created tcp listener");
+    }
     spawn(tx::task(tcp_egress_rx));
 }
 
@@ -128,30 +132,71 @@ pub(crate) enum TcpControlMsg {
     Disconnect,
 }
 
-pub(crate) type TcpIdentifier = (IpAddr, u16, u64);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct TcpConnectionId {
+    pub(crate) ip: IpAddr,
+    pub(crate) port: u16,
+    pub(crate) conn_id: u64,
+    pub(crate) socket: super::TcpSocketType,
+}
+
+impl TcpConnectionId {
+    fn range_for_ip(ip: IpAddr) -> impl RangeBounds<Self> {
+        let start = Self {
+            ip,
+            port: u16::MIN,
+            conn_id: u64::MIN,
+            socket: super::TcpSocketType::Original,
+        };
+        let end = Self {
+            ip,
+            port: u16::MAX,
+            conn_id: u64::MAX,
+            socket: super::MAX_TCP_SOCKET_TYPE,
+        };
+        start..=end
+    }
+
+    fn range_for_socket(ip: IpAddr, port: u16) -> impl RangeBounds<Self> {
+        let start = Self {
+            ip,
+            port,
+            conn_id: u64::MIN,
+            socket: super::TcpSocketType::Original,
+        };
+        let end = Self {
+            ip,
+            port,
+            conn_id: u64::MAX,
+            socket: super::MAX_TCP_SOCKET_TYPE,
+        };
+        start..=end
+    }
+}
+
 pub(crate) type TcpControlSender = UnboundedSender<TcpControlMsg>;
 pub(crate) type TcpControlReceiver = UnboundedReceiver<TcpControlMsg>;
 
 #[derive(Debug, Clone)]
-pub(crate) struct TcpControl(Arc<Mutex<BTreeMap<TcpIdentifier, TcpControlSender>>>);
+pub(crate) struct TcpControl(Arc<Mutex<BTreeMap<TcpConnectionId, TcpControlSender>>>);
 
 impl TcpControl {
     pub(crate) fn new() -> TcpControl {
         TcpControl(Arc::new(Mutex::new(BTreeMap::new())))
     }
 
-    pub(crate) fn register(&self, id: TcpIdentifier) -> TcpControlReceiver {
+    pub(crate) fn register(&self, id: TcpConnectionId) -> TcpControlReceiver {
         let (tx, rx) = mpsc::unbounded_channel();
         self.0.lock().unwrap().insert(id, tx);
         rx
     }
 
-    pub(crate) fn unregister(&self, id: &TcpIdentifier) {
+    pub(crate) fn unregister(&self, id: &TcpConnectionId) {
         self.0.lock().unwrap().remove(id);
     }
 
     #[allow(unused)]
-    pub(crate) fn send_lossy(&self, id: &TcpIdentifier, msg: TcpControlMsg) {
+    pub(crate) fn send_lossy(&self, id: &TcpConnectionId, msg: TcpControlMsg) {
         if let Some(tx) = self.0.lock().unwrap().get(id) {
             let _ = tx.send(msg);
         }
@@ -161,7 +206,7 @@ impl TcpControl {
     pub(crate) fn disconnect_ip(&self, ip: IpAddr) {
         let map = self.0.lock().unwrap();
         let mut count = 0;
-        for (id, tx) in map.range((ip, u16::MIN, u64::MIN)..(ip, u16::MAX, u64::MAX)) {
+        for (_, tx) in map.range(TcpConnectionId::range_for_ip(ip)) {
             let _ = tx.send(TcpControlMsg::Disconnect);
             count += 1;
         }
@@ -176,7 +221,7 @@ impl TcpControl {
     pub(crate) fn disconnect_socket(&self, ip: IpAddr, port: u16) {
         let map = self.0.lock().unwrap();
         let mut count = 0;
-        for (_, tx) in map.range((ip, port, u64::MIN)..(ip, port, u64::MAX)) {
+        for (_, tx) in map.range(TcpConnectionId::range_for_socket(ip, port)) {
             let _ = tx.send(TcpControlMsg::Disconnect);
             count += 1;
         }
@@ -191,14 +236,21 @@ impl TcpControl {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::HashMap,
-        net::{IpAddr, Ipv4Addr},
-    };
+    use std::net::{IpAddr, Ipv4Addr};
 
     use rstest::*;
 
     use super::*;
+    use crate::TcpSocketType;
+
+    fn id(socket: TcpSocketType, ip: IpAddr, port: u16, conn_id: u64) -> TcpConnectionId {
+        TcpConnectionId {
+            ip,
+            port,
+            conn_id,
+            socket,
+        }
+    }
 
     #[fixture]
     fn tcp_control() -> TcpControl {
@@ -206,12 +258,17 @@ mod tests {
     }
 
     #[fixture]
-    fn tcp_id() -> TcpIdentifier {
-        (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 8080, 12345)
+    fn tcp_id() -> TcpConnectionId {
+        id(
+            TcpSocketType::Original,
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+            8080,
+            12345,
+        )
     }
 
     #[rstest]
-    fn test_register_and_unregister(tcp_control: TcpControl, tcp_id: TcpIdentifier) {
+    fn test_register_and_unregister(tcp_control: TcpControl, tcp_id: TcpConnectionId) {
         let _rx = tcp_control.register(tcp_id);
         tcp_control.send_lossy(&tcp_id, TcpControlMsg::Disconnect);
         tcp_control.unregister(&tcp_id);
@@ -219,7 +276,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_send_lossy_existing_and_nonexistent(tcp_control: TcpControl, tcp_id: TcpIdentifier) {
+    fn test_send_lossy_existing_and_nonexistent(tcp_control: TcpControl, tcp_id: TcpConnectionId) {
         tcp_control.send_lossy(&tcp_id, TcpControlMsg::Disconnect);
 
         let mut rx = tcp_control.register(tcp_id);
@@ -228,7 +285,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_multiple_registrations_same_id(tcp_control: TcpControl, tcp_id: TcpIdentifier) {
+    fn test_multiple_registrations_same_id(tcp_control: TcpControl, tcp_id: TcpConnectionId) {
         let _rx1 = tcp_control.register(tcp_id);
         let mut rx2 = tcp_control.register(tcp_id);
 
@@ -239,41 +296,50 @@ mod tests {
     #[rstest]
     #[case::same_ip_different_ports(
         vec![
-            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 8080, 1),
-            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 9090, 2),
-            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8080, 3),
+            id(TcpSocketType::Original, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 8080, 1),
+            id(TcpSocketType::Original, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 9090, 2),
+            id(TcpSocketType::Original, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8080, 3),
         ],
         IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
         vec![0, 1]
     )]
     #[case::edge_ports(
         vec![
-            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), u16::MIN, 1),
-            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), u16::MAX, 2),
-            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 8080, 3),
-            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8080, 4),
+            id(TcpSocketType::Original, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), u16::MIN, 1),
+            id(TcpSocketType::Original, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), u16::MAX, 2),
+            id(TcpSocketType::Original, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 8080, 3),
+            id(TcpSocketType::Original, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8080, 4),
         ],
         IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
         vec![0, 1, 2]
     )]
     #[case::no_matching_ip(
         vec![
-            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8080, 1),
-            (IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1)), 9090, 2),
+            id(TcpSocketType::Original, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8080, 1),
+            id(TcpSocketType::Original, IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1)), 9090, 2),
         ],
         IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
         vec![]
     )]
+    #[case::across_sockets(
+        vec![
+            id(TcpSocketType::Original, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 8080, 1),
+            id(TcpSocketType::Original, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 8080, 2),
+            id(TcpSocketType::Original, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8080, 3),
+        ],
+        IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+        vec![0, 1]
+    )]
     fn test_disconnect_ip(
         tcp_control: TcpControl,
-        #[case] sockets: Vec<TcpIdentifier>,
+        #[case] sockets: Vec<TcpConnectionId>,
         #[case] disconnect_ip: IpAddr,
         #[case] expected_disconnected_indices: Vec<usize>,
     ) {
-        let mut socket_receivers = HashMap::new();
+        let mut socket_receivers = std::collections::HashMap::new();
 
-        for (i, &socket) in sockets.iter().enumerate() {
-            let rx = tcp_control.register(socket);
+        for (i, socket) in sockets.iter().enumerate() {
+            let rx = tcp_control.register(*socket);
             socket_receivers.insert(i, rx);
         }
 
@@ -292,10 +358,10 @@ mod tests {
     #[rstest]
     #[case::same_ip_port_different_connections(
         vec![
-            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 8080, 1),
-            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 8080, 2),
-            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 9090, 3),
-            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8080, 4),
+            id(TcpSocketType::Original, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 8080, 1),
+            id(TcpSocketType::Original, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 8080, 2),
+            id(TcpSocketType::Original, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 9090, 3),
+            id(TcpSocketType::Original, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8080, 4),
         ],
         IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
         8080,
@@ -303,10 +369,10 @@ mod tests {
     )]
     #[case::edge_port_numbers(
         vec![
-            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), u16::MIN, 1),
-            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), u16::MAX, 2),
-            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 8080, 3),
-            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), u16::MIN, 4),
+            id(TcpSocketType::Original, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), u16::MIN, 1),
+            id(TcpSocketType::Original, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), u16::MAX, 2),
+            id(TcpSocketType::Original, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 8080, 3),
+            id(TcpSocketType::Original, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), u16::MIN, 4),
         ],
         IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
         u16::MIN,
@@ -314,24 +380,34 @@ mod tests {
     )]
     #[case::no_matching_socket(
         vec![
-            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 8080, 1),
-            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 9090, 2),
+            id(TcpSocketType::Original, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 8080, 1),
+            id(TcpSocketType::Original, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 9090, 2),
         ],
         IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
         9090,
         vec![]
     )]
+    #[case::across_sockets(
+        vec![
+            id(TcpSocketType::Original, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 8080, 1),
+            id(TcpSocketType::Original, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 8080, 2),
+            id(TcpSocketType::Original, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 9090, 3),
+        ],
+        IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+        8080,
+        vec![0, 1]
+    )]
     fn test_disconnect_socket(
         tcp_control: TcpControl,
-        #[case] sockets: Vec<TcpIdentifier>,
+        #[case] sockets: Vec<TcpConnectionId>,
         #[case] disconnect_ip: IpAddr,
         #[case] disconnect_port: u16,
         #[case] expected_disconnected_indices: Vec<usize>,
     ) {
-        let mut socket_receivers = HashMap::new();
+        let mut socket_receivers = std::collections::HashMap::new();
 
-        for (i, &socket) in sockets.iter().enumerate() {
-            let rx = tcp_control.register(socket);
+        for (i, socket) in sockets.iter().enumerate() {
+            let rx = tcp_control.register(*socket);
             socket_receivers.insert(i, rx);
         }
 

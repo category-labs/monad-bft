@@ -5088,6 +5088,7 @@ dependencies = [
  "rand 0.8.5",
  "rstest",
  "socket2 0.5.10",
+ "strum",
  "thiserror 1.0.69",
  "tokio",
  "tracing",

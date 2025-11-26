@@ -27,7 +27,7 @@ use futures::{Stream, StreamExt};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_dataplane::{DataplaneBuilder, UdpSocketWriter};
+use monad_dataplane::{DataplaneBuilder, TcpSocketType, UdpSocketType, UdpSocketWriter};
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{Message, RouterCommand};
 use monad_node_config::{FullNodeConfig, FullNodeIdentityConfig};
@@ -44,7 +44,7 @@ use monad_raptorcast::{
         group_message::FullNodesGroupMessage, RaptorCastSecondary, SecondaryRaptorCastModeConfig,
     },
     util::Group,
-    RaptorCast, RaptorCastEvent, RAPTORCAST_SOCKET,
+    RaptorCast, RaptorCastEvent,
 };
 use monad_types::{Epoch, NodeId};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -98,12 +98,15 @@ where
         let dp = dataplane_builder.build();
         assert!(dp.block_until_ready(Duration::from_secs(1)));
 
-        let (tcp_socket, mut udp_dataplane, control) = dp.split();
+        let (mut tcp_dataplane, mut udp_dataplane, control) = dp.split();
         let udp_socket = udp_dataplane
-            .take_socket(RAPTORCAST_SOCKET)
+            .take_socket(UdpSocketType::Original)
             .expect("raptorcast socket");
         let udp_writer_secondary = udp_socket.writer().clone();
 
+        let tcp_socket = tcp_dataplane
+            .take_socket(TcpSocketType::Original)
+            .expect("raptorcast tcp socket");
         let (tcp_reader, tcp_writer) = tcp_socket.split();
 
         // Create a channel between primary and secondary raptorcast instances.

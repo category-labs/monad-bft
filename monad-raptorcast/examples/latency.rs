@@ -31,7 +31,9 @@ use futures_util::StreamExt;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_dataplane::DataplaneBuilder;
+use monad_dataplane::{
+    DataplaneBuilder, TcpSocketConfig, TcpSocketType, UdpSocketConfig, UdpSocketType,
+};
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
 use monad_node_config::{fullnode_raptorcast::FullNodeRaptorCastConfig, FullNodeConfig};
@@ -43,7 +45,7 @@ use monad_peer_discovery::{
 use monad_raptorcast::{
     config::{RaptorCastConfig, RaptorCastConfigPrimary},
     raptorcast_secondary::SecondaryRaptorCastModeConfig,
-    RaptorCast, RaptorCastEvent, RAPTORCAST_SOCKET,
+    RaptorCast, RaptorCastEvent,
 };
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{Deserializable, Epoch, NodeId, RouterTarget, Serializable, Stake};
@@ -408,18 +410,25 @@ fn setup_node(
 
     let udp_addr = SocketAddr::V4(my_config.udp_addr);
 
-    let dataplane = DataplaneBuilder::new(&udp_addr, UDP_BW)
-        .extend_udp_sockets(vec![monad_dataplane::UdpSocketConfig {
+    let dataplane = DataplaneBuilder::new(UDP_BW)
+        .extend_udp_sockets(vec![UdpSocketConfig {
             socket_addr: udp_addr,
-            label: RAPTORCAST_SOCKET.to_string(),
+            socket: UdpSocketType::Original,
+        }])
+        .extend_tcp_sockets(vec![TcpSocketConfig {
+            socket_addr: udp_addr,
+            socket: TcpSocketType::Original,
         }])
         .build();
     assert!(dataplane.block_until_ready(Duration::from_secs(2)));
 
-    let (tcp_socket, mut udp_dataplane, dataplane_control) = dataplane.split();
+    let (mut tcp_dataplane, mut udp_dataplane, dataplane_control) = dataplane.split();
+    let tcp_socket = tcp_dataplane
+        .take_socket(TcpSocketType::Original)
+        .expect("raptorcast tcp socket not found");
     let (tcp_reader, tcp_writer) = tcp_socket.split();
     let udp_socket = udp_dataplane
-        .take_socket(RAPTORCAST_SOCKET)
+        .take_socket(UdpSocketType::Original)
         .expect("raptorcast socket not found");
 
     let mut known_addresses = std::collections::HashMap::new();
