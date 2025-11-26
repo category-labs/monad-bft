@@ -35,7 +35,11 @@ use validator::SystemTransactionError;
 pub mod staking_contract;
 pub mod validator;
 
-// Private key used to sign system transactions
+// Private key used to sign system transactions.
+//
+// SECURITY NOTE: Hardcoding the private key in the client is an intentional design decision. All
+// nodes independently generate the set of system transactions per block signed by this key. Any
+// block with transactions signed by the system key not in the expected set will be rejected.
 const SYSTEM_SENDER_PRIV_KEY: B256 = B256::new(hex!(
     "b0358e6d701a955d9926676f227e40172763296b317ff554e49cdf2c2c35f8a7"
 ));
