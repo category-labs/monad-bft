@@ -310,7 +310,7 @@ impl FromStr for BlockTags {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "earliest" => Ok(Self::Latest),
+            "earliest" => Ok(Self::Number(Quantity(0))),
             "latest" => Ok(Self::Latest),
             "safe" => Ok(Self::Safe),
             "finalized" => Ok(Self::Finalized),
