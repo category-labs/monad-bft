@@ -31,8 +31,10 @@ alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
+governor = { workspace = true }
 indexmap = { workspace = true }
 itertools = { workspace = true }
+nonzero_ext = { workspace = true }
 pin-project = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }

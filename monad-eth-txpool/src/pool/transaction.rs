@@ -58,7 +58,7 @@ pub struct ValidEthRecoveredAuthorization {
 }
 
 impl ValidEthTransaction {
-    pub fn validate<ST, SCT>(
+    pub(crate) fn validate<ST, SCT>(
         last_commit: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
         chain_id: u64,
         chain_params: &ChainParams,

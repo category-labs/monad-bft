@@ -62,9 +62,7 @@ fn with_txpool(
     let mut ipc_events = BTreeMap::default();
     let mut event_tracker = EthTxPoolEventTracker::new(&metrics, &mut ipc_events);
 
-    assert!(pool
-        .get_forwardable_txs::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
-        .is_none());
+    assert!(pool.get_forwardable_txs().is_none());
 
     pool.update_committed_block(
         &mut event_tracker,
@@ -79,8 +77,9 @@ fn with_txpool(
     );
 
     assert_eq!(
-        pool.get_forwardable_txs::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
+        pool.get_forwardable_txs()
             .unwrap()
+            .take_all::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
             .count(),
         0
     );
@@ -101,8 +100,9 @@ fn with_txpool(
 
     assert_eq!(pool.num_txs(), 1);
     assert_eq!(
-        pool.get_forwardable_txs::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
+        pool.get_forwardable_txs()
             .unwrap()
+            .take_all::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
             .count(),
         0
     );
@@ -127,8 +127,9 @@ fn test_simple() {
             );
 
             assert_eq!(
-                pool.get_forwardable_txs::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
+                pool.get_forwardable_txs()
                     .unwrap()
+                    .take_all::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
                     .count(),
                 forwardable
             );
@@ -137,8 +138,11 @@ fn test_simple() {
             //  -> Validates that tx is not reproduced in same block
             for _ in 0..128 {
                 assert_eq!(
-                    pool.get_forwardable_txs::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
+                    pool.get_forwardable_txs()
                         .unwrap()
+                        .take_forwardable_while::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>(
+                            |_| true
+                        )
                         .count(),
                     0
                 );
@@ -165,8 +169,11 @@ fn test_forwarded() {
 
             for _ in 0..128 {
                 assert_eq!(
-                    pool.get_forwardable_txs::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
+                    pool.get_forwardable_txs()
                         .unwrap()
+                        .take_forwardable_while::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>(
+                            |_| true
+                        )
                         .count(),
                     // Forwarded txs are never forwarded
                     0
@@ -198,8 +205,9 @@ fn test_multiple_sequential_commits() {
             }
 
             assert_eq!(
-                pool.get_forwardable_txs::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
+                pool.get_forwardable_txs()
                     .unwrap()
+                    .take_all::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
                     .count(),
                 forwardable
             );
@@ -208,8 +216,11 @@ fn test_multiple_sequential_commits() {
             //  -> Validates that forwarding is non-bursty
             for _ in 0..128 {
                 assert_eq!(
-                    pool.get_forwardable_txs::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
+                    pool.get_forwardable_txs()
                         .unwrap()
+                        .take_forwardable_while::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>(
+                            |_| true
+                        )
                         .count(),
                     0
                 );
@@ -239,8 +250,11 @@ fn test_base_fee() {
                 round += 1;
 
                 assert_eq!(
-                    pool.get_forwardable_txs::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
+                    pool.get_forwardable_txs()
                         .unwrap()
+                        .take_forwardable_while::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>(
+                            |_| true
+                        )
                         .count(),
                     0
                 );
@@ -260,8 +274,9 @@ fn test_base_fee() {
             round += 1;
 
             assert_eq!(
-                pool.get_forwardable_txs::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
+                pool.get_forwardable_txs()
                     .unwrap()
+                    .take_all::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
                     .count(),
                 1
             );
@@ -284,8 +299,9 @@ fn test_base_fee() {
             // Subsequent calls do not produce the tx
             //  -> Validates that forwarding is non-bursty
             assert_eq!(
-                pool.get_forwardable_txs::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
+                pool.get_forwardable_txs()
                     .unwrap()
+                    .take_all::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
                     .count(),
                 0
             );

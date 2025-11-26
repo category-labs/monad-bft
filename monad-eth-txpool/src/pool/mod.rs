@@ -46,14 +46,17 @@ use monad_validator::signature_collection::SignatureCollection;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing::{debug, error, info, warn};
 
-pub use self::transaction::max_eip2718_encoded_length;
+pub use self::{
+    forward::EthTxPoolForwardableTxs,
+    transaction::{max_eip2718_encoded_length, ValidEthTransaction},
+};
 use self::{
     sequencer::ProposalSequencer,
     tracked::{TrackedTxLimitsConfig, TrackedTxMap},
-    transaction::ValidEthTransaction,
 };
 use crate::EthTxPoolEventTracker;
 
+mod forward;
 mod sequencer;
 mod tracked;
 mod transaction;
@@ -509,20 +512,19 @@ where
         );
     }
 
-    pub fn get_forwardable_txs<const MIN_SEQNUM_DIFF: u64, const MAX_RETRIES: usize>(
+    pub fn get_forwardable_txs(
         &mut self,
-    ) -> Option<impl Iterator<Item = &TxEnvelope>> {
+    ) -> Option<EthTxPoolForwardableTxs<'_, impl Iterator<Item = &mut ValidEthTransaction>>> {
         let last_commit = self.last_commit.as_ref()?;
 
         let last_commit_seq_num = last_commit.seq_num;
         let last_commit_base_fee = last_commit.execution_inputs.base_fee_per_gas;
 
-        Some(self.tracked.iter_mut_txs().filter_map(move |tx| {
-            tx.get_if_forwardable::<MIN_SEQNUM_DIFF, MAX_RETRIES>(
-                last_commit_seq_num,
-                last_commit_base_fee,
-            )
-        }))
+        Some(EthTxPoolForwardableTxs::new(
+            last_commit_seq_num,
+            last_commit_base_fee,
+            self.tracked.iter_mut_txs(),
+        ))
     }
 
     fn update_aggregate_metrics(&self, event_tracker: &mut EthTxPoolEventTracker<'_>) {
