@@ -52,7 +52,29 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
 ) -> JsonRpcResult<Box<RawValue>> {
     let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block).await?;
 
-    let calls: Vec<Vec<TxEnvelope>> = vec![vec![]];
+    let senders = params
+        .simulation
+        .block_state_calls
+        .iter()
+        .map(|bsc| {
+            bsc.calls
+                .iter()
+                .map(|call| call.from.unwrap_or_default())
+                .collect()
+        })
+        .collect();
+
+    let calls: Vec<Vec<TxEnvelope>> = params
+        .simulation
+        .block_state_calls
+        .iter()
+        .map(|bsc| {
+            bsc.calls
+                .iter()
+                .map(|call| call.clone().try_into().unwrap())
+                .collect()
+        })
+        .collect();
 
     let mut header = match triedb_env
         .get_block_header(block_key)
@@ -77,6 +99,7 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
 
     let result = eth_simulate_v1(
         chain_id,
+        &senders,
         &calls,
         header.header,
         block_number,
