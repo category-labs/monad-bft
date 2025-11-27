@@ -350,7 +350,7 @@ where
     pub chunk: Bytes, // raptor-coded portion
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum MessageValidationError {
     UnknownVersion,
     TooShort,
@@ -496,30 +496,25 @@ where
 
     let cursor_chunk_id = split_off(2)?;
     let chunk_id = u16::from_le_bytes(cursor_chunk_id.as_ref().try_into().expect("u16 is 2 bytes"));
-    let symbol_len = cursor.len();
+
+    let cursor_payload = cursor;
+    let symbol_len = cursor_payload.len();
+    if symbol_len == 0 {
+        // handle the degenerate case
+        return Err(MessageValidationError::TooShort);
+    }
 
     let chunk_id_range = match maybe_broadcast_mode {
-        None | Some(BroadcastMode::Secondary) => valid_chunk_id_range(app_message_len, symbol_len),
+        None | Some(BroadcastMode::Secondary) => valid_chunk_id_range(app_message_len, symbol_len)?,
         Some(BroadcastMode::Primary) => {
             // only perform a basic sanity check here. more precise
             // check of chunk_id is in decoding.rs when the validator
             // set is available.
-            valid_chunk_id_range_raptorcast(app_message_len, symbol_len, MAX_VALIDATOR_SET_SIZE)
+            valid_chunk_id_range_raptorcast(app_message_len, symbol_len, MAX_VALIDATOR_SET_SIZE)?
         }
-    };
-    let Some(chunk_id_range) = chunk_id_range else {
-        // app_message_len overflow when scaled. this should not be
-        // reachable if app_message_len check works.
-        return Err(MessageValidationError::TooLong);
     };
     if !chunk_id_range.contains(&(chunk_id as usize)) {
         return Err(MessageValidationError::InvalidChunkId);
-    }
-
-    let cursor_payload = cursor;
-    if cursor_payload.is_empty() {
-        // handle the degenerate case
-        return Err(MessageValidationError::TooShort);
     }
 
     let leaf_hash = {
@@ -586,17 +581,31 @@ fn valid_chunk_id_range_raptorcast(
     app_message_len: usize,
     symbol_len: usize,
     num_validators: usize,
-) -> Option<Range<usize>> {
+) -> Result<Range<usize>, MessageValidationError> {
+    if symbol_len == 0 {
+        return Err(MessageValidationError::TooShort);
+    }
     let base_chunks = app_message_len.div_ceil(symbol_len);
     let rounding_chunks = num_validators;
-    let num_chunks = MAX_REDUNDANCY.scale(base_chunks)? + rounding_chunks;
-    Some(0..num_chunks)
+    let num_chunks = MAX_REDUNDANCY
+        .scale(base_chunks)
+        .ok_or(MessageValidationError::TooLong)?
+        + rounding_chunks;
+    Ok(0..num_chunks)
 }
 
-fn valid_chunk_id_range(app_message_len: usize, symbol_len: usize) -> Option<Range<usize>> {
+fn valid_chunk_id_range(
+    app_message_len: usize,
+    symbol_len: usize,
+) -> Result<Range<usize>, MessageValidationError> {
+    if symbol_len == 0 {
+        return Err(MessageValidationError::TooShort);
+    }
     let base_chunks = app_message_len.div_ceil(symbol_len);
-    let num_chunks = MAX_REDUNDANCY.scale(base_chunks)?;
-    Some(0..num_chunks)
+    let num_chunks = MAX_REDUNDANCY
+        .scale(base_chunks)
+        .ok_or(MessageValidationError::TooLong)?;
+    Ok(0..num_chunks)
 }
 
 struct BroadcastBatch<PT: PubKey> {
@@ -1167,5 +1176,42 @@ mod tests {
                 Err(MessageValidationError::InvalidChunkId)
             ));
         }
+    }
+
+    #[test]
+    fn test_zero_len_chunk() {
+        let payload = {
+            const PACKET_LEN: usize = 132;
+            let mut packet = vec![0u8; PACKET_LEN];
+
+            // Bytes 0-64: Signature (65 bytes) - arbitrary, not verified before crash
+            // Bytes 65-66: Version = 0 (already zero)
+
+            // Byte 67: tree_depth=1 (bits 0-3), no broadcast flags (bits 6-7)
+            packet[67] = 0x01;
+
+            // Bytes 68-75: Epoch/GroupId (any value)
+            packet[68..76].copy_from_slice(&1u64.to_le_bytes());
+
+            // Bytes 76-83: Timestamp (current time in milliseconds)
+
+            // Bytes 84-103: App message hash (zeros are fine)
+
+            // Bytes 104-107: App message length = 1 (MUST BE > 0!)
+            packet[104..108].copy_from_slice(&1u32.to_le_bytes());
+
+            // Bytes 108-127: Recipient hash (zeros are fine)
+            // Byte 128: Merkle leaf idx = 0
+            // Byte 129: Reserved = 0
+            // Bytes 130-131: Chunk ID = 0
+
+            // NO PAYLOAD - packet ends at 132 bytes
+            // This makes symbol_len = cursor.len() = 0
+
+            packet
+        };
+        let mut signature_cache = LruCache::new(SIGNATURE_CACHE_SIZE);
+        let result = parse_message::<SignatureType>(&mut signature_cache, payload.into(), u64::MAX);
+        assert_eq!(result.err(), Some(MessageValidationError::TooShort))
     }
 }
