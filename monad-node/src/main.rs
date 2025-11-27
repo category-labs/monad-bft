@@ -589,13 +589,7 @@ where
                 }
             };
 
-            let peer_entry = monad_executor_glue::PeerEntry {
-                pubkey: peer.secp256k1_pubkey,
-                addr: address,
-                signature: peer.name_record_sig,
-                record_seq_num: peer.record_seq_num,
-                auth_port: peer.auth_port,
-            };
+            let peer_entry = peer.with_resolved_addr(address);
 
             match MonadNameRecord::try_from(&peer_entry) {
                 Ok(monad_name_record) => Some((node_id, monad_name_record)),
