@@ -80,6 +80,10 @@ pub struct StreamArgs {
     /// Sleep seconds between blocks
     #[arg(long, default_value = "1.0")]
     pub sleep_secs: f64,
+
+    /// Maximum number of blocks to process per iteration
+    #[arg(long, default_value = "10_000")]
+    pub max_blocks_per_iter: u64,
 }
 
 #[derive(Debug, Parser)]
