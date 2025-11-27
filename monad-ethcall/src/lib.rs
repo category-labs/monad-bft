@@ -23,7 +23,7 @@ use std::{
 use alloy_consensus::{Header, Transaction as _, TxEnvelope};
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{Address, Bytes, B256, U256, U64};
-use alloy_rlp::Encodable;
+use alloy_rlp::{encode_iter, encode_list, Encodable};
 use alloy_sol_types::decode_revert_reason;
 use bindings::monad_executor_result;
 use futures::channel::oneshot::{channel, Sender};
@@ -32,7 +32,7 @@ use monad_chain_config::{
     MONAD_TESTNET_CHAIN_ID,
 };
 use serde::{Deserialize, Serialize};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 #[allow(dead_code, non_camel_case_types, non_upper_case_globals)]
 pub mod bindings {
@@ -60,7 +60,7 @@ impl EthCallExecutor {
         node_lru_max_mem: u64,
         triedb_path: &Path,
     ) -> Self {
-        monad_cxx::init_cxx_logging(tracing::Level::WARN);
+        monad_cxx::init_cxx_logging(tracing::Level::TRACE);
 
         let dbpath = CString::new(triedb_path.to_str().expect("invalid path"))
             .expect("failed to create CString");
@@ -633,6 +633,7 @@ pub struct BlockOverride {
 
 pub async fn eth_simulate_v1(
     chain_id: u64,
+    senders: &Vec<Vec<Address>>,
     calls: &Vec<Vec<TxEnvelope>>,
     block_header: Header,
     block_number: u64,
@@ -642,8 +643,16 @@ pub async fn eth_simulate_v1(
 ) -> SimulateResult {
     assert_eq!(calls.len(), overrides.len());
 
+    let mut rlp_encoded_senders = vec![];
+    senders.encode(&mut rlp_encoded_senders);
+
     let mut rlp_encoded_txns = vec![];
     calls.encode(&mut rlp_encoded_txns);
+
+    dbg!(&senders);
+    dbg!(&calls);
+    dbg!(&rlp_encoded_senders);
+    dbg!(&rlp_encoded_txns);
 
     let chain_config = match chain_id {
         ETHEREUM_MAINNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_ETHEREUM_MAINNET,
