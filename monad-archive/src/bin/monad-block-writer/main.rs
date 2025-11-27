@@ -132,7 +132,7 @@ async fn main() -> Result<()> {
                     tokio::time::sleep(Duration::from_secs_f64(stream_args.sleep_secs)).await;
                     continue;
                 }
-                stop = stop.min(start + 1_000_000);
+                stop = stop.min(start + stream_args.max_blocks_per_iter);
                 let last_block = match tokio::spawn(run(
                     concurrent_block_semaphore.clone(),
                     reader.clone(),
