@@ -19,6 +19,7 @@ use monad_crypto::certificate_signature::{CertificateKeyPair, PubKey};
 use monad_types::NodeId;
 
 /// Map validator NodeId to its Certificate PubKey
+#[derive(Clone)]
 pub struct ValidatorMapping<PT: PubKey, VKT: CertificateKeyPair> {
     pub map: BTreeMap<NodeId<PT>, VKT::PubKeyType>,
 }

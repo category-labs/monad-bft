@@ -64,6 +64,22 @@ where
         self.signature
             .recover_pubkey::<signing_domain::Tip>(&rlp_block_header)
     }
+
+    pub fn from_raw(
+        block_header: ConsensusBlockHeader<ST, SCT, EPT>,
+        signature: ST,
+        fresh_certificate: Option<FreshProposalCertificate<SCT>>,
+    ) -> Self {
+        Self {
+            block_header,
+            signature,
+            fresh_certificate,
+        }
+    }
+
+    pub fn signature(&self) -> &ST {
+        &self.signature
+    }
 }
 
 impl<ST, SCT, EPT> Serialize for ConsensusTip<ST, SCT, EPT>

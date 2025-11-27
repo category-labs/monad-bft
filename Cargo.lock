@@ -5010,6 +5010,7 @@ dependencies = [
  "monad-validator",
  "test-case",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -6062,12 +6063,15 @@ name = "monad-testutil"
 version = "0.1.0"
 dependencies = [
  "alloy-rlp",
+ "monad-chain-config",
  "monad-consensus",
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-types",
  "monad-mock-swarm",
  "monad-state",
+ "monad-state-backend",
  "monad-tfm",
  "monad-types",
  "monad-updaters",
