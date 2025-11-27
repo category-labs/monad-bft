@@ -228,6 +228,31 @@ impl ERC20 {
         )
     }
 
+    pub fn construct_approve(
+        &self,
+        from: &PrivateKey,
+        spender: Address,
+        nonce: u64,
+        amount: U256,
+        max_fee_per_gas: u128,
+        chain_id: u64,
+        gas_limit: Option<u64>,
+        priority_fee: Option<u128>,
+    ) -> TxEnvelope {
+        let input = IERC20::approveCall { spender, amount }.abi_encode();
+        make_tx(
+            nonce,
+            from,
+            self.addr,
+            U256::ZERO,
+            input,
+            max_fee_per_gas,
+            chain_id,
+            gas_limit,
+            priority_fee,
+        )
+    }
+
     pub fn balance_of(&self, account: Address) -> (&'static str, [Value; 1]) {
         let input = IERC20::balanceOfCall { account };
         let call = json!({

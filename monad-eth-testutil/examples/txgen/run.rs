@@ -378,7 +378,7 @@ async fn verify_contract_code(client: &ReqwestClient, addr: Address) -> Result<b
 struct DeployedContractFile {
     erc20: Option<Address>,
     ecmul: Option<Address>,
-    uniswap: Option<Address>,
+    uniswap: Option<Uniswap>,
     eip7702: Option<Address>,
     nft_sale: Option<Address>,
 }
@@ -494,16 +494,17 @@ async fn load_or_deploy_contracts(
                     uniswap: Some(uniswap),
                     ..
                 }) => {
-                    if verify_contract_code(client, uniswap).await? {
-                        info!("Contract loaded from file validated");
-                        return Ok(DeployedContract::Uniswap(Uniswap { addr: uniswap }));
+                    // Verify the factory contract is deployed (as a sanity check)
+                    if verify_contract_code(client, uniswap.factory_addr).await? {
+                        info!("Uniswap contracts loaded from file validated");
+                        return Ok(DeployedContract::Uniswap(uniswap));
                     }
                     warn!(
-                        "Contract loaded from file not found on chain, deploying new contract..."
+                        "Uniswap contracts loaded from file not found on chain, deploying new contracts..."
                     );
                 }
                 Err(e) => info!("Failed to load deployed contracts file, {e}"),
-                _ => info!("Contract not in deployed contracts file"),
+                _ => info!("Uniswap contracts not in deployed contracts file"),
             }
 
             // if not found, deploy new contract
@@ -519,7 +520,7 @@ async fn load_or_deploy_contracts(
             let deployed = DeployedContractFile {
                 erc20: None,
                 ecmul: None,
-                uniswap: Some(uniswap.addr),
+                uniswap: Some(uniswap),
                 eip7702: None,
                 nft_sale: None,
             };
@@ -629,27 +630,44 @@ async fn write_and_verify_deployed_contracts(
 ) -> Result<()> {
     if let Some(addr) = dc.erc20 {
         if !verify_contract_code(client, addr).await? {
-            bail!("Failed to verify freshly deployed contract");
+            bail!("Failed to verify freshly deployed ERC20 contract");
         }
     }
     if let Some(addr) = dc.ecmul {
         if !verify_contract_code(client, addr).await? {
-            bail!("Failed to verify freshly deployed contract");
+            bail!("Failed to verify freshly deployed ECMul contract");
         }
     }
-    if let Some(addr) = dc.uniswap {
-        if !verify_contract_code(client, addr).await? {
-            bail!("Failed to verify freshly deployed contract");
+    if let Some(ref uniswap) = dc.uniswap {
+        // Verify all Uniswap contract addresses
+        if !verify_contract_code(client, uniswap.factory_addr).await? {
+            bail!("Failed to verify freshly deployed Uniswap Factory contract");
+        }
+        if !verify_contract_code(client, uniswap.nonfungible_position_manager_addr).await? {
+            bail!("Failed to verify freshly deployed Uniswap Position Manager contract");
+        }
+        if !verify_contract_code(client, uniswap.weth_addr).await? {
+            bail!("Failed to verify freshly deployed WETH contract");
+        }
+        if !verify_contract_code(client, uniswap.token_a_addr).await? {
+            bail!("Failed to verify freshly deployed Token A contract");
+        }
+        if !verify_contract_code(client, uniswap.token_b_addr).await? {
+            bail!("Failed to verify freshly deployed Token B contract");
+        }
+        if !verify_contract_code(client, uniswap.pool_addr).await? {
+            bail!("Failed to verify freshly deployed Uniswap Pool contract");
         }
     }
     if let Some(addr) = dc.eip7702 {
         if !verify_contract_code(client, addr).await? {
-            bail!("Failed to verify freshly deployed contract");
+            bail!("Failed to verify freshly deployed EIP7702 contract");
         }
     }
 
     let mut file = std::fs::File::create(path)?;
-    serde_json::to_writer(&mut file, &dc).context("Failed to serialize deployed contracts")?;
+    serde_json::to_writer_pretty(&mut file, &dc)
+        .context("Failed to serialize deployed contracts")?;
     file.flush()?;
     info!("Wrote deployed contract addresses to {path}");
 

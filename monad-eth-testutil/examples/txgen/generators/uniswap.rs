@@ -29,17 +29,87 @@ impl Generator for UniswapGenerator {
     ) -> Vec<(TxEnvelope, Address, crate::shared::private_key::PrivateKey)> {
         let mut txs = Vec::with_capacity(self.tx_per_sender * accts.len());
 
-        // for each sender, provide liquidity in uniswap pools
+        // for each sender:
+        // - mint tokens A&B for liquidity
+        // - approve tokens A&B for non-fungible position manager
+        // - provide liquidity in uniswap pools
         for sender in accts {
             for _ in 0..self.tx_per_sender {
-                let tx = self.uniswap.construct_tx(
+                let tx = self.uniswap.construct_token_mint_tx(
                     sender,
+                    self.uniswap.token_a_addr,
                     ctx.base_fee,
                     ctx.chain_id,
                     ctx.set_tx_gas_limit,
-                    ctx.priority_fee,
                 );
-                txs.push((tx, self.uniswap.addr, sender.key.clone()));
+                txs.push((
+                    tx,
+                    self.uniswap.nonfungible_position_manager_addr,
+                    sender.key.clone(),
+                ));
+                sender.nonce += 1;
+
+                let tx = self.uniswap.construct_token_mint_tx(
+                    sender,
+                    self.uniswap.token_b_addr,
+                    ctx.base_fee,
+                    ctx.chain_id,
+                    ctx.set_tx_gas_limit,
+                );
+                txs.push((
+                    tx,
+                    self.uniswap.nonfungible_position_manager_addr,
+                    sender.key.clone(),
+                ));
+                sender.nonce += 1;
+
+                // approval txs
+                let tx = self.uniswap.construct_token_approve_tx(
+                    sender,
+                    self.uniswap.token_a_addr,
+                    self.uniswap.nonfungible_position_manager_addr,
+                    ctx.base_fee,
+                    ctx.chain_id,
+                    ctx.set_tx_gas_limit,
+                );
+                txs.push((
+                    tx,
+                    self.uniswap.nonfungible_position_manager_addr,
+                    sender.key.clone(),
+                ));
+                sender.nonce += 1;
+
+                let tx = self.uniswap.construct_token_approve_tx(
+                    sender,
+                    self.uniswap.token_b_addr,
+                    self.uniswap.nonfungible_position_manager_addr,
+                    ctx.base_fee,
+                    ctx.chain_id,
+                    ctx.set_tx_gas_limit,
+                );
+                txs.push((
+                    tx,
+                    self.uniswap.nonfungible_position_manager_addr,
+                    sender.key.clone(),
+                ));
+                sender.nonce += 1;
+
+                // provide liquidity tx
+                let tx = self.uniswap.construct_add_liquidity_tx(
+                    sender,
+                    self.uniswap.nonfungible_position_manager_addr,
+                    self.uniswap.token_a_addr,
+                    self.uniswap.token_b_addr,
+                    ctx.base_fee,
+                    ctx.chain_id,
+                    ctx.set_tx_gas_limit,
+                );
+                txs.push((
+                    tx,
+                    self.uniswap.nonfungible_position_manager_addr,
+                    sender.key.clone(),
+                ));
+                sender.nonce += 1;
             }
         }
 
