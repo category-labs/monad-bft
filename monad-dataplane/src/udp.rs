@@ -157,18 +157,18 @@ fn set_mtu_discovery(socket: &UdpSocket) {
 }
 
 pub(crate) fn spawn_tasks(
-    socket_configs: Vec<(usize, SocketAddr, String, mpsc::Sender<RecvUdpMsg>)>,
+    socket_configs: Vec<(super::UdpSocketType, SocketAddr, mpsc::Sender<RecvUdpMsg>)>,
     udp_egress_rx: mpsc::Receiver<UdpMsg>,
     up_bandwidth_mbps: u64,
     buffer_size: Option<usize>,
 ) {
     let mut tx_sockets = Vec::new();
 
-    for (socket_id, socket_addr, label, ingress_tx) in socket_configs {
+    for (socket, socket_addr, ingress_tx) in socket_configs {
         let (rx, tx) = create_socket_pair(socket_addr, buffer_size);
         spawn(rx_single_socket(rx, ingress_tx));
-        trace!(socket_id, label = %label, ?socket_addr, "created socket");
-        tx_sockets.push(tx);
+        trace!(socket = %socket, ?socket_addr, "created udp socket");
+        tx_sockets.push((socket, tx));
     }
 
     spawn(tx(tx_sockets, udp_egress_rx, up_bandwidth_mbps));
@@ -211,10 +211,18 @@ async fn rx_single_socket(socket: UdpSocket, udp_ingress_tx: mpsc::Sender<RecvUd
 const PACING_SLEEP_OVERSHOOT_DETECTION_WINDOW: Duration = Duration::from_millis(100);
 
 async fn tx(
-    tx_sockets: Vec<UdpSocket>,
+    tx_sockets: Vec<(super::UdpSocketType, UdpSocket)>,
     mut udp_egress_rx: mpsc::Receiver<UdpMsg>,
     up_bandwidth_mbps: u64,
 ) {
+    use strum::EnumCount;
+
+    let mut tx_sockets_arr: [Option<UdpSocket>; super::UdpSocketType::COUNT] =
+        std::array::from_fn(|_| None);
+    for (socket_type, socket) in tx_sockets {
+        tx_sockets_arr[socket_type as usize] = Some(socket);
+    }
+
     let mut next_transmit = Instant::now();
 
     let mut priority_queues = PriorityQueues::new();
@@ -271,10 +279,12 @@ async fn tx(
             let chunk = msg.payload.split_to(chunk_size);
             total_bytes += chunk.len();
 
-            let socket_id = msg.socket_id;
+            let socket_type = msg.socket;
             let dst = msg.dst;
 
-            let socket = tx_sockets.get(socket_id).expect("valid socket_id");
+            let socket = tx_sockets_arr[socket_type as usize]
+                .as_ref()
+                .expect("valid socket");
 
             if !msg.payload.is_empty() {
                 if let Err(err) = priority_queues.try_push(msg) {
@@ -283,7 +293,7 @@ async fn tx(
             }
 
             trace!(
-                socket_id,
+                socket = %socket_type,
                 dst_addr = ?dst,
                 chunk_len = chunk.len(),
                 "preparing udp send"
@@ -376,7 +386,7 @@ mod tests {
 
     fn create_test_msg(priority: UdpPriority, payload_size: usize) -> UdpMsg {
         UdpMsg {
-            socket_id: 0,
+            socket: crate::UdpSocketType::Original,
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080),
             payload: Bytes::from(vec![0u8; payload_size]),
             stride: 1024,

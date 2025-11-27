@@ -39,8 +39,9 @@ use monad_crypto::{
 };
 use monad_dataplane::{
     udp::{segment_size_for_mtu, DEFAULT_MTU},
-    BroadcastMsg, DataplaneBuilder, DataplaneControl, RecvTcpMsg, TcpMsg, TcpSocketReader,
-    TcpSocketWriter, UdpSocketHandle,
+    BroadcastMsg, DataplaneBuilder, DataplaneControl, RecvTcpMsg, TcpMsg, TcpSocketConfig,
+    TcpSocketReader, TcpSocketType, TcpSocketWriter, UdpSocketConfig, UdpSocketHandle,
+    UdpSocketType,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
@@ -78,7 +79,6 @@ pub(crate) mod metrics;
 const SIGNATURE_SIZE: usize = 65;
 
 pub const UNICAST_MSG_BATCH_SIZE: usize = 32;
-pub const RAPTORCAST_SOCKET: &str = "raptorcast";
 
 pub(crate) type OwnedMessageBuilder<ST, PD> =
     packet::MessageBuilder<'static, ST, Arc<Mutex<PeerDiscoveryDriver<PD>>>>;
@@ -432,17 +432,24 @@ where
         ..Default::default()
     };
     let up_bandwidth_mbps = 1_000;
-    let dp = DataplaneBuilder::new(&local_addr, up_bandwidth_mbps)
-        .extend_udp_sockets(vec![monad_dataplane::UdpSocketConfig {
+    let dp = DataplaneBuilder::new(up_bandwidth_mbps)
+        .extend_udp_sockets(vec![UdpSocketConfig {
             socket_addr: local_addr,
-            label: RAPTORCAST_SOCKET.to_string(),
+            socket: UdpSocketType::Original,
+        }])
+        .extend_tcp_sockets(vec![TcpSocketConfig {
+            socket_addr: local_addr,
+            socket: TcpSocketType::Original,
         }])
         .build();
     assert!(dp.block_until_ready(Duration::from_secs(1)));
-    let (tcp_socket, mut udp_dataplane, control) = dp.split();
+    let (mut tcp_dataplane, mut udp_dataplane, control) = dp.split();
     let udp_socket = udp_dataplane
-        .take_socket(RAPTORCAST_SOCKET)
+        .take_socket(UdpSocketType::Original)
         .expect("raptorcast socket");
+    let tcp_socket = tcp_dataplane
+        .take_socket(TcpSocketType::Original)
+        .expect("raptorcast tcp socket");
     let (tcp_reader, tcp_writer) = tcp_socket.split();
     let config = config::RaptorCastConfig {
         shared_key,

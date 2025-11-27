@@ -25,11 +25,9 @@ use bytes::{Bytes, BytesMut};
 use futures::{executor, Stream};
 use futures_util::FutureExt;
 use monad_dataplane::{
-    udp::DEFAULT_SEGMENT_SIZE, BroadcastMsg, Dataplane, DataplaneBuilder, RecvUdpMsg, TcpMsg,
-    UdpSocketHandle,
+    udp::DEFAULT_SEGMENT_SIZE, BroadcastMsg, DataplaneBuilder, RecvUdpMsg, TcpMsg, TcpSocketConfig,
+    TcpSocketHandle, TcpSocketType, UdpSocketConfig, UdpSocketHandle, UdpSocketType,
 };
-
-const LEGACY_SOCKET: &str = "legacy";
 use rand::Rng;
 
 const NODE_ONE_ADDR: &str = "127.0.0.1:60000";
@@ -92,7 +90,7 @@ fn main() {
             })
         }
 
-        tx.dataplane.tcp_write(
+        tx.tcp_socket.write(
             tx.target,
             TcpMsg {
                 msg: Bytes::from(&b"Hello world"[..]),
@@ -111,24 +109,31 @@ fn main() {
 
 struct Node {
     udp_socket: UdpSocketHandle,
-    dataplane: Dataplane,
+    tcp_socket: TcpSocketHandle,
     target: SocketAddr,
 }
 
 impl Node {
     pub fn new(addr: &SocketAddr, target_addr: &str) -> Self {
-        let mut dataplane = DataplaneBuilder::new(addr, 1_000)
-            .extend_udp_sockets(vec![monad_dataplane::UdpSocketConfig {
+        let mut dataplane = DataplaneBuilder::new(1_000)
+            .extend_udp_sockets(vec![UdpSocketConfig {
                 socket_addr: *addr,
-                label: LEGACY_SOCKET.to_string(),
+                socket: UdpSocketType::Original,
+            }])
+            .extend_tcp_sockets(vec![TcpSocketConfig {
+                socket_addr: *addr,
+                socket: TcpSocketType::Original,
             }])
             .build();
         let udp_socket = dataplane
-            .take_udp_socket_handle(LEGACY_SOCKET)
+            .take_udp_socket(UdpSocketType::Original)
             .expect("legacy socket");
+        let tcp_socket = dataplane
+            .take_tcp_socket(TcpSocketType::Original)
+            .expect("tcp socket");
         Self {
             udp_socket,
-            dataplane,
+            tcp_socket,
             target: target_addr.parse().unwrap(),
         }
     }
