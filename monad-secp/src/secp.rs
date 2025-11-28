@@ -98,6 +98,11 @@ fn msg_hash<SD: SigningDomain>(msg: &[u8]) -> secp256k1::Message {
 }
 
 impl KeyPair {
+    pub fn generate<R: secp256k1::rand::Rng + secp256k1::rand::CryptoRng>(rng: &mut R) -> Self {
+        let keypair = secp256k1::Keypair::new(secp256k1::SECP256K1, rng);
+        Self(keypair)
+    }
+
     /// Create a keypair from a secret key slice. The secret is zero-ized after
     /// use. The secret must be 32 byytes.
     pub fn from_bytes(secret: &mut [u8]) -> Result<Self, Error> {
@@ -139,6 +144,11 @@ impl KeyPair {
     /// Get the pubkey
     pub fn pubkey(&self) -> PubKey {
         PubKey(self.0.public_key())
+    }
+
+    pub fn ecdh(&self, public_key: &PubKey) -> [u8; 32] {
+        let shared_secret = secp256k1::ecdh::SharedSecret::new(&public_key.0, &self.0.secret_key());
+        shared_secret.secret_bytes()
     }
 }
 
@@ -410,12 +420,11 @@ mod tests {
             .map(|ikm_hex| {
                 let ikm = hex::decode(ikm_hex).unwrap();
                 let keypair = KeyPair::from_ikm(&ikm).unwrap();
-                let private_key_bytes = keypair.0.secret_key().secret_bytes();
                 let pubkey_bytes = keypair.pubkey().bytes();
 
                 IkmProfile {
                     ikm_hex: ikm_hex.to_string(),
-                    private_key_hex: hex::encode(private_key_bytes),
+                    private_key_hex: keypair.privkey_view().to_string(),
                     pubkey_hex: hex::encode(pubkey_bytes),
                 }
             })

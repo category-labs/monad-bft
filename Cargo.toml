@@ -20,6 +20,7 @@ ignored = [
     "monad-tracing-timing",
     "monad-event-ring",
     "monad-exec-events",
+    "monad-wireauth",
 ]
 
 [workspace.dependencies]
@@ -85,6 +86,7 @@ monad-updaters = { path = "./monad-updaters" }
 monad-validator = { path = "./monad-validator" }
 monad-version = { path = "./monad-version" }
 monad-wal = { path = "./monad-wal" }
+monad-wireauth = { path = "./monad-wireauth" }
 
 actix = "0.13"
 actix-http = "3.11.1"
@@ -93,6 +95,7 @@ actix-test = "0.1"
 actix-rt = "2.9.0"
 actix-web = "4.5.1"
 actix-ws = "0.3.0"
+aegis = "0.5"
 aes = "0.8.3"
 agent = { git = "https://github.com/category-labs/manytrace.git", tag = "v0.1.1" }
 alloy-consensus = "0.8"
@@ -203,6 +206,7 @@ sorted_vector_map = "0.2.0"
 sorted-vec = "0.8.3"
 strum = "0.26.3"
 syn = { version = "1.0.0", features = ["full"] }
+tai64 = "4.0"
 tempfile = "3.5"
 test-case = "3.0"
 thiserror = "1.0"
@@ -225,5 +229,5 @@ unicode-normalization = "0.1"
 url = "2.5.0"
 wasm-bindgen = "0.2"
 zerocopy = { version = "0.8", features = ["derive"] }
-zeroize = "1.3"
+zeroize = { version = "1.7", features = ["derive"] }
 zstd = "0.13"
