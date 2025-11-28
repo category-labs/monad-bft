@@ -13,16 +13,15 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::sync::Arc;
+use std::vec::IntoIter;
 
 use alloy_consensus::Block as AlloyBlock;
 use alloy_rlp::Encodable;
 use clap::Parser;
-use futures::future::join_all;
 use monad_archive::prelude::*;
 use monad_compress::{brotli::BrotliCompression, CompressionAlgo};
-use tokio::sync::Semaphore;
 use tracing::Level;
+use tracing_subscriber::EnvFilter;
 
 mod cli;
 
@@ -79,7 +78,10 @@ async fn process_block(
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
+    tracing_subscriber::fmt()
+        .with_max_level(Level::INFO)
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
 
     let args = cli::Cli::parse();
     info!(?args, "Cli Arguments: ");
@@ -89,7 +91,6 @@ async fn main() -> Result<()> {
     let dest_path = shared_args.dest_path.clone();
     let max_retries = shared_args.max_retries;
 
-    let concurrent_block_semaphore = Arc::new(Semaphore::new(shared_args.concurrency));
     let reader = shared_args
         .block_data_source
         .build(&Metrics::none())
@@ -98,8 +99,8 @@ async fn main() -> Result<()> {
 
     match args.mode {
         cli::Mode::WriteRange(ref write_range_args) => {
-            tokio::spawn(run(
-                concurrent_block_semaphore,
+            tokio::spawn(write_range(
+                shared_args.concurrency,
                 reader,
                 fs,
                 max_retries,
@@ -107,7 +108,7 @@ async fn main() -> Result<()> {
                 write_range_args.stop_block,
                 shared_args.flat_dir,
             ))
-            .await??;
+            .await?;
         }
         cli::Mode::Stream(ref stream_args) => {
             if let Some(start_block) = stream_args.start_block {
@@ -115,13 +116,24 @@ async fn main() -> Result<()> {
             }
 
             loop {
-                let mut start = get_latest_block(&fs).await?;
+                let Ok(mut start) = get_latest_block(&fs)
+                    .await
+                    .inspect_err(|e| error!("Failed to get latest block: {e:?}"))
+                else {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    continue;
+                };
                 if start != 0 {
                     start += 1; // We already processed this block, so start from the next one
                 }
 
-                let Some(mut stop) = reader.get_latest(LatestKind::Uploaded).await? else {
-                    bail!("No latest block found, cannot stream. Quitting...");
+                let Ok(Some(mut stop)) = reader
+                    .get_latest(LatestKind::Uploaded)
+                    .await
+                    .inspect_err(|e| error!("Failed to get latest block: {e:?}"))
+                else {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    continue;
                 };
 
                 if start >= stop {
@@ -133,8 +145,8 @@ async fn main() -> Result<()> {
                     continue;
                 }
                 stop = stop.min(start + stream_args.max_blocks_per_iter);
-                let last_block = match tokio::spawn(run(
-                    concurrent_block_semaphore.clone(),
+                let last_block = match tokio::spawn(write_range(
+                    shared_args.concurrency,
                     reader.clone(),
                     fs.clone(),
                     max_retries,
@@ -144,18 +156,19 @@ async fn main() -> Result<()> {
                 ))
                 .await
                 {
-                    Ok(Ok(last_block)) => last_block,
-                    Ok(Err(e)) => {
-                        error!("Failed to process blocks: {:?}", e);
-                        continue;
-                    }
+                    Ok(last_block) => last_block,
                     Err(e) => {
-                        error!("Task panicked: {:?}", e);
+                        error!("Task panicked: {e:?}");
+                        tokio::time::sleep(Duration::from_millis(200)).await;
                         continue;
                     }
                 };
 
-                set_latest_block(&fs, last_block).await?;
+                if let Err(e) = set_latest_block(&fs, last_block).await {
+                    error!("Failed to set latest block: {e:?}");
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    continue;
+                }
             }
         }
     }
@@ -186,49 +199,37 @@ async fn set_latest_block(fs: &FsStorage, block: u64) -> Result<()> {
     Ok(())
 }
 
-async fn run(
-    concurrent_block_semaphore: Arc<Semaphore>,
+async fn write_range(
+    concurrency: usize,
     reader: BlockDataReaderErased,
     fs: FsStorage,
     max_retries: u32,
     start_block: u64,
     stop_block: u64,
     flat_dir: bool,
-) -> Result<u64> {
+) -> u64 {
     let mut failed_blocks: Vec<u64> = Vec::new();
 
     for attempt in 0..=max_retries {
-        let blocks_to_process = if attempt == 0 {
+        let blocks_to_process: TwoIters<RangeInclusive<u64>, IntoIter<u64>> = if attempt == 0 {
             // First attempt: process all blocks
-            (start_block..=stop_block).collect::<Vec<_>>()
+            TwoIters::A(start_block..=stop_block)
         } else {
             // Retry: only process failed blocks
-            if failed_blocks.is_empty() {
-                break;
-            }
-            let to_retry = failed_blocks.clone();
-            failed_blocks.clear();
-            to_retry
-        };
-
-        if blocks_to_process.is_empty() {
-            break;
-        }
-
-        if attempt > 0 {
             info!(
                 "Retry attempt {} for {} failed blocks",
                 attempt,
-                blocks_to_process.len()
+                failed_blocks.len()
             );
-        }
+            let iter = failed_blocks.into_iter();
+            failed_blocks = Vec::new();
+            TwoIters::B(iter)
+        };
 
-        let join_handles: Vec<_> = blocks_to_process
-            .into_iter()
+        futures::stream::iter(blocks_to_process)
             .map(|current_block| {
                 let reader = reader.clone();
                 let mut fs = fs.clone();
-                let semaphore = concurrent_block_semaphore.clone();
 
                 async move {
                     tokio::spawn(async move {
@@ -239,10 +240,6 @@ async fn run(
                                 .wrap_err("Failed to create prefix for block")
                                 .map_err(|e| (current_block, e))?;
                         }
-                        let _permit = semaphore
-                            .acquire()
-                            .await
-                            .expect("Got permit to execute a new block");
 
                         process_block(&reader, current_block, &fs)
                             .await
@@ -252,38 +249,62 @@ async fn run(
                     .map_err(|e| (current_block, e))
                 }
             })
-            .collect();
+            // Prefer buffered over unordered to lay down blocks in order to allow exeecution
+            // to begin processing before all blocks are laid down.
+            .buffered(concurrency)
+            // Collect failed blocks for retry
+            .for_each(|result| {
+                match result {
+                    Ok(Ok(())) => {
+                        // Success - no retry needed
+                    }
+                    Ok(Err((block_num, e))) => {
+                        error!("Failed to process block {}: {:?}", block_num, e);
+                        failed_blocks.push(block_num);
+                    }
+                    Err((block_num, e)) => {
+                        error!("Task panicked for block {}: {:?}", block_num, e);
+                        failed_blocks.push(block_num);
+                    }
+                }
+                futures::future::ready(())
+            })
+            .await;
 
-        let results = join_all(join_handles).await;
-
-        // Collect failed blocks for retry
-        for result in results {
-            match result {
-                Ok(Ok(())) => {
-                    // Success - no retry needed
-                }
-                Ok(Err((block_num, e))) => {
-                    error!("Failed to process block {}: {:?}", block_num, e);
-                    failed_blocks.push(block_num);
-                }
-                Err((block_num, e)) => {
-                    error!("Task panicked for block {}: {:?}", block_num, e);
-                    failed_blocks.push(block_num);
-                }
-            }
+        if failed_blocks.is_empty() {
+            break;
         }
     }
 
     if !failed_blocks.is_empty() {
-        return Err(eyre::eyre!(
-            "Failed to process {} blocks after {} retries: {:?}",
+        let min_failed = *failed_blocks.iter().min().unwrap();
+        error!(
+            "Failed to process {} blocks after {} retries, earliest failure: {}",
             failed_blocks.len(),
             max_retries,
-            failed_blocks
-        ));
+            min_failed
+        );
+        // Return the block before the first failure so we don't skip any blocks
+        return min_failed.saturating_sub(1);
     }
 
-    Ok(stop_block)
+    stop_block
+}
+
+enum TwoIters<A, B> {
+    A(A),
+    B(B),
+}
+
+impl<T, A: Iterator<Item = T>, B: Iterator<Item = T>> Iterator for TwoIters<A, B> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::A(a) => a.next(),
+            Self::B(b) => b.next(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -344,11 +365,8 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().unwrap();
         let fs = FsStorage::new(temp_dir.path(), Metrics::none()).unwrap();
-        let semaphore = Arc::new(Semaphore::new(2));
 
-        let last_block = run(semaphore, reader, fs.clone(), 3, 0, 4, true)
-            .await
-            .unwrap();
+        let last_block = write_range(2, reader, fs.clone(), 3, 0, 4, true).await;
 
         assert_eq!(last_block, 4);
 
@@ -385,11 +403,8 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().unwrap();
         let fs = FsStorage::new(temp_dir.path(), Metrics::none()).unwrap();
-        let semaphore = Arc::new(Semaphore::new(2));
 
-        let last_block = run(semaphore, reader, fs, 3, 999_999, 1_000_001, false)
-            .await
-            .unwrap();
+        let last_block = write_range(2, reader, fs, 3, 999_999, 1_000_001, false).await;
 
         assert_eq!(last_block, 1_000_001);
 
@@ -411,9 +426,8 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().unwrap();
         let fs = FsStorage::new(temp_dir.path(), Metrics::none()).unwrap();
-        let semaphore = Arc::new(Semaphore::new(4));
 
-        let last_block = run(semaphore, reader, fs, 0, 10, 14, true).await.unwrap();
+        let last_block = write_range(4, reader, fs, 0, 10, 14, true).await;
 
         assert_eq!(last_block, 14);
     }
@@ -427,11 +441,9 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().unwrap();
         let fs = FsStorage::new(temp_dir.path(), Metrics::none()).unwrap();
-        let semaphore = Arc::new(Semaphore::new(2));
 
-        let result = run(semaphore, reader, fs, 0, 0, 4, true).await;
+        let last_block = write_range(2, reader, fs, 0, 0, 4, true).await;
 
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 4);
+        assert_eq!(last_block, 4);
     }
 }
