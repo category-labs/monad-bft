@@ -95,4 +95,8 @@ pub struct Cli {
 
     #[arg(long)]
     pub manytrace_socket: Option<String>,
+
+    /// Set the path for the file that will persist peer discovery records across restarts
+    #[arg(long)]
+    pub persisted_peers_path: PathBuf,
 }

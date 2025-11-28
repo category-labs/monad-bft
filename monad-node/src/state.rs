@@ -65,6 +65,7 @@ pub struct NodeState {
     pub statesync_ipc_path: PathBuf,
     pub statesync_sq_thread_cpu: Option<u32>,
     pub triedb_path: PathBuf,
+    pub persisted_peers_path: PathBuf,
 
     pub otel_endpoint_interval: Option<(String, Duration)>,
     pub pprof: String,
@@ -95,6 +96,7 @@ impl NodeState {
             record_metrics_interval_seconds,
             pprof,
             manytrace_socket,
+            persisted_peers_path,
         } = Cli::from_arg_matches_mut(&mut cmd.get_matches_mut())?;
 
         let (reload_handle, agent) = NodeState::setup_tracing(manytrace_socket)?;
@@ -200,6 +202,7 @@ impl NodeState {
             pprof,
             reload_handle,
             manytrace_agent: agent,
+            persisted_peers_path,
         })
     }
 
