@@ -649,10 +649,10 @@ pub async fn eth_simulate_v1(
     let mut rlp_encoded_txns = vec![];
     calls.encode(&mut rlp_encoded_txns);
 
-    dbg!(&senders);
-    dbg!(&calls);
-    dbg!(&rlp_encoded_senders);
-    dbg!(&rlp_encoded_txns);
+    let mut rlp_encoded_block_header = vec![];
+    block_header.encode(&mut rlp_encoded_block_header);
+
+    let rlp_encoded_block_id = alloy_rlp::encode(block_id.unwrap_or([0_u8; 32]));
 
     let chain_config = match chain_id {
         ETHEREUM_MAINNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_ETHEREUM_MAINNET,
@@ -673,24 +673,83 @@ pub async fn eth_simulate_v1(
         .map(|(_, state_override)| unsafe { bind_state_override(state_override) })
         .collect();
 
+    let (send, recv) = channel();
+    let sender_ctx = Box::new(SenderContext { sender: send });
+
     unsafe {
+        let sender_ctx_ptr = Box::into_raw(sender_ctx);
+
         bindings::monad_executor_eth_simulate_submit(
             eth_call_executor.eth_call_executor,
             chain_config,
-            calls.len(),
+            rlp_encoded_senders.as_ptr(),
+            rlp_encoded_senders.len(),
             rlp_encoded_txns.as_ptr(),
             rlp_encoded_txns.len(),
+            block_number,
+            rlp_encoded_block_header.as_ptr(),
+            rlp_encoded_block_header.len(),
+            rlp_encoded_block_id.as_ptr(),
+            rlp_encoded_block_id.len(),
             *state_overrides.as_ptr(),
             Some(eth_call_submit_callback),
-            std::ptr::null_mut(),
+            sender_ctx_ptr as *mut std::ffi::c_void,
         );
     }
 
-    SimulateResult::Failure(FailureSimulateResult {
-        error_code: EthCallResult::OtherError,
-        message: "not implemented".into(),
-        data: None,
-    })
+    let result = match recv.await {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(
+                "callback from eth_simulate_v1 failed: {:?}",
+                e
+            );
+
+            return SimulateResult::Failure(FailureSimulateResult {
+                error_code: EthCallResult::OtherError,
+                message: "internal eth_simulate_v1 error".to_string(),
+                data: None,
+            });
+        }
+    };
+
+    unsafe {
+        let status_code = (*result).status_code;
+
+        let sim_result = match status_code {
+            ETH_CALL_SUCCESS => {
+                let output_data_len = (*result).encoded_trace_len;
+                let output_data = if output_data_len != 0 {
+                    std::slice::from_raw_parts((*result).encoded_trace, output_data_len).to_vec()
+                } else {
+                    vec![]
+                };
+
+                SimulateResult::Success(SuccessSimulateResult {
+                    output_data,
+                })
+            }
+            _ => {
+                let cstr_msg = CStr::from_ptr((*result).message.cast());
+                let message = match cstr_msg.to_str() {
+                    Ok(str) => String::from(str),
+                    Err(_) => String::from(
+                        "execution error eth_simulate_v1 message invalid utf-8",
+                    ),
+                };
+
+                SimulateResult::Failure(FailureSimulateResult {
+                    error_code: EthCallResult::OtherError,
+                    message,
+                    data: None,
+                })
+            }
+        };
+
+        bindings::monad_executor_result_release(result);
+
+        sim_result
+    }
 }
 
 #[cfg(test)]

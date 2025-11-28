@@ -85,6 +85,7 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
         None => return Err(JsonRpcError::block_not_found()),
     };
 
+
     let (block_number, block_id) = match block_key {
         BlockKey::Finalized(FinalizedBlockKey(SeqNum(n))) => (n, None),
         BlockKey::Proposed(ProposedBlockKey(SeqNum(n), BlockId(Hash(id)))) => (n, Some(id)),
@@ -108,6 +109,7 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
         &overrides,
     )
     .await;
+
 
     match result {
         SimulateResult::Success(SuccessSimulateResult { output_data, .. }) => {
