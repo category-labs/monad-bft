@@ -3479,15 +3479,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42012b0f064e01aa58b545fe3727f90f7dd4020f4a3ea735b50344965f5a57e9"
 
 [[package]]
-name = "fxhash"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c31b6d751ae2c7f11320402d34e41349dd1016f8d5d45e48c4312bc8625af50c"
-dependencies = [
- "byteorder",
-]
-
-[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4770,15 +4761,6 @@ checksum = "32a282da65faaf38286cf3be983213fcf1d2e2a58700e808f83f4ea9a4804bc0"
 
 [[package]]
 name = "memoffset"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5de893c32cde5f383baa4c04c5d6dbdd735cfd4a794b0debdb2bb1b421da5ff4"
-dependencies = [
- "autocfg",
-]
-
-[[package]]
-name = "memoffset"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
@@ -5077,10 +5059,12 @@ name = "monad-dataplane"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "clap 4.5.47",
  "env_logger 0.10.2",
  "futures",
  "futures-util",
  "governor",
+ "io-uring 0.7.10",
  "libc",
  "monad-types",
  "monoio",
@@ -6374,21 +6358,20 @@ dependencies = [
 [[package]]
 name = "monoio"
 version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3bd0f8bcde87b1949f95338b547543fcab187bc7e7a5024247e359a5e828ba6a"
+source = "git+https://github.com/dshulyak/monoio.git?branch=multishot-support#bfd22fed65ad9666cfa15a3c19d58a8605f1f3eb"
 dependencies = [
  "auto-const-array",
  "bytes",
  "flume",
- "fxhash",
  "io-uring 0.6.4",
  "libc",
  "memchr",
  "mio 0.8.11",
  "monoio-macros",
- "nix 0.26.4",
+ "nix 0.29.0",
  "once_cell",
  "pin-project-lite",
+ "rustc-hash 2.1.1",
  "socket2 0.5.10",
  "threadpool",
  "windows-sys 0.48.0",
@@ -6397,8 +6380,7 @@ dependencies = [
 [[package]]
 name = "monoio-macros"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "176a5f5e69613d9e88337cf2a65e11135332b4efbcc628404a7c555e4452084c"
+source = "git+https://github.com/dshulyak/monoio.git?branch=multishot-support#bfd22fed65ad9666cfa15a3c19d58a8605f1f3eb"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6489,15 +6471,14 @@ dependencies = [
 
 [[package]]
 name = "nix"
-version = "0.26.4"
+version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "598beaf3cc6fdd9a5dfb1630c2800c7acd31df7aaf0f565796fba2b53ca1af1b"
+checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
 dependencies = [
- "bitflags 1.3.2",
+ "bitflags 2.9.4",
  "cfg-if",
+ "cfg_aliases",
  "libc",
- "memoffset 0.7.1",
- "pin-utils",
 ]
 
 [[package]]
@@ -6510,7 +6491,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
- "memoffset 0.9.1",
+ "memoffset",
 ]
 
 [[package]]

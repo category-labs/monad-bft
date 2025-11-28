@@ -318,7 +318,7 @@ fn get_node_index(index_arg: Option<usize>) -> Result<usize> {
             source = "NODE_INDEX env variable",
             "using node index from environment"
         );
-        parsed
+        parsed - 1
     } else if let Some(index) = index_arg {
         tracing::info!(
             node_index = index,
@@ -409,6 +409,7 @@ fn setup_node(
     let udp_addr = SocketAddr::V4(my_config.udp_addr);
 
     let dataplane = DataplaneBuilder::new(&udp_addr, UDP_BW)
+        .with_udp_multishot(true)
         .extend_udp_sockets(vec![monad_dataplane::UdpSocketConfig {
             socket_addr: udp_addr,
             label: RAPTORCAST_SOCKET.to_string(),
