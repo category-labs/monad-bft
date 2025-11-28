@@ -1,0 +1,22 @@
+[package]
+name = "monad-raptorcast-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[dependencies]
+afl = "*"
+
+bytes = { workspace = true }
+lru = { workspace = true }
+
+monad-raptorcast = { workspace = true }
+monad-crypto = { workspace = true }
+
+
+[[bin]]
+name = "fuzz_parse_message"
+path = "fuzz_targets/fuzz_parse_message.rs"
+test = false
+doc = false
+bench = false
