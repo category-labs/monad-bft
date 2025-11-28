@@ -68,6 +68,12 @@ ENV PATH="${CARGO_ROOT}/bin:$PATH"
 RUN rustup toolchain install 1.85.0-x86_64-unknown-linux-gnu
 
 ENV TRIEDB_TARGET=triedb_driver
+ENV ASMFLAGS="-march=haswell"
+ENV CFLAGS="-march=haswell -fno-omit-frame-pointer"
+ENV CXXFLAGS="-march=haswell -fno-omit-frame-pointer"
+ENV RUSTFLAGS="-C force-frame-pointers=yes"
+ENV CC=gcc-15
+ENV CXX=g++-15
 
 ARG GIT_TAG_VERSION
 RUN test -n "$GIT_TAG_VERSION"
@@ -83,13 +89,15 @@ ENV GIT_BRANCH=$GIT_BRANCH
 ENV GIT_TAG=$GIT_TAG
 ENV GIT_MODIFIED=$GIT_MODIFIED
 
-# Builder
 COPY . .
-RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell -fno-omit-frame-pointer" CXXFLAGS="-march=haswell -fno-omit-frame-pointer" \
-    RUSTFLAGS="-C force-frame-pointers=yes" CC=gcc-15 CXX=g++-15 cargo build --release --bin monad-rpc && \
-    mv target/release/monad-rpc rpc && \
-    cp `ls -Lt $(find target/release | grep -e "libtriedb_driver.so")` . && \
-    ldd $(ls -Lt $(find target/release | grep -e "libtriedb_driver.so")) | docker/filter-dependent-shared-objects.py | xargs -I {} cp {} .
+
+RUN --mount=type=cache,target=/usr/src/monad-bft/target \
+  --mount=type=cache,target=/root/.cargo/registry \
+  --mount=type=cache,target=/root/.cargo/git \
+  cargo build --release --bin monad-rpc && \
+  cp target/release/monad-rpc rpc && \
+  cp `ls -Lt $(find target/release | grep -e "libtriedb_driver.so")` . && \
+  ldd $(ls -Lt $(find target/release | grep -e "libtriedb_driver.so")) | docker/filter-dependent-shared-objects.py | xargs -I {} cp {} .
 
 # Runner
 FROM base AS runner
