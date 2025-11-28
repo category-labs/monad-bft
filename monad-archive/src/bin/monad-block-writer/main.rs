@@ -86,6 +86,14 @@ async fn main() -> Result<()> {
     let args = cli::Cli::parse();
     info!(?args, "Cli Arguments: ");
 
+    // Handle SetStartBlock separately since it doesn't need shared args
+    if let cli::Mode::SetStartBlock { block, dest_path } = args.mode {
+        let fs = FsStorage::new(dest_path, Metrics::none())?;
+        set_latest_block(&fs, block).await?;
+        println!("Set latest marker: key=\"latest\", block={block}");
+        return Ok(());
+    }
+
     let shared_args = args.mode.shared();
 
     let dest_path = shared_args.dest_path.clone();
@@ -98,6 +106,7 @@ async fn main() -> Result<()> {
     let fs = FsStorage::new(dest_path.clone(), Metrics::none())?;
 
     match args.mode {
+        cli::Mode::SetStartBlock { .. } => unreachable!(),
         cli::Mode::WriteRange(ref write_range_args) => {
             tokio::spawn(write_range(
                 shared_args.concurrency,
@@ -111,10 +120,6 @@ async fn main() -> Result<()> {
             .await?;
         }
         cli::Mode::Stream(ref stream_args) => {
-            if let Some(start_block) = stream_args.start_block {
-                set_latest_block(&fs, start_block).await?;
-            }
-
             loop {
                 let Ok(mut start) = get_latest_block(&fs)
                     .await
