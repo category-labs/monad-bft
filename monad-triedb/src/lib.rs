@@ -37,7 +37,7 @@ mod bindings {
     include!(concat!(env!("OUT_DIR"), "/triedb.rs"));
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct TriedbHandle {
     db_ptr: *mut bindings::triedb,
 }

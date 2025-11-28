@@ -47,7 +47,6 @@ pub mod triedb_env;
 const MAX_TRIEDB_ASYNC_POLLS: usize = 640_000;
 const RODB_NODE_LRU_MAX_MEM: u64 = 50 << 20; // 50 MB
 
-#[derive(Clone)]
 pub struct TriedbReader {
     handle: TriedbHandle,
     state_backend_total_lookups: Arc<AtomicU64>,
