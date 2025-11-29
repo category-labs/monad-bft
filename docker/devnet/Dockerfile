@@ -68,7 +68,14 @@ ARG CARGO_ROOT="/root/.cargo"
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
 ENV PATH="${CARGO_ROOT}/bin:$PATH"
 RUN rustup toolchain install 1.85.0-x86_64-unknown-linux-gnu
-ARG TRIEDB_TARGET=triedb_driver
+
+ENV TRIEDB_TARGET=triedb_driver
+ENV ASMFLAGS="-march=haswell"
+ENV CFLAGS="-march=haswell -fno-omit-frame-pointer"
+ENV CXXFLAGS="-march=haswell -fno-omit-frame-pointer"
+ENV RUSTFLAGS="-C force-frame-pointers=yes"
+ENV CC=gcc-15
+ENV CXX=g++-15
 
 ARG GIT_TAG_VERSION
 RUN test -n "$GIT_TAG_VERSION"
@@ -84,19 +91,21 @@ ENV GIT_BRANCH=$GIT_BRANCH
 ENV GIT_TAG=$GIT_TAG
 ENV GIT_MODIFIED=$GIT_MODIFIED
 
-# Builder
 COPY . .
-RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell -fno-omit-frame-pointer" CXXFLAGS="-march=haswell -fno-omit-frame-pointer" \
-    RUSTFLAGS="-C force-frame-pointers=yes" CC=gcc-15 CXX=g++-15 cargo build --release --bin monad-node --bin monad-keystore --bin monad-debug-node --example ledger-tail --example wal2json --example triedb-bench --example sign-name-record && \
-    mv target/release/monad-node monad-node && \
-    mv target/release/monad-keystore keystore && \
-    mv target/release/monad-debug-node monad-debug-node && \
-    mv target/release/examples/ledger-tail ledger-tail && \
-    mv target/release/examples/wal2json wal2json && \
-    mv target/release/examples/triedb-bench triedb-bench && \
-    mv target/release/examples/sign-name-record sign-name-record && \
-    cp `ls -Lt $(find target/release | grep -e "libtriedb_driver.so")` . && \
-    ldd $(ls -Lt $(find target/release | grep -e "libtriedb_driver.so")) | docker/filter-dependent-shared-objects.py | xargs -I {} cp {} .
+
+RUN --mount=type=cache,target=/usr/src/monad-bft/target \
+  --mount=type=cache,target=/root/.cargo/registry \
+  --mount=type=cache,target=/root/.cargo/git \
+  cargo build --release --bin monad-node --bin monad-keystore --bin monad-debug-node --example ledger-tail --example wal2json --example triedb-bench --example sign-name-record && \
+  cp target/release/monad-node monad-node && \
+  cp target/release/monad-keystore keystore && \
+  cp target/release/monad-debug-node monad-debug-node && \
+  cp target/release/examples/ledger-tail ledger-tail && \
+  cp target/release/examples/wal2json wal2json && \
+  cp target/release/examples/triedb-bench triedb-bench && \
+  cp target/release/examples/sign-name-record sign-name-record && \
+  cp `ls -Lt $(find target/release | grep -e "libtriedb_driver.so")` . && \
+  ldd $(ls -Lt $(find target/release | grep -e "libtriedb_driver.so")) | docker/filter-dependent-shared-objects.py | xargs -I {} cp {} .
 
 # Runner
 FROM base AS runner
