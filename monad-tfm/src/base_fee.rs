@@ -80,7 +80,7 @@ pub fn compute_base_fee(
 /// Computes an approximate `factor * e ** (numerator / denominator)` using
 /// taylor expansion
 ///
-/// based on https://eips.ethereum.org/EIPS/eip-4844#helpers) and modified to
+/// based on https://eips.ethereum.org/EIPS/eip-4844#helpers and modified to
 /// accept negative numerator
 ///
 /// # Parameters
