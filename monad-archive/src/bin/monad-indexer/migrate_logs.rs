@@ -16,7 +16,11 @@
 use futures::TryStreamExt;
 use monad_archive::{model::logs_index::LogsIndexArchiver, prelude::*};
 
-pub async fn run_migrate_logs(args: crate::cli::Cli) -> Result<()> {
+pub async fn run_migrate_logs(
+    args: crate::cli::Cli,
+    start_block: u64,
+    stop_block_override: Option<u64>,
+) -> Result<()> {
     let metrics = Metrics::none();
 
     let block_data_reader = args.block_data_source.build(&metrics).await?;
@@ -31,9 +35,8 @@ pub async fn run_migrate_logs(args: crate::cli::Cli) -> Result<()> {
             .await
             .wrap_err("Failed to create log index reader")?;
 
-    let start_block = args.start_block.unwrap_or(0);
     // If stop block not set, query block data reader for latest
-    let stop_block = if let Some(stop_block) = args.stop_block {
+    let stop_block = if let Some(stop_block) = stop_block_override {
         stop_block
     } else {
         block_data_reader

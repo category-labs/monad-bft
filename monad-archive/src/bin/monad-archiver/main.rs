@@ -24,6 +24,7 @@ mod generic_folder_archiver;
 
 use bft_archive_worker::bft_block_archive_worker;
 use block_archive_worker::{archive_worker, ArchiveWorkerOpts};
+use cli::{Commands, ParsedCli};
 use file_checkpointer::file_checkpoint_worker;
 use generic_folder_archiver::recursive_dir_archiver;
 use tokio::task::JoinHandle;
@@ -35,7 +36,16 @@ mod cli;
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
-    let args = cli::Cli::parse();
+    let parsed = cli::Cli::parse();
+
+    // Handle subcommands
+    if let ParsedCli::Command(cmd) = parsed {
+        return handle_command(cmd).await;
+    }
+
+    let ParsedCli::Daemon(args) = parsed else {
+        unreachable!()
+    };
     info!(?args, "Cli Arguments: ");
 
     let metrics = Metrics::new(
@@ -129,7 +139,6 @@ async fn main() -> Result<()> {
     let archive_worker_opts = ArchiveWorkerOpts {
         max_blocks_per_iteration: args.max_blocks_per_iteration,
         max_concurrent_blocks: args.max_concurrent_blocks,
-        start_block: args.start_block,
         stop_block: args.stop_block,
         unsafe_skip_bad_blocks: args.unsafe_skip_bad_blocks,
         require_traces: args.require_traces,
@@ -155,4 +164,34 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn handle_command(cmd: Commands) -> Result<()> {
+    match cmd {
+        Commands::SetStartBlock {
+            block,
+            archive_sink,
+            async_backfill,
+        } => {
+            let metrics = Metrics::none();
+            let archive = archive_sink.build_block_data_archive(&metrics).await?;
+
+            let latest_kind = if async_backfill {
+                LatestKind::UploadedAsyncBackfill
+            } else {
+                LatestKind::Uploaded
+            };
+
+            archive.update_latest(block, latest_kind).await?;
+
+            let key_name = match latest_kind {
+                LatestKind::Uploaded => "latest",
+                LatestKind::UploadedAsyncBackfill => "latest_uploaded_async_backfill",
+                _ => unreachable!(),
+            };
+
+            println!("Set latest marker: key=\"{key_name}\", block={block}");
+            Ok(())
+        }
+    }
 }

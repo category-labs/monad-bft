@@ -26,7 +26,6 @@ use monad_archive::{model::logs_index::LogsIndexArchiver, prelude::*};
 /// * `max_blocks_per_iteration` - Maximum number of blocks to process in one iteration
 /// * `max_concurrent_blocks` - Maximum number of blocks to process concurrently
 /// * `metrics` - Metrics collection interface
-/// * `start_block_override` - Optional block number to start indexing from
 /// * `stop_block_override` - Optional block number to stop indexing at
 /// * `async_backfill` - If set, indexer will perform an asynchronous backfill of the index
 ///    This allows a second indexer to backfill a range while the first indexer is running
@@ -39,26 +38,17 @@ pub async fn index_worker(
     max_blocks_per_iteration: u64,
     max_concurrent_blocks: usize,
     metrics: Metrics,
-    start_block_override: Option<u64>,
     stop_block_override: Option<u64>,
     poll_frequency: Duration,
     async_backfill: bool,
 ) {
-    // initialize starting block using either override or stored latest
-    let mut start_block = match start_block_override {
-        Some(start_block) => start_block,
-        None => {
-            let mut latest = indexer
-                .get_latest_indexed(async_backfill)
-                .await
-                .unwrap_or(Some(0))
-                .unwrap_or(0);
-            if latest != 0 {
-                latest += 1
-            }
-            latest
-        }
-    };
+    // initialize starting block from stored latest marker
+    let latest = indexer
+        .get_latest_indexed(async_backfill)
+        .await
+        .unwrap_or(Some(0))
+        .unwrap_or(0);
+    let mut start_block = if latest != 0 { latest + 1 } else { 0 };
 
     loop {
         // query latest
@@ -383,7 +373,6 @@ mod tests {
             3, // max_blocks_per_iteration
             2, // max_concurrent_blocks
             Metrics::none(),
-            None,
             Some(5),
             Duration::from_micros(1),
             false,
@@ -467,7 +456,6 @@ mod tests {
             3, // max_blocks_per_iteration
             2, // max_concurrent_blocks
             Metrics::none(),
-            None,
             Some(10), // Stop at block 10
             Duration::from_micros(1),
             false,
@@ -551,7 +539,6 @@ mod tests {
             3, // max_blocks_per_iteration
             2, // max_concurrent_blocks
             Metrics::none(),
-            None,    // start_block_override
             Some(5), // stop_block_override - make it finite for testing
             Duration::from_micros(1),
             false,

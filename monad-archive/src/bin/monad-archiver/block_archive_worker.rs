@@ -29,8 +29,6 @@ pub struct ArchiveWorkerOpts {
     pub max_blocks_per_iteration: u64,
     /// Maximum number of blocks to process concurrently
     pub max_concurrent_blocks: usize,
-    /// Optional block number to start archiving from
-    pub start_block: Option<u64>,
     /// Optional block number to stop archiving at
     pub stop_block: Option<u64>,
     /// If set, archiver will skip blocks that fail to archive
@@ -55,7 +53,6 @@ pub async fn archive_worker(
     let ArchiveWorkerOpts {
         max_blocks_per_iteration,
         max_concurrent_blocks,
-        mut start_block,
         stop_block: stop_block_override,
         unsafe_skip_bad_blocks,
         require_traces,
@@ -67,21 +64,16 @@ pub async fn archive_worker(
     } else {
         LatestKind::Uploaded
     };
-    // initialize starting block using either override or stored latest
-    let mut start_block = match start_block.take() {
-        Some(start_block) => start_block,
-        None => {
-            let latest_uploaded = archive_writer
-                .get_latest(latest_kind)
-                .await
-                .unwrap_or(Some(0))
-                .unwrap_or(0);
-            if latest_uploaded == 0 {
-                0
-            } else {
-                latest_uploaded + 1
-            }
-        }
+    // initialize starting block from stored latest marker
+    let latest_uploaded = archive_writer
+        .get_latest(latest_kind)
+        .await
+        .unwrap_or(Some(0))
+        .unwrap_or(0);
+    let mut start_block = if latest_uploaded == 0 {
+        0
+    } else {
+        latest_uploaded + 1
     };
 
     loop {

@@ -38,13 +38,21 @@ async fn main() -> Result<()> {
     info!(?args, "Cli Arguments: ");
 
     match std::mem::take(&mut args.command) {
-        Some(cli::Commands::MigrateLogs) => run_migrate_logs(args).await,
+        Some(cli::Commands::MigrateLogs {
+            start_block,
+            stop_block,
+        }) => run_migrate_logs(args, start_block, stop_block).await,
         Some(cli::Commands::MigrateCapped {
             db_name,
             coll_name,
             batch_size,
             free_factor,
         }) => run_migrate_capped(db_name, coll_name, batch_size, free_factor, args).await,
+        Some(cli::Commands::SetStartBlock {
+            block,
+            archive_sink,
+            async_backfill,
+        }) => run_set_start_block(block, archive_sink, async_backfill).await,
         None => run_indexer(args).await,
     }
 }
@@ -101,7 +109,6 @@ async fn run_indexer(args: cli::Cli) -> Result<()> {
         args.max_blocks_per_iteration,
         args.max_concurrent_blocks,
         metrics,
-        args.start_block,
         args.stop_block,
         Duration::from_millis(500),
         args.async_backfill,
@@ -131,4 +138,30 @@ async fn run_migrate_capped(
 
     let client = &mongodb_storage.client;
     migrate_to_uncapped(client, &db_name, &coll_name, batch_size, free_factor).await
+}
+
+async fn run_set_start_block(
+    block: u64,
+    archive_sink: monad_archive::cli::ArchiveArgs,
+    async_backfill: bool,
+) -> Result<()> {
+    let metrics = Metrics::none();
+    let archive = archive_sink.build_block_data_archive(&metrics).await?;
+
+    let latest_kind = if async_backfill {
+        LatestKind::IndexedAsyncBackfill
+    } else {
+        LatestKind::Indexed
+    };
+
+    archive.update_latest(block, latest_kind).await?;
+
+    let key_name = match latest_kind {
+        LatestKind::Indexed => "latest_indexed",
+        LatestKind::IndexedAsyncBackfill => "latest_indexed_async_backfill",
+        _ => unreachable!(),
+    };
+
+    println!("Set latest marker: key=\"{key_name}\", block={block}");
+    Ok(())
 }

@@ -19,7 +19,7 @@ use std::{
     process,
 };
 
-use clap::{ArgAction, Parser};
+use clap::{ArgAction, Parser, Subcommand};
 use eyre::{eyre, Context, Result};
 use monad_archive::cli::{ArchiveArgs, BlockDataReaderArgs};
 use serde::Deserialize;
@@ -54,9 +54,6 @@ pub struct Cli {
 
     #[serde(default = "default_max_concurrent_blocks")]
     pub max_concurrent_blocks: usize,
-
-    /// Override block number to start at
-    pub start_block: Option<u64>,
 
     /// Override block number to stop at
     pub stop_block: Option<u64>,
@@ -125,16 +122,35 @@ pub struct Cli {
     pub skip_connectivity_check: bool,
 }
 
+/// Result of parsing CLI arguments - either a subcommand or daemon config
+pub enum ParsedCli {
+    /// A subcommand was provided - handle and exit
+    Command(Commands),
+    /// No subcommand - run as daemon with this config
+    Daemon(Cli),
+}
+
 impl Cli {
-    pub fn parse() -> Self {
+    pub fn parse() -> ParsedCli {
         Self::try_parse().unwrap_or_else(|err| {
             eprintln!("failed to load monad-archiver configuration: {err:?}");
             process::exit(2);
         })
     }
 
-    pub fn try_parse() -> Result<Self> {
-        CliArgs::parse().into_cli()
+    pub fn try_parse() -> Result<ParsedCli> {
+        let args = CliArgs::parse();
+        // If a subcommand is provided, return it without requiring daemon args
+        if let Some(command) = args.command {
+            return Ok(ParsedCli::Command(command));
+        }
+        // No subcommand - parse full daemon config (this requires block_data_source, archive_sink, etc.)
+        let (_, cli) = CliArgs {
+            command: None,
+            ..args
+        }
+        .into_cli()?;
+        Ok(ParsedCli::Daemon(cli))
     }
 
     fn from_sources(config: Option<Cli>, overrides: CliOverrides) -> Result<Self> {
@@ -154,7 +170,6 @@ impl Cli {
             archive_sink,
             max_blocks_per_iteration,
             max_concurrent_blocks,
-            start_block,
             stop_block,
             unsafe_skip_bad_blocks,
             bft_block_path,
@@ -186,7 +201,6 @@ impl Cli {
                 .unwrap_or_else(default_max_blocks_per_iteration),
             max_concurrent_blocks: max_concurrent_blocks
                 .unwrap_or_else(default_max_concurrent_blocks),
-            start_block,
             stop_block,
             unsafe_skip_bad_blocks: unsafe_skip_bad_blocks.unwrap_or(false),
             bft_block_path,
@@ -230,9 +244,6 @@ impl Cli {
         }
         if let Some(value) = overrides.max_concurrent_blocks {
             self.max_concurrent_blocks = value;
-        }
-        if let Some(value) = overrides.start_block {
-            self.start_block = Some(value);
         }
         if let Some(value) = overrides.stop_block {
             self.stop_block = Some(value);
@@ -285,9 +296,31 @@ impl Cli {
     }
 }
 
+#[derive(Debug, Subcommand)]
+pub enum Commands {
+    /// Set the start block marker in the archive and exit.
+    /// Use this instead of --start-block to safely configure the starting point.
+    SetStartBlock {
+        /// Block number to set as the latest marker
+        #[arg(long)]
+        block: u64,
+
+        /// Archive sink to write the marker to
+        #[arg(long, value_parser = clap::value_parser!(ArchiveArgs))]
+        archive_sink: ArchiveArgs,
+
+        /// Set the async-backfill marker instead of the primary marker
+        #[arg(long, action = ArgAction::SetTrue)]
+        async_backfill: bool,
+    },
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "monad-archive", about, long_about = None)]
 struct CliArgs {
+    #[command(subcommand)]
+    pub command: Option<Commands>,
+
     /// Path to a TOML configuration file
     #[arg(long)]
     config: Option<PathBuf>,
@@ -313,10 +346,6 @@ struct CliArgs {
     #[arg(long)]
     max_concurrent_blocks: Option<usize>,
 
-    /// Override block number to start at
-    #[arg(long)]
-    start_block: Option<u64>,
-
     /// Override block number to stop at
     #[arg(long)]
     stop_block: Option<u64>,
@@ -336,6 +365,7 @@ struct CliArgs {
     #[arg(long, action = ArgAction::SetTrue)]
     traces_only: bool,
 
+    /// If set, archiver will perform an asynchronous backfill of the archive
     #[arg(long, action = ArgAction::SetTrue)]
     async_backfill: bool,
 
@@ -388,24 +418,24 @@ struct CliArgs {
 }
 
 impl CliArgs {
-    fn into_cli(self) -> Result<Cli> {
-        let (config_path, overrides) = self.into_parts();
+    fn into_cli(self) -> Result<(Option<Commands>, Cli)> {
+        let (command, config_path, overrides) = self.into_parts();
         let config = match config_path {
             Some(path) => Some(load_config(&path)?),
             None => None,
         };
-        Cli::from_sources(config, overrides)
+        Ok((command, Cli::from_sources(config, overrides)?))
     }
 
-    fn into_parts(self) -> (Option<PathBuf>, CliOverrides) {
+    fn into_parts(self) -> (Option<Commands>, Option<PathBuf>, CliOverrides) {
         let Self {
+            command,
             config,
             block_data_source,
             fallback_block_data_source,
             archive_sink,
             max_blocks_per_iteration,
             max_concurrent_blocks,
-            start_block,
             stop_block,
             unsafe_skip_bad_blocks,
             bft_block_path,
@@ -433,7 +463,6 @@ impl CliArgs {
             archive_sink,
             max_blocks_per_iteration,
             max_concurrent_blocks,
-            start_block,
             stop_block,
             unsafe_skip_bad_blocks: bool_override(unsafe_skip_bad_blocks),
             bft_block_path,
@@ -455,7 +484,7 @@ impl CliArgs {
             async_backfill: bool_override(async_backfill),
         };
 
-        (config, overrides)
+        (command, config, overrides)
     }
 }
 
@@ -466,7 +495,6 @@ struct CliOverrides {
     archive_sink: Option<ArchiveArgs>,
     max_blocks_per_iteration: Option<u64>,
     max_concurrent_blocks: Option<usize>,
-    start_block: Option<u64>,
     stop_block: Option<u64>,
     unsafe_skip_bad_blocks: Option<bool>,
     require_traces: Option<bool>,
@@ -544,7 +572,6 @@ mod tests {
         let config = r#"
             max_blocks_per_iteration = 250
             max_concurrent_blocks = 32
-            start_block = 5
             stop_block = 10
             unsafe_skip_bad_blocks = true
             bft_block_path = "/tmp/bft"
@@ -588,7 +615,6 @@ mod tests {
 
         assert_eq!(cli.max_blocks_per_iteration, 250);
         assert_eq!(cli.max_concurrent_blocks, 32);
-        assert_eq!(cli.start_block, Some(5));
         assert_eq!(cli.stop_block, Some(10));
         assert!(cli.unsafe_skip_bad_blocks);
         assert_eq!(cli.bft_block_path, Some(PathBuf::from("/tmp/bft")));
@@ -704,7 +730,7 @@ mod tests {
         )
         .unwrap();
 
-        let cli =
+        let (_, cli) =
             CliArgs::parse_from(["monad-archiver", "--config", file.path().to_str().unwrap()])
                 .into_cli()
                 .expect("config file should load");
@@ -745,7 +771,7 @@ mod tests {
         )
         .unwrap();
 
-        let cli = CliArgs::parse_from([
+        let (_, cli) = CliArgs::parse_from([
             "monad-archiver",
             "--config",
             file.path().to_str().unwrap(),

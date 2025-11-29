@@ -57,13 +57,29 @@ pub struct SharedArgs {
 pub enum Mode {
     WriteRange(WriteRangeArgs),
     Stream(StreamArgs),
+    /// Set the start block marker and exit.
+    /// Use this instead of --start-block to safely configure the starting point.
+    SetStartBlock {
+        /// Block number to set as the latest marker
+        #[arg(long)]
+        block: u64,
+
+        /// Destination path where the latest marker will be written
+        #[arg(long)]
+        dest_path: PathBuf,
+    },
 }
 
 impl Mode {
+    /// Returns the shared args for modes that have them.
+    /// Panics if called on SetStartBlock (handle that case separately before calling this).
     pub fn shared(&self) -> &SharedArgs {
         match self {
             Mode::WriteRange(args) => &args.shared_args,
             Mode::Stream(args) => &args.shared_args,
+            Mode::SetStartBlock { .. } => {
+                panic!("SetStartBlock does not have shared args - handle it separately")
+            }
         }
     }
 }
@@ -72,10 +88,6 @@ impl Mode {
 pub struct StreamArgs {
     #[command(flatten)]
     pub shared_args: SharedArgs,
-
-    /// Start block override
-    #[arg(long)]
-    pub start_block: Option<u64>,
 
     /// Sleep seconds between blocks
     #[arg(long, default_value = "1.0")]
