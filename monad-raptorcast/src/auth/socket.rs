@@ -26,7 +26,7 @@ use monad_dataplane::{RecvUdpMsg, UdpSocketHandle, UnicastMsg};
 use monad_executor::{ExecutorMetrics, ExecutorMetricsChain};
 use monad_types::UdpPriority;
 use tokio::time::Sleep;
-use tracing::{trace, warn};
+use tracing::{debug, trace, warn};
 use zerocopy::IntoBytes;
 
 use super::{
@@ -251,7 +251,7 @@ where
                     continue;
                 }
                 Err(e) => {
-                    trace!(addr=?message.src_addr, error=?e, "failed to decrypt message");
+                    debug!(addr=?message.src_addr, error=?e, "failed to decrypt message");
                     return Err(e);
                 }
             }

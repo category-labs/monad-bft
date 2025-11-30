@@ -69,8 +69,10 @@ pub enum SessionError {
     InvalidMac(#[source] crate::protocol::errors::CryptoError),
     #[error("cookie validation failed: {0}")]
     InvalidCookie(#[source] crate::protocol::errors::CookieError),
-    #[error("replay detected: packet counter {counter} already seen")]
-    NonceReplay { counter: u64 },
+    #[error("counter {counter} is outside replay window (next={next})")]
+    NonceOutsideWindow { counter: u64, next: u64 },
+    #[error("duplicate counter {counter} detected")]
+    NonceDuplicate { counter: u64 },
 }
 
 pub struct SessionState {

@@ -15,7 +15,7 @@
 
 use super::SessionError;
 
-const REPLAY_WINDOW_SIZE: usize = 32;
+const REPLAY_WINDOW_SIZE: usize = 128;
 const REPLAY_WINDOW_BITS: usize = REPLAY_WINDOW_SIZE * 64;
 
 pub struct ReplayFilter {
@@ -43,11 +43,14 @@ impl ReplayFilter {
         }
 
         if counter.saturating_add(REPLAY_WINDOW_BITS as u64) <= self.next {
-            return Err(SessionError::NonceReplay { counter });
+            return Err(SessionError::NonceOutsideWindow {
+                counter,
+                next: self.next,
+            });
         }
 
         if self.is_set(counter) {
-            return Err(SessionError::NonceReplay { counter });
+            return Err(SessionError::NonceDuplicate { counter });
         }
 
         Ok(())
@@ -57,7 +60,7 @@ impl ReplayFilter {
         if counter >= self.next {
             let gap = counter.saturating_sub(self.next);
             if gap >= REPLAY_WINDOW_BITS as u64 {
-                self.bitmap.iter_mut().for_each(|word| *word = 0);
+                self.bitmap = [0; REPLAY_WINDOW_SIZE];
             } else {
                 (self.next..counter).for_each(|i| self.clear(i));
             }
@@ -125,7 +128,7 @@ mod tests {
         assert!(filter.check(counter).is_err());
         assert!(matches!(
             filter.check(counter),
-            Err(SessionError::NonceReplay { .. })
+            Err(SessionError::NonceDuplicate { .. })
         ));
     }
 

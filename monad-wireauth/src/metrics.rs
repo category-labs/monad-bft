@@ -64,6 +64,11 @@ pub const GAUGE_WIREAUTH_DISPATCH_KEEPALIVE: &str = "monad.wireauth.dispatch.kee
 
 pub const GAUGE_WIREAUTH_ERROR_CONNECT: &str = "monad.wireauth.error.connect";
 pub const GAUGE_WIREAUTH_ERROR_DECRYPT: &str = "monad.wireauth.error.decrypt";
+pub const GAUGE_WIREAUTH_ERROR_DECRYPT_NONCE_OUTSIDE_WINDOW: &str =
+    "monad.wireauth.error.decrypt.nonce_outside_window";
+pub const GAUGE_WIREAUTH_ERROR_DECRYPT_NONCE_DUPLICATE: &str =
+    "monad.wireauth.error.decrypt.nonce_duplicate";
+pub const GAUGE_WIREAUTH_ERROR_DECRYPT_MAC: &str = "monad.wireauth.error.decrypt.mac";
 pub const GAUGE_WIREAUTH_ERROR_ENCRYPT_BY_PUBLIC_KEY: &str =
     "monad.wireauth.error.encrypt_by_public_key";
 pub const GAUGE_WIREAUTH_ERROR_ENCRYPT_BY_SOCKET: &str = "monad.wireauth.error.encrypt_by_socket";

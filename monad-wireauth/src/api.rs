@@ -36,7 +36,7 @@ use crate::{
         ControlPacket, CookieReply, DataPacket, DataPacketHeader, HandshakeInitiation,
         HandshakeResponse, Plaintext,
     },
-    session::{InitiatorState, RenewedTimer, ResponderState, SessionIndex},
+    session::{InitiatorState, RenewedTimer, ResponderState, SessionError, SessionIndex},
     state::State,
 };
 
@@ -236,6 +236,12 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
             }
 
             if let Some(terminated) = terminated {
+                debug!(
+                    session_id=?session_id,
+                    remote_public_key=?terminated.remote_public_key,
+                    remote_addr=?terminated.remote_addr,
+                    "terminating session"
+                );
                 self.state.terminate_session(
                     session_id,
                     &terminated.remote_public_key,
@@ -287,7 +293,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         cookie: Option<[u8; 16]>,
         retry_attempts: u64,
     ) -> Result<(SessionIndex, Duration, HandshakeInitiation)> {
-        trace!(%remote_addr, ?remote_static_key, cookie = cookie.is_some(), ?retry_attempts, "init session");
+        debug!(%remote_addr, ?remote_static_key, cookie = cookie.is_some(), ?retry_attempts, "init session");
 
         // reservation should be committed when code is no longer fallible
         let reservation = self.state.reserve_session_index().ok_or_else(|| {
@@ -503,8 +509,8 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
             let duration_since_start = self.context.duration_since_start();
             let (timer, plaintext) = transport
                 .decrypt(&self.config, duration_since_start, data_packet)
-                .inspect_err(|_| {
-                    self.metrics[GAUGE_WIREAUTH_ERROR_DECRYPT] += 1;
+                .inspect_err(|e| {
+                    track_decrypt_error_metrics(&mut self.metrics, e);
                 })?;
             let remote_public_key = transport.remote_public_key;
             self.replace_timer(timer, receiver_index);
@@ -528,7 +534,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
                     (remote_public_key, plaintext)
                 }
                 Err(e) => {
-                    self.metrics[GAUGE_WIREAUTH_ERROR_DECRYPT] += 1;
+                    track_decrypt_error_metrics(&mut self.metrics, &e);
                     return Err(e.into());
                 }
             }
@@ -714,5 +720,23 @@ impl std::fmt::Debug for CompressedPublicKey {
             "{:02x}{:02x}{:02x}{:02x}",
             self.0[0], self.0[1], self.0[2], self.0[3]
         )
+    }
+}
+
+fn track_decrypt_error_metrics(metrics: &mut ExecutorMetrics, e: &SessionError) {
+    metrics[GAUGE_WIREAUTH_ERROR_DECRYPT] += 1;
+    match e {
+        SessionError::NonceOutsideWindow { .. } => {
+            metrics[GAUGE_WIREAUTH_ERROR_DECRYPT_NONCE_OUTSIDE_WINDOW] += 1;
+        }
+        SessionError::NonceDuplicate { .. } => {
+            metrics[GAUGE_WIREAUTH_ERROR_DECRYPT_NONCE_DUPLICATE] += 1;
+        }
+        SessionError::InvalidMac(_) => {
+            metrics[GAUGE_WIREAUTH_ERROR_DECRYPT_MAC] += 1;
+        }
+        _ => {
+            warn!(error=?e, "unexpected decrypt error variant");
+        }
     }
 }

@@ -113,7 +113,10 @@ session_decrypt         time:   [166.11 ns 168.75 ns 171.20 ns]
 | metric | description |
 |--------|-------------|
 | `monad.wireauth.error.connect` | failed connection attempts (no memory, duplicate, etc) |
-| `monad.wireauth.error.decrypt` | decryption failures (bad auth tag, replay, no session) |
+| `monad.wireauth.error.decrypt` | total decryption failures (includes all decrypt error subtypes) |
+| `monad.wireauth.error.decrypt.nonce_outside_window` | packet counter outside replay window (too old) |
+| `monad.wireauth.error.decrypt.nonce_duplicate` | duplicate packet counter detected (replay attack) |
+| `monad.wireauth.error.decrypt.mac` | chacha20poly1305 mac authentication tag verification failed |
 | `monad.wireauth.error.encrypt_by_public_key` | encryption failures when looking up by public key |
 | `monad.wireauth.error.encrypt_by_socket` | encryption failures when looking up by socket address |
 | `monad.wireauth.error.dispatch_control` | control message processing failures |
