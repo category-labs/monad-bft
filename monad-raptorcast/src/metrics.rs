@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::time::{Duration, Instant};
+
 use monad_executor::{ExecutorMetrics, Histogram};
 
 use crate::util::unix_ts_ms_now;
@@ -21,19 +23,13 @@ pub const GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED: &str =
     "monad.raptorcast.total_messages_received";
 pub const GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS: &str = "monad.raptorcast.total_recv_errors";
 
-pub const PRIMARY_BROADCAST_LATENCY_P50_MS: &str =
-    "monad.bft.raptorcast.udp.primary_broadcast_latency_p50_ms";
-pub const PRIMARY_BROADCAST_LATENCY_P90_MS: &str =
-    "monad.bft.raptorcast.udp.primary_broadcast_latency_p90_ms";
+const HISTOGRAM_CLEAR_INTERVAL: Duration = Duration::from_secs(30);
+
 pub const PRIMARY_BROADCAST_LATENCY_P99_MS: &str =
     "monad.bft.raptorcast.udp.primary_broadcast_latency_p99_ms";
 pub const PRIMARY_BROADCAST_LATENCY_COUNT: &str =
     "monad.bft.raptorcast.udp.primary_broadcast_latency_count";
 
-pub const SECONDARY_BROADCAST_LATENCY_P50_MS: &str =
-    "monad.bft.raptorcast.udp.secondary_broadcast_latency_p50_ms";
-pub const SECONDARY_BROADCAST_LATENCY_P90_MS: &str =
-    "monad.bft.raptorcast.udp.secondary_broadcast_latency_p90_ms";
 pub const SECONDARY_BROADCAST_LATENCY_P99_MS: &str =
     "monad.bft.raptorcast.udp.secondary_broadcast_latency_p99_ms";
 pub const SECONDARY_BROADCAST_LATENCY_COUNT: &str =
@@ -41,36 +37,33 @@ pub const SECONDARY_BROADCAST_LATENCY_COUNT: &str =
 
 pub(crate) struct LatencyHistogram {
     histogram: Histogram,
-    p50_metric: &'static str,
-    p90_metric: &'static str,
     p99_metric: &'static str,
     count_metric: &'static str,
+    last_reset: Instant,
 }
 
 impl LatencyHistogram {
-    fn new(
-        max_ms: u64,
-        p50_metric: &'static str,
-        p90_metric: &'static str,
-        p99_metric: &'static str,
-        count_metric: &'static str,
-    ) -> Self {
+    fn new(max_ms: u64, p99_metric: &'static str, count_metric: &'static str) -> Self {
         Self {
             histogram: Histogram::new(max_ms, 3).expect("failed to create latency histogram"),
-            p50_metric,
-            p90_metric,
             p99_metric,
             count_metric,
+            last_reset: Instant::now(),
         }
     }
 
     pub(crate) fn record(&mut self, latency_ms: u64, metrics: &mut ExecutorMetrics) {
+        let now = Instant::now();
+
+        if now.duration_since(self.last_reset) >= HISTOGRAM_CLEAR_INTERVAL {
+            self.histogram.clear();
+            self.last_reset = now;
+        }
+
         if let Err(e) = self.histogram.record(latency_ms) {
             tracing::warn!("failed to record latency: {}", e);
         }
 
-        metrics[self.p50_metric] = self.histogram.p50();
-        metrics[self.p90_metric] = self.histogram.p90();
         metrics[self.p99_metric] = self.histogram.p99();
         metrics[self.count_metric] = self.histogram.count();
     }
@@ -87,15 +80,11 @@ impl UdpStateMetrics {
         Self {
             primary_broadcast: LatencyHistogram::new(
                 10_000,
-                PRIMARY_BROADCAST_LATENCY_P50_MS,
-                PRIMARY_BROADCAST_LATENCY_P90_MS,
                 PRIMARY_BROADCAST_LATENCY_P99_MS,
                 PRIMARY_BROADCAST_LATENCY_COUNT,
             ),
             secondary_broadcast: LatencyHistogram::new(
                 10_000,
-                SECONDARY_BROADCAST_LATENCY_P50_MS,
-                SECONDARY_BROADCAST_LATENCY_P90_MS,
                 SECONDARY_BROADCAST_LATENCY_P99_MS,
                 SECONDARY_BROADCAST_LATENCY_COUNT,
             ),
