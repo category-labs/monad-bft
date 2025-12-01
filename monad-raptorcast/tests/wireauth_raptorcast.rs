@@ -167,13 +167,17 @@ impl ValidatorInfo {
     }
 }
 
+const DEFAULT_SIG_VERIFICATION_RATE_LIMIT: u32 = 10_000;
+
 fn create_raptorcast_config(
     keypair: Arc<KeyPair>,
+    sig_verification_rate_limit: u32,
 ) -> monad_raptorcast::config::RaptorCastConfig<SecpSignature> {
     monad_raptorcast::config::RaptorCastConfig {
         shared_key: keypair,
         mtu: monad_dataplane::udp::DEFAULT_MTU,
         udp_message_max_age_ms: u64::MAX,
+        sig_verification_rate_limit,
         primary_instance: Default::default(),
         secondary_instance: monad_node_config::FullNodeRaptorCastConfig {
             enable_publisher: false,
@@ -276,7 +280,7 @@ fn spawn_noop_validator(
         let (tcp_socket, _authenticated_socket, non_authenticated_socket, control) =
             create_dataplane(tcp_addr, auth_addr, non_auth_addr);
         let (tcp_reader, tcp_writer) = tcp_socket.split();
-        let config = create_raptorcast_config(keypair);
+        let config = create_raptorcast_config(keypair, DEFAULT_SIG_VERIFICATION_RATE_LIMIT);
         let auth_protocol = monad_raptorcast::auth::NoopAuthProtocol::new();
 
         let mut validator_rc = monad_raptorcast::RaptorCast::<
@@ -334,6 +338,7 @@ fn spawn_wireauth_validator(
         MonadNameRecord<SecpSignature>,
     >,
     peers_to_check: Vec<(SocketAddrV4, monad_secp::PubKey)>,
+    sig_verification_rate_limit: u32,
 ) -> ValidatorChannels {
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -344,7 +349,7 @@ fn spawn_wireauth_validator(
         let (tcp_socket, authenticated_socket, non_authenticated_socket, control) =
             create_dataplane(tcp_addr, auth_addr, non_auth_addr);
         let (tcp_reader, tcp_writer) = tcp_socket.split();
-        let config = create_raptorcast_config(keypair.clone());
+        let config = create_raptorcast_config(keypair.clone(), sig_verification_rate_limit);
         let wireauth_config = monad_wireauth::Config::default();
         let auth_protocol =
             monad_raptorcast::auth::WireAuthProtocol::new(wireauth_config, keypair.clone());
@@ -495,6 +500,7 @@ async fn run_test_scenario(num_auth_nodes: usize, routing_type: RoutingType, mes
                     known_addresses.clone(),
                     name_records.clone(),
                     peers,
+                    DEFAULT_SIG_VERIFICATION_RATE_LIMIT,
                 )
             } else {
                 spawn_noop_validator(
@@ -582,6 +588,157 @@ async fn run_test_scenario(num_auth_nodes: usize, routing_type: RoutingType, mes
             }
         }
     }
+}
+
+async fn test_rate_limiting_basic() {
+    const NUM_TEST_NODES: usize = 3;
+    const RATE_LIMIT: u32 = 10;
+    const MESSAGE_SIZE: usize = 1_000;
+    const NUM_MESSAGES: u32 = 20;
+
+    let validator_infos: Vec<_> = (1..=NUM_TEST_NODES as u8).map(ValidatorInfo::new).collect();
+
+    let name_records: HashMap<_, _> = validator_infos
+        .iter()
+        .map(|v| (v.nodeid, v.create_name_record(true)))
+        .collect();
+
+    let known_addresses: HashMap<_, _> = validator_infos
+        .iter()
+        .map(|v| (v.nodeid, v.non_auth_addr))
+        .collect();
+
+    let peers_for_check: Vec<_> = validator_infos
+        .iter()
+        .map(|v| (v.auth_addr, v.pubkey))
+        .collect();
+
+    let validators: Vec<_> = validator_infos
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            let peers = peers_for_check
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, p)| *p)
+                .collect();
+            spawn_wireauth_validator(
+                v.keypair.clone(),
+                v.tcp_addr,
+                v.auth_addr,
+                v.non_auth_addr,
+                known_addresses.clone(),
+                name_records.clone(),
+                peers,
+                RATE_LIMIT,
+            )
+        })
+        .collect();
+
+    let epoch = Epoch(0);
+    // first 2 nodes are validators
+    let validator_set: Vec<_> = validator_infos
+        .iter()
+        .take(2)
+        .map(|v| (v.nodeid, Stake::ONE))
+        .collect();
+
+    let (cmd_txs, ready_rxs, mut event_rxs): (Vec<_>, Vec<_>, Vec<_>) = validators
+        .into_iter()
+        .map(|v| (v.cmd_tx, v.ready_rx, v.event_rx))
+        .multiunzip();
+
+    let cmd_tx_refs: Vec<_> = cmd_txs.iter().collect();
+    let mut event_rx_refs: Vec<_> = event_rxs.iter_mut().collect();
+
+    establish_connections(
+        &cmd_tx_refs,
+        ready_rxs,
+        epoch,
+        validator_set,
+        &mut event_rx_refs,
+    )
+    .await;
+
+    for event_rx in event_rxs.iter_mut() {
+        while event_rx.try_recv().is_ok() {}
+    }
+
+    let validator_sender_idx = 0;
+    let validator_receiver_idx = 1;
+    let validator_sender_nodeid = validator_infos[validator_sender_idx].nodeid;
+
+    for i in 0..NUM_MESSAGES {
+        let message = MockMessage::new(1000 + i, MESSAGE_SIZE);
+        cmd_txs[validator_sender_idx]
+            .send(RouterCommand::Publish {
+                target: monad_types::RouterTarget::PointToPoint(
+                    validator_infos[validator_receiver_idx].nodeid,
+                ),
+                message,
+            })
+            .unwrap();
+    }
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let mut validator_received = 0;
+    while let Ok(event) = event_rxs[validator_receiver_idx].try_recv() {
+        let MockEvent((from, _)) = event;
+        assert_eq!(from, validator_sender_nodeid);
+        validator_received += 1;
+    }
+
+    assert_eq!(
+        validator_received, NUM_MESSAGES as usize,
+        "all {} messages from validator should be received",
+        NUM_MESSAGES,
+    );
+
+    let non_validator_idx = 2;
+    let non_validator_nodeid = validator_infos[non_validator_idx].nodeid;
+    let target_validator_idx = 0;
+
+    for i in 0..NUM_MESSAGES {
+        let message = MockMessage::new(2000 + i, MESSAGE_SIZE);
+        cmd_txs[non_validator_idx]
+            .send(RouterCommand::Publish {
+                target: monad_types::RouterTarget::PointToPoint(
+                    validator_infos[target_validator_idx].nodeid,
+                ),
+                message,
+            })
+            .unwrap();
+    }
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let mut non_validator_received = 0;
+    while let Ok(event) = event_rxs[target_validator_idx].try_recv() {
+        let MockEvent((from, _)) = event;
+        assert_eq!(from, non_validator_nodeid);
+        non_validator_received += 1;
+    }
+
+    assert!(
+        non_validator_received > 0,
+        "at least some messages from non-validator should be received"
+    );
+    assert!(
+        non_validator_received < NUM_MESSAGES as usize,
+        "all {} messages from non-validator were received, rate limiting did not work",
+        NUM_MESSAGES
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_rate_limiting_p2p() {
+    init_tracing();
+
+    tokio::task::LocalSet::new()
+        .run_until(test_rate_limiting_basic())
+        .await;
 }
 
 #[rstest]

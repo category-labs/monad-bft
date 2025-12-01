@@ -335,6 +335,7 @@ where
                             shared_key,
                             mtu: DEFAULT_MTU,
                             udp_message_max_age_ms: u64::MAX,
+                            sig_verification_rate_limit: 10_000,
                             primary_instance: Default::default(),
                             secondary_instance: FullNodeRaptorCastConfig {
                                 enable_publisher: false,
