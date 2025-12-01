@@ -82,6 +82,8 @@ metrics!(
             invalid_signature,
             invalid_tc_round,
             duplicate_tc_tip_round,
+            empty_signers_tc_tip_round,
+            too_many_tc_tip_round,
             insufficient_stake,
             invalid_seq_num,
             val_data_unavailable,
