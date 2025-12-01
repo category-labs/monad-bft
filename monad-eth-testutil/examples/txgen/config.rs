@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::HashSet, str::FromStr};
+use std::str::FromStr;
 
 use eyre::bail;
 use serde::{Deserialize, Serialize};
@@ -426,46 +426,86 @@ impl Default for TrafficGen {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "snake_case")]
-pub enum RpcWorkflowMode {
-    /// Block indexer workflow
-    Indexer,
-    /// Spam RPC and WebSocket with wallet workflow requests and compare responses
-    SpamRpcWs,
-    /// Compare block headers returned from RPC and WebSocket
-    CompareRpcWs,
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct IndexerConfig {
+    pub requests_per_block: usize,
+}
+
+impl Default for IndexerConfig {
+    fn default() -> Self {
+        Self {
+            requests_per_block: 10,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
-pub struct RpcRequestGeneratorConfig {
-    pub enabled_workflows: HashSet<RpcWorkflowMode>,
-
-    /// Number of requests to index per block
+pub struct SpamRpcWsConfig {
     pub requests_per_block: usize,
 
-    /// Number of concurrent websocket connections to use for spamming rpc and websocket
     pub num_ws_connections: usize,
 }
 
-impl Default for RpcRequestGeneratorConfig {
+impl Default for SpamRpcWsConfig {
     fn default() -> Self {
         Self {
-            enabled_workflows: HashSet::new(),
             requests_per_block: 10,
             num_ws_connections: 4,
         }
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct CompareRpcWsConfig {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum RpcWorkflowConfig {
+    Indexer(IndexerConfig),
+    SpamRpcWs(SpamRpcWsConfig),
+    CompareRpcWs(CompareRpcWsConfig),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct RpcRequestGeneratorConfig {
+    pub workflows: Vec<RpcWorkflowConfig>,
+}
+
+impl Default for RpcRequestGeneratorConfig {
+    fn default() -> Self {
+        Self {
+            workflows: Vec::new(),
+        }
+    }
+}
+
 impl RpcRequestGeneratorConfig {
     pub fn is_enabled(&self) -> bool {
-        !self.enabled_workflows.is_empty()
+        !self.workflows.is_empty()
     }
 
-    pub fn has_workflow(&self, mode: RpcWorkflowMode) -> bool {
-        self.enabled_workflows.contains(&mode)
+    pub fn indexer_config(&self) -> Option<&IndexerConfig> {
+        self.workflows.iter().find_map(|w| match w {
+            RpcWorkflowConfig::Indexer(config) => Some(config),
+            _ => None,
+        })
+    }
+
+    pub fn spam_rpc_ws_config(&self) -> Option<&SpamRpcWsConfig> {
+        self.workflows.iter().find_map(|w| match w {
+            RpcWorkflowConfig::SpamRpcWs(config) => Some(config),
+            _ => None,
+        })
+    }
+
+    pub fn compare_rpc_ws_config(&self) -> Option<&CompareRpcWsConfig> {
+        self.workflows.iter().find_map(|w| match w {
+            RpcWorkflowConfig::CompareRpcWs(config) => Some(config),
+            _ => None,
+        })
     }
 }
 

@@ -31,8 +31,8 @@ use alloy_rpc_types_trace::geth::{
 };
 use futures::{
     future::Future,
-    stream::{FuturesUnordered, SplitStream},
-    SinkExt, StreamExt,
+    stream::{self, FuturesUnordered, SplitStream},
+    SinkExt, StreamExt, TryStreamExt,
 };
 use itertools::Itertools;
 use serde::de::DeserializeOwned;
@@ -40,6 +40,10 @@ use tokio::time::{Duration, Instant};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tracing::{debug, error, warn};
 use url::Url;
+
+const MAX_CONCURRENT_REQUESTS: usize = 10;
+const MAX_CONCURRENT_INDEX_TASKS: usize = 16;
+const RPC_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 async fn ws_call(
     write: &mut futures::stream::SplitSink<
@@ -175,7 +179,7 @@ impl RpcRequestGenerator {
                         block_number,
                         error: e,
                     })?;
-                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    tokio::time::sleep(RPC_RETRY_DELAY).await;
                     continue;
                 }
             }
@@ -200,7 +204,7 @@ impl RpcRequestGenerator {
                 Ok(_) => return resp,
                 Err(err) => {
                     Self::handle_rpc_error(err)?;
-                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    tokio::time::sleep(RPC_RETRY_DELAY).await;
                     continue;
                 }
             }
@@ -232,7 +236,7 @@ impl RpcRequestGenerator {
                 Ok(_) => return resp,
                 Err(err) => {
                     Self::handle_rpc_error(err)?;
-                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    tokio::time::sleep(RPC_RETRY_DELAY).await;
                     continue;
                 }
             }
@@ -255,7 +259,7 @@ impl RpcRequestGenerator {
                 Ok(_) => return resp,
                 Err(err) => {
                     Self::handle_rpc_error(err)?;
-                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    tokio::time::sleep(RPC_RETRY_DELAY).await;
                     continue;
                 }
             }
@@ -286,7 +290,7 @@ impl RpcRequestGenerator {
                     Ok(_) => break futs,
                     Err(err) => {
                         debug!(?err, "eth_getBalance error");
-                        tokio::time::sleep(Duration::from_millis(10)).await;
+                        tokio::time::sleep(RPC_RETRY_DELAY).await;
                         continue;
                     }
                 }
@@ -330,7 +334,7 @@ impl RpcRequestGenerator {
                     Ok(_) => break futs,
                     Err(err) => {
                         Self::handle_rpc_error(err)?;
-                        tokio::time::sleep(Duration::from_millis(10)).await;
+                        tokio::time::sleep(RPC_RETRY_DELAY).await;
                         continue;
                     }
                 }
@@ -365,50 +369,47 @@ impl RpcRequestGenerator {
             let start = Instant::now();
             let (receipts_results, _, _, _) = tokio::join!(
                 async {
-                    let mut futures = (0..requests_per_block)
+                    let receipts: Result<Vec<_>, _> = stream::iter(0..requests_per_block)
                         .map(|_| Self::get_block_receipts(&client, block_number))
-                        .collect::<FuturesUnordered<_>>();
-                    let mut receipts = Vec::new();
-                    while let Some(result) = futures.next().await {
-                        match result {
-                            Ok(r) => receipts.push(r),
-                            Err(err) => {
-                                let _ = result_sender
-                                    .send(Err(BlockIndexError {
-                                        block_number,
-                                        error: err,
-                                    }))
-                                    .await;
-                                return Err(());
-                            }
-                        }
-                    }
-                    receipts.pop().ok_or(())
-                },
-                async {
-                    let mut futures = (0..requests_per_block)
-                        .map(|_| Self::get_logs(&client, block_number))
-                        .collect::<FuturesUnordered<_>>();
+                        .buffer_unordered(MAX_CONCURRENT_REQUESTS)
+                        .try_collect()
+                        .await;
 
-                    let mut logs = Vec::new();
-                    while let Some(result) = futures.next().await {
-                        match result {
-                            Ok(t) => logs.push(t),
-                            Err(err) => {
-                                let _ = result_sender
-                                    .send(Err(BlockIndexError {
-                                        block_number,
-                                        error: err,
-                                    }))
-                                    .await;
-                                return Err(());
-                            }
+                    match receipts {
+                        Ok(mut r) => r.pop().ok_or(()),
+                        Err(err) => {
+                            let _ = result_sender
+                                .send(Err(BlockIndexError {
+                                    block_number,
+                                    error: err,
+                                }))
+                                .await;
+                            Err(())
                         }
                     }
-                    logs.pop().ok_or(())
                 },
                 async {
-                    let mut futures = (0..requests_per_block)
+                    let logs: Result<Vec<_>, _> = stream::iter(0..requests_per_block)
+                        .map(|_| Self::get_logs(&client, block_number))
+                        .buffer_unordered(MAX_CONCURRENT_REQUESTS)
+                        .try_collect()
+                        .await;
+
+                    match logs {
+                        Ok(mut l) => l.pop().ok_or(()),
+                        Err(err) => {
+                            let _ = result_sender
+                                .send(Err(BlockIndexError {
+                                    block_number,
+                                    error: err,
+                                }))
+                                .await;
+                            Err(())
+                        }
+                    }
+                },
+                async {
+                    let traces: Result<Vec<_>, _> = stream::iter(0..requests_per_block)
                         .map(|_| {
                             Self::debug_trace_block_by_number(
                                 &client,
@@ -416,27 +417,25 @@ impl RpcRequestGenerator {
                                 GethDebugBuiltInTracerType::CallTracer,
                             )
                         })
-                        .collect::<FuturesUnordered<_>>();
+                        .buffer_unordered(MAX_CONCURRENT_REQUESTS)
+                        .try_collect()
+                        .await;
 
-                    let mut traces = Vec::new();
-                    while let Some(result) = futures.next().await {
-                        match result {
-                            Ok(t) => traces.push(t),
-                            Err(err) => {
-                                let _ = result_sender
-                                    .send(Err(BlockIndexError {
-                                        block_number,
-                                        error: err,
-                                    }))
-                                    .await;
-                                return Err(());
-                            }
+                    match traces {
+                        Ok(mut t) => t.pop().ok_or(()),
+                        Err(err) => {
+                            let _ = result_sender
+                                .send(Err(BlockIndexError {
+                                    block_number,
+                                    error: err,
+                                }))
+                                .await;
+                            Err(())
                         }
                     }
-                    traces.pop().ok_or(())
                 },
                 async {
-                    let mut futures = (0..requests_per_block)
+                    let traces: Result<Vec<_>, _> = stream::iter(0..requests_per_block)
                         .map(|_| {
                             Self::debug_trace_block_by_number(
                                 &client,
@@ -444,24 +443,22 @@ impl RpcRequestGenerator {
                                 GethDebugBuiltInTracerType::PreStateTracer,
                             )
                         })
-                        .collect::<FuturesUnordered<_>>();
+                        .buffer_unordered(MAX_CONCURRENT_REQUESTS)
+                        .try_collect()
+                        .await;
 
-                    let mut traces = Vec::new();
-                    while let Some(result) = futures.next().await {
-                        match result {
-                            Ok(t) => traces.push(t),
-                            Err(err) => {
-                                let _ = result_sender
-                                    .send(Err(BlockIndexError {
-                                        block_number,
-                                        error: err,
-                                    }))
-                                    .await;
-                                return Err(());
-                            }
+                    match traces {
+                        Ok(mut t) => t.pop().ok_or(()),
+                        Err(err) => {
+                            let _ = result_sender
+                                .send(Err(BlockIndexError {
+                                    block_number,
+                                    error: err,
+                                }))
+                                .await;
+                            Err(())
                         }
                     }
-                    traces.pop().ok_or(())
                 },
             );
             let receipts = match receipts_results {
@@ -746,6 +743,9 @@ impl RpcRequestGenerator {
         let refresher = TipRefresher::new(self.rpc_client.clone(), tip_sender);
         tokio::spawn(async move { refresher.run().await });
 
+        // Semaphore to limit concurrent indexing tasks
+        let index_semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_INDEX_TASKS));
+
         let mut status_interval = tokio::time::interval(Duration::from_secs(1));
         status_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -760,7 +760,15 @@ impl RpcRequestGenerator {
                     debug!(from=index_from, to=index_to, "index range");
 
                     for block_number in index_from..=index_to {
-                        RpcRequestGenerator::index_block(self.rpc_client.clone(), block_number, self.requests_per_block, index_done_sender.clone()).await;
+                        // Wait for permit before spawning - limits concurrent tasks
+                        let permit = index_semaphore.clone().acquire_owned().await.unwrap();
+                        let client = self.rpc_client.clone();
+                        let requests_per_block = self.requests_per_block;
+                        let sender = index_done_sender.clone();
+                        tokio::spawn(async move {
+                            RpcRequestGenerator::index_block(client, block_number, requests_per_block, sender).await;
+                            drop(permit);
+                        });
                     }
                 }
 
@@ -925,7 +933,7 @@ impl RpcWsCompare {
                 Ok(block) => return Some(block),
                 Err(err) => {
                     warn!(?err, "failed to get block by number");
-                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    tokio::time::sleep(RPC_RETRY_DELAY).await;
                     continue;
                 }
             }
@@ -997,30 +1005,14 @@ impl TipRefresher {
                 .map_resp(|res| res.to())
                 .await;
 
-            match resp {
-                Ok(tip) => {
-                    self.tip = tip;
-                    break;
-                }
-                Err(_) => {
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                }
-            }
-        }
-
-        loop {
-            let resp = self
-                .client
-                .request_noparams::<U64>("eth_blockNumber")
-                .map_resp(|res| res.to())
-                .await;
-
             let Ok(tip) = resp else {
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tokio::time::sleep(RPC_RETRY_DELAY).await;
                 continue;
             };
 
-            if tip > self.tip {
+            if self.tip == 0 {
+                self.tip = tip;
+            } else if tip > self.tip {
                 let Ok(()) = self.tip_sender.send((self.tip + 1, tip)).await else {
                     warn!("tip sender channel full");
                     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -1028,7 +1020,7 @@ impl TipRefresher {
                 };
                 self.tip = tip;
             } else {
-                tokio::time::sleep(Duration::from_millis(500)).await;
+                tokio::time::sleep(RPC_RETRY_DELAY).await;
             }
         }
     }
