@@ -564,7 +564,29 @@ where
         for payload_id in payload_ids_to_request {
             if let Some(payload) = self.get_cached_payload(payload_id) {
                 // remove request and clone payload to existing headers
-                self.block_sync.self_payload_requests.remove(&payload_id);
+                let maybe_request = self
+                    .block_sync
+                    .self_payload_requests
+                    .remove(&payload_id)
+                    .expect("payload_id should be in requests");
+                if let Some(request) = maybe_request {
+                    // payload request was already initiated
+
+                    // decrement count as the cache was hydrated after
+                    // the request was initiated
+                    self.block_sync.self_payload_requests_in_flight -= 1;
+
+                    self.metrics
+                        .blocksync_events
+                        .self_payload_requests_in_flight -= 1;
+
+                    if request.to.is_some() {
+                        // reset timeout if the request was made to a peer
+                        cmds.push(BlockSyncCommand::ResetTimeout(
+                            BlockSyncRequestMessage::Payload(payload_id),
+                        ));
+                    }
+                }
 
                 for (_, completed_header) in
                     self.block_sync.self_completed_headers_requests.iter_mut()
@@ -1339,6 +1361,14 @@ mod test {
         ) -> Vec<BlockSyncCommand<SignatureType, SignatureCollectionType, ExecutionProtocolType>>
         {
             self.wrapped_state().handle_timeout(request)
+        }
+
+        fn try_initiate_payload_requests_for_self(
+            &mut self,
+        ) -> Vec<BlockSyncCommand<SignatureType, SignatureCollectionType, ExecutionProtocolType>>
+        {
+            self.wrapped_state()
+                .try_initiate_payload_requests_for_self()
         }
 
         fn assert_empty_block_sync_state(&self) {
@@ -2157,6 +2187,96 @@ mod test {
             context.handle_ledger_response(BlockSyncResponseMessage::found_payload(payload_2));
         // all payloads have been requested
         assert_eq!(find_fetch_payload_commands(&cmds).len(), 0);
+    }
+
+    #[test]
+    fn populate_cache_with_request_in_flight() {
+        let mut context = setup();
+        let num_blocks = BLOCKSYNC_MAX_PAYLOAD_REQUESTS;
+
+        let full_blocks = context.get_blocks(num_blocks);
+        let full_block_1 = full_blocks[0].clone();
+        let full_block_2 = full_blocks[1].clone();
+
+        let requester = BlockSyncSelfRequester::Consensus;
+        let block_range = BlockRange {
+            last_block_id: full_blocks.last().unwrap().get_id(),
+            num_blocks: full_blocks.last().unwrap().get_seq_num(),
+        };
+
+        // requesting a block range should initiate a headers request
+        let cmds = context.handle_self_request(requester, block_range);
+        assert_eq!(cmds.len(), 1);
+
+        let headers = full_blocks
+            .into_iter()
+            .map(|full_block| full_block.split().0)
+            .collect_vec();
+        // headers found, initiate payload requests
+        let cmds = context.handle_ledger_response(BlockSyncResponseMessage::found_headers(
+            block_range,
+            headers,
+        ));
+        // emit all payload fetch commands
+        assert_eq!(cmds.len(), num_blocks);
+        assert_eq!(
+            context
+                .metrics
+                .blocksync_events
+                .self_payload_requests_in_flight,
+            num_blocks as u64
+        );
+        assert_eq!(
+            context.block_sync.self_payload_requests_in_flight,
+            num_blocks
+        );
+
+        // hydrate the cache with a block_1 whose payload request was initiated,
+        // and request was made to self ledger
+        context.blocktree.add(PassthruWrappedBlock(full_block_1));
+
+        // trying to initiate new payload requests should cancel block_1 request
+        let cmds = context.try_initiate_payload_requests_for_self();
+        assert!(cmds.is_empty());
+
+        assert_eq!(
+            context
+                .metrics
+                .blocksync_events
+                .self_payload_requests_in_flight,
+            (num_blocks - 1) as u64
+        );
+        assert_eq!(
+            context.block_sync.self_payload_requests_in_flight,
+            num_blocks - 1
+        );
+
+        // initiate block_2 request to a peer
+        let cmds = context.handle_ledger_response(BlockSyncResponseMessage::payload_not_available(
+            full_block_2.get_body_id(),
+        ));
+        assert_eq!(find_send_request_commands(&cmds).len(), 1);
+        assert_eq!(find_schedule_timeout_commands(&cmds).len(), 1);
+
+        // hydrate the cache with a block_2 whose payload request was initiated,
+        // and request was made to peer
+        context.blocktree.add(PassthruWrappedBlock(full_block_2));
+
+        // trying to initiate new payload requests should cancel block_2 request
+        let cmds = context.try_initiate_payload_requests_for_self();
+        assert_eq!(find_reset_timeout_commands(&cmds).len(), 1);
+
+        assert_eq!(
+            context
+                .metrics
+                .blocksync_events
+                .self_payload_requests_in_flight,
+            (num_blocks - 2) as u64
+        );
+        assert_eq!(
+            context.block_sync.self_payload_requests_in_flight,
+            num_blocks - 2
+        );
     }
 
     #[test]
