@@ -752,11 +752,21 @@ async fn build_call_tree(
         let depth = value.depth.to::<usize>();
         let new_node = Rc::new(RefCell::new(MonadCallFrame::from(value)));
 
-        while let Some(last) = stack.last_mut() {
-            if last.borrow().depth < depth {
-                last.borrow_mut().calls.push(Rc::clone(&new_node));
+        loop {
+            let Some(mut last) = stack.last().map(|last| last.borrow_mut()) else {
+                error!("Call tree root node was removed from stack");
+
+                return Err(JsonRpcError::internal_error(format!(
+                    "call tree inconsistent"
+                )));
+            };
+
+            if last.depth < depth {
+                last.calls.push(Rc::clone(&new_node));
                 break;
             }
+
+            drop(last);
             stack.pop();
         }
 
