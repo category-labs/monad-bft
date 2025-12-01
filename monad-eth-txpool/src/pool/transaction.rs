@@ -234,6 +234,22 @@ impl ValidEthTransaction {
     }
 
     pub fn has_higher_priority(&self, other: &Self, _base_fee: u64) -> bool {
+        // Note: When considering whether a tx has higher priority than another (and thus should
+        // replace it), we do not enforce a minimum gas fee bump. This behavior deviates from
+        // Ethereum clients like geth for two primary reasons:
+        //  1) By the time txpool is calling this function to check the replacement order, it has
+        //     already expended almost all of the computational resources required to insert the tx
+        //     so there's little additional cost in allowing small fee bump txs.
+        //  2) Ethereum has a shared mempool where nodes broadcast and exchange txs with other nodes
+        //     to keep their mempools in sync. This means that gossiped transaction insertion with
+        //     a small fee bump incurs a large network bandwidth cost for all nodes choosing to
+        //     allow said transactions in their mempools. The Monad client, on the other hand, only
+        //     forwards transactions received from an RPC running on the same host to a handful of
+        //     validator nodes which in turn do not forward these transactions since they were not
+        //     received over IPC from the same host. If the node has sufficient network bandwidth
+        //     to forward the transaction, then there is little cost to the network in allowing
+        //     transactions with small fee bumps.
+
         self.tx.max_fee_per_gas() > other.tx.max_fee_per_gas()
             && self.tx.max_priority_fee_per_gas() >= other.tx.max_priority_fee_per_gas()
     }
