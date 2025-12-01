@@ -1,0 +1,16 @@
+---
+source: monad-peer-discovery/src/discovery.rs
+expression: toml_content
+---
+[[peers]]
+address = "8.8.8.8:8000"
+record_seq_num = 1
+secp256k1_pubkey = "0x0334944627833fe16cc7e21cd5e1442b42b3eb9bbd0cdd266e449a9dc026b45a39"
+name_record_sig = "0x92cfa40bcf8f1041b6220c7e9cd96e31f024d8aa59be3a9f23126e2056bfc1735878a8a52114ec83d8c4fa24f5f3502b0362a1bf9b1bf927a3da1a031ec167cd00"
+
+[[peers]]
+address = "8.8.4.4:8001"
+record_seq_num = 2
+secp256k1_pubkey = "0x03efb87e9679dd855714c66e0e262b8a73b359cf4ff92124b3f7f556fd3cf15441"
+name_record_sig = "0xb9d4a8783b1fba411536c072ccf3a0320aede4b6d19a2ac2654bd6a57cd8632776808fd7ed405a558c11b2b55346b024e04fe4765676a614c3f0c48bcbf81ef200"
+auth_port = 9001

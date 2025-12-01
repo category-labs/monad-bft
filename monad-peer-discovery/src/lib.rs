@@ -30,6 +30,7 @@ use monad_crypto::{
 };
 use monad_executor::ExecutorMetrics;
 use monad_executor_glue::PeerEntry;
+use monad_node_config::NodeBootstrapPeerConfig;
 use monad_types::{Epoch, NodeId, Round};
 use tracing::{debug, warn};
 
@@ -514,6 +515,64 @@ impl<ST: CertificateSignatureRecoverable> TryFrom<&MonadNameRecord<ST>> for Peer
             signature: record.signature,
             record_seq_num: record.name_record.seq(),
             auth_port: record.name_record.authenticated_udp_port(),
+        })
+    }
+}
+
+impl<ST: CertificateSignatureRecoverable> From<MonadNameRecordWithPubkey<'_, ST>>
+    for NodeBootstrapPeerConfig<ST>
+{
+    fn from(record_with_pubkey: MonadNameRecordWithPubkey<'_, ST>) -> Self {
+        NodeBootstrapPeerConfig {
+            address: record_with_pubkey.record.udp_address().to_string(),
+            record_seq_num: record_with_pubkey.record.seq(),
+            secp256k1_pubkey: record_with_pubkey.pubkey,
+            name_record_sig: record_with_pubkey.record.signature,
+            auth_port: record_with_pubkey
+                .record
+                .name_record
+                .authenticated_udp_port(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum PeerConfigConversionError {
+    InvalidSignature,
+    InvalidAddress(String),
+}
+
+impl<ST: CertificateSignatureRecoverable> TryFrom<&NodeBootstrapPeerConfig<ST>>
+    for MonadNameRecord<ST>
+{
+    type Error = PeerConfigConversionError;
+
+    fn try_from(peer_config: &NodeBootstrapPeerConfig<ST>) -> Result<Self, Self::Error> {
+        let addr = peer_config
+            .address
+            .parse::<SocketAddrV4>()
+            .map_err(|_| PeerConfigConversionError::InvalidAddress(peer_config.address.clone()))?;
+        let name_record = match peer_config.auth_port {
+            Some(auth_port) => NameRecord::new_with_authentication(
+                *addr.ip(),
+                addr.port(),
+                addr.port(),
+                auth_port,
+                peer_config.record_seq_num,
+            ),
+            None => NameRecord::new(*addr.ip(), addr.port(), peer_config.record_seq_num),
+        };
+
+        let mut encoded = Vec::new();
+        name_record.encode(&mut encoded);
+        peer_config
+            .name_record_sig
+            .verify::<signing_domain::NameRecord>(&encoded, &peer_config.secp256k1_pubkey)
+            .map_err(|_| PeerConfigConversionError::InvalidSignature)?;
+
+        Ok(MonadNameRecord {
+            name_record,
+            signature: peer_config.name_record_sig,
         })
     }
 }

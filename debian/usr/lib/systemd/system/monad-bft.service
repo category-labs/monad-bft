@@ -19,6 +19,7 @@ ExecStart=/usr/local/bin/monad-node \
     --statesync-sq-thread-cpu 8 \
     --record-metrics-interval-seconds 1 \
     --validators-path /home/monad/monad-bft/config/validators/validators.toml \
+    --persisted-peers-path /home/monad/monad-bft/config/peers.toml \
     --keystore-password "${KEYSTORE_PASSWORD}"
 EnvironmentFile=-/home/monad/.env
 Environment="RUST_LOG=debug,h2=warn,tower=warn,opentelemetry_sdk=warn,opentelemetry-otlp=warn"
