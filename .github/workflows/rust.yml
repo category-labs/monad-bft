@@ -32,7 +32,7 @@ env:
   TRIEDB_TARGET: triedb_driver
 
 jobs:
-  build:
+  lockfile-and-format:
     runs-on: self-hosted
 
     container:
@@ -54,17 +54,41 @@ jobs:
           submodules: recursive
           token: ${{ steps.generate_token.outputs.token }}
       - run: rustup toolchain install nightly-2024-12-10 --profile minimal --component rustfmt
+      - run: rustup toolchain install 1.85.0-x86_64-unknown-linux-gnu --profile minimal
+      - name: Verify lockfile
+        run: cargo update --workspace --locked
+      - name: Format
+        run: cargo +nightly-2024-12-10 fmt --all --check
+
+  lint:
+    runs-on: self-hosted
+    needs: lockfile-and-format
+
+    container:
+      image: peach10.devcore4.com/category-labs/builder
+      options: --privileged -u 1000:1000
+
+    steps:
+      - name: Generate a token
+        id: generate_token
+        uses: tibdex/github-app-token@v1
+        with:
+          app_id: ${{ secrets.REPO_READONLY_GITHUB_APP_ID }}
+          private_key: ${{ secrets.REPO_READONLY_GITHUB_APP_KEY }}
+          permissions: >-
+            {"contents": "read"}
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ steps.generate_token.outputs.token }}
       - run: rustup toolchain install 1.85.0-x86_64-unknown-linux-gnu --profile minimal --component clippy
       - name: Install cargo-binstall
         uses: cargo-bins/cargo-binstall@v1.15.7
       - name: Install cargo-shear
         run: cargo binstall --no-confirm cargo-shear
-      - name: Verify lockfile
-        run: cargo update --workspace --locked
       - name: Lint unused dependencies
         run: cargo shear
-      - name: Format
-        run: cargo +nightly-2024-12-10 fmt --all --check
       - uses: Swatinem/rust-cache@v2
       - name: Lint
         run: cargo clippy --all-targets --all-features --
@@ -91,14 +115,89 @@ jobs:
           -A clippy::mutable_key_type
           -A clippy::large_enum_variant
           -A clippy::doc-overindented-list-items
+
+  check-and-test:
+    runs-on: self-hosted
+    needs: lockfile-and-format
+
+    container:
+      image: peach10.devcore4.com/category-labs/builder
+      options: --privileged -u 1000:1000
+
+    steps:
+      - name: Generate a token
+        id: generate_token
+        uses: tibdex/github-app-token@v1
+        with:
+          app_id: ${{ secrets.REPO_READONLY_GITHUB_APP_ID }}
+          private_key: ${{ secrets.REPO_READONLY_GITHUB_APP_KEY }}
+          permissions: >-
+            {"contents": "read"}
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ steps.generate_token.outputs.token }}
+      - run: rustup toolchain install 1.85.0-x86_64-unknown-linux-gnu --profile minimal
+      - uses: Swatinem/rust-cache@v2
       - name: Check
         run: cargo check --all-targets --all-features
       - name: Run tests
         run: cargo test --release --all-targets --all-features
+
+  docs:
+    runs-on: self-hosted
+    needs: lockfile-and-format
+
+    container:
+      image: peach10.devcore4.com/category-labs/builder
+      options: --privileged -u 1000:1000
+
+    steps:
+      - name: Generate a token
+        id: generate_token
+        uses: tibdex/github-app-token@v1
+        with:
+          app_id: ${{ secrets.REPO_READONLY_GITHUB_APP_ID }}
+          private_key: ${{ secrets.REPO_READONLY_GITHUB_APP_KEY }}
+          permissions: >-
+            {"contents": "read"}
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ steps.generate_token.outputs.token }}
+      - run: rustup toolchain install 1.85.0-x86_64-unknown-linux-gnu --profile minimal
+      - uses: Swatinem/rust-cache@v2
       - name: Build docs
         run: cargo doc -p monad-event-ring -p monad-exec-events
       - name: Run doc tests
         run: cargo test --release --doc --all-features
+
+  wasm:
+    runs-on: self-hosted
+    needs: lockfile-and-format
+
+    container:
+      image: peach10.devcore4.com/category-labs/builder
+      options: --privileged -u 1000:1000
+
+    steps:
+      - name: Generate a token
+        id: generate_token
+        uses: tibdex/github-app-token@v1
+        with:
+          app_id: ${{ secrets.REPO_READONLY_GITHUB_APP_ID }}
+          private_key: ${{ secrets.REPO_READONLY_GITHUB_APP_KEY }}
+          permissions: >-
+            {"contents": "read"}
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ steps.generate_token.outputs.token }}
+      - run: rustup toolchain install 1.85.0-x86_64-unknown-linux-gnu --profile minimal
       - run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
       - name: Check WASM
         run: cargo check --target wasm32-unknown-unknown -p monad-debugger
