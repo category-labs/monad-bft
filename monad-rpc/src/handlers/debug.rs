@@ -353,6 +353,7 @@ impl From<CallFrame> for MonadCallFrame {
             0 => None,
             2 => Some("execution reverted".to_string()),
             3 => Some("out of gas".to_string()),
+            18 => Some("reserve balance violation".to_string()),
             _ => Some("error".to_string()),
         };
 
