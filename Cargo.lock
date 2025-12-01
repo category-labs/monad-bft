@@ -5831,6 +5831,7 @@ dependencies = [
  "fixed",
  "futures",
  "futures-util",
+ "governor",
  "hex",
  "humantime",
  "indexmap 2.12.0",

@@ -22,12 +22,20 @@ use std::{
 };
 
 use bytes::{Bytes, BytesMut};
-use monad_dataplane::{RecvUdpMsg, UdpSocketHandle, UnicastMsg};
+use monad_dataplane::{UdpSocketHandle, UnicastMsg};
 use monad_executor::{ExecutorMetrics, ExecutorMetricsChain};
 use monad_types::UdpPriority;
 use tokio::time::Sleep;
 use tracing::{debug, trace, warn};
 use zerocopy::IntoBytes;
+
+#[derive(Clone)]
+pub struct AuthRecvMsg<P> {
+    pub src_addr: SocketAddr,
+    pub payload: Bytes,
+    pub stride: u16,
+    pub auth_public_key: Option<P>,
+}
 
 use super::{
     metrics::{
@@ -132,7 +140,7 @@ where
         }
     }
 
-    pub async fn recv(&mut self) -> Result<RecvUdpMsg, AP::Error> {
+    pub async fn recv(&mut self) -> Result<AuthRecvMsg<AP::PublicKey>, AP::Error> {
         if let Some(authenticated) = &mut self.authenticated {
             tokio::select! {
                 result = authenticated.recv() => {
@@ -143,14 +151,24 @@ where
                 },
                 msg = self.non_authenticated.recv() => {
                     self.metrics[GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ] += msg.payload.len() as u64;
-                    Ok(msg)
+                    Ok(AuthRecvMsg {
+                        src_addr: msg.src_addr,
+                        payload: msg.payload,
+                        stride: msg.stride,
+                        auth_public_key: None,
+                    })
                 },
             }
         } else {
             let msg = self.non_authenticated.recv().await;
             self.metrics[GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ] +=
                 msg.payload.len() as u64;
-            Ok(msg)
+            Ok(AuthRecvMsg {
+                src_addr: msg.src_addr,
+                payload: msg.payload,
+                stride: msg.stride,
+                auth_public_key: None,
+            })
         }
     }
 
@@ -180,10 +198,6 @@ where
                 .auth_protocol
                 .has_any_session_by_public_key(public_key)
         })
-    }
-
-    pub(crate) fn non_auth_socket(&mut self) -> &mut UdpSocketHandle {
-        &mut self.non_authenticated
     }
 
     pub fn segment_size(&self, mtu: u16) -> u16 {
@@ -226,7 +240,7 @@ where
         }
     }
 
-    pub async fn recv(&mut self) -> Result<RecvUdpMsg, AP::Error> {
+    pub async fn recv(&mut self) -> Result<AuthRecvMsg<AP::PublicKey>, AP::Error> {
         loop {
             let timer = AuthenticatedTimerFuture {
                 auth_protocol: &mut self.auth_protocol,
@@ -241,11 +255,12 @@ where
                 message = self.socket.recv() => {
                     let mut packet_buf = message.payload.to_vec();
                     match self.auth_protocol.dispatch(&mut packet_buf, message.src_addr) {
-                        Ok(Some((plaintext, _public_key))) => {
-                            return Ok(RecvUdpMsg {
+                        Ok(Some((plaintext, public_key))) => {
+                            return Ok(AuthRecvMsg {
                                 src_addr: message.src_addr,
                                 payload: plaintext,
                                 stride: message.stride,
+                                auth_public_key: public_key,
                             })
                         }
                         Ok(None) => {

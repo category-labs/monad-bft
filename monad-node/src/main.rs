@@ -708,6 +708,7 @@ where
             shared_key,
             mtu: network_config.mtu,
             udp_message_max_age_ms: network_config.udp_message_max_age_ms,
+            sig_verification_rate_limit: network_config.signature_verifications_per_second,
             primary_instance: RaptorCastConfigPrimary {
                 raptor10_redundancy: 2.5f32,
                 fullnode_dedicated: full_nodes

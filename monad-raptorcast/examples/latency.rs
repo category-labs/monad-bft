@@ -272,6 +272,7 @@ fn create_raptorcast_config(keypair: Arc<KeyPair>) -> RaptorCastConfig<Signature
         shared_key: keypair,
         mtu: monad_dataplane::udp::DEFAULT_MTU,
         udp_message_max_age_ms: 5000,
+        sig_verification_rate_limit: 4_000,
         primary_instance: RaptorCastConfigPrimary::default(),
         secondary_instance: FullNodeRaptorCastConfig {
             enable_publisher: false,
