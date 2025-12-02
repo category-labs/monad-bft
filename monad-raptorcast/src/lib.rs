@@ -941,8 +941,6 @@ where
             return Poll::Ready(Some(event.into()));
         }
 
-        while let Poll::Ready(()) = pin!(this.dual_socket.timer()).poll_unpin(cx) {}
-
         loop {
             let message = {
                 let mut sock = pin!(this.dual_socket.recv());

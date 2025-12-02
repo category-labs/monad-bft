@@ -132,10 +132,6 @@ where
         }
     }
 
-    pub fn timer(&mut self) -> TimerFuture<'_, AP> {
-        TimerFuture { handle: self }
-    }
-
     pub async fn recv(&mut self) -> Result<RecvUdpMsg, AP::Error> {
         if let Some(authenticated) = &mut self.authenticated {
             tokio::select! {
@@ -232,27 +228,35 @@ where
 
     pub async fn recv(&mut self) -> Result<RecvUdpMsg, AP::Error> {
         loop {
-            let message = self.socket.recv().await;
+            let timer = AuthenticatedTimerFuture {
+                auth_protocol: &mut self.auth_protocol,
+                auth_timer: &mut self.auth_timer,
+            };
 
-            let mut packet_buf = message.payload.to_vec();
-            match self
-                .auth_protocol
-                .dispatch(&mut packet_buf, message.src_addr)
-            {
-                Ok(Some((plaintext, _public_key))) => {
-                    return Ok(RecvUdpMsg {
-                        src_addr: message.src_addr,
-                        payload: plaintext,
-                        stride: message.stride,
-                    })
-                }
-                Ok(None) => {
+            tokio::select! {
+                () = timer => {
                     self.flush();
                     continue;
                 }
-                Err(e) => {
-                    debug!(addr=?message.src_addr, error=?e, "failed to decrypt message");
-                    return Err(e);
+                message = self.socket.recv() => {
+                    let mut packet_buf = message.payload.to_vec();
+                    match self.auth_protocol.dispatch(&mut packet_buf, message.src_addr) {
+                        Ok(Some((plaintext, _public_key))) => {
+                            return Ok(RecvUdpMsg {
+                                src_addr: message.src_addr,
+                                payload: plaintext,
+                                stride: message.stride,
+                            })
+                        }
+                        Ok(None) => {
+                            self.flush();
+                            continue;
+                        }
+                        Err(e) => {
+                            debug!(addr=?message.src_addr, error=?e, "failed to decrypt message");
+                            return Err(e);
+                        }
+                    }
                 }
             }
         }
@@ -298,7 +302,10 @@ where
     }
 
     pub fn timer(&mut self) -> AuthenticatedTimerFuture<'_, AP> {
-        AuthenticatedTimerFuture { handle: self }
+        AuthenticatedTimerFuture {
+            auth_protocol: &mut self.auth_protocol,
+            auth_timer: &mut self.auth_timer,
+        }
     }
 
     fn encrypt_packet(
@@ -339,24 +346,19 @@ where
     }
 }
 
-pub struct AuthenticatedTimerFuture<'a, AP>
-where
-    AP: AuthenticationProtocol,
-{
-    handle: &'a mut AuthenticatedSocketHandle<AP>,
+pub struct AuthenticatedTimerFuture<'a, AP: AuthenticationProtocol> {
+    auth_protocol: &'a mut AP,
+    auth_timer: &'a mut Option<(Pin<Box<Sleep>>, Instant)>,
 }
 
-impl<'a, AP> Future for AuthenticatedTimerFuture<'a, AP>
-where
-    AP: AuthenticationProtocol,
-{
+impl<AP: AuthenticationProtocol> Future for AuthenticatedTimerFuture<'_, AP> {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         trace!("polling wireauth timer");
 
         loop {
-            let Some(deadline) = self.handle.auth_protocol.next_deadline() else {
+            let Some(deadline) = self.auth_protocol.next_deadline() else {
                 return Poll::Pending;
             };
 
@@ -368,9 +370,7 @@ where
                     }
                 }
 
-                self.handle.auth_protocol.tick();
-                self.handle.flush();
-
+                self.auth_protocol.tick();
                 return Poll::Ready(());
             }
 
@@ -378,46 +378,23 @@ where
             // for example initially session with have long timer set to session_timeout
             // after fully establishing session, keapalive_interval will be set to a shorter duration
             let should_update_timer = self
-                .handle
                 .auth_timer
                 .as_ref()
                 .is_none_or(|(_, stored_deadline)| deadline < *stored_deadline);
             if should_update_timer {
-                self.handle.auth_timer = Some((
+                *self.auth_timer = Some((
                     Box::pin(tokio::time::sleep_until(deadline.into())),
                     deadline,
                 ));
             }
 
-            match self.handle.auth_timer.as_mut() {
+            match self.auth_timer.as_mut() {
                 Some((sleep, _)) => match sleep.as_mut().poll(cx) {
-                    Poll::Ready(()) => self.handle.auth_timer = None,
+                    Poll::Ready(()) => *self.auth_timer = None,
                     Poll::Pending => return Poll::Pending,
                 },
                 None => return Poll::Pending,
             }
-        }
-    }
-}
-
-pub struct TimerFuture<'a, AP>
-where
-    AP: AuthenticationProtocol,
-{
-    handle: &'a mut DualSocketHandle<AP>,
-}
-
-impl<'a, AP> Future for TimerFuture<'a, AP>
-where
-    AP: AuthenticationProtocol,
-{
-    type Output = ();
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if let Some(authenticated) = &mut self.handle.authenticated {
-            Pin::new(&mut authenticated.timer()).poll(cx)
-        } else {
-            Poll::Pending
         }
     }
 }
