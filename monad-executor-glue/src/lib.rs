@@ -51,6 +51,7 @@ use monad_types::{
 };
 use monad_validator::signature_collection::SignatureCollection;
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 
 const STATESYNC_NETWORK_MESSAGE_NAME: &str = "StateSyncNetworkMessage";
 
@@ -1084,6 +1085,7 @@ impl<SCT: SignatureCollection> Decodable for ValidatorEvent<SCT> {
     }
 }
 
+#[serde_as]
 #[derive(Clone, PartialEq, Eq, Serialize)]
 pub enum MempoolEvent<ST, SCT, EPT>
 where
@@ -1112,11 +1114,12 @@ where
     /// Txs that are incoming via other nodes
     ForwardedTxs {
         sender: NodeId<SCT::NodeIdPubKey>,
+        #[serde_as(as = "Vec<serde_with::hex::Hex>")]
         txs: Vec<Bytes>,
     },
 
     /// Txs that should be forwarded to upcoming leaders
-    ForwardTxs(Vec<Bytes>),
+    ForwardTxs(#[serde_as(as = "Vec<serde_with::hex::Hex>")] Vec<Bytes>),
 }
 
 impl<ST, SCT, EPT> Encodable for MempoolEvent<ST, SCT, EPT>
@@ -1465,15 +1468,19 @@ pub enum StateSyncUpsertType {
     Header,
 }
 
+#[serde_as]
 #[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
 pub struct StateSyncUpsertV0 {
     pub upsert_type: StateSyncUpsertType,
+    #[serde_as(as = "serde_with::hex::Hex")]
     pub data: Vec<u8>,
 }
 
+#[serde_as]
 #[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
 pub struct StateSyncUpsertV1 {
     pub upsert_type: StateSyncUpsertType,
+    #[serde_as(as = "serde_with::hex::Hex")]
     pub data: Bytes,
 }
 

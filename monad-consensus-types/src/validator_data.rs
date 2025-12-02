@@ -31,10 +31,7 @@ pub struct ValidatorSetDataWithEpoch<SCT: SignatureCollection> {
     /// Validator set are active for this epoch
     pub epoch: Epoch,
 
-    #[serde(bound(
-        serialize = "SCT: SignatureCollection",
-        deserialize = "SCT: SignatureCollection",
-    ))]
+    #[serde(bound(serialize = "", deserialize = ""))]
     pub validators: ValidatorSetData<SCT>,
 }
 
@@ -42,11 +39,7 @@ pub struct ValidatorSetDataWithEpoch<SCT: SignatureCollection> {
 /// MonadState
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodable, RlpDecodable)]
 pub struct ValidatorSetData<SCT: SignatureCollection>(
-    #[serde(bound(
-        serialize = "SCT: SignatureCollection",
-        deserialize = "SCT: SignatureCollection",
-    ))]
-    pub Vec<ValidatorData<SCT>>,
+    #[serde(bound(serialize = "", deserialize = ""))] pub Vec<ValidatorData<SCT>>,
 );
 
 #[derive(
@@ -67,10 +60,7 @@ pub struct ValidatorsConfig<SCT: SignatureCollection> {
 /// Top-level lists aren't supported in toml, so create this
 #[derive(Serialize, Deserialize)]
 pub struct ValidatorsConfigFile<SCT: SignatureCollection> {
-    #[serde(bound(
-        serialize = "SCT: SignatureCollection",
-        deserialize = "SCT: SignatureCollection",
-    ))]
+    #[serde(bound(serialize = "", deserialize = ""))]
     pub validator_sets: Vec<ValidatorSetDataWithEpoch<SCT>>,
 }
 

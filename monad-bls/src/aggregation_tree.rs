@@ -28,7 +28,7 @@ use monad_validator::{
     },
     validator_mapping::ValidatorMapping,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{bls::BlsAggregatePubKey, BlsAggregateSignature, BlsKeyPair, BlsSignature};
 
@@ -150,10 +150,10 @@ fn merge_nodes<PT: PubKey>(
     cert
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignerMap(pub BitVec<u8, Lsb0>);
 
-#[derive(Clone, PartialEq, Eq, RlpDecodable, RlpEncodable, Serialize)]
+#[derive(Clone, PartialEq, Eq, RlpDecodable, RlpEncodable)]
 pub struct BlsSignatureCollection<PT: PubKey> {
     pub signers: SignerMap,
 
@@ -180,6 +180,35 @@ impl<PT: PubKey> BlsSignatureCollection<PT> {
             sig,
             _phantom: PhantomData,
         }
+    }
+}
+
+impl<PT: PubKey> Serialize for BlsSignatureCollection<PT> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let hex_str =
+            "0x".to_string() + &hex::encode(<Self as SignatureCollection>::serialize(self));
+        serializer.serialize_str(&hex_str)
+    }
+}
+
+impl<'de, PT: PubKey> Deserialize<'de> for BlsSignatureCollection<PT> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let buf = <std::string::String as Deserialize>::deserialize(deserializer)?;
+
+        let Some(hex_str) = buf.strip_prefix("0x") else {
+            return Err(<D::Error as serde::de::Error>::custom("Missing hex prefix"));
+        };
+
+        let bytes = hex::decode(hex_str).map_err(<D::Error as serde::de::Error>::custom)?;
+
+        <Self as SignatureCollection>::deserialize(bytes.as_ref())
+            .map_err(<D::Error as serde::de::Error>::custom)
     }
 }
 

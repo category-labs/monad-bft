@@ -15,7 +15,7 @@
 
 use std::{fmt::Debug, ops::Deref};
 
-use ::serde::Serialize;
+use ::serde::{Deserialize, Serialize};
 use alloy_consensus::{transaction::Recovered, Header, TxEnvelope};
 use alloy_eips::eip7702::RecoveredAuthorization;
 use alloy_primitives::{Address, B256};
@@ -24,6 +24,7 @@ use alloy_rlp::{
 };
 use monad_crypto::NopPubKey;
 use monad_types::{Balance, ExecutionProtocol, FinalizedHeader, Nonce, SeqNum};
+use serde_with::{serde_as, DisplayFromStr};
 
 pub mod serde;
 
@@ -47,25 +48,41 @@ pub struct EthAccount {
     pub is_delegated: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ProposedEthHeader {
+    #[serde_as(as = "serde_with::hex::Hex")]
     pub ommers_hash: [u8; 32],
     pub beneficiary: Address,
+    #[serde_as(as = "serde_with::hex::Hex")]
     pub transactions_root: [u8; 32],
+    #[serde_as(as = "DisplayFromStr")]
     pub difficulty: u64,
+    #[serde_as(as = "DisplayFromStr")]
     pub number: u64,
+    #[serde_as(as = "DisplayFromStr")]
     pub gas_limit: u64,
+    #[serde_as(as = "DisplayFromStr")]
     pub timestamp: u64,
+    #[serde_as(as = "serde_with::hex::Hex")]
     pub extra_data: [u8; 32],
+    #[serde_as(as = "serde_with::hex::Hex")]
     pub mix_hash: [u8; 32],
+    #[serde_as(as = "serde_with::hex::Hex")]
     pub nonce: [u8; 8],
+    #[serde_as(as = "DisplayFromStr")]
     pub base_fee_per_gas: u64,
+    #[serde_as(as = "serde_with::hex::Hex")]
     pub withdrawals_root: [u8; 32],
     // cancun
+    #[serde_as(as = "DisplayFromStr")]
     pub blob_gas_used: u64,
+    #[serde_as(as = "DisplayFromStr")]
     pub excess_blob_gas: u64,
+    #[serde_as(as = "serde_with::hex::Hex")]
     pub parent_beacon_block_root: [u8; 32],
     // eip-7685
+    #[serde_as(as = "Option<serde_with::hex::Hex>")]
     pub requests_hash: Option<[u8; 32]>,
 }
 
@@ -174,7 +191,9 @@ impl Decodable for ProposedEthHeader {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, RlpEncodableWrapper, RlpDecodableWrapper, Serialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, RlpEncodableWrapper, RlpDecodableWrapper, Serialize, Deserialize,
+)]
 pub struct EthHeader(pub Header);
 
 impl FinalizedHeader for EthHeader {
@@ -183,7 +202,7 @@ impl FinalizedHeader for EthHeader {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Default)]
+#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize, Default)]
 pub struct EthBlockBody {
     // TODO consider storing recovered txs inline here
     pub transactions: Vec<TxEnvelope>,
@@ -191,9 +210,9 @@ pub struct EthBlockBody {
     pub withdrawals: Vec<Withdrawal>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize)]
 pub struct Ommer {}
-#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize)]
 pub struct Withdrawal {}
 
 impl Debug for EthBlockBody {
@@ -340,5 +359,34 @@ mod test {
             new_header.parent_beacon_block_root,
             old_header.parent_beacon_block_root
         );
+    }
+
+    #[test]
+    fn test_proposed_eth_header_toml_roundtrip_u64_max() {
+        let header = ProposedEthHeader {
+            ommers_hash: *EMPTY_OMMER_ROOT_HASH,
+            beneficiary: Address::new([0xff_u8; 20]),
+            transactions_root: *EMPTY_TRANSACTIONS,
+            difficulty: u64::MAX,
+            number: u64::MAX,
+            gas_limit: u64::MAX,
+            timestamp: u64::MAX,
+            extra_data: [0_u8; 32],
+            mix_hash: [0xff_u8; 32],
+            nonce: [0_u8; 8],
+            base_fee_per_gas: u64::MAX,
+            withdrawals_root: *EMPTY_WITHDRAWALS,
+            blob_gas_used: u64::MAX,
+            excess_blob_gas: u64::MAX,
+            parent_beacon_block_root: [0_u8; 32],
+            requests_hash: None,
+        };
+
+        let encoded = toml::to_string_pretty(&header).unwrap();
+        let decoded: ProposedEthHeader = toml::from_str(&encoded).unwrap();
+
+        let re_encoded = toml::to_string_pretty(&decoded).unwrap();
+        assert_eq!(re_encoded, encoded);
+        assert_eq!(decoded, header);
     }
 }

@@ -50,6 +50,7 @@ alloy-rlp = { workspace = true }
 criterion = { workspace = true }
 serde_json = { workspace = true }
 test-case = { workspace = true }
+toml = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 monad-eth-types = { workspace = true }
