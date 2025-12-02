@@ -111,6 +111,9 @@ impl ValidEthTransaction {
 
         let valid_recovered_authorizations =
             if let Some(signed_authorizations) = tx.authorization_list() {
+                // Txpool sets a limit on the number of authorizations per EIP-7702 transaction
+                // to upper bound signature verification costs by txpool.
+                // This limit is not enforced on the protocol level.
                 if signed_authorizations.len() > MAX_EIP7702_AUTHORIZATION_LIST_LENGTH {
                     return Err((
                         tx,

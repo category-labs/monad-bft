@@ -364,6 +364,8 @@ where
             withdrawals: Vec::new(),
         };
 
+        // Monad does not use request hashes yet
+        // It is hardcoded to zero hash for prague compatibility
         let maybe_request_hash = if self
             .execution_revision
             .execution_chain_params()

@@ -492,6 +492,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
 
         // full node will try to connect to NUM_UPSTREAM_VALIDATORS
         // if insufficient connected upstream validators, try to send pings to new validators
+        // validators that are currently in pending status are also counted so that full nodes do not try to connect to excessive validators
         let connected_validators = self
             .participation_info
             .iter()

@@ -285,6 +285,8 @@ where
             ));
         }
 
+        // Monad does not use request hashes yet
+        // It is set to zero hash for prague compatibility
         let expected_requests_hash = execution_chain_params.prague_enabled.then_some([0_u8; 32]);
         if requests_hash != &expected_requests_hash {
             return Err(HeaderError::InvalidRequestsHash {
