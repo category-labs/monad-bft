@@ -5919,6 +5919,7 @@ dependencies = [
  "alloy-signer",
  "alloy-signer-local",
  "arbitrary",
+ "async-stream",
  "awc",
  "bytes",
  "clap 4.5.47",
