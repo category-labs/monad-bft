@@ -1044,23 +1044,31 @@ where
     #[tracing::instrument(level = "debug", skip_all)]
     pub fn handle_vote_timer(
         &mut self,
-        round: Round,
+        vote_timer_round: Round,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         let Some(OutgoingVoteStatus::VoteReady(v)) = self.consensus.scheduled_vote else {
             self.consensus.scheduled_vote = Some(OutgoingVoteStatus::TimerFired);
             return vec![];
         };
 
-        self.send_vote_and_reset_timer(round, v)
+        if vote_timer_round != v.round {
+            debug!(
+                ?vote_timer_round,
+                vote_round =? v.round,
+                "vote timer round doesn't match scheduled vote, are received proposals delayed?"
+            );
+        }
+
+        self.send_vote_and_reset_timer(v)
     }
 
     #[must_use]
     #[tracing::instrument(level = "debug", skip_all)]
     pub fn send_vote_and_reset_timer(
         &mut self,
-        round: Round,
         vote: Vote,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+        let round = vote.round;
         let mut cmds = Vec::new();
         let vote_msg = VoteMessage::<SCT>::new(vote, self.cert_keypair);
         let message = ConsensusMessage {
@@ -1509,7 +1517,7 @@ where
         match self.consensus.scheduled_vote {
             Some(OutgoingVoteStatus::TimerFired) => {
                 // timer already fired for this round so send vote immediately
-                let vote_cmd = self.send_vote_and_reset_timer(proposal_round, v);
+                let vote_cmd = self.send_vote_and_reset_timer(v);
                 cmds.extend(vote_cmd);
             }
             Some(OutgoingVoteStatus::VoteReady(r)) if r.round >= v.round => {
@@ -1530,7 +1538,7 @@ where
                 // if this is the next round after a timeout, we should vote immediately
                 // otherwise, schedule the vote for later
                 if parent_block_round + Round(1) != proposal_round {
-                    let vote_cmd = self.send_vote_and_reset_timer(proposal_round, v);
+                    let vote_cmd = self.send_vote_and_reset_timer(v);
                     cmds.extend(vote_cmd);
                 } else {
                     self.consensus.scheduled_vote = Some(OutgoingVoteStatus::VoteReady(v));
@@ -3203,9 +3211,7 @@ mod test {
             OutgoingVoteStatus::VoteReady(v) => v,
             _ => panic!(),
         };
-        let cmds1 = n1
-            .wrapped_state()
-            .send_vote_and_reset_timer(p1_vote.round, p1_vote);
+        let cmds1 = n1.wrapped_state().send_vote_and_reset_timer(p1_vote);
         let p1_votes = extract_vote_msgs(cmds1)[0];
 
         // n3 process cp1
@@ -3214,9 +3220,7 @@ mod test {
             OutgoingVoteStatus::VoteReady(v) => v,
             _ => panic!(),
         };
-        let cmds3 = n3
-            .wrapped_state()
-            .send_vote_and_reset_timer(p3_vote.round, p3_vote);
+        let cmds3 = n3.wrapped_state().send_vote_and_reset_timer(p3_vote);
         let p3_votes = extract_vote_msgs(cmds3)[0];
 
         // n4 process cp1
@@ -3225,9 +3229,7 @@ mod test {
             OutgoingVoteStatus::VoteReady(v) => v,
             _ => panic!(),
         };
-        let cmds4 = n4
-            .wrapped_state()
-            .send_vote_and_reset_timer(p4_vote.round, p4_vote);
+        let cmds4 = n4.wrapped_state().send_vote_and_reset_timer(p4_vote);
         let p4_votes = extract_vote_msgs(cmds4)[0];
 
         // n2 process mp1
@@ -3237,9 +3239,7 @@ mod test {
             OutgoingVoteStatus::VoteReady(v) => v,
             _ => panic!(),
         };
-        let cmds2 = n2
-            .wrapped_state()
-            .send_vote_and_reset_timer(p2_vote.round, p2_vote);
+        let cmds2 = n2.wrapped_state().send_vote_and_reset_timer(p2_vote);
         let p2_votes = extract_vote_msgs(cmds2)[0];
 
         assert_eq!(p1_votes.vote, p3_votes.vote);
@@ -3574,9 +3574,7 @@ mod test {
                             OutgoingVoteStatus::VoteReady(v) => v,
                             _ => panic!(),
                         };
-                        let cmds = node
-                            .wrapped_state()
-                            .send_vote_and_reset_timer(vote.round, vote);
+                        let cmds = node.wrapped_state().send_vote_and_reset_timer(vote);
 
                         let v = extract_vote_msgs(cmds);
                         assert_eq!(v.len(), 2);
@@ -3789,9 +3787,7 @@ mod test {
                     OutgoingVoteStatus::VoteReady(v) => v,
                     _ => panic!(),
                 };
-                let cmds = node
-                    .wrapped_state()
-                    .send_vote_and_reset_timer(vote.round, vote);
+                let cmds = node.wrapped_state().send_vote_and_reset_timer(vote);
 
                 let v = extract_vote_msgs(cmds);
                 assert_eq!(v.len(), 2);
