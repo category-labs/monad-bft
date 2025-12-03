@@ -78,7 +78,7 @@ pub async fn archive_worker(
 
     loop {
         // query latest
-        let latest_source = match block_data_source.get_latest(latest_kind).await {
+        let latest_source = match block_data_source.get_latest(LatestKind::Uploaded).await {
             Ok(number) => number.unwrap_or(0),
             Err(e) => {
                 warn!("Error getting latest source block: {e:?}");
@@ -694,5 +694,74 @@ mod tests {
         assert!(archiver.get_block_by_number(5).await.is_err());
         assert!(archiver.get_block_receipts(5).await.is_err());
         assert!(archiver.get_block_traces(5).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn archive_blocks_async_backfill_with_start_stop() {
+        // This test verifies that async_backfill mode correctly reads from the
+        // source's LatestKind::Uploaded marker while writing progress to its own
+        // LatestKind::UploadedAsyncBackfill marker. Previously, the worker would
+        // query get_latest(LatestKind::UploadedAsyncBackfill) from the source,
+        // which wouldn't exist, causing it to find no blocks to process.
+        let (reader, archiver) = memory_sink_source();
+
+        let row = |b| {
+            (
+                mock_block(b, vec![mock_tx()]),
+                vec![mock_rx()],
+                vec![vec![], vec![2]],
+            )
+        };
+        // Source has blocks 0-20 with LatestKind::Uploaded set to 20
+        mock_source(&reader, (0..=20).map(row)).await;
+
+        assert_eq!(
+            reader.get_latest(LatestKind::Uploaded).await.unwrap(),
+            Some(20)
+        );
+        // Source does NOT have UploadedAsyncBackfill marker set
+        assert_eq!(
+            reader
+                .get_latest(LatestKind::UploadedAsyncBackfill)
+                .await
+                .unwrap(),
+            None
+        );
+
+        // Simulate async_backfill archiving a subset (blocks 5-10)
+        let end_block = archive_blocks(
+            &reader,
+            &None::<BlockDataReaderErased>,
+            5..=10,
+            &archiver,
+            &metrics::Metrics::none(),
+            3,
+            false,
+            false,
+            false,
+            LatestKind::UploadedAsyncBackfill,
+        )
+        .await;
+
+        assert_eq!(end_block, 10);
+        // Archiver should have UploadedAsyncBackfill marker set
+        assert_eq!(
+            archiver
+                .get_latest(LatestKind::UploadedAsyncBackfill)
+                .await
+                .unwrap(),
+            Some(10)
+        );
+        // Regular Uploaded marker should NOT be set
+        assert_eq!(
+            archiver.get_latest(LatestKind::Uploaded).await.unwrap(),
+            None
+        );
+        // Verify blocks were archived
+        assert!(archiver.get_block_by_number(5).await.is_ok());
+        assert!(archiver.get_block_by_number(10).await.is_ok());
+        // Blocks outside the range should not exist
+        assert!(archiver.get_block_by_number(4).await.is_err());
+        assert!(archiver.get_block_by_number(11).await.is_err());
     }
 }
