@@ -41,6 +41,19 @@ mod config;
 const MAX_BATCH_LEN: usize = 128;
 const BATCH_TIMER_INTERVAL_MS: u64 = 8;
 
+pub trait TxPoolServer: Sized {
+    fn new(config: EthTxPoolIpcConfig) -> Result<Self, io::Error>;
+
+    fn broadcast_tx_events(self: Pin<&mut Self>, events: BTreeMap<TxHash, EthTxPoolEventType>);
+
+    fn poll_txs(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        generate_snapshot: impl Fn() -> EthTxPoolSnapshot,
+    ) -> Poll<Vec<TxEnvelope>>;
+}
+
+
 #[pin_project(project = EthTxPoolIpcServerProjected)]
 pub struct EthTxPoolIpcServer {
     #[pin]
@@ -53,8 +66,8 @@ pub struct EthTxPoolIpcServer {
     batch_timer: Sleep,
 }
 
-impl EthTxPoolIpcServer {
-    pub fn new(
+impl TxPoolServer for EthTxPoolIpcServer {
+    fn new(
         EthTxPoolIpcConfig {
             bind_path,
             tx_batch_size: _,
@@ -76,7 +89,7 @@ impl EthTxPoolIpcServer {
         })
     }
 
-    pub fn broadcast_tx_events(self: Pin<&mut Self>, events: BTreeMap<TxHash, EthTxPoolEventType>) {
+    fn broadcast_tx_events(self: Pin<&mut Self>, events: BTreeMap<TxHash, EthTxPoolEventType>) {
         if events.is_empty() {
             return;
         }
@@ -101,7 +114,7 @@ impl EthTxPoolIpcServer {
             });
     }
 
-    pub fn poll_txs(
+    fn poll_txs(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         generate_snapshot: impl Fn() -> EthTxPoolSnapshot,
