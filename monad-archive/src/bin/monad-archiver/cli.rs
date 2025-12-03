@@ -114,6 +114,26 @@ pub struct Cli {
     #[serde(default)]
     pub unsafe_disable_normal_archiving: bool,
 
+    /// Allow overwriting all existing archived data (blocks, receipts, traces)
+    /// DO NOT ENABLE UNDER NORMAL OPERATION
+    #[serde(default)]
+    pub unsafe_allow_overwrite: bool,
+
+    /// Allow overwriting existing archived blocks
+    /// DO NOT ENABLE UNDER NORMAL OPERATION
+    #[serde(default)]
+    pub unsafe_allow_blocks_overwrite: bool,
+
+    /// Allow overwriting existing archived receipts
+    /// DO NOT ENABLE UNDER NORMAL OPERATION
+    #[serde(default)]
+    pub unsafe_allow_receipts_overwrite: bool,
+
+    /// Allow overwriting existing archived traces
+    /// DO NOT ENABLE UNDER NORMAL OPERATION
+    #[serde(default)]
+    pub unsafe_allow_traces_overwrite: bool,
+
     pub otel_endpoint: Option<String>,
 
     pub otel_replica_name_override: Option<String>,
@@ -183,6 +203,10 @@ impl Cli {
             additional_dirs_archive_freq_secs,
             additional_dirs_exclude_prefix,
             unsafe_disable_normal_archiving,
+            unsafe_allow_overwrite,
+            unsafe_allow_blocks_overwrite,
+            unsafe_allow_receipts_overwrite,
+            unsafe_allow_traces_overwrite,
             otel_endpoint,
             otel_replica_name_override,
             skip_connectivity_check,
@@ -220,6 +244,10 @@ impl Cli {
             additional_dirs_exclude_prefix: additional_dirs_exclude_prefix
                 .unwrap_or_else(default_additional_dirs_exclude_prefix),
             unsafe_disable_normal_archiving: unsafe_disable_normal_archiving.unwrap_or(false),
+            unsafe_allow_overwrite: unsafe_allow_overwrite.unwrap_or(false),
+            unsafe_allow_blocks_overwrite: unsafe_allow_blocks_overwrite.unwrap_or(false),
+            unsafe_allow_receipts_overwrite: unsafe_allow_receipts_overwrite.unwrap_or(false),
+            unsafe_allow_traces_overwrite: unsafe_allow_traces_overwrite.unwrap_or(false),
             otel_endpoint,
             otel_replica_name_override,
             skip_connectivity_check: skip_connectivity_check.unwrap_or(false),
@@ -283,6 +311,18 @@ impl Cli {
         }
         if let Some(value) = overrides.unsafe_disable_normal_archiving {
             self.unsafe_disable_normal_archiving = value;
+        }
+        if let Some(value) = overrides.unsafe_allow_overwrite {
+            self.unsafe_allow_overwrite = value;
+        }
+        if let Some(value) = overrides.unsafe_allow_blocks_overwrite {
+            self.unsafe_allow_blocks_overwrite = value;
+        }
+        if let Some(value) = overrides.unsafe_allow_receipts_overwrite {
+            self.unsafe_allow_receipts_overwrite = value;
+        }
+        if let Some(value) = overrides.unsafe_allow_traces_overwrite {
+            self.unsafe_allow_traces_overwrite = value;
         }
         if let Some(value) = overrides.otel_endpoint {
             self.otel_endpoint = Some(value);
@@ -407,6 +447,26 @@ struct CliArgs {
     #[arg(long, action = ArgAction::SetTrue)]
     unsafe_disable_normal_archiving: bool,
 
+    /// Allow overwriting all existing archived data (blocks, receipts, traces)
+    /// DO NOT ENABLE UNDER NORMAL OPERATION
+    #[arg(long, action = ArgAction::SetTrue)]
+    unsafe_allow_overwrite: bool,
+
+    /// Allow overwriting existing archived blocks
+    /// DO NOT ENABLE UNDER NORMAL OPERATION
+    #[arg(long, action = ArgAction::SetTrue)]
+    unsafe_allow_blocks_overwrite: bool,
+
+    /// Allow overwriting existing archived receipts
+    /// DO NOT ENABLE UNDER NORMAL OPERATION
+    #[arg(long, action = ArgAction::SetTrue)]
+    unsafe_allow_receipts_overwrite: bool,
+
+    /// Allow overwriting existing archived traces
+    /// DO NOT ENABLE UNDER NORMAL OPERATION
+    #[arg(long, action = ArgAction::SetTrue)]
+    unsafe_allow_traces_overwrite: bool,
+
     #[arg(long)]
     otel_endpoint: Option<String>,
 
@@ -452,6 +512,10 @@ impl CliArgs {
             otel_replica_name_override,
             skip_connectivity_check,
             unsafe_disable_normal_archiving,
+            unsafe_allow_overwrite,
+            unsafe_allow_blocks_overwrite,
+            unsafe_allow_receipts_overwrite,
+            unsafe_allow_traces_overwrite,
             require_traces,
             traces_only,
             async_backfill,
@@ -479,6 +543,10 @@ impl CliArgs {
             otel_replica_name_override,
             skip_connectivity_check: bool_override(skip_connectivity_check),
             unsafe_disable_normal_archiving: bool_override(unsafe_disable_normal_archiving),
+            unsafe_allow_overwrite: bool_override(unsafe_allow_overwrite),
+            unsafe_allow_blocks_overwrite: bool_override(unsafe_allow_blocks_overwrite),
+            unsafe_allow_receipts_overwrite: bool_override(unsafe_allow_receipts_overwrite),
+            unsafe_allow_traces_overwrite: bool_override(unsafe_allow_traces_overwrite),
             require_traces: bool_override(require_traces),
             traces_only: bool_override(traces_only),
             async_backfill: bool_override(async_backfill),
@@ -514,6 +582,10 @@ struct CliOverrides {
     otel_replica_name_override: Option<String>,
     skip_connectivity_check: Option<bool>,
     unsafe_disable_normal_archiving: Option<bool>,
+    unsafe_allow_overwrite: Option<bool>,
+    unsafe_allow_blocks_overwrite: Option<bool>,
+    unsafe_allow_receipts_overwrite: Option<bool>,
+    unsafe_allow_traces_overwrite: Option<bool>,
 }
 
 fn load_config(path: &Path) -> Result<Cli> {

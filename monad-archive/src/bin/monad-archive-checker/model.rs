@@ -17,7 +17,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use eyre::{Context, Result};
 use futures::future::try_join_all;
-use monad_archive::{cli::ArchiveArgs, prelude::*};
+use monad_archive::{cli::ArchiveArgs, kvstore::WritePolicy, prelude::*};
 use serde::{Deserialize, Serialize};
 
 // Constants for S3 key prefixes defining the storage organization
@@ -76,9 +76,10 @@ impl CheckerModel {
             serde_json::to_vec(&replica_args).wrap_err("Failed to serialize replica list")?;
 
         // Store in S3
-        s3.put(REPLICAS_KEY, data)
+        s3.put(REPLICAS_KEY, data, WritePolicy::AllowOverwrite)
             .await
-            .wrap_err("Failed to store replica list in S3")
+            .wrap_err("Failed to store replica list in S3")?;
+        Ok(())
     }
 
     /// Retrieves replica configuration from S3
@@ -184,7 +185,11 @@ impl CheckerModel {
     ) -> Result<()> {
         let key = latest_checked_key(replica);
         self.store
-            .put(&key, block_num.to_string().into_bytes())
+            .put(
+                &key,
+                block_num.to_string().into_bytes(),
+                WritePolicy::AllowOverwrite,
+            )
             .await
             .wrap_err("Failed to set latest checked for replica")?;
         Ok(())
@@ -379,9 +384,10 @@ impl CheckerModel {
         let data = serde_json::to_vec(&faults).wrap_err("Failed to serialize faults")?;
 
         self.store
-            .put(&key, data)
+            .put(&key, data, WritePolicy::AllowOverwrite)
             .await
-            .wrap_err("Failed to set faults chunk")
+            .wrap_err("Failed to set faults chunk")?;
+        Ok(())
     }
 
     /// Retrieves the good blocks reference for a block range
@@ -408,7 +414,7 @@ impl CheckerModel {
         let data = serde_json::to_vec(&good_blocks).wrap_err("Failed to serialize good blocks")?;
 
         self.store
-            .put(&key, data)
+            .put(&key, data, WritePolicy::AllowOverwrite)
             .await
             .wrap_err("Failed to set good blocks")?;
         Ok(())

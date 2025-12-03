@@ -15,7 +15,7 @@
 
 use std::path::PathBuf;
 
-use monad_archive::prelude::*;
+use monad_archive::{kvstore::WritePolicy, prelude::*};
 
 /// Worker that periodically saves files to durable storage.
 /// Reads files from disk and uploads them with timestamps.
@@ -49,9 +49,10 @@ async fn read_and_upload(store: &KVStoreErased, path: &PathBuf, blob_prefix: &st
 
     let key = format!("{blob_prefix}/{}", get_timestamp());
     store
-        .put(&key, buf)
+        .put(&key, buf, WritePolicy::AllowOverwrite)
         .await
-        .wrap_err_with(|| format!("Failed to upload wal to blob store, key: {}", &key))
+        .wrap_err_with(|| format!("Failed to upload wal to blob store, key: {}", &key))?;
+    Ok(())
 }
 
 fn get_timestamp() -> String {
