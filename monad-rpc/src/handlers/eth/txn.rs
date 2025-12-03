@@ -258,9 +258,7 @@ async fn submit_to_txpool(
 ) -> Result<(), JsonRpcError> {
     let Some(_tx_inflight_guard) = txpool_bridge_client.acquire_tx_inflight_guard() else {
         warn!("txpool overloaded");
-        return Err(JsonRpcError::custom(
-            "overloaded, try again later".to_owned(),
-        ));
+        return Err(JsonRpcError::overloaded());
     };
 
     let (tx_status_send, tx_status_recv) = tokio::sync::oneshot::channel::<TxStatus>();
@@ -270,9 +268,7 @@ async fn submit_to_txpool(
             ?err,
             "txpool bridge try_send error after acquiring tx_inflight_guard"
         );
-        return Err(JsonRpcError::internal_error(
-            "overloaded, try again later".to_owned(),
-        ));
+        return Err(JsonRpcError::overloaded());
     }
 
     match tokio::time::timeout(Duration::from_secs(1), tx_status_recv).await {
