@@ -182,7 +182,7 @@ where
 
         // Remove all groups that have ended.
         self.group_schedule
-            .retain(|_, group| group.end_round >= new_round);
+            .retain(|_, group| group.end_round > new_round);
 
         let Some(next_group) = self.group_schedule.first_entry() else {
             // We didn't manage to form a group in time for the new round.
@@ -2270,5 +2270,94 @@ mod tests {
         } else {
             panic!("Expected a group to be scheduled for round 8");
         }
+    }
+
+    #[test]
+    fn group_garbage_cleaning() {
+        let sched_cfg = GroupSchedulingConfig {
+            max_group_size: 1,
+            round_span: Round(5),
+            invite_lookahead: Round(100),
+            max_invite_wait: Round(2),
+            deadline_round_dist: Round(10),
+            init_empty_round_span: Round(20),
+        };
+
+        let mut v0_fsm: Publisher<ST> = Publisher::new(
+            nid(0),
+            RaptorCastConfigSecondaryPublisher {
+                full_nodes_prioritized: vec![nid(10)],
+                group_scheduling: sched_cfg,
+            },
+            ChaCha8Rng::seed_from_u64(42),
+        );
+
+        // The first group starts at round 21 because of init_empty_round_span =
+        // 20
+        //
+        // Create two groups [21, 26), [26, 31)
+        let (group_msg, _invitees) = v0_fsm
+            .enter_round_and_step_until(Round(1))
+            .expect("PrepareGroup message");
+
+        let FullNodesGroupMessage::PrepareGroup(invite_msg) = group_msg else {
+            panic!("Expected FullNodesGroupMessage::PrepareGroup");
+        };
+        assert_eq!(invite_msg.start_round, Round(21));
+        assert_eq!(invite_msg.end_round, Round(26));
+
+        let (group_msg, _invitees) = v0_fsm
+            .enter_round_and_step_until(Round(2))
+            .expect("PrepareGroup message");
+
+        let FullNodesGroupMessage::PrepareGroup(invite_msg) = group_msg else {
+            panic!("Expected FullNodesGroupMessage::PrepareGroup");
+        };
+        assert_eq!(invite_msg.start_round, Round(26));
+        assert_eq!(invite_msg.end_round, Round(31));
+
+        // Full node accepts both groups. enter_round_and_step_until drives the
+        // state machine to confirm those groups
+        let accept_msg = make_invite_response(nid(0), nid(10), true, Round(21), &sched_cfg);
+        v0_fsm.on_candidate_response(accept_msg);
+        // Confirm first group
+        let (group_msg, _invitees) = v0_fsm
+            .enter_round_and_step_until(Round(3))
+            .expect("ConfirmGroup message");
+        let FullNodesGroupMessage::ConfirmGroup(confirm_group) = group_msg else {
+            panic!("Expected FullNodesGroupMessage::ConfirmGroup");
+        };
+        assert_eq!(confirm_group.prepare.start_round, Round(21));
+
+        let accept_msg = make_invite_response(nid(0), nid(10), true, Round(26), &sched_cfg);
+        v0_fsm.on_candidate_response(accept_msg);
+
+        // Confirm second group
+        let (group_msg, _invitees) = v0_fsm
+            .enter_round_and_step_until(Round(4))
+            .expect("ConfirmGroup message");
+        let FullNodesGroupMessage::ConfirmGroup(confirm_group) = group_msg else {
+            panic!("Expected FullNodesGroupMessage::ConfirmGroup");
+        };
+        assert_eq!(confirm_group.prepare.start_round, Round(26));
+
+        // All groups are scheduled
+        assert!(v0_fsm.group_schedule.contains_key(&Round(21)));
+        assert!(v0_fsm.group_schedule.contains_key(&Round(26)));
+
+        v0_fsm.enter_round_and_step_until(Round(26));
+        assert!(
+            !v0_fsm.group_schedule.contains_key(&Round(21)),
+            "Group [21, 26) with end_round=26 should be purged (26 <= 26)"
+        );
+        assert!(
+            v0_fsm
+                .get_current_raptorcast_group()
+                .expect("current group is set")
+                .get_round_span()
+                .start
+                == Round(26),
+            "Group [26, 31) should be present and set as current group"
+        );
     }
 }
