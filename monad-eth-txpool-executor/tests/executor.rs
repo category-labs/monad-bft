@@ -27,7 +27,7 @@ use monad_crypto::NopSignature;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, secret_to_eth_address, S1};
 use monad_eth_txpool_executor::{
-    forward::egress_max_size_bytes, EthTxPoolExecutor, EthTxPoolExecutorClient, EthTxPoolIpcConfig,
+    EthTxPoolExecutor, EthTxPoolExecutorClient, EthTxPoolIpcConfig, EthTxPoolIpcServer, forward::egress_max_size_bytes
 };
 use monad_eth_txpool_ipc::EthTxPoolIpcClient;
 use monad_eth_txpool_types::EthTxPoolSnapshot;
@@ -63,7 +63,7 @@ async fn setup_txpool_executor_with_client() -> (
     let ipc_tempdir = tempfile::tempdir().unwrap();
     let bind_path = ipc_tempdir.path().join("txpool_executor_test.socket");
 
-    let mut txpool_executor = EthTxPoolExecutor::start(
+    let mut txpool_executor = EthTxPoolExecutor::<_, _, _, _, _, EthTxPoolIpcServer>::start(
         eth_block_policy,
         state_backend,
         EthTxPoolIpcConfig {

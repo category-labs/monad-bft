@@ -46,9 +46,9 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tokio::{sync::mpsc, time::Instant};
 use tracing::{debug, debug_span, error, info, trace_span, warn};
 
-pub use self::{client::EthTxPoolExecutorClient, ipc::EthTxPoolIpcConfig};
+pub use self::{client::EthTxPoolExecutorClient, ipc::{EthTxPoolIpcConfig, EthTxPoolIpcServer}};
 use self::{
-    client::ForwardedTxs, forward::EthTxPoolForwardingManager, ipc::{EthTxPoolIpcServer, TxPoolServer},
+    client::ForwardedTxs, forward::EthTxPoolForwardingManager, ipc::TxPoolServer,
     metrics::EthTxPoolExecutorMetrics, preload::EthTxPoolPreloadManager,
     reset::EthTxPoolResetTrigger,
 };
@@ -60,7 +60,7 @@ mod metrics;
 mod preload;
 mod reset;
 
-pub struct EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT, PST = EthTxPoolIpcServer>
+pub struct EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT, PST>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
