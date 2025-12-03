@@ -27,7 +27,8 @@ use monad_crypto::NopSignature;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, secret_to_eth_address, S1};
 use monad_eth_txpool_executor::{
-    EthTxPoolExecutor, EthTxPoolExecutorClient, EthTxPoolIpcConfig, EthTxPoolIpcServer, forward::egress_max_size_bytes
+    forward::egress_max_size_bytes, EthTxPoolExecutor, EthTxPoolExecutorClient, EthTxPoolIpcConfig,
+    EthTxPoolIpcServer,
 };
 use monad_eth_txpool_ipc::EthTxPoolIpcClient;
 use monad_eth_txpool_types::EthTxPoolSnapshot;

@@ -53,7 +53,6 @@ pub trait TxPoolServer: Sized {
     ) -> Poll<Vec<TxEnvelope>>;
 }
 
-
 #[pin_project(project = EthTxPoolIpcServerProjected)]
 pub struct EthTxPoolIpcServer {
     #[pin]

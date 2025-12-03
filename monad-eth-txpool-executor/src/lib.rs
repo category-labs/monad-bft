@@ -46,7 +46,10 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tokio::{sync::mpsc, time::Instant};
 use tracing::{debug, debug_span, error, info, trace_span, warn};
 
-pub use self::{client::EthTxPoolExecutorClient, ipc::{EthTxPoolIpcConfig, EthTxPoolIpcServer}};
+pub use self::{
+    client::EthTxPoolExecutorClient,
+    ipc::{EthTxPoolIpcConfig, EthTxPoolIpcServer},
+};
 use self::{
     client::ForwardedTxs, forward::EthTxPoolForwardingManager, ipc::TxPoolServer,
     metrics::EthTxPoolExecutorMetrics, preload::EthTxPoolPreloadManager,
@@ -232,7 +235,7 @@ where
     CertificateSignaturePubKey<ST>: ExtractEthAddress,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
-    PST: TxPoolServer
+    PST: TxPoolServer,
 {
     fn process_forwarded_txs(&mut self, forwarded_txs: Vec<ForwardedTxs<SCT>>) {
         for ForwardedTxs { sender, txs } in forwarded_txs {
@@ -281,7 +284,7 @@ where
     CertificateSignaturePubKey<ST>: ExtractEthAddress,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
-    PST: TxPoolServer
+    PST: TxPoolServer,
 {
     type Command = TxPoolCommand<
         ST,
