@@ -71,6 +71,62 @@ macro_rules! metrics {
     };
 }
 
+macro_rules! global_metrics {
+    (
+        $(
+            (
+                $class:ident,
+                $class_field:ident,
+                [$($name:ident),* $(,)?]
+            )
+        ),*
+        $(,)?
+    ) => {
+        $(
+            metrics!(
+                @class
+                $class,
+                [$($name),*]
+            );
+        )*
+
+        #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+        pub struct GlobalMetrics {
+            $(
+                pub $class_field: $class
+            ),*
+        }
+
+        impl GlobalMetrics {
+            pub fn global_metrics(&self) -> Vec<(&'static str, u64)> {
+                vec![
+                    $(
+                        $(
+                            (
+                                concat!("monad.state.", stringify!($class_field), ".", stringify!($name)),
+                                self.$class_field.$name
+                            ),
+                        )*
+                    )*
+                ]
+            }
+        }
+    };
+
+    (
+        @class
+        $class:ident,
+        [$($name:ident),*]
+    ) => {
+        #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+        pub struct $class {
+            $(
+                pub $name: u64
+            ),*
+        }
+    };
+}
+
 metrics!(
     (NodeState, node_state, [self_stake_bps,]),
     (
@@ -169,5 +225,16 @@ metrics!(
             peer_payload_request_successful,
             peer_payload_request_failed
         ]
-    )
+    ),
 );
+
+global_metrics!((
+    BackendCacheEvents,
+    backendcache_events,
+    [
+        db_avg_account_reads_time_ns,
+        db_account_num_reads, // reset counter every 10_000 reads
+        cache_hits,           // accounts successfully returned rom cache
+        cache_misses,         // accounts missing in cache
+    ]
+));

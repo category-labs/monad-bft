@@ -26,10 +26,11 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_types::{EthAccount, EthHeader};
+use monad_metrics::METRICS;
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{BlockId, DropTimer, Epoch, SeqNum, Stake};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
-use tracing::warn;
+use tracing::{debug, trace, warn};
 
 #[derive(Debug)]
 struct BlockCache {
@@ -99,17 +100,28 @@ where
                 .filter(|&address| !block_cache.accounts.contains_key(address))
                 .collect(),
         };
+        let unique_addresses_cnt = addresses.iter().unique().count();
+        let total_db_read_time: Arc<Mutex<u64>> = Arc::new(Mutex::new(0));
+        let num_db_reads: Arc<Mutex<u64>> = Arc::new(Mutex::new(0));
 
         if !cache_misses.is_empty() {
             // hydrate cache with missing accounts
             let cache_misses_data = {
-                let _timer = DropTimer::start(Duration::from_millis(10), |elapsed| {
+                // let _timer = DropTimer::start(Duration::from_millis(10), |elapsed| {
+                let _timer = DropTimer::start(Duration::from_millis(0), |elapsed| {
                     warn!(
                         ?elapsed,
                         lookups = cache_misses.len(),
-                        "long get_account_statuses"
-                    )
+                        "get_account_statuses_time"
+                    );
+                    let mut db_read_time = total_db_read_time.lock().unwrap();
+                    let mut num_reads = num_db_reads.lock().unwrap();
+                    if cache_misses.len() > 1 {
+                        *db_read_time += elapsed.as_nanos() as u64;
+                        *num_reads += cache_misses.len() as u64;
+                    }
                 });
+
                 self.state_backend.get_account_statuses(
                     block_id,
                     seq_num,
@@ -131,6 +143,53 @@ where
                         .map(|&&address| address)
                         .zip_eq(cache_misses_data),
                 )
+        }
+
+        if let Ok(mut global_metrics) = METRICS.try_write() {
+            let metrics = global_metrics.metrics();
+
+            let cur_cache_misses_cnt = cache_misses.len();
+
+            let cache_misses_cnt = metrics
+                .backendcache_events
+                .cache_misses
+                .checked_add(cur_cache_misses_cnt.try_into().unwrap());
+
+            let cache_hit_cnt = metrics.backendcache_events.cache_hits.checked_add(
+                (unique_addresses_cnt - cur_cache_misses_cnt)
+                    .try_into()
+                    .unwrap(),
+            );
+            if cache_hit_cnt.is_none() || cache_misses_cnt.is_none() {
+                // overflow reset counters
+                metrics.backendcache_events.cache_hits = 0;
+                metrics.backendcache_events.cache_misses = 0;
+                trace!("Updated metrics cache_hits or cache_misses overflow");
+            } else {
+                metrics.backendcache_events.cache_hits = cache_hit_cnt.unwrap();
+                metrics.backendcache_events.cache_misses = cache_misses_cnt.unwrap();
+                trace!(
+                    "Updated metrics cache_hits: {:?} , cache_misses: {:?}",
+                    cache_hit_cnt.unwrap(),
+                    cache_misses_cnt.unwrap()
+                );
+            }
+            let num_reads = *num_db_reads.lock().unwrap();
+            let db_read_time = *total_db_read_time.lock().unwrap();
+            if num_reads > 0 {
+                let old_num_reads = metrics.backendcache_events.db_account_num_reads;
+                let old_read_time = metrics.backendcache_events.db_avg_account_reads_time_ns;
+                metrics.backendcache_events.db_account_num_reads += num_reads;
+                metrics.backendcache_events.db_avg_account_reads_time_ns =
+                    (old_read_time * old_num_reads + db_read_time) / (old_num_reads + num_reads);
+                debug!(
+                    "Updated metrics avg_account_num_reads: {:?} , avg_account_reads_time_ns: {:?}, local_avg_time: {:?}, num_reads: {:?}",
+                    metrics.backendcache_events.db_account_num_reads,
+                    metrics.backendcache_events.db_avg_account_reads_time_ns,
+                    db_read_time/num_reads,
+                    num_reads,
+                );
+            }
         }
 
         let block_cache = cache

@@ -12,6 +12,7 @@ bench = false
 monad-crypto = { workspace = true }
 monad-eth-types = { workspace = true }
 monad-state-backend = { workspace = true }
+monad-metrics = { workspace = true }
 monad-types = { workspace = true }
 monad-validator = { workspace = true }
 

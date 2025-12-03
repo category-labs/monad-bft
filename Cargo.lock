@@ -5502,6 +5502,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-metrics"
+version = "0.1.0"
+dependencies = [
+ "lazy_static",
+ "monad-consensus-types",
+]
+
+[[package]]
 name = "monad-mock-swarm"
 version = "0.1.0"
 dependencies = [
@@ -5588,6 +5596,7 @@ dependencies = [
  "monad-executor-glue",
  "monad-keystore",
  "monad-ledger",
+ "monad-metrics",
  "monad-node-config",
  "monad-peer-discovery",
  "monad-pprof",
@@ -6112,6 +6121,7 @@ dependencies = [
  "itertools 0.10.5",
  "monad-crypto",
  "monad-eth-types",
+ "monad-metrics",
  "monad-state-backend",
  "monad-types",
  "monad-validator",

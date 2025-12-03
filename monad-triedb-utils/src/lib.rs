@@ -201,12 +201,13 @@ impl TriedbReader {
                                         eth_account.is_delegated =
                                             delegation_code == EIP7702_DELEGATION_PREFIX;
                                         if eth_account.is_delegated {
-                                            trace!(?eth_account, block_id = ?seq_num.0, "is_delegated == true");
+                                            debug!(?eth_account, block_id = ?seq_num.0, "LegacyAccount is_delegated == true");
                                         }
                                     }
                                 }
                             },
                             AccountCodeOrHash::InlineCode(_) => {
+                                debug!(block_id = ?seq_num.0, ?eth_account, "InlineAccount is_delegated == true");
                                 eth_account.is_delegated = true;
                             }
                             AccountCodeOrHash::IsEmpty(()) => {}
