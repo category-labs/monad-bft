@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use tracing::trace;
 
 use crate::{
-    kvstore::{KVStoreType, MetricsResultExt},
+    kvstore::{KVStoreType, MetricsResultExt, PutResult, WritePolicy},
     prelude::*,
 };
 
@@ -236,7 +236,13 @@ impl KVStore for MongoDbStorage {
         &self.name
     }
 
-    async fn put(&self, key: impl AsRef<str>, data: Vec<u8>) -> Result<()> {
+    async fn put(
+        &self,
+        key: impl AsRef<str>,
+        data: Vec<u8>,
+        _policy: WritePolicy,
+    ) -> Result<PutResult> {
+        // Note: WritePolicy is ignored for MongoDB - always overwrites
         let start = Instant::now();
         let doc = if data.len() > CHUNK_SIZE {
             for (chunk_num, chunk) in data.chunks(CHUNK_SIZE).enumerate() {
@@ -282,7 +288,7 @@ impl KVStore for MongoDbStorage {
             .wrap_err("MongoDB put operation failed")
             .write_put_metrics(start.elapsed(), KVStoreType::Mongo, &self.metrics)?;
 
-        Ok(())
+        Ok(PutResult::Written)
     }
 
     async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>> {
@@ -342,7 +348,10 @@ pub mod mongo_tests {
         // Test put
         let key = "test_key";
         let value = b"test_value".to_vec();
-        storage.put(key, value.clone()).await.unwrap();
+        storage
+            .put(key, value.clone(), WritePolicy::AllowOverwrite)
+            .await
+            .unwrap();
 
         // Test get
         let result = storage.get(key).await.unwrap().unwrap();
@@ -364,7 +373,10 @@ pub mod mongo_tests {
         value.extend(&b"b".repeat(CHUNK_SIZE * 5));
         value.extend(&b"c".repeat(CHUNK_SIZE * 5));
 
-        storage.put(key, value.clone()).await.unwrap();
+        storage
+            .put(key, value.clone(), WritePolicy::AllowOverwrite)
+            .await
+            .unwrap();
 
         // Test get
         let result = storage.get(key).await.unwrap().unwrap();
@@ -395,13 +407,16 @@ pub mod mongo_tests {
             .unwrap();
 
         let writer = BlockDataArchive::new(storage.clone());
-        writer.archive_block(block_data.block).await.unwrap();
         writer
-            .archive_traces(block_data.traces, block_number)
+            .archive_block(block_data.block, WritePolicy::NoClobber)
             .await
             .unwrap();
         writer
-            .archive_receipts(block_data.receipts, block_number)
+            .archive_traces(block_data.traces, block_number, WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        writer
+            .archive_receipts(block_data.receipts, block_number, WritePolicy::NoClobber)
             .await
             .unwrap();
 
@@ -433,7 +448,10 @@ pub mod mongo_tests {
             ("key3".to_string(), b"value3".to_vec()),
         ];
 
-        storage.bulk_put(kvs.clone()).await.unwrap();
+        storage
+            .bulk_put(kvs.clone(), WritePolicy::NoClobber)
+            .await
+            .unwrap();
 
         for (key, value) in kvs {
             let result = storage.get(&key).await.unwrap().unwrap();
@@ -467,7 +485,7 @@ pub mod mongo_tests {
             ("prefix2_a".to_string(), b"value3".to_vec()),
         ];
 
-        storage.bulk_put(kvs).await.unwrap();
+        storage.bulk_put(kvs, WritePolicy::NoClobber).await.unwrap();
 
         // Test prefix scanning
         let results = storage.scan_prefix("prefix1_").await.unwrap();

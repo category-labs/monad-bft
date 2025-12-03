@@ -48,6 +48,25 @@ pub enum KVStoreType {
     FileSystem,
 }
 
+/// Policy controlling whether `put` can overwrite existing keys.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WritePolicy {
+    /// Allow overwriting existing keys (default behavior).
+    #[default]
+    AllowOverwrite,
+    /// Prevent overwriting - skip write if key exists.
+    NoClobber,
+}
+
+/// Result of a `put` operation indicating whether data was written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PutResult {
+    /// Data was successfully written to the store.
+    Written,
+    /// Write was skipped because the key already exists (NoClobber policy).
+    Skipped,
+}
+
 impl KVStoreType {
     pub const fn as_str(&self) -> &'static str {
         match self {
@@ -97,10 +116,19 @@ impl From<KVStoreErased> for KVReaderErased {
 
 #[enum_dispatch]
 pub trait KVStore: KVReader {
-    async fn put(&self, key: impl AsRef<str>, data: Vec<u8>) -> Result<()>;
-    async fn bulk_put(&self, kvs: impl IntoIterator<Item = (String, Vec<u8>)>) -> Result<()> {
+    async fn put(
+        &self,
+        key: impl AsRef<str>,
+        data: Vec<u8>,
+        policy: WritePolicy,
+    ) -> Result<PutResult>;
+    async fn bulk_put(
+        &self,
+        kvs: impl IntoIterator<Item = (String, Vec<u8>)>,
+        policy: WritePolicy,
+    ) -> Result<()> {
         futures::stream::iter(kvs)
-            .map(|(k, v)| self.put(k, v))
+            .map(|(k, v)| self.put(k, v, policy))
             .buffer_unordered(10)
             .count()
             .await;
@@ -247,7 +275,7 @@ impl<T, E> MetricsResultExt for std::result::Result<T, E> {
     }
 }
 
-fn kvstore_put_metrics(
+pub(crate) fn kvstore_put_metrics(
     duration: Duration,
     is_success: bool,
     kvstore_type: KVStoreType,

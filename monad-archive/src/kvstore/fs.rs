@@ -20,9 +20,11 @@ use std::{
 
 use bytes::Bytes;
 use eyre::{Context, Result};
-use tokio::{fs, task::spawn_blocking};
+use tokio::{fs, io::AsyncWriteExt, task::spawn_blocking};
 
-use super::{kvstore_get_metrics, KVStoreType, MetricsResultExt};
+use super::{
+    kvstore_get_metrics, kvstore_put_metrics, KVStoreType, MetricsResultExt, PutResult, WritePolicy,
+};
 use crate::{metrics::Metrics, prelude::*};
 
 #[derive(Clone)]
@@ -118,7 +120,12 @@ impl KVStore for FsStorage {
         &self.name
     }
 
-    async fn put(&self, key: impl AsRef<str>, data: Vec<u8>) -> Result<()> {
+    async fn put(
+        &self,
+        key: impl AsRef<str>,
+        data: Vec<u8>,
+        policy: WritePolicy,
+    ) -> Result<PutResult> {
         let key = key.as_ref();
         let path = self.key_path(key)?;
 
@@ -129,12 +136,54 @@ impl KVStore for FsStorage {
         }
 
         let start = Instant::now();
-        fs::write(&path, &data)
-            .await
-            .write_put_metrics(start.elapsed(), KVStoreType::FileSystem, &self.metrics)
-            .wrap_err_with(|| format!("Failed to write key {key} to path {path:?}"))?;
 
-        Ok(())
+        if policy == WritePolicy::NoClobber {
+            // Use create_new to atomically fail if file exists
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .await
+            {
+                Ok(mut file) => {
+                    file.write_all(&data)
+                        .await
+                        .wrap_err_with(|| format!("Failed to write key {key} to path {path:?}"))?;
+                    kvstore_put_metrics(
+                        start.elapsed(),
+                        true,
+                        KVStoreType::FileSystem,
+                        &self.metrics,
+                    );
+                    Ok(PutResult::Written)
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                    kvstore_put_metrics(
+                        start.elapsed(),
+                        true,
+                        KVStoreType::FileSystem,
+                        &self.metrics,
+                    );
+                    warn!(key, "FS put skipped: key already exists (NoClobber policy)");
+                    Ok(PutResult::Skipped)
+                }
+                Err(err) => {
+                    kvstore_put_metrics(
+                        start.elapsed(),
+                        false,
+                        KVStoreType::FileSystem,
+                        &self.metrics,
+                    );
+                    Err(err).wrap_err_with(|| format!("Failed to write key {key} to path {path:?}"))
+                }
+            }
+        } else {
+            fs::write(&path, &data)
+                .await
+                .write_put_metrics(start.elapsed(), KVStoreType::FileSystem, &self.metrics)
+                .wrap_err_with(|| format!("Failed to write key {key} to path {path:?}"))?;
+            Ok(PutResult::Written)
+        }
     }
 
     async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>> {
@@ -202,7 +251,9 @@ mod tests {
 
         let key = "nested/test-key";
         let data = b"hello world".to_vec();
-        storage.put(key, data.clone()).await?;
+        storage
+            .put(key, data.clone(), WritePolicy::AllowOverwrite)
+            .await?;
 
         let result = storage.get(key).await?.unwrap();
         assert_eq!(result, Bytes::from(data));
@@ -218,9 +269,15 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let storage = FsStorage::new(dir.path(), Metrics::none())?;
 
-        storage.put("test/a", b"a".to_vec()).await?;
-        storage.put("test/b", b"b".to_vec()).await?;
-        storage.put("other/c", b"c".to_vec()).await?;
+        storage
+            .put("test/a", b"a".to_vec(), WritePolicy::AllowOverwrite)
+            .await?;
+        storage
+            .put("test/b", b"b".to_vec(), WritePolicy::AllowOverwrite)
+            .await?;
+        storage
+            .put("other/c", b"c".to_vec(), WritePolicy::AllowOverwrite)
+            .await?;
 
         let results = storage.scan_prefix("test").await?;
         assert_eq!(results.len(), 2);
@@ -238,7 +295,9 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let storage = FsStorage::new(dir.path(), Metrics::none())?;
 
-        storage.put("delete/me", b"bye".to_vec()).await?;
+        storage
+            .put("delete/me", b"bye".to_vec(), WritePolicy::AllowOverwrite)
+            .await?;
         storage.delete("delete/me").await?;
 
         let result = storage.get("delete/me").await?;
@@ -254,7 +313,9 @@ mod tests {
     async fn test_reject_parent_segments() {
         let dir = tempfile::tempdir().unwrap();
         let storage = FsStorage::new(dir.path(), Metrics::none()).unwrap();
-        let result = storage.put("../escape", b"oops".to_vec()).await;
+        let result = storage
+            .put("../escape", b"oops".to_vec(), WritePolicy::AllowOverwrite)
+            .await;
         assert!(result.is_err());
     }
 
@@ -264,12 +325,67 @@ mod tests {
         let storage = FsStorage::new(dir.path(), Metrics::none())?;
 
         let key = "hi/bye/foo.txt";
-        storage.put(key, b"data".to_vec()).await?;
+        storage
+            .put(key, b"data".to_vec(), WritePolicy::AllowOverwrite)
+            .await?;
 
         let file_path = dir.path().join(key);
         assert!(file_path.is_file());
         assert!(dir.path().join("hi").is_dir());
         assert!(dir.path().join("hi/bye").is_dir());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_noclobber_skips_existing_file() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let storage = FsStorage::new(dir.path(), Metrics::none())?;
+
+        let key = "noclobber/test";
+        let original_data = b"original".to_vec();
+        let new_data = b"new".to_vec();
+
+        // First write should succeed
+        let result = storage
+            .put(key, original_data.clone(), WritePolicy::NoClobber)
+            .await?;
+        assert_eq!(result, PutResult::Written);
+
+        // Second write with NoClobber should be skipped
+        let result = storage.put(key, new_data, WritePolicy::NoClobber).await?;
+        assert_eq!(result, PutResult::Skipped);
+
+        // Verify original data is preserved
+        let stored = storage.get(key).await?.unwrap();
+        assert_eq!(stored, Bytes::from(original_data));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_allow_overwrite_overwrites_existing_file() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let storage = FsStorage::new(dir.path(), Metrics::none())?;
+
+        let key = "overwrite/test";
+        let original_data = b"original".to_vec();
+        let new_data = b"new".to_vec();
+
+        // First write
+        storage
+            .put(key, original_data, WritePolicy::AllowOverwrite)
+            .await?;
+
+        // Second write with AllowOverwrite should succeed
+        let result = storage
+            .put(key, new_data.clone(), WritePolicy::AllowOverwrite)
+            .await?;
+        assert_eq!(result, PutResult::Written);
+
+        // Verify new data is stored
+        let stored = storage.get(key).await?.unwrap();
+        assert_eq!(stored, Bytes::from(new_data));
 
         Ok(())
     }
