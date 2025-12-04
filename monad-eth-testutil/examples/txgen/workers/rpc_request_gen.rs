@@ -41,9 +41,13 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tracing::{debug, error, warn};
 use url::Url;
 
+use crate::workers::Metrics;
+
 const MAX_CONCURRENT_REQUESTS: usize = 10;
 const MAX_CONCURRENT_INDEX_TASKS: usize = 16;
 const RPC_RETRY_DELAY: Duration = Duration::from_millis(10);
+const WS_RETRY_DELAY: Duration = Duration::from_millis(200);
+const RPC_BATCH_SIZE: usize = 1000;
 
 async fn ws_call(
     write: &mut futures::stream::SplitSink<
@@ -133,6 +137,7 @@ pub struct RpcRequestGenerator {
     requests_per_block: usize,
     // number of concurrent websocket connections
     num_connections: usize,
+    metrics: Option<Arc<Metrics>>,
 }
 
 impl RpcRequestGenerator {
@@ -141,12 +146,14 @@ impl RpcRequestGenerator {
         ws_url: Url,
         requests_per_block: usize,
         num_connections: usize,
+        metrics: Option<Arc<Metrics>>,
     ) -> Self {
         Self {
             rpc_client,
             ws_url,
             requests_per_block,
             num_connections,
+            metrics,
         }
     }
 
@@ -161,11 +168,38 @@ impl RpcRequestGenerator {
         }
     }
 
+    async fn eth_block_number(
+        client: &ReqwestClient,
+        metrics: Option<Arc<Metrics>>,
+    ) -> BlockNumber {
+        loop {
+            if let Some(ref m) = metrics {
+                m.total_rpc_calls.fetch_add(1, Ordering::SeqCst);
+            }
+            match client
+                .request_noparams::<U64>("eth_blockNumber")
+                .map_resp(|res| res.to())
+                .await
+            {
+                Ok(block_number) => return block_number,
+                Err(err) => {
+                    warn!(?err, "failed to get block number");
+                    tokio::time::sleep(RPC_RETRY_DELAY).await;
+                    continue;
+                }
+            }
+        }
+    }
+
     async fn get_block_by_number(
         client: &ReqwestClient,
         block_number: BlockNumber,
+        metrics: Option<Arc<Metrics>>,
     ) -> Result<alloy_rpc_types_eth::Block, BlockIndexError> {
         loop {
+            if let Some(ref m) = metrics {
+                m.total_rpc_calls.fetch_add(1, Ordering::SeqCst);
+            }
             match client
                 .request::<_, alloy_rpc_types_eth::Block>(
                     "eth_getBlockByNumber",
@@ -189,11 +223,15 @@ impl RpcRequestGenerator {
     async fn get_block_receipts(
         client: &ReqwestClient,
         block_number: BlockNumber,
+        metrics: Option<Arc<Metrics>>,
     ) -> Result<
         Vec<alloy_rpc_types_eth::TransactionReceipt>,
         RpcError<alloy_transport::TransportErrorKind>,
     > {
         loop {
+            if let Some(ref m) = metrics {
+                m.total_rpc_calls.fetch_add(1, Ordering::SeqCst);
+            }
             let resp = client
                 .request::<_, Vec<alloy_rpc_types_eth::TransactionReceipt>>(
                     "eth_getBlockReceipts",
@@ -215,11 +253,15 @@ impl RpcRequestGenerator {
         client: &ReqwestClient,
         block_number: BlockNumber,
         tracer: GethDebugBuiltInTracerType,
+        metrics: Option<Arc<Metrics>>,
     ) -> Result<
         Vec<alloy_rpc_types_trace::geth::GethTrace>,
         RpcError<alloy_transport::TransportErrorKind>,
     > {
         loop {
+            if let Some(ref m) = metrics {
+                m.total_rpc_calls.fetch_add(1, Ordering::SeqCst);
+            }
             let resp = client
                 .request::<_, Vec<alloy_rpc_types_trace::geth::GethTrace>>(
                     "debug_traceBlockByNumber",
@@ -246,9 +288,14 @@ impl RpcRequestGenerator {
     async fn get_logs(
         client: &ReqwestClient,
         block_number: BlockNumber,
+        metrics: Option<Arc<Metrics>>,
     ) -> Result<Vec<alloy_rpc_types_eth::Log<LogData>>, RpcError<alloy_transport::TransportErrorKind>>
     {
         loop {
+            if let Some(ref m) = metrics {
+                m.total_rpc_calls.fetch_add(1, Ordering::SeqCst);
+                m.logs_rpc_calls.fetch_add(1, Ordering::SeqCst);
+            }
             let filter = Filter::new();
             let filter = filter.from_block(block_number);
             let filter = filter.to_block(block_number);
@@ -258,6 +305,9 @@ impl RpcRequestGenerator {
             match resp {
                 Ok(_) => return resp,
                 Err(err) => {
+                    if let Some(ref m) = metrics {
+                        m.logs_rpc_calls_error.fetch_add(1, Ordering::SeqCst);
+                    }
                     Self::handle_rpc_error(err)?;
                     tokio::time::sleep(RPC_RETRY_DELAY).await;
                     continue;
@@ -270,9 +320,13 @@ impl RpcRequestGenerator {
         client: &ReqwestClient,
         block_number: BlockNumber,
         addrs: Vec<Address>,
+        metrics: Option<Arc<Metrics>>,
     ) -> Result<(), RpcError<alloy_transport::TransportErrorKind>> {
-        for chunk in addrs.chunks(1000) {
+        for chunk in addrs.chunks(RPC_BATCH_SIZE) {
             let futs = loop {
+                if let Some(ref m) = metrics {
+                    m.total_rpc_calls.fetch_add(1, Ordering::SeqCst);
+                }
                 let mut batch = client.new_batch();
                 let futs = chunk
                     .iter()
@@ -306,10 +360,14 @@ impl RpcRequestGenerator {
     async fn debug_trace_transaction<T: TransactionResponse>(
         client: &ReqwestClient,
         txn_hashes: BlockTransactionHashes<'_, T>,
+        metrics: Option<Arc<Metrics>>,
     ) -> Result<(), RpcError<alloy_transport::TransportErrorKind>> {
         let txn_hashes = txn_hashes.into_iter().collect::<Vec<_>>();
-        for chunk in txn_hashes.chunks(1000) {
+        for chunk in txn_hashes.chunks(RPC_BATCH_SIZE) {
             let futs = loop {
+                if let Some(ref m) = metrics {
+                    m.total_rpc_calls.fetch_add(1, Ordering::SeqCst);
+                }
                 let mut batch = client.new_batch();
 
                 let futs = chunk
@@ -355,9 +413,14 @@ impl RpcRequestGenerator {
         result_sender: tokio::sync::mpsc::Sender<
             Result<(BlockNumber, Vec<Address>), BlockIndexError>,
         >,
+        metrics: Option<Arc<Metrics>>,
     ) {
-        let block = match Self::get_block_by_number(&client, block_number).await {
-            Ok(header) => header,
+        let start = Instant::now();
+
+        let block = match Self::get_block_by_number(&client, block_number, metrics.clone()).await {
+            Ok(header) => {
+                header
+            },
             Err(err) => {
                 warn!(?err, "Failed to get block by number");
                 return;
@@ -370,7 +433,9 @@ impl RpcRequestGenerator {
             let (receipts_results, _, _, _) = tokio::join!(
                 async {
                     let receipts: Result<Vec<_>, _> = stream::iter(0..requests_per_block)
-                        .map(|_| Self::get_block_receipts(&client, block_number))
+                        .map(|_| {
+                            Self::get_block_receipts(&client, block_number, metrics.clone())
+                        })
                         .buffer_unordered(MAX_CONCURRENT_REQUESTS)
                         .try_collect()
                         .await;
@@ -390,7 +455,9 @@ impl RpcRequestGenerator {
                 },
                 async {
                     let logs: Result<Vec<_>, _> = stream::iter(0..requests_per_block)
-                        .map(|_| Self::get_logs(&client, block_number))
+                        .map(|_| {
+                            Self::get_logs(&client, block_number, metrics.clone())
+                        })
                         .buffer_unordered(MAX_CONCURRENT_REQUESTS)
                         .try_collect()
                         .await;
@@ -415,6 +482,7 @@ impl RpcRequestGenerator {
                                 &client,
                                 block_number,
                                 GethDebugBuiltInTracerType::CallTracer,
+                                metrics.clone(),
                             )
                         })
                         .buffer_unordered(MAX_CONCURRENT_REQUESTS)
@@ -441,6 +509,7 @@ impl RpcRequestGenerator {
                                 &client,
                                 block_number,
                                 GethDebugBuiltInTracerType::PreStateTracer,
+                                metrics.clone(),
                             )
                         })
                         .buffer_unordered(MAX_CONCURRENT_REQUESTS)
@@ -483,8 +552,8 @@ impl RpcRequestGenerator {
                 .collect::<Vec<_>>();
             debug!(n = addrs.len(), "reading account balances");
             let (balances_res, trace_res) = tokio::join!(
-                Self::get_balances(&client, block_number, addrs.clone()),
-                Self::debug_trace_transaction(&client, txn_hashes),
+                Self::get_balances(&client, block_number, addrs.clone(), metrics.clone()),
+                Self::debug_trace_transaction(&client, txn_hashes, metrics.clone()),
             );
             if let Err(ref err) = balances_res {
                 warn!(?block_number, ?err, "Error fetching balances");
@@ -505,6 +574,14 @@ impl RpcRequestGenerator {
             Vec::new()
         };
 
+        let duration = start.elapsed();
+
+        if let Some(ref m) = metrics {
+            m.indexer_blocks_indexed.fetch_add(1, Ordering::SeqCst);
+            let mut total_duration = m.indexer_total_duration_ms.write().unwrap();
+            *total_duration += duration.as_millis() as u64;
+        }
+
         if result_sender
             .send(Ok((block_number, uniq_addrs)))
             .await
@@ -519,16 +596,33 @@ impl RpcRequestGenerator {
         rpc_client: ReqwestClient,
         ws_url: Url,
         shutdown: Arc<AtomicBool>,
+        metrics: Option<Arc<Metrics>>,
     ) {
         // Each connection has its own request id counter
         let mut next_id: u64 = 1;
+        let mut prev_id: u64 = 1;
+
         while !shutdown.load(Ordering::Relaxed) {
+            // Add metrics from previous iteration
+            let messages_in_prev_iteration = next_id - prev_id;
+            if let Some(ref m) = metrics {
+                m.ws_messages_sent
+                    .fetch_add(messages_in_prev_iteration as usize, Ordering::SeqCst);
+                m.ws_messages_received
+                    .fetch_add(messages_in_prev_iteration as usize, Ordering::SeqCst);
+                m.wallet_comparison_attempts
+                    .fetch_add(messages_in_prev_iteration as usize, Ordering::SeqCst);
+            }
+            prev_id = next_id;
+
             // Open a websocket connection
             let (ws_stream, _) = match connect_async(&ws_url.to_string()).await {
-                Ok(ok) => ok,
+                Ok(ok) => {
+                    ok
+                },
                 Err(err) => {
                     warn!(?err, "Failed to connect websocket; retrying");
-                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    tokio::time::sleep(WS_RETRY_DELAY).await;
                     continue;
                 }
             };
@@ -551,6 +645,9 @@ impl RpcRequestGenerator {
                 Ok((ws_val, rpc_val)) => {
                     if ws_val != rpc_val {
                         warn!("eth_chainId mismatch; ws: {:?}, rpc: {:?}", ws_val, rpc_val);
+                        if let Some(ref m) = metrics {
+                            m.wallet_comparison_mismatches.fetch_add(1, Ordering::SeqCst);
+                        }
                     }
                 }
                 Err(_) => {
@@ -581,6 +678,9 @@ impl RpcRequestGenerator {
                             "eth_blockNumber mismatch; ws: {:?}, rpc: {:?}",
                             ws_val, rpc_val
                         );
+                        if let Some(ref m) = metrics {
+                            m.wallet_comparison_mismatches.fetch_add(1, Ordering::SeqCst);
+                        }
                         continue;
                     }
                     rpc_val
@@ -618,6 +718,9 @@ impl RpcRequestGenerator {
                             "eth_getBlockByNumber mismatch; ws: {:?}, rpc: {:?}",
                             ws_val, rpc_val
                         );
+                        if let Some(ref m) = metrics {
+                            m.wallet_comparison_mismatches.fetch_add(1, Ordering::SeqCst);
+                        }
                         continue;
                     }
                 }
@@ -652,6 +755,9 @@ impl RpcRequestGenerator {
                             "eth_getBalance mismatch; ws: {:?}, rpc: {:?}",
                             ws_val, rpc_val
                         );
+                        if let Some(ref m) = metrics {
+                            m.wallet_comparison_mismatches.fetch_add(1, Ordering::SeqCst);
+                        }
                     }
                 }
                 Err(_) => {
@@ -684,6 +790,9 @@ impl RpcRequestGenerator {
                             "eth_getTransactionCount mismatch; ws: {:?}, rpc: {:?}",
                             ws_val, rpc_val
                         );
+                        if let Some(ref m) = metrics {
+                            m.wallet_comparison_mismatches.fetch_add(1, Ordering::SeqCst);
+                        }
                     }
                 }
                 Err(_) => {
@@ -722,6 +831,9 @@ impl RpcRequestGenerator {
                             "eth_estimateGas mismatch; ws: {:?}, rpc: {:?}",
                             ws_val, rpc_val
                         );
+                        if let Some(ref m) = metrics {
+                            m.wallet_comparison_mismatches.fetch_add(1, Ordering::SeqCst);
+                        }
                     }
                 }
                 Err(_) => {
@@ -740,7 +852,7 @@ impl RpcRequestGenerator {
         // start block tip refresher task
         let (tip_sender, mut tip_receiver) = tokio::sync::mpsc::channel(8);
         let (index_done_sender, mut index_done_receiver) = tokio::sync::mpsc::channel(32);
-        let refresher = TipRefresher::new(self.rpc_client.clone(), tip_sender);
+        let refresher = TipRefresher::new(self.rpc_client.clone(), tip_sender, self.metrics.clone());
         tokio::spawn(async move { refresher.run().await });
 
         // Semaphore to limit concurrent indexing tasks
@@ -765,8 +877,9 @@ impl RpcRequestGenerator {
                         let client = self.rpc_client.clone();
                         let requests_per_block = self.requests_per_block;
                         let sender = index_done_sender.clone();
+                        let metrics = self.metrics.clone();
                         tokio::spawn(async move {
-                            RpcRequestGenerator::index_block(client, block_number, requests_per_block, sender).await;
+                            RpcRequestGenerator::index_block(client, block_number, requests_per_block, sender, metrics).await;
                             drop(permit);
                         });
                     }
@@ -781,6 +894,9 @@ impl RpcRequestGenerator {
                         },
                         Err(err) => {
                             total_failed += 1;
+                            if let Some(ref m) = self.metrics {
+                                m.indexer_blocks_failed.fetch_add(1, Ordering::SeqCst);
+                            }
                             warn!(?err.block_number, ?err.error,"failed to index block");
                             err.block_number
                         }
@@ -799,11 +915,12 @@ impl RpcRequestGenerator {
         for _ in 0..self.num_connections {
             let ws_url = self.ws_url.clone();
             let http_client = self.rpc_client.clone();
+            let metrics = self.metrics.clone();
 
             let shutdown2 = shutdown.clone();
 
             tasks.push(tokio::spawn(async move {
-                Self::subscribe_and_compare(http_client, ws_url, shutdown2).await;
+                Self::subscribe_and_compare(http_client, ws_url, shutdown2, metrics).await;
             }));
         }
         while let Some(res) = tasks.next().await {
@@ -818,32 +935,30 @@ impl RpcRequestGenerator {
 pub struct RpcWsCompare {
     rpc_client: ReqwestClient,
     ws_url: Url,
+    metrics: Option<Arc<Metrics>>,
 }
 
 impl RpcWsCompare {
-    pub fn new(rpc_client: ReqwestClient, ws_url: Url) -> Self {
-        Self { rpc_client, ws_url }
+    pub fn new(rpc_client: ReqwestClient, ws_url: Url, metrics: Option<Arc<Metrics>>) -> Self {
+        Self { rpc_client, ws_url, metrics }
     }
 
     pub async fn run(&self, shutdown: Arc<AtomicBool>) {
         let client = self.rpc_client.clone();
 
         // Get the current tip from the rpc
-        let mut tip = client
-            .request_noparams::<U64>("eth_blockNumber")
-            .map_resp(|res| res.to())
-            .await
-            .unwrap();
+        let mut tip = RpcRequestGenerator::eth_block_number(&client, self.metrics.clone()).await;
 
         let (block_sender, mut block_receiver) = tokio::sync::mpsc::channel(100);
         let rpc_client_clone = self.rpc_client.clone();
 
         // shutdown this tokio task
         let shutdown2 = shutdown.clone();
+        let metrics = self.metrics.clone();
         tokio::spawn(async move {
             let client = rpc_client_clone;
             while !shutdown2.load(Ordering::Relaxed) {
-                let block = Self::get_block_by_number(&client, tip).await.unwrap();
+                let block = RpcRequestGenerator::get_block_by_number(&client, tip, metrics.clone()).await.unwrap();
                 block_sender.send(block).await.unwrap();
                 tip += 1;
                 tokio::time::sleep(Duration::from_millis(500)).await; // Add a small delay
@@ -862,6 +977,7 @@ impl RpcWsCompare {
 
         let (ws_tx, mut ws_rx) = tokio::sync::mpsc::channel(100);
         let shutdown3 = shutdown.clone();
+        let metrics_clone = self.metrics.clone();
         tokio::spawn(async move {
             while !shutdown3.load(Ordering::Relaxed) {
                 tokio::select! {
@@ -871,6 +987,9 @@ impl RpcWsCompare {
                             Message::Text(text) => {
                                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
                                     if let Some(result) = json.get("params").unwrap().get("result") {
+                                        if let Some(ref m) = metrics_clone {
+                                            m.ws_messages_received.fetch_add(1, Ordering::SeqCst);
+                                        }
                                         // Convert result to alloy_rpc_types_eth::Header
                                         let header = serde_json::from_value::<alloy_rpc_types_eth::Header>(result.clone()).expect("failed to convert result to alloy_rpc_types_eth::Header");
                                         ws_tx.send(header).await.unwrap();
@@ -902,11 +1021,18 @@ impl RpcWsCompare {
                 None => break,
             };
 
+            if let Some(ref m) = self.metrics {
+                m.rpcws_blocks_compared.fetch_add(1, Ordering::SeqCst);
+            }
+
             if ws_header.number != rpc_header.number {
                 error!(
                     "block number mismatch websocket {:?} rpc {:?}. stopping comparison",
                     ws_header.number, rpc_header.number
                 );
+                if let Some(ref m) = self.metrics {
+                    m.rpcws_block_number_mismatches.fetch_add(1, Ordering::SeqCst);
+                }
                 break;
             }
             if ws_header != rpc_header {
@@ -914,27 +1040,8 @@ impl RpcWsCompare {
                     "block header mismatch websocket {:?} rpc {:?}",
                     ws_header, rpc_header
                 );
-            }
-        }
-    }
-
-    async fn get_block_by_number(
-        client: &ReqwestClient,
-        block_number: BlockNumber,
-    ) -> Option<alloy_rpc_types_eth::Block> {
-        loop {
-            match client
-                .request::<_, alloy_rpc_types_eth::Block>(
-                    "eth_getBlockByNumber",
-                    (U64::from(block_number), true),
-                )
-                .await
-            {
-                Ok(block) => return Some(block),
-                Err(err) => {
-                    warn!(?err, "failed to get block by number");
-                    tokio::time::sleep(RPC_RETRY_DELAY).await;
-                    continue;
+                if let Some(ref m) = self.metrics {
+                    m.rpcws_header_mismatches.fetch_add(1, Ordering::SeqCst);
                 }
             }
         }
@@ -983,32 +1090,26 @@ struct TipRefresher {
     tip: BlockNumber,
     tip_sender: tokio::sync::mpsc::Sender<(BlockNumber, BlockNumber)>,
     client: ReqwestClient,
+    metrics: Option<Arc<Metrics>>,
 }
 
 impl TipRefresher {
     fn new(
         client: ReqwestClient,
         sender: tokio::sync::mpsc::Sender<(BlockNumber, BlockNumber)>,
+        metrics: Option<Arc<Metrics>>,
     ) -> Self {
         Self {
             tip: 0,
             tip_sender: sender,
             client,
+            metrics,
         }
     }
 
     async fn run(mut self) {
         loop {
-            let resp = self
-                .client
-                .request_noparams::<U64>("eth_blockNumber")
-                .map_resp(|res| res.to())
-                .await;
-
-            let Ok(tip) = resp else {
-                tokio::time::sleep(RPC_RETRY_DELAY).await;
-                continue;
-            };
+            let tip = RpcRequestGenerator::eth_block_number(&self.client, self.metrics.clone()).await;
 
             if self.tip == 0 {
                 self.tip = tip;

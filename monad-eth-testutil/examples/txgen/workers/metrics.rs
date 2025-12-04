@@ -46,6 +46,19 @@ pub struct Metrics {
 
     // pub txs_by_hash_rpc_calls: AtomicUsize,
     // pub txs_by_hash_rpc_calls_error: AtomicUsize,
+
+    pub indexer_blocks_indexed: AtomicUsize,
+    pub indexer_blocks_failed: AtomicUsize,
+    pub indexer_total_duration_ms: Arc<RwLock<u64>>,
+
+    pub ws_messages_sent: AtomicUsize,
+    pub ws_messages_received: AtomicUsize,
+    pub wallet_comparison_attempts: AtomicUsize,
+    pub wallet_comparison_mismatches: AtomicUsize,
+
+    pub rpcws_blocks_compared: AtomicUsize,
+    pub rpcws_header_mismatches: AtomicUsize,
+    pub rpcws_block_number_mismatches: AtomicUsize,
 }
 
 impl Metrics {
@@ -79,6 +92,19 @@ impl Metrics {
         let mut logs_rpc_calls = Rate::new(&self.logs_rpc_calls);
         let mut logs_rpc_calls_error = Rate::new(&self.logs_rpc_calls_error);
         let mut logs_total = Rate::new(&self.logs_total);
+
+        // Indexer workflow metrics
+        let mut indexer_blocks_indexed = Rate::new(&self.indexer_blocks_indexed);
+        let mut indexer_blocks_failed = Rate::new(&self.indexer_blocks_failed);
+
+        // Wallet workflow metrics
+        let mut wallet_comparison_attempts = Rate::new(&self.wallet_comparison_attempts);
+        let mut wallet_comparison_mismatches = Rate::new(&self.wallet_comparison_mismatches);
+
+        // RpcWsCompare metrics
+        let mut rpcws_blocks_compared = Rate::new(&self.rpcws_blocks_compared);
+        let mut rpcws_header_mismatches = Rate::new(&self.rpcws_header_mismatches);
+        let rpcws_block_number_mismatches = Rate::new(&self.rpcws_block_number_mismatches);
 
         loop {
             if shutdown.load(Ordering::Relaxed) {
@@ -131,6 +157,38 @@ impl Metrics {
                 report_interval.period().as_secs() / 60,
                 report_interval.period().as_secs() % 60
             );
+
+            info!(
+                blocks_indexed = indexer_blocks_indexed.val(),
+                blocks_failed = indexer_blocks_failed.val(),
+                total_duration_ms = *self.indexer_total_duration_ms.read().unwrap(),
+                blocks_indexed_ps = indexer_blocks_indexed.rate(elapsed),
+                blocks_failed_ps = indexer_blocks_failed.rate(elapsed),
+                "Metrics RpcRequestGen -> Indexer (freq: {}m:{}s)",
+                report_interval.period().as_secs() / 60,
+                report_interval.period().as_secs() % 60
+            );
+
+            info!(
+                comparison_attempts = wallet_comparison_attempts.val(),
+                comparison_mismatches = wallet_comparison_mismatches.val(),
+                comparison_attempts_ps = wallet_comparison_attempts.rate(elapsed),
+                comparison_mismatches_ps = wallet_comparison_mismatches.rate(elapsed),
+                "Metrics RpcRequestGen -> Wallet (freq: {}m:{}s)",
+                report_interval.period().as_secs() / 60,
+                report_interval.period().as_secs() % 60
+            );
+
+            info!(
+                blocks_compared = rpcws_blocks_compared.val(),
+                header_mismatches = rpcws_header_mismatches.val(),
+                block_number_mismatches = rpcws_block_number_mismatches.val(),
+                blocks_compared_ps = rpcws_blocks_compared.rate(elapsed),
+                header_mismatches_ps = rpcws_header_mismatches.rate(elapsed),
+                "Metrics RpcRequestGen -> RpcWsCompare (freq: {}m:{}s)",
+                report_interval.period().as_secs() / 60,
+                report_interval.period().as_secs() % 60
+            );
             last = now;
         }
     }
@@ -175,6 +233,18 @@ pub struct MetricsReporter {
     total_transactions: Gauge<u64>,
     total_contracts_created: Gauge<u64>,
 
+    // Indexer workflow gauges
+    indexer_blocks_indexed_ps: Gauge<u64>,
+    indexer_blocks_failed_ps: Gauge<u64>,
+
+    // Wallet workflow gauges
+    wallet_comparison_attempts_ps: Gauge<u64>,
+    wallet_comparison_mismatches_ps: Gauge<u64>,
+
+    // RpcWsCompare gauges
+    rpcws_blocks_compared_ps: Gauge<u64>,
+    rpcws_header_mismatches_ps: Gauge<u64>,
+
     // Keeping these so they don't get dropped
     _provider: SdkMeterProvider,
     _meter: opentelemetry::metrics::Meter,
@@ -186,6 +256,15 @@ struct Rates<'a> {
     committed_txs: Rate<'a>,
     rpc_calls_error: Rate<'a>,
     contracts_deployed: Rate<'a>,
+
+    indexer_blocks_indexed: Rate<'a>,
+    indexer_blocks_failed: Rate<'a>,
+
+    wallet_comparison_attempts: Rate<'a>,
+    wallet_comparison_mismatches: Rate<'a>,
+
+    rpcws_blocks_compared: Rate<'a>,
+    rpcws_header_mismatches: Rate<'a>,
 }
 
 impl MetricsReporter {
@@ -215,6 +294,16 @@ impl MetricsReporter {
             total_transactions: meter.u64_gauge("total_transactions").build(),
             total_contracts_created: meter.u64_gauge("total_contracts_created").build(),
 
+            indexer_blocks_indexed_ps: meter.u64_gauge("indexer_blocks_indexed_ps").build(),
+            indexer_blocks_failed_ps: meter.u64_gauge("indexer_blocks_failed_ps").build(),
+
+            wallet_comparison_attempts_ps: meter.u64_gauge("wallet_comparison_attempts_ps").build(),
+            wallet_comparison_mismatches_ps: meter.u64_gauge("wallet_comparison_mismatches_ps").build(),
+            wallet_comparison_errors_ps: meter.u64_gauge("wallet_comparison_errors_ps").build(),
+
+            rpcws_blocks_compared_ps: meter.u64_gauge("rpcws_blocks_compared_ps").build(),
+            rpcws_header_mismatches_ps: meter.u64_gauge("rpcws_header_mismatches_ps").build(),
+
             _provider: provider,
             _meter: meter,
         };
@@ -229,6 +318,12 @@ impl MetricsReporter {
                 committed_txs: Rate::new(&metrics.total_committed_txs),
                 rpc_calls_error: Rate::new(&metrics.receipts_rpc_calls_error),
                 contracts_deployed: Rate::new(&metrics.receipts_contracts_deployed),
+                indexer_blocks_indexed: Rate::new(&metrics.indexer_blocks_indexed),
+                indexer_blocks_failed: Rate::new(&metrics.indexer_blocks_failed),
+                wallet_comparison_attempts: Rate::new(&metrics.wallet_comparison_attempts),
+                wallet_comparison_mismatches: Rate::new(&metrics.wallet_comparison_mismatches),
+                rpcws_blocks_compared: Rate::new(&metrics.rpcws_blocks_compared),
+                rpcws_header_mismatches: Rate::new(&metrics.rpcws_header_mismatches),
             },
         );
 
@@ -246,6 +341,12 @@ impl MetricsReporter {
             committed_txs: Rate::new(&self.metrics.total_committed_txs),
             rpc_calls_error: Rate::new(&self.metrics.receipts_rpc_calls_error),
             contracts_deployed: Rate::new(&self.metrics.receipts_contracts_deployed),
+            indexer_blocks_indexed: Rate::new(&self.metrics.indexer_blocks_indexed),
+            indexer_blocks_failed: Rate::new(&self.metrics.indexer_blocks_failed),
+            wallet_comparison_attempts: Rate::new(&self.metrics.wallet_comparison_attempts),
+            wallet_comparison_mismatches: Rate::new(&self.metrics.wallet_comparison_mismatches),
+            rpcws_blocks_compared: Rate::new(&self.metrics.rpcws_blocks_compared),
+            rpcws_header_mismatches: Rate::new(&self.metrics.rpcws_header_mismatches),
         };
 
         loop {
@@ -290,6 +391,21 @@ impl MetricsReporter {
             .record(rates.txs_sent.val() as u64, &[]);
         self.total_contracts_created
             .record(rates.contracts_deployed.val() as u64, &[]);
+
+        self.indexer_blocks_indexed_ps
+            .record(rates.indexer_blocks_indexed.rate(elapsed) as u64, &[]);
+        self.indexer_blocks_failed_ps
+            .record(rates.indexer_blocks_failed.rate(elapsed) as u64, &[]);
+
+        self.wallet_comparison_attempts_ps
+            .record(rates.wallet_comparison_attempts.rate(elapsed) as u64, &[]);
+        self.wallet_comparison_mismatches_ps
+            .record(rates.wallet_comparison_mismatches.rate(elapsed) as u64, &[]);
+
+        self.rpcws_blocks_compared_ps
+            .record(rates.rpcws_blocks_compared.rate(elapsed) as u64, &[]);
+        self.rpcws_header_mismatches_ps
+            .record(rates.rpcws_header_mismatches.rate(elapsed) as u64, &[]);
 
         info!("Otel Metrics Reported");
     }
