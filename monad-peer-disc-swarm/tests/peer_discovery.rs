@@ -99,6 +99,7 @@ struct TestConfig {
     pub min_num_peers: usize,
     pub max_num_peers: usize,
     pub max_group_size: usize,
+    pub ping_rate_limit_per_second: u32,
     pub outbound_pipeline: Vec<GenericTransformer<PubKeyType, PeerDiscoveryMessage<SignatureType>>>,
 }
 
@@ -120,6 +121,7 @@ impl Default for TestConfig {
             min_num_peers: 5,
             max_num_peers: 50,
             max_group_size: 50,
+            ping_rate_limit_per_second: 100,
             outbound_pipeline: vec![],
         }
     }
@@ -222,6 +224,7 @@ fn setup_keys_and_swarm_builder(
                             enable_client: secondary_raptorcast_enabled,
                             rng: ChaCha8Rng::seed_from_u64(123456), // fixed seed for reproducibility
                             persisted_peers_path: Default::default(),
+                            ping_rate_limit_per_second: config.ping_rate_limit_per_second,
                         },
                         router_scheduler: NoSerRouterConfig::new(
                             all_peers.keys().cloned().collect(),
@@ -404,6 +407,7 @@ fn test_update_name_record() {
             enable_client: false,
             rng: ChaCha8Rng::seed_from_u64(123456),
             persisted_peers_path: Default::default(),
+            ping_rate_limit_per_second: config.ping_rate_limit_per_second,
         },
         router_scheduler: NoSerRouterConfig::new(node_ids.iter().cloned().collect()).build(),
         seed: 1,
@@ -1278,6 +1282,7 @@ fn test_validator_name_record_change_propagation_to_full_node() {
             enable_client: false,
             rng: ChaCha8Rng::seed_from_u64(123456),
             persisted_peers_path: Default::default(),
+            ping_rate_limit_per_second: config.ping_rate_limit_per_second,
         },
         router_scheduler: NoSerRouterConfig::new(node_ids.iter().cloned().collect()).build(),
         seed: 1,

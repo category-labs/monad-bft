@@ -13,6 +13,7 @@ monad-types = { workspace = true }
 alloy-rlp = { workspace = true }
 arrayvec = { workspace = true }
 futures = { workspace = true }
+governor = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 tracing = { workspace = true }

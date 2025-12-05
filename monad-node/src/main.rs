@@ -696,6 +696,7 @@ where
         enable_client: node_config.fullnode_raptorcast.enable_client,
         rng: ChaCha8Rng::from_entropy(),
         persisted_peers_path,
+        ping_rate_limit_per_second: peer_discovery_config.ping_rate_limit_per_second,
     };
 
     let shared_key = Arc::new(identity);
