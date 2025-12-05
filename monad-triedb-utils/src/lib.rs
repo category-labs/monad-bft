@@ -188,6 +188,7 @@ impl TriedbReader {
                 match res {
                     Some(mut eth_account) => {
                         trace!(?eth_account, block_id = ?seq_num.0, "account code_hash");
+                        let eth_address_copy = *eth_address;
                         match eth_account.code_or_hash {
                             AccountCodeOrHash::CodeHash(code_hash) => {
                                 // Request code
@@ -201,13 +202,13 @@ impl TriedbReader {
                                         eth_account.is_delegated =
                                             delegation_code == EIP7702_DELEGATION_PREFIX;
                                         if eth_account.is_delegated {
-                                            debug!(?eth_account, block_id = ?seq_num.0, "LegacyAccount is_delegated == true");
+                                            debug!(?eth_account, block_id = ?seq_num.0, ?eth_address_copy, "LegacyAccount is_delegated == true");
                                         }
                                     }
                                 }
                             },
                             AccountCodeOrHash::InlineCode(_) => {
-                                debug!(block_id = ?seq_num.0, ?eth_account, "InlineAccount is_delegated == true");
+                                debug!(block_id = ?seq_num.0, ?eth_account, ?eth_address_copy, "InlineAccount is_delegated == true");
                                 eth_account.is_delegated = true;
                             }
                             AccountCodeOrHash::IsEmpty(()) => {}
