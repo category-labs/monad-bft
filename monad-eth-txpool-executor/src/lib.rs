@@ -48,10 +48,10 @@ use tracing::{debug, debug_span, error, info, trace_span, warn};
 
 pub use self::{
     client::EthTxPoolExecutorClient,
-    ipc::{EthTxPoolIpcConfig, EthTxPoolIpcServer},
+    ipc::{TxPoolServer, EthTxPoolIpcConfig, EthTxPoolIpcServer},
 };
 use self::{
-    client::ForwardedTxs, forward::EthTxPoolForwardingManager, ipc::TxPoolServer,
+    client::ForwardedTxs, forward::EthTxPoolForwardingManager,
     metrics::EthTxPoolExecutorMetrics, preload::EthTxPoolPreloadManager,
     reset::EthTxPoolResetTrigger,
 };
@@ -92,7 +92,7 @@ where
     _phantom: PhantomData<CRT>,
 }
 
-impl<ST, SCT, SBT, CCT, CRT, PST> EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT, PST>
+impl<ST, SCT, SBT, CCT, CRT> EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT, PST>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
