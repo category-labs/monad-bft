@@ -16,6 +16,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     net::SocketAddrV4,
+    num::NonZeroU32,
     path::PathBuf,
     time::Duration,
 };
@@ -39,6 +40,13 @@ use crate::{
     ipv4_validation::{IpCheckError, validate_socket_ipv4_address},
 };
 
+type RateLimiter = governor::RateLimiter<
+    governor::state::NotKeyed,
+    governor::state::InMemoryState,
+    governor::clock::QuantaClock,
+    governor::middleware::NoOpMiddleware<governor::clock::QuantaInstant>,
+>;
+
 /// Maximum number of peers to be included in a PeerLookupResponse
 const MAX_PEER_IN_RESPONSE: usize = 16;
 /// Number of peers to send lookup request to
@@ -55,6 +63,7 @@ pub const GAUGE_PEER_DISC_PING_TIMEOUT: &str = "monad.peer_disc.ping_timeout";
 pub const GAUGE_PEER_DISC_SEND_PONG: &str = "monad.peer_disc.send_pong";
 pub const GAUGE_PEER_DISC_RECV_PONG: &str = "monad.peer_disc.recv_pong";
 pub const GAUGE_PEER_DISC_DROP_PONG: &str = "monad.peer_disc.drop_pong";
+pub const GAUGE_PEER_DISC_RATE_LIMITED: &str = "monad.peer_disc.rate_limited";
 pub const GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST: &str = "monad.peer_disc.send_lookup_request";
 pub const GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST: &str = "monad.peer_disc.recv_lookup_request";
 pub const GAUGE_PEER_DISC_RECV_OPEN_LOOKUP_REQUEST: &str =
@@ -173,6 +182,8 @@ pub struct PeerDiscovery<ST: CertificateSignatureRecoverable> {
     pub enable_client: bool,
     pub rng: ChaCha8Rng,
     pub persisted_peers_path: PathBuf,
+    // rate limiter for incoming pings
+    ping_rate_limiter: RateLimiter,
 }
 
 pub struct PeerDiscoveryBuilder<ST: CertificateSignatureRecoverable> {
@@ -195,6 +206,7 @@ pub struct PeerDiscoveryBuilder<ST: CertificateSignatureRecoverable> {
     pub enable_client: bool,
     pub rng: ChaCha8Rng,
     pub persisted_peers_path: PathBuf,
+    pub ping_rate_limit_per_second: u32,
 }
 
 impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDiscoveryBuilder<ST> {
@@ -269,6 +281,12 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
             enable_client: self.enable_client,
             rng: self.rng,
             persisted_peers_path: self.persisted_peers_path,
+            ping_rate_limiter: governor::RateLimiter::direct(
+                governor::Quota::per_second(
+                    NonZeroU32::new(self.ping_rate_limit_per_second).unwrap(),
+                )
+                .allow_burst(NonZeroU32::new(self.ping_rate_limit_per_second).unwrap()),
+            ),
         };
 
         let mut cmds = Vec::new();
@@ -778,6 +796,13 @@ where
         self.metrics[GAUGE_PEER_DISC_RECV_PING] += 1;
 
         let mut cmds = Vec::new();
+
+        // check rate limit for incoming pings
+        if self.ping_rate_limiter.check().is_err() {
+            debug!(?from, "ping rate limit exceeded, dropping ping");
+            self.metrics[GAUGE_PEER_DISC_RATE_LIMITED] += 1;
+            return cmds;
+        }
 
         // do not accept pings from socket address that is already bound to another node ID
         let incoming_socket = ping_msg.local_name_record.udp_address();
@@ -1843,6 +1868,10 @@ mod tests {
             enable_client: false,
             rng: ChaCha8Rng::seed_from_u64(123456),
             persisted_peers_path: Default::default(),
+            ping_rate_limiter: governor::RateLimiter::direct(
+                governor::Quota::per_second(NonZeroU32::new(100).unwrap())
+                    .allow_burst(NonZeroU32::new(100).unwrap()),
+            ),
         }
     }
 
@@ -1973,6 +2002,53 @@ mod tests {
         let connection_info = state.pending_queue.get(&peer1_pubkey);
         assert!(connection_info.is_some());
         assert_eq!(connection_info.unwrap().last_ping, last_ping);
+    }
+
+    #[test]
+    fn test_rate_limit_pings() {
+        let keys = create_keys::<SignatureType>(2);
+        let peer0 = &keys[0];
+        let peer1 = &keys[1];
+        let peer1_pubkey = NodeId::new(peer1.pubkey());
+
+        let mut state = generate_test_state(peer0, vec![]);
+
+        // handle pings up to rate limit (100 pings per second)
+        let peer_name_record = generate_name_record(peer1, 0);
+        for i in 0..100 {
+            let cmds = state.handle_ping(
+                peer1_pubkey,
+                Ping {
+                    id: i,
+                    local_name_record: peer_name_record.clone(),
+                },
+            );
+            assert_ne!(cmds.len(), 0); // should not drop pings
+        }
+
+        // next ping should be rate limited and dropped
+        let cmds = state.handle_ping(
+            peer1_pubkey,
+            Ping {
+                id: 101,
+                local_name_record: peer_name_record.clone(),
+            },
+        );
+        assert_eq!(cmds.len(), 0); // should be rate limited and dropped
+        assert_eq!(state.metrics[GAUGE_PEER_DISC_RATE_LIMITED], 1);
+
+        // advance time by 1 second
+        std::thread::sleep(Duration::from_secs(1));
+
+        // next ping should be accepted
+        let cmds = state.handle_ping(
+            peer1_pubkey,
+            Ping {
+                id: 102,
+                local_name_record: peer_name_record,
+            },
+        );
+        assert_ne!(cmds.len(), 0); // should not drop pings
     }
 
     #[test]
@@ -2966,6 +3042,10 @@ mod tests {
             enable_client: false,
             rng: ChaCha8Rng::seed_from_u64(123456),
             persisted_peers_path: Default::default(),
+            ping_rate_limiter: governor::RateLimiter::direct(
+                governor::Quota::per_second(NonZeroU32::new(100).unwrap())
+                    .allow_burst(NonZeroU32::new(100).unwrap()),
+            ),
         };
 
         // set up a temporary file path for testing

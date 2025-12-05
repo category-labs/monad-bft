@@ -33,4 +33,5 @@ pub struct PeerDiscoveryConfig<ST: CertificateSignatureRecoverable> {
     pub last_participation_prune_threshold: Round,
     pub min_num_peers: usize,
     pub max_num_peers: usize,
+    pub ping_rate_limit_per_second: u32,
 }
