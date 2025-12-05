@@ -167,6 +167,7 @@ impl TrafficGen {
             GenMode::EIP7702Create(..) => 10,
             GenMode::ExtremeValues(..) => 10,
             GenMode::NftSale => 10,
+            GenMode::ERC4337_7702Bundled(_) => 10,
         }
     }
 
@@ -195,6 +196,7 @@ impl TrafficGen {
             GenMode::EIP7702Create(..) => 10,
             GenMode::ExtremeValues(..) => 10,
             GenMode::NftSale => 10,
+            GenMode::ERC4337_7702Bundled(_) => 10,
         }
     }
 
@@ -223,6 +225,7 @@ impl TrafficGen {
             GenMode::EIP7702Create(..) => 100,
             GenMode::ExtremeValues(..) => 100,
             GenMode::NftSale => 2500,
+            GenMode::ERC4337_7702Bundled(_) => 100,
         }
     }
 
@@ -258,6 +261,7 @@ impl TrafficGen {
             GenMode::EIP7702Create(..) => EIP7702,
             GenMode::ExtremeValues(..) => ERC20,
             GenMode::NftSale => NftSale,
+            GenMode::ERC4337_7702Bundled(_) => RequiredContract::ERC4337_7702,
         }
     }
 
@@ -516,6 +520,7 @@ pub enum RequiredContract {
     Uniswap,
     EIP7702,
     NftSale,
+    ERC4337_7702,
 }
 
 #[derive(Debug, Clone)]
@@ -526,6 +531,13 @@ pub enum DeployedContract {
     Uniswap(Uniswap),
     EIP7702(EIP7702),
     NftSale(NftSale),
+    ERC4337_7702(ERC4337_7702Bundled),
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ERC4337_7702Bundled {
+    pub entrypoint: Address,
+    pub simple7702account: Address,
 }
 
 impl DeployedContract {
@@ -573,6 +585,13 @@ impl DeployedContract {
             _ => bail!("Expected nft sale, found {:?}", &self),
         }
     }
+
+    pub fn erc4337_7702(self) -> Result<ERC4337_7702Bundled> {
+        match self {
+            DeployedContract::ERC4337_7702(c) => Ok(c),
+            _ => bail!("Expected ERC4337_7702 contracts, found {:?}", &self),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -603,6 +622,14 @@ pub enum GenMode {
     ExtremeValues(ExtremeValuesConfig),
     #[serde(rename = "nft_sale")]
     NftSale,
+    #[serde(rename = "erc4337_7702")]
+    ERC4337_7702Bundled(ERC4337_7702Config),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ERC4337_7702Config {
+    /// Number of UserOperations per handleOps() call
+    pub ops_per_bundle: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -37,7 +37,8 @@ use crate::{
     },
     report::Report,
     shared::{
-        ecmul::ECMul, eip7702::EIP7702, erc20::ERC20, eth_json_rpc::EthJsonRpc, nft_sale::NftSale,
+        ecmul::ECMul, eip7702::EIP7702, erc20::ERC20, erc4337_entrypoint::EntryPoint,
+        eth_json_rpc::EthJsonRpc, nft_sale::NftSale, simple7702_account::Simple7702Account,
         uniswap::Uniswap,
     },
     workers::transform::TransformOptions,
@@ -413,6 +414,7 @@ struct DeployedContractFile {
     uniswap: Option<Uniswap>,
     eip7702: Option<Address>,
     nft_sale: Option<Address>,
+    erc4337_7702: Option<ERC4337_7702Bundled>,
 }
 
 async fn load_or_deploy_contracts(
@@ -499,6 +501,7 @@ async fn load_or_deploy_contracts(
                 uniswap: None,
                 eip7702: None,
                 nft_sale: None,
+                erc4337_7702: None,
             };
 
             write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
@@ -538,6 +541,7 @@ async fn load_or_deploy_contracts(
                 uniswap: None,
                 eip7702: None,
                 nft_sale: None,
+                erc4337_7702: None,
             };
 
             write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
@@ -578,6 +582,7 @@ async fn load_or_deploy_contracts(
                 uniswap: Some(uniswap),
                 eip7702: None,
                 nft_sale: None,
+                erc4337_7702: None,
             };
 
             write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
@@ -617,6 +622,7 @@ async fn load_or_deploy_contracts(
                 uniswap: None,
                 eip7702: Some(eip7702.addr),
                 nft_sale: None,
+                erc4337_7702: None,
             };
 
             write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
@@ -661,10 +667,61 @@ async fn load_or_deploy_contracts(
                 uniswap: None,
                 eip7702: None,
                 nft_sale: Some(nft_sale.addr),
+                erc4337_7702: None,
             };
 
             write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
             Ok(DeployedContract::NftSale(nft_sale))
+        }
+        RequiredContract::ERC4337_7702 => {
+            match open_deployed_contracts_file(PATH) {
+                Ok(DeployedContractFile {
+                    erc4337_7702: Some(erc4337_7702),
+                    ..
+                }) => {
+                    if verify_contract_code(client, erc4337_7702.entrypoint).await?
+                        && verify_contract_code(client, erc4337_7702.simple7702account).await?
+                    {
+                        info!("ERC4337_7702 contracts loaded from file validated");
+                        return Ok(DeployedContract::ERC4337_7702(erc4337_7702));
+                    }
+                    warn!(
+                        "ERC4337_7702 contracts loaded from file not found on chain, deploying new contracts..."
+                    );
+                }
+                Err(e) => info!("Failed to load deployed contracts file, {e}"),
+                _ => info!("ERC4337_7702 contracts not in deployed contracts file"),
+            }
+
+            // if not found, deploy new contract
+            let entrypoint =
+                EntryPoint::deploy(&deployer, client, max_fee_per_gas, chain_id).await?;
+
+            let simple7702account = Simple7702Account::deploy(
+                &deployer,
+                client,
+                entrypoint.addr,
+                max_fee_per_gas,
+                chain_id,
+            )
+            .await?;
+
+            let erc4337_7702 = ERC4337_7702Bundled {
+                entrypoint: entrypoint.addr,
+                simple7702account: simple7702account.addr,
+            };
+
+            let deployed = DeployedContractFile {
+                erc20: None,
+                ecmul: None,
+                uniswap: None,
+                eip7702: None,
+                nft_sale: None,
+                erc4337_7702: Some(erc4337_7702),
+            };
+
+            write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
+            Ok(DeployedContract::ERC4337_7702(erc4337_7702))
         }
     }
 }
