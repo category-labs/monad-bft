@@ -318,21 +318,27 @@ where
             return;
         };
 
-        let maybe_entry = invites.get(&confirm_msg.prepare.validator_id);
-        let Some(old_invite) = maybe_entry else {
+        // Validator sends confirmed group once per invite. Removing from
+        // pending_confirms. If ConfirmGroup is not validated/accepted, removing
+        // it from pending_confirms releases the rounds to other invites
+
+        // TODO: discount validator reputation if it has sent an invalid
+        // ConfirmGroup
+        let Some(accepted_invite) = invites.remove(&confirm_msg.prepare.validator_id) else {
             warn!(
+                ?confirm_msg,
                 "RaptorCastSecondary ignoring ConfirmGroup from \
-                            unrecognized validator id: {:?}",
-                confirm_msg
+                            unrecognized validator id"
             );
             return;
         };
 
-        if old_invite != &confirm_msg.prepare {
+        if accepted_invite != confirm_msg.prepare {
             warn!(
-                "RaptorCastSecondary ignoring ConfirmGroup that \
-                                doesn't match the original invite. Expected: {:?}, got: {:?}",
-                old_invite, confirm_msg.prepare
+                ?accepted_invite,
+                confirming_invite = ?confirm_msg.prepare,
+                "RaptorCastSecondary dropping ConfirmGroup that \
+                                doesn't match the original invite"
             );
             return;
         }
@@ -340,21 +346,27 @@ where
         let confirm_group_size = confirm_msg.peers.len();
         if confirm_group_size > confirm_msg.prepare.max_group_size {
             warn!(
-                "RaptorCastSecondary ignoring ConfirmGroup that \
-                                is larger ({}) than the promised max_group_size ({}). \
-                                Message details: {:?}",
+                ?confirm_msg,
+                "RaptorCastSecondary dropping ConfirmGroup that \
+                                is larger ({}) than the promised max_group_size ({})",
                 confirm_msg.peers.len(),
                 confirm_msg.prepare.max_group_size,
-                confirm_msg
             );
             return;
         }
 
         if !confirm_msg.peers.contains(&self.client_node_id) {
+            if confirm_msg.peers.len() == confirm_msg.prepare.max_group_size {
+                debug!(
+                    ?confirm_msg,
+                    "Group invite has reached max_group_size. Node participation is not confirmed"
+                );
+                return;
+            }
             warn!(
-                "RaptorCastSecondary ignoring ConfirmGroup \
-                                with a group that does not contain our node_id: {:?}",
-                confirm_msg
+                ?confirm_msg,
+                "RaptorCastSecondary dropping ConfirmGroup \
+                                with a group that does not contain our node_id",
             );
             return;
         }
@@ -371,7 +383,7 @@ where
         // round gaps, as they aren't receiving proposals and hence can't advance
         // (enter) rounds.
         if let Err(error) = self.group_sink_channel.send(group.clone()) {
-            tracing::error!(
+            error!(
                 "RaptorCastSecondary failed to send group to primary \
                                     Raptorcast instance: {}",
                 error
@@ -390,8 +402,6 @@ where
 
         self.confirmed_groups
             .force_insert(round_span.start..round_span.end, group);
-
-        invites.remove(&confirm_msg.prepare.validator_id);
 
         self.metrics[CLIENT_NUM_CURRENT_GROUPS] = self.get_current_group_count();
     }
