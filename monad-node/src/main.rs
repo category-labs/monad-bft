@@ -580,18 +580,24 @@ where
     }
     dp_builder = dp_builder.extend_udp_sockets(udp_sockets);
 
+    // auth port in peer discovery config and network config should be set and unset simultaneously
+    assert_eq!(
+        peer_discovery_config.self_auth_port.is_some(),
+        network_config.authenticated_bind_address_port.is_some()
+    );
+
     let self_id = NodeId::new(identity.pubkey());
-    let self_record = match network_config.authenticated_bind_address_port {
+    let self_record = match peer_discovery_config.self_auth_port {
         Some(auth_port) => NameRecord::new_with_authentication(
             *name_record_address.ip(),
             name_record_address.port(),
-            network_config.bind_address_port,
+            name_record_address.port(),
             auth_port,
             peer_discovery_config.self_record_seq_num,
         ),
         None => NameRecord::new(
             *name_record_address.ip(),
-            network_config.bind_address_port,
+            name_record_address.port(),
             peer_discovery_config.self_record_seq_num,
         ),
     };
