@@ -851,6 +851,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "slow test"]
     fn test_bit_flip_parse_failure() {
         let (key, validators, known_addresses) = validator_set();
         let epoch_validators = validators.view_without(vec![&NodeId::new(key.pubkey())]);

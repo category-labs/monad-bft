@@ -161,15 +161,22 @@ pub(crate) fn spawn_tasks(
     udp_egress_rx: mpsc::Receiver<UdpMsg>,
     up_bandwidth_mbps: u64,
     buffer_size: Option<usize>,
+    bound_addrs_tx: std::sync::mpsc::SyncSender<Vec<SocketAddr>>,
 ) {
     let mut tx_sockets = Vec::new();
+    let mut bound_addrs = Vec::with_capacity(socket_configs.len());
 
+    // NOTE(dshulyak) sockets must be sent to the channel in order they are passed to this function
     for (socket_id, socket_addr, label, ingress_tx) in socket_configs {
         let (rx, tx) = create_socket_pair(socket_addr, buffer_size);
+        let actual_addr = rx.local_addr().unwrap();
+        bound_addrs.push(actual_addr);
         spawn(rx_single_socket(rx, ingress_tx));
-        trace!(socket_id, label = %label, ?socket_addr, "created socket");
+        trace!(socket_id, label = %label, configured_addr = ?socket_addr, actual_addr = ?actual_addr, "created socket");
         tx_sockets.push(tx);
     }
+
+    bound_addrs_tx.send(bound_addrs).unwrap();
 
     spawn(tx(tx_sockets, udp_egress_rx, up_bandwidth_mbps));
 }
