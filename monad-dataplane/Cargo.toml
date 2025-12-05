@@ -12,14 +12,12 @@ bench = false
 monad-types = { workspace = true }
 
 bytes = { workspace = true }
-env_logger = { workspace = true }
 futures = { workspace = true }
-futures-util = { workspace = true }
 governor = { workspace = true }
 libc = { workspace = true }
 monoio = { workspace = true }
-rand = { workspace = true }
 socket2 = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 zerocopy = { workspace = true }
@@ -28,3 +26,6 @@ zerocopy = { workspace = true }
 ntest = { workspace = true }
 rstest = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+env_logger = { workspace = true }
+rand = { workspace = true }
+futures-util = { workspace = true }

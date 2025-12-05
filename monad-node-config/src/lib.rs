@@ -89,4 +89,7 @@ pub type ForkpointConfig = monad_consensus_types::checkpoint::Checkpoint<
     ExecutionProtocolType,
 >;
 #[cfg(feature = "crypto")]
+pub type ValidatorsConfigType =
+    monad_consensus_types::validator_data::ValidatorsConfig<SignatureCollectionType>;
+#[cfg(feature = "crypto")]
 pub type MonadNodeConfig = NodeConfig<SignatureType>;

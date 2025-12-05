@@ -51,7 +51,6 @@ pub extern "C" fn statesync_send_request(
 }
 
 pub(crate) struct StateSync<PT: PubKey> {
-    state_sync_peers: Vec<NodeId<PT>>,
     outbound_requests: OutboundRequests<PT>,
     current_target: Option<Header>,
 
@@ -156,7 +155,7 @@ impl<PT: PubKey> StateSync<PT> {
     pub fn start(
         db_paths: &[String],
         sq_thread_cpu: Option<u32>,
-        state_sync_peers: &[NodeId<PT>],
+        state_sync_init_peers: &[NodeId<PT>],
         max_parallel_requests: usize,
         request_timeout: Duration,
     ) -> Self {
@@ -336,11 +335,10 @@ impl<PT: PubKey> StateSync<PT> {
         }).expect("failed to spawn statesync thread");
 
         Self {
-            state_sync_peers: state_sync_peers.to_vec(),
             outbound_requests: OutboundRequests::new(
                 max_parallel_requests,
                 request_timeout,
-                state_sync_peers.to_vec(),
+                state_sync_init_peers,
             ),
             current_target: None,
 
@@ -364,7 +362,7 @@ impl<PT: PubKey> StateSync<PT> {
     }
 
     pub fn handle_response(&mut self, from: NodeId<PT>, response: StateSyncResponse) {
-        if !self.state_sync_peers.iter().any(|trusted| trusted == &from) {
+        if !self.is_trusted_peer(&from) {
             tracing::warn!(
                 ?from,
                 ?response,
@@ -391,7 +389,7 @@ impl<PT: PubKey> StateSync<PT> {
     }
 
     pub fn handle_bad_version(&mut self, from: NodeId<PT>, bad_version: StateSyncBadVersion) {
-        if !self.state_sync_peers.iter().any(|trusted| trusted == &from) {
+        if !self.is_trusted_peer(&from) {
             tracing::warn!(
                 ?from,
                 ?bad_version,
@@ -403,9 +401,29 @@ impl<PT: PubKey> StateSync<PT> {
         self.outbound_requests.handle_bad_version(from, bad_version);
     }
 
+    pub fn handle_not_whitelisted(&mut self, from: NodeId<PT>) {
+        if !self.is_trusted_peer(&from) {
+            tracing::warn!(
+                ?from,
+                "dropping statesync not whitelisted notification from untrusted peer",
+            );
+            return;
+        }
+
+        self.outbound_requests.handle_not_whitelisted(from);
+    }
+
+    pub fn expand_upstream_peers(&mut self, new_peers: &[NodeId<PT>]) {
+        self.outbound_requests.expand_upstream_peers(new_peers);
+    }
+
     /// An estimate of current sync progress in `Target` units
     pub fn progress_estimate(&self) -> Option<SeqNum> {
         self.progress.lock().unwrap().estimate()
+    }
+
+    fn is_trusted_peer(&self, peer: &NodeId<PT>) -> bool {
+        self.outbound_requests.is_trusted_peer(peer)
     }
 }
 

@@ -49,6 +49,8 @@ pub struct BlockDataArchive {
 
     pub latest_uploaded_table_key: &'static str,
     pub latest_indexed_table_key: &'static str,
+    pub latest_uploaded_async_backfill_table_key: &'static str,
+    pub latest_indexed_async_backfill_table_key: &'static str,
     pub block_table_prefix: &'static str,
     pub block_hash_table_prefix: &'static str,
     pub receipts_table_prefix: &'static str,
@@ -64,6 +66,8 @@ impl BlockDataReader for BlockDataArchive {
         let key = match latest_kind {
             LatestKind::Uploaded => &self.latest_uploaded_table_key,
             LatestKind::Indexed => &self.latest_indexed_table_key,
+            LatestKind::UploadedAsyncBackfill => &self.latest_uploaded_async_backfill_table_key,
+            LatestKind::IndexedAsyncBackfill => &self.latest_indexed_async_backfill_table_key,
         };
 
         let value = match self
@@ -215,6 +219,8 @@ impl BlockDataArchive {
             traces_table_prefix: "traces",
             latest_uploaded_table_key: "latest",
             latest_indexed_table_key: "latest_indexed",
+            latest_uploaded_async_backfill_table_key: "latest_uploaded_async_backfill",
+            latest_indexed_async_backfill_table_key: "latest_indexed_async_backfill",
         }
     }
 
@@ -249,6 +255,8 @@ impl BlockDataArchive {
         let key = match latest_kind {
             LatestKind::Uploaded => &self.latest_uploaded_table_key,
             LatestKind::Indexed => &self.latest_indexed_table_key,
+            LatestKind::UploadedAsyncBackfill => &self.latest_uploaded_async_backfill_table_key,
+            LatestKind::IndexedAsyncBackfill => &self.latest_indexed_async_backfill_table_key,
         };
         let latest_value = format!("{:0width$}", block_num, width = BLOCK_PADDING_WIDTH);
         self.store.put(key, latest_value.as_bytes().to_vec()).await

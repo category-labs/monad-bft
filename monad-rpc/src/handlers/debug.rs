@@ -244,7 +244,7 @@ impl Decodable for CallFrame {
     }
 }
 
-#[derive(Deserialize, Debug, Default, schemars::JsonSchema, Clone)]
+#[derive(Deserialize, Debug, Default, schemars::JsonSchema, Clone, Copy)]
 #[serde(rename_all = "camelCase")]
 pub struct TracerObject {
     #[serde(default)]
@@ -253,7 +253,7 @@ pub struct TracerObject {
     pub config: TracerConfig,
 }
 
-#[derive(Deserialize, Debug, Default, schemars::JsonSchema, Clone, PartialEq, Eq)]
+#[derive(Deserialize, Debug, Default, schemars::JsonSchema, Clone, Copy, PartialEq, Eq)]
 pub enum Tracer {
     #[default]
     #[serde(rename = "callTracer")]
@@ -262,7 +262,7 @@ pub enum Tracer {
     PreStateTracer,
 }
 
-#[derive(Clone, Debug, Deserialize, Default, schemars::JsonSchema)]
+#[derive(Clone, Copy, Debug, Deserialize, Default, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TracerConfig {
     /// onlyTopCall for callTracer, ignored for prestateTracer
@@ -278,11 +278,11 @@ pub struct TracerConfig {
     pub with_log: bool,
 }
 
-#[derive(Deserialize, Debug, schemars::JsonSchema)]
+#[derive(Clone, Copy, Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadDebugTraceTransactionParams {
-    tx_hash: EthHash,
+    pub tx_hash: EthHash,
     #[serde(default)]
-    tracer: TracerObject,
+    pub tracer: TracerObject,
 }
 
 #[derive(Serialize, Debug, schemars::JsonSchema)]
@@ -316,6 +316,7 @@ pub struct MonadCallFrame {
     #[serde(rename = "type")]
     typ: CallKind,
     from: EthAddress,
+    #[serde(skip_serializing_if = "Option::is_none")]
     to: Option<EthAddress>,
     #[serde(skip_serializing_if = "Option::is_none")]
     value: Option<MonadU256>,
@@ -352,6 +353,7 @@ impl From<CallFrame> for MonadCallFrame {
             0 => None,
             2 => Some("execution reverted".to_string()),
             3 => Some("out of gas".to_string()),
+            18 => Some("reserve balance violation".to_string()),
             _ => Some("error".to_string()),
         };
 
@@ -359,10 +361,21 @@ impl From<CallFrame> for MonadCallFrame {
             .as_ref()
             .and_then(|_| monad_ethcall::decode_revert_message(&value.output));
 
+        let mut to = value.to.map(Into::into);
+
+        // Historical traces include a Some(NullAddress) for the 'to' field if the contract deployment failed.
+        // Newer traces do not include the 'to' field, so match this behavior.
+        if error.is_some()
+            && matches!(value.typ, CallKind::Create | CallKind::Create2)
+            && value.to.is_some()
+        {
+            to = None;
+        }
+
         Self {
             typ: value.typ,
             from: value.from.into(),
-            to: value.to.map(Into::into),
+            to,
             value: frame_value,
             gas: Quantity(u64::from_le_bytes(value.gas.to_le_bytes())),
             gas_used: Quantity(u64::from_le_bytes(value.gas_used.to_le_bytes())),
@@ -394,9 +407,9 @@ pub enum CallKind {
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadDebugTraceBlockByHashParams {
-    block_hash: EthHash,
+    pub block_hash: EthHash,
     #[serde(default)]
-    tracer: TracerObject,
+    pub tracer: TracerObject,
 }
 
 #[rpc(method = "debug_traceBlockByHash")]
@@ -437,7 +450,7 @@ pub async fn monad_debug_traceBlockByHash<T: Triedb>(
             {
                 let tx_ids = block.body.transactions().map(|tx| *tx.tx.tx_hash());
 
-                for (call_frame, tx_id) in call_frames.iter().zip(tx_ids) {
+                for (call_frame, tx_id) in call_frames.into_iter().zip(tx_ids) {
                     let rlp_call_frame = &mut call_frame.as_slice();
                     let Some(traces) = decode_call_frame(
                         triedb_env,
@@ -463,11 +476,11 @@ pub async fn monad_debug_traceBlockByHash<T: Triedb>(
     Err(JsonRpcError::internal_error("block not found".into()))
 }
 
-#[derive(Deserialize, Debug, schemars::JsonSchema)]
+#[derive(Clone, Copy, Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadDebugTraceBlockByNumberParams {
-    block_number: BlockTags,
+    pub block_number: BlockTags,
     #[serde(default)]
-    tracer: TracerObject,
+    pub tracer: TracerObject,
 }
 
 #[derive(Serialize, Debug, schemars::JsonSchema)]
@@ -503,7 +516,7 @@ pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
                 let tx_ids = block.body.transactions().map(|tx| *tx.tx.tx_hash());
 
                 // TODO: parallelize this with stream + buffered + try_collect
-                for (call_frame, tx_id) in call_frames.iter().zip(tx_ids) {
+                for (call_frame, tx_id) in call_frames.into_iter().zip(tx_ids) {
                     let rlp_call_frame = &mut call_frame.as_slice();
                     let Some(traces) =
                         decode_call_frame(triedb_env, rlp_call_frame, block_key, &params.tracer)
@@ -585,7 +598,7 @@ async fn get_call_frames_from_triedb<T: Triedb>(
         .map_err(JsonRpcError::internal_error)?;
 
     let tx_ids = transactions
-        .iter()
+        .into_iter()
         .map(|tx| *tx.tx.tx_hash())
         .collect::<Vec<_>>();
 
@@ -594,7 +607,7 @@ async fn get_call_frames_from_triedb<T: Triedb>(
         .await
         .map_err(JsonRpcError::internal_error)?;
 
-    for (call_frame, tx_id) in call_frames.iter().zip(tx_ids.into_iter()) {
+    for (call_frame, tx_id) in call_frames.into_iter().zip(tx_ids.into_iter()) {
         let rlp_call_frame = &mut call_frame.as_slice();
         let Some(traces) = decode_call_frame(triedb_env, rlp_call_frame, block_key, tracer).await?
         else {
@@ -625,9 +638,20 @@ pub async fn decode_call_frame<T: Triedb>(
             // If logs were requested and there were none stored with the call
             // frame, this RPC call should be rejected.
             if frame.logs.is_none() {
-                return Err(JsonRpcError::internal_error(
-                    "logs not found in call frame".to_string(),
-                ));
+                if matches!(frame.typ, CallKind::SelfDestruct) {
+                    // Fix up a bug for historical traces, where the logs for
+                    // SELFDESTRUCT were stored as None instead of an empty
+                    // vector, causing decoding to fail if any frames in a call
+                    // contained a selfdestruct. This is safe to do, because if
+                    // the transaction is a historical one where there
+                    // legitimately were no logs stored, then one of the other
+                    // frames will cause decoding to fail on a None log entry.
+                    frame.logs = Some(Vec::new());
+                } else {
+                    return Err(JsonRpcError::internal_error(
+                        "logs not found in call frame".to_string(),
+                    ));
+                }
             }
         } else {
             // Logs are stored in TrieDB by default; if the RPC request didn't ask for
@@ -677,12 +701,22 @@ async fn include_code_output<T: Triedb>(
     triedb_env: &T,
     block_key: BlockKey,
 ) -> JsonRpcResult<()> {
-    if matches!(frame.typ, CallKind::Create) || matches!(frame.typ, CallKind::Create2) {
+    // If the frame is a create or create2 call and the output is empty, include the code output.
+    // Historical traces may not include the code output in their output field.
+    // This is because the code output was not stored in the call frame in the past.
+    // Archiver uses this function to include the code output if it is not present.
+    if frame.output.is_empty()
+        && (matches!(frame.typ, CallKind::Create) || matches!(frame.typ, CallKind::Create2))
+    {
         let Some(contract_addr) = &frame.to else {
-            error!("expected contract address in call frame");
-            return Err(JsonRpcError::internal_error(
-                "contract address not found in call frame".to_string(),
-            ));
+            if frame.status == 0 {
+                error!("expected contract address in call frame");
+                return Err(JsonRpcError::internal_error(
+                    "contract address not found in call frame".to_string(),
+                ));
+            } else {
+                return Ok(());
+            }
         };
 
         let account = triedb_env
@@ -704,27 +738,35 @@ async fn include_code_output<T: Triedb>(
 
 async fn build_call_tree(
     nodes: Vec<CallFrame>,
-) -> JsonRpcResult<
-    Option<
-        // FIXME why Rc<RefCell<_>> ?
-        std::rc::Rc<std::cell::RefCell<MonadCallFrame>>,
-    >,
-> {
-    if nodes.is_empty() {
-        return Ok(None);
-    }
+) -> JsonRpcResult<Option<Rc<RefCell<MonadCallFrame>>>> {
+    let mut nodes = nodes.into_iter();
 
-    let root = Rc::new(RefCell::new(MonadCallFrame::from(nodes[0].clone())));
+    let Some(root) = nodes.next() else {
+        return Ok(None);
+    };
+
+    let root = Rc::new(RefCell::new(MonadCallFrame::from(root)));
     let mut stack = vec![Rc::clone(&root)];
 
-    for value in nodes.into_iter().skip(1) {
+    for value in nodes {
         let depth = value.depth.to::<usize>();
         let new_node = Rc::new(RefCell::new(MonadCallFrame::from(value)));
-        while let Some(last) = stack.last() {
-            if last.borrow().depth < depth {
-                last.borrow_mut().calls.push(Rc::clone(&new_node));
+
+        loop {
+            let Some(mut last) = stack.last().map(|last| last.borrow_mut()) else {
+                error!("Call tree root node was removed from stack");
+
+                return Err(JsonRpcError::internal_error(format!(
+                    "call tree inconsistent"
+                )));
+            };
+
+            if last.depth < depth {
+                last.calls.push(Rc::clone(&new_node));
                 break;
             }
+
+            drop(last);
             stack.pop();
         }
 
@@ -1084,10 +1126,13 @@ mod tests {
             logs_bloom: Bloom::default(),
         };
 
-        mock_triedb.set_receipts(vec![ReceiptWithLogIndex {
-            receipt: ReceiptEnvelope::Eip1559(receipt),
-            starting_log_index: 0,
-        }]);
+        mock_triedb.set_receipts(
+            SeqNum(1),
+            vec![ReceiptWithLogIndex {
+                receipt: ReceiptEnvelope::Eip1559(receipt),
+                starting_log_index: 0,
+            }],
+        );
 
         let chain_state = ChainState::new(None, mock_triedb, None);
         let result = monad_debug_getRawReceipts(

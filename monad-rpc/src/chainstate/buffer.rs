@@ -146,9 +146,9 @@ impl ChainStateBuffer {
             };
 
             if let Some((_, evicted_block)) = self.by_height.remove(&evicted_block_height) {
-                match &evicted_block.transactions {
+                match evicted_block.transactions {
                     alloy_rpc_types::BlockTransactions::Full(v) => {
-                        v.iter().for_each(|tx| {
+                        v.into_iter().for_each(|tx| {
                             let id = tx.inner.tx_hash();
                             self.transactions.remove(&FixedData(id.0));
                         });
@@ -209,25 +209,13 @@ impl ChainStateBuffer {
     pub fn get_latest_finalized_block_num(&self) -> u64 {
         self.finalized.load(Ordering::SeqCst)
     }
-
-    pub fn get_latest_safe_voted_block_num(&self) -> u64 {
-        // eth_call currently floors the voted block to finalized + 1. Do the same here in order to avoid errors in common wallet workflows.
-        let voted = self.voted.load(Ordering::SeqCst);
-        let finalized = self.finalized.load(Ordering::SeqCst);
-
-        if (finalized + 1) <= voted {
-            finalized + 1
-        } else {
-            finalized
-        }
-    }
 }
 
 pub(super) fn block_height_from_tag(buffer: &ChainStateBuffer, tag: &BlockTags) -> u64 {
     match tag {
         BlockTags::Number(n) => n.0,
-        BlockTags::Latest => buffer.get_latest_safe_voted_block_num(),
-        BlockTags::Safe => buffer.get_latest_safe_voted_block_num(),
+        BlockTags::Latest => buffer.get_latest_voted_block_num(),
+        BlockTags::Safe => buffer.get_latest_voted_block_num(),
         BlockTags::Finalized => buffer.get_latest_finalized_block_num(),
     }
 }

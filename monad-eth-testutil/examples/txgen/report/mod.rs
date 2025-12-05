@@ -16,7 +16,6 @@
 use std::sync::atomic::Ordering;
 
 use chrono::{DateTime, Utc};
-use eyre::Context;
 use serde::{Deserialize, Serialize};
 
 use crate::prelude::*;
@@ -28,37 +27,46 @@ pub use join::*;
 pub use stats::*;
 
 impl Report {
-    pub fn new(
+    pub async fn new(
         config: Config,
         workload_idx: usize,
         start_time: DateTime<Utc>,
         metrics: &Metrics,
+        client: &impl EthJsonRpc,
+        prom_url: Option<String>,
     ) -> Self {
         let txs_sent = metrics.total_txs_sent.load(Ordering::Relaxed);
         let txs_committed = metrics.total_committed_txs.load(Ordering::Relaxed);
         let txs_dropped = txs_sent - txs_committed;
         let target_tps = config.workload_groups[workload_idx].traffic_gens[0].tps as usize;
+        let end_time = Utc::now();
+
+        // Grab client version from node
+        let client_version = client
+            .get_client_version()
+            .await
+            .inspect_err(|e| error!("Failed to get client version: {e:?}"))
+            .ok();
+
+        // Grab prometheus stats for node performance metrics
+        let (stats, stats_str) = join_stats(prom_url, start_time, end_time)
+            .await
+            .wrap_err("Failed to join stats for Workload Group Report")
+            .unwrap_or_default();
+
         Self {
             start_time,
-            end_time: Utc::now(),
+            end_time,
             config,
             workload_idx,
             txs_sent,
             txs_committed,
             txs_dropped,
             target_tps,
-            stats: HashMap::new(),
-            stats_str: String::new(),
+            stats,
+            stats_str,
+            client_version,
         }
-    }
-
-    pub async fn join_stats(&mut self, prom_url: Option<String>) -> Result<()> {
-        let report = join_stats(prom_url, self.start_time, self.end_time)
-            .await
-            .wrap_err("Failed to join stats for Workload Group Report")?;
-        self.stats = report.0;
-        self.stats_str = report.1;
-        Ok(())
     }
 
     pub fn to_json_file(&self, dir: &std::path::Path) -> Result<()> {
@@ -98,4 +106,5 @@ pub struct Report {
     target_tps: usize,
     stats: HashMap<String, CounterStatsReport>,
     stats_str: String,
+    client_version: Option<String>,
 }

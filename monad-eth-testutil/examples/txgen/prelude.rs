@@ -32,4 +32,8 @@ pub use tracing::{debug, error, info, trace, warn};
 
 // pub use crate::run::{AcctMap, GenAccount, TxMap, TxState};
 pub use crate::shared::key_pool::*;
-pub use crate::{config::*, shared::private_key::PrivateKey, workers::*};
+pub use crate::{
+    config::*,
+    shared::{eth_json_rpc::EthJsonRpc, private_key::PrivateKey},
+    workers::*,
+};

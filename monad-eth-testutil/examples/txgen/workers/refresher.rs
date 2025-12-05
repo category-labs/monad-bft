@@ -19,6 +19,7 @@ use std::sync::{
 };
 
 use eyre::bail;
+use futures::future;
 use tokio::time::MissedTickBehavior;
 
 use super::*;
@@ -30,7 +31,7 @@ pub struct Refresher {
 
     pub client: ReqwestClient,
     pub metrics: Arc<Metrics>,
-    pub erc20: Option<ERC20>,
+    pub erc20_contracts: Vec<ERC20>,
     pub workload_group_name: String,
     pub base_fee: Arc<Mutex<u128>>,
 
@@ -54,22 +55,22 @@ impl Refresher {
         workload_group_name: String,
         shutdown: Arc<AtomicBool>,
     ) -> Result<Refresher> {
-        let erc20 = if refresh_erc20_balance {
-            let DeployedContract::ERC20(erc20) = deployed_contract else {
+        let erc20_contracts = if refresh_erc20_balance {
+            let DeployedContract::ERC20(erc20s) = deployed_contract else {
                 bail!("Cannot construct Refresher: refresh_erc20_balance arg requires erc20 contract be deployed or loaded");
             };
-            Some(erc20)
+            erc20s
         } else {
-            None
+            Vec::new()
         };
         Ok(Refresher {
             rpc_rx,
             gen_sender,
             client,
             metrics,
+            erc20_contracts,
             base_fee,
             delay,
-            erc20,
             workload_group_name,
             shutdown,
         })
@@ -109,13 +110,13 @@ impl Refresher {
         let client = self.client.clone();
         let metrics = self.metrics.clone();
         let gen_sender = self.gen_sender.clone();
-        let deployed_erc20 = self.erc20;
+        let erc20_contracts = self.erc20_contracts.clone();
         let base_fee = self.base_fee.clone();
         tokio::spawn(async move {
             let mut times_sent = 0;
 
             while let Err(e) =
-                refresh_batch(&client, &mut accts, &metrics, deployed_erc20, &base_fee).await
+                refresh_batch(&client, &mut accts, &metrics, &erc20_contracts, &base_fee).await
             {
                 if times_sent > 5 {
                     error!("Exhausted retries refreshing account, oh well! {e}");
@@ -146,26 +147,29 @@ pub async fn refresh_batch(
     client: &ReqwestClient,
     accts: &mut Accounts,
     metrics: &Metrics,
-    deployed_erc20: Option<ERC20>,
+    erc20_contracts: &[ERC20],
     base_fee: &Arc<Mutex<u128>>,
 ) -> Result<()> {
     trace!("Refreshing batch...");
 
-    let iter = accts.iter().map(|a| &a.addr);
-    let (new_gas_price, native_bals, nonces, erc20_bals): (
+    let addrs: Vec<Address> = accts.iter().map(|a| a.addr).collect();
+
+    let (new_gas_price, native_bals, nonces, erc20_bals_vec): (
         _,
         _,
         _,
-        Option<Result<Vec<Result<(Address, U256)>>>>,
+        Vec<Result<Vec<Result<(Address, U256)>>>>,
     ) = tokio::join!(
         client.get_base_fee(),
-        client.batch_get_balance(iter.clone()),
-        client.batch_get_transaction_count(iter.clone()),
+        client.batch_get_balance(addrs.iter()),
+        client.batch_get_transaction_count(addrs.iter()),
         async {
-            match deployed_erc20 {
-                Some(erc20) => Some(client.batch_get_erc20_balance(iter.clone(), erc20).await),
-                None => None,
-            }
+            future::join_all(
+                erc20_contracts
+                    .iter()
+                    .map(|erc20| client.batch_get_erc20_balance(addrs.iter(), *erc20)),
+            )
+            .await
         }
     );
 
@@ -186,14 +190,14 @@ pub async fn refresh_batch(
     let native_bals = native_bals?;
     let nonces = nonces?;
 
-    let erc20_bals = match erc20_bals {
-        Some(b) => Some(b?),
-        None => None,
-    };
+    let erc20_bals_results: Vec<_> = erc20_bals_vec
+        .into_iter()
+        .map(|result| result.map_err(|e| eyre::eyre!("Failed to get ERC20 balances: {}", e)))
+        .collect::<Result<Vec<_>>>()?;
 
     metrics
         .total_rpc_calls
-        .fetch_add(accts.iter().len() * 2, SeqCst);
+        .fetch_add(accts.iter().len() * (2 + erc20_contracts.len()), SeqCst);
 
     for (i, acct) in accts.iter_mut().enumerate() {
         if let Ok((_, b)) = &native_bals[i] {
@@ -202,9 +206,10 @@ pub async fn refresh_batch(
         if let Ok((_, n)) = &nonces[i] {
             acct.nonce = *n;
         }
-        if let Some(bals) = &erc20_bals {
-            if let Ok((_, b)) = &bals[i] {
-                acct.erc20_bal = *b;
+
+        for (erc20, bals_result) in erc20_contracts.iter().zip(erc20_bals_results.iter()) {
+            if let Ok((_, b)) = &bals_result[i] {
+                acct.set_erc20_balance_for(erc20.addr, *b);
             }
         }
     }

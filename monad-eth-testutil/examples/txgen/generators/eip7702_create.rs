@@ -44,7 +44,7 @@ impl Generator for EIP7702CreateGenerator {
         &mut self,
         accts: &mut [SimpleAccount],
         ctx: &GenCtx,
-    ) -> Vec<(TxEnvelope, Address)> {
+    ) -> Vec<(TxEnvelope, Address, crate::shared::private_key::PrivateKey)> {
         let mut txs = Vec::with_capacity(self.tx_per_sender * accts.len());
         let mut rng = rand::thread_rng();
 
@@ -103,7 +103,7 @@ impl Generator for EIP7702CreateGenerator {
                     ctx.priority_fee,
                 );
 
-                txs.push((tx, target_account));
+                txs.push((tx, target_account, accts[sender_idx].key.clone()));
             }
         }
 

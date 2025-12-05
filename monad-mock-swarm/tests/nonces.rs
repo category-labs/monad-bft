@@ -23,14 +23,13 @@ mod test {
     use alloy_consensus::{Transaction, TxEnvelope};
     use alloy_primitives::{Address, B256};
     use itertools::Itertools;
+    use monad_bls::BlsSignatureCollection;
     use monad_chain_config::{
         revision::{ChainParams, MockChainRevision},
         MockChainConfig,
     };
-    use monad_crypto::{
-        certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
-        NopPubKey, NopSignature,
-    };
+    use monad_consensus_types::{timeout::HighExtend, RoundCertificate};
+    use monad_crypto::certificate_signature::CertificateSignaturePubKey;
     use monad_eth_block_policy::EthBlockPolicy;
     use monad_eth_block_validator::EthBlockValidator;
     use monad_eth_ledger::MockEthLedger;
@@ -44,8 +43,8 @@ mod test {
         terminator::UntilTerminator,
         verifier::{happy_path_tick_by_block, MockSwarmVerifier},
     };
-    use monad_multi_sig::MultiSig;
     use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
+    use monad_secp::{PubKey, SecpSignature};
     use monad_state::{MonadMessage, VerifiedMonadMessage};
     use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
     use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
@@ -65,8 +64,8 @@ mod test {
 
     pub struct EthSwarm;
     impl SwarmRelation for EthSwarm {
-        type SignatureType = NopSignature;
-        type SignatureCollectionType = MultiSig<Self::SignatureType>;
+        type SignatureType = SecpSignature;
+        type SignatureCollectionType = BlsSignatureCollection<PubKey>;
         type ExecutionProtocolType = EthExecutionProtocol;
         type StateBackendType = InMemoryState<Self::SignatureType, Self::SignatureCollectionType>;
         type BlockPolicyType = EthBlockPolicy<
@@ -190,19 +189,11 @@ mod test {
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockValSetUpdaterNop::new(validators.validators.clone(), epoch_length),
+                        MockValSetUpdaterNop::new(validators.validators, epoch_length),
                         MockTxPoolExecutor::new(create_block_policy(), state_backend.clone())
                             .with_chain_params(&CHAIN_PARAMS),
                         MockEthLedger::new(state_backend.clone()),
-                        MockStateSyncExecutor::new(
-                            state_backend,
-                            validators
-                                .validators
-                                .0
-                                .into_iter()
-                                .map(|v| v.node_id)
-                                .collect(),
-                        ),
+                        MockStateSyncExecutor::new(state_backend),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(
                             CONSENSUS_DELTA,
                         ))],
@@ -219,7 +210,7 @@ mod test {
 
     fn verify_transactions_in_ledger(
         swarm: &Nodes<EthSwarm>,
-        node_ids: Vec<ID<NopPubKey>>,
+        node_ids: Vec<ID<PubKey>>,
         txns: Vec<TxEnvelope>,
     ) -> bool {
         let txns: HashSet<_> = HashSet::from_iter(txns.iter().map(|t| *t.tx_hash()));
@@ -366,6 +357,56 @@ mod test {
         ));
 
         swarm_ledger_verification(&swarm, 8);
+    }
+
+    #[test]
+    fn test_forkpoint_serde_roundtrip() {
+        let sender_1_key = B256::repeat_byte(15);
+        let mut swarm = generate_eth_swarm(4, vec![secret_to_eth_address(sender_1_key)]);
+
+        // pick the second node because it proposes in the first `delay` blocks
+        let bad_node_idx = 1;
+
+        {
+            let (_id, node) = swarm.states().iter().nth(bad_node_idx).unwrap();
+            let sbt = node.state.state_backend();
+            sbt.lock().unwrap().extra_data = 1;
+        }
+
+        let mut seen_tc_with_tip = false;
+        while let Some((_, id, _)) = swarm.step_until(&mut UntilTerminator::new().until_block(10)) {
+            let node = swarm.states().get(&id).unwrap();
+            if let Some(state) = node.state.consensus() {
+                let high_certificate = state.get_high_certificate();
+                if let RoundCertificate::Tc(tc) = &high_certificate {
+                    if let HighExtend::Tip(_) = &tc.high_extend {
+                        seen_tc_with_tip = true;
+                    }
+                }
+                let high_certificate_json_ser = serde_json::to_string(high_certificate)
+                    .expect("failed to json serialize high_certificate");
+                let high_certificate_json_roundtrip =
+                    serde_json::from_str(&high_certificate_json_ser)
+                        .expect("failed to json deserialize high_certificate");
+                assert_eq!(
+                    high_certificate, &high_certificate_json_roundtrip,
+                    "failed to json roundtrip high_certificate"
+                );
+
+                let high_certificate_toml_ser = toml::to_string(high_certificate)
+                    .expect("failed to toml serialize high_certificate");
+                let high_certificate_toml_roundtrip = toml::from_str(&high_certificate_toml_ser)
+                    .expect("failed to toml deserialize high_certificate");
+                assert_eq!(
+                    high_certificate, &high_certificate_toml_roundtrip,
+                    "failed to toml roundtrip high_certificate"
+                );
+            }
+        }
+        assert!(
+            seen_tc_with_tip,
+            "never tested TC roundtrip with HighExtend::Tip"
+        );
     }
 
     #[test]

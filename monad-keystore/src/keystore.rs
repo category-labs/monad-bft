@@ -114,7 +114,7 @@ impl From<std::io::Error> for KeystoreError {
     }
 }
 
-#[derive(Zeroize, ZeroizeOnDrop)]
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct KeystoreSecret(Vec<u8>);
 
 impl KeystoreSecret {
@@ -130,7 +130,7 @@ impl KeystoreSecret {
         self.0.is_empty()
     }
 
-    pub fn to_bls(&mut self, version: KeystoreVersion) -> Result<BlsKeyPair, KeystoreError> {
+    pub fn to_bls(mut self, version: KeystoreVersion) -> Result<BlsKeyPair, KeystoreError> {
         match version {
             KeystoreVersion::Legacy => {
                 BlsKeyPair::from_bytes(self.as_mut()).map_err(|_| KeystoreError::InvalidJSONFormat)
@@ -141,7 +141,7 @@ impl KeystoreSecret {
         }
     }
 
-    pub fn to_secp(&mut self, version: KeystoreVersion) -> Result<KeyPair, KeystoreError> {
+    pub fn to_secp(mut self, version: KeystoreVersion) -> Result<KeyPair, KeystoreError> {
         match version {
             KeystoreVersion::Legacy => {
                 KeyPair::from_bytes(self.as_mut()).map_err(|_| KeystoreError::InvalidJSONFormat)
@@ -323,12 +323,12 @@ impl Keystore {
     }
 
     pub fn load_bls_key(path: &Path, password: &str) -> Result<BlsKeyPair, KeystoreError> {
-        let (mut keystore_secret, version) = Keystore::load_key_with_version(path, password)?;
+        let (keystore_secret, version) = Keystore::load_key_with_version(path, password)?;
         keystore_secret.to_bls(version)
     }
 
     pub fn load_secp_key(path: &Path, password: &str) -> Result<KeyPair, KeystoreError> {
-        let (mut keystore_secret, version) = Keystore::load_key_with_version(path, password)?;
+        let (keystore_secret, version) = Keystore::load_key_with_version(path, password)?;
         keystore_secret.to_secp(version)
     }
 }

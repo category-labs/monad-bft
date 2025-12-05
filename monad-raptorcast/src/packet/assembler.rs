@@ -30,7 +30,11 @@ use super::{
     assigner::{ChunkAssignment, ChunkOrder},
     BuildError, Collector, PeerAddrLookup, Result, UdpMessage,
 };
-use crate::{util::Redundancy, SIGNATURE_SIZE};
+use crate::{
+    udp::GroupId,
+    util::{compute_hash, Redundancy},
+    SIGNATURE_SIZE,
+};
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub enum AssembleMode {
@@ -156,7 +160,7 @@ impl<PT: PubKey> PartialEq for RecipientInner<PT> {
 
 impl<PT: PubKey> Recipient<PT> {
     pub fn new(node_id: NodeId<PT>) -> Self {
-        let node_hash = crate::util::compute_hash(&node_id).0;
+        let node_hash = compute_hash(&node_id).0;
         let addr = OnceCell::new();
         let inner = RecipientInner {
             node_id,
@@ -577,16 +581,17 @@ pub(crate) fn build_header(
     version: u16,
     broadcast_type: BroadcastType,
     merkle_tree_depth: u8,
-    epoch_no: u64,
+    group_id: GroupId,
     unix_ts_ms: u64,
-    app_message: &[u8],
+    app_message_hash: &[u8; 20],
+    app_message_len: usize,
 ) -> Result<Bytes> {
     // 2  // Version
     // 1  // Broadcast bit
     //       Secondary broadcast bit,
     //       2 unused bits,
     //       4 bits for Merkle Tree Depth
-    // 8  // Epoch #
+    // 8  // Group id
     // 8  // Unix timestamp
     // 20 // AppMessage hash
     // 4  // AppMessage length
@@ -610,21 +615,20 @@ pub(crate) fn build_header(
     broadcast_byte |= merkle_tree_depth & 0b0000_1111;
     cursor_broadcast_merkle_depth[0] = broadcast_byte;
 
-    let (cursor_epoch_no, cursor) = cursor.split_at_mut_checked(8).expect("header too short");
-    cursor_epoch_no.copy_from_slice(&epoch_no.to_le_bytes());
+    let group_id: u64 = group_id.into();
+    let (cursor_group_id, cursor) = cursor.split_at_mut_checked(8).expect("header too short");
+    cursor_group_id.copy_from_slice(&group_id.to_le_bytes());
 
     let (cursor_unix_ts_ms, cursor) = cursor.split_at_mut_checked(8).expect("header too short");
     cursor_unix_ts_ms.copy_from_slice(&unix_ts_ms.to_le_bytes());
 
     let (cursor_app_message_hash, cursor) =
         cursor.split_at_mut_checked(20).expect("header too short");
-    let app_message_hash = calc_full_hash(app_message);
-    cursor_app_message_hash.copy_from_slice(&app_message_hash[..20]);
+    cursor_app_message_hash.copy_from_slice(app_message_hash);
 
     let (cursor_app_message_len, cursor) =
         cursor.split_at_mut_checked(4).expect("header too short");
-    let app_message_len: u32 = app_message
-        .len()
+    let app_message_len: u32 = app_message_len
         .try_into()
         .map_err(|_| BuildError::AppMessageTooLarge)?;
     cursor_app_message_len.copy_from_slice(&app_message_len.to_le_bytes());
@@ -645,17 +649,11 @@ where
     }
 }
 
-fn calc_full_hash(bytes: &[u8]) -> Hash {
-    let mut hasher = HasherType::new();
-    hasher.update(bytes);
-    hasher.hash()
-}
-
 impl AssembleMode {
     pub fn expected_chunk_order(self) -> Option<ChunkOrder> {
         match self {
             AssembleMode::GsoFull => Some(ChunkOrder::GsoFriendly),
-            AssembleMode::GsoBestEffort => None,
+            AssembleMode::GsoBestEffort => Some(ChunkOrder::GsoFriendly),
             AssembleMode::RoundRobin => Some(ChunkOrder::RoundRobin),
         }
     }

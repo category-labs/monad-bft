@@ -21,12 +21,55 @@ use aws_config::{
 };
 use aws_sdk_s3::config::{Credentials, SharedCredentialsProvider};
 use eyre::{bail, OptionExt};
-use serde::{Deserialize, Serialize};
+use serde::{
+    de::{self, DeserializeOwned},
+    Deserialize, Serialize,
+};
+use serde_json::{Map as JsonMap, Value as JsonValue};
 
 use crate::{kvstore::mongo::MongoDbStorage, prelude::*};
 
 const DEFAULT_BUCKET_TIMEOUT: u64 = 10;
 const DEFAULT_CONCURRENCY: usize = 50;
+const DEFAULT_TRIEDB_NODE_LRU_MAX_MEM: u64 = 50 << 20;
+const DEFAULT_MAX_BUFFERED_READ_REQUESTS: usize = 5000;
+const DEFAULT_MAX_TRIEDB_ASYNC_READ_CONCURRENCY: usize = 10000;
+const DEFAULT_MAX_BUFFERED_TRAVERSE_REQUESTS: usize = 200;
+const DEFAULT_MAX_TRIEDB_ASYNC_TRAVERSE_CONCURRENCY: usize = 20;
+const DEFAULT_MAX_FINALIZED_BLOCK_CACHE_LEN: usize = 200;
+const DEFAULT_MAX_VOTED_BLOCK_CACHE_LEN: usize = 3;
+
+fn default_aws_concurrency() -> usize {
+    DEFAULT_CONCURRENCY
+}
+
+fn default_triedb_node_lru_max_mem() -> u64 {
+    DEFAULT_TRIEDB_NODE_LRU_MAX_MEM
+}
+
+fn default_triedb_max_buffered_read_requests() -> usize {
+    DEFAULT_MAX_BUFFERED_READ_REQUESTS
+}
+
+fn default_triedb_max_async_read_concurrency() -> usize {
+    DEFAULT_MAX_TRIEDB_ASYNC_READ_CONCURRENCY
+}
+
+fn default_triedb_max_buffered_traverse_requests() -> usize {
+    DEFAULT_MAX_BUFFERED_TRAVERSE_REQUESTS
+}
+
+fn default_triedb_max_async_traverse_concurrency() -> usize {
+    DEFAULT_MAX_TRIEDB_ASYNC_TRAVERSE_CONCURRENCY
+}
+
+fn default_triedb_max_finalized_block_cache_len() -> usize {
+    DEFAULT_MAX_FINALIZED_BLOCK_CACHE_LEN
+}
+
+fn default_triedb_max_voted_block_cache_len() -> usize {
+    DEFAULT_MAX_VOTED_BLOCK_CACHE_LEN
+}
 
 pub fn get_default_bucket_timeout() -> u64 {
     DEFAULT_BUCKET_TIMEOUT
@@ -52,6 +95,13 @@ pub fn set_source_and_sink_metrics(
                 vec![opentelemetry::KeyValue::new("sink_store_type", "mongodb")],
             );
         }
+        ArchiveArgs::Fs(_) => {
+            metrics.periodic_gauge_with_attrs(
+                MetricNames::SINK_STORE_TYPE,
+                3,
+                vec![opentelemetry::KeyValue::new("sink_store_type", "fs")],
+            );
+        }
     }
 
     match source {
@@ -67,6 +117,13 @@ pub fn set_source_and_sink_metrics(
                 MetricNames::SOURCE_STORE_TYPE,
                 2,
                 vec![opentelemetry::KeyValue::new("source_store_type", "mongodb")],
+            );
+        }
+        BlockDataReaderArgs::Fs(_) => {
+            metrics.periodic_gauge_with_attrs(
+                MetricNames::SOURCE_STORE_TYPE,
+                4,
+                vec![opentelemetry::KeyValue::new("source_store_type", "fs")],
             );
         }
         BlockDataReaderArgs::Triedb(_) => {
@@ -109,17 +166,19 @@ pub async fn get_aws_config(region: Option<String>, timeout_secs: u64) -> SdkCon
         .await
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone, Serialize, Eq, PartialEq, Hash)]
 pub enum BlockDataReaderArgs {
     Aws(AwsCliArgs),
     Triedb(TrieDbCliArgs),
     MongoDb(MongoDbCliArgs),
+    Fs(FsCliArgs),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone, Serialize, Eq, PartialEq, Hash)]
 pub enum ArchiveArgs {
     Aws(AwsCliArgs),
     MongoDb(MongoDbCliArgs),
+    Fs(FsCliArgs),
 }
 
 impl FromStr for BlockDataReaderArgs {
@@ -133,6 +192,7 @@ impl FromStr for BlockDataReaderArgs {
             "aws" => Aws(AwsCliArgs::parse(args)?),
             "triedb" => Triedb(TrieDbCliArgs::parse(args)?),
             "mongodb" => MongoDb(MongoDbCliArgs::parse(args)?),
+            "fs" => Fs(FsCliArgs::parse(args)?),
             _ => {
                 bail!("Unrecognized storage args variant: {storage_type}");
             }
@@ -150,10 +210,31 @@ impl FromStr for ArchiveArgs {
         Ok(match storage_type.to_lowercase().as_str() {
             "aws" => Aws(AwsCliArgs::parse(args)?),
             "mongodb" => MongoDb(MongoDbCliArgs::parse(args)?),
+            "fs" => Fs(FsCliArgs::parse(args)?),
             _ => {
                 bail!("Unrecognized storage args variant: {storage_type}");
             }
         })
+    }
+}
+
+impl<'de> Deserialize<'de> for BlockDataReaderArgs {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = JsonValue::deserialize(deserializer)?;
+        parse_block_data_reader_args(value)
+    }
+}
+
+impl<'de> Deserialize<'de> for ArchiveArgs {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = JsonValue::deserialize(deserializer)?;
+        parse_archive_args(value)
     }
 }
 
@@ -171,6 +252,10 @@ impl BlockDataReaderArgs {
                 MongoDbStorage::new_block_store(&args.url, &args.db, metrics.clone()).await?,
             )
             .into(),
+            Fs(fs_args) => {
+                BlockDataArchive::new(FsStorage::new(fs_args.block_store_path(), metrics.clone())?)
+                    .into()
+            }
         })
     }
 
@@ -182,6 +267,7 @@ impl BlockDataReaderArgs {
             MongoDb(mongo_db_cli_args) => {
                 format!("{}:{}", mongo_db_cli_args.url, mongo_db_cli_args.db)
             }
+            Fs(fs_cli_args) => fs_cli_args.path.to_string_lossy().into_owned(),
         }
     }
 }
@@ -197,6 +283,9 @@ impl ArchiveArgs {
                 MongoDbStorage::new_block_store(&args.url, &args.db, metrics.clone())
                     .await?
                     .into()
+            }
+            ArchiveArgs::Fs(args) => {
+                FsStorage::new(args.block_store_path(), metrics.clone())?.into()
             }
         };
         Ok(BlockDataArchive::new(store))
@@ -227,6 +316,10 @@ impl ArchiveArgs {
                 MongoDbStorage::new_index_store(&args.url, &args.db, metrics.clone())
                     .await?
                     .into(),
+            ),
+            ArchiveArgs::Fs(args) => (
+                FsStorage::new(args.block_store_path(), metrics.clone())?.into(),
+                FsStorage::new(args.index_store_path(), metrics.clone())?.into(),
             ),
         };
         Ok(TxIndexArchiver::new(
@@ -259,6 +352,10 @@ impl ArchiveArgs {
                     .await?
                     .into(),
             ),
+            ArchiveArgs::Fs(args) => (
+                FsStorage::new(args.block_store_path(), metrics.clone())?.into(),
+                FsStorage::new(args.index_store_path(), metrics.clone())?.into(),
+            ),
         };
         let bdr = BlockDataReaderErased::from(BlockDataArchive::new(blob));
         Ok(ArchiveReader::new(
@@ -273,8 +370,125 @@ impl ArchiveArgs {
         match self {
             ArchiveArgs::Aws(aws_cli_args) => aws_cli_args.bucket.clone(),
             ArchiveArgs::MongoDb(mongo_db_cli_args) => mongo_db_cli_args.db.clone(),
+            ArchiveArgs::Fs(fs_cli_args) => fs_cli_args.path.to_string_lossy().into_owned(),
         }
     }
+}
+
+fn parse_block_data_reader_args<E: de::Error>(value: JsonValue) -> Result<BlockDataReaderArgs, E> {
+    let map = match value {
+        JsonValue::Object(map) => map,
+        other => {
+            return Err(E::custom(format!(
+                "block_data_source must be a table, got {other:?}",
+            )))
+        }
+    };
+
+    parse_type_or_legacy(
+        map,
+        "block_data_source",
+        |ty, cfg| match ty.as_str() {
+            "aws" => {
+                deserialize_variant(cfg, "aws block_data_source").map(BlockDataReaderArgs::Aws)
+            }
+            "triedb" => deserialize_variant(cfg, "triedb block_data_source")
+                .map(BlockDataReaderArgs::Triedb),
+            "mongodb" => deserialize_variant(cfg, "mongodb block_data_source")
+                .map(BlockDataReaderArgs::MongoDb),
+            "fs" => deserialize_variant(cfg, "fs block_data_source").map(BlockDataReaderArgs::Fs),
+            other => Err(E::custom(format!(
+                "unsupported block_data_source type '{other}'",
+            ))),
+        },
+        |variant, cfg| match variant.as_str() {
+            "Aws" => {
+                deserialize_variant(cfg, "Aws block_data_source").map(BlockDataReaderArgs::Aws)
+            }
+            "Triedb" => deserialize_variant(cfg, "Triedb block_data_source")
+                .map(BlockDataReaderArgs::Triedb),
+            "MongoDb" => deserialize_variant(cfg, "MongoDb block_data_source")
+                .map(BlockDataReaderArgs::MongoDb),
+            "Fs" => deserialize_variant(cfg, "Fs block_data_source").map(BlockDataReaderArgs::Fs),
+            other => Err(E::custom(format!(
+                "unsupported block_data_source variant '{other}'",
+            ))),
+        },
+    )
+}
+
+fn parse_archive_args<E: de::Error>(value: JsonValue) -> Result<ArchiveArgs, E> {
+    let map = match value {
+        JsonValue::Object(map) => map,
+        other => {
+            return Err(E::custom(format!(
+                "archive_sink must be a table, got {other:?}",
+            )))
+        }
+    };
+
+    parse_type_or_legacy(
+        map,
+        "archive_sink",
+        |ty, cfg| match ty.as_str() {
+            "aws" => deserialize_variant(cfg, "aws archive_sink").map(ArchiveArgs::Aws),
+            "mongodb" => deserialize_variant(cfg, "mongodb archive_sink").map(ArchiveArgs::MongoDb),
+            "fs" => deserialize_variant(cfg, "fs archive_sink").map(ArchiveArgs::Fs),
+            other => Err(E::custom(format!(
+                "unsupported archive_sink type '{other}'",
+            ))),
+        },
+        |variant, cfg| match variant.as_str() {
+            "Aws" => deserialize_variant(cfg, "Aws archive_sink").map(ArchiveArgs::Aws),
+            "MongoDb" => deserialize_variant(cfg, "MongoDb archive_sink").map(ArchiveArgs::MongoDb),
+            "Fs" => deserialize_variant(cfg, "Fs archive_sink").map(ArchiveArgs::Fs),
+            other => Err(E::custom(format!(
+                "unsupported archive_sink variant '{other}'",
+            ))),
+        },
+    )
+}
+
+fn parse_type_or_legacy<E, FTyped, FLegacy, R>(
+    mut map: JsonMap<String, JsonValue>,
+    context: &str,
+    mut typed: FTyped,
+    mut legacy: FLegacy,
+) -> Result<R, E>
+where
+    E: de::Error,
+    FTyped: FnMut(String, JsonValue) -> Result<R, E>,
+    FLegacy: FnMut(String, JsonValue) -> Result<R, E>,
+{
+    if let Some(type_value) = map.remove("type") {
+        let type_name = extract_type::<E>(type_value, context)?;
+        let cfg = JsonValue::Object(map);
+        return typed(type_name, cfg);
+    }
+
+    if map.len() != 1 {
+        return Err(E::custom(format!(
+            "{context} must contain a 'type' field or a single legacy variant",
+        )));
+    }
+
+    let (variant, value) = map.into_iter().next().unwrap();
+    legacy(variant, value)
+}
+
+fn extract_type<E: de::Error>(value: JsonValue, context: &str) -> Result<String, E> {
+    value
+        .as_str()
+        .map(|s| s.to_lowercase())
+        .ok_or_else(|| E::custom(format!("{context}.type must be a string")))
+}
+
+fn deserialize_variant<E: de::Error, T: DeserializeOwned>(
+    value: JsonValue,
+    label: &str,
+) -> Result<T, E> {
+    serde_json::from_value(value)
+        .map_err(|err| E::custom(format!("failed to parse {label}: {err}")))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, Eq, PartialEq, Hash)]
@@ -285,6 +499,7 @@ pub struct AwsCliArgs {
     pub access_key_id: Option<String>,
     pub secret_access_key: Option<String>,
     // TODO: remove me, concurrency should be handled elsewhere
+    #[serde(default = "default_aws_concurrency")]
     pub concurrency: usize,
     // If these are not provided, uses timeout_secs for all
     #[serde(default = "get_default_bucket_timeout")]
@@ -379,12 +594,19 @@ impl AwsCliArgs {
 #[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
 pub struct TrieDbCliArgs {
     pub triedb_path: String,
+    #[serde(default = "default_triedb_node_lru_max_mem")]
     pub triedb_node_lru_max_mem: u64,
+    #[serde(default = "default_triedb_max_buffered_read_requests")]
     pub max_buffered_read_requests: usize,
+    #[serde(default = "default_triedb_max_async_read_concurrency")]
     pub max_triedb_async_read_concurrency: usize,
+    #[serde(default = "default_triedb_max_buffered_traverse_requests")]
     pub max_buffered_traverse_requests: usize,
+    #[serde(default = "default_triedb_max_async_traverse_concurrency")]
     pub max_triedb_async_traverse_concurrency: usize,
+    #[serde(default = "default_triedb_max_finalized_block_cache_len")]
     pub max_finalized_block_cache_len: usize,
+    #[serde(default = "default_triedb_max_voted_block_cache_len")]
     pub max_voted_block_cache_len: usize,
 }
 
@@ -407,17 +629,37 @@ impl TrieDbCliArgs {
         let max_buffered_read_requests = positional
             .get(1)
             .and_then(|s| usize::from_str(s).ok())
-            .unwrap_or_else(|| get("max-buffered-read-requests", 5000));
+            .unwrap_or_else(|| {
+                get(
+                    "max-buffered-read-requests",
+                    DEFAULT_MAX_BUFFERED_READ_REQUESTS,
+                )
+            });
 
         Ok(TrieDbCliArgs {
             triedb_path,
             max_buffered_read_requests,
-            max_triedb_async_read_concurrency: get("max-triedb-async-read-concurrency", 10000),
-            max_buffered_traverse_requests: get("max-buffered-traverse-requests", 200),
-            max_triedb_async_traverse_concurrency: get("max-triedb-async-traverse-concurrency", 20),
-            max_finalized_block_cache_len: get("max-finalized-block-cache-len", 200),
-            max_voted_block_cache_len: get("max-voted-block-cache-len", 3),
-            triedb_node_lru_max_mem: 50 << 20, // 50MB
+            max_triedb_async_read_concurrency: get(
+                "max-triedb-async-read-concurrency",
+                DEFAULT_MAX_TRIEDB_ASYNC_READ_CONCURRENCY,
+            ),
+            max_buffered_traverse_requests: get(
+                "max-buffered-traverse-requests",
+                DEFAULT_MAX_BUFFERED_TRAVERSE_REQUESTS,
+            ),
+            max_triedb_async_traverse_concurrency: get(
+                "max-triedb-async-traverse-concurrency",
+                DEFAULT_MAX_TRIEDB_ASYNC_TRAVERSE_CONCURRENCY,
+            ),
+            max_finalized_block_cache_len: get(
+                "max-finalized-block-cache-len",
+                DEFAULT_MAX_FINALIZED_BLOCK_CACHE_LEN,
+            ),
+            max_voted_block_cache_len: get(
+                "max-voted-block-cache-len",
+                DEFAULT_MAX_VOTED_BLOCK_CACHE_LEN,
+            ),
+            triedb_node_lru_max_mem: DEFAULT_TRIEDB_NODE_LRU_MAX_MEM, // 50MB
         })
     }
 }
@@ -441,6 +683,32 @@ impl MongoDbCliArgs {
                 .or_else(|| positional.get(1).cloned())
                 .ok_or_eyre("storage args missing mongo db name")?,
         })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
+pub struct FsCliArgs {
+    pub path: PathBuf,
+}
+
+impl FsCliArgs {
+    pub fn parse(s: &str) -> Result<Self> {
+        let (positional, mut kv) = parse_str_positional_and_kv(s)?;
+        Ok(Self {
+            path: kv
+                .remove("path")
+                .or_else(|| positional.first().cloned())
+                .map(PathBuf::from)
+                .ok_or_eyre("storage args missing path")?,
+        })
+    }
+
+    pub fn block_store_path(&self) -> PathBuf {
+        self.path.join("blocks")
+    }
+
+    pub fn index_store_path(&self) -> PathBuf {
+        self.path.join("index")
     }
 }
 
@@ -482,7 +750,7 @@ fn parse_str_positional_and_kv(s: &str) -> Result<(Vec<String>, HashMap<String, 
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
+    use std::{path::PathBuf, str::FromStr};
 
     use super::*;
 
@@ -571,6 +839,36 @@ mod tests {
     }
 
     #[test]
+    fn fs_fromstr_block_reader() {
+        let args = BlockDataReaderArgs::from_str("fs /tmp/archive").unwrap();
+        match args {
+            BlockDataReaderArgs::Fs(fs_args) => {
+                assert_eq!(fs_args.path, PathBuf::from("/tmp/archive"));
+                assert_eq!(
+                    fs_args.block_store_path(),
+                    PathBuf::from("/tmp/archive/blocks")
+                );
+                assert_eq!(
+                    fs_args.index_store_path(),
+                    PathBuf::from("/tmp/archive/index")
+                );
+            }
+            _ => panic!("expected Fs variant"),
+        }
+    }
+
+    #[test]
+    fn fs_fromstr_archive() {
+        let args = ArchiveArgs::from_str("fs /tmp/archive").unwrap();
+        match args {
+            ArchiveArgs::Fs(fs_args) => {
+                assert_eq!(fs_args.path, PathBuf::from("/tmp/archive"));
+            }
+            _ => panic!("expected Fs variant"),
+        }
+    }
+
+    #[test]
     fn mongodb_fromstr_ignores_deprecated_capped_size_arg() {
         // Third positional numeric should be ignored with a warning
         let a = BlockDataReaderArgs::from_str("mongodb mongodb://host:27017 mydb 10").unwrap();
@@ -653,5 +951,8 @@ mod tests {
 
         let mongo = ArchiveArgs::from_str("mongodb mongodb://h:27017 mydb").unwrap();
         assert_eq!(mongo.replica_name(), "mydb");
+
+        let local = ArchiveArgs::from_str("fs /tmp/archive").unwrap();
+        assert_eq!(local.replica_name(), "/tmp/archive");
     }
 }

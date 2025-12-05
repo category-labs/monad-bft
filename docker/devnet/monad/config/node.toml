@@ -57,8 +57,9 @@ peers = []
 # secp256k1_pubkey = "..."
 
 [statesync]
-peers = []
-# [[statesync.peers]]
+expand_to_group = true
+init_peers = []
+# [[statesync.init_peers]]
 # secp256k1_pubkey = "..."
 
 [fullnode_raptorcast]

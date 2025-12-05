@@ -15,7 +15,7 @@
 
 use std::{
     error::Error,
-    fmt::Debug,
+    fmt::{Debug, Display},
     io,
     ops::{Add, AddAssign, Div, Rem, Sub, SubAssign},
     str::FromStr,
@@ -34,6 +34,9 @@ use zerocopy::IntoBytes;
 
 pub const GENESIS_SEQ_NUM: SeqNum = SeqNum(0);
 pub const GENESIS_ROUND: Round = Round(0);
+
+pub const ETHERNET_MTU: u16 = 1500;
+pub const DEFAULT_MTU: u16 = ETHERNET_MTU;
 
 const PROTOCOL_VERSION: u32 = 1;
 
@@ -111,7 +114,22 @@ impl AddAssign for Round {
 
 impl Debug for Round {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
+        Debug::fmt(&self.0, f)
+    }
+}
+
+impl Display for Round {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(&self.0, f)
+    }
+}
+
+impl FromStr for Round {
+    type Err = <u64 as FromStr>::Err;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let round = u64::from_str(s)?;
+        Ok(Round(round))
     }
 }
 
@@ -219,16 +237,24 @@ impl Epoch {
 
 impl Debug for Epoch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
+        Debug::fmt(&self.0, f)
     }
 }
 
-impl From<Epoch> for u64 {
-    fn from(epoch: Epoch) -> Self {
-        epoch.0
+impl Display for Epoch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(&self.0, f)
     }
 }
 
+impl FromStr for Epoch {
+    type Err = <u64 as FromStr>::Err;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let epoch_num = u64::from_str(s)?;
+        Ok(Epoch(epoch_num))
+    }
+}
 /// Block sequence number
 ///
 /// Consecutive blocks in the same branch have consecutive sequence numbers,
@@ -317,7 +343,22 @@ impl SeqNum {
 
 impl Debug for SeqNum {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
+        Debug::fmt(&self.0, f)
+    }
+}
+
+impl Display for SeqNum {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(&self.0, f)
+    }
+}
+
+impl FromStr for SeqNum {
+    type Err = <u64 as FromStr>::Err;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let seq_num = u64::from_str(s)?;
+        Ok(SeqNum(seq_num))
     }
 }
 
@@ -705,6 +746,7 @@ pub trait ExecutionProtocol:
         + Encodable
         + Decodable
         + Serialize
+        + for<'de> Deserialize<'de>
         // TODO delete Default once null blocks are gone
         + Default;
     type Body: Debug
@@ -717,6 +759,7 @@ pub trait ExecutionProtocol:
         + Encodable
         + Decodable
         + Serialize
+        + for<'de> Deserialize<'de>
         // TODO delete Default once null blocks are gone
         + Default;
 
@@ -725,7 +768,17 @@ pub trait ExecutionProtocol:
 }
 
 pub trait FinalizedHeader:
-    Debug + Clone + PartialEq + Eq + Send + Sync + Unpin + Encodable + Decodable + Serialize
+    Debug
+    + Clone
+    + PartialEq
+    + Eq
+    + Send
+    + Sync
+    + Unpin
+    + Encodable
+    + Decodable
+    + Serialize
+    + for<'de> Deserialize<'de>
 {
     fn seq_num(&self) -> SeqNum;
 }

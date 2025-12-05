@@ -25,7 +25,6 @@ use futures_util::{Stream, StreamExt};
 use inotify::{Inotify, WatchMask};
 use lru::LruCache;
 use monad_block_persist::{BlockPersist, FileBlockPersist, BLOCKDB_HEADERS_PATH};
-use monad_chain_config::{ChainConfig, MonadChainConfig};
 use monad_consensus_types::{
     block::{ConsensusBlockHeader, ConsensusFullBlock},
     quorum_certificate::QuorumCertificate,
@@ -128,10 +127,6 @@ async fn main() {
         ExecutionProtocolType,
     > = FileBlockPersist::new(ledger_path.clone());
 
-    let staking_activation = MonadChainConfig::new(node_config.chain_id, None)
-        .expect("unsupported chain_id")
-        .get_staking_activation();
-
     let mut last_high_certificate = RoundCertificate::Qc(QuorumCertificate::genesis_qc());
     let mut tip_stream = Box::pin(latest_tip_stream(&forkpoint_path, &ledger_path));
     while let Some((high_certificate, proposed_head)) = tip_stream.next().await {
@@ -153,11 +148,8 @@ async fn main() {
                 });
 
                 let skipped_round = tc.round;
-                let skipped_leader = WeightedRoundRobin::new(staking_activation).get_leader(
-                    skipped_round,
-                    tc.epoch,
-                    validators,
-                );
+                let skipped_leader =
+                    WeightedRoundRobin::default().get_leader(skipped_round, validators);
                 info!(
                     round =? skipped_round,
                     author =? skipped_leader,
@@ -293,8 +285,11 @@ pub fn latest_tip_stream(
     inotify_events.filter_map(move |maybe_event| {
         let result = (|| match maybe_event {
             Ok(_event) => {
-                let forkpoint_config: ForkpointConfig =
-                    toml::from_str(&std::fs::read_to_string(&forkpoint_path).ok()?).ok()?;
+                let forkpoint_config = ForkpointConfig::try_parse_bytes(
+                    &forkpoint_path.to_string_lossy(),
+                    &std::fs::read(&forkpoint_path).ok()?,
+                )
+                .ok()?;
                 let proposed_head = block_persist.read_proposed_head_bft_header().ok()?;
                 Some((forkpoint_config.high_certificate, proposed_head))
             }

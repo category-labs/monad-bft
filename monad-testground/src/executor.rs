@@ -32,14 +32,16 @@ use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::certificate_signature::{
     CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_dataplane::DataplaneBuilder;
+use monad_dataplane::{DataplaneBuilder, UdpSocketConfig};
 use monad_executor_glue::{Command, MonadEvent, RouterCommand, ValSetCommand};
 use monad_peer_discovery::{
     driver::PeerDiscoveryDriver,
     mock::{NopDiscovery, NopDiscoveryBuilder},
 };
 use monad_raptorcast::{
-    config::RaptorCastConfig, raptorcast_secondary::SecondaryRaptorCastModeConfig, RaptorCast,
+    auth::NoopAuthProtocol, config::RaptorCastConfig,
+    raptorcast_secondary::SecondaryRaptorCastModeConfig, RaptorCast,
+    AUTHENTICATED_RAPTORCAST_SOCKET, RAPTORCAST_SOCKET,
 };
 use monad_state::{Forkpoint, MonadMessage, MonadState, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::InMemoryState;
@@ -140,9 +142,6 @@ where
 
     let _ = tracing::subscriber::set_global_default(subscriber);
 
-    let dataplane_builder =
-        DataplaneBuilder::new(&config.local_addr, 1_000).with_udp_buffer_size(62_500_000);
-
     let peer_discovery_builder = NopDiscoveryBuilder {
         known_addresses: config.known_addresses,
         ..Default::default()
@@ -156,20 +155,53 @@ where
             RouterConfig::RaptorCast(cfg) => {
                 let pdd = PeerDiscoveryDriver::new(peer_discovery_builder);
                 let shared_peer_discovery_driver = Arc::new(Mutex::new(pdd));
-                let (dp_reader, dp_writer) = dataplane_builder.build().split();
+
+                let auth_socket_addr =
+                    SocketAddr::new(config.local_addr.ip(), config.local_addr.port() + 1);
+                let dataplane_builder = DataplaneBuilder::new(&config.local_addr, 1_000)
+                    .with_udp_buffer_size(62_500_000)
+                    .extend_udp_sockets(vec![
+                        UdpSocketConfig {
+                            socket_addr: auth_socket_addr,
+                            label: AUTHENTICATED_RAPTORCAST_SOCKET.to_string(),
+                        },
+                        UdpSocketConfig {
+                            socket_addr: config.local_addr,
+                            label: RAPTORCAST_SOCKET.to_string(),
+                        },
+                    ]);
+
+                let dp = dataplane_builder.build();
+                assert!(dp.block_until_ready(Duration::from_secs(1)));
+
+                let (tcp_socket, mut udp_dataplane, control) = dp.split();
+                let authenticated_socket = udp_dataplane
+                    .take_socket(AUTHENTICATED_RAPTORCAST_SOCKET)
+                    .expect("authenticated raptorcast socket");
+                let non_authenticated_socket = udp_dataplane
+                    .take_socket(RAPTORCAST_SOCKET)
+                    .expect("raptorcast socket");
+                let (tcp_reader, tcp_writer) = tcp_socket.split();
+
+                let auth_protocol = NoopAuthProtocol::new();
                 Updater::boxed(RaptorCast::<
                     ST,
                     MonadMessage<ST, SCT, MockExecutionProtocol>,
                     VerifiedMonadMessage<ST, SCT, MockExecutionProtocol>,
                     MonadEvent<ST, SCT, MockExecutionProtocol>,
                     NopDiscovery<ST>,
+                    NoopAuthProtocol<CertificateSignaturePubKey<ST>>,
                 >::new(
                     cfg,
                     SecondaryRaptorCastModeConfig::None,
-                    dp_reader,
-                    dp_writer,
+                    tcp_reader,
+                    tcp_writer,
+                    Some(authenticated_socket),
+                    non_authenticated_socket,
+                    control,
                     shared_peer_discovery_driver,
                     Epoch(0),
+                    auth_protocol,
                 ))
             }
         },
@@ -197,11 +229,7 @@ where
         )
         .expect("uds bind failed"),
         loopback: LoopbackExecutor::default(),
-        state_sync: MockStateSyncExecutor::new(
-            state_backend,
-            // TODO do we test statesync in testground?
-            Vec::new(),
-        ),
+        state_sync: MockStateSyncExecutor::new(state_backend),
         config_loader: MockConfigLoader::default(),
     }
 }
@@ -280,6 +308,8 @@ where
         locked_epoch_validators,
         block_sync_override_peers: Default::default(),
         consensus_config: config.consensus_config,
+        whitelisted_statesync_nodes: Default::default(),
+        statesync_expand_to_group: true,
 
         _phantom: PhantomData,
     }

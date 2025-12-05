@@ -18,7 +18,7 @@ pub mod timed_event;
 
 use std::{ops::DerefMut, pin::Pin};
 
-pub use metrics::{ExecutorMetrics, ExecutorMetricsChain};
+pub use metrics::{ExecutorMetrics, ExecutorMetricsChain, Histogram};
 
 /// An Executor executes Commands
 /// Commands generally are output by State

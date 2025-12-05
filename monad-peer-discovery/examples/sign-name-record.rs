@@ -30,6 +30,12 @@ struct Args {
     #[arg(long)]
     address: SocketAddrV4,
 
+    #[arg(
+        long,
+        help = "Optional authenticated UDP port. If provided, will create name record with authenticated UDP port"
+    )]
+    authenticated_udp_port: Option<u16>,
+
     /// Sequence number for the name record
     #[arg(long)]
     self_record_seq_num: Option<u64>,
@@ -69,15 +75,25 @@ fn main() {
             .unwrap_or_else(|| panic!("Either node_config or self_record_seq_num must be provided"))
     };
     let self_address = args.address;
-    let name_record = NameRecord {
-        address: self_address,
-        seq: self_record_seq_num,
+    let name_record = if let Some(authenticated_udp_port) = args.authenticated_udp_port {
+        NameRecord::new_with_authentication(
+            *self_address.ip(),
+            self_address.port(),
+            self_address.port(),
+            authenticated_udp_port,
+            self_record_seq_num,
+        )
+    } else {
+        NameRecord::new(*self_address.ip(), self_address.port(), self_record_seq_num)
     };
     let signed_name_record: MonadNameRecord<SecpSignature> =
         MonadNameRecord::new(name_record, &keypair);
 
     println!("self_address = {:?}", self_address.to_string());
     println!("self_record_seq_num = {}", self_record_seq_num);
+    if let Some(authenticated_udp_port) = args.authenticated_udp_port {
+        println!("authenticated_udp_port = {}", authenticated_udp_port);
+    }
     println!(
         "self_name_record_sig = {:?}",
         hex::encode(signed_name_record.signature.serialize())

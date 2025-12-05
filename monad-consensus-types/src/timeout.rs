@@ -25,8 +25,7 @@ use monad_crypto::{
 use monad_types::*;
 use monad_validator::{
     signature_collection::{
-        deserialize_signature_collection, serialize_signature_collection, SignatureCollection,
-        SignatureCollectionError, SignatureCollectionKeyPairType,
+        SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
     },
     validator_mapping::ValidatorMapping,
 };
@@ -417,8 +416,6 @@ impl TimeoutInfo {
 pub struct HighTipRoundSigColTuple<SCT> {
     pub high_qc_round: Round,
     pub high_tip_round: Round,
-    #[serde(serialize_with = "serialize_signature_collection::<_, SCT>")]
-    #[serde(deserialize_with = "deserialize_signature_collection::<_, SCT>")]
     pub sigs: SCT,
 }
 
@@ -511,7 +508,11 @@ where
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "SCT: SignatureCollection",
+    deserialize = "SCT: SignatureCollection",
+))]
 pub struct NoTipCertificate<SCT>
 where
     SCT: SignatureCollection,

@@ -30,9 +30,12 @@ pub(crate) use self::{
     assigner::ChunkAssigner,
     builder::MessageBuilder,
 };
-use crate::util::{BuildTarget, Redundancy};
+use crate::{
+    udp::GroupId,
+    util::{BuildTarget, Redundancy},
+};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct UdpMessage {
     pub dest: SocketAddr,
     pub payload: Bytes,
@@ -80,7 +83,7 @@ pub fn build_messages<ST>(
     segment_size: u16,
     app_message: Bytes,
     redundancy: Redundancy,
-    epoch_no: u64,
+    group_id: GroupId,
     unix_ts_ms: u64,
     build_target: BuildTarget<ST>,
     known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
@@ -90,7 +93,7 @@ where
 {
     let builder = MessageBuilder::new(key, known_addresses)
         .segment_size(segment_size)
-        .epoch_no(epoch_no)
+        .group_id(group_id)
         .unix_ts_ms(unix_ts_ms)
         .redundancy(redundancy);
 
@@ -111,12 +114,11 @@ pub trait RetrofitResult<T> {
         ST: CertificateSignatureRecoverable;
 }
 
-impl<T> RetrofitResult<Vec<T>> for Result<Vec<T>> {
-    fn unwrap_log_on_error<ST>(
-        self,
-        ctx_app_msg: &[u8],
-        ctx_build_target: &BuildTarget<ST>,
-    ) -> Vec<T>
+impl<T> RetrofitResult<T> for Result<T>
+where
+    T: Default,
+{
+    fn unwrap_log_on_error<ST>(self, ctx_app_msg: &[u8], ctx_build_target: &BuildTarget<ST>) -> T
     where
         ST: CertificateSignatureRecoverable,
     {
@@ -124,7 +126,7 @@ impl<T> RetrofitResult<Vec<T>> for Result<Vec<T>> {
         let build_target = ctx_build_target;
 
         match self {
-            Ok(packets) => packets,
+            Ok(packets) => return packets,
 
             // retrofit original error handling
             Err(BuildError::TooManyChunks) => {
@@ -133,25 +135,22 @@ impl<T> RetrofitResult<Vec<T>> for Result<Vec<T>> {
                     ?build_target,
                     "Too many chunks generated."
                 );
-                vec![]
             }
             Err(BuildError::AppMessageTooLarge) => {
                 tracing::error!(?app_message_len, "App message too large");
-                vec![]
             }
             Err(BuildError::ZeroTotalStake) => {
                 tracing::error!(?build_target, "Total stake is zero");
-                vec![]
             }
             Err(BuildError::RedundancyTooHigh) => {
                 tracing::error!(?build_target, "Redundancy too high");
-                vec![]
             }
             Err(e) => {
                 tracing::error!("Failed to build packets: {:?}", e);
-                vec![]
             }
         }
+
+        Default::default()
     }
 }
 
@@ -208,5 +207,137 @@ where
 {
     fn push(&mut self, item: T) {
         self(item)
+    }
+}
+
+// Batch assembled UdpMessages into UnicastMsgs for consumption in
+// dataplane, flush on buffer full and on drop.
+pub struct UdpMessageBatcher<F>
+where
+    F: FnMut(monad_dataplane::UnicastMsg),
+{
+    buffer_size: usize,
+    buffer: monad_dataplane::UnicastMsg,
+    sink: F,
+}
+
+impl<F> UdpMessageBatcher<F>
+where
+    F: FnMut(monad_dataplane::UnicastMsg),
+{
+    pub fn new(buffer_size: usize, sink: F) -> Self {
+        Self {
+            buffer_size,
+            buffer: monad_dataplane::UnicastMsg {
+                msgs: Vec::with_capacity(buffer_size),
+                stride: 0,
+            },
+            sink,
+        }
+    }
+
+    fn flush(&mut self) {
+        if self.buffer.msgs.is_empty() {
+            return;
+        }
+        debug_assert!(self.buffer.stride != 0);
+
+        let fresh_buffer = monad_dataplane::UnicastMsg {
+            msgs: Vec::with_capacity(self.buffer_size),
+            stride: 0,
+        };
+
+        let unicast_msg = std::mem::replace(&mut self.buffer, fresh_buffer);
+        (self.sink)(unicast_msg);
+    }
+}
+
+impl<F> Drop for UdpMessageBatcher<F>
+where
+    F: FnMut(monad_dataplane::UnicastMsg),
+{
+    fn drop(&mut self) {
+        self.flush();
+    }
+}
+
+impl<F> Collector<UdpMessage> for UdpMessageBatcher<F>
+where
+    F: FnMut(monad_dataplane::UnicastMsg),
+{
+    fn push(&mut self, item: UdpMessage) {
+        let stride = item.stride as u16;
+
+        // uninitialized, set the stride
+        if self.buffer.stride == 0 {
+            self.buffer.stride = stride;
+        }
+
+        // stride changes, flush the buffer and update the stride
+        if self.buffer.stride != stride {
+            tracing::debug!(
+                "UdpMessageBatcher: stride changed from {} to {}",
+                self.buffer.stride,
+                stride
+            );
+
+            self.flush();
+            self.buffer.stride = stride;
+        }
+
+        self.buffer.msgs.push((item.dest, item.payload));
+
+        if self.buffer.msgs.len() >= self.buffer_size {
+            self.flush();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+
+    use super::*;
+
+    #[test]
+    fn test_udp_message_batcher() {
+        let collected_batches: RefCell<Vec<monad_dataplane::UnicastMsg>> = Default::default();
+        let dest = "127.0.0.1:3000".parse().unwrap();
+        let msg_batch_1 = vec![
+            // 4 messages, each with stride 4
+            UdpMessage { dest, payload: Bytes::from(vec![42; 4]), stride: 4 }; 4
+        ];
+
+        let msg_batch_2 = vec![
+            // 4 messages, each with stride 5
+            UdpMessage { dest, payload: Bytes::from(vec![43; 5]), stride: 5 }; 4
+        ];
+
+        let mut batcher = UdpMessageBatcher::new(3, |batch| {
+            collected_batches.borrow_mut().push(batch);
+        });
+        for msg in msg_batch_1 {
+            batcher.push(msg);
+        }
+        for msg in msg_batch_2 {
+            batcher.push(msg);
+        }
+        assert_eq!(collected_batches.borrow().len(), 3);
+        // first UnicastMsg: 3 messages with stride 4
+        assert_eq!(collected_batches.borrow()[0].msgs.len(), 3);
+        assert_eq!(collected_batches.borrow()[0].stride, 4);
+        // second UnicastMsg: 1 message with stride 4
+        assert_eq!(collected_batches.borrow()[1].msgs.len(), 1);
+        assert_eq!(collected_batches.borrow()[1].stride, 4);
+        // third UnicastMsg: 3 messages with stride 5
+        assert_eq!(collected_batches.borrow()[2].msgs.len(), 3);
+        assert_eq!(collected_batches.borrow()[2].stride, 5);
+
+        drop(batcher);
+
+        // on drop, the last message with stride 5 should be flushed
+        assert_eq!(collected_batches.borrow().len(), 4);
+        assert_eq!(collected_batches.borrow()[3].msgs.len(), 1);
+        assert_eq!(collected_batches.borrow()[3].stride, 5);
     }
 }

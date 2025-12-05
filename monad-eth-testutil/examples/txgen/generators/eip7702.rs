@@ -51,7 +51,7 @@ impl Generator for EIP7702Generator {
         &mut self,
         accts: &mut [SimpleAccount],
         ctx: &GenCtx,
-    ) -> Vec<(TxEnvelope, Address)> {
+    ) -> Vec<(TxEnvelope, Address, crate::shared::private_key::PrivateKey)> {
         let mut txs = Vec::with_capacity(self.tx_per_sender * accts.len());
         let mut rng = rand::thread_rng();
 
@@ -105,7 +105,7 @@ impl Generator for EIP7702Generator {
                         ctx.priority_fee,
                     );
 
-                    txs.push((tx, target_account));
+                    txs.push((tx, target_account, sender.key.clone()));
                 } else {
                     debug!("No authorizations found, falling back to simple contract call");
                     let tx = self.batch_call_contract.create_simple_call_tx(
@@ -115,7 +115,7 @@ impl Generator for EIP7702Generator {
                         ctx.set_tx_gas_limit,
                         ctx.priority_fee,
                     );
-                    txs.push((tx, self.batch_call_contract.addr));
+                    txs.push((tx, self.batch_call_contract.addr, sender.key.clone()));
                 }
             }
         }

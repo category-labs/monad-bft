@@ -27,22 +27,38 @@ pub mod committed_tx_watcher;
 pub mod gen_harness;
 pub mod metrics;
 pub mod refresher;
+pub mod rpc_request_gen;
 pub mod rpc_sender;
+pub mod transform;
 
 pub use committed_tx_watcher::*;
 pub use gen_harness::*;
 pub use metrics::*;
 pub use refresher::*;
 pub use rpc_sender::*;
+pub use transform::*;
 
 pub const BATCH_SIZE: usize = 500;
 
 pub struct SimpleAccount {
     pub nonce: u64,
     pub native_bal: U256,
-    pub erc20_bal: U256,
+    pub erc20_balances: std::collections::HashMap<Address, U256>,
     pub key: PrivateKey,
     pub addr: Address,
+}
+
+impl SimpleAccount {
+    pub fn erc20_balance_for(&self, contract_addr: Address) -> U256 {
+        self.erc20_balances
+            .get(&contract_addr)
+            .copied()
+            .unwrap_or(U256::ZERO)
+    }
+
+    pub fn set_erc20_balance_for(&mut self, contract_addr: Address, balance: U256) {
+        self.erc20_balances.insert(contract_addr, balance);
+    }
 }
 
 pub struct Accounts {
@@ -171,7 +187,7 @@ pub struct AddrsWithTime {
 
 pub struct AccountsWithTxs {
     pub accts: Accounts,
-    pub txs: Vec<(TxEnvelope, Address)>,
+    pub txs: Vec<(TxEnvelope, Address, crate::shared::private_key::PrivateKey)>,
 }
 
 impl ExactSizeIterator for AccountsIter<'_> {}
@@ -179,12 +195,22 @@ impl ExactSizeIterator for AccountsIterMut<'_> {}
 
 impl std::fmt::Display for SimpleAccount {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let erc20_balances_str = if self.erc20_balances.is_empty() {
+            "none".to_string()
+        } else {
+            self.erc20_balances
+                .iter()
+                .map(|(addr, bal)| format!("{}:{:+.2e}", addr, bal.to::<u128>()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+
         write!(
             f,
-            "Account{{ nonce: {}, native: {:+.2e}, erc20: {:+.2e}, addr: {}}}",
+            "Account{{ nonce: {}, native: {:+.2e}, erc20: [{}], addr: {}}}",
             self.nonce,
             self.native_bal.to::<u128>(),
-            self.erc20_bal.to::<u128>(),
+            erc20_balances_str,
             self.addr,
         )
     }
@@ -197,7 +223,7 @@ impl From<(Address, PrivateKey)> for SimpleAccount {
             addr,
             nonce: Default::default(),
             native_bal: Default::default(),
-            erc20_bal: Default::default(),
+            erc20_balances: Default::default(),
         }
     }
 }

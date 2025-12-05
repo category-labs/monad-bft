@@ -24,17 +24,18 @@
 use std::collections::VecDeque;
 
 use alloy_consensus::{Transaction, TxEnvelope, transaction::Recovered};
-use alloy_primitives::{Address, TxKind};
+use alloy_primitives::{Address, Bytes, TxKind, U256};
 use monad_chain_config::{ChainConfig, revision::ChainRevision};
 use monad_consensus_types::block::ConsensusBlockHeader;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
+use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress, ValidatedTx};
+use monad_types::Epoch;
 use monad_validator::signature_collection::SignatureCollection;
-use tracing::debug;
+use tracing::{debug, info, warn};
 
-use crate::{SYSTEM_SENDER_ETH_ADDRESS, SystemCall, SystemTransaction, generate_system_calls};
+use crate::{SYSTEM_SENDER_ETH_ADDRESS, SystemCall, generate_system_calls};
 
 #[derive(Debug)]
 pub enum SystemTransactionError {
@@ -45,16 +46,24 @@ pub enum SystemTransactionError {
     NonZeroGasPrice,
     NonZeroGasLimit,
     InvalidTxKind,
-    UnexpectedDestAddress,
-    UnexpectedInput,
-    UnexpectedValue,
+    UnexpectedDestAddress {
+        expected: Address,
+        actual: Option<Address>,
+    },
+    UnexpectedInput {
+        expected_input: Bytes,
+        actual_input: Bytes,
+    },
+    UnexpectedValue {
+        expected_value: U256,
+        actual_value: U256,
+    },
 }
 
 #[derive(Debug)]
 pub enum SystemTransactionValidationError {
     MissingSystemTransaction,
     UnexpectedSystemTransaction,
-    NonSequentialNonces,
     SystemTransactionError(SystemTransactionError),
 }
 
@@ -113,36 +122,79 @@ impl SystemTransactionValidator {
         Ok(())
     }
 
-    fn validate_system_transaction_input(
-        expected_sys_call: SystemCall,
-        sys_txn: Recovered<TxEnvelope>,
-    ) -> Result<SystemTransaction, SystemTransactionError> {
-        expected_sys_call.validate_system_transaction_input(sys_txn)
-    }
-
-    fn validate_system_transaction<CCT, CRT>(
-        expected_sys_call: SystemCall,
-        sys_txn: Recovered<TxEnvelope>,
+    // Used to extract statically validated system transactions in block validator
+    pub fn extract_system_transactions<ST, SCT, CCT, CRT>(
+        block_header: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
+        mut recovered_txns: VecDeque<Recovered<TxEnvelope>>,
         chain_config: &CCT,
-    ) -> Result<SystemTransaction, SystemTransactionError>
+    ) -> Result<(Vec<ValidatedTx>, Vec<Recovered<TxEnvelope>>), SystemTransactionValidationError>
     where
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         CCT: ChainConfig<CRT>,
         CRT: ChainRevision,
     {
-        Self::static_validate_system_transaction(&sys_txn, chain_config)?;
+        let timestamp_s: u64 = (block_header.timestamp_ns / 1_000_000_000)
+            .try_into()
+            .unwrap_or(u64::MAX);
 
-        Self::validate_system_transaction_input(expected_sys_call, sys_txn)
+        if !chain_config
+            .get_execution_chain_revision(timestamp_s)
+            .execution_chain_params()
+            .validate_system_txs
+        {
+            return Ok((Vec::new(), recovered_txns.into()));
+        }
+
+        let mut sys_txns = Vec::new();
+        while let Some(txn) = recovered_txns.front() {
+            if !Self::is_system_sender(txn.signer()) {
+                break;
+            }
+
+            // encountered a transaction from the system sender
+            // static validate system transaction
+            if let Err(sys_txn_err) =
+                SystemTransactionValidator::static_validate_system_transaction(txn, chain_config)
+            {
+                debug!(
+                    ?txn,
+                    ?sys_txn_err,
+                    "system transaction failed static validation"
+                );
+                return Err(SystemTransactionValidationError::SystemTransactionError(
+                    sys_txn_err,
+                ));
+            };
+
+            sys_txns.push(ValidatedTx {
+                tx: recovered_txns.pop_front().unwrap(),
+                authorizations_7702: Vec::new(),
+            });
+        }
+
+        for user_txn in &recovered_txns {
+            if SystemTransactionValidator::is_system_sender(user_txn.signer()) {
+                debug!(?user_txn, "unexpected system sender in user transactions");
+                return Err(SystemTransactionValidationError::UnexpectedSystemTransaction);
+            }
+
+            if SystemTransactionValidator::is_restricted_system_call(user_txn) {
+                debug!(?user_txn, "unexpected system call in user transaction");
+                return Err(SystemTransactionValidationError::UnexpectedSystemTransaction);
+            }
+        }
+
+        Ok((sys_txns, recovered_txns.into()))
     }
 
-    // Used to extract expected systems transactions in block validator
-    pub fn validate_and_extract_system_transactions<ST, SCT, CCT, CRT>(
+    // Used to validate system transaction input in block policy
+    pub fn validate_system_transactions_input<ST, SCT, CCT, CRT>(
         block_header: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
-        mut txns: VecDeque<Recovered<TxEnvelope>>,
+        parent_block_epoch: Epoch,
+        sys_txns: &Vec<ValidatedTx>,
         chain_config: &CCT,
-    ) -> Result<
-        (Vec<SystemTransaction>, Vec<Recovered<TxEnvelope>>),
-        SystemTransactionValidationError,
-    >
+    ) -> Result<(), SystemTransactionValidationError>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -159,57 +211,53 @@ impl SystemTransactionValidator {
             .execution_chain_params()
             .validate_system_txs
         {
-            return Ok((Vec::new(), txns.into()));
+            assert!(
+                sys_txns.is_empty(),
+                "system transactions shouldn't be extracted from the block"
+            );
+            return Ok(());
         }
 
-        let mut validated_sys_txns = Vec::new();
-
-        let address = block_header.author.pubkey().get_eth_address();
         let expected_sys_calls = generate_system_calls(
             block_header.seq_num,
             block_header.epoch,
-            block_header.qc.get_epoch(),
-            address,
+            parent_block_epoch,
+            block_header.author.pubkey().get_eth_address(),
             chain_config,
         );
-        let mut curr_sys_sender_nonce = None;
-        for expected_sys_call in expected_sys_calls {
-            let Some(sys_txn) = txns.pop_front() else {
-                return Err(SystemTransactionValidationError::MissingSystemTransaction);
-            };
 
-            match Self::validate_system_transaction(expected_sys_call, sys_txn, chain_config) {
-                Ok(validated_sys_txn) => {
-                    // system sender nonce must be sequential
-                    if let Some(old_nonce) = curr_sys_sender_nonce {
-                        if validated_sys_txn.nonce() != old_nonce + 1 {
-                            debug!(?validated_sys_txn, "invalid system transaction nonce");
-                            return Err(SystemTransactionValidationError::NonSequentialNonces);
-                        }
-                    }
-                    curr_sys_sender_nonce = Some(validated_sys_txn.nonce());
+        info!(
+            ?expected_sys_calls,
+            block_seq_num =? block_header.seq_num,
+            block_epoch =? block_header.epoch,
+            ?parent_block_epoch,
+            "generated expected system calls"
+        );
 
-                    validated_sys_txns.push(validated_sys_txn);
-                }
-                Err(err) => {
-                    return Err(SystemTransactionValidationError::SystemTransactionError(
-                        err,
-                    ));
-                }
+        if expected_sys_calls.len() != sys_txns.len() {
+            warn!(
+                ?sys_txns,
+                ?expected_sys_calls,
+                "unexpected system transactions length"
+            );
+            return Err(SystemTransactionValidationError::UnexpectedSystemTransaction);
+        }
+
+        for (expected_sys_call, sys_txn) in expected_sys_calls.into_iter().zip(sys_txns) {
+            if let Err(sys_txn_error) = expected_sys_call.validate_system_transaction_input(sys_txn)
+            {
+                debug!(
+                    ?expected_sys_call,
+                    ?sys_txn_error,
+                    "system transaction error"
+                );
+                return Err(SystemTransactionValidationError::SystemTransactionError(
+                    sys_txn_error,
+                ));
             }
         }
 
-        for user_txn in &txns {
-            if Self::is_system_sender(user_txn.signer()) {
-                return Err(SystemTransactionValidationError::UnexpectedSystemTransaction);
-            }
-
-            if Self::is_restricted_system_call(user_txn) {
-                return Err(SystemTransactionValidationError::UnexpectedSystemTransaction);
-            }
-        }
-
-        Ok((validated_sys_txns, txns.into()))
+        Ok(())
     }
 }
 
@@ -228,7 +276,7 @@ mod test {
     };
     use monad_crypto::{NopKeyPair, NopSignature, certificate_signature::CertificateKeyPair};
     use monad_eth_testutil::make_legacy_tx;
-    use monad_eth_types::{EthExecutionProtocol, ProposedEthHeader};
+    use monad_eth_types::{EthExecutionProtocol, ProposedEthHeader, ValidatedTx};
     use monad_testutil::signing::MockSignatures;
     use monad_types::{Epoch, GENESIS_SEQ_NUM, Hash, NodeId, Round, SeqNum};
 
@@ -366,11 +414,16 @@ mod test {
     fn test_unexpected_system_txn() {
         let unsigned_tx1 = make_legacy_tx(B256::repeat_byte(0xAu8), 0, 0, 0, 10);
         let signer = unsigned_tx1.recover_signer().unwrap();
-        let tx1 = Recovered::new_unchecked(unsigned_tx1, signer);
+        let tx1 = ValidatedTx {
+            tx: Recovered::new_unchecked(unsigned_tx1, signer),
+            authorizations_7702: Vec::new(),
+        };
+        let tx2 = ValidatedTx {
+            tx: sign_with_system_sender(get_valid_system_transaction()),
+            authorizations_7702: Vec::new(),
+        };
 
-        let tx2 = sign_with_system_sender(get_valid_system_transaction());
-
-        let txs = vec![tx1, tx2].into();
+        let txs = vec![tx1, tx2];
 
         // no expected system calls generated with this block header
         let nop_keypair = NopKeyPair::from_bytes(&mut [0_u8; 32]).unwrap();
@@ -394,9 +447,10 @@ mod test {
             Some(BASE_FEE_MOMENT),
         );
 
-        let result = SystemTransactionValidator::validate_and_extract_system_transactions(
+        let result = SystemTransactionValidator::validate_system_transactions_input(
             &block_header,
-            txs,
+            Epoch(1),
+            &txs,
             &MockChainConfig::DEFAULT,
         );
         assert!(matches!(

@@ -41,6 +41,7 @@ RUN apt update && apt install -y \
   libgmp-dev \
   libgtest-dev \
   libhugetlbfs-dev \
+  libmagicenum-dev \
   libmimalloc-dev \
   libtbb-dev \
   liburing-dev \
@@ -71,6 +72,16 @@ ENV TRIEDB_TARGET=triedb_driver
 ARG GIT_TAG_VERSION
 RUN test -n "$GIT_TAG_VERSION"
 ENV MONAD_VERSION=$GIT_TAG_VERSION
+
+ARG GIT_COMMIT=""
+ARG GIT_BRANCH=""
+ARG GIT_TAG=""
+ARG GIT_MODIFIED="false"
+
+ENV GIT_COMMIT=$GIT_COMMIT
+ENV GIT_BRANCH=$GIT_BRANCH
+ENV GIT_TAG=$GIT_TAG
+ENV GIT_MODIFIED=$GIT_MODIFIED
 
 # Builder
 COPY . .

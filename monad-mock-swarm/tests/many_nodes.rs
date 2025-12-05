@@ -78,18 +78,10 @@ fn many_nodes_noser() {
                     ID::new(NodeId::new(state_builder.key.pubkey())),
                     state_builder,
                     NoSerRouterConfig::new(all_peers.clone()).build(),
-                    MockValSetUpdaterNop::new(validators.validators.clone(), SeqNum(2000)),
+                    MockValSetUpdaterNop::new(validators.validators, SeqNum(2000)),
                     MockTxPoolExecutor::default().with_chain_params(&CHAIN_PARAMS),
                     MockLedger::new(state_backend.clone()),
-                    MockStateSyncExecutor::new(
-                        state_backend,
-                        validators
-                            .validators
-                            .0
-                            .into_iter()
-                            .map(|v| v.node_id)
-                            .collect(),
-                    ),
+                    MockStateSyncExecutor::new(state_backend),
                     vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                     vec![],
                     TimestamperConfig::default(),
@@ -143,18 +135,10 @@ fn many_nodes_noser_one_offline() {
                     ID::new(NodeId::new(state_builder.key.pubkey())),
                     state_builder,
                     NoSerRouterConfig::new(all_peers.clone()).build(),
-                    MockValSetUpdaterNop::new(validators.validators.clone(), SeqNum(2000)),
+                    MockValSetUpdaterNop::new(validators.validators, SeqNum(2000)),
                     MockTxPoolExecutor::default().with_chain_params(&CHAIN_PARAMS),
                     MockLedger::new(state_backend.clone()),
-                    MockStateSyncExecutor::new(
-                        state_backend,
-                        validators
-                            .validators
-                            .0
-                            .into_iter()
-                            .map(|v| v.node_id)
-                            .collect(),
-                    ),
+                    MockStateSyncExecutor::new(state_backend),
                     vec![
                         GenericTransformer::Latency(LatencyTransformer::new(
                             Duration::from_millis(1),

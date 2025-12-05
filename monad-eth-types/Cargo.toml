@@ -17,3 +17,7 @@ alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true, features = ["serde"] }
 alloy-rlp = { workspace = true, features = ["derive"] }
 serde = { workspace = true }
+serde_with = { workspace = true, features = ["hex"] }
+
+[dev-dependencies]
+toml = { workspace = true }

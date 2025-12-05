@@ -789,7 +789,7 @@ where
         .get_cert_pubkeys(&epoch)
         .ok_or(Error::ValidatorSetDataUnavailable)?;
 
-    let leader = election.get_leader(round, epoch, validator_set.get_members());
+    let leader = election.get_leader(round, validator_set.get_members());
 
     Ok((validator_set, validator_cert_pubkeys, leader))
 }
@@ -826,6 +826,10 @@ where
 
     let (validators, validator_mapping, _leader) = epoch_to_validators(tc.epoch, tc.round)?;
 
+    if tc.tip_rounds.len() > validators.get_members().len() {
+        return Err(Error::TooManyTcTipRound);
+    }
+
     let mut node_ids = Vec::new();
     let mut highest_rank = HighExtendRank::Qc {
         qc_round: GENESIS_ROUND,
@@ -841,6 +845,10 @@ where
         if !is_new_tip_round {
             // duplicate tip round - TC isn't bundled correctly
             return Err(Error::DuplicateTcTipRound);
+        }
+
+        if t.sigs.num_signatures() == 0 {
+            return Err(Error::EmptySignersTcTipRound);
         }
 
         if t.rank() > highest_rank {
@@ -1127,10 +1135,12 @@ impl<PT: PubKey> ValidatorPubKey for PT {
         self,
         validators: &BTreeMap<NodeId<Self::NodeIdPubKey>, Stake>,
     ) -> Result<Self, Error> {
-        if validators.contains_key(&NodeId::new(self)) {
-            Ok(self)
-        } else {
-            Err(Error::InvalidAuthor)
+        match validators.get(&NodeId::new(self)) {
+            Some(stake) => {
+                assert!(*stake > Stake::ZERO, "validator should have non-zero stake");
+                Ok(self)
+            }
+            None => Err(Error::InvalidAuthor),
         }
     }
 }
@@ -1511,6 +1521,64 @@ mod test {
         ));
     }
 
+    // TC includes more tip rounds than the number of validators
+    // should short-circuit reject
+    #[test]
+    fn test_tc_too_many_tip_rounds() {
+        let num_validators = 2;
+        let (keypairs, certkeys, vset, vmap) =
+            create_keys_w_validators::<SignatureType, SignatureCollectionType, _>(
+                num_validators,
+                ValidatorSetFactory::default(),
+            );
+
+        let epoch = Epoch(1);
+        let round = Round(5);
+
+        // TC contains 3 tip rounds but there are only 2 validators
+        let tip_rounds = (0..num_validators + 1)
+            .map(|_| {
+                let keypair = &keypairs[0];
+                let certkey = &certkeys[0];
+                let td = TimeoutInfo {
+                    epoch: Epoch(1),
+                    round: Round(5),
+                    high_qc_round: GENESIS_ROUND,
+                    high_tip_round: GENESIS_ROUND,
+                };
+                let msg = alloy_rlp::encode(td);
+
+                let sigs = vec![(NodeId::new(keypair.pubkey()), <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign::<signing_domain::Timeout>(msg.as_ref(), certkey))];
+
+                let sigcol = <SignatureCollectionType as SignatureCollection>::new::<signing_domain::Timeout>(sigs, &vmap, msg.as_ref()).unwrap();
+
+                HighTipRoundSigColTuple {
+                    high_qc_round: GENESIS_ROUND,
+                    high_tip_round: GENESIS_ROUND,
+                    sigs: sigcol,
+                }
+            })
+            .collect();
+
+        let tc: TimeoutCertificate<SignatureType, SignatureCollectionType, ExecutionProtocolType> =
+            TimeoutCertificate {
+                epoch,
+                round,
+                tip_rounds,
+                high_extend: HighExtend::Qc(QuorumCertificate::genesis_qc()),
+            };
+
+        let mut cert_cache = CertificateCache::default();
+        assert!(matches!(
+            verify_tc(
+                &mut cert_cache,
+                &|_epoch, _round| Ok((&vset, &vmap, NodeId::new(keypairs[0].pubkey()))),
+                &tc
+            ),
+            Err(Error::TooManyTcTipRound)
+        ));
+    }
+
     /// The signature collection is created on an epoch different from the
     /// TC::epoch. Expect TC signature verification to fail
     #[test]
@@ -1575,7 +1643,7 @@ mod test {
             SignatureCollectionType,
             _,
         >(2, ValidatorSetFactory::default());
-        let election = WeightedRoundRobin::new(Epoch(1));
+        let election = WeightedRoundRobin::default();
 
         // TC doesn't have any signatures
         let tc: TimeoutCertificate<SignatureType, SignatureCollectionType, ExecutionProtocolType> =
@@ -1642,6 +1710,57 @@ mod test {
         assert!(matches!(err, Err(Error::InsufficientStake)));
     }
 
+    // TC has tip_round but with empty signatures. Should be short-circuit rejected
+    #[test]
+    fn empty_signature_tip_round_tc() {
+        let tmo_info = TimeoutInfo {
+            epoch: Epoch(1),
+            round: Round(1),
+            high_qc_round: GENESIS_ROUND,
+            high_tip_round: GENESIS_ROUND,
+        };
+
+        let tmo_digest = alloy_rlp::encode(&tmo_info);
+
+        let keypair = get_key::<SignatureType>(6);
+        let cert_keypair = get_certificate_key::<SignatureCollectionType>(6);
+        let stake_list = vec![(NodeId::new(keypair.pubkey()), Stake::ONE)];
+        let voting_identity = vec![(NodeId::new(keypair.pubkey()), cert_keypair.pubkey())];
+
+        let vset = ValidatorSetFactory::default().create(stake_list).unwrap();
+        let val_mapping = ValidatorMapping::new(voting_identity);
+
+        let sigs = Vec::new(); // empty signatures
+        let sigcol = SignatureCollectionType::new::<signing_domain::Timeout>(
+            sigs,
+            &val_mapping,
+            tmo_digest.as_ref(),
+        )
+        .unwrap();
+
+        let tc: TimeoutCertificate<SignatureType, SignatureCollectionType, ExecutionProtocolType> =
+            TimeoutCertificate {
+                epoch: Epoch(1),
+                round: Round(1),
+                tip_rounds: vec![HighTipRoundSigColTuple {
+                    high_qc_round: GENESIS_ROUND,
+                    high_tip_round: GENESIS_ROUND,
+                    sigs: sigcol,
+                }],
+                high_extend: HighExtend::Qc(QuorumCertificate::genesis_qc()),
+            };
+
+        let mut cert_cache = CertificateCache::default();
+        assert!(matches!(
+            verify_tc(
+                &mut cert_cache,
+                &|_epoch, _round| Ok((&vset, &val_mapping, NodeId::new(keypair.pubkey()))),
+                &tc
+            ),
+            Err(Error::EmptySignersTcTipRound)
+        ));
+    }
+
     /// The timeout message (r=5) carries a high QC (r=3) with no TC. Expect
     /// TimeoutMsg verification to yield "not wellformed" error
     #[test]
@@ -1651,7 +1770,7 @@ mod test {
             SignatureCollectionType,
             _,
         >(2, ValidatorSetFactory::default());
-        let election = WeightedRoundRobin::new(Epoch(1));
+        let election = WeightedRoundRobin::default();
 
         let tmo_epoch = Epoch(1);
         let tmo_round = Round(5);
@@ -1745,7 +1864,7 @@ mod test {
         >(4, ValidatorSetFactory::default());
 
         let validator_stakes = Vec::from_iter(valset.get_members().clone());
-        let election = WeightedRoundRobin::new(Epoch(1));
+        let election = WeightedRoundRobin::default();
 
         let author = &keys[0];
         let author_cert_key = &cert_keys[0];
@@ -1868,7 +1987,7 @@ mod test {
             _,
         >(4, ValidatorSetFactory::default());
         let validator_stakes = Vec::from_iter(valset.get_members().clone());
-        let election = WeightedRoundRobin::new(Epoch(1));
+        let election = WeightedRoundRobin::default();
 
         let author_cert_key = &cert_keys[0];
 
@@ -1926,7 +2045,7 @@ mod test {
             _,
         >(4, ValidatorSetFactory::default());
         let validator_stakes = Vec::from_iter(valset.get_members().clone());
-        let election = WeightedRoundRobin::new(Epoch(1));
+        let election = WeightedRoundRobin::default();
 
         let author_cert_key = &cert_keys[0];
 
@@ -1969,7 +2088,7 @@ mod test {
             _,
         >(4, ValidatorSetFactory::default());
         let validator_stakes = Vec::from_iter(valset.get_members().clone());
-        let election = WeightedRoundRobin::new(Epoch(1));
+        let election = WeightedRoundRobin::default();
 
         let vote = Vote {
             id: BlockId(Hash([0x09_u8; 32])),
@@ -2024,7 +2143,7 @@ mod test {
             _,
         >(4, ValidatorSetFactory::default());
         let validator_stakes = Vec::from_iter(valset.get_members().clone());
-        let election = WeightedRoundRobin::new(Epoch(1));
+        let election = WeightedRoundRobin::default();
 
         // create valid QC
         let vote = Vote {

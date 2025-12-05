@@ -16,6 +16,7 @@
 use std::{
     collections::{BTreeMap, VecDeque},
     sync::Arc,
+    time::Duration,
 };
 
 use alloy_consensus::{
@@ -29,6 +30,7 @@ use monad_chain_config::{revision::MockChainRevision, ChainConfig, MockChainConf
 use monad_consensus_types::{
     block::{BlockPolicy, GENESIS_TIMESTAMP},
     block_validator::BlockValidator,
+    metrics::Metrics,
     payload::RoundSignature,
 };
 use monad_crypto::{
@@ -47,7 +49,7 @@ use monad_eth_txpool::{
 use monad_eth_txpool_types::EthTxPoolSnapshot;
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
-use monad_types::{Balance, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
+use monad_types::{Balance, Epoch, NodeId, Round, SeqNum, GENESIS_ROUND, GENESIS_SEQ_NUM};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing_test::traced_test;
 
@@ -110,6 +112,13 @@ enum TxPoolTestEvent<'a> {
 }
 
 fn run_custom_iter<const N: usize>(
+    mut pool: EthTxPool<
+        SignatureType,
+        SignatureCollectionType,
+        StateBackendType,
+        MockChainConfig,
+        MockChainRevision,
+    >,
     mut eth_block_policy: EthBlockPolicy<
         SignatureType,
         SignatureCollectionType,
@@ -155,7 +164,6 @@ fn run_custom_iter<const N: usize>(
         )
     };
 
-    let mut pool = EthTxPool::default_testing();
     let metrics = EthTxPoolMetrics::default();
     let mut ipc_events = BTreeMap::default();
     let mut event_tracker = EthTxPoolEventTracker::new(&metrics, &mut ipc_events);
@@ -199,17 +207,24 @@ fn run_custom_iter<const N: usize>(
                         |inserted_tx| {
                             assert_eq!(&tx, inserted_tx.raw());
 
-                            if !should_insert {
-                                panic!("tx was inserted when it shouldn't have been!");
-                            }
-
                             was_inserted = true;
                         },
                     );
 
-                    if should_insert && !was_inserted {
-                        panic!("tx should have been inserted but was not! events: {ipc_events:?}",);
+                    if !should_insert && was_inserted {
+                        panic!(
+                            "tx was inserted when it shouldn't have been!\n{:#?}",
+                            ipc_events
+                        );
                     }
+
+                    if should_insert && !was_inserted {
+                        panic!(
+                            "tx should have been inserted but was not! events:\n{ipc_events:#?}",
+                        );
+                    }
+
+                    event_tracker.now += Duration::from_millis(1);
                 }
 
                 assert_eq!(
@@ -331,6 +346,7 @@ fn run_custom_iter<const N: usize>(
                     block.body().clone(),
                     Some(&block.get_author().pubkey()),
                     &MockChainConfig::DEFAULT,
+                    &mut Metrics::default(),
                 )
                 .unwrap();
 
@@ -397,9 +413,18 @@ fn run_custom_iter<const N: usize>(
             TxPoolTestEvent::Block(f) => f(&mut pool),
         }
     }
+
+    event_tracker.now += Duration::from_millis(1);
 }
 
 fn run_custom<const N: usize>(
+    pool_generator: impl Fn() -> EthTxPool<
+        SignatureType,
+        SignatureCollectionType,
+        StateBackendType,
+        MockChainConfig,
+        MockChainRevision,
+    >,
     eth_block_policy_generator: impl Fn() -> EthBlockPolicy<
         SignatureType,
         SignatureCollectionType,
@@ -412,6 +437,7 @@ fn run_custom<const N: usize>(
 ) {
     for owned in [false, true] {
         run_custom_iter(
+            pool_generator(),
             eth_block_policy_generator(),
             max_account_balance,
             nonces_override.clone(),
@@ -422,7 +448,13 @@ fn run_custom<const N: usize>(
 }
 
 fn run_simple<const N: usize>(events: [TxPoolTestEvent<'_>; N]) {
-    run_custom(make_test_block_policy, Balance::MAX, None, events);
+    run_custom(
+        EthTxPool::default_testing,
+        make_test_block_policy,
+        Balance::MAX,
+        None,
+        events,
+    );
 }
 
 #[test]
@@ -822,7 +854,7 @@ fn test_intermediary_nonce_gap() {
 #[test]
 #[traced_test]
 fn test_nonce_exists_in_committed_block() {
-    // A transaction with nonce 0 should not be included in the block if the latest nonce of the account is 0
+    // A transaction with nonce 0 should not be included in the block if the latest nonce of the account is 1
 
     let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
     let tx2 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
@@ -832,12 +864,13 @@ fn test_nonce_exists_in_committed_block() {
         .collect();
 
     run_custom(
+        EthTxPool::default_testing,
         make_test_block_policy,
         Balance::MAX,
         Some(nonces),
         [
             TxPoolTestEvent::InsertTxs {
-                txs: vec![(&tx1, true), (&tx2, true)],
+                txs: vec![(&tx1, false), (&tx2, true)],
                 expected_pool_size_change: 1,
             },
             TxPoolTestEvent::CreateProposal {
@@ -858,6 +891,7 @@ fn test_insert_unknown_account() {
     let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
 
     run_custom(
+        EthTxPool::default_testing,
         make_test_block_policy,
         Balance::MAX,
         Some(BTreeMap::default()),
@@ -883,16 +917,17 @@ fn test_insert_unknown_account() {
 
 #[test]
 #[traced_test]
-fn test_insert_low_balance() {
-    let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
+fn test_insert_legacy_low_balance() {
+    let tx = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
 
     run_custom(
+        EthTxPool::default_testing,
         make_test_block_policy,
         Balance::ZERO,
         None,
         [
             TxPoolTestEvent::InsertTxs {
-                txs: vec![(&tx1, false)],
+                txs: vec![(&tx, false)],
                 expected_pool_size_change: 0,
             },
             TxPoolTestEvent::Block(Arc::new(|pool| {
@@ -910,12 +945,13 @@ fn test_insert_low_balance() {
     );
 
     run_custom(
+        EthTxPool::default_testing,
         make_test_block_policy,
-        (BASE_FEE_PER_GAS * tx1.gas_limit() - 1).try_into().unwrap(),
+        (BASE_FEE_PER_GAS * tx.gas_limit() - 1).try_into().unwrap(),
         None,
         [
             TxPoolTestEvent::InsertTxs {
-                txs: vec![(&tx1, false)],
+                txs: vec![(&tx, false)],
                 expected_pool_size_change: 0,
             },
             TxPoolTestEvent::Block(Arc::new(|pool| {
@@ -933,12 +969,13 @@ fn test_insert_low_balance() {
     );
 
     run_custom(
+        EthTxPool::default_testing,
         make_test_block_policy,
-        (BASE_FEE_PER_GAS * tx1.gas_limit()).try_into().unwrap(),
+        (BASE_FEE_PER_GAS * tx.gas_limit()).try_into().unwrap(),
         None,
         [
             TxPoolTestEvent::InsertTxs {
-                txs: vec![(&tx1, true)],
+                txs: vec![(&tx, true)],
                 expected_pool_size_change: 1,
             },
             TxPoolTestEvent::CreateProposal {
@@ -946,7 +983,84 @@ fn test_insert_low_balance() {
                 tx_limit: 1,
                 gas_limit: GAS_LIMIT,
                 byte_limit: PROPOSAL_SIZE_LIMIT,
-                expected_txs: vec![&tx1],
+                expected_txs: vec![&tx],
+                add_to_blocktree: true,
+            },
+        ],
+    );
+}
+
+#[test]
+#[traced_test]
+fn test_insert_1559_low_balance() {
+    let tx = make_eip1559_tx(S1, BASE_FEE + 1, 1, GAS_LIMIT, 0, 10);
+
+    run_custom(
+        EthTxPool::default_testing,
+        make_test_block_policy,
+        Balance::ZERO,
+        None,
+        [
+            TxPoolTestEvent::InsertTxs {
+                txs: vec![(&tx, false)],
+                expected_pool_size_change: 0,
+            },
+            TxPoolTestEvent::Block(Arc::new(|pool| {
+                assert!(pool.is_empty());
+            })),
+            TxPoolTestEvent::CreateProposal {
+                base_fee: BASE_FEE_PER_GAS,
+                tx_limit: 1,
+                gas_limit: GAS_LIMIT,
+                byte_limit: PROPOSAL_SIZE_LIMIT,
+                expected_txs: vec![],
+                add_to_blocktree: true,
+            },
+        ],
+    );
+
+    run_custom(
+        EthTxPool::default_testing,
+        make_test_block_policy,
+        (BASE_FEE_PER_GAS * tx.gas_limit()).try_into().unwrap(),
+        None,
+        [
+            TxPoolTestEvent::InsertTxs {
+                txs: vec![(&tx, false)],
+                expected_pool_size_change: 0,
+            },
+            TxPoolTestEvent::Block(Arc::new(|pool| {
+                assert!(pool.is_empty());
+            })),
+            TxPoolTestEvent::CreateProposal {
+                base_fee: BASE_FEE_PER_GAS,
+                tx_limit: 1,
+                gas_limit: GAS_LIMIT,
+                byte_limit: PROPOSAL_SIZE_LIMIT,
+                expected_txs: vec![],
+                add_to_blocktree: true,
+            },
+        ],
+    );
+
+    run_custom(
+        EthTxPool::default_testing,
+        make_test_block_policy,
+        ((BASE_FEE_PER_GAS + 1) * tx.gas_limit())
+            .try_into()
+            .unwrap(),
+        None,
+        [
+            TxPoolTestEvent::InsertTxs {
+                txs: vec![(&tx, true)],
+                expected_pool_size_change: 1,
+            },
+            TxPoolTestEvent::CreateProposal {
+                base_fee: BASE_FEE_PER_GAS,
+                tx_limit: 1,
+                gas_limit: GAS_LIMIT,
+                byte_limit: PROPOSAL_SIZE_LIMIT,
+                expected_txs: vec![&tx],
                 add_to_blocktree: true,
             },
         ],
@@ -1185,6 +1299,7 @@ fn test_tx_invalid_chain_id() {
     };
 
     run_custom(
+        EthTxPool::default_testing,
         || EthBlockPolicy::new(GENESIS_SEQ_NUM, 0),
         Balance::MAX,
         None,
@@ -1331,10 +1446,10 @@ fn test_large_batch_many_senders() {
             let txs = txs.clone();
 
             move |pool| {
-                let EthTxPoolSnapshot { pending, tracked } = pool.generate_snapshot();
+                let EthTxPoolSnapshot { txs: snapshot_txs } = pool.generate_snapshot();
 
                 let mut txs = txs.clone();
-                txs.retain(|tx| !pending.contains(tx.tx_hash()) && !tracked.contains(tx.tx_hash()));
+                txs.retain(|tx| !snapshot_txs.contains(tx.tx_hash()));
 
                 assert!(txs.is_empty())
             }
@@ -1467,6 +1582,67 @@ fn test_proposal_tx_low_base_fee() {
 }
 
 #[test]
+fn test_eviction_policy() {
+    let tx_a = make_eip1559_tx(S1, (BASE_FEE_PER_GAS + 1).into(), 1, GAS_LIMIT, 0, 0);
+    let tx_b = make_eip1559_tx(S1, (BASE_FEE_PER_GAS + 1).into(), 2, GAS_LIMIT, 1, 0);
+    let tx_c = make_eip1559_tx(S2, (BASE_FEE_PER_GAS + 2).into(), 1, GAS_LIMIT, 0, 0);
+    let tx_d = make_eip1559_tx(S3, (BASE_FEE_PER_GAS + 3).into(), 3, GAS_LIMIT, 0, 0);
+
+    for txs in [&tx_a, &tx_b, &tx_c, &tx_d].iter().cloned().permutations(4) {
+        assert_eq!(txs.len(), 4);
+
+        let a_idx = txs.iter().position(|tx| *tx == &tx_a).unwrap();
+        let b_idx = txs.iter().position(|tx| *tx == &tx_b).unwrap();
+        let c_idx = txs.iter().position(|tx| *tx == &tx_c).unwrap();
+        let d_idx = txs.iter().position(|tx| *tx == &tx_d).unwrap();
+
+        let a_eviction_condition =
+            // tx_b will be evicted so tx_a will not have priority
+            a_idx == 3
+            // tx_a will be evicted to tx_b will not have priority
+            || (c_idx < a_idx && b_idx == 3);
+
+        run_custom(
+            || {
+                EthTxPool::new(
+                    Some(2),
+                    Some(3),
+                    None,
+                    Some(3),
+                    Duration::from_secs(60),
+                    Duration::from_secs(60),
+                    MockChainConfig::DEFAULT.chain_id(),
+                    MockChainConfig::DEFAULT.get_chain_revision(GENESIS_ROUND),
+                    MockChainConfig::DEFAULT.get_execution_chain_revision(GENESIS_TIMESTAMP as u64),
+                    true,
+                )
+            },
+            make_test_block_policy,
+            Balance::MAX,
+            None,
+            [
+                TxPoolTestEvent::InsertTxs {
+                    txs: txs.clone().into_iter().map(|tx| (tx, true)).collect_vec(),
+                    expected_pool_size_change: if a_eviction_condition { 2 } else { 3 },
+                },
+                TxPoolTestEvent::CreateProposal {
+                    base_fee: BASE_FEE_PER_GAS,
+                    tx_limit: usize::MAX,
+                    gas_limit: u64::MAX,
+                    byte_limit: u64::MAX,
+                    expected_txs: if a_eviction_condition {
+                        vec![&tx_d, &tx_c]
+                    } else {
+                        vec![&tx_d, &tx_a, &tx_b]
+                    },
+                    add_to_blocktree: true,
+                },
+            ],
+        );
+    }
+}
+
+#[test]
 fn test_eip7702_valid_authorization_changes_nonce() {
     let tx1 = make_eip7702_tx(
         S1,
@@ -1481,6 +1657,7 @@ fn test_eip7702_valid_authorization_changes_nonce() {
     let tx2 = make_legacy_tx(S2, BASE_FEE, GAS_LIMIT, 1, 0);
 
     run_custom(
+        EthTxPool::default_testing,
         make_test_block_policy,
         Balance::MAX,
         None,
@@ -1539,6 +1716,7 @@ fn test_eip7702_authorization_nonce_higher() {
     let tx2 = make_legacy_tx(S2, BASE_FEE, GAS_LIMIT, 0, 0);
 
     run_custom(
+        EthTxPool::default_testing,
         make_test_block_policy,
         Balance::MAX,
         None,
@@ -1614,6 +1792,7 @@ fn test_eip7702_authorization_nonce_lower() {
     let tx2 = make_legacy_tx(S2, BASE_FEE, GAS_LIMIT, 1, 0);
 
     run_custom(
+        EthTxPool::default_testing,
         make_test_block_policy,
         Balance::MAX,
         Some(BTreeMap::from_iter([

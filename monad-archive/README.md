@@ -45,6 +45,35 @@ independently scalable and fault-tolerant.
 - Enables detailed dashboarding and alerting
 - Can determine if any binaries in the system are unhealthy without needing to ssh to each box
 
+### Configuration
+
+`monad-archiver` accepts a `--config path/to/config.toml` flag that loads the
+same struct as the CLI. Any explicit CLI arguments override corresponding entries
+from the file, so a minimal invocation can look like:
+
+```sh
+monad-archiver --config /etc/monad/archiver.toml --start-block 12
+```
+
+Example TOML (match the CLI flags 1:1):
+
+```toml
+max_blocks_per_iteration = 100
+max_concurrent_blocks = 20
+
+[block_data_source]
+type = "aws"
+bucket = "source-bucket"
+
+[archive_sink]
+type = "mongodb"
+url = "mongodb://mongo:27017"
+db = "archive"
+```
+
+When `--config` is omitted you can still supply all values purely via CLI flags
+just as before.
+
 ## Terms:
 
 - **Archive-Backed RPC**: rpc configured to read from an ArchiveDB instead of local TrieDB for historical queries
@@ -61,45 +90,55 @@ independently scalable and fault-tolerant.
 ![Aws ArchiveDB](./docs/ArchiveSystem_AWS.png "Aws ArchiveDB")
 
 
-## File Structure of Library and Binaries 
-The archive system is broken apart into a core library, `monad-archive`, and 3 
+## File Structure of Library and Binaries
+The archive system is broken apart into a core library, `monad-archive`, and 4
 scoped binaries:
 - `monad-archiver` - Reads from TrieDB or another archive, writes to durable storage
-- `monad-archive-checker` - Validates data consistency across archive replicas
 - `monad-indexer` - Builds transaction and log indexes from archived blocks
+- `monad-archive-checker` - Validates data consistency across archive replicas
+- `monad-block-writer` - Exports blocks to filesystem with compression
 
-Within the library there are 3 primary abstraction tiers, in order from lowest to highest:
+### Library Structure
+
+Within the library there are 2 primary abstraction tiers, in order from lowest to highest:
 - kvstore
-    - Defines a key-value store trait and it's read-only equivalent. 
-    - Provides implementations for many backends, including `TrieDB`, `S3`, `DynamoDB`, `MongoDB`, `MemoryStorage`
-    - Uses enum dispatch to provide a type erased `KVStore`/`KVReader` to prevent generics contagion 
+    - Defines a key-value store trait and its read-only equivalent.
+    - Provides implementations for many backends: `S3`, `DynamoDB`, `MongoDB`, `TrieDB`, `FileSystem`, `MemoryStorage`, `CloudProxy`
+    - Uses enum dispatch to provide a type erased `KVStore`/`KVReader` to prevent generics contagion
     without needing dynamic dispatch
     - Each implementation includes retry logic, metrics collection, and appropriate error handling
 - model
     - Provides abstractions for reading/writing domain structures on top of any kvstore implementation
     - `block_data_archive.rs` responsible for block, block receipts and block traces (aka block-level data). This is the "primary" archive data,
       all other index data can be derived/recovered from this data. Defines how to archive a single block_number.
-    - `tx_index_archive.rs` responsible for tx hash indexed data, such as transactions, transaction receipts and traces. Defines 
+    - `tx_index_archive.rs` responsible for tx hash indexed data, such as transactions, transaction receipts and traces. Defines
       how to index a particular block. Supports inline storage for small transactions (<350KB) vs references for larger ones.
     - `logs_index.rs` responsible for creating an index to efficiently support eth_getLogs queries. Unlike other modules, it does not
-       rely on kvstore, but directly works with mongo apis for complex query support. 
+       rely on kvstore, but directly works with mongo apis for complex query support.
     - The model folder also defines the Binary representations including schema versioning and on-the-fly conversion to the latest schema
     - Includes RLP offset tracking for efficient partial reads without full deserialization
-- workers
-    - All workers are locally stateless, meaning they can be terminated and restarted at any time
-    - `block_archive_worker.rs` Manages reading block-level data from a block data source (i.e. Triedb or another archive replica) and writing to an archive-sink (i.e. an archive replica). Uses a source and uploaded latest block pointer to keep track of progress. Supports configurable batch sizes and concurrency limits.
-    - `index_worker.rs` Similar to above, this worker reads from the archive replica and writes to same replica's tx index. If the backing kvstore is mongo, then it also using the `LogIndexArchive` to support efficient eth_getLogs queries. Processes blocks after they've been archived.
-    - `bft_block_archiver.rs` Uploads bft blocks found in the node's local folder to the archive. Compares what is locally on disk to what is in the archive and uploads the delta. Runs periodically to ensure BFT data durability.
-    - `file_checkpointer.rs` Watches a file on disk and periodically uploads a copy to the archive for backup purposes
 
 There are several one-off modules at the top-level:
 - `archive_reader.rs` Defines a unified tx index and block data reader. Optionally includes a fallback source, aka mongo as primary and aws as fallback, but other configurations work too. Provides a single interface for reading from multiple archive sources.
 - `cli.rs` Defines custom parser for `--block-data-source`, `--archive-sink`, etc. to enable flexibly connecting sources and sinks of various backend types. Also defines using these fields to construct the appropriate `KVStore`/`KVReader` instances. Handles parsing backend locator strings into concrete implementations.
-- `fault.rs` Will be removed when checker migration is complete.
+- `failover_circuit_breaker.rs` Implements circuit breaker pattern for primary/fallback source failover with failure tracking and recovery.
 - `metrics.rs` Defines shared object to record metrics and is responsible for publishing otel metrics to configured collector endpoint.
-- `prelude.rs` Re-exports commonly used types
+- `prelude.rs` Re-exports commonly used types.
 - `rlp_offset_scanner.rs` Partially decodes rlp data to find field offsets. Used in Reference storage type by model to enable efficient partial reads without full RLP decoding.
 - `test_utils.rs` Defines common mock data generation test utilities.
+
+### Binary Structure
+
+Each binary contains its own worker modules. Workers are locally stateless and can be terminated and restarted at any time.
+
+**monad-archiver** contains:
+- `block_archive_worker.rs` Manages reading block-level data from a block data source (i.e. Triedb or another archive replica) and writing to an archive-sink (i.e. an archive replica). Uses a source and uploaded latest block pointer to keep track of progress. Supports configurable batch sizes and concurrency limits.
+- `bft_archive_worker.rs` Uploads bft blocks found in the node's local folder to the archive. Compares what is locally on disk to what is in the archive and uploads the delta. Runs periodically to ensure BFT data durability.
+- `file_checkpointer.rs` Watches a file on disk and periodically uploads a copy to the archive for backup purposes.
+- `generic_folder_archiver.rs` Recursively archives directories to durable storage.
+
+**monad-indexer** contains:
+- `index_worker.rs` Reads from the archive replica and writes to same replica's tx index. If the backing kvstore is mongo, then it also uses the `LogIndexArchive` to support efficient eth_getLogs queries. Processes blocks after they've been archived.
 
 ### When will an archiver will copy data from another bucket B to it's bucket Sink
 Either:

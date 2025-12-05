@@ -130,29 +130,33 @@ async fn main() -> std::io::Result<()> {
 
     MONAD_RPC_VERSION.map(|v| info!("starting monad-rpc with version {}", v));
 
-    // Wait for bft to be in a ready state before starting the RPC server.
-    // Bft will bind to the ipc socket after state syncing.
-    let ipc_path = args.ipc_path;
-
-    let mut print_message_timer = tokio::time::interval(Duration::from_secs(60));
-    let mut retry_timer = tokio::time::interval(Duration::from_secs(1));
-    let (txpool_bridge_client, _txpool_bridge_handle) = loop {
-        tokio::select! {
-            _ = print_message_timer.tick() => {
-                info!("Waiting for statesync to complete");
-            }
-            _= retry_timer.tick() => {
-                match EthTxPoolBridge::start(&ipc_path).await  {
-                    Ok((client, handle)) => {
-                        info!("Statesync complete, starting RPC server");
-                        break (client, handle)
-                    },
-                    Err(e) => {
-                        debug!("caught error: {e}, retrying");
-                    },
+    let (txpool_bridge_client, _txpool_bridge_handle) = if let Some(ipc_path) = args.ipc_path {
+        // Wait for bft to be in a ready state before starting the RPC server.
+        // Bft will bind to the ipc socket after state syncing.
+        let mut print_message_timer = tokio::time::interval(Duration::from_secs(60));
+        let mut retry_timer = tokio::time::interval(Duration::from_secs(1));
+        let (txpool_bridge_client, _txpool_bridge_handle) = loop {
+            tokio::select! {
+                _ = print_message_timer.tick() => {
+                    info!("Waiting for statesync to complete");
                 }
-            },
-        }
+                _= retry_timer.tick() => {
+                    match EthTxPoolBridge::start(&ipc_path).await  {
+                        Ok((client, handle)) => {
+                            info!("Statesync complete, starting RPC server");
+                            break (client, handle)
+                        },
+                        Err(e) => {
+                            debug!("caught error: {e}, retrying");
+                        },
+                    }
+                },
+            }
+        };
+        (Some(txpool_bridge_client), Some(_txpool_bridge_handle))
+    } else {
+        warn!("--ipc-path is not set, tx pool will be disabled. This means that the node will not be able to send transactions.");
+        (None, None)
     };
 
     let triedb_env = args.triedb_path.clone().as_deref().map(|path| {
@@ -268,11 +272,20 @@ async fn main() -> std::io::Result<()> {
         timeout_sec: args.eth_call_high_executor_queuing_timeout,
         queue_limit: args.eth_call_high_max_concurrent_requests,
     };
+    let block_pool_config = monad_ethcall::PoolConfig {
+        num_threads: args.eth_trace_block_executor_threads,
+        num_fibers: args.eth_trace_block_executor_fibers,
+        timeout_sec: args.eth_trace_block_executor_queuing_timeout,
+        queue_limit: args.eth_trace_block_max_concurrent_requests,
+    };
+    let tx_exec_num_fibers = args.eth_trace_tx_executor_fibers;
 
     let eth_call_executor = args.triedb_path.clone().as_deref().map(|path| {
         Arc::new(EthCallExecutor::new(
             low_pool_config,
             high_pool_config,
+            block_pool_config,
+            tx_exec_num_fibers,
             args.eth_call_executor_node_lru_max_mem,
             path,
         ))
@@ -355,6 +368,8 @@ async fn main() -> std::io::Result<()> {
         args.eth_get_logs_max_block_range,
         args.eth_call_provider_gas_limit,
         args.eth_estimate_gas_provider_gas_limit,
+        args.eth_send_raw_transaction_sync_default_timeout_ms,
+        args.eth_send_raw_transaction_sync_max_timeout_ms,
         args.dry_run_get_logs_index,
         args.use_eth_get_logs_index,
         args.max_finalized_block_cache_len,
@@ -402,7 +417,7 @@ async fn main() -> std::io::Result<()> {
         })
         .bind((args.rpc_addr, args.rpc_port))?
         .shutdown_timeout(1)
-        .workers(2)
+        .workers(args.worker_threads)
         .run(),
         None => HttpServer::new(move || {
             App::new()
@@ -414,7 +429,7 @@ async fn main() -> std::io::Result<()> {
         })
         .bind((args.rpc_addr, args.rpc_port))?
         .shutdown_timeout(1)
-        .workers(2)
+        .workers(args.worker_threads)
         .run(),
     };
 
@@ -441,6 +456,7 @@ async fn main() -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+
     use actix_http::{Request, StatusCode};
     use actix_web::{
         body::{to_bytes, MessageBody},
@@ -461,7 +477,7 @@ mod tests {
     async fn init_server(
     ) -> impl Service<Request, Response = ServiceResponse<impl MessageBody>, Error = Error> {
         let app_state = MonadRpcResources {
-            txpool_bridge_client: EthTxPoolBridgeClient::for_testing(),
+            txpool_bridge_client: Some(EthTxPoolBridgeClient::for_testing()),
             triedb_reader: None,
             eth_call_executor: None,
             eth_call_executor_fibers: 64,
@@ -477,6 +493,8 @@ mod tests {
             logs_max_block_range: 1000,
             eth_call_provider_gas_limit: u64::MAX,
             eth_estimate_gas_provider_gas_limit: u64::MAX,
+            eth_send_raw_transaction_sync_default_timeout_ms: 2_000,
+            eth_send_raw_transaction_sync_max_timeout_ms: 10_000,
             dry_run_get_logs_index: false,
             use_eth_get_logs_index: false,
             max_finalized_block_cache_len: 200,

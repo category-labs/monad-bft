@@ -17,6 +17,7 @@ pub use std::{
     collections::{HashMap, HashSet},
     ffi::OsString,
     ops::RangeInclusive,
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -33,8 +34,8 @@ pub use tracing::{debug, error, info, warn, Level};
 pub use crate::{
     archive_reader::{ArchiveReader, LatestKind},
     kvstore::{
-        dynamodb::DynamoDBArchive, s3::Bucket, triedb_reader::TriedbReader, KVReader,
-        KVReaderErased, KVStore, KVStoreErased,
+        dynamodb::DynamoDBArchive, fs::FsStorage, s3::Bucket, triedb_reader::TriedbReader,
+        KVReader, KVReaderErased, KVStore, KVStoreErased,
     },
     metrics::{MetricNames, Metrics},
     model::{

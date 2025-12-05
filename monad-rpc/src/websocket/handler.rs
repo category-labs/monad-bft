@@ -126,10 +126,11 @@ pub async fn ws_handler(
         if let Some(metrics) = &app_state.metrics {
             metrics.record_websocket_connection(-1);
 
-            subscriptions.iter().for_each(|(_, subs)| {
+            subscriptions.into_iter().for_each(|(_, subs)| {
                 metrics.record_websocket_topic(-(subs.len() as i64));
             });
         }
+
         drop(permit);
     });
 
@@ -674,7 +675,7 @@ mod tests {
             EventServer::start_for_testing_with_delay(snapshot, Duration::from_secs(1));
 
         let app_state = MonadRpcResources {
-            txpool_bridge_client: EthTxPoolBridgeClient::for_testing(),
+            txpool_bridge_client: Some(EthTxPoolBridgeClient::for_testing()),
             triedb_reader: None,
             eth_call_executor: None,
             eth_call_executor_fibers: 64,
@@ -690,6 +691,8 @@ mod tests {
             logs_max_block_range: 1000,
             eth_call_provider_gas_limit: u64::MAX,
             eth_estimate_gas_provider_gas_limit: u64::MAX,
+            eth_send_raw_transaction_sync_default_timeout_ms: 2_000,
+            eth_send_raw_transaction_sync_max_timeout_ms: 10_000,
             dry_run_get_logs_index: false,
             use_eth_get_logs_index: false,
             max_finalized_block_cache_len: 200,
@@ -916,7 +919,7 @@ mod tests {
         let server = create_test_server();
 
         let url = format!("{}ws/", server.url(""));
-        let (res, mut conn) = actix_test::Client::new().ws(url).connect().await.unwrap();
+        let (_res, mut conn) = actix_test::Client::new().ws(url).connect().await.unwrap();
 
         // Create 101 subscriptions
         for n in 0..=101 {

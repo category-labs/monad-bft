@@ -27,37 +27,28 @@ use monad_crypto::NopSignature;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, secret_to_eth_address, S1};
 use monad_eth_txpool_executor::{
-    forward::egress_max_size_bytes, EthTxPoolExecutor, EthTxPoolIpcConfig,
+    forward::egress_max_size_bytes, EthTxPoolExecutor, EthTxPoolExecutorClient, EthTxPoolIpcConfig,
 };
 use monad_eth_txpool_ipc::EthTxPoolIpcClient;
 use monad_eth_txpool_types::EthTxPoolSnapshot;
-use monad_eth_types::EthExecutionProtocol;
 use monad_executor::Executor;
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
 use monad_tfm::base_fee::MIN_BASE_FEE;
 use monad_types::{Balance, SeqNum, GENESIS_ROUND, GENESIS_SEQ_NUM};
-use monad_updaters::TokioTaskUpdater;
 
 type SignatureType = NopSignature;
 type SignatureCollectionType = MockSignatures<SignatureType>;
 type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
-type BlockPolicyType =
-    EthBlockPolicy<SignatureType, SignatureCollectionType, MockChainConfig, MockChainRevision>;
 
 async fn setup_txpool_executor_with_client() -> (
-    TokioTaskUpdater<
-        TxPoolCommand<
-            SignatureType,
-            SignatureCollectionType,
-            EthExecutionProtocol,
-            BlockPolicyType,
-            StateBackendType,
-            MockChainConfig,
-            MockChainRevision,
-        >,
-        MonadEvent<SignatureType, SignatureCollectionType, EthExecutionProtocol>,
+    EthTxPoolExecutorClient<
+        SignatureType,
+        SignatureCollectionType,
+        StateBackendType,
+        MockChainConfig,
+        MockChainRevision,
     >,
     EthTxPoolIpcClient,
 ) {
@@ -100,11 +91,9 @@ async fn setup_txpool_executor_with_client() -> (
         )],
     }]);
 
-    let (ipc_client, EthTxPoolSnapshot { pending, tracked }) =
-        EthTxPoolIpcClient::new(bind_path).await.unwrap();
+    let (ipc_client, EthTxPoolSnapshot { txs }) = EthTxPoolIpcClient::new(bind_path).await.unwrap();
 
-    assert!(pending.is_empty());
-    assert!(tracked.is_empty());
+    assert!(txs.is_empty());
 
     (txpool_executor, ipc_client)
 }

@@ -15,15 +15,19 @@
 
 #![allow(async_fn_in_trait)]
 
-use clap::Parser;
-use monad_archive::{
-    cli::set_source_and_sink_metrics,
-    prelude::*,
-    workers::{
-        bft_archive_worker::bft_block_archive_worker, block_archive_worker::archive_worker,
-        file_checkpointer::file_checkpoint_worker,
-    },
-};
+use monad_archive::{cli::set_source_and_sink_metrics, prelude::*};
+
+mod bft_archive_worker;
+mod block_archive_worker;
+mod file_checkpointer;
+mod generic_folder_archiver;
+
+use bft_archive_worker::bft_block_archive_worker;
+use block_archive_worker::{archive_worker, ArchiveWorkerOpts};
+use cli::{Commands, ParsedCli};
+use file_checkpointer::file_checkpoint_worker;
+use generic_folder_archiver::recursive_dir_archiver;
+use tokio::task::JoinHandle;
 use tracing::Level;
 
 mod cli;
@@ -32,7 +36,16 @@ mod cli;
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
-    let args = cli::Cli::parse();
+    let parsed = cli::Cli::parse();
+
+    // Handle subcommands
+    if let ParsedCli::Command(cmd) = parsed {
+        return handle_command(cmd).await;
+    }
+
+    let ParsedCli::Daemon(args) = parsed else {
+        unreachable!()
+    };
     info!(?args, "Cli Arguments: ");
 
     let metrics = Metrics::new(
@@ -43,6 +56,7 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|| args.archive_sink.replica_name()),
         Duration::from_secs(15),
     )?;
+
     set_source_and_sink_metrics(&args.archive_sink, &args.block_data_source, &metrics);
 
     let archive_writer = args.archive_sink.build_block_data_archive(&metrics).await?;
@@ -53,6 +67,8 @@ async fn main() -> Result<()> {
         Some(source) => Some(source.build(&metrics).await?),
         None => None,
     };
+
+    let mut worker_handles: Vec<JoinHandle<Result<()>>> = Vec::new();
 
     // Confirm connectivity
     if !args.skip_connectivity_check {
@@ -68,23 +84,25 @@ async fn main() -> Result<()> {
 
     if let Some(path) = args.bft_block_path {
         info!("Spawning bft block archive worker...");
-        tokio::spawn(bft_block_archive_worker(
+        let handle = tokio::spawn(bft_block_archive_worker(
             archive_writer.store.clone(),
             path,
             Duration::from_secs(args.bft_block_poll_freq_secs),
             metrics.clone(),
             Some(Duration::from_secs(args.bft_block_min_age_secs)),
         ));
+        worker_handles.push(handle);
     }
 
     if let Some(path) = args.forkpoint_path {
         info!("Spawning forkpoint checkpoint worker...");
-        tokio::spawn(file_checkpoint_worker(
+        let handle = tokio::spawn(file_checkpoint_worker(
             archive_writer.store.clone(),
             path,
             "forkpoint".to_owned(),
             Duration::from_secs(args.forkpoint_checkpoint_freq_secs),
         ));
+        worker_handles.push(handle);
     }
 
     for path in args.additional_files_to_checkpoint {
@@ -93,25 +111,87 @@ async fn main() -> Result<()> {
         };
         let file_name = file_name.to_owned();
         info!("Spawning {} checkpoint worker...", &file_name,);
-        tokio::spawn(file_checkpoint_worker(
+        worker_handles.push(tokio::spawn(file_checkpoint_worker(
             archive_writer.store.clone(),
             path,
             file_name,
             Duration::from_secs(args.additional_checkpoint_freq_secs),
-        ));
+        )));
     }
 
-    tokio::spawn(archive_worker(
-        block_data_source,
-        fallback_block_data_source,
-        archive_writer,
-        args.max_blocks_per_iteration,
-        args.max_concurrent_blocks,
-        args.start_block,
-        args.stop_block,
-        args.unsafe_skip_bad_blocks,
-        metrics,
-    ))
-    .await
-    .map_err(Into::into)
+    for path in args.additional_dirs_to_archive {
+        info!(
+            "Spawning {} folder archive worker...",
+            &path.file_name().unwrap().to_string_lossy()
+        );
+        let handle = tokio::spawn(recursive_dir_archiver(
+            archive_writer.store.clone(),
+            path,
+            Duration::from_millis((args.additional_dirs_archive_freq_secs * 1000.0) as u64),
+            args.additional_dirs_exclude_prefix.clone(),
+            metrics.clone(),
+            Some(Duration::from_secs(1)),
+            Duration::from_secs(60 * 60), // 1 hour hot TTL
+        ));
+        worker_handles.push(handle);
+    }
+
+    let archive_worker_opts = ArchiveWorkerOpts {
+        max_blocks_per_iteration: args.max_blocks_per_iteration,
+        max_concurrent_blocks: args.max_concurrent_blocks,
+        stop_block: args.stop_block,
+        unsafe_skip_bad_blocks: args.unsafe_skip_bad_blocks,
+        require_traces: args.require_traces,
+        traces_only: args.traces_only,
+        async_backfill: args.async_backfill,
+    };
+
+    if !args.unsafe_disable_normal_archiving {
+        tokio::spawn(archive_worker(
+            block_data_source,
+            fallback_block_data_source,
+            archive_writer,
+            archive_worker_opts,
+            metrics,
+        ))
+        .await?;
+    } else {
+        info!("Normal archiving disabled, only running auxiliary workers");
+    }
+
+    for handle in worker_handles {
+        handle.await??;
+    }
+
+    Ok(())
+}
+
+async fn handle_command(cmd: Commands) -> Result<()> {
+    match cmd {
+        Commands::SetStartBlock {
+            block,
+            archive_sink,
+            async_backfill,
+        } => {
+            let metrics = Metrics::none();
+            let archive = archive_sink.build_block_data_archive(&metrics).await?;
+
+            let latest_kind = if async_backfill {
+                LatestKind::UploadedAsyncBackfill
+            } else {
+                LatestKind::Uploaded
+            };
+
+            archive.update_latest(block, latest_kind).await?;
+
+            let key_name = match latest_kind {
+                LatestKind::Uploaded => "latest",
+                LatestKind::UploadedAsyncBackfill => "latest_uploaded_async_backfill",
+                _ => unreachable!(),
+            };
+
+            println!("Set latest marker: key=\"{key_name}\", block={block}");
+            Ok(())
+        }
+    }
 }

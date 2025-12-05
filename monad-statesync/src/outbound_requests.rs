@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{btree_map::Entry, BTreeMap, BTreeSet, HashMap},
+    collections::{btree_map::Entry, BTreeMap, BTreeSet, HashMap, HashSet},
     marker::PhantomData,
     time::{Duration, Instant},
 };
@@ -28,8 +28,12 @@ use monad_types::NodeId;
 use rand::seq::IteratorRandom;
 
 pub(crate) struct OutboundRequests<PT: PubKey> {
-    // List of peers with their negotiated state sync version
-    peers: HashMap<NodeId<PT>, StateSyncVersion>,
+    // List of trusted peers with their negotiated state sync version
+    // This set can expand
+    peers: HashMap<NodeId<PT>, PeerInfo>,
+    // List of peers that have been pruned
+    pruned_peers: HashSet<NodeId<PT>>,
+
     max_parallel_requests: usize,
     request_timeout: Duration,
 
@@ -38,6 +42,27 @@ pub(crate) struct OutboundRequests<PT: PubKey> {
 
     /// for each prefix, the node (if any) that all further responses must come from
     prefix_peers: HashMap<u64, NodeId<PT>>,
+}
+
+struct PeerInfo {
+    version: StateSyncVersion,
+    last_timeout: Option<Instant>,
+}
+
+impl Default for PeerInfo {
+    fn default() -> Self {
+        Self {
+            version: SELF_STATESYNC_VERSION,
+            last_timeout: None,
+        }
+    }
+}
+
+impl PeerInfo {
+    fn with_version(mut self, version: StateSyncVersion) -> Self {
+        self.version = version;
+        self
+    }
 }
 
 struct InFlightRequest<PT: PubKey> {
@@ -61,7 +86,7 @@ impl<PT: PubKey> InFlightRequest<PT> {
     fn new(peer: NodeId<PT>) -> Self {
         Self {
             peer,
-            last_active: std::time::Instant::now(),
+            last_active: Instant::now(),
             responses: BTreeMap::default(),
             seen_nonces: Default::default(),
             response_index: 0,
@@ -112,7 +137,7 @@ impl<PT: PubKey> InFlightRequest<PT> {
             }
         }
         tracing::debug!(?from, ?response, "applying statesync response");
-        self.last_active = std::time::Instant::now();
+        self.last_active = Instant::now();
 
         if response.response_index < self.response_index {
             tracing::debug!(
@@ -160,16 +185,17 @@ impl<PT: PubKey> OutboundRequests<PT> {
     pub fn new(
         max_parallel_requests: usize,
         request_timeout: Duration,
-        peers: Vec<NodeId<PT>>,
+        init_peers: &[NodeId<PT>],
     ) -> Self {
         assert!(max_parallel_requests > 0);
         // Initialize peers with the maximum state sync version, it will be negotiated
         // down if not supported by peer.
         Self {
-            peers: peers
-                .into_iter()
-                .map(|peer| (peer, SELF_STATESYNC_VERSION))
+            peers: init_peers
+                .iter()
+                .map(|&peer| (peer, PeerInfo::default()))
                 .collect(),
+            pruned_peers: Default::default(),
             max_parallel_requests,
             request_timeout,
 
@@ -183,6 +209,10 @@ impl<PT: PubKey> OutboundRequests<PT> {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.pending_requests.is_empty() && self.in_flight_requests.is_empty()
+    }
+
+    pub fn is_trusted_peer(&self, peer: &NodeId<PT>) -> bool {
+        self.peers.contains_key(peer)
     }
 
     pub fn clear_prefix_peers(&mut self) {
@@ -256,8 +286,12 @@ impl<PT: PubKey> OutboundRequests<PT> {
                 bad_version
             );
             self.peers.remove(&from);
+            self.pruned_peers.insert(from);
         } else {
-            self.peers.insert(from, bad_version.max_version);
+            self.peers.insert(
+                from,
+                PeerInfo::default().with_version(bad_version.max_version),
+            );
         }
         let requests_to_remove: Vec<_> = self
             .in_flight_requests
@@ -275,21 +309,85 @@ impl<PT: PubKey> OutboundRequests<PT> {
         }
     }
 
-    fn choose_peer(&self, prefix: u64) -> NodeId<PT> {
-        *self
-            .prefix_peers
-            .get(&prefix)
-            .or_else(|| self.peers.keys().choose(&mut rand::thread_rng()))
-            .expect("unable to send statesync request, no peers")
+    pub fn handle_not_whitelisted(&mut self, from: NodeId<PT>) {
+        tracing::debug!(
+            ?from,
+            "peer does not serve statesync request, removing from peer list"
+        );
+        self.peers.remove(&from);
+        self.pruned_peers.insert(from);
+
+        let requests_to_remove: Vec<_> = self
+            .in_flight_requests
+            .iter()
+            .filter(|(_, in_flight_request)| in_flight_request.peer == from)
+            .map(|(request, _)| *request)
+            .collect();
+
+        for request in requests_to_remove {
+            self.in_flight_requests.remove(&request);
+            self.pending_requests.insert(request);
+        }
+    }
+
+    pub fn expand_upstream_peers(&mut self, new_peers: &[NodeId<PT>]) {
+        let new_peers: Vec<_> = new_peers
+            .iter()
+            .filter(|&peer| !self.peers.contains_key(peer) && !self.pruned_peers.contains(peer))
+            .cloned()
+            .collect();
+        if new_peers.is_empty() {
+            return;
+        }
+        tracing::debug!(?new_peers, "expanding upstream statesync peer set");
+
+        for peer in new_peers {
+            self.peers.insert(peer, PeerInfo::default());
+        }
+    }
+
+    fn choose_peer(&self, prefix: u64) -> Option<NodeId<PT>> {
+        if let Some(prefix_peer) = self.prefix_peers.get(&prefix) {
+            return Some(*prefix_peer);
+        }
+
+        if self.peers.is_empty() {
+            // no peers left to statesync from
+            return None;
+        }
+
+        // Find oldest timeout among all peers
+        let maybe_oldest_timeout = self
+            .peers
+            .values()
+            .map(|info| info.last_timeout)
+            .min()
+            .expect("peers not empty");
+
+        // pick randomly among all nodes sharing oldest timeout
+        // in practice, the candidate set is only >1 if >1 peers have never timed out
+        let peer = self
+            .peers
+            .iter()
+            .filter_map(|(peer, info)| (info.last_timeout <= maybe_oldest_timeout).then_some(peer))
+            .choose(&mut rand::thread_rng())
+            .expect("peers not empty");
+        Some(*peer)
     }
 
     // Select new peer, update version to the peer's version and insert to inflight requests
-    fn insert_request(&mut self, mut to_send: StateSyncRequest) -> (NodeId<PT>, StateSyncRequest) {
-        let peer = self.choose_peer(to_send.prefix);
-        to_send.version = self.peers.get(&peer).copied().expect("peer not found");
+    // If no peer is available, insert to pending requests instead and yield
+    #[must_use]
+    fn insert_request(&mut self, mut to_send: StateSyncRequest) -> RequestPollResult<PT> {
+        let Some(peer) = self.choose_peer(to_send.prefix) else {
+            self.pending_requests.insert(to_send);
+            // no peers left to statesync from, so yield forever
+            return RequestPollResult::Timer(None);
+        };
+        to_send.version = self.peers.get(&peer).expect("peer not found").version;
         self.in_flight_requests
             .insert(to_send, InFlightRequest::new(peer));
-        (peer, to_send)
+        RequestPollResult::Request(peer, to_send)
     }
 
     #[must_use]
@@ -299,8 +397,7 @@ impl<PT: PubKey> OutboundRequests<PT> {
             && !self.pending_requests.is_empty()
         {
             let to_send = self.pending_requests.pop_first().expect("!is_empty()");
-            let (peer, request) = self.insert_request(to_send);
-            return RequestPollResult::Request(peer, request);
+            return self.insert_request(to_send);
         }
 
         // find request that will timeout first
@@ -320,11 +417,15 @@ impl<PT: PubKey> OutboundRequests<PT> {
             ));
         }
 
+        // request timed out
+        if let Some(peer) = self.peers.get_mut(&in_flight_request.peer) {
+            peer.last_timeout = Some(Instant::now());
+        }
+
         // Reinitialize request since selecting new peer may change the version
         let to_send = *request;
         self.in_flight_requests.remove(&to_send);
 
-        let (peer, request) = self.insert_request(to_send);
-        RequestPollResult::Request(peer, request)
+        self.insert_request(to_send)
     }
 }

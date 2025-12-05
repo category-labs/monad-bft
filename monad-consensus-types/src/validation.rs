@@ -25,6 +25,10 @@ pub enum Error {
     InvalidTcRound,
     /// There are duplicate (tip_round, high_qc_round) in the TC
     DuplicateTcTipRound,
+    /// Empty signers for a (tip_round, high_qc_round) in the TC
+    EmptySignersTcTipRound,
+    /// Too many (tip_round, high_qc_round) in the TC
+    TooManyTcTipRound,
     /// The SignatureCollection doesn't have supermajority of the stake signed
     InsufficientStake,
     /// Required validator set (or cert pubkeys) not in validators epoch mapping

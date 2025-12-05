@@ -28,8 +28,8 @@ pub struct Request<'p> {
     #[serde(deserialize_with = "deserialize_jsonrpc")]
     pub jsonrpc: String,
     pub method: String,
-    #[serde(borrow)]
-    pub params: &'p RawValue,
+    #[serde(borrow, default)]
+    pub params: RequestParams<'p>,
     #[serde(deserialize_with = "deserialize_id")]
     pub id: RequestId,
 }
@@ -43,6 +43,19 @@ where
         Ok(value)
     } else {
         Err(serde::de::Error::custom("jsonrpc must be \"2.0\""))
+    }
+}
+
+#[derive(Copy, Clone, Debug, Default, Serialize, Deserialize)]
+pub struct RequestParams<'p>(#[serde(borrow)] Option<&'p RawValue>);
+
+impl<'p> RequestParams<'p> {
+    pub fn new(params: &'p RawValue) -> Self {
+        Self(Some(params))
+    }
+
+    pub fn get(&self) -> &'p str {
+        self.0.map_or("", RawValue::get)
     }
 }
 
@@ -124,7 +137,7 @@ impl<'p> Request<'p> {
         Self {
             jsonrpc: JSONRPC_VERSION.into(),
             method,
-            params,
+            params: RequestParams::new(params),
             id: RequestId::Number(id),
         }
     }
@@ -368,6 +381,28 @@ impl JsonRpcError {
         }
     }
 
+    /// EIP-7966 errors
+    pub fn tx_sync_timeout(tx_hash: String, timeout_ms: u64) -> Self {
+        Self {
+            code: 4,
+            message: format!(
+                "Transaction receipt not available within {}ms timeout",
+                timeout_ms
+            ),
+            data: Some(serde_json::json!({
+                "hash": tx_hash
+            })),
+        }
+    }
+
+    pub fn tx_sync_unready() -> Self {
+        Self {
+            code: 5,
+            message: "The transaction is not ready to be processed".into(),
+            data: None,
+        }
+    }
+
     pub fn eth_call_error(message: String, data: Option<String>) -> Self {
         Self {
             code: -32603,
@@ -491,6 +526,34 @@ mod test {
             assert_eq!(method, "foobar");
             assert_eq!(params.get(), "[42, 43]");
             assert_eq!(id, RequestId::String("string-id".into()));
+        }
+    }
+
+    #[test]
+    fn test_missing_params() {
+        let s = r#"
+                {
+                    "jsonrpc": "2.0",
+                    "method": "foobar",
+                    "id": 1
+                }
+                "#;
+
+        for result in [
+            serde_json::from_str(s),
+            serde_json::from_slice(s.as_bytes()),
+        ] {
+            let Request {
+                jsonrpc,
+                method,
+                params,
+                id,
+            } = result.unwrap();
+
+            assert_eq!(jsonrpc, "2.0");
+            assert_eq!(method, "foobar");
+            assert_eq!(params.get(), "");
+            assert_eq!(id, RequestId::Number(1));
         }
     }
 }

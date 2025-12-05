@@ -1,0 +1,5 @@
+---
+source: monad-peer-discovery/src/message.rs
+expression: "hex::encode(encoded)"
+---
+"c20105"

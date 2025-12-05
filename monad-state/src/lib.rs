@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt::Debug,
     marker::PhantomData,
     ops::Deref,
@@ -54,11 +54,11 @@ use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor_glue::{
-    BlockSyncEvent, ClearMetrics, Command, ConfigEvent, ConfigReloadCommand, ConsensusEvent,
-    ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers, LedgerCommand,
-    MempoolEvent, Message, MonadEvent, ReadCommand, ReloadConfig, RouterCommand, StateSyncCommand,
-    StateSyncEvent, StateSyncNetworkMessage, TxPoolCommand, ValSetCommand, ValidatorEvent,
-    WriteCommand,
+    BlockSyncEvent, ClearMetrics, Command, ConfigEvent, ConfigFileCommand, ConfigReloadCommand,
+    ConsensusEvent, ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers,
+    LedgerCommand, MempoolEvent, Message, MonadEvent, ReadCommand, ReloadConfig, RouterCommand,
+    StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest, TxPoolCommand,
+    ValSetCommand, ValidatorEvent, WriteCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{
@@ -75,16 +75,17 @@ use monad_validator::{
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
+use tracing::warn;
 
 use self::{
-    blocksync::BlockSyncChildState, consensus::ConsensusChildState, epoch::EpochChildState,
-    statesync::BlockBuffer,
+    blocksync::BlockSyncChildState, consensus::ConsensusChildState, statesync::BlockBuffer,
 };
 
 mod blocksync;
 mod consensus;
-mod epoch;
 mod statesync;
+
+const STATESYNC_BLOCK_THRESHOLD: SeqNum = SeqNum(30_000);
 
 pub(crate) fn handle_validation_error(e: validation::Error, metrics: &mut Metrics) {
     match e {
@@ -102,6 +103,12 @@ pub(crate) fn handle_validation_error(e: validation::Error, metrics: &mut Metric
         }
         validation::Error::DuplicateTcTipRound => {
             metrics.validation_errors.duplicate_tc_tip_round += 1;
+        }
+        validation::Error::EmptySignersTcTipRound => {
+            metrics.validation_errors.empty_signers_tc_tip_round += 1;
+        }
+        validation::Error::TooManyTcTipRound => {
+            metrics.validation_errors.too_many_tc_tip_round += 1;
         }
         validation::Error::InsufficientStake => {
             metrics.validation_errors.insufficient_stake += 1;
@@ -265,7 +272,7 @@ where
             let (vset, vmap) = validators
                 .get(&epoch)
                 .ok_or(validation::Error::ValidatorSetDataUnavailable)?;
-            let leader = election.get_leader(round, epoch, vset.get_members());
+            let leader = election.get_leader(round, vset.get_members());
             Ok((vset, vmap, leader))
         };
 
@@ -409,6 +416,9 @@ where
     epoch_manager: EpochManager,
     /// Maps the epoch number to validator stakes and certificate pubkeys
     val_epoch_map: ValidatorsEpochMapping<VTF, SCT>,
+    /// Excludes self node id
+    /// Expiry NodeId -> round
+    secondary_raptorcast_peers: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Round>,
 
     block_timestamp: BlockTimestamp,
     block_validator: BVT,
@@ -421,6 +431,13 @@ where
 
     /// Versions for client and protocol validation
     version: MonadVersion,
+
+    /// Whitelisted full nodes for statesync filtering
+    whitelisted_statesync_nodes: HashSet<NodeId<CertificateSignaturePubKey<ST>>>,
+    // Expand statesync client peer set to its group
+    // - For validators, this means all validators
+    // - For full nodes, this means all secondary raptorcast peers
+    statesync_expand_to_group: bool,
 }
 
 impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
@@ -442,6 +459,10 @@ where
             ConsensusMode::Sync { .. } => None,
             ConsensusMode::Live(consensus) => Some(consensus),
         }
+    }
+
+    pub fn is_statesyncing(&self) -> bool {
+        self.consensus().is_none()
     }
 
     pub fn state_backend(&self) -> &SBT {
@@ -477,7 +498,7 @@ where
     }
 
     pub fn get_self_stake_bps(&self) -> u64 {
-        if matches!(self.consensus, ConsensusMode::Sync { .. }) {
+        if self.is_statesyncing() {
             return 0;
         }
 
@@ -501,6 +522,44 @@ where
 
     pub fn metrics(&self) -> &Metrics {
         &self.metrics
+    }
+
+    /// Check if a statesync request from the given sender should be serviced.
+    ///
+    /// Service rules:
+    /// - If self is a validator: only service requests from validators or whitelisted full nodes
+    /// - If self is a full node: service all requests
+    fn should_service_statesync_request(
+        &mut self,
+        sender: &NodeId<CertificateSignaturePubKey<ST>>,
+        _request: &StateSyncRequest,
+    ) -> bool {
+        // Check if self is a validator
+        let self_role = self.get_role();
+
+        match self_role {
+            // Full nodes service all requests
+            Role::FullNode => true,
+            // Validator only service requests from other validators or whitelisted full nodes
+            Role::Validator => {
+                let current_epoch = self.consensus.current_epoch();
+
+                // Check if sender is a validator
+                if let Some(validator_set) = self.val_epoch_map.get_val_set(&current_epoch) {
+                    if validator_set.get_members().contains_key(sender) {
+                        return true;
+                    }
+                }
+
+                // Check if sender is a whitelisted node
+                if self.whitelisted_statesync_nodes.contains(sender) {
+                    return true;
+                }
+
+                // Drop the request
+                false
+            }
+        }
     }
 }
 
@@ -790,6 +849,8 @@ where
     pub certkey: SignatureCollectionKeyPairType<SCT>,
     pub beneficiary: [u8; 20],
     pub block_sync_override_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
+    pub whitelisted_statesync_nodes: HashSet<NodeId<SCT::NodeIdPubKey>>,
+    pub statesync_expand_to_group: bool,
 
     pub consensus_config: ConsensusConfig<CCT, CRT>,
 
@@ -872,6 +933,7 @@ where
             leader_election: self.leader_election,
             epoch_manager,
             val_epoch_map,
+            secondary_raptorcast_peers: Default::default(),
 
             block_timestamp,
             block_validator: self.block_validator,
@@ -881,6 +943,9 @@ where
 
             metrics: Metrics::default(),
             version: MonadVersion::version(),
+
+            whitelisted_statesync_nodes: self.whitelisted_statesync_nodes,
+            statesync_expand_to_group: self.statesync_expand_to_group,
         };
 
         let mut init_cmds = Vec::new();
@@ -982,13 +1047,41 @@ where
                     .collect::<Vec<_>>()
             }
 
-            MonadEvent::ValidatorEvent(validator_event) => {
-                let validator_cmds = EpochChildState::new(self).update(validator_event);
+            MonadEvent::ValidatorEvent(ValidatorEvent::UpdateValidators(validator_set_data)) => {
+                let val_ids = validator_set_data.validators.get_pubkeys();
 
-                validator_cmds
-                    .into_iter()
-                    .flat_map(Into::<Vec<Command<_, _, _, _, _, _, _, _, _>>>::into)
-                    .collect::<Vec<_>>()
+                self.val_epoch_map.insert(
+                    validator_set_data.epoch,
+                    validator_set_data.validators.get_stakes(),
+                    ValidatorMapping::new(validator_set_data.validators.get_cert_pubkeys()),
+                );
+
+                let mut cmds = vec![
+                    Command::RouterCommand(RouterCommand::AddEpochValidatorSet {
+                        epoch: validator_set_data.epoch,
+                        validator_set: validator_set_data.validators.get_stakes(),
+                    }),
+                    Command::ConfigFileCommand(ConfigFileCommand::ValidatorSetData {
+                        validator_set_data,
+                    }),
+                ];
+
+                // if expand_to_group and not live and is_validator, emit
+                // validator peers to statesync
+                if self.statesync_expand_to_group
+                    && self.is_statesyncing()
+                    && val_ids.contains(&self.nodeid)
+                {
+                    let vals_excl_self: Vec<_> = val_ids
+                        .into_iter()
+                        .filter(|peer| peer != &self.nodeid)
+                        .collect();
+                    cmds.push(Command::StateSyncCommand(
+                        StateSyncCommand::ExpandUpstreamPeers(vals_excl_self),
+                    ))
+                }
+
+                cmds
             }
 
             MonadEvent::MempoolEvent(event) => {
@@ -997,8 +1090,27 @@ where
             }
             MonadEvent::StateSyncEvent(state_sync_event) => match state_sync_event {
                 StateSyncEvent::Inbound(sender, message) => {
-                    // TODO we need to add some sort of throttling to who we service... right now
-                    // we'll service indiscriminately
+                    // Filter statesync requests based on sender
+                    if let StateSyncNetworkMessage::Request(request) = message {
+                        if !self.should_service_statesync_request(&sender, &request) {
+                            tracing::debug!(
+                                ?sender,
+                                "dropping statesync request from non-whitelisted sender"
+                            );
+
+                            // Send NotWhitelisted response to sender so that it can look for other peers
+                            return vec![Command::RouterCommand(RouterCommand::Publish {
+                                target: RouterTarget::TcpPointToPoint {
+                                    to: sender,
+                                    completion: None,
+                                },
+                                message: VerifiedMonadMessage::StateSyncMessage(
+                                    StateSyncNetworkMessage::NotWhitelisted,
+                                ),
+                            })];
+                        }
+                    }
+
                     vec![Command::StateSyncCommand(StateSyncCommand::Message((
                         sender, message,
                     )))]
@@ -1137,6 +1249,15 @@ where
                 ConfigEvent::ConfigUpdate(config_update) => {
                     self.block_sync
                         .set_override_peers(config_update.blocksync_override_peers);
+
+                    // Store whitelisted full nodes for statesync filtering
+                    self.whitelisted_statesync_nodes = config_update
+                        .dedicated_full_nodes
+                        .iter()
+                        .chain(config_update.prioritized_full_nodes.iter())
+                        .cloned()
+                        .collect();
+
                     let mut cmds = Vec::new();
                     cmds.push(Command::RouterCommand(RouterCommand::UpdateFullNodes {
                         dedicated_full_nodes: config_update.dedicated_full_nodes,
@@ -1162,6 +1283,39 @@ where
                     })]
                 }
             },
+            MonadEvent::SecondaryRaptorcastPeersUpdate {
+                expiry_round,
+                confirm_group_peers,
+            } => {
+                let peers_excl_self: Vec<_> = confirm_group_peers
+                    .into_iter()
+                    .filter(|peer| peer != &self.nodeid)
+                    .collect();
+
+                let current_round = self.consensus.current_round();
+
+                // Trim peers that have expired
+                self.secondary_raptorcast_peers
+                    .retain(|_, expiry_round| *expiry_round > current_round);
+
+                // Push back existing peer's expiry round, or insert new if not found
+                for &peer in &peers_excl_self {
+                    self.secondary_raptorcast_peers
+                        .entry(peer)
+                        .and_modify(|expiry| *expiry = (*expiry).max(expiry_round))
+                        .or_insert(expiry_round);
+                }
+
+                // if expand_to_group and not live, emit secondary raptorcast
+                // peers to statesync
+                let mut cmds = Vec::new();
+                if self.statesync_expand_to_group && self.is_statesyncing() {
+                    cmds.push(Command::StateSyncCommand(
+                        StateSyncCommand::ExpandUpstreamPeers(peers_excl_self),
+                    ))
+                }
+                cmds
+            }
         }
     }
 
@@ -1263,6 +1417,21 @@ where
                 "always 1 execution result after first k-1 blocks for now"
             );
 
+            let maybe_latest_finalized_block = self.state_backend.raw_read_latest_finalized_block();
+            if let Some(latest_finalized_block) = maybe_latest_finalized_block {
+                if latest_finalized_block.saturating_add(STATESYNC_BLOCK_THRESHOLD) < delay_seq_num
+                {
+                    warn!(
+                        ?latest_finalized_block,
+                        ?delay_seq_num,
+                        "local tip over {} blocks older than root. consider restoring from snapshot first",
+                        STATESYNC_BLOCK_THRESHOLD.0
+                    );
+                }
+            } else {
+                warn!("starting from empty state, consider fetching a snapshot first");
+            }
+
             self.metrics.consensus_events.trigger_state_sync += 1;
             return vec![Command::StateSyncCommand(StateSyncCommand::RequestSync(
                 delayed_execution_result
@@ -1301,6 +1470,7 @@ where
                         // this is because these blocks are already committed by majority
                         None,
                         &self.consensus_config.chain_config,
+                        &mut self.metrics,
                     )
                     .expect("majority committed invalid block")
             })
@@ -1383,6 +1553,17 @@ where
         );
         self.consensus = ConsensusMode::Live(consensus);
         commands.push(Command::StateSyncCommand(StateSyncCommand::StartExecution));
+        // technically we should be waiting for the vote pacing timer
+        // to expire before we set scheduled_vote to TimerFired
+        //
+        // in practice, it won't make a difference, because f+1 nodes
+        // would need to restart at the exact same time and finish
+        // statesyncing/blocksyncing within the vote pacing window
+        commands.extend(
+            self.update(MonadEvent::ConsensusEvent(ConsensusEvent::SendVote(
+                current_round,
+            ))),
+        );
         commands.extend(
             self.update(MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(
                 current_round,
@@ -1511,7 +1692,7 @@ mod test {
             })
             .collect();
 
-        (forkpoint, validator_sets, WeightedRoundRobin::new(Epoch(1)))
+        (forkpoint, validator_sets, WeightedRoundRobin::default())
     }
 
     #[test]

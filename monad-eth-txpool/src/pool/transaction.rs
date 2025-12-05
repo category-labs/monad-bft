@@ -23,9 +23,10 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{
-    compute_txn_max_gas_cost, compute_txn_max_value, validation::static_validate_transaction,
+    compute_txn_max_gas_cost, compute_txn_max_value,
+    validation::{static_validate_transaction, StaticValidationError},
 };
-use monad_eth_txpool_types::{EthTxPoolDropReason, TransactionError};
+use monad_eth_txpool_types::EthTxPoolDropReason;
 use monad_eth_types::EthExecutionProtocol;
 use monad_system_calls::{validator::SystemTransactionValidator, SYSTEM_SENDER_ETH_ADDRESS};
 use monad_tfm::base_fee::{MIN_BASE_FEE, PRE_TFM_BASE_FEE};
@@ -72,7 +73,9 @@ impl ValidEthTransaction {
         if tx.eip2718_encoded_length() > max_eip2718_encoded_length(execution_params) {
             return Err((
                 tx,
-                EthTxPoolDropReason::NotWellFormed(TransactionError::EncodedLengthLimitExceeded),
+                EthTxPoolDropReason::NotWellFormed(
+                    StaticValidationError::EncodedLengthLimitExceeded,
+                ),
             ));
         }
 
@@ -108,11 +111,14 @@ impl ValidEthTransaction {
 
         let valid_recovered_authorizations =
             if let Some(signed_authorizations) = tx.authorization_list() {
+                // Txpool sets a limit on the number of authorizations per EIP-7702 transaction
+                // to upper bound signature verification costs by txpool.
+                // This limit is not enforced on the protocol level.
                 if signed_authorizations.len() > MAX_EIP7702_AUTHORIZATION_LIST_LENGTH {
                     return Err((
                         tx,
                         EthTxPoolDropReason::NotWellFormed(
-                            TransactionError::AuthorizationListLengthLimitExceeded,
+                            StaticValidationError::AuthorizationListLengthLimitExceeded,
                         ),
                     ));
                 }
@@ -120,12 +126,6 @@ impl ValidEthTransaction {
                 match signed_authorizations
                     .iter()
                     .filter_map(|signed_authorization| {
-                        if signed_authorization.chain_id != 0
-                            && signed_authorization.chain_id != chain_id
-                        {
-                            return None;
-                        }
-
                         let Ok(authority) = signed_authorization.recover_authority() else {
                             return None;
                         };
@@ -167,7 +167,7 @@ impl ValidEthTransaction {
         chain_id: u64,
         chain_params: &ChainParams,
         execution_params: &ExecutionChainParams,
-    ) -> Result<(), TransactionError> {
+    ) -> Result<(), StaticValidationError> {
         static_validate_transaction(&self.tx, chain_id, chain_params, execution_params)
     }
 
@@ -237,6 +237,22 @@ impl ValidEthTransaction {
     }
 
     pub fn has_higher_priority(&self, other: &Self, _base_fee: u64) -> bool {
+        // Note: When considering whether a tx has higher priority than another (and thus should
+        // replace it), we do not enforce a minimum gas fee bump. This behavior deviates from
+        // Ethereum clients like geth for two primary reasons:
+        //  1) By the time txpool is calling this function to check the replacement order, it has
+        //     already expended almost all of the computational resources required to insert the tx
+        //     so there's little additional cost in allowing small fee bump txs.
+        //  2) Ethereum has a shared mempool where nodes broadcast and exchange txs with other nodes
+        //     to keep their mempools in sync. This means that gossiped transaction insertion with
+        //     a small fee bump incurs a large network bandwidth cost for all nodes choosing to
+        //     allow said transactions in their mempools. The Monad client, on the other hand, only
+        //     forwards transactions received from an RPC running on the same host to a handful of
+        //     validator nodes which in turn do not forward these transactions since they were not
+        //     received over IPC from the same host. If the node has sufficient network bandwidth
+        //     to forward the transaction, then there is little cost to the network in allowing
+        //     transactions with small fee bumps.
+
         self.tx.max_fee_per_gas() > other.tx.max_fee_per_gas()
             && self.tx.max_priority_fee_per_gas() >= other.tx.max_priority_fee_per_gas()
     }

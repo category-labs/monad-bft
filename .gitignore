@@ -9,9 +9,12 @@
 /docker/devnet/monad/config/forkpoint.toml
 
 test-keys
+.claude
+AGENTS.md
 .vscode
 *.swp
 .idea
+perf.data*
 .cargo/config.toml
 /*.log
 .gdbinit
@@ -19,3 +22,5 @@ test-keys
 /venv
 /logs
 **/proptest-regressions/
+/reports
+deployed_contracts.json

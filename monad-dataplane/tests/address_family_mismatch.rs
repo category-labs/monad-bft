@@ -21,6 +21,8 @@ use tracing::debug;
 /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
 const UP_BANDWIDTH_MBPS: u64 = 1_000;
 
+const LEGACY_SOCKET: &str = "legacy";
+
 const BIND_ADDRS: [&str; 2] = ["0.0.0.0:19100", "127.0.0.1:19101"];
 
 const TX_ADDRS: [&str; 2] = ["127.0.0.1:19200", "[::1]:19201"];
@@ -40,22 +42,28 @@ fn address_family_mismatch() {
     }));
 
     for addr in BIND_ADDRS {
-        let dataplane = DataplaneBuilder::new(&addr.parse().unwrap(), UP_BANDWIDTH_MBPS).build();
+        let bind_addr = addr.parse().unwrap();
+        let mut dataplane = DataplaneBuilder::new(&bind_addr, UP_BANDWIDTH_MBPS)
+            .extend_udp_sockets(vec![monad_dataplane::UdpSocketConfig {
+                socket_addr: bind_addr,
+                label: LEGACY_SOCKET.to_string(),
+            }])
+            .build();
 
-        // Allow Dataplane thread to set itself up.
         assert!(dataplane.block_until_ready(Duration::from_secs(1)));
+
+        let socket = dataplane.take_udp_socket_handle(LEGACY_SOCKET).unwrap();
 
         for tx_addr in TX_ADDRS {
             debug!("sending to {} from {}", tx_addr, addr);
 
-            dataplane.udp_write_broadcast(BroadcastMsg {
+            socket.write_broadcast(BroadcastMsg {
                 targets: vec![tx_addr.parse().unwrap(); 1],
                 payload: vec![0; DEFAULT_SEGMENT_SIZE.into()].into(),
                 stride: DEFAULT_SEGMENT_SIZE,
             });
         }
 
-        // Allow Dataplane thread to catch up.
         sleep(Duration::from_millis(10));
     }
 }

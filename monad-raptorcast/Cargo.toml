@@ -21,6 +21,7 @@ monad-raptor = { workspace = true }
 monad-secp = { workspace = true }
 monad-types = { workspace = true }
 monad-validator = { workspace = true }
+monad-wireauth = { workspace = true }
 
 alloy-rlp = { workspace = true }
 bitvec = { workspace = true }
@@ -36,18 +37,31 @@ rand = { workspace = true }
 rand_chacha = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["macros"] }
+zerocopy = { workspace = true }
 
 [dev-dependencies]
 monad-testutil = { workspace = true }
 alloy-primitives = { workspace = true }
 
+byte-unit = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
-rstest = { workspace = true }
 criterion = { workspace = true }
+eyre = { workspace = true }
 futures-util = { workspace = true }
+humantime = { workspace = true }
 insta = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
+opentelemetry-otlp = { workspace = true, features = ["metrics", "grpc-tonic"] }
+opentelemetry-semantic-conventions = { workspace = true }
+rand_distr = { workspace = true }
+rstest = { workspace = true }
+serial_test = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+tikv-jemallocator = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "test-util"] }
+toml = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [[bench]]
@@ -60,3 +74,6 @@ harness = false
 
 [[example]]
 name = "service"
+
+[[example]]
+name = "latency"

@@ -15,7 +15,7 @@ ExecStart=/usr/local/bin/monad-node \
     --statesync-ipc-path /home/monad/monad-bft/statesync.sock \
     --ledger-path /home/monad/monad-bft/ledger \
     --triedb-path /dev/triedb \
-    --otel-endpoint "http://0.0.0.0:4317" \
+    --otel-endpoint "http://127.0.0.1:4317" \
     --statesync-sq-thread-cpu 8 \
     --record-metrics-interval-seconds 1 \
     --validators-path /home/monad/monad-bft/config/validators/validators.toml \

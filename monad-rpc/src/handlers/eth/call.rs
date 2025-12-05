@@ -15,7 +15,7 @@
 
 use std::{
     cmp::min,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -25,8 +25,8 @@ use std::{
 
 use alloy_consensus::{Header, SignableTransaction, TxEip1559, TxEip7702, TxEnvelope, TxLegacy};
 use alloy_eips::eip7702::SignedAuthorization;
-use alloy_primitives::{Address, PrimitiveSignature, TxKind, Uint, U256, U64, U8};
-use alloy_rpc_types::AccessList;
+use alloy_primitives::{Address, PrimitiveSignature, TxKind, Uint, B256, U256, U64, U8};
+use alloy_rpc_types::{AccessList, AccessListItem, AccessListResult};
 use monad_chain_config::execution_revision::MonadExecutionRevision;
 use monad_ethcall::{eth_call, CallResult, EthCallExecutor, MonadTracer, StateOverrideSet};
 use monad_rpc_docs::rpc;
@@ -453,6 +453,31 @@ pub fn check_contract_creation_size(call_request: &CallRequest) -> Result<(), Js
     Ok(())
 }
 
+pub fn merge_access_lists(generated: AccessList, original: Option<AccessList>) -> AccessList {
+    let Some(original) = original else {
+        return generated;
+    };
+
+    let mut access_map: HashMap<Address, HashSet<B256>> = HashMap::new();
+
+    for item in generated.0.into_iter().chain(original.0.into_iter()) {
+        access_map
+            .entry(item.address)
+            .or_default()
+            .extend(item.storage_keys.into_iter());
+    }
+
+    let merged_items: Vec<AccessListItem> = access_map
+        .into_iter()
+        .map(|(address, storage_keys)| AccessListItem {
+            address,
+            storage_keys: storage_keys.into_iter().collect(),
+        })
+        .collect();
+
+    AccessList(merged_items)
+}
+
 /// Populate gas limit and gas prices
 pub async fn fill_gas_params<T: Triedb>(
     triedb_env: &T,
@@ -565,10 +590,17 @@ pub struct MonadDebugTraceCallParams {
     tracer: EnrichedTracerObject,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema, Clone)]
+pub struct MonadCreateAccessListParams {
+    pub transaction: CallRequest,
+    pub block: BlockTagOrHash,
+}
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub enum CallParams {
     Call(MonadEthCallParams),
     Trace(MonadDebugTraceCallParams),
+    AccessList(MonadCreateAccessListParams),
 }
 
 impl CallParams {
@@ -577,6 +609,7 @@ impl CallParams {
         match self {
             CallParams::Call(p) => &mut p.transaction,
             CallParams::Trace(p) => &mut p.transaction,
+            CallParams::AccessList(p) => &mut p.transaction,
         }
     }
 
@@ -584,13 +617,15 @@ impl CallParams {
         match self {
             CallParams::Call(p) => p.block.clone(),
             CallParams::Trace(p) => p.block.clone(),
+            CallParams::AccessList(p) => p.block.clone(),
         }
     }
 
-    fn state_overrides(&self) -> &StateOverrideSet {
+    fn state_overrides(&self) -> StateOverrideSet {
         match self {
-            CallParams::Call(p) => &p.state_overrides,
-            CallParams::Trace(p) => &p.tracer.state_overrides,
+            CallParams::Call(p) => p.state_overrides.clone(),
+            CallParams::Trace(p) => p.tracer.state_overrides.clone(),
+            CallParams::AccessList(_) => StateOverrideSet::default(),
         }
     }
 
@@ -606,17 +641,19 @@ impl CallParams {
                     MonadTracer::PreStateTracer
                 }
             }
+            CallParams::AccessList(_) => MonadTracer::AccessListTracer,
         }
     }
 
     /// `true` only for the trace variant.
+    #[allow(dead_code)]
     fn trace(&self) -> bool {
         matches!(self, CallParams::Trace(_))
     }
 }
 
 #[tracing::instrument(level = "debug")]
-async fn prepare_eth_call<T: Triedb + TriedbPath>(
+pub async fn prepare_eth_call<T: Triedb + TriedbPath>(
     triedb_env: &T,
     eth_call_executor: Arc<EthCallExecutor>,
     chain_id: u64,
@@ -656,7 +693,7 @@ async fn prepare_eth_call<T: Triedb + TriedbPath>(
         None => return Err(JsonRpcError::block_not_found()),
     };
 
-    let state_overrides = params.state_overrides().clone();
+    let state_overrides = params.state_overrides();
     let gas_specified = params.tx().gas.is_some();
     let original_tx_gas = params
         .tx()
@@ -696,7 +733,7 @@ async fn prepare_eth_call<T: Triedb + TriedbPath>(
         BlockKey::Proposed(ProposedBlockKey(SeqNum(n), BlockId(Hash(id)))) => (n, Some(id)),
     };
 
-    let state_overrides = params.state_overrides().clone();
+    let state_overrides = params.state_overrides();
     let tracer = params.monad_tracer();
     let header_gas_limit = header.header.gas_limit;
     match eth_call(
@@ -824,8 +861,102 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
             })
         }
 
+        MonadTracer::AccessListTracer => Err(JsonRpcError::invalid_params()),
+
         MonadTracer::NoopTracer => Ok(Box::<RawValue>::default()),
     }
+}
+
+/// Returns an access list containing all addresses and storage slots accessed during a simulated transaction.
+#[rpc(
+    method = "eth_createAccessList",
+    ignore = "chain_id",
+    ignore = "eth_call_executor",
+    ignore = "eth_call_gas_limit"
+)]
+#[allow(non_snake_case)]
+pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
+    triedb_env: &T,
+    eth_call_executor: Arc<EthCallExecutor>,
+    chain_id: u64,
+    eth_call_gas_limit: u64,
+    params: MonadCreateAccessListParams,
+) -> JsonRpcResult<Box<RawValue>> {
+    trace!("monad_createAccessList: {params:?}");
+
+    let raw_payload: Vec<u8> = match prepare_eth_call(
+        triedb_env,
+        eth_call_executor.clone(),
+        chain_id,
+        eth_call_gas_limit,
+        CallParams::AccessList(params.clone()),
+    )
+    .await?
+    {
+        CallResult::Success(monad_ethcall::SuccessCallResult { output_data, .. }) => output_data,
+        CallResult::Failure(error) => {
+            return Err(JsonRpcError::eth_call_error(error.message, error.data))
+        }
+        CallResult::Revert(_) => {
+            return Err(JsonRpcError::eth_call_error(
+                "execution reverted".to_string(),
+                None,
+            ));
+        }
+    };
+
+    let v: serde_cbor::Value = if raw_payload.is_empty() {
+        serde_cbor::Value::Array(vec![])
+    } else {
+        serde_cbor::from_slice(&raw_payload)
+            .map_err(|e| JsonRpcError::internal_error(format!("cbor decode error: {}", e)))?
+    };
+
+    let access_list: AccessList = serde_cbor::value::from_value(v).map_err(|e| {
+        JsonRpcError::internal_error(format!("failed to decode access list: {}", e))
+    })?;
+
+    let mut with_access_list_tx = params.transaction.clone();
+    with_access_list_tx.access_list = Some(merge_access_lists(
+        access_list.clone(),
+        params.transaction.access_list,
+    ));
+
+    let call_params = MonadEthCallParams {
+        transaction: with_access_list_tx,
+        block: params.block,
+        state_overrides: StateOverrideSet::default(),
+    };
+
+    let result: AccessListResult = match prepare_eth_call(
+        triedb_env,
+        eth_call_executor,
+        chain_id,
+        eth_call_gas_limit,
+        CallParams::Call(call_params),
+    )
+    .await?
+    {
+        CallResult::Success(monad_ethcall::SuccessCallResult { gas_used, .. }) => {
+            AccessListResult {
+                access_list,
+                gas_used: U256::from(gas_used),
+                error: None,
+            }
+        }
+        CallResult::Failure(error) => {
+            return Err(JsonRpcError::eth_call_error(error.message, error.data))
+        }
+        CallResult::Revert(_) => {
+            return Err(JsonRpcError::eth_call_error(
+                "execution reverted".to_string(),
+                None,
+            ));
+        }
+    };
+
+    serde_json::value::to_raw_value(&result)
+        .map_err(|e| JsonRpcError::internal_error(format!("json serialization error: {}", e)))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]

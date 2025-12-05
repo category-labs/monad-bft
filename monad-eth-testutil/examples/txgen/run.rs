@@ -29,13 +29,19 @@ use futures::{future::try_join_all, stream::FuturesUnordered, FutureExt};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    config::{Config, DeployedContract, TrafficGen},
+    config::{Config, DeployedContract, RpcWorkflowConfig, TrafficGen},
     generators::make_generator,
-    prelude::*,
+    prelude::{
+        rpc_request_gen::{RpcRequestGenerator, RpcWsCompare},
+        *,
+    },
     report::Report,
     shared::{
-        ecmul::ECMul, eip7702::EIP7702, erc20::ERC20, eth_json_rpc::EthJsonRpc, uniswap::Uniswap,
+        ecmul::ECMul, eip7702::EIP7702, erc20::ERC20, erc4337_entrypoint::EntryPoint,
+        eth_json_rpc::EthJsonRpc, nft_sale::NftSale, simple7702_account::Simple7702Account,
+        uniswap::Uniswap,
     },
+    workers::transform::TransformOptions,
 };
 
 /// Runs the txgen for the given config
@@ -50,15 +56,41 @@ pub async fn run(clients: Vec<ReqwestClient>, config: Config) -> Result<()> {
     }
 
     let mut workload_group_index = 0;
+    let read_client = clients[0].clone();
 
     loop {
-        let current_traffic_gen = &config.workload_groups[workload_group_index];
+        let workload_group = &config.workload_groups[workload_group_index];
         info!(
-            "Starting workload group phase {}: {:?}",
-            workload_group_index, current_traffic_gen.name
+            "Starting workload group phase {}: {}",
+            workload_group_index, workload_group.name
         );
 
-        run_workload_group(&clients, &config, workload_group_index).await?;
+        let start_time = Utc::now();
+        let metrics = Arc::new(Metrics::default());
+        if let Err(e) =
+            run_workload_group(&clients, &config, workload_group_index, metrics.clone()).await
+        {
+            error!(
+                workload_group = workload_group.name,
+                "Failed to run workload group: {e:?}"
+            );
+        }
+
+        if let Some(report_dir) = config.report_dir.as_deref() {
+            let report = Report::new(
+                config.clone(),
+                workload_group_index,
+                start_time,
+                &metrics,
+                &read_client,
+                config.prom_url.clone(),
+            )
+            .await;
+
+            if let Err(e) = report.to_json_file(report_dir.as_ref()) {
+                error!("Failed to write report: {e:?}");
+            }
+        };
 
         workload_group_index = (workload_group_index + 1) % config.workload_groups.len();
     }
@@ -71,6 +103,7 @@ async fn run_workload_group(
     clients: &[ReqwestClient],
     config: &Config,
     workload_group_index: usize,
+    metrics: Arc<Metrics>,
 ) -> Result<()> {
     let workload_group = &config.workload_groups[workload_group_index];
     let read_client = clients[0].clone();
@@ -79,11 +112,68 @@ async fn run_workload_group(
     let shutdown_clone = Arc::clone(&shutdown);
 
     // shared state for monitoring
-    let metrics = Arc::new(Metrics::default());
     let sent_txs = Arc::new(DashMap::with_capacity(100_000));
 
     // Shared tasks for all workers in the workload group
     let mut tasks = FuturesUnordered::new();
+
+    let rpc_config = &workload_group.rpc_generator;
+
+    for workflow in &rpc_config.workflows {
+        match workflow {
+            RpcWorkflowConfig::Indexer(indexer_config) => {
+                let indexer = RpcRequestGenerator::new(
+                    read_client.clone(),
+                    config.ws_url().expect("WS URL is not valid"),
+                    indexer_config.requests_per_block,
+                    1, // num_ws_connections not used by indexer
+                );
+                let shutdown_clone = Arc::clone(&shutdown);
+                tasks.push(
+                    critical_task(
+                        "Indexer",
+                        tokio::spawn(
+                            async move { indexer.run_indexer_workflow(shutdown_clone).await },
+                        ),
+                    )
+                    .boxed(),
+                );
+            }
+            RpcWorkflowConfig::SpamRpcWs(spam_config) => {
+                let spammer = RpcRequestGenerator::new(
+                    read_client.clone(),
+                    config.ws_url().expect("WS URL is not valid"),
+                    spam_config.requests_per_block,
+                    spam_config.num_ws_connections,
+                );
+                let shutdown_clone = Arc::clone(&shutdown);
+                tasks.push(
+                    critical_task(
+                        "Spammer",
+                        tokio::spawn(
+                            async move { spammer.run_wallet_workflow(shutdown_clone).await },
+                        ),
+                    )
+                    .boxed(),
+                );
+            }
+            RpcWorkflowConfig::CompareRpcWs(_) => {
+                let compare_rpc_ws = RpcWsCompare::new(
+                    read_client.clone(),
+                    config.ws_url().expect("WS URL is not valid"),
+                );
+                let shutdown_clone = Arc::clone(&shutdown);
+                tasks.push(
+                    critical_task(
+                        "Compare RPC WS",
+                        tokio::spawn(async move { compare_rpc_ws.run(shutdown_clone).await }),
+                    )
+                    .boxed(),
+                );
+            }
+        }
+    }
+
     // Deployed contract for each traffic gen
     let mut deployed_contracts = Vec::new();
     for traffic_gen in &workload_group.traffic_gens {
@@ -140,7 +230,7 @@ async fn run_workload_group(
     tasks.push(
         helper_task(
             "CommittedTx Watcher",
-            tokio::spawn(committed_tx_watcher.run()),
+            tokio::spawn(committed_tx_watcher.run(Arc::clone(&shutdown))),
             Arc::clone(&shutdown),
         )
         .boxed(),
@@ -148,11 +238,9 @@ async fn run_workload_group(
 
     let runtime_seconds = (workload_group.runtime_minutes * 60.) as u64;
     let timeout = tokio::time::sleep(Duration::from_secs(runtime_seconds));
-    // Start time is after all tasks are started. Tasks take some time to start up so this is a better approximation of the start time
-    let start_time = Utc::now();
 
     // Wait for all tasks to complete or timeout
-    let result = tokio::select! {
+    tokio::select! {
         _ = timeout => {
             info!("Traffic phase completed after {} minutes", workload_group.runtime_minutes);
             shutdown_clone.store(true, Ordering::Relaxed);
@@ -171,20 +259,7 @@ async fn run_workload_group(
                 }
             }
         }
-    };
-
-    // Write report regardless of result
-    if let Some(report_dir) = config.report_dir.as_deref() {
-        let mut report = Report::new(config.clone(), workload_group_index, start_time, &metrics);
-        if let Err(e) = report.join_stats(config.prom_url.clone()).await {
-            error!("Failed to join stats for report: {e:?}");
-        }
-        if let Err(e) = report.to_json_file(report_dir.as_ref()) {
-            error!("Failed to write report: {e:?}");
-        }
-    };
-
-    result
+    }
 }
 
 fn run_traffic_gen(
@@ -220,6 +295,11 @@ fn run_traffic_gen(
     });
 
     let generator = make_generator(traffic_gen, deployed_contract.clone())?;
+    let transform_opts = TransformOptions::new(
+        workload_group.mutation_percentage,
+        workload_group.drop_percentage,
+        workload_group.convert_eip1559_to_legacy,
+    );
     let gen = GeneratorHarness::new(
         generator,
         refresh_rx,
@@ -235,6 +315,7 @@ fn run_traffic_gen(
         config.set_tx_gas_limit,
         config.priority_fee,
         config.random_priority_fee_range,
+        transform_opts,
         Arc::clone(shutdown),
     );
 
@@ -328,10 +409,12 @@ async fn verify_contract_code(client: &ReqwestClient, addr: Address) -> Result<b
 
 #[derive(Deserialize, Serialize)]
 struct DeployedContractFile {
-    erc20: Option<Address>,
+    erc20: Option<Vec<Address>>,
     ecmul: Option<Address>,
-    uniswap: Option<Address>,
+    uniswap: Option<Uniswap>,
     eip7702: Option<Address>,
+    nft_sale: Option<Address>,
+    erc4337_7702: Option<ERC4337_7702Bundled>,
 }
 
 async fn load_or_deploy_contracts(
@@ -352,53 +435,78 @@ async fn load_or_deploy_contracts(
     match contract_to_ensure {
         RequiredContract::None => Ok(DeployedContract::None),
         RequiredContract::ERC20 => {
+            let required_count = traffic_gen.erc20_contract_count().max(1);
+
             // Check CLI override first
             if let Some(addr_str) = &config.erc20_contract {
                 if let Ok(addr) = addr_str.parse::<Address>() {
                     if verify_contract_code(client, addr).await? {
                         info!("Using ERC20 contract from CLI: {}", addr);
-                        return Ok(DeployedContract::ERC20(ERC20 { addr }));
+                        return Ok(DeployedContract::ERC20(vec![ERC20 { addr }]));
                     } else {
                         warn!("ERC20 contract from CLI has no code, falling back to auto-deploy");
                     }
                 }
             }
 
+            let mut existing_contracts = Vec::new();
             match open_deployed_contracts_file(PATH) {
                 Ok(DeployedContractFile {
-                    erc20: Some(erc20), ..
+                    erc20: Some(erc20_addrs),
+                    ..
                 }) => {
-                    if verify_contract_code(client, erc20).await? {
-                        info!("Contract loaded from file validated");
-                        return Ok(DeployedContract::ERC20(ERC20 { addr: erc20 }));
+                    for addr in erc20_addrs {
+                        if verify_contract_code(client, addr).await? {
+                            existing_contracts.push(ERC20 { addr });
+                        } else {
+                            warn!("Contract {} from file not found on chain, skipping", addr);
+                        }
                     }
-                    warn!(
-                        "Contract loaded from file not found on chain, deploying new contract..."
-                    );
+
+                    if !existing_contracts.is_empty() {
+                        info!(
+                            "Loaded {} ERC20 contract(s) from file",
+                            existing_contracts.len()
+                        );
+                    }
                 }
                 Err(e) => info!("Failed to load deployed contracts file, {e}"),
-                _ => info!("Contract not in deployed contracts file"),
+                _ => info!("No ERC20 contracts in deployed contracts file"),
             }
 
-            // if not found, deploy new contract
-            let erc20 = ERC20::deploy(
-                &deployer,
-                client,
-                max_fee_per_gas,
-                chain_id,
-                config.gas_limit_contract_deployment,
-            )
-            .await?;
+            // Deploy additional contracts if needed
+            let mut all_contracts = existing_contracts;
+            while all_contracts.len() < required_count {
+                info!(
+                    "Deploying ERC20 contract {} of {}",
+                    all_contracts.len() + 1,
+                    required_count
+                );
+                let erc20 = ERC20::deploy(
+                    &deployer,
+                    client,
+                    max_fee_per_gas,
+                    chain_id,
+                    config.gas_limit_contract_deployment,
+                )
+                .await?;
+                all_contracts.push(erc20);
+            }
 
+            // Save all contracts to file
+            let addrs: Vec<Address> = all_contracts.iter().map(|c| c.addr).collect();
             let deployed = DeployedContractFile {
-                erc20: Some(erc20.addr),
+                erc20: Some(addrs),
                 ecmul: None,
                 uniswap: None,
                 eip7702: None,
+                nft_sale: None,
+                erc4337_7702: None,
             };
 
             write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
-            Ok(DeployedContract::ERC20(erc20))
+            info!("Using {} ERC20 contract(s)", all_contracts.len());
+            Ok(DeployedContract::ERC20(all_contracts))
         }
         RequiredContract::ECMUL => {
             match open_deployed_contracts_file(PATH) {
@@ -432,6 +540,8 @@ async fn load_or_deploy_contracts(
                 ecmul: Some(ecmul.addr),
                 uniswap: None,
                 eip7702: None,
+                nft_sale: None,
+                erc4337_7702: None,
             };
 
             write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
@@ -443,16 +553,17 @@ async fn load_or_deploy_contracts(
                     uniswap: Some(uniswap),
                     ..
                 }) => {
-                    if verify_contract_code(client, uniswap).await? {
-                        info!("Contract loaded from file validated");
-                        return Ok(DeployedContract::Uniswap(Uniswap { addr: uniswap }));
+                    // Verify the factory contract is deployed (as a sanity check)
+                    if verify_contract_code(client, uniswap.factory_addr).await? {
+                        info!("Uniswap contracts loaded from file validated");
+                        return Ok(DeployedContract::Uniswap(uniswap));
                     }
                     warn!(
-                        "Contract loaded from file not found on chain, deploying new contract..."
+                        "Uniswap contracts loaded from file not found on chain, deploying new contracts..."
                     );
                 }
                 Err(e) => info!("Failed to load deployed contracts file, {e}"),
-                _ => info!("Contract not in deployed contracts file"),
+                _ => info!("Uniswap contracts not in deployed contracts file"),
             }
 
             // if not found, deploy new contract
@@ -468,8 +579,10 @@ async fn load_or_deploy_contracts(
             let deployed = DeployedContractFile {
                 erc20: None,
                 ecmul: None,
-                uniswap: Some(uniswap.addr),
+                uniswap: Some(uniswap),
                 eip7702: None,
+                nft_sale: None,
+                erc4337_7702: None,
             };
 
             write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
@@ -508,10 +621,107 @@ async fn load_or_deploy_contracts(
                 ecmul: None,
                 uniswap: None,
                 eip7702: Some(eip7702.addr),
+                nft_sale: None,
+                erc4337_7702: None,
             };
 
             write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
             Ok(DeployedContract::EIP7702(eip7702))
+        }
+        RequiredContract::NftSale => {
+            match open_deployed_contracts_file(PATH) {
+                Ok(DeployedContractFile {
+                    nft_sale: Some(nft_sale),
+                    ..
+                }) => {
+                    if verify_contract_code(client, nft_sale).await? {
+                        let current_price = NftSale::get_current_price(client, nft_sale).await?;
+
+                        info!("Contract loaded from file validated");
+                        return Ok(DeployedContract::NftSale(NftSale {
+                            addr: nft_sale,
+                            current_sale_price: current_price,
+                        }));
+                    }
+                    warn!(
+                        "Contract loaded from file not found on chain, deploying new contract..."
+                    );
+                }
+                Err(e) => info!("Failed to load deployed contracts file, {e}"),
+                _ => info!("Contract not in deployed contracts file"),
+            }
+
+            // if not found, deploy new contract
+            let nft_sale = NftSale::deploy(
+                &deployer,
+                client,
+                max_fee_per_gas,
+                chain_id,
+                config.gas_limit_contract_deployment,
+            )
+            .await?;
+
+            let deployed = DeployedContractFile {
+                erc20: None,
+                ecmul: None,
+                uniswap: None,
+                eip7702: None,
+                nft_sale: Some(nft_sale.addr),
+                erc4337_7702: None,
+            };
+
+            write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
+            Ok(DeployedContract::NftSale(nft_sale))
+        }
+        RequiredContract::ERC4337_7702 => {
+            match open_deployed_contracts_file(PATH) {
+                Ok(DeployedContractFile {
+                    erc4337_7702: Some(erc4337_7702),
+                    ..
+                }) => {
+                    if verify_contract_code(client, erc4337_7702.entrypoint).await?
+                        && verify_contract_code(client, erc4337_7702.simple7702account).await?
+                    {
+                        info!("ERC4337_7702 contracts loaded from file validated");
+                        return Ok(DeployedContract::ERC4337_7702(erc4337_7702));
+                    }
+                    warn!(
+                        "ERC4337_7702 contracts loaded from file not found on chain, deploying new contracts..."
+                    );
+                }
+                Err(e) => info!("Failed to load deployed contracts file, {e}"),
+                _ => info!("ERC4337_7702 contracts not in deployed contracts file"),
+            }
+
+            // if not found, deploy new contract
+            let entrypoint =
+                EntryPoint::deploy(&deployer, client, max_fee_per_gas, chain_id).await?;
+
+            let simple7702account = Simple7702Account::deploy(
+                &deployer,
+                client,
+                entrypoint.addr,
+                max_fee_per_gas,
+                chain_id,
+            )
+            .await?;
+
+            let erc4337_7702 = ERC4337_7702Bundled {
+                entrypoint: entrypoint.addr,
+                simple7702account: simple7702account.addr,
+            };
+
+            let deployed = DeployedContractFile {
+                erc20: None,
+                ecmul: None,
+                uniswap: None,
+                eip7702: None,
+                nft_sale: None,
+                erc4337_7702: Some(erc4337_7702),
+            };
+
+            write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
+            Ok(DeployedContract::ERC4337_7702(erc4337_7702))
         }
     }
 }
@@ -530,19 +740,48 @@ async fn write_and_verify_deployed_contracts(
     path: &str,
     dc: &DeployedContractFile,
 ) -> Result<()> {
-    if let Some(addr) = dc.erc20 {
-        if !verify_contract_code(client, addr).await? {
-            bail!("Failed to verify freshly deployed contract");
+    if let Some(addrs) = &dc.erc20 {
+        for addr in addrs {
+            if !verify_contract_code(client, *addr).await? {
+                bail!("Failed to verify freshly deployed contract: {}", addr);
+            }
         }
     }
     if let Some(addr) = dc.ecmul {
         if !verify_contract_code(client, addr).await? {
-            bail!("Failed to verify freshly deployed contract");
+            bail!("Failed to verify freshly deployed ECMul contract");
+        }
+    }
+    if let Some(ref uniswap) = dc.uniswap {
+        // Verify all Uniswap contract addresses
+        if !verify_contract_code(client, uniswap.factory_addr).await? {
+            bail!("Failed to verify freshly deployed Uniswap Factory contract");
+        }
+        if !verify_contract_code(client, uniswap.nonfungible_position_manager_addr).await? {
+            bail!("Failed to verify freshly deployed Uniswap Position Manager contract");
+        }
+        if !verify_contract_code(client, uniswap.weth_addr).await? {
+            bail!("Failed to verify freshly deployed WETH contract");
+        }
+        if !verify_contract_code(client, uniswap.token_a_addr).await? {
+            bail!("Failed to verify freshly deployed Token A contract");
+        }
+        if !verify_contract_code(client, uniswap.token_b_addr).await? {
+            bail!("Failed to verify freshly deployed Token B contract");
+        }
+        if !verify_contract_code(client, uniswap.pool_addr).await? {
+            bail!("Failed to verify freshly deployed Uniswap Pool contract");
+        }
+    }
+    if let Some(addr) = dc.eip7702 {
+        if !verify_contract_code(client, addr).await? {
+            bail!("Failed to verify freshly deployed EIP7702 contract");
         }
     }
 
     let mut file = std::fs::File::create(path)?;
-    serde_json::to_writer(&mut file, &dc).context("Failed to serialize deployed contracts")?;
+    serde_json::to_writer_pretty(&mut file, &dc)
+        .context("Failed to serialize deployed contracts")?;
     file.flush()?;
     info!("Wrote deployed contract addresses to {path}");
 

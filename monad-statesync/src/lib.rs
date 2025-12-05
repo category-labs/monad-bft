@@ -45,6 +45,13 @@ mod outbound_requests;
 const GAUGE_STATESYNC_SYNCING: &str = "monad.statesync.syncing";
 const GAUGE_STATESYNC_PROGRESS_ESTIMATE: &str = "monad.statesync.progress_estimate";
 const GAUGE_STATESYNC_LAST_TARGET: &str = "monad.statesync.last_target";
+const GAUGE_STATESYNC_SERVER_PENDING_REQUESTS: &str = "monad.statesync.server_pending_requests";
+const GAUGE_STATESYNC_SERVER_NUM_SYNCDONE_SUCCESS: &str =
+    "monad.statesync.server_num_syncdone_success";
+const GAUGE_STATESYNC_SERVER_NUM_SYNCDONE_FAILED: &str =
+    "monad.statesync.server_num_syncdone_failed";
+const GAUGE_STATESYNC_SERVER_TOTAL_SERVICE_TIME_US: &str =
+    "monad.statesync.server_total_service_time_us";
 
 pub struct StateSync<ST, SCT>
 where
@@ -67,7 +74,7 @@ where
     pub fn new(
         db_paths: Vec<String>,
         sq_thread_cpu: Option<u32>,
-        state_sync_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+        state_sync_init_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
         max_parallel_requests: usize,
         request_timeout: Duration,
         incoming_request_timeout: Duration,
@@ -82,7 +89,7 @@ where
             mode: StateSyncMode::Sync(ffi::StateSync::start(
                 &db_paths,
                 sq_thread_cpu,
-                &state_sync_peers,
+                &state_sync_init_peers,
                 max_parallel_requests,
                 request_timeout,
             )),
@@ -201,6 +208,19 @@ where
                         )
                     }
                 }
+                StateSyncCommand::Message((from, StateSyncNetworkMessage::NotWhitelisted)) => {
+                    let statesync = match &mut self.mode {
+                        StateSyncMode::Sync(sync) => sync,
+                        StateSyncMode::Live(_) => {
+                            tracing::warn!(
+                                ?from,
+                                "dropping statesync not whitelisted, already done syncing"
+                            );
+                            continue;
+                        }
+                    };
+                    statesync.handle_not_whitelisted(from);
+                }
                 StateSyncCommand::StartExecution => {
                     let valid_transition = match self.mode {
                         StateSyncMode::Sync(_) => true,
@@ -211,6 +231,21 @@ where
                         &self.uds_path,
                         self.incoming_request_timeout,
                     ));
+                    if let Some(waker) = self.waker.take() {
+                        waker.wake();
+                    }
+                }
+                StateSyncCommand::ExpandUpstreamPeers(new_peers) => {
+                    let statesync = match &mut self.mode {
+                        StateSyncMode::Sync(sync) => sync,
+                        StateSyncMode::Live(_) => {
+                            tracing::warn!(
+                                "dropping statesync expand upstream peers, already done syncing"
+                            );
+                            continue;
+                        }
+                    };
+                    statesync.expand_upstream_peers(&new_peers);
                     if let Some(waker) = self.waker.take() {
                         waker.wake();
                     }
@@ -273,6 +308,15 @@ where
                 }
             }
             StateSyncMode::Live(execution_ipc) => {
+                this.metrics[GAUGE_STATESYNC_SERVER_PENDING_REQUESTS] =
+                    execution_ipc.pending_request_len() as u64
+                        + execution_ipc.is_servicing_request() as u64;
+                this.metrics[GAUGE_STATESYNC_SERVER_NUM_SYNCDONE_SUCCESS] =
+                    execution_ipc.num_syncdone_success() as u64;
+                this.metrics[GAUGE_STATESYNC_SERVER_NUM_SYNCDONE_FAILED] =
+                    execution_ipc.num_syncdone_failed() as u64;
+                this.metrics[GAUGE_STATESYNC_SERVER_TOTAL_SERVICE_TIME_US] =
+                    execution_ipc.total_service_time_us() as u64;
                 if let Poll::Ready(maybe_response) = execution_ipc.response_rx.poll_recv(cx) {
                     let (to, message, completion) = maybe_response.expect("did StateSyncIpc die?");
                     tracing::debug!(

@@ -4,6 +4,16 @@ WORKDIR /usr/src/monad-bft
 RUN apt update
 RUN apt install -y python3 clang
 
+ARG GIT_COMMIT=""
+ARG GIT_BRANCH=""
+ARG GIT_TAG=""
+ARG GIT_MODIFIED="false"
+
+ENV GIT_COMMIT=$GIT_COMMIT
+ENV GIT_BRANCH=$GIT_BRANCH
+ENV GIT_TAG=$GIT_TAG
+ENV GIT_MODIFIED=$GIT_MODIFIED
+
 # Builder
 COPY . .
 RUN cargo build --release --bin monad-testground && \

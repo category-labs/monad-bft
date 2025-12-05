@@ -13,12 +13,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use crate::{prelude::*, shared::erc20::ERC20};
+use crate::{generators::ERC20Pool, prelude::*};
 
 pub struct HighCallDataTxGenerator {
     pub(crate) recipient_keys: KeyPool,
     pub(crate) tx_per_sender: usize,
-    pub(crate) gas_limit: u64,
+    pub erc20_pool: ERC20Pool,
 }
 
 impl Generator for HighCallDataTxGenerator {
@@ -26,27 +26,45 @@ impl Generator for HighCallDataTxGenerator {
         &mut self,
         accts: &mut [SimpleAccount],
         ctx: &GenCtx,
-    ) -> Vec<(TxEnvelope, Address)> {
+    ) -> Vec<(TxEnvelope, Address, crate::shared::private_key::PrivateKey)> {
         let mut txs = Vec::with_capacity(accts.len());
 
         for sender in accts {
             for _ in 0..self.tx_per_sender {
                 let to = self.recipient_keys.next_addr();
-
-                let tx = ERC20::deploy_tx_with_gas_limit_and_priority(
-                    sender.nonce,
-                    &sender.key,
-                    ctx.base_fee * 2,
-                    ctx.chain_id,
-                    ctx.set_tx_gas_limit.unwrap_or(self.gas_limit), // use CLI override or generator default
-                    ctx.priority_fee.unwrap_or(10), // 10 default, override with --priority-fee
-                );
-                sender.nonce += 1;
-
-                txs.push((tx, to));
+                let tx = high_calldata_erc20_call(sender, self.erc20_pool.next_contract(), ctx);
+                txs.push((tx, to, sender.key.clone()));
             }
         }
 
         txs
     }
+}
+
+pub fn high_calldata_erc20_call(
+    from: &mut SimpleAccount,
+    erc20: &crate::shared::erc20::ERC20,
+    ctx: &GenCtx,
+) -> TxEnvelope {
+    let max_fee_per_gas = ctx.base_fee * 2;
+    let input = vec![0u8; 1 << 15];
+    let tx = crate::shared::erc20::make_tx(
+        from.nonce,
+        &from.key,
+        erc20.addr,
+        U256::ZERO,
+        input,
+        max_fee_per_gas,
+        ctx.chain_id,
+        ctx.set_tx_gas_limit,
+        ctx.priority_fee,
+    );
+
+    // update from
+    from.nonce += 1;
+    from.native_bal = from
+        .native_bal
+        .checked_sub(U256::from(400_000 * max_fee_per_gas))
+        .unwrap_or(U256::ZERO); // todo: wire gas correctly, see above comment
+    tx
 }

@@ -21,6 +21,7 @@ auto_impl = { workspace = true }
 bytes = { workspace = true }
 hex = { workspace = true }
 serde = { workspace = true, features = ["rc", "serde_derive"] }
+serde_with = { workspace = true }
 toml = { workspace = true }
 
 [dev-dependencies]

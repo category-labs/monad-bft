@@ -4,6 +4,10 @@ chain_id = 31337
 name = "few_to_many"
 runtime_minutes = 1
 
+[rpc_generator]
+enabled_workflows = ["indexer"]
+requests_per_block = 10
+
 [[workload_groups.traffic_gens]]
 tps = 200
 gen_mode.few_to_many = { tx_type = "erc20" }

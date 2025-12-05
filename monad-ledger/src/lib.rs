@@ -113,6 +113,12 @@ where
         Some(last_commit_seq_num)
     }
 
+    /// returns true once the cache is fully hydrated
+    /// once this returns true, it'll never return false again
+    fn is_cache_hydrated(&self) -> bool {
+        self.block_cache_index.len() >= self.block_cache_size
+    }
+
     fn update_cache(&mut self, monad_block: ConsensusFullBlock<ST, SCT, EthExecutionProtocol>) {
         let block_id = monad_block.get_id();
         let payload_id = monad_block.get_body_id();
@@ -180,7 +186,18 @@ where
         while (headers.len() as u64) < block_range.num_blocks.0 {
             let block_header = if let Some(cached_block) = self.block_cache.get(&next_block_id) {
                 cached_block.header().clone()
+            } else if self.is_cache_hydrated() {
+                // as soon as cache is fully hydrated, we refuse to read from disk
+                //
+                // a hydrated cache that's unable to service a request implies the
+                // request is for a stale range
+                trace!(
+                    ?block_range,
+                    "can't satisfy blocksync header request from fully hydrated cache"
+                );
+                return BlockSyncHeadersResponse::NotAvailable(block_range);
             } else if let Ok(block) = self.bft_block_persist.read_bft_header(&next_block_id) {
+                // cache isn't fully hydrated, so we are willing to read from disk
                 block
             } else {
                 trace!(?block_range, "requested headers not available in ledger");
@@ -203,7 +220,18 @@ where
             // payload in cache
             trace!(?payload_id, "found requested payload in ledger cache");
             BlockSyncBodyResponse::Found(cached_payload.clone())
+        } else if self.is_cache_hydrated() {
+            // as soon as cache is fully hydrated, we refuse to read from disk
+            //
+            // a hydrated cache that's unable to service a request implies the
+            // request is for a stale payload
+            trace!(
+                ?payload_id,
+                "can't satisfy blocksync payload request from fully hydrated cache"
+            );
+            BlockSyncBodyResponse::NotAvailable(payload_id)
         } else if let Ok(payload) = self.bft_block_persist.read_bft_body(&payload_id) {
+            // cache isn't fully hydrated, so we are willing to read from disk
             // payload read from block persist
             trace!(
                 ?payload_id,
@@ -229,7 +257,6 @@ where
             match command {
                 LedgerCommand::LedgerCommit(OptimisticCommit::Proposed(block)) => {
                     let block_id = block.get_id();
-                    let block_round = block.get_block_round();
 
                     // this can panic because failure to persist a block is fatal error
                     self.write_bft_block(&block);
@@ -244,7 +271,6 @@ where
                     self.metrics[GAUGE_EXECUTION_LEDGER_NUM_COMMITS] += 1;
 
                     let block_id = block.get_id();
-                    let block_round = block.get_block_round();
                     let num_tx = block.body().execution_body.transactions.len() as u64;
                     let block_num = block.get_seq_num().0;
                     info!(num_tx, block_num, "committed block");

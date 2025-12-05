@@ -21,7 +21,7 @@ use monad_crypto::{
     signing_domain::SigningDomain,
 };
 use monad_types::NodeId;
-use serde::{Deserialize, Deserializer, Serializer};
+use serde::{Deserialize, Serialize};
 
 use crate::validator_mapping::ValidatorMapping;
 
@@ -68,7 +68,17 @@ impl<PT: PubKey, S: CertificateSignature> std::fmt::Display for SignatureCollect
 impl<PT: PubKey, S: CertificateSignature> std::error::Error for SignatureCollectionError<PT, S> {}
 
 pub trait SignatureCollection:
-    Clone + Eq + Debug + Send + Sync + Unpin + Encodable + Decodable + 'static
+    Clone
+    + Eq
+    + Debug
+    + Send
+    + Sync
+    + Unpin
+    + Encodable
+    + Decodable
+    + Serialize
+    + for<'a> Deserialize<'a>
+    + 'static
 {
     type NodeIdPubKey: PubKey;
     type SignatureType: CertificateSignature + Unpin;
@@ -94,39 +104,10 @@ pub trait SignatureCollection:
         SignatureCollectionError<Self::NodeIdPubKey, Self::SignatureType>,
     >;
 
-    // TODO-4: deprecate this function: only used by tests
     fn num_signatures(&self) -> usize;
 
     fn serialize(&self) -> Vec<u8>;
     fn deserialize(
         data: &[u8],
     ) -> Result<Self, SignatureCollectionError<Self::NodeIdPubKey, Self::SignatureType>>;
-}
-
-pub fn serialize_signature_collection<S, SCT>(
-    signature_collection: &SCT,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    SCT: SignatureCollection,
-    S: Serializer,
-{
-    let hex_str = "0x".to_string() + &hex::encode(signature_collection.serialize());
-    serializer.serialize_str(&hex_str)
-}
-
-pub fn deserialize_signature_collection<'de, D, SCT>(deserializer: D) -> Result<SCT, D::Error>
-where
-    SCT: SignatureCollection,
-    D: Deserializer<'de>,
-{
-    let buf = <std::string::String as Deserialize>::deserialize(deserializer)?;
-
-    let Some(hex_str) = buf.strip_prefix("0x") else {
-        return Err(<D::Error as serde::de::Error>::custom("Missing hex prefix"));
-    };
-
-    let bytes = hex::decode(hex_str).map_err(<D::Error as serde::de::Error>::custom)?;
-
-    SCT::deserialize(bytes.as_ref()).map_err(<D::Error as serde::de::Error>::custom)
 }

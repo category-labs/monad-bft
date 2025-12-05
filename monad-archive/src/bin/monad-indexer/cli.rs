@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use clap::{Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand};
 use monad_archive::cli::{ArchiveArgs, BlockDataReaderArgs};
 
 #[derive(Debug, Parser)]
@@ -26,10 +26,20 @@ pub struct Cli {
     #[arg(long, value_parser = clap::value_parser!(BlockDataReaderArgs))]
     pub block_data_source: BlockDataReaderArgs,
 
+    /// If reading from --block-data-source fails, attempts to read from
+    /// this optional fallback
+    #[arg(long, value_parser = clap::value_parser!(BlockDataReaderArgs))]
+    pub fallback_block_data_source: Option<BlockDataReaderArgs>,
+
     /// Where archive data is written to
     /// For aws: 'aws <bucket_name> <concurrent_requests>'
     #[arg(long, value_parser = clap::value_parser!(ArchiveArgs))]
     pub archive_sink: ArchiveArgs,
+
+    /// If set, indexer will perform an asynchronous backfill of the index
+    /// This allows a second indexer to backfill a range while the first indexer is running
+    #[arg(long, default_value_t = false)]
+    pub async_backfill: bool,
 
     #[arg(long, default_value_t = 50)]
     pub max_blocks_per_iteration: u64,
@@ -40,10 +50,6 @@ pub struct Cli {
     /// Resets the latest indexed entry
     #[arg(long, default_value_t = false)]
     pub reset_index: bool,
-
-    /// Override block number to start at
-    #[arg(long)]
-    pub start_block: Option<u64>,
 
     /// Override block number to stop at
     #[arg(long)]
@@ -73,7 +79,14 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Commands {
     /// Migrate logs index
-    MigrateLogs,
+    MigrateLogs {
+        /// Block number to start migration from (default: 0)
+        #[arg(long, default_value_t = 0)]
+        start_block: u64,
+        /// Block number to stop migration at (default: latest indexed)
+        #[arg(long)]
+        stop_block: Option<u64>,
+    },
     /// Migrate capped collection to uncapped
     MigrateCapped {
         /// Database name
@@ -88,5 +101,20 @@ pub enum Commands {
         /// Free space factor
         #[arg(long, default_value_t = 1.5)]
         free_factor: f64,
+    },
+    /// Set the start block marker in the archive and exit.
+    /// Use this instead of --start-block to safely configure the starting point.
+    SetStartBlock {
+        /// Block number to set as the latest indexed marker
+        #[arg(long)]
+        block: u64,
+
+        /// Archive sink to write the marker to
+        #[arg(long, value_parser = clap::value_parser!(ArchiveArgs))]
+        archive_sink: ArchiveArgs,
+
+        /// Set the async-backfill marker instead of the primary marker
+        #[arg(long, action = ArgAction::SetTrue)]
+        async_backfill: bool,
     },
 }

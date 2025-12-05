@@ -31,10 +31,7 @@ pub struct ValidatorSetDataWithEpoch<SCT: SignatureCollection> {
     /// Validator set are active for this epoch
     pub epoch: Epoch,
 
-    #[serde(bound(
-        serialize = "SCT: SignatureCollection",
-        deserialize = "SCT: SignatureCollection",
-    ))]
+    #[serde(bound(serialize = "", deserialize = ""))]
     pub validators: ValidatorSetData<SCT>,
 }
 
@@ -42,11 +39,7 @@ pub struct ValidatorSetDataWithEpoch<SCT: SignatureCollection> {
 /// MonadState
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodable, RlpDecodable)]
 pub struct ValidatorSetData<SCT: SignatureCollection>(
-    #[serde(bound(
-        serialize = "SCT: SignatureCollection",
-        deserialize = "SCT: SignatureCollection",
-    ))]
-    pub Vec<ValidatorData<SCT>>,
+    #[serde(bound(serialize = "", deserialize = ""))] pub Vec<ValidatorData<SCT>>,
 );
 
 #[derive(
@@ -67,11 +60,26 @@ pub struct ValidatorsConfig<SCT: SignatureCollection> {
 /// Top-level lists aren't supported in toml, so create this
 #[derive(Serialize, Deserialize)]
 pub struct ValidatorsConfigFile<SCT: SignatureCollection> {
-    #[serde(bound(
-        serialize = "SCT: SignatureCollection",
-        deserialize = "SCT: SignatureCollection",
-    ))]
+    #[serde(bound(serialize = "", deserialize = ""))]
     pub validator_sets: Vec<ValidatorSetDataWithEpoch<SCT>>,
+}
+
+impl<SCT> From<&ValidatorsConfig<SCT>> for ValidatorsConfigFile<SCT>
+where
+    SCT: SignatureCollection,
+{
+    fn from(config: &ValidatorsConfig<SCT>) -> Self {
+        Self {
+            validator_sets: config
+                .validators
+                .iter()
+                .map(|(&epoch, vset)| ValidatorSetDataWithEpoch {
+                    epoch,
+                    validators: vset.clone(),
+                })
+                .collect(),
+        }
+    }
 }
 
 impl<SCT: SignatureCollection> ValidatorsConfig<SCT> {
@@ -88,7 +96,18 @@ impl<SCT: SignatureCollection> ValidatorsConfig<SCT> {
             validators: validators_config
                 .validator_sets
                 .into_iter()
-                .map(|validator| (validator.epoch, validator.validators))
+                .map(|validator_set| {
+                    assert!(
+                        validator_set
+                            .validators
+                            .get_stakes()
+                            .iter()
+                            .all(|(_, stake)| *stake > Stake::ZERO),
+                        "validators should have non-zero stake"
+                    );
+
+                    (validator_set.epoch, validator_set.validators)
+                })
                 .collect(),
         })
     }
@@ -195,6 +214,19 @@ impl<SCT: SignatureCollection> ValidatorSetData<SCT> {
                      stake: _,
                      cert_pubkey,
                  }| (*node_id, *cert_pubkey),
+            )
+            .collect()
+    }
+
+    pub fn get_pubkeys(&self) -> Vec<NodeId<SCT::NodeIdPubKey>> {
+        self.0
+            .iter()
+            .map(
+                |ValidatorData {
+                     node_id,
+                     stake: _,
+                     cert_pubkey: _,
+                 }| *node_id,
             )
             .collect()
     }

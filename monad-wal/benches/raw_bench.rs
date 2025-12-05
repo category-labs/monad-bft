@@ -18,7 +18,7 @@ use std::{error::Error, fmt::Debug, fs::create_dir_all};
 use bytes::Bytes;
 use criterion::{criterion_group, Criterion};
 use monad_types::{Deserializable, Serializable};
-use monad_wal::{wal::*, PersistenceLoggerBuilder};
+use monad_wal::wal::*;
 use tempfile::{tempdir, TempDir};
 
 const VOTE_SIZE: usize = 400;

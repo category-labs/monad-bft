@@ -17,8 +17,11 @@ use clap::Parser;
 use eyre::bail;
 use monad_archive::{
     cli::set_source_and_sink_metrics, model::logs_index::LogsIndexArchiver, prelude::*,
-    workers::index_worker::index_worker,
 };
+
+mod index_worker;
+
+use index_worker::index_worker;
 use tracing::{info, Level};
 
 use crate::{migrate_capped::migrate_to_uncapped, migrate_logs::run_migrate_logs};
@@ -35,13 +38,21 @@ async fn main() -> Result<()> {
     info!(?args, "Cli Arguments: ");
 
     match std::mem::take(&mut args.command) {
-        Some(cli::Commands::MigrateLogs) => run_migrate_logs(args).await,
+        Some(cli::Commands::MigrateLogs {
+            start_block,
+            stop_block,
+        }) => run_migrate_logs(args, start_block, stop_block).await,
         Some(cli::Commands::MigrateCapped {
             db_name,
             coll_name,
             batch_size,
             free_factor,
         }) => run_migrate_capped(db_name, coll_name, batch_size, free_factor, args).await,
+        Some(cli::Commands::SetStartBlock {
+            block,
+            archive_sink,
+            async_backfill,
+        }) => run_set_start_block(block, archive_sink, async_backfill).await,
         None => run_indexer(args).await,
     }
 }
@@ -57,6 +68,11 @@ async fn run_indexer(args: cli::Cli) -> Result<()> {
     set_source_and_sink_metrics(&args.archive_sink, &args.block_data_source, &metrics);
 
     let block_data_reader = args.block_data_source.build(&metrics).await?;
+    // Optional fallback
+    let fallback_block_data_source = match args.fallback_block_data_source {
+        Some(source) => Some(source.build(&metrics).await?),
+        None => None,
+    };
     let tx_index_archiver = args
         .archive_sink
         .build_index_archive(&metrics, args.max_inline_encoded_len)
@@ -81,20 +97,21 @@ async fn run_indexer(args: cli::Cli) -> Result<()> {
 
     // for testing
     if args.reset_index {
-        tx_index_archiver.update_latest_indexed(0).await?;
+        tx_index_archiver.update_latest_indexed(0, false).await?;
     }
 
     // tokio main should not await futures directly, so we spawn a worker
     tokio::spawn(index_worker(
         block_data_reader,
+        fallback_block_data_source,
         tx_index_archiver,
         log_index_archiver,
         args.max_blocks_per_iteration,
         args.max_concurrent_blocks,
         metrics,
-        args.start_block,
         args.stop_block,
         Duration::from_millis(500),
+        args.async_backfill,
     ))
     .await
     .map_err(Into::into)
@@ -121,4 +138,30 @@ async fn run_migrate_capped(
 
     let client = &mongodb_storage.client;
     migrate_to_uncapped(client, &db_name, &coll_name, batch_size, free_factor).await
+}
+
+async fn run_set_start_block(
+    block: u64,
+    archive_sink: monad_archive::cli::ArchiveArgs,
+    async_backfill: bool,
+) -> Result<()> {
+    let metrics = Metrics::none();
+    let archive = archive_sink.build_block_data_archive(&metrics).await?;
+
+    let latest_kind = if async_backfill {
+        LatestKind::IndexedAsyncBackfill
+    } else {
+        LatestKind::Indexed
+    };
+
+    archive.update_latest(block, latest_kind).await?;
+
+    let key_name = match latest_kind {
+        LatestKind::Indexed => "latest_indexed",
+        LatestKind::IndexedAsyncBackfill => "latest_indexed_async_backfill",
+        _ => unreachable!(),
+    };
+
+    println!("Set latest marker: key=\"{key_name}\", block={block}");
+    Ok(())
 }

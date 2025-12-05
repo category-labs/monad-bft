@@ -147,7 +147,7 @@ impl GraphQLRoot {
             let Some(val_set) = validators.get_val_set(&leader_epoch) else {
                 continue;
             };
-            leader = Some(election.get_leader(leader_round, leader_epoch, val_set.get_members()));
+            leader = Some(election.get_leader(leader_round, val_set.get_members()));
         }
         leader.as_ref().map(Into::into)
     }
@@ -184,7 +184,7 @@ impl GraphQLRoot {
             let Some(val_set) = validators.get_val_set(&leader_epoch) else {
                 continue;
             };
-            leader = Some(election.get_leader(leader_round, leader_epoch, val_set.get_members()));
+            leader = Some(election.get_leader(leader_round, val_set.get_members()));
         }
         leader.as_ref().map(Into::into)
     }
@@ -395,6 +395,7 @@ impl<'s> From<&'s MonadEventType> for GraphQLMonadEvent<'s> {
             }
             MonadEvent::StateSyncEvent(event) => Self::StateSyncEvent(GraphQLStateSyncEvent(event)),
             MonadEvent::ConfigEvent(event) => Self::ConfigEvent(GraphQLConfigEvent(event)),
+            MonadEvent::SecondaryRaptorcastPeersUpdate { .. } => todo!(),
         }
     }
 }

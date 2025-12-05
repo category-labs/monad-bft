@@ -30,7 +30,7 @@ impl Generator for SelfDestructTxGenerator {
         accts: &mut [SimpleAccount],
 
         ctx: &GenCtx,
-    ) -> Vec<(TxEnvelope, Address)> {
+    ) -> Vec<(TxEnvelope, Address, crate::shared::private_key::PrivateKey)> {
         let mut idxs: Vec<usize> = (0..accts.len()).collect();
         let mut rng = SmallRng::from_entropy();
         let mut txs = Vec::with_capacity(self.tx_per_sender * accts.len());
@@ -61,6 +61,7 @@ impl Generator for SelfDestructTxGenerator {
                             ctx.priority_fee,
                         ),
                         contract.addr,
+                        sender.key.clone(),
                     ))
                 } else {
                     let addr = calculate_contract_addr(&sender.addr, sender.nonce);
@@ -76,7 +77,7 @@ impl Generator for SelfDestructTxGenerator {
                         ctx.gas_limit_contract_deployment.unwrap_or(800_000),
                     );
                     sender.nonce += 1;
-                    txs.push((tx, addr));
+                    txs.push((tx, addr, sender.key.clone()));
                 }
             }
         }

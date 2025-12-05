@@ -27,6 +27,7 @@ use alloy_rlp::Encodable;
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use monad_chain_config::{ChainConfig, revision::ChainRevision};
+use monad_eth_types::ValidatedTx;
 use monad_types::{Epoch, GENESIS_SEQ_NUM, SeqNum};
 use staking_contract::{StakingContractCall, StakingContractTransaction};
 use validator::SystemTransactionError;
@@ -34,7 +35,11 @@ use validator::SystemTransactionError;
 pub mod staking_contract;
 pub mod validator;
 
-// Private key used to sign system transactions
+// Private key used to sign system transactions.
+//
+// SECURITY NOTE: Hardcoding the private key in the client is an intentional design decision. All
+// nodes independently generate the set of system transactions per block signed by this key. Any
+// block with transactions signed by the system key not in the expected set will be rejected.
 const SYSTEM_SENDER_PRIV_KEY: B256 = B256::new(hex!(
     "b0358e6d701a955d9926676f227e40172763296b317ff554e49cdf2c2c35f8a7"
 ));
@@ -51,6 +56,7 @@ fn sign_with_system_sender(transaction: TxLegacy) -> Recovered<TxEnvelope> {
     Recovered::new_unchecked(TxEnvelope::Legacy(signed), SYSTEM_SENDER_ETH_ADDRESS)
 }
 
+#[derive(Debug)]
 enum SystemCall {
     StakingContractCall(StakingContractCall),
 }
@@ -63,13 +69,13 @@ impl SystemCall {
 
     // Used to validate inputs of the expected system transactions
     pub fn validate_system_transaction_input(
-        self,
-        sys_txn: Recovered<TxEnvelope>,
-    ) -> Result<SystemTransaction, SystemTransactionError> {
+        &self,
+        sys_txn: &ValidatedTx,
+    ) -> Result<(), SystemTransactionError> {
         match self {
-            Self::StakingContractCall(staking_sys_call) => staking_sys_call
-                .validate_system_transaction_input(sys_txn)
-                .map(SystemTransaction::StakingContractTransaction),
+            Self::StakingContractCall(staking_sys_call) => {
+                staking_sys_call.validate_system_transaction_input(sys_txn)
+            }
         }
     }
 
@@ -138,7 +144,6 @@ where
 {
     let epoch_length = chain_config.get_epoch_length();
     let staking_activation = chain_config.get_staking_activation();
-    let staking_rewards_activation = chain_config.get_staking_rewards_activation();
 
     let mut system_calls = Vec::new();
 
@@ -173,11 +178,8 @@ where
     // starting at the first block in Epoch N
     let generate_reward_txn = proposed_epoch >= staking_activation;
     if generate_reward_txn {
-        let block_reward = if proposed_epoch >= staking_rewards_activation {
-            U256::from(StakingContractCall::MON) * U256::from(StakingContractCall::BLOCK_REWARD_MON)
-        } else {
-            U256::ZERO
-        };
+        let block_reward_mon = chain_config.get_block_reward_mon(proposed_epoch);
+        let block_reward = U256::from(StakingContractCall::MON) * U256::from(block_reward_mon);
 
         system_calls.push(SystemCall::StakingContractCall(
             StakingContractCall::Reward {

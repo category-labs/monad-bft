@@ -19,7 +19,6 @@ use std::{
     pin::{pin, Pin},
     sync::{Arc, Mutex},
     task::{Context, Poll},
-    time::Duration,
 };
 
 mod client;
@@ -33,30 +32,43 @@ use group_message::FullNodesGroupMessage;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_dataplane::{udp::segment_size_for_mtu, DataplaneWriter};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, PeerEntry, RouterCommand};
 use monad_peer_discovery::{driver::PeerDiscoveryDriver, PeerDiscoveryAlgo, PeerDiscoveryEvent};
-use monad_types::{DropTimer, Epoch, NodeId};
+use monad_types::{Epoch, NodeId};
 use publisher::Publisher;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, error, trace, warn};
 
-use super::{
+use crate::{
     config::{RaptorCastConfig, SecondaryRaptorCastMode},
     message::OutboundRouterMessage,
-    util::{BuildTarget, FullNodes, Group, Redundancy},
+    udp::GroupId,
+    util::{FullNodes, Group},
     RaptorCastEvent,
 };
-use crate::OwnedMessageBuilder;
 
 #[derive(Debug, Clone, Copy)]
 pub enum SecondaryRaptorCastModeConfig {
     Client,
     Publisher,
     None, // Disables secondary raptorcast
+}
+
+#[derive(Debug, Clone)]
+pub enum SecondaryOutboundMessage<ST: CertificateSignatureRecoverable> {
+    SendSingle {
+        msg_bytes: bytes::Bytes,
+        dest: NodeId<CertificateSignaturePubKey<ST>>,
+        group_id: GroupId,
+    },
+    SendToGroup {
+        msg_bytes: bytes::Bytes,
+        group: Group<ST>,
+        group_id: GroupId,
+    },
 }
 
 // It's possible to switch role during runtime
@@ -80,14 +92,12 @@ where
     // Represents only the group logic, excluding everything network related.
     role: Role<ST>,
 
-    // Args for encoding outbound (validator -> full-node) messages
     curr_epoch: Epoch,
 
-    dataplane_writer: DataplaneWriter,
     peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
-    message_builder: OwnedMessageBuilder<ST, PD>,
 
     channel_from_primary: UnboundedReceiver<FullNodesGroupMessage<ST>>,
+    channel_to_primary_outbound: UnboundedSender<SecondaryOutboundMessage<ST>>,
     #[expect(unused)]
     metrics: ExecutorMetrics,
     _phantom: PhantomData<(OM, SE, M)>,
@@ -103,10 +113,10 @@ where
     pub fn new(
         config: RaptorCastConfig<ST>,
         secondary_mode: SecondaryRaptorCastMode<ST>,
-        dataplane_writer: DataplaneWriter,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
         channel_from_primary: UnboundedReceiver<FullNodesGroupMessage<ST>>,
         channel_to_primary: UnboundedSender<Group<ST>>,
+        channel_to_primary_outbound: UnboundedSender<SecondaryOutboundMessage<ST>>,
         current_epoch: Epoch,
     ) -> Self {
         let node_id = NodeId::new(config.shared_key.pubkey());
@@ -128,37 +138,14 @@ where
             ),
         };
 
-        let raptor10_redundancy = config
-            .secondary_instance
-            .raptor10_fullnode_redundancy_factor;
-        trace!(
-            self_id =? node_id, mtu =? config.mtu, ?raptor10_redundancy,
-            "RaptorCastSecondary::new()",
-        );
-
-        if raptor10_redundancy < 1f32 {
-            panic!(
-                "Configuration value raptor10_redundancy must be equal or greater than 1, \
-                but got {}. This is a bug in the configuration for the secondary instance.",
-                raptor10_redundancy
-            );
-        }
-        let redundancy = Redundancy::from_f32(raptor10_redundancy)
-            .expect("secondary raptor10_redundancy doesn't fit");
-
-        let message_builder =
-            OwnedMessageBuilder::new(config.shared_key, peer_discovery_driver.clone())
-                .segment_size(segment_size_for_mtu(config.mtu))
-                .epoch_no(current_epoch)
-                .redundancy(redundancy);
+        trace!(self_id =? node_id, "RaptorCastSecondary::new()");
 
         Self {
             role,
             curr_epoch: current_epoch,
-            message_builder,
-            dataplane_writer,
             peer_discovery_driver,
             channel_from_primary,
+            channel_to_primary_outbound,
             metrics: Default::default(),
             _phantom: PhantomData,
         }
@@ -167,7 +154,7 @@ where
     fn send_single_msg(
         &self,
         group_msg: FullNodesGroupMessage<ST>,
-        dest_node: &NodeId<CertificateSignaturePubKey<ST>>,
+        dest_node: NodeId<CertificateSignaturePubKey<ST>>,
     ) {
         trace!(
             ?dest_node,
@@ -179,17 +166,18 @@ where
         let msg_bytes = match router_msg.try_serialize() {
             Ok(msg) => msg,
             Err(err) => {
-                error!(?err, "failed to serialize a message");
+                error!(?err, "failed to serialize message from secondary");
                 return;
             }
         };
 
-        let build_target = BuildTarget::<ST>::PointToPoint(dest_node);
-        if let Some(rc_chunks) = self
-            .message_builder
-            .build_unicast_msg(&msg_bytes, &build_target)
-        {
-            self.dataplane_writer.udp_write_unicast(rc_chunks);
+        let outbound = SecondaryOutboundMessage::SendSingle {
+            msg_bytes,
+            dest: dest_node,
+            group_id: GroupId::Primary(self.curr_epoch),
+        };
+        if let Err(err) = self.channel_to_primary_outbound.send(outbound) {
+            error!(?err, "failed to send message to primary");
         }
     }
 
@@ -203,13 +191,9 @@ where
             ?group_msg,
             "RaptorCastSecondary send_group_msg"
         );
-        let _timer = DropTimer::start(Duration::from_millis(100), |elapsed| {
-            warn!(?elapsed, "long time to send_group_msg")
-        });
         let group_msg = self.try_fill_name_records(group_msg, &dest_node_ids);
-        // Can udp_write_broadcast() be used? Optimize later
         for nid in dest_node_ids.list {
-            self.send_single_msg(group_msg.clone(), &nid);
+            self.send_single_msg(group_msg.clone(), nid);
         }
     }
 
@@ -229,7 +213,7 @@ where
             filled_confirm_msg.name_records = Vec::default();
             for node_id in &dest_node_ids.list {
                 if let Some(name_record) = name_records.get(node_id) {
-                    filled_confirm_msg.name_records.push(*name_record);
+                    filled_confirm_msg.name_records.push(name_record.clone());
                 } else {
                     // Maybe can happen if peer discovery gets pruned just
                     // before sending a ConfirmGroup message.
@@ -310,7 +294,6 @@ where
                             "RaptorCastSecondary UpdateCurrentRound (Publisher)"
                         );
                         self.curr_epoch = epoch;
-                        self.message_builder.set_epoch_no(epoch);
                         // The publisher needs to be periodically informed about new nodes out there,
                         // so that it can randomize when creating new groups.
                         let full_nodes = self
@@ -346,12 +329,12 @@ where
                     }
                 },
 
-                Self::Command::PublishToFullNodes { epoch, message } => {
-                    let _timer = DropTimer::start(Duration::from_millis(20), |elapsed| {
-                        warn!(?elapsed, "long time to publish message")
-                    });
-
-                    let curr_group: &Group<ST> = match &mut self.role {
+                Self::Command::PublishToFullNodes {
+                    epoch: _,
+                    round,
+                    message,
+                } => {
+                    let curr_group: Group<ST> = match &mut self.role {
                         Role::Client(_) => {
                             continue;
                         }
@@ -360,7 +343,7 @@ where
                                 Some(group) => {
                                     trace!(?group, size_excl_self =? group.size_excl_self(),
                                         "RaptorCastSecondary PublishToFullNodes");
-                                    group
+                                    group.clone()
                                 }
                                 None => {
                                     trace!("RaptorCastSecondary PublishToFullNodes; group: NONE");
@@ -375,8 +358,6 @@ where
                         continue;
                     }
 
-                    let build_target = BuildTarget::FullNodeRaptorCast(curr_group);
-
                     let outbound_message = match OutboundRouterMessage::<OM, ST>::AppMessage(
                         message,
                     )
@@ -384,21 +365,18 @@ where
                     {
                         Ok(msg) => msg,
                         Err(err) => {
-                            error!(?err, "failed to serialize a message");
+                            error!(?err, "failed to serialize message from secondary");
                             continue;
                         }
                     };
 
-                    // Split outbound_message into raptorcast chunks that we can
-                    // send to full nodes.
-                    if let Some(rc_chunks) = self
-                        .message_builder
-                        .prepare()
-                        .epoch_no(epoch)
-                        .build_unicast_msg(&outbound_message, &build_target)
-                    {
-                        // Send the raptorcast chunks via UDP to all peers in group
-                        self.dataplane_writer.udp_write_unicast(rc_chunks);
+                    let outbound = SecondaryOutboundMessage::SendToGroup {
+                        msg_bytes: outbound_message,
+                        group: curr_group,
+                        group_id: GroupId::Secondary(round),
+                    };
+                    if let Err(err) = self.channel_to_primary_outbound.send(outbound) {
+                        error!(?err, "failed to send message to primary");
                     }
                 }
             }
@@ -459,13 +437,7 @@ where
                         // FIXME: bind name records with peers and ask peer discovery to verify
                         for ii in 0..num_mappings {
                             let rec = &confirm_msg.name_records[ii];
-                            let peer_entry = PeerEntry {
-                                pubkey: confirm_msg.peers[ii].pubkey(),
-                                addr: rec.name_record.address,
-                                signature: rec.signature,
-                                record_seq_num: rec.name_record.seq,
-                            };
-                            peers.push(peer_entry);
+                            peers.push(rec.with_pubkey(confirm_msg.peers[ii].pubkey()).into());
                         }
                         this.peer_discovery_driver
                             .lock()
@@ -504,7 +476,7 @@ where
                 {
                     // Send back a response to the validator
                     trace!("RaptorCastSecondary sending back response for group message");
-                    this.send_single_msg(response_msg, &validator_id);
+                    this.send_single_msg(response_msg, validator_id);
                 }
             }
         }

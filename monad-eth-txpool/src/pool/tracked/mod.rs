@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
+use std::marker::PhantomData;
 
 use alloy_primitives::Address;
 use indexmap::{map::Entry as IndexMapEntry, IndexMap};
@@ -25,36 +25,20 @@ use monad_consensus_types::block::ConsensusBlockHeader;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_block_policy::{
-    nonce_usage::{NonceUsage, NonceUsageMap},
-    EthBlockPolicy,
-};
-use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason};
-use monad_eth_types::EthExecutionProtocol;
+use monad_eth_block_policy::nonce_usage::NonceUsageMap;
+use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
 use monad_state_backend::StateBackend;
-use monad_types::{DropTimer, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
-use tracing::{debug, error, info, warn};
+use tracing::error;
 
-pub(super) use self::list::TrackedTxList;
-use super::{
-    pending::{PendingTxList, PendingTxMap},
-    transaction::ValidEthTransaction,
-};
-use crate::EthTxPoolEventTracker;
+use self::limits::TrackedTxLimits;
+pub(super) use self::{limits::TrackedTxLimitsConfig, list::TrackedTxList};
+use super::transaction::ValidEthTransaction;
+use crate::{pool::tracked::priority::PriorityMap, EthTxPoolEventTracker};
 
+mod limits;
 mod list;
-
-// To produce 5k tx blocks, we need the tracked tx map to hold at least 15k addresses so that, after
-// pruning the txpool of up to 5k unique addresses in the last committed block update and up to 5k
-// unique addresses in the pending blocktree, the tracked tx map will still have at least 5k other
-// addresses with at least one tx each to use when creating the next block.
-const MAX_ADDRESSES: usize = 16 * 1024;
-
-// Tx batches from rpc can contain up to roughly 500 transactions. Since we don't evict based on how
-// many txs are in the pool, we need to ensure that after eviction there is always space for all 500
-// txs.
-const SOFT_EVICT_ADDRESSES_WATERMARK: usize = MAX_ADDRESSES - 512;
+mod priority;
 
 /// Stores transactions using a "snapshot" system by which each address has an associated
 /// account_nonce stored in the TrackedTxList which is guaranteed to be the correct
@@ -69,9 +53,8 @@ where
     // By using IndexMap, we can iterate through the map with Vec-like performance and are able to
     // evict expired txs through the entry API.
     txs: IndexMap<Address, TrackedTxList>,
-
-    soft_tx_expiry: Duration,
-    hard_tx_expiry: Duration,
+    priority: PriorityMap,
+    limits: TrackedTxLimits,
 
     _phantom: PhantomData<(ST, SCT, SBT, CCT, CRT)>,
 }
@@ -81,15 +64,17 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend<ST, SCT>,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
-    pub fn new(soft_tx_expiry: Duration, hard_tx_expiry: Duration) -> Self {
-        Self {
-            txs: IndexMap::with_capacity(MAX_ADDRESSES),
+    pub fn new(limits_config: TrackedTxLimitsConfig) -> Self {
+        let limits = TrackedTxLimits::new(limits_config);
 
-            soft_tx_expiry,
-            hard_tx_expiry,
+        Self {
+            txs: limits.build_txs_map(),
+            priority: PriorityMap::default(),
+            limits,
 
             _phantom: PhantomData,
         }
@@ -119,174 +104,110 @@ where
         self.txs.values_mut().flat_map(TrackedTxList::iter_mut)
     }
 
-    /// Produces a reference to the tx if it was inserted, producing None when the tx signer was
-    /// tracked but the tx was not inserted. If the tx signer is not tracked or the tracked pool is
-    /// not ready to accept txs, an error is produced with the original tx.
-    pub fn try_insert_tx(
-        &mut self,
-        event_tracker: &mut EthTxPoolEventTracker<'_>,
-        last_commit: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
-        tx: ValidEthTransaction,
-    ) -> Result<Option<&ValidEthTransaction>, ValidEthTransaction> {
-        let Some(tx_list) = self.txs.get_mut(tx.signer_ref()) else {
-            return Err(tx);
+    fn update_priority(&mut self, event_tracker: &EthTxPoolEventTracker<'_>, address: Address) {
+        let Some(tx_list) = self.txs.get(&address) else {
+            error!(
+                ?address,
+                "txpool update tx list called on non-existent address"
+            );
+            return;
         };
 
-        Ok(tx_list.try_insert_tx(
-            event_tracker,
-            tx,
-            last_commit.execution_inputs.base_fee_per_gas,
-            self.hard_tx_expiry,
-        ))
+        self.priority
+            .update_priority(event_tracker, address, tx_list);
     }
 
-    pub fn try_promote_pending(
+    pub fn try_insert_txs(
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         last_commit: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
-        block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
-        state_backend: &SBT,
-        pending: &mut PendingTxMap,
-        max_promotable: usize,
-    ) -> bool {
-        let Some(insertable) = MAX_ADDRESSES.checked_sub(self.txs.len()) else {
-            return false;
-        };
+        address: Address,
+        txs: Vec<ValidEthTransaction>,
+        account_nonce: u64,
+        on_insert: &mut impl FnMut(&ValidEthTransaction),
+    ) {
+        let mut inserted = false;
 
-        let insertable = insertable.min(max_promotable);
+        match self.txs.entry(address) {
+            IndexMapEntry::Occupied(o) => {
+                let tx_list = o.into_mut();
 
-        if insertable == 0 {
-            return true;
-        }
-
-        let to_insert = pending.split_off(insertable);
-
-        if to_insert.is_empty() {
-            return true;
-        }
-
-        let last_commit_seq_num = last_commit.seq_num;
-
-        let addresses = to_insert.len();
-        let _timer = DropTimer::start(Duration::ZERO, |elapsed| {
-            debug!(?elapsed, addresses, "txpool promote_pending")
-        });
-
-        let addresses = to_insert.keys().cloned().collect_vec();
-
-        // BlockPolicy only guarantees that data is available for seqnum (N-k, N] for some execution
-        // delay k. Since block_policy looks up seqnum - execution_delay, passing the last commit
-        // seqnum will result in a lookup outside that range. As a fix, we add 1 so the seqnum is on
-        // the edge of the range.
-        let account_nonces = match block_policy.get_account_base_nonces(
-            last_commit_seq_num + SeqNum(1),
-            state_backend,
-            &Vec::default(),
-            addresses.iter(),
-        ) {
-            Ok(account_nonces) => account_nonces,
-            Err(err) => {
-                warn!(
-                    ?err,
-                    "failed to lookup account nonces during promote pending"
-                );
-                event_tracker.drop_all(
-                    to_insert
-                        .into_values()
-                        .map(PendingTxList::into_map)
-                        .flat_map(BTreeMap::into_values)
-                        .map(ValidEthTransaction::into_raw),
-                    EthTxPoolDropReason::Internal(EthTxPoolInternalDropReason::StateBackendError),
-                );
-                return false;
+                for tx in txs {
+                    if let Some(tx) = tx_list.try_insert_tx(
+                        event_tracker,
+                        &mut self.limits,
+                        tx,
+                        last_commit.execution_inputs.base_fee_per_gas,
+                    ) {
+                        on_insert(tx);
+                        inserted = true;
+                    }
+                }
             }
-        };
+            IndexMapEntry::Vacant(v) => TrackedTxList::try_new(
+                v,
+                event_tracker,
+                &mut self.limits,
+                txs,
+                account_nonce,
+                &mut |tx| {
+                    on_insert(tx);
+                    inserted = true;
+                },
+                last_commit.execution_inputs.base_fee_per_gas,
+            ),
+        }
 
-        for (address, pending_tx_list) in to_insert {
-            let Some(account_nonce) = account_nonces.get(&address) else {
-                error!("txpool address missing from state backend");
+        if !inserted {
+            return;
+        }
 
-                event_tracker
-                    .pending_drop_unknown(pending_tx_list.into_map().values().map(|tx| tx.hash()));
+        self.update_priority(event_tracker, address);
 
-                continue;
+        while self.limits.is_exceeding_limits(self.txs.len()) {
+            let Some(removal_address) = self.priority.pop_eviction_address() else {
+                error!("txpool cannot find eviction address but exceeding limits");
+                self.reset();
+                return;
             };
 
-            match self.txs.entry(address) {
-                IndexMapEntry::Occupied(_) => {
-                    unreachable!("pending address present in tracked map")
+            match self.txs.entry(removal_address) {
+                IndexMapEntry::Vacant(_) => {
+                    error!("txpool failed to find removal address during insertion");
                 }
-                IndexMapEntry::Vacant(v) => {
-                    let Some(tracked_tx_list) = TrackedTxList::new_from_promote_pending(
-                        event_tracker,
-                        *account_nonce,
-                        pending_tx_list,
-                    ) else {
-                        continue;
-                    };
-
-                    v.insert(tracked_tx_list);
+                IndexMapEntry::Occupied(o) => {
+                    TrackedTxList::evict_pool_full(event_tracker, &mut self.limits, o);
                 }
             }
         }
-
-        true
     }
 
     pub fn update_committed_nonce_usages(
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         nonce_usages: NonceUsageMap,
-        pending: &mut PendingTxMap,
     ) {
-        let mut insertable = MAX_ADDRESSES.saturating_sub(self.txs.len());
-
         for (address, nonce_usage) in nonce_usages.into_map() {
             match self.txs.entry(address) {
                 IndexMapEntry::Occupied(tx_list) => {
-                    TrackedTxList::update_committed_nonce_usage(event_tracker, tx_list, nonce_usage)
-                }
-                IndexMapEntry::Vacant(v) => match nonce_usage {
-                    NonceUsage::Possible(_) => continue,
-                    NonceUsage::Known(nonce) => {
-                        if insertable == 0 {
-                            continue;
-                        }
-
-                        let Some(pending_tx_list) = pending.remove(&address) else {
-                            continue;
-                        };
-
-                        let account_nonce = nonce
-                            .checked_add(1)
-                            .expect("account nonce does not overflow");
-
-                        let Some(tracked_tx_list) = TrackedTxList::new_from_promote_pending(
-                            event_tracker,
-                            account_nonce,
-                            pending_tx_list,
-                        ) else {
-                            continue;
-                        };
-
-                        insertable -= 1;
-
-                        v.insert(tracked_tx_list);
+                    if TrackedTxList::update_committed_nonce_usage(
+                        event_tracker,
+                        &mut self.limits,
+                        tx_list,
+                        nonce_usage,
+                    ) {
+                        self.update_priority(event_tracker, address);
+                    } else {
+                        self.priority.remove(address);
                     }
-                },
+                }
+                IndexMapEntry::Vacant(_) => {}
             }
         }
     }
 
     pub fn evict_expired_txs(&mut self, event_tracker: &mut EthTxPoolEventTracker<'_>) {
-        let num_txs = self.num_txs();
-
-        let tx_expiry = if num_txs < SOFT_EVICT_ADDRESSES_WATERMARK {
-            self.hard_tx_expiry
-        } else {
-            info!(?num_txs, "txpool hit soft evict addresses watermark");
-            self.soft_tx_expiry
-        };
+        let tx_expiry = self.limits.expiry_duration_during_evict();
 
         let mut idx = 0;
 
@@ -299,16 +220,17 @@ where
                 break;
             };
 
-            if TrackedTxList::evict_expired_txs(event_tracker, entry, tx_expiry) {
+            let address = *entry.key();
+
+            if TrackedTxList::evict_expired_txs(event_tracker, &mut self.limits, entry, tx_expiry) {
+                self.priority.remove(address);
                 continue;
             }
 
+            self.update_priority(event_tracker, address);
+
             idx += 1;
         }
-    }
-
-    pub fn reset(&mut self) {
-        self.txs.clear();
     }
 
     pub fn static_validate_all_txs(
@@ -318,13 +240,30 @@ where
         chain_revision: &CRT,
         execution_revision: &MonadExecutionRevision,
     ) {
-        self.txs.retain(|_, tx_list| {
-            tx_list.static_validate_all_txs(
+        self.txs.retain(|address, tx_list| {
+            let retain = tx_list.static_validate_all_txs(
                 event_tracker,
+                &mut self.limits,
                 chain_id,
                 chain_revision,
                 execution_revision,
-            )
+            );
+
+            if !retain {
+                self.priority.remove(*address);
+            }
+
+            retain
         });
+
+        for address in self.txs.keys().cloned().collect_vec() {
+            self.update_priority(event_tracker, address);
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.txs.clear();
+        self.priority.reset();
+        self.limits.reset();
     }
 }

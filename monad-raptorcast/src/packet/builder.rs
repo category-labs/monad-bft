@@ -21,20 +21,20 @@ use monad_crypto::certificate_signature::{
 };
 use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_types::NodeId;
-use rand::{seq::SliceRandom as _, Rng};
+use rand::Rng;
 
 use super::{
     assembler::{self, build_header, AssembleMode, BroadcastType, PacketLayout},
     assigner::{self, ChunkAssignment},
-    BuildError, ChunkAssigner, PeerAddrLookup, RetrofitResult as _, UdpMessage,
+    BuildError, ChunkAssigner, PeerAddrLookup, UdpMessage,
 };
 use crate::{
     message::MAX_MESSAGE_SIZE,
     udp::{
-        MAX_MERKLE_TREE_DEPTH, MAX_NUM_PACKETS, MAX_REDUNDANCY, MAX_SEGMENT_LENGTH,
+        GroupId, MAX_MERKLE_TREE_DEPTH, MAX_NUM_PACKETS, MAX_REDUNDANCY, MAX_SEGMENT_LENGTH,
         MIN_CHUNK_LENGTH, MIN_MERKLE_TREE_DEPTH,
     },
-    util::{self, BuildTarget, Redundancy},
+    util::{compute_app_message_hash, unix_ts_ms_now, BuildTarget, Redundancy},
 };
 
 pub const DEFAULT_MERKLE_TREE_DEPTH: u8 = 6;
@@ -92,7 +92,7 @@ where
     peer_lookup: PL,
 
     // required fields
-    epoch_no: Option<u64>,
+    group_id: Option<GroupId>,
     redundancy: Option<Redundancy>,
 
     // optional fields
@@ -111,7 +111,7 @@ where
         Self {
             key: self.key.clone(),
             peer_lookup: self.peer_lookup.clone(),
-            epoch_no: self.epoch_no,
+            group_id: self.group_id,
             redundancy: self.redundancy,
             unix_ts_ms: self.unix_ts_ms,
             segment_size: self.segment_size,
@@ -141,7 +141,7 @@ where
 
             // default fields
             redundancy: None,
-            epoch_no: None,
+            group_id: None,
             unix_ts_ms: TimestampMode::RealTime,
 
             // optional fields
@@ -162,8 +162,8 @@ where
         self
     }
 
-    pub fn epoch_no(mut self, epoch_no: impl Into<u64>) -> Self {
-        self.epoch_no = Some(epoch_no.into());
+    pub fn group_id(mut self, group_id: GroupId) -> Self {
+        self.group_id = Some(group_id);
         self
     }
 
@@ -173,22 +173,22 @@ where
     }
 
     // we currently don't use non-standard merkle_tree_depth
-    #[expect(unused)]
-    pub fn merkle_tree_depth(mut self, depth: u8) -> Result<Self> {
+    #[cfg_attr(not(test), expect(unused))]
+    pub fn merkle_tree_depth(mut self, depth: u8) -> Self {
         self.merkle_tree_depth = depth;
-        Ok(self)
+        self
     }
 
     // we currently don't use any non-standard assemble mode.
     #[expect(unused)]
-    pub fn assemble_mode(mut self, mode: AssembleMode) -> Result<Self> {
+    pub fn assemble_mode(mut self, mode: AssembleMode) -> Self {
         self.assemble_mode = mode;
-        Ok(self)
+        self
     }
 
     // ----- Convenience methods for modifying the builder -----
-    pub fn set_epoch_no(&mut self, epoch_no: impl Into<u64>) {
-        self.epoch_no = Some(epoch_no.into());
+    pub fn set_group_id(&mut self, group_id: GroupId) {
+        self.group_id = Some(group_id);
     }
 
     // ----- Prepare override builder -----
@@ -196,7 +196,7 @@ where
         PreparedMessageBuilder {
             base: self,
             peer_lookup: None,
-            epoch_no: None,
+            group_id: None,
         }
     }
 
@@ -210,12 +210,11 @@ where
         PreparedMessageBuilder {
             base: self,
             peer_lookup: Some(peer_lookup),
-            epoch_no: None,
+            group_id: None,
         }
     }
 
     // ----- Delegated build methods -----
-    #[expect(unused)]
     pub fn build_into<C>(
         &self,
         app_message: &[u8],
@@ -236,14 +235,6 @@ where
     ) -> Result<Vec<UdpMessage>> {
         self.prepare().build_vec(app_message, build_target)
     }
-
-    pub fn build_unicast_msg(
-        &self,
-        app_message: &[u8],
-        build_target: &BuildTarget<ST>,
-    ) -> Option<monad_dataplane::UnicastMsg> {
-        self.prepare().build_unicast_msg(app_message, build_target)
-    }
 }
 
 pub struct PreparedMessageBuilder<'base, 'key, ST, PL, PL2>
@@ -256,7 +247,7 @@ where
 
     // Add extra override fields as needed
     peer_lookup: Option<PL2>,
-    epoch_no: Option<u64>,
+    group_id: Option<GroupId>,
 }
 
 impl<'base, 'key, ST, PL, PL2> PreparedMessageBuilder<'base, 'key, ST, PL, PL2>
@@ -266,26 +257,26 @@ where
     PL2: PeerAddrLookup<CertificateSignaturePubKey<ST>>,
 {
     // ----- Setters for overrides -----
-    pub fn epoch_no(mut self, epoch_no: impl Into<u64>) -> Self {
-        self.epoch_no = Some(epoch_no.into());
+    pub fn group_id(mut self, group_id: GroupId) -> Self {
+        self.group_id = Some(group_id);
         self
     }
 
     // ----- Parameter validation methods -----
-    fn unwrap_epoch_no(&self) -> Result<u64> {
-        if let Some(epoch_no) = self.epoch_no {
-            return Ok(epoch_no);
+    fn unwrap_group_id(&self) -> Result<GroupId> {
+        if let Some(group_id) = self.group_id {
+            return Ok(group_id);
         }
-        let epoch_no = self
+        let group_id = self
             .base
-            .epoch_no
-            .expect("epoch_no must be set before building");
-        Ok(epoch_no)
+            .group_id
+            .expect("group_id must be set before building");
+        Ok(group_id)
     }
     fn unwrap_unix_ts_ms(&self) -> Result<u64> {
         let unix_ts_ms = match self.base.unix_ts_ms {
             TimestampMode::Fixed(ts) => ts,
-            TimestampMode::RealTime => util::unix_ts_ms_now(),
+            TimestampMode::RealTime => unix_ts_ms_now(),
         };
         Ok(unix_ts_ms)
     }
@@ -364,18 +355,20 @@ where
         merkle_tree_depth: u8,
         layout: PacketLayout,
         broadcast_type: BroadcastType,
-        app_message: &[u8],
+        app_message_hash: &[u8; 20],
+        app_message_len: usize,
     ) -> Result<Bytes> {
-        let epoch_no = self.unwrap_epoch_no()?;
+        let group_id = self.unwrap_group_id()?;
         let unix_ts_ms = self.unwrap_unix_ts_ms()?;
 
         let header_buf = build_header(
             0, // version
             broadcast_type,
             merkle_tree_depth,
-            epoch_no,
+            group_id,
             unix_ts_ms,
-            app_message,
+            app_message_hash,
+            app_message_len,
         )?;
 
         debug_assert_eq!(header_buf.len(), layout.header_sans_signature_range().len());
@@ -383,26 +376,33 @@ where
         Ok(header_buf)
     }
 
-    fn choose_assigner(
+    fn make_assigner(
         build_target: &BuildTarget<ST>,
         self_node_id: &NodeId<CertificateSignaturePubKey<ST>>,
+        app_message_hash: &[u8; 20],
         rng: &mut impl Rng,
     ) -> Box<dyn ChunkAssigner<CertificateSignaturePubKey<ST>>>
     where
         ST: CertificateSignatureRecoverable,
     {
+        use assigner::{Partitioned, Replicated, StakeBasedWithRC};
         match build_target {
-            BuildTarget::PointToPoint(to) => Box::new(assigner::Replicated::from_unicast(**to)),
-            BuildTarget::Broadcast(nodes) => Box::new(assigner::Replicated::from_broadcast(
-                nodes.iter().copied().collect(),
-            )),
+            BuildTarget::PointToPoint(to) => Box::new(Replicated::from_unicast(**to)),
+            BuildTarget::Broadcast(nodes) => {
+                let assigner = Replicated::from_broadcast(nodes.iter().copied().collect());
+                Box::new(assigner)
+            }
             BuildTarget::Raptorcast(validators) => {
-                let mut validator_set: Vec<_> = validators
-                    .iter()
-                    .map(|(node_id, stake)| (*node_id, stake))
-                    .collect();
-                validator_set.shuffle(rng);
-                Box::new(assigner::Partitioned::from_validator_set(validator_set))
+                let seed =
+                    StakeBasedWithRC::<CertificateSignaturePubKey<ST>>::seed_from_app_message_hash(
+                        app_message_hash,
+                    );
+                let sorted_validators =
+                    StakeBasedWithRC::<CertificateSignaturePubKey<ST>>::shuffle_validators::<ST>(
+                        validators, seed,
+                    );
+                let assigner = StakeBasedWithRC::from_validator_set(sorted_validators);
+                Box::new(assigner)
             }
             BuildTarget::FullNodeRaptorCast(group) => {
                 let seed = rng.gen::<usize>();
@@ -410,7 +410,7 @@ where
                     .iter_skip_self_and_author(self_node_id, seed)
                     .copied()
                     .collect();
-                Box::new(assigner::Partitioned::from_homogeneous_peers(nodes))
+                Box::new(Partitioned::from_homogeneous_peers(nodes))
             }
         }
     }
@@ -430,10 +430,13 @@ where
         let depth = self.unwrap_merkle_tree_depth()?;
         let layout = PacketLayout::new(segment_size, depth);
 
+        // compute app message hash
+        let app_message_hash = compute_app_message_hash(app_message).0;
+
         // select chunk assignment algorithm based on build target
         let rng = &mut rand::thread_rng();
         let self_node_id = NodeId::new(self.base.key.as_ref().pubkey());
-        let assigner = Self::choose_assigner(build_target, &self_node_id, rng);
+        let assigner = Self::make_assigner(build_target, &self_node_id, &app_message_hash, rng);
 
         // calculate the number of symbols needed for assignment
         let app_message_len = self.checked_message_len(app_message.len())?;
@@ -451,7 +454,8 @@ where
             depth,
             layout,
             broadcast_type_from_build_target(build_target),
-            app_message,
+            &app_message_hash,
+            app_message.len(),
         )?;
 
         // assemble the chunks's headers and content
@@ -481,33 +485,6 @@ where
         let mut packets = Vec::new();
         self.build_into(app_message, build_target, &mut packets)?;
         Ok(packets)
-    }
-
-    pub fn build_unicast_msg(
-        &self,
-        app_message: &[u8],
-        build_target: &BuildTarget<ST>,
-    ) -> Option<monad_dataplane::UnicastMsg> {
-        use std::time::Duration;
-
-        use monad_types::DropTimer;
-
-        let _timer = DropTimer::start(Duration::from_millis(10), |elapsed| {
-            tracing::warn!(
-                ?elapsed,
-                app_message_len = app_message.len(),
-                "long time to build_unicast_msg"
-            )
-        });
-
-        let messages = self
-            .build_vec(app_message, build_target)
-            .unwrap_log_on_error(app_message, build_target);
-
-        let stride = messages.first()?.stride as u16;
-        let msgs = messages.into_iter().map(|m| (m.dest, m.payload)).collect();
-
-        Some(monad_dataplane::UnicastMsg { msgs, stride })
     }
 }
 

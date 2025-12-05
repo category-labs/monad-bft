@@ -99,6 +99,13 @@ where
                     assert!(!self.started_execution);
                     self.started_execution = true;
                 }
+                StateSyncCommand::ExpandUpstreamPeers(new_peers) => {
+                    let new_peers: Vec<_> = new_peers
+                        .into_iter()
+                        .filter(|peer| !self.peers.contains(peer))
+                        .collect();
+                    self.peers.extend(new_peers);
+                }
                 StateSyncCommand::RequestSync(eth_header)
                     if eth_header.seq_num() == GENESIS_SEQ_NUM =>
                 {
@@ -109,6 +116,7 @@ where
                 }
                 StateSyncCommand::RequestSync(eth_header) => {
                     assert!(!self.started_execution);
+                    assert!(!self.peers.is_empty());
                     let request = StateSyncRequest {
                         version: SELF_STATESYNC_VERSION,
                         target: eth_header.seq_num().0,
@@ -183,6 +191,7 @@ where
                     }
                     StateSyncNetworkMessage::BadVersion(_) => {}
                     StateSyncNetworkMessage::Completion(_) => {}
+                    StateSyncNetworkMessage::NotWhitelisted => {}
                 },
             }
         }
@@ -199,14 +208,13 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    pub fn new(
-        state_backend: InMemoryState<ST, SCT>,
-        peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
-    ) -> Self {
+    pub fn new(state_backend: InMemoryState<ST, SCT>) -> Self {
         Self {
             events: Default::default(),
             state_backend,
-            peers,
+            // no peers on initialization
+            // these get populated via StateSyncCommand::ExpandUpstreamPeers
+            peers: Default::default(),
             max_service_window: SeqNum::MAX,
             started_execution: false,
             request: None,

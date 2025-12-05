@@ -13,7 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{marker::PhantomData, path::PathBuf};
+use std::{
+    marker::PhantomData,
+    path::{Path, PathBuf},
+};
 
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::{
@@ -25,8 +28,9 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::ConfigFileCommand;
-use monad_types::{Epoch, ExecutionProtocol, SeqNum};
+use monad_types::{Epoch, ExecutionProtocol, Round, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
+use tracing::warn;
 
 pub struct MockConfigFile<ST, SCT, EPT>
 where
@@ -122,32 +126,58 @@ where
     }
 
     fn write_checkpoint(&self, root_seq_num: SeqNum, checkpoint: Checkpoint<ST, SCT, EPT>) {
-        let checkpoint_str =
-            toml::to_string_pretty(&checkpoint).expect("failed to serialize checkpoint");
+        // write forkpoint.rlp or panic
+        Self::write_checkpoint_bytes_to_path(
+            &self.forkpoint_path.with_extension("rlp"),
+            root_seq_num,
+            checkpoint.high_certificate.round(),
+            &checkpoint.to_rlp_bytes(),
+        );
+        // try to serialize and write forkpoint.toml
+        let forkpoint_toml_path = self.forkpoint_path.with_extension("toml");
+        match checkpoint.try_to_toml_string() {
+            Ok(checkpoint_toml) => Self::write_checkpoint_bytes_to_path(
+                &forkpoint_toml_path,
+                root_seq_num,
+                checkpoint.high_certificate.round(),
+                &checkpoint_toml,
+            ),
+            Err(err) => {
+                warn!(?err, "failed to write forkpoint to toml string");
+                let _ = std::fs::remove_file(&forkpoint_toml_path);
+            }
+        }
+    }
+
+    fn write_checkpoint_bytes_to_path(
+        path: &Path,
+        root_seq_num: SeqNum,
+        high_certificate_round: Round,
+        checkpoint_bytes: &impl AsRef<[u8]>,
+    ) {
         let temp_path = {
-            let mut file_name = self
-                .forkpoint_path
+            let mut file_name = path
                 .file_name()
                 .expect("invalid checkpoint file name")
                 .to_owned();
             file_name.push(".wip");
 
-            let mut temp_path = self.forkpoint_path.clone();
+            let mut temp_path = path.to_owned();
             temp_path.set_file_name(file_name);
             temp_path
         };
         std::fs::write(
             format!(
                 "{}.{}.{}",
-                self.forkpoint_path.to_string_lossy(),
+                path.to_string_lossy(),
                 root_seq_num.0,
-                checkpoint.high_certificate.round().0,
+                high_certificate_round.0,
             ),
-            &checkpoint_str,
+            checkpoint_bytes,
         )
         .expect("failed to write checkpoint backup");
-        std::fs::write(&temp_path, &checkpoint_str).expect("failed to write checkpoint");
-        std::fs::rename(&temp_path, &self.forkpoint_path).expect("failed to rename checkpoint");
+        std::fs::write(&temp_path, checkpoint_bytes).expect("failed to write checkpoint");
+        std::fs::rename(&temp_path, path).expect("failed to rename checkpoint");
     }
 
     fn write_validator_set(&mut self, new_validator_set: ValidatorSetDataWithEpoch<SCT>) {

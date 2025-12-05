@@ -22,23 +22,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-use agent::AgentBuilder;
 use alloy_rlp::{Decodable, Encodable};
 use chrono::Utc;
 use clap::CommandFactory;
 use futures_util::{FutureExt, StreamExt};
 use monad_chain_config::ChainConfig;
 use monad_consensus_state::ConsensusConfig;
-use monad_consensus_types::{
-    metrics::Metrics,
-    validator_data::{ValidatorSetDataWithEpoch, ValidatorsConfig},
-};
-use monad_control_panel::{ipc::ControlPanelIpcReceiver, TracingReload};
-use monad_crypto::{
-    certificate_signature::{
-        CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
-    },
-    signing_domain,
+use monad_consensus_types::{metrics::Metrics, validator_data::ValidatorSetDataWithEpoch};
+use monad_control_panel::ipc::ControlPanelIpcReceiver;
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_dataplane::DataplaneBuilder;
 use monad_eth_block_policy::EthBlockPolicy;
@@ -56,7 +49,10 @@ use monad_peer_discovery::{
     MonadNameRecord, NameRecord,
 };
 use monad_pprof::start_pprof_server;
-use monad_raptorcast::config::{RaptorCastConfig, RaptorCastConfigPrimary};
+use monad_raptorcast::{
+    config::{RaptorCastConfig, RaptorCastConfigPrimary},
+    AUTHENTICATED_RAPTORCAST_SOCKET, RAPTORCAST_SOCKET,
+};
 use monad_router_multi::MultiRouter;
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::StateBackendThreadClient;
@@ -73,18 +69,12 @@ use monad_validator::{
     signature_collection::SignatureCollection, validator_set::ValidatorSetFactory,
     weighted_round_robin::WeightedRoundRobin,
 };
-use monad_wal::{wal::WALoggerConfig, PersistenceLoggerBuilder};
+use monad_wal::wal::WALoggerConfig;
 use opentelemetry::metrics::MeterProvider;
 use opentelemetry_otlp::{MetricExporter, WithExportConfig};
 use rand_chacha::{rand_core::SeedableRng, ChaCha8Rng};
 use tokio::signal::unix::{signal, SignalKind};
 use tracing::{error, event, info, warn, Instrument, Level};
-use tracing_manytrace::{ManytraceLayer, TracingExtension};
-use tracing_subscriber::{
-    fmt::{format::FmtSpan, Layer as FmtLayer},
-    layer::SubscriberExt,
-    Layer,
-};
 
 use self::{cli::Cli, error::NodeSetupError, state::NodeState};
 
@@ -124,9 +114,6 @@ fn main() {
         .map_err(Into::into)
         .unwrap_or_else(|e: NodeSetupError| cmd.error(e.kind(), e).exit());
 
-    let (reload_handle, _agent) = setup_tracing(&node_state)
-        .unwrap_or_else(|e: NodeSetupError| cmd.error(e.kind(), e).exit());
-
     drop(cmd);
 
     MONAD_NODE_VERSION.map(|v| info!("starting monad-bft with version {}", v));
@@ -149,70 +136,14 @@ fn main() {
         });
     }
 
-    if let Err(e) = runtime.block_on(run(node_state, reload_handle)) {
+    if let Err(e) = runtime.block_on(run(node_state)) {
         tracing::error!("monad consensus node crashed: {:?}", e);
     }
 }
 
-fn setup_tracing(
-    node_state: &NodeState,
-) -> Result<(Box<dyn TracingReload>, Option<agent::Agent>), NodeSetupError> {
-    if let Some(socket_path) = &node_state.manytrace_socket {
-        let extension = std::sync::Arc::new(TracingExtension::new());
-        let agent = AgentBuilder::new(socket_path.clone())
-            .register_tracing(Box::new((*extension).clone()))
-            .build()
-            .map_err(|e| NodeSetupError::Custom {
-                kind: clap::error::ErrorKind::Io,
-                msg: format!("failed to build manytrace agent: {}", e),
-            })?;
-        let (filter, reload_handle) = tracing_subscriber::reload::Layer::new(
-            tracing_subscriber::EnvFilter::from_default_env(),
-        );
-        let subscriber = tracing_subscriber::Registry::default()
-            .with(ManytraceLayer::new(extension))
-            .with(
-                FmtLayer::default()
-                    .json()
-                    .with_span_events(FmtSpan::NONE)
-                    .with_current_span(false)
-                    .with_span_list(false)
-                    .with_writer(std::io::stdout)
-                    .with_ansi(false)
-                    .with_filter(filter),
-            );
-
-        tracing::subscriber::set_global_default(subscriber)?;
-        info!("manytrace tracing enabled");
-        Ok((Box::new(reload_handle), Some(agent)))
-    } else {
-        let (filter, reload_handle) = tracing_subscriber::reload::Layer::new(
-            tracing_subscriber::EnvFilter::from_default_env(),
-        );
-
-        let subscriber = tracing_subscriber::Registry::default().with(filter).with(
-            FmtLayer::default()
-                .json()
-                .with_span_events(FmtSpan::NONE)
-                .with_current_span(false)
-                .with_span_list(false)
-                .with_writer(std::io::stdout)
-                .with_ansi(false),
-        );
-
-        tracing::subscriber::set_global_default(subscriber)?;
-        Ok((Box::new(reload_handle), None))
-    }
-}
-
-async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Result<(), ()> {
-    let locked_epoch_validators = ValidatorsConfig::read_from_path(&node_state.validators_path)
-        .unwrap_or_else(|err| {
-            panic!(
-                "failed to read/parse validators_path={:?}, err={:?}",
-                &node_state.validators_path, err
-            )
-        })
+async fn run(node_state: NodeState) -> Result<(), ()> {
+    let locked_epoch_validators = node_state
+        .validators_config
         .get_locked_validator_sets(&node_state.forkpoint_config);
 
     let current_epoch = node_state
@@ -266,18 +197,13 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
         bootstrap_nodes.push(peer_id);
     }
 
-    // default statesync peers to bootstrap nodes if none is specified
-    let state_sync_peers = if node_state.node_config.statesync.peers.is_empty() {
-        bootstrap_nodes
-    } else {
-        node_state
-            .node_config
-            .statesync
-            .peers
-            .into_iter()
-            .map(|p| NodeId::new(p.secp256k1_pubkey))
-            .collect()
-    };
+    let state_sync_init_peers = node_state
+        .node_config
+        .statesync
+        .init_peers
+        .into_iter()
+        .map(|p| NodeId::new(p.secp256k1_pubkey))
+        .collect();
 
     // TODO: use PassThruBlockPolicy and NopStateBackend for consensus only mode
     let create_block_policy = || {
@@ -341,7 +267,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
         .expect("txpool ipc succeeds"),
         control_panel: ControlPanelIpcReceiver::new(
             node_state.control_panel_ipc_path,
-            reload_handle,
+            node_state.reload_handle,
             1000,
         )
         .expect("uds bind failed"),
@@ -349,7 +275,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
         state_sync: StateSync::<SignatureType, SignatureCollectionType>::new(
             vec![statesync_triedb_path.to_string_lossy().to_string()],
             node_state.statesync_sq_thread_cpu,
-            state_sync_peers,
+            state_sync_init_peers,
             node_state
                 .node_config
                 .statesync_max_concurrent_requests
@@ -386,19 +312,36 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
         .map(|p| NodeId::new(p.secp256k1_pubkey))
         .collect();
 
+    let whitelisted_statesync_nodes = node_state
+        .node_config
+        .fullnode_dedicated
+        .identities
+        .into_iter()
+        .map(|p| NodeId::new(p.secp256k1_pubkey))
+        .chain(
+            node_state
+                .node_config
+                .fullnode_raptorcast
+                .full_nodes_prioritized
+                .identities
+                .into_iter()
+                .map(|p| NodeId::new(p.secp256k1_pubkey)),
+        )
+        .collect();
+
     let mut last_ledger_tip: Option<SeqNum> = None;
 
     let builder = MonadStateBuilder {
         validator_set_factory: ValidatorSetFactory::default(),
-        leader_election: WeightedRoundRobin::new(node_state.chain_config.get_staking_activation()),
+        leader_election: WeightedRoundRobin::default(),
         block_validator: EthBlockValidator::default(),
         block_policy: create_block_policy(),
         state_backend,
         key: node_state.secp256k1_identity,
         certkey: node_state.bls12_381_identity,
         beneficiary: node_state.node_config.beneficiary.into(),
-        locked_epoch_validators,
         forkpoint: node_state.forkpoint_config.into(),
+        locked_epoch_validators,
         block_sync_override_peers,
         consensus_config: ConsensusConfig {
             execution_delay: SeqNum(EXECUTION_DELAY),
@@ -413,6 +356,8 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
             timestamp_latency_estimate_ns: 20_000_000,
             _phantom: Default::default(),
         },
+        whitelisted_statesync_nodes,
+        statesync_expand_to_group: node_state.node_config.statesync.expand_to_group,
         _phantom: PhantomData,
     };
 
@@ -562,9 +507,16 @@ fn build_raptorcast_router<ST, SCT, M, OM>(
     locked_epoch_validators: Vec<ValidatorSetDataWithEpoch<SCT>>,
     current_epoch: Epoch,
     current_round: Round,
-) -> MultiRouter<ST, M, OM, MonadEvent<ST, SCT, ExecutionProtocolType>, PeerDiscovery<ST>>
+) -> MultiRouter<
+    ST,
+    M,
+    OM,
+    MonadEvent<ST, SCT, ExecutionProtocolType>,
+    PeerDiscovery<ST>,
+    monad_raptorcast::auth::WireAuthProtocol,
+>
 where
-    ST: CertificateSignatureRecoverable,
+    ST: CertificateSignatureRecoverable<KeyPairType = monad_secp::KeyPair>,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>>
         + Decodable
@@ -578,6 +530,10 @@ where
         IpAddr::V4(node_config.network.bind_address_host),
         node_config.network.bind_address_port,
     );
+    let authenticated_bind_address = node_config
+        .network
+        .authenticated_bind_address_port
+        .map(|port| SocketAddr::new(IpAddr::V4(node_config.network.bind_address_host), port));
     let Some(SocketAddr::V4(name_record_address)) = resolve_domain_v4(
         &NodeId::new(identity.pubkey()),
         &peer_discovery_config.self_address,
@@ -590,6 +546,7 @@ where
 
     tracing::debug!(
         ?bind_address,
+        ?authenticated_bind_address,
         ?name_record_address,
         "Monad-node starting, pid: {}",
         process::id()
@@ -611,10 +568,32 @@ where
             network_config.tcp_rate_limit_burst,
         );
 
+    let mut udp_sockets = vec![monad_dataplane::UdpSocketConfig {
+        socket_addr: bind_address,
+        label: RAPTORCAST_SOCKET.to_string(),
+    }];
+    if let Some(auth_addr) = authenticated_bind_address {
+        udp_sockets.push(monad_dataplane::UdpSocketConfig {
+            socket_addr: auth_addr,
+            label: AUTHENTICATED_RAPTORCAST_SOCKET.to_string(),
+        });
+    }
+    dp_builder = dp_builder.extend_udp_sockets(udp_sockets);
+
     let self_id = NodeId::new(identity.pubkey());
-    let self_record = NameRecord {
-        address: name_record_address,
-        seq: peer_discovery_config.self_record_seq_num,
+    let self_record = match network_config.authenticated_bind_address_port {
+        Some(auth_port) => NameRecord::new_with_authentication(
+            *name_record_address.ip(),
+            name_record_address.port(),
+            network_config.bind_address_port,
+            auth_port,
+            peer_discovery_config.self_record_seq_num,
+        ),
+        None => NameRecord::new(
+            *name_record_address.ip(),
+            network_config.bind_address_port,
+            peer_discovery_config.self_record_seq_num,
+        ),
     };
     let self_record = MonadNameRecord::new(self_record, &identity);
     assert!(
@@ -638,25 +617,17 @@ where
                     return None;
                 }
             };
-            let name_record = NameRecord {
-                address,
-                seq: peer.record_seq_num,
+
+            let peer_entry = monad_executor_glue::PeerEntry {
+                pubkey: peer.secp256k1_pubkey,
+                addr: address,
+                signature: peer.name_record_sig,
+                record_seq_num: peer.record_seq_num,
+                auth_port: peer.auth_port,
             };
 
-            // verify signature of name record
-            let mut encoded = Vec::new();
-            name_record.encode(&mut encoded);
-            match peer
-                .name_record_sig
-                .verify::<signing_domain::NameRecord>(&encoded, &peer.secp256k1_pubkey)
-            {
-                Ok(_) => Some((
-                    node_id,
-                    MonadNameRecord {
-                        name_record,
-                        signature: peer.name_record_sig,
-                    },
-                )),
+            match MonadNameRecord::try_from(&peer_entry) {
+                Ok(monad_name_record) => Some((node_id, monad_name_record)),
                 Err(_) => {
                     warn!(?node_id, "invalid name record signature in config file");
                     None
@@ -716,10 +687,15 @@ where
         rng: ChaCha8Rng::from_entropy(),
     };
 
+    let shared_key = Arc::new(identity);
+    let wireauth_config = monad_wireauth::Config::default();
+    let auth_protocol =
+        monad_raptorcast::auth::WireAuthProtocol::new(wireauth_config, shared_key.clone());
+
     MultiRouter::new(
         self_id,
         RaptorCastConfig {
-            shared_key: Arc::new(identity),
+            shared_key,
             mtu: network_config.mtu,
             udp_message_max_age_ms: network_config.udp_message_max_age_ms,
             primary_instance: RaptorCastConfigPrimary {
@@ -735,6 +711,7 @@ where
         peer_discovery_builder,
         current_epoch,
         epoch_validators,
+        auth_protocol,
     )
 }
 

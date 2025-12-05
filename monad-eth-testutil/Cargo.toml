@@ -27,6 +27,9 @@ alloy-signer = { workspace = true }
 alloy-signer-local = { workspace = true }
 rand = { workspace = true }
 
+[build-dependencies]
+monad-version = { workspace = true }
+
 [dev-dependencies]
 alloy-json-rpc = { workspace = true }
 alloy-network = { workspace = true }
@@ -64,3 +67,5 @@ tracing-subscriber = { workspace = true, features = [
     "std",
 ] }
 url = { workspace = true }
+monad-version = { workspace = true }
+tokio-tungstenite = { workspace = true, features = ["native-tls"]}

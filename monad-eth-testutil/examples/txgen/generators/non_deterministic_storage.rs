@@ -13,14 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use crate::{
-    prelude::*,
-    shared::erc20::{ERC20, IERC20},
-};
+use crate::{generators::ERC20Pool, prelude::*, shared::erc20::IERC20};
 
 pub struct NonDeterministicStorageTxGenerator {
     pub(crate) recipient_keys: KeyPool,
-    pub(crate) erc20: ERC20,
+    pub(crate) erc20_pool: ERC20Pool,
     pub(crate) tx_per_sender: usize,
 }
 
@@ -30,7 +27,7 @@ impl Generator for NonDeterministicStorageTxGenerator {
         &mut self,
         accts: &mut [SimpleAccount],
         ctx: &GenCtx,
-    ) -> Vec<(TxEnvelope, Address)> {
+    ) -> Vec<(TxEnvelope, Address, crate::shared::private_key::PrivateKey)> {
         let mut idxs: Vec<usize> = (0..accts.len()).collect();
         let mut rng = SmallRng::from_entropy();
         let mut txs = Vec::with_capacity(self.tx_per_sender * accts.len());
@@ -40,10 +37,11 @@ impl Generator for NonDeterministicStorageTxGenerator {
 
             for &idx in &idxs {
                 let from = &mut accts[idx];
+                let erc20 = self.erc20_pool.next_contract();
 
                 if rng.gen_bool(0.3) {
                     txs.push((
-                        self.erc20.construct_tx(
+                        erc20.construct_tx(
                             from,
                             IERC20::transferToFriendsCall {
                                 amount: U256::from(10),
@@ -54,11 +52,12 @@ impl Generator for NonDeterministicStorageTxGenerator {
                             ctx.priority_fee,
                         ),
                         from.addr,
+                        from.key.clone(),
                     ));
                 } else {
                     let to = self.recipient_keys.next_addr(); // change sampling strategy?
                     txs.push((
-                        self.erc20.construct_tx(
+                        erc20.construct_tx(
                             from,
                             IERC20::addFriendCall { friend: to },
                             ctx.base_fee,
@@ -67,6 +66,7 @@ impl Generator for NonDeterministicStorageTxGenerator {
                             ctx.priority_fee,
                         ),
                         to,
+                        from.key.clone(),
                     ));
                 };
             }

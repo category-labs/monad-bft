@@ -17,8 +17,9 @@ use std::time::Duration;
 
 use alloy_consensus::TxEnvelope;
 use alloy_eips::eip2718::Encodable2718;
-use alloy_primitives::{Address, Bytes, U128, U256, U64};
+use alloy_primitives::{Address, Bytes, TxHash, U128, U256, U64};
 use alloy_rpc_client::ReqwestClient;
+use alloy_rpc_types::TransactionReceipt;
 use eyre::Result;
 use monad_types::DropTimer;
 use tracing::trace;
@@ -26,6 +27,7 @@ use tracing::trace;
 use crate::shared::erc20::ERC20;
 
 pub trait EthJsonRpc {
+    async fn get_transaction_receipt(&self, hash: &TxHash) -> Result<TransactionReceipt>;
     async fn send_raw_transaction_params(&self, tx: TxEnvelope) -> (&'static str, Bytes);
     async fn get_transaction_count(&self, addr: &Address) -> Result<u64>;
     async fn get_balance(&self, addr: &Address) -> Result<U256>;
@@ -46,9 +48,16 @@ pub trait EthJsonRpc {
         addrs: impl std::iter::ExactSizeIterator<Item = &Address>,
         erc20: ERC20,
     ) -> Result<Vec<Result<(Address, U256)>>>;
+    async fn get_client_version(&self) -> Result<String>;
 }
 
 impl EthJsonRpc for ReqwestClient {
+    async fn get_transaction_receipt(&self, hash: &TxHash) -> Result<TransactionReceipt> {
+        self.request::<_, TransactionReceipt>("eth_getTransactionReceipt", [&hash])
+            .await
+            .map_err(Into::into)
+    }
+
     async fn get_transaction_count(&self, addr: &Address) -> Result<u64> {
         let addr = addr.to_string();
         let nonce = self
@@ -168,6 +177,12 @@ impl EthJsonRpc for ReqwestClient {
             .await
             .map_err(Into::into)
             .map(|b| b.to())
+    }
+
+    async fn get_client_version(&self) -> Result<String> {
+        self.request::<_, String>("web3_clientVersion", ())
+            .await
+            .map_err(Into::into)
     }
 }
 

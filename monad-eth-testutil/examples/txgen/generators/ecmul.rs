@@ -26,7 +26,7 @@ impl Generator for ECMulGenerator {
         &mut self,
         accts: &mut [SimpleAccount],
         ctx: &GenCtx,
-    ) -> Vec<(TxEnvelope, Address)> {
+    ) -> Vec<(TxEnvelope, Address, crate::shared::private_key::PrivateKey)> {
         let mut txs = Vec::with_capacity(self.tx_per_sender * accts.len());
 
         for sender in accts {
@@ -38,7 +38,7 @@ impl Generator for ECMulGenerator {
                     ctx.set_tx_gas_limit,
                     ctx.priority_fee,
                 );
-                txs.push((tx, self.ecmul.addr));
+                txs.push((tx, self.ecmul.addr, sender.key.clone()));
             }
         }
 

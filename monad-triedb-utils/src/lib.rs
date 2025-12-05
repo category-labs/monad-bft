@@ -47,7 +47,6 @@ pub mod triedb_env;
 const MAX_TRIEDB_ASYNC_POLLS: usize = 640_000;
 const RODB_NODE_LRU_MAX_MEM: u64 = 50 << 20; // 50 MB
 
-#[derive(Clone)]
 pub struct TriedbReader {
     handle: TriedbHandle,
     state_backend_total_lookups: Arc<AtomicU64>,
@@ -75,6 +74,16 @@ impl TriedbReader {
     pub fn get_latest_voted_block_id(&self) -> Option<BlockId> {
         let latest_voted = self.handle.latest_voted_block_id()?;
         Some(BlockId(Hash(latest_voted)))
+    }
+
+    pub fn get_latest_proposed_block(&self) -> Option<SeqNum> {
+        let latest_proposed = self.handle.latest_proposed_block()?;
+        Some(SeqNum(latest_proposed))
+    }
+
+    pub fn get_latest_proposed_block_id(&self) -> Option<BlockId> {
+        let latest_proposed = self.handle.latest_proposed_block_id()?;
+        Some(BlockId(Hash(latest_proposed)))
     }
 
     pub fn get_latest_finalized_block(&self) -> Option<SeqNum> {

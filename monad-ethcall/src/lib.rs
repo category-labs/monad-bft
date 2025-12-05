@@ -25,11 +25,11 @@ use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{Address, Bytes, B256, U256, U64};
 use alloy_rlp::Encodable;
 use alloy_sol_types::decode_revert_reason;
-use bindings::monad_eth_call_result;
+use bindings::monad_executor_result;
 use futures::channel::oneshot::{channel, Sender};
 use monad_chain_config::{
     ETHEREUM_MAINNET_CHAIN_ID, MONAD_DEVNET_CHAIN_ID, MONAD_MAINNET_CHAIN_ID,
-    MONAD_TESTNET2_CHAIN_ID, MONAD_TESTNET_CHAIN_ID,
+    MONAD_TESTNET_CHAIN_ID,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
@@ -39,11 +39,11 @@ pub mod bindings {
     include!(concat!(env!("OUT_DIR"), "/ethcall.rs"));
 }
 
-pub use bindings::monad_eth_call_pool_config as PoolConfig;
+pub use bindings::monad_executor_pool_config as PoolConfig;
 
 #[derive(Debug)]
 pub struct EthCallExecutor {
-    eth_call_executor: *mut bindings::monad_eth_call_executor,
+    eth_call_executor: *mut bindings::monad_executor,
 }
 
 unsafe impl Send for EthCallExecutor {}
@@ -53,6 +53,8 @@ impl EthCallExecutor {
     pub fn new(
         low_pool_config: PoolConfig,
         high_pool_config: PoolConfig,
+        block_pool_config: PoolConfig,
+        tx_exec_num_fibers: u32,
         node_lru_max_mem: u64,
         triedb_path: &Path,
     ) -> Self {
@@ -62,9 +64,11 @@ impl EthCallExecutor {
             .expect("failed to create CString");
 
         let eth_call_executor = unsafe {
-            bindings::monad_eth_call_executor_create(
+            bindings::monad_executor_create(
                 low_pool_config,
                 high_pool_config,
+                block_pool_config,
+                tx_exec_num_fibers,
                 node_lru_max_mem,
                 dbpath.as_c_str().as_ptr(),
             )
@@ -78,7 +82,7 @@ impl Drop for EthCallExecutor {
     fn drop(&mut self) {
         info!("dropping eth_call_executor");
         unsafe {
-            bindings::monad_eth_call_executor_destroy(self.eth_call_executor);
+            bindings::monad_executor_destroy(self.eth_call_executor);
         }
         info!("eth_call_executor successfully destroyed");
     }
@@ -112,6 +116,7 @@ pub enum MonadTracer {
     CallTracer,
     PreStateTracer,
     StateDiffTracer,
+    AccessListTracer,
 }
 
 impl From<MonadTracer> for u32 {
@@ -121,6 +126,7 @@ impl From<MonadTracer> for u32 {
             MonadTracer::CallTracer => 1,
             MonadTracer::PreStateTracer => 2,
             MonadTracer::StateDiffTracer => 3,
+            MonadTracer::AccessListTracer => 4,
         }
     }
 }
@@ -164,7 +170,7 @@ pub struct RevertCallResult {
 }
 
 pub struct SenderContext {
-    sender: Sender<*mut monad_eth_call_result>,
+    sender: Sender<*mut monad_executor_result>,
 }
 
 /// # Safety
@@ -173,7 +179,7 @@ pub struct SenderContext {
 /// This function is called when the eth_call is finished and the result is returned over the
 /// channel
 pub unsafe extern "C" fn eth_call_submit_callback(
-    result: *mut monad_eth_call_result,
+    result: *mut monad_executor_result,
     user: *mut std::ffi::c_void,
 ) {
     let user = unsafe { Box::from_raw(user as *mut SenderContext) };
@@ -289,7 +295,6 @@ pub async fn eth_call(
         MONAD_DEVNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_DEVNET,
         MONAD_TESTNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_TESTNET,
         MONAD_MAINNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_MAINNET,
-        MONAD_TESTNET2_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_TESTNET2,
         _ => {
             unsafe { bindings::monad_state_override_destroy(override_ctx) };
 
@@ -310,7 +315,7 @@ pub async fn eth_call(
     unsafe {
         let sender_ctx_ptr = Box::into_raw(sender_ctx);
 
-        bindings::monad_eth_call_executor_submit(
+        bindings::monad_executor_eth_call_submit(
             eth_call_executor.eth_call_executor,
             chain_config,
             rlp_encoded_tx.as_ptr(),
@@ -437,7 +442,7 @@ pub async fn eth_call(
             }
         };
 
-        bindings::monad_eth_call_result_release(result);
+        bindings::monad_executor_result_release(result);
         bindings::monad_state_override_destroy(override_ctx);
 
         call_result
@@ -458,6 +463,126 @@ pub fn decode_revert_message(output_data: &[u8]) -> Option<String> {
             Some(parsed_message.to_string())
         }
     })
+}
+
+pub async fn eth_trace_block_or_transaction(
+    chain_id: u64,
+    block_header: Header,
+    block_number: u64,
+    block_id: Option<[u8; 32]>,
+    parent_id: Option<[u8; 32]>,
+    grandparent_id: Option<[u8; 32]>,
+    transaction_index: i64,
+    eth_call_executor: Arc<EthCallExecutor>,
+    tracer: MonadTracer,
+) -> CallResult {
+    let chain_config = match chain_id {
+        ETHEREUM_MAINNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_ETHEREUM_MAINNET,
+        MONAD_DEVNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_DEVNET,
+        MONAD_TESTNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_TESTNET,
+        MONAD_MAINNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_MAINNET,
+        _ => {
+            return CallResult::Failure(FailureCallResult {
+                error_code: EthCallResult::OtherError,
+                message: "unsupported chain id".to_string(),
+                data: Some(chain_id.to_string()),
+            });
+        }
+    };
+
+    let mut rlp_encoded_block_header = vec![];
+    block_header.encode(&mut rlp_encoded_block_header);
+
+    let rlp_encoded_block_id = alloy_rlp::encode(block_id.unwrap_or([0_u8; 32]));
+
+    let rlp_encoded_parent_id = alloy_rlp::encode(parent_id.unwrap_or([0_u8; 32]));
+
+    let rlp_encoded_grandparent_id = alloy_rlp::encode(grandparent_id.unwrap_or([0_u8; 32]));
+
+    let (send, recv) = channel();
+    let sender_ctx = Box::new(SenderContext { sender: send });
+
+    unsafe {
+        let sender_ctx_ptr = Box::into_raw(sender_ctx);
+
+        bindings::monad_executor_run_transactions(
+            eth_call_executor.eth_call_executor,
+            chain_config,
+            rlp_encoded_block_header.as_ptr(),
+            rlp_encoded_block_header.len(),
+            block_number,
+            rlp_encoded_block_id.as_ptr(),
+            rlp_encoded_block_id.len(),
+            rlp_encoded_parent_id.as_ptr(),
+            rlp_encoded_parent_id.len(),
+            rlp_encoded_grandparent_id.as_ptr(),
+            rlp_encoded_grandparent_id.len(),
+            transaction_index,
+            Some(eth_call_submit_callback),
+            sender_ctx_ptr as *mut std::ffi::c_void,
+            tracer.into(),
+        )
+    };
+
+    let result = match recv.await {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(
+                "callback from eth_trace_block_or_transaction_executor failed: {:?}",
+                e
+            );
+
+            return CallResult::Failure(FailureCallResult {
+                error_code: EthCallResult::OtherError,
+                message: "internal eth_trace_block_or_transaction error".to_string(),
+                data: None,
+            });
+        }
+    };
+
+    unsafe {
+        let status_code = (*result).status_code;
+
+        let call_result = match status_code {
+            ETH_CALL_SUCCESS => {
+                // TODO(dhil): I don't think these matter for the output of prestate tracing. Other providers don't seem to return them in prestate mode.
+                let gas_used = (*result).gas_used as u64;
+                let gas_refund = (*result).gas_refund as u64;
+
+                let output_data_len = (*result).encoded_trace_len;
+                let output_data = if output_data_len != 0 {
+                    std::slice::from_raw_parts((*result).encoded_trace, output_data_len).to_vec()
+                } else {
+                    vec![]
+                };
+
+                CallResult::Success(SuccessCallResult {
+                    gas_used,
+                    gas_refund,
+                    output_data,
+                })
+            }
+            _ => {
+                let cstr_msg = CStr::from_ptr((*result).message.cast());
+                let message = match cstr_msg.to_str() {
+                    Ok(str) => String::from(str),
+                    Err(_) => String::from(
+                        "execution error eth_trace_block_or_transaction message invalid utf-8",
+                    ),
+                };
+
+                CallResult::Failure(FailureCallResult {
+                    error_code: EthCallResult::OtherError,
+                    message,
+                    data: None,
+                })
+            }
+        };
+
+        bindings::monad_executor_result_release(result);
+
+        call_result
+    }
 }
 
 #[cfg(test)]

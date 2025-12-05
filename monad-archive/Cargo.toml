@@ -18,6 +18,10 @@ name = "monad-archiver"
 bench = false
 
 [[bin]]
+name = "monad-block-writer"
+bench = false
+
+[[bin]]
 name = "monad-indexer"
 bench = false
 
@@ -26,6 +30,7 @@ default = []
 mongodb-integration-tests = []
 
 [dependencies]
+monad-compress = { workspace = true }
 monad-triedb-utils = { workspace = true }
 monad-types = { workspace = true }
 
@@ -58,6 +63,7 @@ regex = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+toml = { workspace = true }
 tempfile.workspace = true
 tokio = { workspace = true, features = [
     "fs",

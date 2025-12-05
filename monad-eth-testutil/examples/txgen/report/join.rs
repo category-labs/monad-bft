@@ -194,7 +194,7 @@ fn format_report(report: &CounterStatsReport, spec: &CounterSpec) -> String {
     ));
 
     let labels = ["Quarter 1", "Quarter 2", "Quarter 3", "Quarter 4"];
-    s.push_str(&"Quarters:\n".to_string());
+    s.push_str("Quarters:\n");
     for (label, stats) in labels.iter().zip(report.quarters.iter()) {
         match stats {
             Some(ss) => s.push_str(&format!(

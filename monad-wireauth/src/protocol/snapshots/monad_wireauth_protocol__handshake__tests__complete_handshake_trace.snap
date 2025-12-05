@@ -1,0 +1,42 @@
+---
+source: monad-wireauth-protocol/src/handshake.rs
+expression: trace
+---
+test_name: standard_handshake
+seed: 42
+timestamp: 1700000000
+initiator_static_private: a22427226377cc867d51ad3f130af08ad13451de7160efa2b23076fd782de967
+initiator_static_public: 0351177dde89242d9121d787a681bd2a0bd6013428a6b83e684a253815db96d8b3
+responder_static_private: ea9f11f8dfb0ca08a8810f9ea39c3a6afb780859e8d8c7bc37b78e2f9b8d68d9
+responder_static_public: 035b0ef8c9bd756af433edc3129975888f6f18b8185b2afbaabc8bb3029a00cf81
+initiator_session_index: 100
+responder_session_index: 200
+init_message:
+  raw_bytes: 010000006400000002f8112234026e68b1e4d1565540d7b791ced1b64c5f30525cbe14f21dd7aa8c7867edd9f17422725dee2667cf726d0ed50f398048d01fe572838c93b934e8be07a7ff68535b15d42f2107b9acf8061b904542b61ddd9d795c8edecef3345508b3270675521141d54ce2d824f23c27a87935cca82c9284c13b7d569957c400000000000000000000000000000000
+  sender_index: 100
+  receiver_index: 0
+  ephemeral_public: 02f8112234026e68b1e4d1565540d7b791ced1b64c5f30525cbe14f21dd7aa8c78
+  encrypted_static: 67edd9f17422725dee2667cf726d0ed50f398048d01fe572838c93b934e8be07a7
+  encrypted_static_tag: ff68535b15d42f2107b9acf8061b9045
+  encrypted_timestamp: 42b61ddd9d795c8edecef334
+  encrypted_timestamp_tag: 5508b3270675521141d54ce2d824f23c
+  encrypted_nothing_tag: ~
+  mac1: 27a87935cca82c9284c13b7d569957c4
+  mac2: "00000000000000000000000000000000"
+response_message:
+  raw_bytes: 02000000c80000006400000003c48b53afac0d2d5169cd6848f03f67a21db6f506f8b8fc2dbef2552b6a7dc111c8829fbc22114e65bf26be96959d83a7797408dbb8ddfede5c1b4c795a3c4ef400000000000000000000000000000000
+  sender_index: 200
+  receiver_index: 100
+  ephemeral_public: 03c48b53afac0d2d5169cd6848f03f67a21db6f506f8b8fc2dbef2552b6a7dc111
+  encrypted_static: ""
+  encrypted_static_tag: ""
+  encrypted_timestamp: ""
+  encrypted_timestamp_tag: ""
+  encrypted_nothing_tag: c8829fbc22114e65bf26be96959d83a7
+  mac1: 797408dbb8ddfede5c1b4c795a3c4ef4
+  mac2: "00000000000000000000000000000000"
+transport_keys:
+  initiator_send_key: fc1746686aad0bd4ee7789dc2dfa37b1
+  initiator_recv_key: af8122429bbc4fc39749e2032b17691e
+  responder_send_key: af8122429bbc4fc39749e2032b17691e
+  responder_recv_key: fc1746686aad0bd4ee7789dc2dfa37b1

@@ -31,13 +31,27 @@ use monad_validator::{
     },
     validator_mapping::ValidatorMapping,
 };
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Default, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
-pub struct MockSignatures<ST: CertificateSignatureRecoverable> {
+#[derive(
+    Clone, Default, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize,
+)]
+#[serde(bound(
+    serialize = "CertificateSignaturePubKey<ST>: Serialize",
+    deserialize = "CertificateSignaturePubKey<ST>: Deserialize<'de>"
+))]
+pub struct MockSignatures<ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
     pubkey: Vec<CertificateSignaturePubKey<ST>>,
 }
 
-impl<ST: CertificateSignatureRecoverable> MockSignatures<ST> {
+impl<ST> MockSignatures<ST>
+where
+    ST: CertificateSignatureRecoverable,
+    CertificateSignaturePubKey<ST>: Serialize + for<'de> Deserialize<'de>,
+{
     pub fn with_pubkeys(pubkeys: &[CertificateSignaturePubKey<ST>]) -> Self {
         Self {
             pubkey: pubkeys.to_vec(),
@@ -45,7 +59,11 @@ impl<ST: CertificateSignatureRecoverable> MockSignatures<ST> {
     }
 }
 
-impl<ST: CertificateSignatureRecoverable> SignatureCollection for MockSignatures<ST> {
+impl<ST> SignatureCollection for MockSignatures<ST>
+where
+    ST: CertificateSignatureRecoverable,
+    CertificateSignaturePubKey<ST>: Serialize + for<'de> Deserialize<'de>,
+{
     type NodeIdPubKey = CertificateSignaturePubKey<ST>;
     type SignatureType = ST;
 

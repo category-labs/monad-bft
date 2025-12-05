@@ -27,8 +27,9 @@ pub struct BlockSyncPeersConfig<P: PubKey> {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct StateSyncPeersConfig<P: PubKey> {
+    pub expand_to_group: bool,
     #[serde(bound = "P:PubKey")]
-    pub peers: Vec<SyncPeerIdentityConfig<P>>,
+    pub init_peers: Vec<SyncPeerIdentityConfig<P>>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

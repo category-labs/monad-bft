@@ -43,6 +43,7 @@ RUN apt update && apt install -y \
   libgmp-dev \
   libgtest-dev \
   libhugetlbfs-dev \
+  libmagicenum-dev \
   libmimalloc-dev \
   libtbb-dev \
   liburing-dev \
@@ -68,6 +69,16 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
 ENV PATH="${CARGO_ROOT}/bin:$PATH"
 RUN rustup toolchain install 1.85.0-x86_64-unknown-linux-gnu
 ARG TRIEDB_TARGET=triedb_driver
+
+ARG GIT_COMMIT=""
+ARG GIT_BRANCH=""
+ARG GIT_TAG=""
+ARG GIT_MODIFIED="false"
+
+ENV GIT_COMMIT=$GIT_COMMIT
+ENV GIT_BRANCH=$GIT_BRANCH
+ENV GIT_TAG=$GIT_TAG
+ENV GIT_MODIFIED=$GIT_MODIFIED
 
 # Builder
 COPY . .

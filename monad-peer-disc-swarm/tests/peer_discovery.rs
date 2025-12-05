@@ -132,10 +132,7 @@ fn generate_name_record(keypair: &KeyPairType) -> MonadNameRecord<SignatureType>
     let ipaddr_v4 = Ipv4Addr::from_bits(u32::from_be_bytes(hash.0[28..32].try_into().unwrap()));
     assert_ne!(ipaddr_v4, Ipv4Addr::UNSPECIFIED);
 
-    let name_record = NameRecord {
-        address: SocketAddrV4::new(ipaddr_v4, 8000),
-        seq: 0,
-    };
+    let name_record = NameRecord::new(ipaddr_v4, 8000, 0);
     let mut encoded = Vec::new();
     name_record.encode(&mut encoded);
     let signature = SignatureType::sign::<signing_domain::NameRecord>(&encoded, keypair);
@@ -200,7 +197,7 @@ fn setup_keys_and_swarm_builder(
                     .collect::<BTreeSet<_>>();
                 NodeBuilder {
                     id: NodeId::new(key.pubkey()),
-                    addr: generate_name_record(key).address(),
+                    addr: generate_name_record(key).udp_address(),
                     algo_builder: PeerDiscoveryBuilder {
                         self_id,
                         self_record: generate_name_record(key),
@@ -364,10 +361,11 @@ fn test_update_name_record() {
         .expect("Node0 state should exist");
 
     // create new name record for Node0 with new IP and incremented seq number
-    let new_name_record = NameRecord {
-        address: SocketAddrV4::from_str("2.2.2.2:8000").unwrap(),
-        seq: 1,
-    };
+    let new_name_record = NameRecord::new(
+        *SocketAddrV4::from_str("2.2.2.2:8000").unwrap().ip(),
+        8000,
+        1,
+    );
     let mut encoded = Vec::new();
     new_name_record.encode(&mut encoded);
     let signature = SignatureType::sign::<signing_domain::NameRecord>(&encoded, node_0_key);
@@ -378,10 +376,10 @@ fn test_update_name_record() {
 
     let new_node_0_builder = NodeBuilder {
         id: node_0,
-        addr: new_name_record.address(),
+        addr: new_name_record.udp_address(),
         algo_builder: PeerDiscoveryBuilder {
             self_id: node_0,
-            self_record: new_name_record,
+            self_record: new_name_record.clone(),
             current_round: config.current_round,
             current_epoch: config.current_epoch,
             epoch_validators: BTreeMap::new(),
@@ -1179,6 +1177,151 @@ fn test_prune_non_participating_full_node() {
         if node_ids[2] == state.self_id {
             assert!(state.routing_info.contains_key(&node_ids[0]));
             assert!(!state.routing_info.contains_key(&node_ids[1]));
+        }
+    }
+}
+
+#[traced_test]
+#[test]
+fn test_validator_name_record_change_propagation_to_full_node() {
+    // 3 nodes: Node0 (Validator), Node1 (Validator), Node2 (Full Node)
+    // Node1 change its name record
+    // Node2 should discover the updated Node1 name record through periodic random validator peer lookup
+    let config = TestConfig {
+        num_nodes: 3,
+        epoch_validators: BTreeMap::from([(Epoch(1), BTreeSet::from([0, 1]))]),
+        bootstrap_peers: BTreeMap::from([
+            (0, BTreeSet::from([1])),
+            (1, BTreeSet::from([0])),
+            (2, BTreeSet::from([0, 1])),
+        ]),
+        refresh_period: Duration::from_secs(10),
+        min_num_peers: 1,
+        ..Default::default()
+    };
+    let (keys, swarm_builder) = setup_keys_and_swarm_builder(config.clone());
+    let node_ids = keys
+        .iter()
+        .map(|k| NodeId::new(k.pubkey()))
+        .collect::<Vec<_>>();
+    let mut nodes = swarm_builder.build();
+
+    // all nodes are connected to each other
+    while nodes.step_until(Duration::from_secs(0)) {}
+    for state in nodes.states().values() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
+        for node_id in node_ids.iter() {
+            if node_id == &state.self_id {
+                continue;
+            }
+            assert!(state.routing_info.contains_key(node_id));
+        }
+    }
+
+    // Node1 restarting with a new name record
+    let node_0_key = &keys[0];
+    let node_1_key = &keys[1];
+    let node_0 = node_ids[0];
+    let node_1 = node_ids[1];
+    let node_2 = node_ids[2];
+
+    let old_node_1_state = nodes
+        .remove_state(&node_1)
+        .expect("Node1 state should exist");
+
+    // create new name record for Node1 with new IP and incremented seq number
+    let new_name_record = NameRecord::new(
+        *SocketAddrV4::from_str("8.8.8.8:8000").unwrap().ip(),
+        8000,
+        1,
+    );
+    let mut encoded = Vec::new();
+    new_name_record.encode(&mut encoded);
+    let signature = SignatureType::sign::<signing_domain::NameRecord>(&encoded, node_1_key);
+    let new_node_1_name_record = MonadNameRecord {
+        name_record: new_name_record,
+        signature,
+    };
+
+    let new_node_1_builder = NodeBuilder {
+        id: node_1,
+        addr: new_node_1_name_record.udp_address(),
+        algo_builder: PeerDiscoveryBuilder {
+            self_id: node_1,
+            self_record: new_node_1_name_record.clone(),
+            current_round: config.current_round,
+            current_epoch: config.current_epoch,
+            epoch_validators: old_node_1_state
+                .peer_disc_driver
+                .get_peer_disc_state()
+                .epoch_validators
+                .clone(),
+            pinned_full_nodes: BTreeSet::new(),
+            prioritized_full_nodes: BTreeSet::new(),
+            bootstrap_peers: BTreeMap::from([(node_0, generate_name_record(node_0_key))]),
+            refresh_period: config.refresh_period,
+            request_timeout: config.request_timeout,
+            unresponsive_prune_threshold: config.unresponsive_prune_threshold,
+            last_participation_prune_threshold: config.last_participation_prune_threshold,
+            min_num_peers: config.min_num_peers,
+            max_num_peers: config.max_num_peers,
+            max_group_size: config.max_group_size,
+            enable_publisher: false,
+            enable_client: false,
+            rng: ChaCha8Rng::seed_from_u64(123456),
+        },
+        router_scheduler: NoSerRouterConfig::new(node_ids.iter().cloned().collect()).build(),
+        seed: 1,
+        outbound_pipeline: vec![],
+    };
+
+    nodes.add_state(new_node_1_builder);
+
+    while nodes.step_until(Duration::from_secs(0)) {}
+    for state in nodes.states().values() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
+        if state.self_id == node_0 {
+            // Node0 should have Node1's updated name record
+            let node_1_record_in_node_0 = state
+                .routing_info
+                .get(&node_1)
+                .expect("Node0 should have Node1's updated name record");
+            assert_eq!(*node_1_record_in_node_0, new_node_1_name_record);
+        }
+
+        if state.self_id == node_2 {
+            // Node2 should still have Node1's old name record
+            let node_1_record_in_node_2 = state
+                .routing_info
+                .get(&node_1)
+                .expect("Node2 should have Node1's name record");
+            assert_eq!(*node_1_record_in_node_2, generate_name_record(node_1_key));
+        }
+    }
+
+    // during refresh period, Node2 discovers Node1's updated name record via peer lookup
+    while nodes.step_until(config.refresh_period) {}
+    let node_2_state = nodes
+        .states()
+        .get(&node_2)
+        .expect("Node2 state should exist");
+    let routing_info = &node_2_state
+        .peer_disc_driver
+        .get_peer_disc_state()
+        .routing_info;
+    let node_1_record_in_node_2 = routing_info
+        .get(&node_1)
+        .expect("Node2 should have discovered Node1's updated name record");
+    assert_eq!(*node_1_record_in_node_2, new_node_1_name_record);
+
+    // it's a fully connected network
+    for state in nodes.states().values() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
+        for node_id in node_ids.iter() {
+            if node_id == &state.self_id {
+                continue;
+            }
+            assert!(state.routing_info.contains_key(node_id));
         }
     }
 }

@@ -13,13 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use itertools::Itertools;
-use monad_event_ring::{DecodedEventRing, EventNextResult, SnapshotEventRing};
+use monad_event_ring::{DecodedEventRing, EventNextResult};
 use monad_exec_events::{
     BlockBuilderError, BlockCommitState, CommitStateBlockBuilder, CommitStateBlockUpdate,
-    ExecEventDecoder, ExecEventRing, ExecutedBlock, ExecutedBlockBuilder,
+    ExecEventRing, ExecutedBlock, ExecutedBlockBuilder,
 };
 use monad_types::BlockId;
 use tokio::sync::broadcast;
@@ -93,77 +93,6 @@ impl EventServer<ExecEventRing> {
                     event_reader.reset();
                     block_builder.reset();
                     continue;
-                }
-                Err(BlockBuilderError::ImplicitDrop {
-                    block,
-                    reassembly_error,
-                }) => {
-                    unreachable!("Implicit drop: {reassembly_error:#?}\n{block:#?}");
-                }
-                Ok(CommitStateBlockUpdate {
-                    block,
-                    state,
-                    abandoned,
-                }) => handle_update(&broadcast_tx, block, state, abandoned),
-            }
-        }
-    }
-}
-
-impl EventServer<SnapshotEventRing<ExecEventDecoder>> {
-    pub(crate) fn start_for_testing(
-        snapshot_event_ring: SnapshotEventRing<ExecEventDecoder>,
-    ) -> EventServerClient {
-        Self::start_for_testing_with_delay(snapshot_event_ring, Duration::from_millis(1))
-    }
-
-    pub(crate) fn start_for_testing_with_delay(
-        snapshot_event_ring: SnapshotEventRing<ExecEventDecoder>,
-        delay: Duration,
-    ) -> EventServerClient {
-        let (broadcast_tx, _) = tokio::sync::broadcast::channel(BROADCAST_CHANNEL_SIZE);
-
-        let this = Self {
-            event_ring: snapshot_event_ring,
-            block_builder: CommitStateBlockBuilder::new(ExecutedBlockBuilder::new(false)),
-            broadcast_tx: broadcast_tx.clone(),
-        };
-
-        let handle = tokio::spawn(this.run_for_testing(delay));
-
-        EventServerClient::new(broadcast_tx, handle)
-    }
-
-    async fn run_for_testing(self, delay: Duration) {
-        tokio::time::sleep(delay).await;
-
-        let Self {
-            event_ring,
-            mut block_builder,
-            broadcast_tx,
-        } = self;
-
-        let mut event_reader = event_ring.create_reader();
-
-        loop {
-            let event_descriptor = match event_reader.next_descriptor() {
-                EventNextResult::Ready(event_descriptor) => event_descriptor,
-                EventNextResult::NotReady => break,
-                EventNextResult::Gap => {
-                    unreachable!("SnapshotEventDescriptor cannot gap")
-                }
-            };
-
-            let Some(result) = block_builder.process_event_descriptor(&event_descriptor) else {
-                continue;
-            };
-
-            match result {
-                Err(BlockBuilderError::Rejected) => {
-                    unimplemented!();
-                }
-                Err(BlockBuilderError::PayloadExpired) => {
-                    unreachable!("SnapshotEventDescriptor payload cannot expire")
                 }
                 Err(BlockBuilderError::ImplicitDrop {
                     block,
@@ -280,12 +209,85 @@ mod test {
     use std::time::Duration;
 
     use monad_event_ring::SnapshotEventRing;
+    use monad_exec_events::ExecEventDecoder;
     use serde::{de::DeserializeOwned, Serialize};
 
+    use super::*;
     use crate::{
         eth_json_types::MonadNotification,
         event::{EventServer, EventServerEvent},
     };
+
+    impl EventServer<SnapshotEventRing<ExecEventDecoder>> {
+        pub(crate) fn start_for_testing(
+            snapshot_event_ring: SnapshotEventRing<ExecEventDecoder>,
+        ) -> EventServerClient {
+            Self::start_for_testing_with_delay(snapshot_event_ring, Duration::from_millis(1))
+        }
+
+        pub(crate) fn start_for_testing_with_delay(
+            snapshot_event_ring: SnapshotEventRing<ExecEventDecoder>,
+            delay: Duration,
+        ) -> EventServerClient {
+            let (broadcast_tx, _) = tokio::sync::broadcast::channel(BROADCAST_CHANNEL_SIZE);
+
+            let this = Self {
+                event_ring: snapshot_event_ring,
+                block_builder: CommitStateBlockBuilder::new(ExecutedBlockBuilder::new(false)),
+                broadcast_tx: broadcast_tx.clone(),
+            };
+
+            let handle = tokio::spawn(this.run_for_testing(delay));
+
+            EventServerClient::new(broadcast_tx, handle)
+        }
+
+        async fn run_for_testing(self, delay: Duration) {
+            tokio::time::sleep(delay).await;
+
+            let Self {
+                event_ring,
+                mut block_builder,
+                broadcast_tx,
+            } = self;
+
+            let mut event_reader = event_ring.create_reader();
+
+            loop {
+                let event_descriptor = match event_reader.next_descriptor() {
+                    EventNextResult::Ready(event_descriptor) => event_descriptor,
+                    EventNextResult::NotReady => break,
+                    EventNextResult::Gap => {
+                        unreachable!("SnapshotEventDescriptor cannot gap")
+                    }
+                };
+
+                let Some(result) = block_builder.process_event_descriptor(&event_descriptor) else {
+                    continue;
+                };
+
+                match result {
+                    Err(BlockBuilderError::Rejected) => {
+                        unimplemented!();
+                    }
+                    Err(BlockBuilderError::PayloadExpired) => {
+                        unreachable!("SnapshotEventDescriptor payload cannot expire")
+                    }
+                    Err(BlockBuilderError::ImplicitDrop {
+                        block,
+                        reassembly_error,
+                    }) => {
+                        unreachable!("Implicit drop: {reassembly_error:#?}\n{block:#?}");
+                    }
+                    Ok(CommitStateBlockUpdate {
+                        block,
+                        state,
+                        abandoned,
+                    }) => handle_update(&broadcast_tx, block, state, abandoned),
+                }
+            }
+        }
+    }
 
     #[tokio::test]
     async fn testing_server() {

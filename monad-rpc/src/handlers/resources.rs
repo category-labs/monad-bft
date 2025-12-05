@@ -34,7 +34,7 @@ use crate::{
 
 #[derive(Clone)]
 pub struct MonadRpcResources {
-    pub txpool_bridge_client: EthTxPoolBridgeClient,
+    pub txpool_bridge_client: Option<EthTxPoolBridgeClient>,
     pub triedb_reader: Option<TriedbEnv>,
     pub eth_call_executor: Option<Arc<EthCallExecutor>>,
     pub eth_call_executor_fibers: usize,
@@ -50,6 +50,8 @@ pub struct MonadRpcResources {
     pub logs_max_block_range: u64,
     pub eth_call_provider_gas_limit: u64,
     pub eth_estimate_gas_provider_gas_limit: u64,
+    pub eth_send_raw_transaction_sync_default_timeout_ms: u64,
+    pub eth_send_raw_transaction_sync_max_timeout_ms: u64,
     pub dry_run_get_logs_index: bool,
     pub use_eth_get_logs_index: bool,
     pub max_finalized_block_cache_len: u64,
@@ -60,7 +62,7 @@ pub struct MonadRpcResources {
 
 impl MonadRpcResources {
     pub fn new(
-        txpool_bridge_client: EthTxPoolBridgeClient,
+        txpool_bridge_client: Option<EthTxPoolBridgeClient>,
         triedb_reader: Option<TriedbEnv>,
         eth_call_executor: Option<Arc<EthCallExecutor>>,
         eth_call_executor_fibers: usize,
@@ -75,6 +77,8 @@ impl MonadRpcResources {
         logs_max_block_range: u64,
         eth_call_provider_gas_limit: u64,
         eth_estimate_gas_provider_gas_limit: u64,
+        eth_send_raw_transaction_sync_default_timeout_ms: u64,
+        eth_send_raw_transaction_sync_max_timeout_ms: u64,
         dry_run_get_logs_index: bool,
         use_eth_get_logs_index: bool,
         max_finalized_block_cache_len: u64,
@@ -103,6 +107,8 @@ impl MonadRpcResources {
             logs_max_block_range,
             eth_call_provider_gas_limit,
             eth_estimate_gas_provider_gas_limit,
+            eth_send_raw_transaction_sync_default_timeout_ms,
+            eth_send_raw_transaction_sync_max_timeout_ms,
             dry_run_get_logs_index,
             use_eth_get_logs_index,
             max_finalized_block_cache_len,

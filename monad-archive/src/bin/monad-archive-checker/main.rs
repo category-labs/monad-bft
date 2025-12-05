@@ -63,10 +63,14 @@ async fn main() -> Result<()> {
         "Initializing metrics with endpoint: {:?}",
         args.otel_endpoint
     );
+    let replica_name = args
+        .otel_replica_name_override
+        .clone()
+        .unwrap_or_else(|| args.bucket.clone());
     let metrics = Metrics::new(
         args.otel_endpoint,
         "monad_archive_checker",
-        "",
+        replica_name,
         Duration::from_secs(15),
     )?;
 

@@ -35,7 +35,6 @@ pub(super) type TxStatusSender = tokio::sync::oneshot::Sender<TxStatus>;
 #[derive(Clone)]
 pub struct EthTxPoolBridgeStateView {
     status: Arc<DashMap<TxHash, (TxStatus, Option<TxStatusSender>)>>,
-    hash_address: Arc<DashMap<TxHash, Address>>,
     address_hashes: Arc<DashMap<Address, HashSet<TxHash>>>,
 }
 
@@ -64,7 +63,6 @@ impl EthTxPoolBridgeStateView {
     pub fn for_testing() -> Self {
         Self {
             status: Default::default(),
-            hash_address: Default::default(),
             address_hashes: Default::default(),
         }
     }
@@ -95,7 +93,6 @@ impl EthTxPoolBridgeState {
     pub(super) fn create_view(&self) -> EthTxPoolBridgeStateView {
         EthTxPoolBridgeStateView {
             status: Arc::clone(&self.status),
-            hash_address: Arc::clone(&self.hash_address),
             address_hashes: Arc::clone(&self.address_hashes),
         }
     }
@@ -118,10 +115,7 @@ impl EthTxPoolBridgeState {
         eviction_queue: &mut EthTxPoolBridgeEvictionQueue,
         snapshot: EthTxPoolSnapshot,
     ) {
-        let EthTxPoolSnapshot {
-            mut pending,
-            mut tracked,
-        } = snapshot;
+        let EthTxPoolSnapshot { mut txs } = snapshot;
 
         let now = Instant::now();
 
@@ -130,13 +124,7 @@ impl EthTxPoolBridgeState {
         self.status.retain(|tx_hash, status| {
             status.1 = None;
 
-            if pending.remove(tx_hash) {
-                status.0 = TxStatus::Pending;
-                eviction_queue.push_back((now, *tx_hash));
-                return true;
-            }
-
-            if tracked.remove(tx_hash) {
+            if txs.remove(tx_hash) {
                 status.0 = TxStatus::Tracked;
                 eviction_queue.push_back((now, *tx_hash));
                 return true;
@@ -153,12 +141,7 @@ impl EthTxPoolBridgeState {
             false
         });
 
-        for tx_hash in pending {
-            self.status.insert(tx_hash, (TxStatus::Pending, None));
-            eviction_queue.push_back((now, tx_hash));
-        }
-
-        for tx_hash in tracked {
+        for tx_hash in txs {
             self.status.insert(tx_hash, (TxStatus::Tracked, None));
             eviction_queue.push_back((now, tx_hash));
         }
@@ -191,19 +174,8 @@ impl EthTxPoolBridgeState {
 
         for EthTxPoolEvent { tx_hash, action } in events {
             match action {
-                EthTxPoolEventType::Insert {
-                    address,
-                    owned: _,
-                    tracked,
-                } => {
-                    insert(
-                        tx_hash,
-                        if tracked {
-                            TxStatus::Tracked
-                        } else {
-                            TxStatus::Pending
-                        },
-                    );
+                EthTxPoolEventType::Insert { address, owned: _ } => {
+                    insert(tx_hash, TxStatus::Tracked);
 
                     self.hash_address.entry(tx_hash).insert(address);
                     self.address_hashes
@@ -232,7 +204,7 @@ impl EthTxPoolBridgeState {
                 continue;
             };
 
-            let _ = tx_status_send.send(o.0.clone());
+            let _ = tx_status_send.send(o.0);
         }
     }
 
@@ -291,8 +263,7 @@ mod test {
         let state = EthTxPoolBridgeState::new(
             &mut eviction_queue,
             EthTxPoolSnapshot {
-                pending: HashSet::default(),
-                tracked: HashSet::default(),
+                txs: HashSet::default(),
             },
         );
         let state_view = state.create_view();
@@ -332,28 +303,18 @@ mod test {
     async fn test_handle_events_and_snapshot() {
         enum TestCases {
             EmptySnapshot,
-            InsertPending,
-            InsertPendingSnapshot,
-            InsertTracked,
-            InsertTrackedSnapshot,
+            Insert,
+            InsertSnapshot,
             Drop,
-            Promote,
-            PromoteSnapshot,
-            DemoteSnapshot,
             Commit,
             Evict,
         }
 
         for test in [
             TestCases::EmptySnapshot,
-            TestCases::InsertPending,
-            TestCases::InsertPendingSnapshot,
-            TestCases::InsertTracked,
-            TestCases::InsertTrackedSnapshot,
+            TestCases::Insert,
+            TestCases::InsertSnapshot,
             TestCases::Drop,
-            TestCases::Promote,
-            TestCases::PromoteSnapshot,
-            TestCases::DemoteSnapshot,
             TestCases::Commit,
             TestCases::Evict,
         ] {
@@ -370,13 +331,12 @@ mod test {
                     state.apply_snapshot(
                         &mut eviction_queue,
                         EthTxPoolSnapshot {
-                            pending: HashSet::default(),
-                            tracked: HashSet::default(),
+                            txs: HashSet::default(),
                         },
                     );
                     assert_eq!(state_view.get_status_by_hash(tx.tx_hash()), None);
                 }
-                TestCases::InsertPending => {
+                TestCases::Insert => {
                     state.handle_events(
                         &mut eviction_queue,
                         vec![EthTxPoolEvent {
@@ -384,37 +344,6 @@ mod test {
                             action: EthTxPoolEventType::Insert {
                                 address: tx.recover_signer().unwrap(),
                                 owned: true,
-                                tracked: false,
-                            },
-                        }],
-                    );
-                    assert_eq!(
-                        state_view.get_status_by_hash(tx.tx_hash()),
-                        Some(TxStatus::Pending)
-                    );
-                }
-                TestCases::InsertPendingSnapshot => {
-                    state.apply_snapshot(
-                        &mut eviction_queue,
-                        EthTxPoolSnapshot {
-                            pending: HashSet::from_iter(std::iter::once(tx.tx_hash().to_owned())),
-                            tracked: HashSet::default(),
-                        },
-                    );
-                    assert_eq!(
-                        state_view.get_status_by_hash(tx.tx_hash()),
-                        Some(TxStatus::Pending)
-                    );
-                }
-                TestCases::InsertTracked => {
-                    state.handle_events(
-                        &mut eviction_queue,
-                        vec![EthTxPoolEvent {
-                            tx_hash: tx.tx_hash().to_owned(),
-                            action: EthTxPoolEventType::Insert {
-                                address: tx.recover_signer().unwrap(),
-                                owned: true,
-                                tracked: true,
                             },
                         }],
                     );
@@ -423,12 +352,11 @@ mod test {
                         Some(TxStatus::Tracked)
                     );
                 }
-                TestCases::InsertTrackedSnapshot => {
+                TestCases::InsertSnapshot => {
                     state.apply_snapshot(
                         &mut eviction_queue,
                         EthTxPoolSnapshot {
-                            pending: HashSet::default(),
-                            tracked: HashSet::from_iter(std::iter::once(tx.tx_hash().to_owned())),
+                            txs: HashSet::from_iter(std::iter::once(tx.tx_hash().to_owned())),
                         },
                     );
                     assert_eq!(
@@ -453,97 +381,6 @@ mod test {
                         })
                     );
                 }
-                TestCases::Promote => {
-                    state.handle_events(
-                        &mut eviction_queue,
-                        vec![EthTxPoolEvent {
-                            tx_hash: tx.tx_hash().to_owned(),
-                            action: EthTxPoolEventType::Insert {
-                                address: tx.recover_signer().unwrap(),
-                                owned: true,
-                                tracked: false,
-                            },
-                        }],
-                    );
-                    assert_eq!(
-                        state_view.get_status_by_hash(tx.tx_hash()),
-                        Some(TxStatus::Pending)
-                    );
-
-                    state.handle_events(
-                        &mut eviction_queue,
-                        vec![EthTxPoolEvent {
-                            tx_hash: tx.tx_hash().to_owned(),
-                            action: EthTxPoolEventType::Insert {
-                                address: tx.recover_signer().unwrap(),
-                                owned: true,
-                                tracked: true,
-                            },
-                        }],
-                    );
-                    assert_eq!(
-                        state_view.get_status_by_hash(tx.tx_hash()),
-                        Some(TxStatus::Tracked)
-                    );
-                }
-                TestCases::PromoteSnapshot => {
-                    state.handle_events(
-                        &mut eviction_queue,
-                        vec![EthTxPoolEvent {
-                            tx_hash: tx.tx_hash().to_owned(),
-                            action: EthTxPoolEventType::Insert {
-                                address: tx.recover_signer().unwrap(),
-                                owned: true,
-                                tracked: false,
-                            },
-                        }],
-                    );
-                    assert_eq!(
-                        state_view.get_status_by_hash(tx.tx_hash()),
-                        Some(TxStatus::Pending)
-                    );
-
-                    state.apply_snapshot(
-                        &mut eviction_queue,
-                        EthTxPoolSnapshot {
-                            pending: HashSet::default(),
-                            tracked: HashSet::from_iter(std::iter::once(tx.tx_hash().to_owned())),
-                        },
-                    );
-                    assert_eq!(
-                        state_view.get_status_by_hash(tx.tx_hash()),
-                        Some(TxStatus::Tracked)
-                    );
-                }
-                TestCases::DemoteSnapshot => {
-                    state.handle_events(
-                        &mut eviction_queue,
-                        vec![EthTxPoolEvent {
-                            tx_hash: tx.tx_hash().to_owned(),
-                            action: EthTxPoolEventType::Insert {
-                                address: tx.recover_signer().unwrap(),
-                                owned: true,
-                                tracked: true,
-                            },
-                        }],
-                    );
-                    assert_eq!(
-                        state_view.get_status_by_hash(tx.tx_hash()),
-                        Some(TxStatus::Tracked)
-                    );
-
-                    state.apply_snapshot(
-                        &mut eviction_queue,
-                        EthTxPoolSnapshot {
-                            pending: HashSet::from_iter(std::iter::once(tx.tx_hash().to_owned())),
-                            tracked: HashSet::default(),
-                        },
-                    );
-                    assert_eq!(
-                        state_view.get_status_by_hash(tx.tx_hash()),
-                        Some(TxStatus::Pending)
-                    );
-                }
                 TestCases::Commit => {
                     state.handle_events(
                         &mut eviction_queue,
@@ -560,8 +397,7 @@ mod test {
                     state.apply_snapshot(
                         &mut eviction_queue,
                         EthTxPoolSnapshot {
-                            pending: HashSet::default(),
-                            tracked: HashSet::default(),
+                            txs: HashSet::default(),
                         },
                     );
                     assert_eq!(state_view.get_status_by_hash(tx.tx_hash()), None);
@@ -586,8 +422,7 @@ mod test {
                     state.apply_snapshot(
                         &mut eviction_queue,
                         EthTxPoolSnapshot {
-                            pending: HashSet::default(),
-                            tracked: HashSet::default(),
+                            txs: HashSet::default(),
                         },
                     );
                     assert_eq!(state_view.get_status_by_hash(tx.tx_hash()), None);

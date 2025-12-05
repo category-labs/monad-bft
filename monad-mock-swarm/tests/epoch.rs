@@ -244,18 +244,10 @@ mod test {
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockValSetUpdaterNop::new(validators.validators.clone(), epoch_length),
+                        MockValSetUpdaterNop::new(validators.validators, epoch_length),
                         MockTxPoolExecutor::default().with_chain_params(&CHAIN_PARAMS),
                         MockLedger::new(state_backend.clone()),
-                        MockStateSyncExecutor::new(
-                            state_backend,
-                            validators
-                                .validators
-                                .0
-                                .into_iter()
-                                .map(|v| v.node_id)
-                                .collect(),
-                        ),
+                        MockStateSyncExecutor::new(state_backend),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                         vec![],
                         TimestamperConfig::default(),
@@ -344,18 +336,10 @@ mod test {
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockValSetUpdaterNop::new(validators.validators.clone(), epoch_length),
+                        MockValSetUpdaterNop::new(validators.validators, epoch_length),
                         MockTxPoolExecutor::default().with_chain_params(&CHAIN_PARAMS),
                         MockLedger::new(state_backend.clone()),
-                        MockStateSyncExecutor::new(
-                            state_backend,
-                            validators
-                                .validators
-                                .0
-                                .into_iter()
-                                .map(|v| v.node_id)
-                                .collect(),
-                        ),
+                        MockStateSyncExecutor::new(state_backend),
                         regular_pipeline.clone(),
                         vec![],
                         TimestamperConfig::default(),
@@ -530,18 +514,10 @@ mod test {
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockValSetUpdaterSwap::new(validators.validators.clone(), epoch_length),
+                        MockValSetUpdaterSwap::new(validators.validators, epoch_length),
                         MockTxPoolExecutor::default().with_chain_params(&CHAIN_PARAMS),
                         MockLedger::new(state_backend.clone()),
-                        MockStateSyncExecutor::new(
-                            state_backend,
-                            validators
-                                .validators
-                                .0
-                                .into_iter()
-                                .map(|v| v.node_id)
-                                .collect(),
-                        ),
+                        MockStateSyncExecutor::new(state_backend),
                         regular_pipeline.clone(),
                         vec![],
                         TimestamperConfig::default(),
@@ -728,18 +704,10 @@ mod test {
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockValSetUpdaterSwap::new(validators.validators.clone(), epoch_length),
+                        MockValSetUpdaterSwap::new(validators.validators, epoch_length),
                         MockTxPoolExecutor::default().with_chain_params(&CHAIN_PARAMS),
                         MockLedger::new(state_backend.clone()),
-                        MockStateSyncExecutor::new(
-                            state_backend,
-                            validators
-                                .validators
-                                .0
-                                .into_iter()
-                                .map(|v| v.node_id)
-                                .collect(),
-                        ),
+                        MockStateSyncExecutor::new(state_backend),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                         vec![],
                         TimestamperConfig::default(),

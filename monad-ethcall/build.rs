@@ -25,7 +25,7 @@ fn main() {
 
     let bindings = bindgen::Builder::default()
         .header("../monad-cxx/monad-execution/category/execution/ethereum/chain/chain_config.h")
-        .header("../monad-cxx/monad-execution/category/rpc/eth_call.h")
+        .header("../monad-cxx/monad-execution/category/rpc/monad_executor.h")
         .clang_arg("-I../monad-cxx/monad-execution")
         .clang_arg("-std=c23")
         // invalidate on header change

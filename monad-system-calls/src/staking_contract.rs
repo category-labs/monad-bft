@@ -16,10 +16,12 @@
 use alloy_consensus::{Transaction, TxEnvelope, TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, Bytes, FixedBytes, TxKind, U256, hex};
 use alloy_sol_types::SolValue;
+use monad_eth_types::ValidatedTx;
 use monad_types::Epoch;
 
 use crate::{sign_with_system_sender, validator::SystemTransactionError};
 
+#[derive(Debug)]
 pub(crate) enum StakingContractCall {
     Reward {
         block_author_address: Address,
@@ -44,7 +46,6 @@ impl StakingContractCall {
     pub const EPOCH_CHANGE_FUNCTION_SELECTOR: FixedBytes<4> = FixedBytes::new(hex!("0x1d4e9f02"));
 
     pub const MON: u64 = 1_000_000_000_000_000_000;
-    pub const BLOCK_REWARD_MON: u64 = 1;
 
     pub fn is_restricted_staking_contract_call(txn: &Recovered<TxEnvelope>) -> bool {
         if txn.to() == Some(Self::STAKING_CONTRACT_ADDRESS) {
@@ -55,6 +56,17 @@ impl StakingContractCall {
         }
 
         false
+    }
+
+    fn get_transaction_value(&self) -> U256 {
+        match self {
+            StakingContractCall::Reward {
+                block_author_address: _,
+                block_reward,
+            } => *block_reward,
+            StakingContractCall::Snapshot => U256::ZERO,
+            StakingContractCall::EpochChange { new_epoch: _ } => U256::ZERO,
+        }
     }
 
     fn get_transaction_input(&self) -> Bytes {
@@ -78,110 +90,107 @@ impl StakingContractCall {
         }
     }
 
-    pub fn into_signed_transaction(self, chain_id: u64, nonce: u64) -> StakingContractTransaction {
-        let mut transaction = TxLegacy {
+    pub fn as_legacy_transaction(&self, chain_id: u64, nonce: u64) -> TxLegacy {
+        TxLegacy {
             chain_id: Some(chain_id),
             nonce,
             gas_price: 0,
             gas_limit: 0,
             to: TxKind::Call(Self::STAKING_CONTRACT_ADDRESS),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+            value: self.get_transaction_value(),
+            input: self.get_transaction_input(),
+        }
+    }
 
+    pub fn into_signed_transaction(self, chain_id: u64, nonce: u64) -> StakingContractTransaction {
         match self {
             StakingContractCall::Reward {
                 block_author_address: _,
-                block_reward,
-            } => {
-                let input = self.get_transaction_input();
-                assert_eq!(input.len(), 36);
-
-                transaction.input = input;
-                transaction.value = block_reward;
-
-                StakingContractTransaction::Reward(sign_with_system_sender(transaction))
-            }
-            StakingContractCall::Snapshot => {
-                let input = self.get_transaction_input();
-                assert_eq!(input.len(), 4);
-
-                transaction.input = input;
-
-                StakingContractTransaction::Snapshot(sign_with_system_sender(transaction))
-            }
+                block_reward: _,
+            } => StakingContractTransaction::Reward(sign_with_system_sender(
+                self.as_legacy_transaction(chain_id, nonce),
+            )),
+            StakingContractCall::Snapshot => StakingContractTransaction::Snapshot(
+                sign_with_system_sender(self.as_legacy_transaction(chain_id, nonce)),
+            ),
             StakingContractCall::EpochChange { new_epoch: _ } => {
-                let input = self.get_transaction_input();
-                assert_eq!(input.len(), 36);
-
-                transaction.input = input;
-
-                StakingContractTransaction::EpochChange(sign_with_system_sender(transaction))
+                StakingContractTransaction::EpochChange(sign_with_system_sender(
+                    self.as_legacy_transaction(chain_id, nonce),
+                ))
             }
         }
     }
 
     pub fn validate_system_transaction_input(
-        self,
-        sys_txn: Recovered<TxEnvelope>,
-    ) -> Result<StakingContractTransaction, SystemTransactionError> {
-        let to = sys_txn.to();
-        let input = sys_txn.input();
-        let value = sys_txn.value();
+        &self,
+        system_txn: &ValidatedTx,
+    ) -> Result<(), SystemTransactionError> {
+        let to = system_txn.to();
+        if to != Some(Self::STAKING_CONTRACT_ADDRESS) {
+            return Err(SystemTransactionError::UnexpectedDestAddress {
+                expected: Self::STAKING_CONTRACT_ADDRESS,
+                actual: to,
+            });
+        }
+
+        let input = system_txn.input();
+        let value = system_txn.value();
 
         match self {
             Self::Reward {
                 block_author_address: _,
                 block_reward,
             } => {
-                if to != Some(Self::STAKING_CONTRACT_ADDRESS) {
-                    return Err(SystemTransactionError::UnexpectedDestAddress);
-                }
-
                 let expected_input = self.get_transaction_input();
                 if input != &expected_input {
-                    return Err(SystemTransactionError::UnexpectedInput);
+                    return Err(SystemTransactionError::UnexpectedInput {
+                        expected_input,
+                        actual_input: input.clone(),
+                    });
                 }
 
-                if value != block_reward {
-                    return Err(SystemTransactionError::UnexpectedValue);
+                if value != *block_reward {
+                    return Err(SystemTransactionError::UnexpectedValue {
+                        expected_value: *block_reward,
+                        actual_value: value,
+                    });
                 }
-
-                Ok(StakingContractTransaction::Reward(sys_txn))
             }
             Self::Snapshot => {
-                if to != Some(Self::STAKING_CONTRACT_ADDRESS) {
-                    return Err(SystemTransactionError::UnexpectedDestAddress);
-                }
-
                 let expected_input = self.get_transaction_input();
                 if input != &expected_input {
-                    return Err(SystemTransactionError::UnexpectedInput);
+                    return Err(SystemTransactionError::UnexpectedInput {
+                        expected_input,
+                        actual_input: input.clone(),
+                    });
                 }
 
                 if value != U256::ZERO {
-                    return Err(SystemTransactionError::UnexpectedValue);
+                    return Err(SystemTransactionError::UnexpectedValue {
+                        expected_value: U256::ZERO,
+                        actual_value: value,
+                    });
                 }
-
-                Ok(StakingContractTransaction::Snapshot(sys_txn))
             }
             Self::EpochChange { new_epoch: _ } => {
-                if to != Some(Self::STAKING_CONTRACT_ADDRESS) {
-                    return Err(SystemTransactionError::UnexpectedDestAddress);
-                }
-
                 let expected_input = self.get_transaction_input();
                 if input != &expected_input {
-                    return Err(SystemTransactionError::UnexpectedInput);
+                    return Err(SystemTransactionError::UnexpectedInput {
+                        expected_input,
+                        actual_input: input.clone(),
+                    });
                 }
 
                 if value != U256::ZERO {
-                    return Err(SystemTransactionError::UnexpectedValue);
+                    return Err(SystemTransactionError::UnexpectedValue {
+                        expected_value: U256::ZERO,
+                        actual_value: value,
+                    });
                 }
-
-                Ok(StakingContractTransaction::EpochChange(sys_txn))
             }
         }
+
+        Ok(())
     }
 }
 

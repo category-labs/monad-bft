@@ -18,7 +18,10 @@ use std::sync::{
     Mutex,
 };
 
-use super::*;
+use super::{
+    transform::{transform_batch, TransformOptions},
+    *,
+};
 use crate::{config::GenMode, generators::native_transfer_priority_fee, prelude::*};
 
 pub trait Generator {
@@ -27,7 +30,7 @@ pub trait Generator {
         &mut self,
         accts: &mut [SimpleAccount],
         ctx: &GenCtx,
-    ) -> Vec<(TxEnvelope, Address)>;
+    ) -> Vec<(TxEnvelope, Address, PrivateKey)>;
 }
 
 pub struct GenCtx {
@@ -69,6 +72,8 @@ pub struct GeneratorHarness {
     pub priority_fee: Option<u128>,
     pub random_priority_fee_range: Option<(u128, u128)>,
 
+    pub transform_opts: TransformOptions,
+
     pub shutdown: Arc<AtomicBool>,
 }
 
@@ -88,6 +93,7 @@ impl GeneratorHarness {
         set_tx_gas_limit: Option<u64>,
         priority_fee: Option<u128>,
         random_priority_fee_range: Option<(u128, u128)>,
+        transform_opts: TransformOptions,
         shutdown: Arc<AtomicBool>,
     ) -> Self {
         Self {
@@ -106,6 +112,7 @@ impl GeneratorHarness {
             set_tx_gas_limit,
             priority_fee,
             random_priority_fee_range,
+            transform_opts,
             shutdown,
         }
     }
@@ -163,7 +170,7 @@ impl GeneratorHarness {
                                 random_priority_fee_range: self.random_priority_fee_range,
                             },
                         );
-                        txs.push((tx, acct.addr));
+                        txs.push((tx, acct.addr, root.key.clone()));
                     }
                     info!("Root2 {root}");
                 }
@@ -177,6 +184,8 @@ impl GeneratorHarness {
             } else {
                 None
             };
+
+            let txs = transform_batch(txs, &self.transform_opts);
 
             let accts_with_txs = AccountsWithTxs {
                 accts: Accounts { accts, root },

@@ -25,7 +25,7 @@ use alloy_rpc_types::{
     Block, BlockTransactions, Filter, FilterBlockOption, FilteredParams, Header, Log, Transaction,
     TransactionReceipt,
 };
-use futures::{stream, StreamExt, TryStreamExt};
+use futures::{stream, Stream, StreamExt, TryStreamExt};
 use itertools::{Either, Itertools};
 use monad_archive::{
     model::BlockDataReader,
@@ -52,7 +52,7 @@ pub mod buffer;
 #[derive(Clone)]
 pub struct ChainState<T> {
     buffer: Option<Arc<ChainStateBuffer>>,
-    triedb_env: T,
+    pub triedb_env: T,
     archive_reader: Option<ArchiveReader>,
 }
 
@@ -312,7 +312,7 @@ impl<T: Triedb> ChainState<T> {
         };
 
         let block_key = match &block {
-            BlockTagOrHash::BlockTags(tag) => get_block_key_from_tag(&self.triedb_env, tag.clone()),
+            BlockTagOrHash::BlockTags(tag) => get_block_key_from_tag(&self.triedb_env, *tag),
             BlockTagOrHash::Hash(hash) => {
                 let latest_block_key = get_latest_block_key(&self.triedb_env);
 
@@ -394,7 +394,7 @@ impl<T: Triedb> ChainState<T> {
         }
 
         let block_key = match &block {
-            BlockTagOrHash::BlockTags(tag) => get_block_key_from_tag(&self.triedb_env, tag.clone()),
+            BlockTagOrHash::BlockTags(tag) => get_block_key_from_tag(&self.triedb_env, *tag),
             BlockTagOrHash::Hash(hash) => {
                 let latest_block_key = get_latest_block_key(&self.triedb_env);
 
@@ -682,48 +682,47 @@ impl<T: Triedb> ChainState<T> {
 
         let filtered_params = FilteredParams::new(Some(filter.clone()));
 
-        let block_range = from_block..=to_block;
-
-        let triedb_stream = stream::iter(block_range)
+        let stream_with_triedb = stream::iter(from_block..=to_block)
             .map(|block_num| {
                 async move {
                     let block_key = self.triedb_env.get_block_key(SeqNum(block_num)).ok_or(
                         JsonRpcError::internal_error("missing block in db in range".to_owned()),
                     )?;
-                    if let Some(header) = self
+
+                    let Some(header) = self
                         .triedb_env
                         .get_block_header(block_key)
                         .await
                         .map_err(JsonRpcError::internal_error)?
-                    {
-                        if filter_match(header.header.logs_bloom) {
-                            // try fetching from triedb
-                            if let Ok(transactions) =
-                                self.triedb_env.get_transactions(block_key).await
-                            {
-                                let bloom_receipts = self
-                                    .triedb_env
-                                    .get_receipts(block_key)
-                                    .await
-                                    .map_err(JsonRpcError::internal_error)?;
-                                // successfully fetched from triedb
-                                Ok(Either::Left((header, transactions, bloom_receipts)))
-                            } else {
-                                // header exists but not transactions, block is statesynced
-                                // pass block number to try for archive
-                                Ok(Either::Right(block_num))
-                            }
-                        } else {
-                            Ok(Either::Left((header, vec![], vec![])))
-                        }
-                    } else {
-                        Ok(Either::Right(block_num)) // pass block number to try for archive
+                    else {
+                        // pass block number to try for archive
+                        return Ok(Either::Right(block_num));
+                    };
+
+                    if !filter_match(header.header.logs_bloom) {
+                        return Ok(Either::Left((header, vec![], vec![])));
                     }
+
+                    // try fetching from triedb
+                    let Ok(transactions) = self.triedb_env.get_transactions(block_key).await else {
+                        // header exists but not transactions, block is statesynced
+                        // pass block number to try for archive
+                        return Ok(Either::Right(block_num));
+                    };
+
+                    let receipts = self
+                        .triedb_env
+                        .get_receipts(block_key)
+                        .await
+                        .map_err(JsonRpcError::internal_error)?;
+
+                    // successfully fetched from triedb
+                    Ok(Either::Left((header, transactions, receipts)))
                 }
             })
             .buffered(10);
 
-        let data = triedb_stream
+        let stream_with_archive = stream_with_triedb
             .map(|result| {
                 async move {
                     match result {
@@ -742,47 +741,26 @@ impl<T: Triedb> ChainState<T> {
                     }
                 }
             })
-            .buffered(100)
-            .try_collect::<Vec<_>>()
-            .await?;
+            .buffered(100);
 
-        let receipt_logs = data
-            .iter()
-            .map(|(header, transactions, bloom_receipts)| {
-                block_receipts(
-                    transactions.to_vec(),
-                    bloom_receipts.to_vec(),
-                    &header.header,
-                    header.hash,
-                )
+        let data = stream_with_archive.try_collect::<Vec<_>>().await?;
+
+        let logs = data
+            .into_iter()
+            .map(|(header, transactions, receipts)| {
+                block_receipts(transactions, receipts, &header.header, header.hash)
             })
             .flatten_ok()
-            .map_ok(|receipt| {
-                let logs = match receipt.inner {
-                    alloy_consensus::ReceiptEnvelope::Legacy(receipt_with_bloom)
-                    | alloy_consensus::ReceiptEnvelope::Eip2930(receipt_with_bloom)
-                    | alloy_consensus::ReceiptEnvelope::Eip1559(receipt_with_bloom)
-                    | alloy_consensus::ReceiptEnvelope::Eip4844(receipt_with_bloom)
-                    | alloy_consensus::ReceiptEnvelope::Eip7702(receipt_with_bloom) => {
-                        receipt_with_bloom.receipt.logs
-                    }
-                    _ => unreachable!(),
-                };
-
-                logs.into_iter().filter(|log: &Log| {
-                    !(filtered_params.filter.is_some()
-                        && (!filtered_params.filter_address(&log.address())
-                            || !filtered_params.filter_topics(log.topics())))
-                })
-            })
+            .map_ok(|receipt| transaction_receipt_to_logs_iter(receipt, &filtered_params))
             .flatten_ok()
             .map_ok(MonadLog)
             .collect::<Result<Vec<_>, _>>()?;
 
         if dry_run_get_logs_index {
-            let non_indexed =
-                HashSet::from_iter(receipt_logs.iter().map(|monad_log| &monad_log.0).cloned());
             if let Some(archive_reader) = self.archive_reader.clone() {
+                let non_indexed =
+                    HashSet::from_iter(logs.iter().map(|monad_log| &monad_log.0).cloned());
+
                 tokio::spawn(async move {
                     if let Err(e) = check_dry_run_get_logs_index(
                         archive_reader,
@@ -799,8 +777,30 @@ impl<T: Triedb> ChainState<T> {
             }
         }
 
-        Ok(receipt_logs)
+        Ok(logs)
     }
+}
+
+fn transaction_receipt_to_logs_iter<'a>(
+    receipt: TransactionReceipt,
+    filtered_params: &'a FilteredParams,
+) -> impl Iterator<Item = Log> + 'a {
+    let logs = match receipt.inner {
+        alloy_consensus::ReceiptEnvelope::Legacy(receipt_with_bloom)
+        | alloy_consensus::ReceiptEnvelope::Eip2930(receipt_with_bloom)
+        | alloy_consensus::ReceiptEnvelope::Eip1559(receipt_with_bloom)
+        | alloy_consensus::ReceiptEnvelope::Eip4844(receipt_with_bloom)
+        | alloy_consensus::ReceiptEnvelope::Eip7702(receipt_with_bloom) => {
+            receipt_with_bloom.receipt.logs
+        }
+        _ => unreachable!(),
+    };
+
+    logs.into_iter().filter(|log: &Log| {
+        !(filtered_params.filter.is_some()
+            && (!filtered_params.filter_address(&log.address())
+                || !filtered_params.filter_topics(log.topics())))
+    })
 }
 
 async fn fetch_from_archive(
@@ -889,19 +889,22 @@ async fn check_dry_run_get_logs_index(
     Ok(())
 }
 
-async fn get_logs_with_index(
-    reader: &ArchiveReader,
+async fn get_receipts_stream_using_index<'a>(
+    reader: &'a ArchiveReader,
     from_block: u64,
     to_block: u64,
-    filter: &Filter,
-) -> monad_archive::prelude::Result<Vec<Log>> {
+    filter: &'a Filter,
+) -> Result<
+    impl Stream<Item = monad_archive::prelude::Result<TransactionReceipt>> + 'a,
+    monad_archive::prelude::Report,
+> {
     let log_index = reader
         .log_index
         .as_ref()
         .wrap_err("Log index reader not present")?;
 
     let latest_indexed_tx = reader
-        .get_latest_indexed()
+        .get_latest_indexed(false)
         .await?
         .wrap_err("Latest indexed tx not found")?;
 
@@ -913,19 +916,13 @@ async fn get_logs_with_index(
         );
     }
 
-    let filtered_params = FilteredParams::new(Some(filter.clone()));
-
-    // Note: we an limit returned (and queried!) data by using `query_logs_index_streamed`
+    // Note: we can limit returned (and queried!) data by using `query_logs_index_streamed`
     // and take_while we're under the response size limit
-    let potential_matches = log_index
+    Ok(log_index
         .query_logs(from_block, to_block, filter.address.iter(), &filter.topics)
-        .await?;
-    let potential_matches = potential_matches.try_collect::<Vec<_>>().await?;
-
-    Ok(potential_matches
-        .into_iter()
-        .flat_map(|tx_data| {
-            let receipt = parse_tx_receipt(
+        .await?
+        .map_ok(|tx_data| {
+            parse_tx_receipt(
                 tx_data.header_subset.base_fee_per_gas,
                 Some(tx_data.header_subset.block_timestamp),
                 tx_data.header_subset.block_hash,
@@ -934,20 +931,28 @@ async fn get_logs_with_index(
                 tx_data.receipt,
                 tx_data.header_subset.block_number,
                 tx_data.header_subset.tx_index,
-            );
-            receipt
-                .inner
-                .logs()
-                .iter()
-                .filter(|log: &&Log| {
-                    !(filtered_params.filter.is_some()
-                        && (!filtered_params.filter_address(&log.address())
-                            || !filtered_params.filter_topics(log.topics())))
-                })
-                .cloned()
-                .collect::<Vec<_>>()
+            )
+        }))
+}
+
+async fn get_logs_with_index(
+    reader: &ArchiveReader,
+    from_block: u64,
+    to_block: u64,
+    filter: &Filter,
+) -> monad_archive::prelude::Result<Vec<Log>> {
+    let filtered_params = FilteredParams::new(Some(filter.clone()));
+
+    get_receipts_stream_using_index(reader, from_block, to_block, filter)
+        .await?
+        .map_ok(|receipt| {
+            futures::stream::iter(
+                transaction_receipt_to_logs_iter(receipt, &filtered_params).map(Result::Ok),
+            )
         })
-        .collect())
+        .try_flatten()
+        .try_collect::<Vec<_>>()
+        .await
 }
 
 fn parse_block_content(
@@ -974,7 +979,12 @@ fn parse_block_content(
 
         BlockTransactions::Full(txs)
     } else {
-        BlockTransactions::Hashes(transactions.iter().map(|tx| *tx.tx.tx_hash()).collect())
+        BlockTransactions::Hashes(
+            transactions
+                .into_iter()
+                .map(|tx| *tx.tx.tx_hash())
+                .collect(),
+        )
     };
 
     // NOTE: no withdrawals currently in monad-bft

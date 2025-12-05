@@ -24,7 +24,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{block::ConsensusBlockHeader, no_endorsement::FreshProposalCertificate};
 
-#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize)]
+#[serde(bound(serialize = "", deserialize = ""))]
 #[rlp(trailing)]
 pub struct ConsensusTip<ST, SCT, EPT>
 where
@@ -63,42 +64,5 @@ where
         let rlp_block_header = alloy_rlp::encode(&self.block_header);
         self.signature
             .recover_pubkey::<signing_domain::Tip>(&rlp_block_header)
-    }
-}
-
-impl<ST, SCT, EPT> Serialize for ConsensusTip<ST, SCT, EPT>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    EPT: ExecutionProtocol,
-{
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let bytes = alloy_rlp::encode(self);
-        let bytes_hex = hex::encode(&bytes);
-        serializer.serialize_str(&bytes_hex)
-    }
-}
-
-impl<'de, ST, SCT, EPT> Deserialize<'de> for ConsensusTip<ST, SCT, EPT>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    EPT: ExecutionProtocol,
-{
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let bytes_hex = String::deserialize(deserializer)?;
-        let bytes = hex::decode(&bytes_hex).map_err(|err| {
-            serde::de::Error::custom(format!("tip hex decoding error: {:?}", err))
-        })?;
-        let tip = alloy_rlp::decode_exact(&bytes).map_err(|err| {
-            serde::de::Error::custom(format!("tip rlp decoding error: {:?}", err))
-        })?;
-        Ok(tip)
     }
 }

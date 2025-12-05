@@ -106,6 +106,7 @@ fn nodes_with_random_latency_cron() {
 #[test_case(5153471631950140680; "seed15")]
 #[test_case(4180491672667595808; "seed16")]
 #[test_case(3250401801427586510; "seed17")]
+#[test_case(13102732628471206412; "seed18")]
 fn nodes_with_random_latency(latency_seed: u64) -> Result<(), String> {
     use std::time::Duration;
 
@@ -141,18 +142,10 @@ fn nodes_with_random_latency(latency_seed: u64) -> Result<(), String> {
                     ID::new(NodeId::new(state_builder.key.pubkey())),
                     state_builder,
                     NoSerRouterConfig::new(all_peers.clone()).build(),
-                    MockValSetUpdaterNop::new(validators.validators.clone(), SeqNum(3000)),
+                    MockValSetUpdaterNop::new(validators.validators, SeqNum(3000)),
                     MockTxPoolExecutor::default().with_chain_params(&CHAIN_PARAMS),
                     MockLedger::new(state_backend.clone()),
-                    MockStateSyncExecutor::new(
-                        state_backend,
-                        validators
-                            .validators
-                            .0
-                            .into_iter()
-                            .map(|v| v.node_id)
-                            .collect(),
-                    ),
+                    MockStateSyncExecutor::new(state_backend),
                     vec![GenericTransformer::RandLatency(
                         RandLatencyTransformer::new(latency_seed, delta),
                     )],
@@ -174,7 +167,7 @@ fn nodes_with_random_latency(latency_seed: u64) -> Result<(), String> {
     // -5 is arbitrary. this is to ensure that nodes aren't lagging too
     // far behind because of the latency
     let min_ledger_len = last_block - 5;
-    let max_blocksync_requests = 50;
+    let max_blocksync_requests = 55;
     let max_tick = happy_path_tick_by_block(min_ledger_len, delta);
 
     let mut verifier = MockSwarmVerifier::default().tick_range(max_tick / 2, max_tick / 2);

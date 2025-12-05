@@ -8,7 +8,7 @@ Type=simple
 ExecStart=/usr/local/bin/monad-indexer \
     --block-data-source "${BLOCK_DATA_SOURCE}" \
     --archive-sink "${ARCHIVE_SINK}" \
-    --otel-endpoint "http://0.0.0.0:4317"
+    --otel-endpoint "http://127.0.0.1:4317"
 EnvironmentFile=-/home/monad/.env
 Restart=no
 User=monad

@@ -262,7 +262,7 @@ impl<'de, const N: usize> Deserialize<'de> for FixedData<N> {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BlockTags {
     Number(Quantity), // voted or finalized
     #[default]
@@ -310,7 +310,7 @@ impl FromStr for BlockTags {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "earliest" => Ok(Self::Latest),
+            "earliest" => Ok(Self::Number(Quantity(0))),
             "latest" => Ok(Self::Latest),
             "safe" => Ok(Self::Safe),
             "finalized" => Ok(Self::Finalized),
@@ -354,6 +354,7 @@ enum BlockTagOrHashHelper {
         #[serde(rename = "blockHash")]
         hash: EthHash,
         #[serde(default, rename = "camelCase")]
+        #[allow(dead_code)]
         require_canonical: bool,
     },
 }

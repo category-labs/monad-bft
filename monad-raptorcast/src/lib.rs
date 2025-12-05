@@ -38,52 +38,68 @@ use monad_crypto::{
     signing_domain,
 };
 use monad_dataplane::{
-    udp::{segment_size_for_mtu, DEFAULT_MTU},
-    BroadcastMsg, DataplaneBuilder, DataplaneReader, DataplaneWriter, RecvTcpMsg, TcpMsg,
+    udp::{DEFAULT_MTU, ETHERNET_SEGMENT_SIZE},
+    DataplaneBuilder, DataplaneControl, RecvTcpMsg, TcpMsg, TcpSocketReader, TcpSocketWriter,
+    UdpSocketHandle, UnicastMsg,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
-    BlockSyncEvent, ControlPanelEvent, GetFullNodes, GetPeers, Message, MonadEvent, PeerEntry,
-    RouterCommand,
+    ControlPanelEvent, GetFullNodes, GetPeers, Message, MonadEvent, PeerEntry, RouterCommand,
 };
 use monad_node_config::{FullNodeConfig, FullNodeRaptorCastConfig};
 use monad_peer_discovery::{
     driver::{PeerDiscoveryDriver, PeerDiscoveryEmit},
     message::PeerDiscoveryMessage,
     mock::{NopDiscovery, NopDiscoveryBuilder},
-    PeerDiscoveryAlgo, PeerDiscoveryEvent,
+    NameRecord, PeerDiscoveryAlgo, PeerDiscoveryEvent,
 };
 use monad_types::{DropTimer, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, UdpPriority};
 use monad_validator::signature_collection::SignatureCollection;
-use raptorcast_secondary::{group_message::FullNodesGroupMessage, SecondaryRaptorCastModeConfig};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, debug_span, error, trace, warn};
+use udp::GroupId;
 use util::{BuildTarget, EpochValidators, FullNodes, Group, ReBroadcastGroupMap, Redundancy};
 
+use crate::{
+    metrics::{GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED, GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS},
+    packet::RetrofitResult as _,
+    raptorcast_secondary::{
+        group_message::FullNodesGroupMessage, SecondaryOutboundMessage,
+        SecondaryRaptorCastModeConfig,
+    },
+};
+
+pub mod auth;
 pub mod config;
 pub mod decoding;
 pub mod message;
+pub mod metrics;
 pub mod packet;
 pub mod raptorcast_secondary;
 pub mod udp;
 pub mod util;
 
 const SIGNATURE_SIZE: usize = 65;
+const DEFAULT_RETRY_ATTEMPTS: u64 = 3;
+
+pub const UNICAST_MSG_BATCH_SIZE: usize = 32;
+pub const RAPTORCAST_SOCKET: &str = "raptorcast";
+pub const AUTHENTICATED_RAPTORCAST_SOCKET: &str = "authenticated_raptorcast";
 
 pub(crate) type OwnedMessageBuilder<ST, PD> =
     packet::MessageBuilder<'static, ST, Arc<Mutex<PeerDiscoveryDriver<PD>>>>;
 
-pub struct RaptorCast<ST, M, OM, SE, PD>
+pub struct RaptorCast<ST, M, OM, SE, PD, AP>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
     OM: Encodable + Into<M> + Clone,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
+    AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
 {
     signing_key: Arc<ST::KeyPairType>,
     is_dynamic_fullnode: bool,
 
-    // Raptorcast group with stake information. For the send side (i.e., initiating proposals)
     epoch_validators: BTreeMap<Epoch, EpochValidators<ST>>,
     rebroadcast_map: ReBroadcastGroupMap<ST>,
 
@@ -94,13 +110,17 @@ where
 
     udp_state: udp::UdpState<ST>,
     message_builder: OwnedMessageBuilder<ST, PD>,
+    secondary_message_builder: Option<OwnedMessageBuilder<ST, PD>>,
 
-    dataplane_reader: DataplaneReader,
-    dataplane_writer: DataplaneWriter,
+    tcp_reader: TcpSocketReader,
+    tcp_writer: TcpSocketWriter,
+    dual_socket: auth::DualSocketHandle<AP>,
+    dataplane_control: DataplaneControl,
     pending_events: VecDeque<RaptorCastEvent<M::Event, ST>>,
 
     channel_to_secondary: Option<UnboundedSender<FullNodesGroupMessage<ST>>>,
     channel_from_secondary: Option<UnboundedReceiver<Group<ST>>>,
+    channel_from_secondary_outbound: Option<UnboundedReceiver<SecondaryOutboundMessage<ST>>>,
 
     waker: Option<Waker>,
     metrics: ExecutorMetrics,
@@ -119,20 +139,26 @@ pub enum RaptorCastEvent<E, ST: CertificateSignatureRecoverable> {
     SecondaryRaptorcastPeersUpdate(Round, Vec<NodeId<CertificateSignaturePubKey<ST>>>),
 }
 
-impl<ST, M, OM, SE, PD> RaptorCast<ST, M, OM, SE, PD>
+impl<ST, M, OM, SE, PD, AP> RaptorCast<ST, M, OM, SE, PD, AP>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
     OM: Encodable + Into<M> + Clone,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
+    AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
 {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: config::RaptorCastConfig<ST>,
         secondary_mode: SecondaryRaptorCastModeConfig,
-        dataplane_reader: DataplaneReader,
-        dataplane_writer: DataplaneWriter,
+        tcp_reader: TcpSocketReader,
+        tcp_writer: TcpSocketWriter,
+        authenticated_socket: Option<UdpSocketHandle>,
+        non_authenticated_socket: UdpSocketHandle,
+        control: DataplaneControl,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
         current_epoch: Epoch,
+        auth_protocol: AP,
     ) -> Self {
         if config.primary_instance.raptor10_redundancy < 1f32 {
             panic!(
@@ -147,13 +173,32 @@ where
             ?is_dynamic_fullnode, ?self_id, ?config.mtu, "RaptorCast::new",
         );
 
+        let dual_socket = auth::DualSocketHandle::new(
+            authenticated_socket
+                .map(|socket| auth::AuthenticatedSocketHandle::new(socket, auth_protocol)),
+            non_authenticated_socket,
+        );
+
         let redundancy = Redundancy::from_f32(config.primary_instance.raptor10_redundancy)
             .expect("primary raptor10_redundancy doesn't fit");
+        let segment_size = dual_socket.segment_size(config.mtu);
         let message_builder =
             OwnedMessageBuilder::new(config.shared_key.clone(), peer_discovery_driver.clone())
-                .segment_size(segment_size_for_mtu(config.mtu))
-                .epoch_no(current_epoch)
+                .segment_size(segment_size)
+                .group_id(GroupId::Primary(current_epoch))
                 .redundancy(redundancy);
+
+        let secondary_redundancy = Redundancy::from_f32(
+            config
+                .secondary_instance
+                .raptor10_fullnode_redundancy_factor,
+        )
+        .expect("secondary raptor10_redundancy doesn't fit");
+        let secondary_message_builder =
+            OwnedMessageBuilder::new(config.shared_key.clone(), peer_discovery_driver.clone())
+                .segment_size(segment_size)
+                .group_id(GroupId::Primary(current_epoch))
+                .redundancy(secondary_redundancy);
 
         Self {
             is_dynamic_fullnode,
@@ -166,16 +211,20 @@ where
 
             signing_key: config.shared_key.clone(),
             message_builder,
+            secondary_message_builder: Some(secondary_message_builder),
 
             current_epoch,
 
             udp_state: udp::UdpState::new(self_id, config.udp_message_max_age_ms),
 
-            dataplane_reader,
-            dataplane_writer,
+            tcp_reader,
+            tcp_writer,
+            dual_socket,
+            dataplane_control: control,
             pending_events: Default::default(),
             channel_to_secondary: None,
             channel_from_secondary: None,
+            channel_from_secondary_outbound: None,
 
             waker: None,
             metrics: Default::default(),
@@ -191,8 +240,10 @@ where
         &mut self,
         channel_to_secondary: UnboundedSender<FullNodesGroupMessage<ST>>,
         channel_from_secondary: UnboundedReceiver<Group<ST>>,
+        channel_from_secondary_outbound: UnboundedReceiver<SecondaryOutboundMessage<ST>>,
     ) {
         self.channel_to_secondary = Some(channel_to_secondary);
+        self.channel_from_secondary_outbound = Some(channel_from_secondary_outbound);
         if self.is_dynamic_fullnode {
             self.channel_from_secondary = Some(channel_from_secondary);
         } else {
@@ -211,6 +262,15 @@ where
 
     pub fn get_rebroadcast_groups(&self) -> &ReBroadcastGroupMap<ST> {
         &self.rebroadcast_map
+    }
+
+    pub fn is_connected_to(
+        &self,
+        socket_addr: &SocketAddr,
+        public_key: &CertificateSignaturePubKey<ST>,
+    ) -> bool {
+        self.dual_socket
+            .is_connected_socket_and_public_key(socket_addr, public_key)
     }
 
     fn enqueue_message_to_self(
@@ -253,7 +313,7 @@ where
                 assert_eq!(signature.len(), SIGNATURE_SIZE);
                 signed_message[..SIGNATURE_SIZE].copy_from_slice(&signature);
                 signed_message[SIGNATURE_SIZE..].copy_from_slice(&app_message);
-                self.dataplane_writer.tcp_write(
+                self.tcp_writer.write(
                     address,
                     TcpMsg {
                         msg: signed_message.freeze(),
@@ -264,6 +324,61 @@ where
         };
     }
 
+    fn handle_secondary_outbound_message(&mut self, outbound_msg: SecondaryOutboundMessage<ST>) {
+        let Some(secondary_mb) = self.secondary_message_builder.as_mut() else {
+            error!("secondary_message_builder not configured");
+            return;
+        };
+
+        match outbound_msg {
+            SecondaryOutboundMessage::SendSingle {
+                msg_bytes,
+                dest,
+                group_id,
+            } => {
+                trace!(
+                    ?dest,
+                    msg_len = msg_bytes.len(),
+                    "raptorcastprimary handling single message from secondary"
+                );
+                let build_target = BuildTarget::<ST>::PointToPoint(&dest);
+                send(
+                    &mut self.dual_socket,
+                    &self.peer_discovery_driver,
+                    secondary_mb,
+                    &msg_bytes,
+                    &build_target,
+                    UdpPriority::Regular,
+                    group_id,
+                );
+            }
+            SecondaryOutboundMessage::SendToGroup {
+                msg_bytes,
+                group,
+                group_id,
+            } => {
+                trace!(
+                    group_size = group.size_excl_self(),
+                    msg_len = msg_bytes.len(),
+                    "raptorcastprimary handling group message from secondary"
+                );
+                if group.size_excl_self() < 1 {
+                    return;
+                }
+                let build_target = BuildTarget::FullNodeRaptorCast(&group);
+                send(
+                    &mut self.dual_socket,
+                    &self.peer_discovery_driver,
+                    secondary_mb,
+                    &msg_bytes,
+                    &build_target,
+                    UdpPriority::Regular,
+                    group_id,
+                );
+            }
+        }
+    }
+
     fn handle_publish(
         &mut self,
         target: RouterTarget<CertificateSignaturePubKey<ST>>,
@@ -272,13 +387,13 @@ where
         self_id: NodeId<CertificateSignaturePubKey<ST>>,
     ) {
         let _span = debug_span!("router publish").entered();
-        let _timer = DropTimer::start(Duration::from_millis(20), |elapsed| {
+        let _timer = DropTimer::start(Duration::from_millis(10), |elapsed| {
             warn!(?elapsed, "long time to publish message")
         });
 
         match target {
             RouterTarget::Broadcast(epoch) | RouterTarget::Raptorcast(epoch) => {
-                let Some(epoch_validators) = self.epoch_validators.get_mut(&epoch) else {
+                let Some(epoch_validators) = self.epoch_validators.get(&epoch) else {
                     error!(
                         "don't have epoch validators populated for epoch: {:?}",
                         epoch
@@ -294,12 +409,10 @@ where
                         self_id,
                     );
                 }
+
                 let epoch_validators_without_self = epoch_validators.view_without(vec![&self_id]);
 
                 if epoch_validators_without_self.is_empty() {
-                    // this is degenerate case where the only
-                    // validator is self and we have no full nodes
-                    // to forward
                     return;
                 }
 
@@ -320,15 +433,24 @@ where
                             return;
                         }
                     };
-                if let Some(rc_chunks) = self
-                    .message_builder
-                    .prepare()
-                    .epoch_no(epoch)
-                    .build_unicast_msg(&outbound_message, &build_target)
-                {
-                    self.dataplane_writer
-                        .udp_write_unicast_with_priority(rc_chunks, priority);
-                }
+
+                let _timer = DropTimer::start(Duration::from_millis(10), |elapsed| {
+                    warn!(
+                        ?elapsed,
+                        app_msg_len = outbound_message.len(),
+                        "long time to build raptorcast/broadcast message"
+                    )
+                });
+
+                send(
+                    &mut self.dual_socket,
+                    &self.peer_discovery_driver,
+                    &mut self.message_builder,
+                    &outbound_message,
+                    &build_target,
+                    priority,
+                    GroupId::Primary(epoch),
+                );
             }
 
             RouterTarget::PointToPoint(to) => {
@@ -352,13 +474,24 @@ where
                         }
                     };
                     let build_target = BuildTarget::<ST>::PointToPoint(&to);
-                    if let Some(rc_chunks) = self
-                        .message_builder
-                        .build_unicast_msg(&outbound_message, &build_target)
-                    {
-                        self.dataplane_writer
-                            .udp_write_unicast_with_priority(rc_chunks, priority);
-                    }
+
+                    let _timer = DropTimer::start(Duration::from_millis(10), |elapsed| {
+                        warn!(
+                            ?elapsed,
+                            app_msg_len = outbound_message.len(),
+                            "long time to build point-to-point message"
+                        )
+                    });
+
+                    send(
+                        &mut self.dual_socket,
+                        &self.peer_discovery_driver,
+                        &mut self.message_builder,
+                        &outbound_message,
+                        &build_target,
+                        priority,
+                        GroupId::Primary(self.current_epoch),
+                    );
                 }
             }
 
@@ -388,7 +521,14 @@ pub fn new_defaulted_raptorcast_for_tests<ST, M, OM, SE>(
     local_addr: SocketAddr,
     known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4>,
     shared_key: Arc<ST::KeyPairType>,
-) -> RaptorCast<ST, M, OM, SE, NopDiscovery<ST>>
+) -> RaptorCast<
+    ST,
+    M,
+    OM,
+    SE,
+    NopDiscovery<ST>,
+    auth::NoopAuthProtocol<CertificateSignaturePubKey<ST>>,
+>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
@@ -399,9 +539,28 @@ where
         ..Default::default()
     };
     let up_bandwidth_mbps = 1_000;
-    let dp = DataplaneBuilder::new(&local_addr, up_bandwidth_mbps).build();
+    let non_authenticated_addr = SocketAddr::new(local_addr.ip(), local_addr.port() + 1);
+    let dp = DataplaneBuilder::new(&local_addr, up_bandwidth_mbps)
+        .extend_udp_sockets(vec![
+            monad_dataplane::UdpSocketConfig {
+                socket_addr: local_addr,
+                label: AUTHENTICATED_RAPTORCAST_SOCKET.to_string(),
+            },
+            monad_dataplane::UdpSocketConfig {
+                socket_addr: non_authenticated_addr,
+                label: RAPTORCAST_SOCKET.to_string(),
+            },
+        ])
+        .build();
     assert!(dp.block_until_ready(Duration::from_secs(1)));
-    let (dp_reader, dp_writer) = dp.split();
+    let (tcp_socket, mut udp_dataplane, control) = dp.split();
+    let authenticated_socket = udp_dataplane
+        .take_socket(AUTHENTICATED_RAPTORCAST_SOCKET)
+        .expect("authenticated socket");
+    let non_authenticated_socket = udp_dataplane
+        .take_socket(RAPTORCAST_SOCKET)
+        .expect("non-authenticated socket");
+    let (tcp_reader, tcp_writer) = tcp_socket.split();
     let config = config::RaptorCastConfig {
         shared_key,
         mtu: DEFAULT_MTU,
@@ -426,22 +585,105 @@ where
     };
     let pd = PeerDiscoveryDriver::new(peer_discovery_builder);
     let shared_pd = Arc::new(Mutex::new(pd));
-    RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>>::new(
+    let auth_protocol = auth::NoopAuthProtocol::new();
+    RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>, _>::new(
         config,
         SecondaryRaptorCastModeConfig::None,
-        dp_reader,
-        dp_writer,
+        tcp_reader,
+        tcp_writer,
+        Some(authenticated_socket),
+        non_authenticated_socket,
+        control,
         shared_pd,
         Epoch(0),
+        auth_protocol,
     )
 }
 
-impl<ST, M, OM, SE, PD> Executor for RaptorCast<ST, M, OM, SE, PD>
+pub fn new_wireauth_raptorcast_for_tests<ST, M, OM, SE>(
+    local_addr: SocketAddr,
+    known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4>,
+    shared_key: Arc<ST::KeyPairType>,
+) -> RaptorCast<ST, M, OM, SE, NopDiscovery<ST>, auth::WireAuthProtocol>
+where
+    ST: CertificateSignatureRecoverable<KeyPairType = monad_secp::KeyPair>,
+    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
+    OM: Encodable + Into<M> + Clone,
+{
+    let peer_discovery_builder = NopDiscoveryBuilder {
+        known_addresses,
+        ..Default::default()
+    };
+    let up_bandwidth_mbps = 1_000;
+    let non_authenticated_addr = SocketAddr::new(local_addr.ip(), local_addr.port() + 1);
+    let dp = DataplaneBuilder::new(&local_addr, up_bandwidth_mbps)
+        .extend_udp_sockets(vec![
+            monad_dataplane::UdpSocketConfig {
+                socket_addr: local_addr,
+                label: AUTHENTICATED_RAPTORCAST_SOCKET.to_string(),
+            },
+            monad_dataplane::UdpSocketConfig {
+                socket_addr: non_authenticated_addr,
+                label: RAPTORCAST_SOCKET.to_string(),
+            },
+        ])
+        .build();
+    assert!(dp.block_until_ready(Duration::from_secs(1)));
+    let (tcp_socket, mut udp_dataplane, control) = dp.split();
+    let authenticated_socket = udp_dataplane
+        .take_socket(AUTHENTICATED_RAPTORCAST_SOCKET)
+        .expect("authenticated socket");
+    let non_authenticated_socket = udp_dataplane
+        .take_socket(RAPTORCAST_SOCKET)
+        .expect("non-authenticated socket");
+    let (tcp_reader, tcp_writer) = tcp_socket.split();
+    let config = config::RaptorCastConfig {
+        shared_key: shared_key.clone(),
+        mtu: DEFAULT_MTU,
+        udp_message_max_age_ms: u64::MAX,
+        primary_instance: Default::default(),
+        secondary_instance: FullNodeRaptorCastConfig {
+            enable_publisher: false,
+            enable_client: false,
+            raptor10_fullnode_redundancy_factor: 2f32,
+            full_nodes_prioritized: FullNodeConfig { identities: vec![] },
+            round_span: Round(10),
+            invite_lookahead: Round(5),
+            max_invite_wait: Round(3),
+            deadline_round_dist: Round(3),
+            init_empty_round_span: Round(1),
+            max_group_size: 10,
+            max_num_group: 5,
+            invite_future_dist_min: Round(1),
+            invite_future_dist_max: Round(5),
+            invite_accept_heartbeat_ms: 100,
+        },
+    };
+    let pd = PeerDiscoveryDriver::new(peer_discovery_builder);
+    let shared_pd = Arc::new(Mutex::new(pd));
+    let wireauth_config = monad_wireauth::Config::default();
+    let auth_protocol = auth::WireAuthProtocol::new(wireauth_config, shared_key);
+    RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>, _>::new(
+        config,
+        SecondaryRaptorCastModeConfig::None,
+        tcp_reader,
+        tcp_writer,
+        Some(authenticated_socket),
+        non_authenticated_socket,
+        control,
+        shared_pd,
+        Epoch(0),
+        auth_protocol,
+    )
+}
+
+impl<ST, M, OM, SE, PD, AP> Executor for RaptorCast<ST, M, OM, SE, PD, AP>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
     OM: Encodable + Into<M> + Clone,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
+    AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
 {
     type Command = RouterCommand<ST, OM>;
 
@@ -469,11 +711,14 @@ where
                                 .flat_map(|val| iter_ips(val, &*pd_driver))
                                 .collect();
                             drop(pd_driver);
-                            self.dataplane_writer.update_trusted(added, removed);
+                            self.dataplane_control.update_trusted(added, removed);
                         }
 
                         self.current_epoch = epoch;
-                        self.message_builder.set_epoch_no(epoch);
+                        self.message_builder.set_group_id(GroupId::Primary(epoch));
+                        if let Some(secondary_mb) = self.secondary_message_builder.as_mut() {
+                            secondary_mb.set_group_id(GroupId::Primary(epoch));
+                        }
 
                         while let Some(entry) = self.epoch_validators.first_entry() {
                             if *entry.key() + Epoch(1) < self.current_epoch {
@@ -532,7 +777,11 @@ where
                 } => {
                     self.handle_publish(target, message, priority, self_id);
                 }
-                RouterCommand::PublishToFullNodes { epoch, message } => {
+                RouterCommand::PublishToFullNodes {
+                    epoch,
+                    round: _,
+                    message,
+                } => {
                     let full_nodes_view = self.dedicated_full_nodes.view();
                     if self.is_dynamic_fullnode {
                         debug!("self is dynamic full node, skipping publishing to full nodes");
@@ -562,22 +811,30 @@ where
                         .lock()
                         .unwrap()
                         .get_known_addresses();
+
+                    let _timer = DropTimer::start(Duration::from_millis(20), |elapsed| {
+                        warn!(
+                            ?elapsed,
+                            app_msg_len = outbound_message.len(),
+                            "long time to build message"
+                        )
+                    });
+
                     for node in full_nodes_view.iter() {
                         if !node_addrs.contains_key(node) {
                             continue;
                         }
 
-                        // TODO: optimize the build of copies of the
-                        // same message to multiple recipients.
                         let build_target = BuildTarget::PointToPoint(node);
-                        if let Some(rc_chunks) = self
-                            .message_builder
-                            .prepare_with_peer_lookup(&node_addrs)
-                            .epoch_no(epoch)
-                            .build_unicast_msg(&outbound_message, &build_target)
-                        {
-                            self.dataplane_writer.udp_write_unicast(rc_chunks);
-                        };
+                        send(
+                            &mut self.dual_socket,
+                            &self.peer_discovery_driver,
+                            &mut self.message_builder,
+                            &outbound_message,
+                            &build_target,
+                            UdpPriority::Regular,
+                            GroupId::Primary(epoch),
+                        );
                     }
                 }
                 RouterCommand::GetPeers => {
@@ -588,11 +845,8 @@ where
                         .get_name_records();
                     let peer_list = name_records
                         .iter()
-                        .map(|(node_id, name_record)| PeerEntry {
-                            pubkey: node_id.pubkey(),
-                            addr: name_record.address(),
-                            signature: name_record.signature,
-                            record_seq_num: name_record.seq(),
+                        .map(|(node_id, name_record)| {
+                            name_record.with_pubkey(node_id.pubkey()).into()
                         })
                         .collect::<Vec<_>>();
                     self.pending_events
@@ -641,10 +895,11 @@ where
     }
 
     fn metrics(&self) -> ExecutorMetricsChain {
-        // FIXME: avoid copying metrics
         ExecutorMetricsChain::default()
             .push(self.metrics.as_ref())
             .push(self.peer_discovery_metrics.as_ref())
+            .push(self.udp_state.metrics().executor_metrics())
+            .chain(self.dual_socket.metrics())
     }
 }
 
@@ -659,19 +914,21 @@ fn iter_ips<'a, ST: CertificateSignatureRecoverable, PD: PeerDiscoveryAlgo<Signa
         .map(|socket| socket.ip())
 }
 
-impl<ST, M, OM, E, PD> Stream for RaptorCast<ST, M, OM, E, PD>
+impl<ST, M, OM, E, PD, AP> Stream for RaptorCast<ST, M, OM, E, PD, AP>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
     OM: Encodable + Into<M> + Clone,
     E: From<RaptorCastEvent<M::Event, ST>>,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
+    AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
     PeerDiscoveryDriver<PD>: Unpin,
     Self: Unpin,
 {
     type Item = E;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        trace!("polling raptorcast");
         let this = self.deref_mut();
 
         if let Some(waker) = this.waker.as_mut() {
@@ -685,9 +942,21 @@ where
         }
 
         loop {
-            let dataplane = &mut this.dataplane_reader;
-            let Poll::Ready(message) = pin!(dataplane.udp_read()).poll_unpin(cx) else {
-                break;
+            let message = {
+                let mut sock = pin!(this.dual_socket.recv());
+
+                match sock.poll_unpin(cx) {
+                    Poll::Ready(Ok(msg)) => {
+                        this.metrics[GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED] += 1;
+                        msg
+                    }
+                    Poll::Ready(Err(e)) => {
+                        this.metrics[GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS] += 1;
+                        trace!(error=?e, "socket recv error");
+                        continue;
+                    }
+                    Poll::Pending => break,
+                }
             };
 
             trace!(
@@ -703,28 +972,19 @@ where
             // decoded (AKA parsed, original) message.
             // Stream the chunks to our dedicated full-nodes as we receive them.
             let decoded_app_messages = {
-                // FIXME: pass dataplane as arg to handle_message
                 this.udp_state.handle_message(
-                    this.current_epoch,
-                    &this.rebroadcast_map, // contains the NodeIds for all the RC participants for each epoch
+                    &this.rebroadcast_map,
                     &this.epoch_validators,
                     |targets, payload, bcast_stride| {
-                        // Callback for re-broadcasting raptorcast chunks to other RaptorCast participants (validator peers)
-                        let target_addrs: Vec<SocketAddr> = targets
-                            .into_iter()
-                            .filter_map(|target| {
-                                this.peer_discovery_driver.lock().unwrap().get_addr(&target)
-                            })
-                            .collect();
-
-                        this.dataplane_writer.udp_write_broadcast_with_priority(
-                            BroadcastMsg {
-                                targets: target_addrs,
-                                payload,
-                                stride: bcast_stride,
-                            },
-                            UdpPriority::High,
-                        );
+                        for target in targets {
+                            rebroadcast_packet(
+                                &mut this.dual_socket,
+                                &this.peer_discovery_driver,
+                                &target,
+                                payload.clone(),
+                                bcast_stride,
+                            );
+                        }
                     },
                     message,
                 )
@@ -812,8 +1072,7 @@ where
         }
 
         loop {
-            let dataplane = &mut this.dataplane_reader;
-            let Poll::Ready(msg) = pin!(dataplane.tcp_read()).poll_unpin(cx) else {
+            let Poll::Ready(msg) = pin!(this.tcp_reader.recv()).poll_unpin(cx) else {
                 break;
             };
             let RecvTcpMsg { payload, src_addr } = msg;
@@ -823,7 +1082,7 @@ where
                     ?src_addr,
                     "invalid message, message length less than signature size"
                 );
-                this.dataplane_writer.disconnect(src_addr);
+                this.dataplane_control.disconnect(src_addr);
                 continue;
             }
             let signature_bytes = &payload[..SIGNATURE_SIZE];
@@ -831,7 +1090,7 @@ where
                 Ok(signature) => signature,
                 Err(err) => {
                     warn!(?err, ?src_addr, "invalid signature");
-                    this.dataplane_writer.disconnect(src_addr);
+                    this.dataplane_control.disconnect(src_addr);
                     continue;
                 }
             };
@@ -841,7 +1100,7 @@ where
                     Ok(message) => message,
                     Err(err) => {
                         warn!(?err, ?src_addr, "failed to deserialize message");
-                        this.dataplane_writer.disconnect(src_addr);
+                        this.dataplane_control.disconnect(src_addr);
                         continue;
                     }
                 };
@@ -851,7 +1110,7 @@ where
                 Ok(from) => from,
                 Err(err) => {
                     warn!(?err, ?src_addr, "failed to recover pubkey");
-                    this.dataplane_writer.disconnect(src_addr);
+                    this.dataplane_control.disconnect(src_addr);
                     continue;
                 }
             };
@@ -869,49 +1128,67 @@ where
                         ?message,
                         "dropping peer discovery message, should come through udp channel"
                     );
-                    this.dataplane_writer.disconnect(src_addr);
+                    this.dataplane_control.disconnect(src_addr);
                     continue;
                 }
                 InboundRouterMessage::FullNodesGroup(_group_message) => {
-                    // pass TCP message to MultiRouter
                     warn!("FullNodesGroup protocol via TCP not implemented");
-                    this.dataplane_writer.disconnect(src_addr);
+                    this.dataplane_control.disconnect(src_addr);
                     continue;
                 }
             }
         }
 
         {
-            let send_peer_disc_msg = |this: &RaptorCast<ST, M, OM, E, PD>,
-                                      target: NodeId<CertificateSignaturePubKey<ST>>,
-                                      message: PeerDiscoveryMessage<ST>,
-                                      custom_known_addrs: Option<
-                HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
-            >| {
-                let _span = debug_span!("publish discovery").entered();
-                let Ok(router_message) =
-                    OutboundRouterMessage::<OM, ST>::PeerDiscoveryMessage(message).try_serialize()
-                else {
-                    error!("failed to serialize peer discovery message");
-                    return;
-                };
+            let send_peer_disc_msg =
+                |this: &mut RaptorCast<ST, M, OM, E, PD, AP>,
+                 target: NodeId<CertificateSignaturePubKey<ST>>,
+                 target_name_record: Option<NameRecord>,
+                 message: PeerDiscoveryMessage<ST>| {
+                    let _span = debug_span!("publish discovery").entered();
+                    let Ok(router_message) =
+                        OutboundRouterMessage::<OM, ST>::PeerDiscoveryMessage(message)
+                            .try_serialize()
+                    else {
+                        error!("failed to serialize peer discovery message");
+                        return;
+                    };
 
-                let build_target = BuildTarget::<ST>::PointToPoint(&target);
+                    let build_target = BuildTarget::<ST>::PointToPoint(&target);
 
-                let rc_chunks = match custom_known_addrs {
-                    Some(addrs) => this
-                        .message_builder
-                        .prepare_with_peer_lookup(&addrs)
-                        .build_unicast_msg(&router_message, &build_target),
-                    None => this
-                        .message_builder
-                        .build_unicast_msg(&router_message, &build_target),
-                };
+                    let _timer = DropTimer::start(Duration::from_millis(10), |elapsed| {
+                        warn!(
+                            ?elapsed,
+                            app_msg_len = router_message.len(),
+                            "long time to build discovery message"
+                        )
+                    });
 
-                if let Some(rc_chunks) = rc_chunks {
-                    this.dataplane_writer.udp_write_unicast(rc_chunks);
+                    match target_name_record {
+                        Some(name_record) => {
+                            send_with_record(
+                                &mut this.dual_socket,
+                                &this.peer_discovery_driver,
+                                &mut this.message_builder,
+                                &router_message,
+                                UdpPriority::Regular,
+                                &target,
+                                &name_record,
+                            );
+                        }
+                        None => {
+                            send(
+                                &mut this.dual_socket,
+                                &this.peer_discovery_driver,
+                                &mut this.message_builder,
+                                &router_message,
+                                &build_target,
+                                UdpPriority::Regular,
+                                GroupId::Primary(this.current_epoch),
+                            );
+                        }
+                    }
                 };
-            };
 
             loop {
                 let mut pd_driver = this.peer_discovery_driver.lock().unwrap();
@@ -923,15 +1200,14 @@ where
 
                 match peer_disc_emit {
                     PeerDiscoveryEmit::RouterCommand { target, message } => {
-                        send_peer_disc_msg(this, target, message, None);
+                        send_peer_disc_msg(this, target, None, message);
                     }
                     PeerDiscoveryEmit::PingPongCommand {
                         target,
-                        socket_address,
+                        name_record,
                         message,
                     } => {
-                        let addrs = HashMap::from_iter([(target, SocketAddr::V4(socket_address))]);
-                        send_peer_disc_msg(this, target, message, Some(addrs));
+                        send_peer_disc_msg(this, target, Some(name_record), message);
                     }
                     PeerDiscoveryEmit::MetricsCommand(executor_metrics) => {
                         this.peer_discovery_metrics = executor_metrics;
@@ -959,6 +1235,29 @@ where
             }
         }
 
+        loop {
+            let msg_option =
+                this.channel_from_secondary_outbound
+                    .as_mut()
+                    .and_then(|ch| match pin!(ch.recv()).poll(cx) {
+                        Poll::Ready(Some(msg)) => Some(Ok(msg)),
+                        Poll::Ready(None) => Some(Err(())),
+                        Poll::Pending => None,
+                    });
+
+            match msg_option {
+                Some(Ok(outbound_msg)) => {
+                    this.handle_secondary_outbound_message(outbound_msg);
+                }
+                Some(Err(())) => {
+                    error!("RaptorCast secondary->primary outbound channel disconnected.");
+                    this.channel_from_secondary_outbound = None;
+                    break;
+                }
+                None => break,
+            }
+        }
+
         Poll::Pending
     }
 }
@@ -983,10 +1282,10 @@ where
                 }
             }
             RaptorCastEvent::SecondaryRaptorcastPeersUpdate(expiry_round, confirm_group_peers) => {
-                MonadEvent::BlockSyncEvent(BlockSyncEvent::SecondaryRaptorcastPeersUpdate {
+                MonadEvent::SecondaryRaptorcastPeersUpdate {
                     expiry_round,
                     confirm_group_peers,
-                })
+                }
             }
         }
     }
@@ -1003,5 +1302,220 @@ where
         FullNodesGroupMessage::PrepareGroup(msg) => &msg.validator_id == sender,
         FullNodesGroupMessage::PrepareGroupResponse(msg) => &msg.node_id == sender,
         FullNodesGroupMessage::ConfirmGroup(msg) => &msg.prepare.validator_id == sender,
+    }
+}
+
+fn send<ST, PD, AP>(
+    dual_socket: &mut auth::DualSocketHandle<AP>,
+    peer_discovery_driver: &Arc<Mutex<PeerDiscoveryDriver<PD>>>,
+    message_builder: &mut OwnedMessageBuilder<ST, PD>,
+    message: &Bytes,
+    build_target: &BuildTarget<ST>,
+    priority: UdpPriority,
+    group_id: GroupId,
+) where
+    ST: CertificateSignatureRecoverable,
+    PD: PeerDiscoveryAlgo<SignatureType = ST>,
+    AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+{
+    {
+        let dual_socket_cell = std::cell::RefCell::new(&mut *dual_socket);
+        let mut sink = packet::UdpMessageBatcher::new(UNICAST_MSG_BATCH_SIZE, |rc_chunks| {
+            dual_socket_cell
+                .borrow_mut()
+                .write_unicast_with_priority(rc_chunks, priority);
+        });
+
+        message_builder
+            .prepare_with_peer_lookup((peer_discovery_driver, &dual_socket_cell))
+            .group_id(group_id)
+            .build_into(message, build_target, &mut sink)
+            .unwrap_log_on_error(message, build_target);
+    }
+
+    ensure_authenticated_sessions(dual_socket, peer_discovery_driver, build_target.iter());
+}
+
+fn send_with_record<ST, PD, AP>(
+    dual_socket: &mut auth::DualSocketHandle<AP>,
+    peer_discovery_driver: &Arc<Mutex<PeerDiscoveryDriver<PD>>>,
+    message_builder: &mut OwnedMessageBuilder<ST, PD>,
+    message: &Bytes,
+    priority: UdpPriority,
+    target: &NodeId<CertificateSignaturePubKey<ST>>,
+    name_record: &NameRecord,
+) where
+    ST: CertificateSignatureRecoverable,
+    PD: PeerDiscoveryAlgo<SignatureType = ST>,
+    AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+{
+    let build_target: BuildTarget<'_, ST> = BuildTarget::PointToPoint(target);
+    let should_authenticate = name_record.authenticated_udp_socket().is_some();
+
+    {
+        let dual_socket_cell = std::cell::RefCell::new(&mut *dual_socket);
+        let lookup = NameRecordLookup::<ST, AP> {
+            target: *target,
+            name_record,
+            dual_socket: &dual_socket_cell,
+        };
+        let mut sink = packet::UdpMessageBatcher::new(UNICAST_MSG_BATCH_SIZE, |rc_chunks| {
+            dual_socket_cell
+                .borrow_mut()
+                .write_unicast_with_priority(rc_chunks, priority);
+        });
+
+        message_builder
+            .prepare_with_peer_lookup(&lookup)
+            .build_into(message, &build_target, &mut sink)
+            .unwrap_log_on_error(message, &build_target);
+    }
+
+    if should_authenticate {
+        ensure_authenticated_sessions(dual_socket, peer_discovery_driver, std::iter::once(target));
+    }
+}
+
+fn rebroadcast_packet<ST, PD, AP>(
+    dual_socket: &mut auth::DualSocketHandle<AP>,
+    peer_discovery_driver: &Arc<Mutex<PeerDiscoveryDriver<PD>>>,
+    target: &NodeId<CertificateSignaturePubKey<ST>>,
+    payload: Bytes,
+    bcast_stride: u16,
+) where
+    ST: CertificateSignatureRecoverable,
+    PD: PeerDiscoveryAlgo<SignatureType = ST>,
+    AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+{
+    // if the packet was created by non-upgraded node we won't be able to fit auth header
+    let fits_with_auth_header =
+        payload.len() + AP::HEADER_SIZE as usize <= ETHERNET_SEGMENT_SIZE as usize;
+
+    // if we can fit auth header, check if connection exists, otherwise fallback to non-auth socket
+    let target_addr = if fits_with_auth_header {
+        dual_socket
+            .get_socket_by_public_key(&target.pubkey())
+            .or_else(|| {
+                peer_discovery_driver
+                    .lock()
+                    .ok()
+                    .and_then(|pd| pd.get_addr(target))
+            })
+    } else {
+        peer_discovery_driver
+            .lock()
+            .ok()
+            .and_then(|pd| pd.get_addr(target))
+    };
+
+    let Some(target_addr) = target_addr else {
+        warn!(target=?target, "failed to find address for rebroadcast target");
+        return;
+    };
+
+    dual_socket.write_unicast_with_priority(
+        UnicastMsg {
+            msgs: vec![(target_addr, payload)],
+            stride: bcast_stride,
+        },
+        UdpPriority::High,
+    );
+
+    ensure_authenticated_sessions(dual_socket, peer_discovery_driver, std::iter::once(target));
+}
+
+fn ensure_authenticated_sessions<'a, ST, PD, AP>(
+    dual_socket: &mut auth::DualSocketHandle<AP>,
+    peer_discovery_driver: &Arc<Mutex<PeerDiscoveryDriver<PD>>>,
+    targets: impl Iterator<Item = &'a NodeId<CertificateSignaturePubKey<ST>>>,
+) where
+    ST: CertificateSignatureRecoverable,
+    PD: PeerDiscoveryAlgo<SignatureType = ST>,
+    AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+{
+    let pd_driver = peer_discovery_driver.lock().unwrap();
+
+    targets
+        .filter_map(|target| {
+            pd_driver
+                .get_name_record(target)
+                .and_then(|record| record.name_record.authenticated_udp_socket())
+                .map(|addr| (target, addr))
+        })
+        .for_each(|(target, auth_addr)| {
+            if dual_socket.has_any_session_by_public_key(&target.pubkey()) {
+                return;
+            }
+
+            if let Err(e) = dual_socket.connect(
+                &target.pubkey(),
+                SocketAddr::V4(auth_addr),
+                DEFAULT_RETRY_ATTEMPTS,
+            ) {
+                warn!(
+                    target=?target,
+                    auth_addr=?auth_addr,
+                    error=?e,
+                    "failed to initiate connection to authenticated endpoint"
+                );
+            }
+        });
+
+    dual_socket.flush();
+}
+
+impl<ST, PD, AP> packet::PeerAddrLookup<CertificateSignaturePubKey<ST>>
+    for (
+        &Arc<Mutex<PeerDiscoveryDriver<PD>>>,
+        &std::cell::RefCell<&mut auth::DualSocketHandle<AP>>,
+    )
+where
+    ST: CertificateSignatureRecoverable,
+    PD: PeerDiscoveryAlgo<SignatureType = ST>,
+    AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+{
+    fn lookup(&self, node_id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<SocketAddr> {
+        let (discovery, auth_socket) = self;
+
+        if let Some(auth_addr) = auth_socket
+            .borrow()
+            .get_socket_by_public_key(&node_id.pubkey())
+        {
+            return Some(auth_addr);
+        }
+
+        discovery.lock().ok()?.get_addr(node_id)
+    }
+}
+
+struct NameRecordLookup<'a, ST, AP>
+where
+    ST: CertificateSignatureRecoverable,
+    AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+{
+    pub target: NodeId<CertificateSignaturePubKey<ST>>,
+    pub name_record: &'a NameRecord,
+    pub dual_socket: &'a std::cell::RefCell<&'a mut auth::DualSocketHandle<AP>>,
+}
+
+impl<ST, AP> packet::PeerAddrLookup<CertificateSignaturePubKey<ST>> for NameRecordLookup<'_, ST, AP>
+where
+    ST: CertificateSignatureRecoverable,
+    AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+{
+    fn lookup(&self, node_id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<SocketAddr> {
+        if *node_id != self.target {
+            return None;
+        }
+
+        if let Some(auth_addr) = self
+            .dual_socket
+            .borrow()
+            .get_socket_by_public_key(&node_id.pubkey())
+        {
+            return Some(auth_addr);
+        }
+
+        Some(SocketAddr::V4(self.name_record.udp_socket()))
     }
 }

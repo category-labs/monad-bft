@@ -7,7 +7,7 @@ Type=simple
 ExecStart=/usr/local/bin/monad-rpc \
     --ipc-path /home/monad/monad-bft/mempool.sock \
     --triedb-path /dev/triedb \
-    --otel-endpoint "http://0.0.0.0:4317" \
+    --otel-endpoint "http://127.0.0.1:4317" \
     --allow-unprotected-txs \
     --node-config /home/monad/monad-bft/config/node.toml
 Environment="RUST_LOG=info,monad_ipc=debug"

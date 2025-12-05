@@ -159,7 +159,8 @@ impl<PT: PubKey> ValidatorSetTypeFactory for ValidatorSetFactory<PT> {
         let mut vmap = BTreeMap::new();
         let mut total_stake = Stake::ZERO;
         for (node_id, stake) in validators.into_iter() {
-            // TODO disallow unstaked?
+            assert!(stake > Stake::ZERO, "validator should have non-zero stake");
+
             let duplicate = vmap.insert(node_id, stake);
             if duplicate.is_some() {
                 return Err(ValidatorSetError::DuplicateValidator(node_id));
