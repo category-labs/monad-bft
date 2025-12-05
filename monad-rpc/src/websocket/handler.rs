@@ -919,7 +919,7 @@ mod tests {
         let server = create_test_server();
 
         let url = format!("{}ws/", server.url(""));
-        let (res, mut conn) = actix_test::Client::new().ws(url).connect().await.unwrap();
+        let (_res, mut conn) = actix_test::Client::new().ws(url).connect().await.unwrap();
 
         // Create 101 subscriptions
         for n in 0..=101 {

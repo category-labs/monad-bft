@@ -646,6 +646,7 @@ impl CallParams {
     }
 
     /// `true` only for the trace variant.
+    #[allow(dead_code)]
     fn trace(&self) -> bool {
         matches!(self, CallParams::Trace(_))
     }

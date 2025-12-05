@@ -35,7 +35,6 @@ pub(super) type TxStatusSender = tokio::sync::oneshot::Sender<TxStatus>;
 #[derive(Clone)]
 pub struct EthTxPoolBridgeStateView {
     status: Arc<DashMap<TxHash, (TxStatus, Option<TxStatusSender>)>>,
-    hash_address: Arc<DashMap<TxHash, Address>>,
     address_hashes: Arc<DashMap<Address, HashSet<TxHash>>>,
 }
 
@@ -64,7 +63,6 @@ impl EthTxPoolBridgeStateView {
     pub fn for_testing() -> Self {
         Self {
             status: Default::default(),
-            hash_address: Default::default(),
             address_hashes: Default::default(),
         }
     }
@@ -95,7 +93,6 @@ impl EthTxPoolBridgeState {
     pub(super) fn create_view(&self) -> EthTxPoolBridgeStateView {
         EthTxPoolBridgeStateView {
             status: Arc::clone(&self.status),
-            hash_address: Arc::clone(&self.hash_address),
             address_hashes: Arc::clone(&self.address_hashes),
         }
     }

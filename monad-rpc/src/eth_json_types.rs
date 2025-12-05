@@ -354,6 +354,7 @@ enum BlockTagOrHashHelper {
         #[serde(rename = "blockHash")]
         hash: EthHash,
         #[serde(default, rename = "camelCase")]
+        #[allow(dead_code)]
         require_canonical: bool,
     },
 }

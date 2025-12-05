@@ -256,7 +256,7 @@ async fn submit_to_txpool(
     txpool_bridge_client: &EthTxPoolBridgeClient,
     tx: TxEnvelope,
 ) -> Result<(), JsonRpcError> {
-    let Some(tx_inflight_guard) = txpool_bridge_client.acquire_tx_inflight_guard() else {
+    let Some(_tx_inflight_guard) = txpool_bridge_client.acquire_tx_inflight_guard() else {
         warn!("txpool overloaded");
         return Err(JsonRpcError::custom(
             "overloaded, try again later".to_owned(),

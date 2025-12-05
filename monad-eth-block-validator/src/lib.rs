@@ -298,6 +298,13 @@ where
         Ok(())
     }
 
+    /// Validates the individual transactions in the block body, and block limits such as block gas limits and transaction limits
+    /// For each transaction, validate that there is no nonce gap within this block
+    /// Actual nonce and balance validation against account state and preceding blocks is done in check_coherency in monad-eth-block-policy
+    /// Execution client also validates that transaction sender must be an EOA or delegated EOA (not a smart contract)
+    /// However, consensus does not have the latest account state to validate this due to delayed execution
+    /// It is deemed acceptable to skip this validation in consensus
+    /// As it is impractical for a sender to find a hash collision to deploy code on its own address
     fn validate_block_body<CCT, CRT>(
         header: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
         body: &ConsensusBlockBody<EthExecutionProtocol>,
@@ -542,11 +549,17 @@ where
                             delegation_before_first_txn: true,
                         });
 
+                    // authorizations with invalid chain id are skipped for nonce tracking
                     if recovered_auth.chain_id() != 0_u64
                         && recovered_auth.chain_id() != chain_config.chain_id()
                     {
                         continue;
                     }
+
+                    // EIP-7702 states that only authority with empty code or already delegated is considered a valid authorization
+                    // Otherwise the authorization is skipped
+                    // Similar to consensus not validating transaction sender is an EOA, code check is skipped here
+                    // It is deemed impractical for an authority to find a hash collision to deploy code on its own address
 
                     // update nonce usage for authority
                     match nonce_usages.entry(authority) {

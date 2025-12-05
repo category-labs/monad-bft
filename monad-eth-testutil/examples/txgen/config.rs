@@ -349,20 +349,14 @@ pub struct WorkloadGroup {
     /// mutated txn will have one of its fields modified, but there may be more.
     pub mutation_percentage: f64,
 
-    /// Spam rpc and websocket with wallet workflow requests and compare the responses
-    pub spam_rpc_ws: bool,
-
-    /// Compare block headers returned from rpc and websocket
-    pub compare_rpc_ws: bool,
-
-    /// Number of concurrent websocket connections to use for spamming rpc and websocket
-    pub num_ws_connections: usize,
-
     /// Percentage of transactions the workload should drop at random before sending (0-100).
     pub drop_percentage: f64,
 
     /// Percentage of EIP-1559 transactions to convert to legacy transactions.
     pub convert_eip1559_to_legacy: f64,
+
+    /// RPC request generator configuration
+    pub rpc_generator: RpcRequestGeneratorConfig,
 }
 
 impl Default for WorkloadGroup {
@@ -372,11 +366,9 @@ impl Default for WorkloadGroup {
             name: "default".to_string(),
             traffic_gens: vec![],
             mutation_percentage: 0.0,
-            spam_rpc_ws: false,
-            compare_rpc_ws: false,
-            num_ws_connections: 4,
             drop_percentage: 0.0,
             convert_eip1559_to_legacy: 0.0,
+            rpc_generator: RpcRequestGeneratorConfig::default(),
         }
     }
 }
@@ -431,6 +423,89 @@ impl Default for TrafficGen {
             sender_group_size: None,
             tx_per_sender: None,
         }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct IndexerConfig {
+    pub requests_per_block: usize,
+}
+
+impl Default for IndexerConfig {
+    fn default() -> Self {
+        Self {
+            requests_per_block: 10,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct SpamRpcWsConfig {
+    pub requests_per_block: usize,
+
+    pub num_ws_connections: usize,
+}
+
+impl Default for SpamRpcWsConfig {
+    fn default() -> Self {
+        Self {
+            requests_per_block: 10,
+            num_ws_connections: 4,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct CompareRpcWsConfig {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum RpcWorkflowConfig {
+    Indexer(IndexerConfig),
+    SpamRpcWs(SpamRpcWsConfig),
+    CompareRpcWs(CompareRpcWsConfig),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct RpcRequestGeneratorConfig {
+    pub workflows: Vec<RpcWorkflowConfig>,
+}
+
+impl Default for RpcRequestGeneratorConfig {
+    fn default() -> Self {
+        Self {
+            workflows: Vec::new(),
+        }
+    }
+}
+
+impl RpcRequestGeneratorConfig {
+    pub fn is_enabled(&self) -> bool {
+        !self.workflows.is_empty()
+    }
+
+    pub fn indexer_config(&self) -> Option<&IndexerConfig> {
+        self.workflows.iter().find_map(|w| match w {
+            RpcWorkflowConfig::Indexer(config) => Some(config),
+            _ => None,
+        })
+    }
+
+    pub fn spam_rpc_ws_config(&self) -> Option<&SpamRpcWsConfig> {
+        self.workflows.iter().find_map(|w| match w {
+            RpcWorkflowConfig::SpamRpcWs(config) => Some(config),
+            _ => None,
+        })
+    }
+
+    pub fn compare_rpc_ws_config(&self) -> Option<&CompareRpcWsConfig> {
+        self.workflows.iter().find_map(|w| match w {
+            RpcWorkflowConfig::CompareRpcWs(config) => Some(config),
+            _ => None,
+        })
     }
 }
 

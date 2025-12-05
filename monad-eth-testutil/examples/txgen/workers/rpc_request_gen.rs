@@ -13,25 +13,37 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
+use std::{
+    collections::BTreeSet,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 
 use alloy_json_rpc::RpcError;
-use alloy_primitives::{Address, BlockNumber, U256, U64};
+use alloy_network::TransactionResponse;
+use alloy_primitives::{Address, BlockNumber, LogData, U256, U64};
 use alloy_rpc_client::ReqwestClient;
-use alloy_rpc_types::TransactionRequest;
+use alloy_rpc_types::{BlockTransactionHashes, Filter, TransactionRequest};
+use alloy_rpc_types_trace::geth::{
+    GethDebugBuiltInTracerType, GethDebugTracerType, GethDebugTracingOptions, GethTrace,
+};
 use futures::{
     future::Future,
-    stream::{FuturesUnordered, SplitStream},
-    SinkExt, StreamExt,
+    stream::{self, FuturesUnordered, SplitStream},
+    SinkExt, StreamExt, TryStreamExt,
 };
+use itertools::Itertools;
 use serde::de::DeserializeOwned;
-use tokio::time::Duration;
+use tokio::time::{Duration, Instant};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 use url::Url;
+
+const MAX_CONCURRENT_REQUESTS: usize = 10;
+const MAX_CONCURRENT_INDEX_TASKS: usize = 16;
+const RPC_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 async fn ws_call(
     write: &mut futures::stream::SplitSink<
@@ -108,23 +120,401 @@ where
     }
 }
 
-// RpcWalletSpam will send common wallet workflow requests to an rpc and websocket endpoints
-pub struct RpcWalletSpam {
+#[derive(Debug)]
+struct BlockIndexError {
+    block_number: BlockNumber,
+    error: RpcError<alloy_transport::TransportErrorKind>,
+}
+
+// RpcRequestGenerator will send common wallet workflow requests to an rpc and websocket endpoints
+pub struct RpcRequestGenerator {
     rpc_client: ReqwestClient,
     ws_url: Url,
+    requests_per_block: usize,
     // number of concurrent websocket connections
     num_connections: usize,
 }
 
-impl RpcWalletSpam {
-    pub fn new(rpc_client: ReqwestClient, ws_url: Url, num_connections: usize) -> Self {
+impl RpcRequestGenerator {
+    pub fn new(
+        rpc_client: ReqwestClient,
+        ws_url: Url,
+        requests_per_block: usize,
+        num_connections: usize,
+    ) -> Self {
         Self {
             rpc_client,
             ws_url,
+            requests_per_block,
             num_connections,
         }
     }
 
+    // FIXME: fix rpc error handling
+    fn handle_rpc_error(
+        rpc_error: RpcError<alloy_transport::TransportErrorKind>,
+    ) -> Result<(), RpcError<alloy_transport::TransportErrorKind>> {
+        match rpc_error {
+            // retry on transport error
+            RpcError::Transport(_) => Ok(()),
+            _ => Err(rpc_error),
+        }
+    }
+
+    async fn get_block_by_number(
+        client: &ReqwestClient,
+        block_number: BlockNumber,
+    ) -> Result<alloy_rpc_types_eth::Block, BlockIndexError> {
+        loop {
+            match client
+                .request::<_, alloy_rpc_types_eth::Block>(
+                    "eth_getBlockByNumber",
+                    (U64::from(block_number), true),
+                )
+                .await
+            {
+                Ok(block) => return Ok(block),
+                Err(err) => {
+                    Self::handle_rpc_error(err).map_err(|e| BlockIndexError {
+                        block_number,
+                        error: e,
+                    })?;
+                    tokio::time::sleep(RPC_RETRY_DELAY).await;
+                    continue;
+                }
+            }
+        }
+    }
+
+    async fn get_block_receipts(
+        client: &ReqwestClient,
+        block_number: BlockNumber,
+    ) -> Result<
+        Vec<alloy_rpc_types_eth::TransactionReceipt>,
+        RpcError<alloy_transport::TransportErrorKind>,
+    > {
+        loop {
+            let resp = client
+                .request::<_, Vec<alloy_rpc_types_eth::TransactionReceipt>>(
+                    "eth_getBlockReceipts",
+                    (U64::from(block_number),),
+                )
+                .await;
+            match resp {
+                Ok(_) => return resp,
+                Err(err) => {
+                    Self::handle_rpc_error(err)?;
+                    tokio::time::sleep(RPC_RETRY_DELAY).await;
+                    continue;
+                }
+            }
+        }
+    }
+
+    async fn debug_trace_block_by_number(
+        client: &ReqwestClient,
+        block_number: BlockNumber,
+        tracer: GethDebugBuiltInTracerType,
+    ) -> Result<
+        Vec<alloy_rpc_types_trace::geth::GethTrace>,
+        RpcError<alloy_transport::TransportErrorKind>,
+    > {
+        loop {
+            let resp = client
+                .request::<_, Vec<alloy_rpc_types_trace::geth::GethTrace>>(
+                    "debug_traceBlockByNumber",
+                    (
+                        U64::from(block_number),
+                        GethDebugTracingOptions {
+                            tracer: Some(GethDebugTracerType::BuiltInTracer(tracer)),
+                            ..Default::default()
+                        },
+                    ),
+                )
+                .await;
+            match resp {
+                Ok(_) => return resp,
+                Err(err) => {
+                    Self::handle_rpc_error(err)?;
+                    tokio::time::sleep(RPC_RETRY_DELAY).await;
+                    continue;
+                }
+            }
+        }
+    }
+
+    async fn get_logs(
+        client: &ReqwestClient,
+        block_number: BlockNumber,
+    ) -> Result<Vec<alloy_rpc_types_eth::Log<LogData>>, RpcError<alloy_transport::TransportErrorKind>>
+    {
+        loop {
+            let filter = Filter::new();
+            let filter = filter.from_block(block_number);
+            let filter = filter.to_block(block_number);
+            let resp = client
+                .request::<_, Vec<alloy_rpc_types_eth::Log<LogData>>>("eth_getLogs", (filter,))
+                .await;
+            match resp {
+                Ok(_) => return resp,
+                Err(err) => {
+                    Self::handle_rpc_error(err)?;
+                    tokio::time::sleep(RPC_RETRY_DELAY).await;
+                    continue;
+                }
+            }
+        }
+    }
+
+    async fn get_balances(
+        client: &ReqwestClient,
+        block_number: BlockNumber,
+        addrs: Vec<Address>,
+    ) -> Result<(), RpcError<alloy_transport::TransportErrorKind>> {
+        for chunk in addrs.chunks(1000) {
+            let futs = loop {
+                let mut batch = client.new_batch();
+                let futs = chunk
+                    .iter()
+                    .map(|addr| {
+                        let params = (addr, U64::from(block_number));
+                        batch
+                            .add_call::<_, U256>("eth_getBalance", &params)
+                            .map(|w| async move { w.await })
+                            .unwrap()
+                    })
+                    .collect::<Vec<_>>();
+
+                let resp = batch.send().await;
+                match resp {
+                    Ok(_) => break futs,
+                    Err(err) => {
+                        debug!(?err, "eth_getBalance error");
+                        tokio::time::sleep(RPC_RETRY_DELAY).await;
+                        continue;
+                    }
+                }
+            };
+
+            for fut in futs {
+                fut.await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn debug_trace_transaction<T: TransactionResponse>(
+        client: &ReqwestClient,
+        txn_hashes: BlockTransactionHashes<'_, T>,
+    ) -> Result<(), RpcError<alloy_transport::TransportErrorKind>> {
+        let txn_hashes = txn_hashes.into_iter().collect::<Vec<_>>();
+        for chunk in txn_hashes.chunks(1000) {
+            let futs = loop {
+                let mut batch = client.new_batch();
+
+                let futs = chunk
+                    .iter()
+                    .map(|txn| {
+                        let config = GethDebugTracingOptions {
+                            tracer: Some(GethDebugTracerType::BuiltInTracer(
+                                GethDebugBuiltInTracerType::CallTracer,
+                            )),
+                            ..Default::default()
+                        };
+                        let params = (txn, config);
+                        batch
+                            .add_call::<_, GethTrace>("debug_traceTransaction", &params)
+                            .map(|w| async move { w.await })
+                            .unwrap()
+                    })
+                    .collect::<Vec<_>>();
+
+                let resp = batch.send().await;
+                match resp {
+                    Ok(_) => break futs,
+                    Err(err) => {
+                        Self::handle_rpc_error(err)?;
+                        tokio::time::sleep(RPC_RETRY_DELAY).await;
+                        continue;
+                    }
+                }
+            };
+
+            for fut in futs {
+                fut.await?;
+            }
+        }
+        Ok(())
+    }
+
+    // Call rpc using common indexer workflow requests.
+    async fn index_block(
+        client: ReqwestClient,
+        block_number: BlockNumber,
+        requests_per_block: usize,
+        result_sender: tokio::sync::mpsc::Sender<
+            Result<(BlockNumber, Vec<Address>), BlockIndexError>,
+        >,
+    ) {
+        let block = match Self::get_block_by_number(&client, block_number).await {
+            Ok(header) => header,
+            Err(err) => {
+                warn!(?err, "Failed to get block by number");
+                return;
+            }
+        };
+
+        let uniq_addrs = if !block.transactions.is_empty() {
+            // generate requests for block receipts and traces
+            let start = Instant::now();
+            let (receipts_results, _, _, _) = tokio::join!(
+                async {
+                    let receipts: Result<Vec<_>, _> = stream::iter(0..requests_per_block)
+                        .map(|_| Self::get_block_receipts(&client, block_number))
+                        .buffer_unordered(MAX_CONCURRENT_REQUESTS)
+                        .try_collect()
+                        .await;
+
+                    match receipts {
+                        Ok(mut r) => r.pop().ok_or(()),
+                        Err(err) => {
+                            let _ = result_sender
+                                .send(Err(BlockIndexError {
+                                    block_number,
+                                    error: err,
+                                }))
+                                .await;
+                            Err(())
+                        }
+                    }
+                },
+                async {
+                    let logs: Result<Vec<_>, _> = stream::iter(0..requests_per_block)
+                        .map(|_| Self::get_logs(&client, block_number))
+                        .buffer_unordered(MAX_CONCURRENT_REQUESTS)
+                        .try_collect()
+                        .await;
+
+                    match logs {
+                        Ok(mut l) => l.pop().ok_or(()),
+                        Err(err) => {
+                            let _ = result_sender
+                                .send(Err(BlockIndexError {
+                                    block_number,
+                                    error: err,
+                                }))
+                                .await;
+                            Err(())
+                        }
+                    }
+                },
+                async {
+                    let traces: Result<Vec<_>, _> = stream::iter(0..requests_per_block)
+                        .map(|_| {
+                            Self::debug_trace_block_by_number(
+                                &client,
+                                block_number,
+                                GethDebugBuiltInTracerType::CallTracer,
+                            )
+                        })
+                        .buffer_unordered(MAX_CONCURRENT_REQUESTS)
+                        .try_collect()
+                        .await;
+
+                    match traces {
+                        Ok(mut t) => t.pop().ok_or(()),
+                        Err(err) => {
+                            let _ = result_sender
+                                .send(Err(BlockIndexError {
+                                    block_number,
+                                    error: err,
+                                }))
+                                .await;
+                            Err(())
+                        }
+                    }
+                },
+                async {
+                    let traces: Result<Vec<_>, _> = stream::iter(0..requests_per_block)
+                        .map(|_| {
+                            Self::debug_trace_block_by_number(
+                                &client,
+                                block_number,
+                                GethDebugBuiltInTracerType::PreStateTracer,
+                            )
+                        })
+                        .buffer_unordered(MAX_CONCURRENT_REQUESTS)
+                        .try_collect()
+                        .await;
+
+                    match traces {
+                        Ok(mut t) => t.pop().ok_or(()),
+                        Err(err) => {
+                            let _ = result_sender
+                                .send(Err(BlockIndexError {
+                                    block_number,
+                                    error: err,
+                                }))
+                                .await;
+                            Err(())
+                        }
+                    }
+                },
+            );
+            let receipts = match receipts_results {
+                Ok(r) => r,
+                Err(_) => {
+                    warn!(?block_number, "Unable to retrieve block receipts");
+                    return;
+                }
+            };
+            let txn_hashes = block.transactions.hashes();
+            let duration = start.elapsed();
+            debug!(
+                ?block_number,
+                ?duration,
+                "eth_getBlockReceipts, eth_getLogs and debug_traceBlockByNumber duration"
+            );
+            // account balances and eth call
+            let start = Instant::now();
+            let addrs = receipts
+                .into_iter()
+                .map(|receipt| receipt.from)
+                .collect::<Vec<_>>();
+            debug!(n = addrs.len(), "reading account balances");
+            let (balances_res, trace_res) = tokio::join!(
+                Self::get_balances(&client, block_number, addrs.clone()),
+                Self::debug_trace_transaction(&client, txn_hashes),
+            );
+            if let Err(ref err) = balances_res {
+                warn!(?block_number, ?err, "Error fetching balances");
+            }
+            if let Err(ref err) = trace_res {
+                warn!(?block_number, ?err, "Error tracing transaction");
+            }
+            let duration = start.elapsed();
+            let num_addr = addrs.len();
+            debug!(
+                ?block_number,
+                ?duration,
+                ?num_addr,
+                "eth_getBalance and debug_traceTransaction"
+            );
+            addrs.into_iter().unique().collect()
+        } else {
+            Vec::new()
+        };
+
+        if result_sender
+            .send(Ok((block_number, uniq_addrs)))
+            .await
+            .is_err()
+        {
+            warn!(?block_number, "Failed to send block index result");
+        }
+    }
+
+    // Call rpc and rpc on a websocket connection using common wallet workflow requests.
     pub async fn subscribe_and_compare(
         rpc_client: ReqwestClient,
         ws_url: Url,
@@ -346,7 +736,65 @@ impl RpcWalletSpam {
         }
     }
 
-    pub async fn run(&self, shutdown: Arc<AtomicBool>) {
+    pub async fn run_indexer_workflow(&self, shutdown: Arc<AtomicBool>) {
+        // start block tip refresher task
+        let (tip_sender, mut tip_receiver) = tokio::sync::mpsc::channel(8);
+        let (index_done_sender, mut index_done_receiver) = tokio::sync::mpsc::channel(32);
+        let refresher = TipRefresher::new(self.rpc_client.clone(), tip_sender);
+        tokio::spawn(async move { refresher.run().await });
+
+        // Semaphore to limit concurrent indexing tasks
+        let index_semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_INDEX_TASKS));
+
+        let mut status_interval = tokio::time::interval(Duration::from_secs(1));
+        status_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        let mut total_indexed = 0;
+        let mut total_failed = 0;
+        let mut uniq_addrs = BTreeSet::new();
+
+        // select on tip refresher channel and completion channel
+        while !shutdown.load(Ordering::Relaxed) {
+            tokio::select! {
+                Some((index_from, index_to)) = tip_receiver.recv() => {
+                    debug!(from=index_from, to=index_to, "index range");
+
+                    for block_number in index_from..=index_to {
+                        // Wait for permit before spawning - limits concurrent tasks
+                        let permit = index_semaphore.clone().acquire_owned().await.unwrap();
+                        let client = self.rpc_client.clone();
+                        let requests_per_block = self.requests_per_block;
+                        let sender = index_done_sender.clone();
+                        tokio::spawn(async move {
+                            RpcRequestGenerator::index_block(client, block_number, requests_per_block, sender).await;
+                            drop(permit);
+                        });
+                    }
+                }
+
+                Some(index_result) = index_done_receiver.recv() => {
+                    let _block_number = match index_result {
+                        Ok((num, addrs)) => {
+                            total_indexed += 1;
+                            uniq_addrs.extend(addrs.into_iter());
+                            num
+                        },
+                        Err(err) => {
+                            total_failed += 1;
+                            warn!(?err.block_number, ?err.error,"failed to index block");
+                            err.block_number
+                        }
+                    };
+                }
+
+                _ = status_interval.tick() => {
+                    debug!(indexed=total_indexed, failed=total_failed, addrs=uniq_addrs.len(), "indexer status");
+                }
+            }
+        }
+    }
+
+    pub async fn run_wallet_workflow(&self, shutdown: Arc<AtomicBool>) {
         let mut tasks = FuturesUnordered::new();
         for _ in 0..self.num_connections {
             let ws_url = self.ws_url.clone();
@@ -445,13 +893,14 @@ impl RpcWsCompare {
         });
 
         while !shutdown.load(Ordering::Relaxed) {
-            let ws_header = ws_rx.recv().await.expect("ws block not found");
-            let rpc_header = block_receiver
-                .recv()
-                .await
-                .take()
-                .expect("rpc block not found")
-                .header;
+            let ws_header = match ws_rx.recv().await {
+                Some(header) => header,
+                None => break,
+            };
+            let rpc_header = match block_receiver.recv().await {
+                Some(block) => block.header,
+                None => break,
+            };
 
             if ws_header.number != rpc_header.number {
                 error!(
@@ -484,7 +933,7 @@ impl RpcWsCompare {
                 Ok(block) => return Some(block),
                 Err(err) => {
                     warn!(?err, "failed to get block by number");
-                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    tokio::time::sleep(RPC_RETRY_DELAY).await;
                     continue;
                 }
             }
@@ -527,5 +976,52 @@ impl RpcWsCompare {
             }
         }
         None
+    }
+}
+
+struct TipRefresher {
+    tip: BlockNumber,
+    tip_sender: tokio::sync::mpsc::Sender<(BlockNumber, BlockNumber)>,
+    client: ReqwestClient,
+}
+
+impl TipRefresher {
+    fn new(
+        client: ReqwestClient,
+        sender: tokio::sync::mpsc::Sender<(BlockNumber, BlockNumber)>,
+    ) -> Self {
+        Self {
+            tip: 0,
+            tip_sender: sender,
+            client,
+        }
+    }
+
+    async fn run(mut self) {
+        loop {
+            let resp = self
+                .client
+                .request_noparams::<U64>("eth_blockNumber")
+                .map_resp(|res| res.to())
+                .await;
+
+            let Ok(tip) = resp else {
+                tokio::time::sleep(RPC_RETRY_DELAY).await;
+                continue;
+            };
+
+            if self.tip == 0 {
+                self.tip = tip;
+            } else if tip > self.tip {
+                let Ok(()) = self.tip_sender.send((self.tip + 1, tip)).await else {
+                    warn!("tip sender channel full");
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                };
+                self.tip = tip;
+            } else {
+                tokio::time::sleep(RPC_RETRY_DELAY).await;
+            }
+        }
     }
 }
