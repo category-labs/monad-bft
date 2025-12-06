@@ -279,6 +279,24 @@ where
     }
 
     #[cfg(test)]
+    fn total_size(&self, tier: MessageTier) -> MessageSize {
+        match tier {
+            MessageTier::Broadcast => self.pending_messages.broadcast.total_size(),
+            MessageTier::Validator => self.pending_messages.validator.total_size(),
+            MessageTier::P2P => self.pending_messages.p2p.total_size(),
+        }
+    }
+
+    #[cfg(test)]
+    fn max_total_size(&self, tier: MessageTier) -> MessageSize {
+        match tier {
+            MessageTier::Broadcast => self.pending_messages.broadcast.max_total_size(),
+            MessageTier::Validator => self.pending_messages.validator.max_total_size(),
+            MessageTier::P2P => self.pending_messages.p2p.max_total_size(),
+        }
+    }
+
+    #[cfg(test)]
     fn recently_decoded_len(&self) -> usize {
         self.recently_decoded.len()
     }
@@ -470,6 +488,13 @@ impl<PT: PubKey> SoftQuotaCache<PT> {
         let approx_num_authors = (config.total_slots / config.min_slots_per_author).max(1);
         let max_total_size = config.max_total_size_per_author * approx_num_authors;
 
+        tracing::info!(
+            ?config,
+            approx_num_authors,
+            max_total_size,
+            "initialized SoftQuotaCache"
+        );
+
         if max_total_size > MAX_TOTAL_SIZE_LIMIT {
             panic!("SoftQuotaCache max_total_size ({max_total_size}) exceeds the sane limit of {MAX_TOTAL_SIZE_LIMIT} bytes");
         }
@@ -502,6 +527,8 @@ impl<PT: PubKey> SoftQuotaCache<PT> {
             return;
         }
 
+        // Eviction stage #1: evict from the current message's
+        // author who is over-quota.
         if self.author_index.is_author_overquota(&message.author) {
             // current author is over quota, evict overquota cache entries
             // from this author.
@@ -514,62 +541,81 @@ impl<PT: PubKey> SoftQuotaCache<PT> {
             // for safety.
             if !evicted_keys.is_empty() {
                 self.cache_store.remove_many(&evicted_keys);
-                debug_assert!(!self.is_full());
                 tracing::debug!(
                     ?message,
                     ?context,
                     "enforced decoding cache quota for author"
                 );
+            }
+
+            if !self.is_full() {
                 return;
             }
         }
 
-        // current author is below its quota, evict overquota entries
-        // from all authors.
+        // Eviction stage #2: evict from any authors who are
+        // over-quota.
         let evicted_keys = self.author_index.enforce_quota_all(context);
         self.cache_store.remove_many(&evicted_keys);
         if !evicted_keys.is_empty() {
-            // some keys are evicted, so the cache should no longer be full.
-            debug_assert!(!self.is_full());
             tracing::debug!(
                 ?message,
                 ?context,
                 "enforced decoding cache quota for all authors"
             );
-            return;
+
+            // check if the evicted keys sufficiently reduced the cache size.
+            if !self.is_full() {
+                return;
+            }
         }
 
-        // no other authors are over quota. we will prune any expired
-        // keys.
+        // Eviction stage #3: evict any expired entries.
         let expired_keys = self.author_index.prune_expired_all(context);
-
         self.cache_store.remove_many(&expired_keys);
         if !expired_keys.is_empty() {
-            // some keys are evicted, so the cache should no longer be full.
-            debug_assert!(!self.is_full());
             tracing::debug!(
                 ?message,
                 ?context,
                 "evicted expired decoding cache entries for all authors"
             );
-            return;
+
+            if !self.is_full() {
+                // the removed keys sufficiently reduced the size of
+                // the cache below the limit.
+                return;
+            }
         }
 
         // at this point, all authors are within their quota, and no
         // keys are considered expired. but we need to make space for
         // the new entry. this may happen when there are many authors
-        // with min_slots config. now we randomly evict a cache entry
+        // with min_slots config. now we randomly evict cache entries
         // to compensate for the new entry.
-        let (key, author, _decoder_state) = self.cache_store.get_random().expect("cache not empty");
-        self.author_index.remove(author, &key);
-        self.cache_store.remove(&key);
 
-        tracing::warn!(
-            ?message,
-            ?context,
-            ?quota,
-            "dropped a decoding cache entry randomly"
-        );
+        // Eviction stage #4: evict random keys until the cache is
+        // not full. Note: we may need to evict multiple entries to
+        // attain the cache's size limit.
+        while self.is_full() {
+            let Some((key, author, _decoder_state)) = self.cache_store.get_random() else {
+                tracing::error!(
+                    ?message,
+                    ?context,
+                    ?quota,
+                    "decoding cache is full but has no entries to evict"
+                );
+                return;
+            };
+
+            self.author_index.remove(author, &key);
+            self.cache_store.remove(&key);
+            tracing::debug!(
+                ?message,
+                ?context,
+                ?quota,
+                "dropped a decoding cache entry randomly"
+            );
+        }
     }
 
     pub fn remove(&mut self, key: &CacheKey) -> Option<(NodeId<PT>, DecoderState)> {
@@ -603,11 +649,21 @@ impl<PT: PubKey> SoftQuotaCache<PT> {
 
     pub fn is_full(&self) -> bool {
         self.cache_store.len() > self.total_slots
-            || self.author_index.used_size > self.max_total_size
+            || self.author_index.total_size > self.max_total_size
     }
 
     pub fn total_slots(&self) -> usize {
         self.total_slots
+    }
+
+    #[cfg(test)]
+    pub fn max_total_size(&self) -> usize {
+        self.max_total_size
+    }
+
+    #[cfg(test)]
+    pub fn total_size(&self) -> usize {
+        self.author_index.total_size
     }
 
     #[cfg(test)]
@@ -622,6 +678,11 @@ impl<PT: PubKey> SoftQuotaCache<PT> {
         // check if cache size exceeds the total slots
         if self.cache_store.len() > self.total_slots {
             breaches.push(format!("{prefix}.cache-store-overflow"))
+        }
+
+        // check if the size exceeds the max size limit
+        if self.author_index.total_size > self.max_total_size {
+            breaches.push(format!("{prefix}.author-index-overflow"))
         }
 
         // check if cache store has the same author set as author index
@@ -716,8 +777,8 @@ impl<PT: PubKey> CacheStore<PT> {
 struct AuthorIndex<PT: PubKey> {
     prune_config: PruneConfig,
 
-    // The used size of all messages in the cache.
-    used_size: MessageSize,
+    // The total size of all messages in the cache.
+    total_size: MessageSize,
 
     // The chronological index of cache keys per author.
     per_author_index: HashMap<NodeId<PT>, PerAuthorIndex>,
@@ -732,7 +793,7 @@ struct AuthorIndex<PT: PubKey> {
 impl<PT: PubKey> AuthorIndex<PT> {
     pub fn new(prune_config: PruneConfig) -> Self {
         Self {
-            used_size: 0,
+            total_size: 0,
             prune_config,
             per_author_index: HashMap::new(),
             overquota_authors: HashSet::new(),
@@ -759,7 +820,7 @@ impl<PT: PubKey> AuthorIndex<PT> {
         let message_size = message.app_message_len as MessageSize;
 
         index.insert(cache_key.clone(), message.unix_ts_ms, message_size);
-        self.used_size += message_size;
+        self.total_size += message_size;
 
         if index.is_overquota() {
             self.overquota_authors.insert(author);
@@ -871,10 +932,10 @@ impl<PT: PubKey> AuthorIndex<PT> {
         expired_keys
     }
 
-    // Decompose the pruned keys and update the used_size.
+    // Decompose the pruned keys and update the total_size.
     pub fn reap_pruned(&mut self, pruned_keys: PrunedKeys) -> Vec<CacheKey> {
         let (keys, reclaimed_size) = pruned_keys.decompose();
-        self.used_size -= reclaimed_size;
+        self.total_size -= reclaimed_size;
         keys
     }
 
@@ -903,7 +964,7 @@ impl<PT: PubKey> AuthorIndex<PT> {
             }
         }
 
-        let mut used_size = self.used_size;
+        let mut total_size = self.total_size;
         for (author, author_index) in &self.per_author_index {
             if author_index.is_empty() {
                 breaches.push(format!("{prefix}.empty-per-author-index"));
@@ -917,12 +978,12 @@ impl<PT: PubKey> AuthorIndex<PT> {
                 breaches.push(format!("{prefix}.overquota-set-false-positive"));
             }
 
-            used_size -= author_index.used_size;
+            total_size -= author_index.total_size;
             breaches.extend(author_index.consistency_breaches(&format!("{prefix}.author")));
         }
 
-        if used_size != 0 {
-            breaches.push(format!("{prefix}.used_size_mismatch"));
+        if total_size != 0 {
+            breaches.push(format!("{prefix}.total_size_mismatch"));
         }
 
         breaches
@@ -936,7 +997,7 @@ impl<PT: PubKey> AuthorIndex<PT> {
 //
 // Non-public methods are restricted to be used within PerAuthorIndex
 // to maintain its type-level semantic. This type is must_use to
-// ensure the AuthorIndex's used_size is properly updated.
+// ensure the AuthorIndex's total_size is properly updated.
 #[derive(Debug)]
 #[must_use]
 struct PrunedKeys {
@@ -981,7 +1042,7 @@ impl PrunedKeys {
 // epoch. Can be efficiently trimmed down to a designated quota.
 struct PerAuthorIndex {
     quota: Quota,
-    used_size: MessageSize,
+    total_size: MessageSize,
     time_index: BTreeSet<(UnixTimestamp, CacheKey)>,
     reverse_index: HashMap<CacheKey, (UnixTimestamp, MessageSize)>,
 }
@@ -990,14 +1051,14 @@ impl PerAuthorIndex {
     pub fn new(quota: Quota) -> Self {
         Self {
             quota,
-            used_size: 0,
+            total_size: 0,
             time_index: BTreeSet::new(),
             reverse_index: HashMap::new(),
         }
     }
 
     pub fn is_overquota(&self) -> bool {
-        self.len() > self.quota.max_slots || self.used_size > self.quota.max_size
+        self.len() > self.quota.max_slots || self.total_size > self.quota.max_size
     }
 
     pub fn is_empty(&self) -> bool {
@@ -1014,7 +1075,7 @@ impl PerAuthorIndex {
         };
 
         self.time_index.remove(&(unix_ts_ms, key.clone()));
-        self.used_size -= size;
+        self.total_size -= size;
         PrunedKeys::singleton(key.clone(), size)
     }
 
@@ -1037,7 +1098,7 @@ impl PerAuthorIndex {
     pub fn insert(&mut self, cache_key: CacheKey, unix_ts_ms: UnixTimestamp, size: MessageSize) {
         self.time_index.insert((unix_ts_ms, cache_key.clone()));
         self.reverse_index.insert(cache_key, (unix_ts_ms, size));
-        self.used_size += size;
+        self.total_size += size;
     }
 
     // Remove expired entries.
@@ -1093,7 +1154,7 @@ impl PerAuthorIndex {
 
     fn prune_by_size(&mut self, target_size: MessageSize) -> PrunedKeys {
         let mut pruned_keys = PrunedKeys::empty();
-        while self.used_size > target_size {
+        while self.total_size > target_size {
             let (_, key) = self.time_index.first().expect("author index empty");
             let key = key.clone();
             pruned_keys.extend(self.remove(&key));
@@ -1108,16 +1169,16 @@ impl PerAuthorIndex {
             breaches.push(format!("{prefix}.time-index-size-mismatch"));
         }
 
-        let mut used_size = self.used_size;
+        let mut total_size = self.total_size;
         for (key, (unix_ts, _size)) in &self.reverse_index {
             if !self.time_index.contains(&(*unix_ts, key.clone())) {
                 breaches.push(format!("{prefix}.time-index-missing-key"));
             }
-            used_size -= *_size;
+            total_size -= *_size;
         }
 
-        if used_size != 0 {
-            breaches.push(format!("{prefix}.used-size-mismatch"));
+        if total_size != 0 {
+            breaches.push(format!("{prefix}.total-size-mismatch"));
         }
 
         breaches
@@ -2113,6 +2174,167 @@ mod test {
         assert!(matches!(res, Ok(TryDecodeStatus::RejectedByCache)));
         // the offending author's max_size quota is enforced
         assert!(cache.pending_len(MessageTier::P2P) == 2);
+    }
+
+    #[test]
+    fn test_eviction_cascade_on_enforce_quota() {
+        // Test the scenario where enforce_quota_all remove entries
+        // but cache remains full by size. Thus requiring cascaded
+        // evictions.
+        //
+        // Config:
+        // - total_slots=5,
+        // - min_slots_per_author=2
+        // - max_total_size_per_author=1000
+        // - max_total_size=2000
+        //
+        // State:
+        // - Author 0: 3 small msgs (size=300 each), slots=3, size=900 (overquota by slots)
+        // - Author 1: 2 small msgs (size=300 each), slots=2, size=600
+        // - Total: slots=5, size=1500 (within limits)
+        //
+        // Insert a large msg from Author 2 (size=1000):
+        // - After insert: slots=6, size=2500. Cache is full, eviction takes place.
+        // - Eviction stage #1: Author 2 not overquota, skip
+        // - Eviction stage #2: Author 0 overquota, evict 1 message
+        //   + Now Author 0 is within size and slot quota.
+        //   + Cache total: slots=5, size=2200 (still full)
+        // - Eviction stage #3: not effective as no key is expired
+        // - Eviction stage #4: randomly evict 1 message, then cache is not full
+        //   Resulting cache: slots=5, size=1900 or 1200
+        //   (final size depends on which entry gets randomly evicted)
+
+        let mut config = DecoderCacheConfig::default();
+        config.p2p_tier.total_slots = 5;
+        config.p2p_tier.min_slots_per_author = 2;
+        config.p2p_tier.max_total_size_per_author = 1000;
+
+        let mut cache = DecoderCache::new(config);
+        assert_eq!(cache.max_total_size(MessageTier::P2P), 2000);
+        let context = DecodingContext::new(None, UNIX_TS_MS);
+
+        // Insert 3 small messages (size=300) from Author 0
+        for i in 0..3 {
+            let app_msg = Bytes::from(vec![i; 300]);
+            let symbols = make_symbols(&app_msg, node_id(0), UNIX_TS_MS);
+            let res = cache.try_decode(&symbols[0], &context);
+            assert!(cache.consistency_breaches().is_empty());
+            assert!(matches!(res, Ok(TryDecodeStatus::NeedsMoreSymbols)));
+        }
+        // Insert 2 small messages (size=300) from Author 1
+        for i in 0..2 {
+            let app_msg = Bytes::from(vec![10 + i; 300]);
+            let symbols = make_symbols(&app_msg, node_id(1), UNIX_TS_MS);
+            let res = cache.try_decode(&symbols[0], &context);
+            assert!(cache.consistency_breaches().is_empty());
+            assert!(matches!(res, Ok(TryDecodeStatus::NeedsMoreSymbols)));
+        }
+
+        assert_eq!(cache.pending_len(MessageTier::P2P), 5);
+        assert_eq!(cache.total_size(MessageTier::P2P), 1500);
+
+        // Insert 1 large message (size=1000) from Author 2
+        let app_msg = Bytes::from(vec![20; 1000]);
+        let symbols = make_symbols(&app_msg, node_id(2), UNIX_TS_MS);
+        let res = cache.try_decode(&symbols[0], &context);
+
+        assert!(cache.consistency_breaches().is_empty());
+        assert!(matches!(
+            res,
+            Ok(TryDecodeStatus::NeedsMoreSymbols) | Ok(TryDecodeStatus::RejectedByCache)
+        ));
+
+        // Eviction should cascade until cache is not full, so we
+        // expect two entries evicted.
+        assert_eq!(cache.pending_len(MessageTier::P2P), 4);
+        // size = 1900 if a small msg is evicted
+        // size = 1200 if the large msg is evicted
+        assert!(matches!(cache.total_size(MessageTier::P2P), 1900 | 1200));
+    }
+
+    #[test]
+    fn test_multiple_random_evictions() {
+        // Test the scenario where we need multiple random evictions
+        // to bring the cache within its limit.
+        //
+        // Config:
+        // - total_slots=10
+        // - min_slots_per_author=5
+        // - max_total_size_per_author=1000
+        // - max_total_size=2000
+        //
+        // State:
+        // - Author 0: 5 small msgs (size=200 each), slots=5, size=1000 (at quota)
+        // - Author 1: 5 small msgs (size=200 each), slots=5, size=1000 (at quota)
+        // - Total: slots=10, size=2000 (at limit)
+        //
+        // Insert large msg from Author 2 (size=900):
+        // - After insert: slots=11, size=2900. Cache is full, eviction takes place.
+        // - Eviction stage #1: Author 2 not overquota, skip
+        // - Eviction stage #2: No author overquota, skip
+        // - Eviction stage #3: No expired entries, skip
+        // - Eviction stage #4: Random eviction needed
+        //   - If evict only small msgs: need 5 evictions (5*200=1000) to get to 1900
+        //   - If evict the large msg: need 1 eviction (900) to get to 2000 (at quota)
+        //   - Or evict a mix of small and large msgs
+
+        let mut config = DecoderCacheConfig::default();
+        config.p2p_tier.total_slots = 10;
+        config.p2p_tier.min_slots_per_author = 5;
+        config.p2p_tier.max_total_size_per_author = 1000;
+
+        let mut cache = DecoderCache::new(config);
+        assert_eq!(cache.max_total_size(MessageTier::P2P), 2000);
+        let context = DecodingContext::new(None, UNIX_TS_MS);
+
+        // Insert 5 small messages (size=200) from Author 0
+        for i in 0..5 {
+            let app_msg = Bytes::from(vec![i; 200]);
+            let symbols = make_symbols(&app_msg, node_id(0), UNIX_TS_MS);
+            let res = cache.try_decode(&symbols[0], &context);
+            assert!(cache.consistency_breaches().is_empty());
+            assert!(matches!(res, Ok(TryDecodeStatus::NeedsMoreSymbols)));
+        }
+
+        // Insert 5 small messages (size=200) from Author 1
+        for i in 0..5 {
+            let app_msg = Bytes::from(vec![10 + i; 200]);
+            let symbols = make_symbols(&app_msg, node_id(1), UNIX_TS_MS);
+            let res = cache.try_decode(&symbols[0], &context);
+            assert!(cache.consistency_breaches().is_empty());
+            assert!(matches!(res, Ok(TryDecodeStatus::NeedsMoreSymbols)));
+        }
+
+        assert_eq!(cache.pending_len(MessageTier::P2P), 10);
+        assert_eq!(cache.total_size(MessageTier::P2P), 2000);
+
+        // Insert 1 large message (size=900) from Author 2
+        let app_msg = Bytes::from(vec![20; 900]);
+        let symbols = make_symbols(&app_msg, node_id(2), UNIX_TS_MS);
+        let res = cache.try_decode(&symbols[0], &context);
+
+        assert!(cache.consistency_breaches().is_empty());
+        assert!(matches!(
+            res,
+            Ok(TryDecodeStatus::NeedsMoreSymbols) | Ok(TryDecodeStatus::RejectedByCache)
+        ));
+
+        // The random eviction will loop and can evict multiple
+        // entries until cache is not full. The random nature means we
+        // could evict either small msg or large msg, resulting in
+        // these possible cache sizes/slots combinations.
+        assert!(matches!(
+            (
+                cache.total_size(MessageTier::P2P),
+                cache.pending_len(MessageTier::P2P)
+            ),
+            (1900, 6) | // small=5,large=0 (evicted)
+            (1200, 6) | // small=4,large=1 (evicted)
+            (1400, 7) | // small=3,large=1 (evicted)
+            (1600, 8) | // small=2,large=1 (evicted)
+            (1800, 9) | // small=1,large=1 (evicted)
+            (2000, 10) // large=1,small=0 (evicted)
+        ));
     }
 
     fn try_decode_all<'a>(
