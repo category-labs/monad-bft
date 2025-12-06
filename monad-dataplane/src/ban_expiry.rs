@@ -80,17 +80,13 @@ pub(crate) async fn task(
 
 #[cfg(test)]
 mod tests {
-    use std::{net::IpAddr, pin::pin, sync::Arc, task::Poll, time::Duration};
+    use std::{net::IpAddr, sync::Arc, time::Duration};
 
-    use futures::poll;
-    use monoio::time::{sleep, Instant};
+    use monoio::time::Instant;
     use rstest::*;
     use tokio::sync::mpsc;
 
-    use crate::{
-        addrlist::{Addrlist, Status},
-        ban_expiry,
-    };
+    use crate::addrlist::Addrlist;
 
     // NOTE(dshulyak)
     // monoio doesn't support advancing time manually hence we have to use sleep in the tests below.

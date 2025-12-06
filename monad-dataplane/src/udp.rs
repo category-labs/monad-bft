@@ -21,10 +21,15 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use futures::future::join_all;
 use monad_types::UdpPriority;
-use monoio::{net::udp::UdpSocket, spawn, time};
+use monoio::{
+    buf::{Ipv4RecvMsgParser, RecvMsgBufRing},
+    io::stream::Stream,
+    net::udp::UdpSocket,
+    spawn, time,
+};
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tracing::{debug, error, trace, warn};
@@ -161,25 +166,33 @@ pub(crate) fn spawn_tasks(
     udp_egress_rx: mpsc::Receiver<UdpMsg>,
     up_bandwidth_mbps: u64,
     buffer_size: Option<usize>,
+    use_multishot: bool,
 ) {
     let mut tx_sockets = Vec::new();
 
     for (socket_id, socket_addr, label, ingress_tx) in socket_configs {
-        let (rx, tx) = create_socket_pair(socket_addr, buffer_size);
-        spawn(rx_single_socket(rx, ingress_tx));
-        trace!(socket_id, label = %label, ?socket_addr, "created socket");
+        let socket = std::net::UdpSocket::bind(socket_addr).unwrap();
+        let tx = UdpSocket::from_std(socket).unwrap();
+        configure_socket(&tx, buffer_size);
+
+        if use_multishot {
+            let rx = tx.dup().expect("failed to dup socket");
+            spawn(rx_multishot_socket(
+                rx,
+                ingress_tx.clone(),
+                socket_id as u16,
+            ));
+            trace!(socket_id, label = %label, ?socket_addr, "created multishot socket");
+        } else {
+            let rx = tx.dup().expect("failed to dup socket");
+            spawn(rx_single_socket(rx, ingress_tx.clone()));
+            trace!(socket_id, label = %label, ?socket_addr, "created socket");
+        }
+
         tx_sockets.push(tx);
     }
 
     spawn(tx(tx_sockets, udp_egress_rx, up_bandwidth_mbps));
-}
-
-fn create_socket_pair(addr: SocketAddr, buffer_size: Option<usize>) -> (UdpSocket, UdpSocket) {
-    let rx = UdpSocket::bind(addr).unwrap();
-    configure_socket(&rx, buffer_size);
-    let tx =
-        UdpSocket::from_std(unsafe { std::net::UdpSocket::from_raw_fd(rx.as_raw_fd()) }).unwrap();
-    (rx, tx)
 }
 
 async fn rx_single_socket(socket: UdpSocket, udp_ingress_tx: mpsc::Sender<RecvUdpMsg>) {
@@ -207,6 +220,60 @@ async fn rx_single_socket(socket: UdpSocket, udp_ingress_tx: mpsc::Sender<RecvUd
         }
     }
 }
+
+async fn rx_multishot_socket(
+    socket: UdpSocket,
+    udp_ingress_tx: mpsc::Sender<RecvUdpMsg>,
+    group_id: u16,
+) {
+    let ring = RecvMsgBufRing::<Ipv4RecvMsgParser>::new(
+        DEFAULT_RINGBUF_COUNT,
+        DEFAULT_RINGBUF_SIZE as usize,
+        group_id,
+    )
+    .expect("failed to create buffer ring");
+
+    loop {
+        let mut stream = socket
+            .recvmsg_multishot(&ring)
+            .expect("failed to create multishot stream");
+
+        loop {
+            match stream.next().await {
+                Some(Ok((src_addr, buf))) => {
+                    let payload = Bytes::copy_from_slice(&buf);
+                    let len = payload.len();
+
+                    let msg = RecvUdpMsg {
+                        src_addr: src_addr.into(),
+                        payload,
+                        stride: len.max(1).try_into().unwrap(),
+                    };
+
+                    if let Err(err) = udp_ingress_tx.send(msg).await {
+                        warn!(?err, "error queueing up received UDP message (multishot)");
+                        return;
+                    }
+                }
+                Some(Err(e)) if e.raw_os_error() == Some(libc::ENOBUFS) => {
+                    debug!("ringbuf exhausted");
+                    break;
+                }
+                Some(Err(e)) => {
+                    warn!("multishot recv error: {:?}", e);
+                    break;
+                }
+                None => {
+                    debug!("multishot stream ended, recreating stream");
+                    break;
+                }
+            }
+        }
+    }
+}
+
+const DEFAULT_RINGBUF_COUNT: u32 = 256;
+const DEFAULT_RINGBUF_SIZE: u32 = ETHERNET_SEGMENT_SIZE as u32;
 
 const PACING_SLEEP_OVERSHOOT_DETECTION_WINDOW: Duration = Duration::from_millis(100);
 
@@ -365,6 +432,20 @@ fn is_eafnosupport(err: &Error) -> bool {
     err.len() >= EAFNOSUPPORT.len() && &err[0..EAFNOSUPPORT.len()] == EAFNOSUPPORT
 }
 
+pub trait UdpSocketExt: AsRawFd {
+    fn dup(&self) -> std::io::Result<UdpSocket> {
+        let fd = self.as_raw_fd();
+        let new_fd = unsafe { libc::dup(fd) };
+        if new_fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let std_socket = unsafe { std::net::UdpSocket::from_raw_fd(new_fd) };
+        UdpSocket::from_std(std_socket)
+    }
+}
+
+impl UdpSocketExt for UdpSocket {}
+
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
@@ -411,5 +492,30 @@ mod tests {
         assert!(queue
             .try_push(create_test_msg(UdpPriority::Regular, 300))
             .is_err());
+    }
+
+    #[monoio::test]
+    async fn test_dup_independent() {
+        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let main_socket = monoio::net::udp::UdpSocket::bind(addr).unwrap();
+        let actual_addr = main_socket.local_addr().unwrap();
+
+        let dup1 = main_socket.dup().unwrap();
+        let dup2 = main_socket.dup().unwrap();
+
+        drop(dup1);
+
+        let result = dup2.send_to(b"test", actual_addr).await.0.map(|_| ());
+        assert!(result.is_ok(), "dup2 should still work after dup1 dropped");
+
+        let result = main_socket
+            .send_to(b"test", actual_addr)
+            .await
+            .0
+            .map(|_| ());
+        assert!(
+            result.is_ok(),
+            "main socket should still work after dup1 dropped"
+        );
     }
 }
