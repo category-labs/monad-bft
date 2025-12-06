@@ -38,6 +38,9 @@ where
     // Maximum age of UDP messages in milliseconds. Messages older than this will be rejected.
     pub udp_message_max_age_ms: u64,
 
+    /// Rate limit for signature verifications performed by raptorcast
+    pub sig_verification_rate_limit: u32,
+
     // The primary instance owns the receive side of the UDP traffic used for
     // raptorcast and hence is mandatory in all configuration cases.
     pub primary_instance: RaptorCastConfigPrimary<ST>,
@@ -59,6 +62,7 @@ where
             shared_key: self.shared_key.clone(),
             mtu: self.mtu,
             udp_message_max_age_ms: self.udp_message_max_age_ms,
+            sig_verification_rate_limit: self.sig_verification_rate_limit,
             primary_instance: self.primary_instance.clone(),
             secondary_instance: self.secondary_instance.clone(),
         }
