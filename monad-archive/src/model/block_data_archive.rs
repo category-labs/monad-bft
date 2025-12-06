@@ -24,7 +24,7 @@ use futures::try_join;
 use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
-use crate::{prelude::*, rlp_offset_scanner::get_all_tx_offsets};
+use crate::{kvstore::WritePolicy, prelude::*, rlp_offset_scanner::get_all_tx_offsets};
 
 pub type Block = AlloyBlock<TxEnvelopeWithSender, Header>;
 pub type BlockReceipts = Vec<ReceiptWithLogIndex>;
@@ -259,10 +259,17 @@ impl BlockDataArchive {
             LatestKind::IndexedAsyncBackfill => &self.latest_indexed_async_backfill_table_key,
         };
         let latest_value = format!("{:0width$}", block_num, width = BLOCK_PADDING_WIDTH);
-        self.store.put(key, latest_value.as_bytes().to_vec()).await
+        self.store
+            .put(
+                key,
+                latest_value.as_bytes().to_vec(),
+                WritePolicy::AllowOverwrite,
+            )
+            .await?;
+        Ok(())
     }
 
-    pub async fn archive_block(&self, block: Block) -> Result<()> {
+    pub async fn archive_block(&self, block: Block, policy: WritePolicy) -> Result<()> {
         // 1) Insert into block table
         let block_num = block.header.number;
         let block_key = self.block_key(block_num);
@@ -278,28 +285,42 @@ impl BlockDataArchive {
 
         // 4) Join futures
         try_join!(
-            self.store.put(&block_key, encoded_block),
-            self.store.put(&block_hash_key, block_hash_value.to_vec())
+            self.store.put(&block_key, encoded_block, policy),
+            self.store
+                .put(&block_hash_key, block_hash_value.to_vec(), policy)
         )?;
         Ok(())
     }
 
-    pub async fn archive_receipts(&self, receipts: BlockReceipts, block_num: u64) -> Result<()> {
+    pub async fn archive_receipts(
+        &self,
+        receipts: BlockReceipts,
+        block_num: u64,
+        policy: WritePolicy,
+    ) -> Result<()> {
         self.store
             .put(
                 &self.receipts_key(block_num),
                 ReceiptStorageRepr::V1(receipts).encode()?,
+                policy,
             )
-            .await
+            .await?;
+        Ok(())
     }
 
-    pub async fn archive_traces(&self, traces: BlockTraces, block_num: u64) -> Result<()> {
+    pub async fn archive_traces(
+        &self,
+        traces: BlockTraces,
+        block_num: u64,
+        policy: WritePolicy,
+    ) -> Result<()> {
         let mut rlp_traces = vec![];
         traces.encode(&mut rlp_traces);
 
         self.store
-            .put(&self.traces_key(block_num), rlp_traces)
-            .await
+            .put(&self.traces_key(block_num), rlp_traces, policy)
+            .await?;
+        Ok(())
     }
 }
 
@@ -949,7 +970,10 @@ mod tests {
         let archive = BlockDataArchive::new(store);
 
         let block = create_test_block(1);
-        archive.archive_block(block.clone()).await.unwrap();
+        archive
+            .archive_block(block.clone(), WritePolicy::NoClobber)
+            .await
+            .unwrap();
 
         let retrieved_block = archive.get_block_by_number(1).await.unwrap();
         assert_eq!(retrieved_block.header.number, 1);
@@ -989,11 +1013,11 @@ mod tests {
         let traces = vec![vec![1, 2, 3]];
 
         archive
-            .archive_receipts(receipts.clone(), block_num)
+            .archive_receipts(receipts.clone(), block_num, WritePolicy::NoClobber)
             .await
             .unwrap();
         archive
-            .archive_traces(traces.clone(), block_num)
+            .archive_traces(traces.clone(), block_num, WritePolicy::NoClobber)
             .await
             .unwrap();
 
@@ -1092,7 +1116,11 @@ mod tests {
         // Insert non-UTF8 bytes for latest_uploaded_table_key.
         archive
             .store
-            .put(archive.latest_uploaded_table_key, vec![0xff, 0xfe])
+            .put(
+                archive.latest_uploaded_table_key,
+                vec![0xff, 0xfe],
+                WritePolicy::AllowOverwrite,
+            )
             .await
             .unwrap();
         assert!(archive.get_latest(LatestKind::Uploaded).await.is_err());
@@ -1104,7 +1132,11 @@ mod tests {
         let archive = BlockDataArchive::new(store);
         archive
             .store
-            .put(archive.latest_uploaded_table_key, b"not_a_number".to_vec())
+            .put(
+                archive.latest_uploaded_table_key,
+                b"not_a_number".to_vec(),
+                WritePolicy::AllowOverwrite,
+            )
             .await
             .unwrap();
         assert!(archive.get_latest(LatestKind::Uploaded).await.is_err());
@@ -1127,7 +1159,11 @@ mod tests {
         let store = MemoryStorage::new("test");
         let archive = BlockDataArchive::new(store.clone());
         let key = archive.block_key(1);
-        archive.store.put(&key, vec![1, 2, 3]).await.unwrap();
+        archive
+            .store
+            .put(&key, vec![1, 2, 3], WritePolicy::AllowOverwrite)
+            .await
+            .unwrap();
         assert!(archive.get_block_by_number(1).await.is_err());
     }
 
@@ -1137,12 +1173,20 @@ mod tests {
         let archive = BlockDataArchive::new(store.clone());
         archive
             .store
-            .put(&archive.receipts_key(1), vec![1, 2, 3])
+            .put(
+                &archive.receipts_key(1),
+                vec![1, 2, 3],
+                WritePolicy::AllowOverwrite,
+            )
             .await
             .unwrap();
         archive
             .store
-            .put(&archive.traces_key(1), vec![1, 2, 3])
+            .put(
+                &archive.traces_key(1),
+                vec![1, 2, 3],
+                WritePolicy::AllowOverwrite,
+            )
             .await
             .unwrap();
         assert!(archive.get_block_receipts(1).await.is_err());
@@ -1160,9 +1204,18 @@ mod tests {
         };
         let receipts = vec![receipt];
         let traces = vec![vec![4, 5, 6]];
-        archive.archive_block(block.clone()).await.unwrap();
-        archive.archive_receipts(receipts.clone(), 1).await.unwrap();
-        archive.archive_traces(traces.clone(), 1).await.unwrap();
+        archive
+            .archive_block(block.clone(), WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        archive
+            .archive_receipts(receipts.clone(), 1, WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        archive
+            .archive_traces(traces.clone(), 1, WritePolicy::NoClobber)
+            .await
+            .unwrap();
 
         let data = archive.get_block_data_with_offsets(1).await.unwrap();
         assert_eq!(data.block.header.number, 1);

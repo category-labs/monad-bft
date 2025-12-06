@@ -17,7 +17,7 @@ use std::collections::HashMap;
 
 use eyre::{eyre, Context, Result};
 use futures::stream;
-use monad_archive::prelude::*;
+use monad_archive::{kvstore::WritePolicy, prelude::*};
 use opentelemetry::KeyValue;
 use tracing::{debug, error, info, warn};
 
@@ -321,9 +321,9 @@ async fn fix_fault(
     // Extract components from the good block data
     let (block, receipts, traces) = good_block_data;
 
-    // Archive the block
+    // Archive the block (use AllowOverwrite since we're fixing faults)
     faulty_replica_archiver
-        .archive_block(block.clone())
+        .archive_block(block.clone(), WritePolicy::AllowOverwrite)
         .await
         .with_context(|| {
             format!(
@@ -334,7 +334,11 @@ async fn fix_fault(
 
     // Archive the receipts
     faulty_replica_archiver
-        .archive_receipts(receipts.clone(), fault.block_num)
+        .archive_receipts(
+            receipts.clone(),
+            fault.block_num,
+            WritePolicy::AllowOverwrite,
+        )
         .await
         .with_context(|| {
             format!(
@@ -345,7 +349,7 @@ async fn fix_fault(
 
     // Archive the traces
     faulty_replica_archiver
-        .archive_traces(traces.clone(), fault.block_num)
+        .archive_traces(traces.clone(), fault.block_num, WritePolicy::AllowOverwrite)
         .await
         .with_context(|| {
             format!(
@@ -421,12 +425,18 @@ mod tests {
         if let Some(archiver) = model.block_data_readers.get(good_replica_name) {
             // Add block data
             let (block, receipts, traces) = create_test_block_data(block_num, 1, None);
-            archiver.archive_block(block).await.unwrap();
             archiver
-                .archive_receipts(receipts, block_num)
+                .archive_block(block, WritePolicy::NoClobber)
                 .await
                 .unwrap();
-            archiver.archive_traces(traces, block_num).await.unwrap();
+            archiver
+                .archive_receipts(receipts, block_num, WritePolicy::NoClobber)
+                .await
+                .unwrap();
+            archiver
+                .archive_traces(traces, block_num, WritePolicy::NoClobber)
+                .await
+                .unwrap();
 
             archiver
                 .update_latest(block_num, LatestKind::Uploaded)
@@ -529,12 +539,18 @@ mod tests {
                 // Add block data for both blocks
                 for block_num in [chunk_start + 1, chunk_start + 2] {
                     let (block, receipts, traces) = blocks.get(&block_num).unwrap().clone();
-                    archiver.archive_block(block).await.unwrap();
                     archiver
-                        .archive_receipts(receipts, block_num)
+                        .archive_block(block, WritePolicy::NoClobber)
                         .await
                         .unwrap();
-                    archiver.archive_traces(traces, block_num).await.unwrap();
+                    archiver
+                        .archive_receipts(receipts, block_num, WritePolicy::NoClobber)
+                        .await
+                        .unwrap();
+                    archiver
+                        .archive_traces(traces, block_num, WritePolicy::NoClobber)
+                        .await
+                        .unwrap();
                 }
 
                 archiver
@@ -549,13 +565,16 @@ mod tests {
             // Add the second block with incorrect data
             let (mut block, receipts, traces) = blocks.get(&(chunk_start + 2)).unwrap().clone();
             block.header.extra_data = Bytes::from(vec![2]);
-            archiver.archive_block(block).await.unwrap();
             archiver
-                .archive_receipts(receipts, chunk_start + 2)
+                .archive_block(block, WritePolicy::NoClobber)
                 .await
                 .unwrap();
             archiver
-                .archive_traces(traces, chunk_start + 2)
+                .archive_receipts(receipts, chunk_start + 2, WritePolicy::NoClobber)
+                .await
+                .unwrap();
+            archiver
+                .archive_traces(traces, chunk_start + 2, WritePolicy::NoClobber)
                 .await
                 .unwrap();
 
@@ -667,13 +686,16 @@ mod tests {
         if let Some(archiver) = model.block_data_readers.get(good_replica_name) {
             // Add block data
             let (block, receipts, traces) = create_test_block_data(chunk_start + 1, 1, None);
-            archiver.archive_block(block).await.unwrap();
             archiver
-                .archive_receipts(receipts, chunk_start + 1)
+                .archive_block(block, WritePolicy::NoClobber)
                 .await
                 .unwrap();
             archiver
-                .archive_traces(traces, chunk_start + 1)
+                .archive_receipts(receipts, chunk_start + 1, WritePolicy::NoClobber)
+                .await
+                .unwrap();
+            archiver
+                .archive_traces(traces, chunk_start + 1, WritePolicy::NoClobber)
                 .await
                 .unwrap();
 

@@ -20,7 +20,7 @@ use std::{
 };
 
 use futures::stream::{self, StreamExt};
-use monad_archive::prelude::*;
+use monad_archive::{kvstore::WritePolicy, prelude::*};
 
 const BFT_BLOCK_PREFIX: &str = "bft_block/";
 const BFT_BLOCK_HEADER_EXTENSION: &str = ".header";
@@ -176,7 +176,7 @@ async fn process_single_file(
         .wrap_err("Failed to read local BFT file")?;
 
     store
-        .put(&key, bytes)
+        .put(&key, bytes, WritePolicy::AllowOverwrite)
         .await
         .wrap_err("Failed to upload BFT block")?;
     metrics.inc_counter(MetricNames::BFT_BLOCK_FILES_UPLOADED);
@@ -374,7 +374,11 @@ mod tests {
         // Pre-upload a file to S3
         let header_key = format!("{BFT_BLOCK_PREFIX}block_003{BFT_BLOCK_HEADER_EXTENSION}");
         store
-            .put(&header_key, b"already uploaded".to_vec())
+            .put(
+                &header_key,
+                b"already uploaded".to_vec(),
+                WritePolicy::AllowOverwrite,
+            )
             .await
             .unwrap();
 
@@ -514,7 +518,10 @@ mod tests {
 
         // Add a key to the store
         let key = format!("{BFT_BLOCK_PREFIX}test_block{BFT_BLOCK_HEADER_EXTENSION}");
-        store.put(&key, b"content".to_vec()).await.unwrap();
+        store
+            .put(&key, b"content".to_vec(), WritePolicy::AllowOverwrite)
+            .await
+            .unwrap();
 
         // Check existence
         assert!(s3_exists_key(&store, &key).await.unwrap());
@@ -525,7 +532,14 @@ mod tests {
         let store: KVStoreErased = MemoryStorage::new("test").into();
 
         // Add a different key
-        store.put("other_key", b"content".to_vec()).await.unwrap();
+        store
+            .put(
+                "other_key",
+                b"content".to_vec(),
+                WritePolicy::AllowOverwrite,
+            )
+            .await
+            .unwrap();
 
         // Check non-existent key
         let key = format!("{BFT_BLOCK_PREFIX}missing{BFT_BLOCK_HEADER_EXTENSION}");
@@ -538,11 +552,19 @@ mod tests {
 
         // Add keys with partial matches
         store
-            .put("bft_block/test", b"content".to_vec())
+            .put(
+                "bft_block/test",
+                b"content".to_vec(),
+                WritePolicy::AllowOverwrite,
+            )
             .await
             .unwrap();
         store
-            .put("bft_block/test_longer", b"content".to_vec())
+            .put(
+                "bft_block/test_longer",
+                b"content".to_vec(),
+                WritePolicy::AllowOverwrite,
+            )
             .await
             .unwrap();
 

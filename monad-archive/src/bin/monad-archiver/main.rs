@@ -15,7 +15,7 @@
 
 #![allow(async_fn_in_trait)]
 
-use monad_archive::{cli::set_source_and_sink_metrics, prelude::*};
+use monad_archive::{cli::set_source_and_sink_metrics, kvstore::WritePolicy, prelude::*};
 
 mod bft_archive_worker;
 mod block_archive_worker;
@@ -144,6 +144,23 @@ async fn main() -> Result<()> {
         require_traces: args.require_traces,
         traces_only: args.traces_only,
         async_backfill: args.async_backfill,
+        blocks_write_policy: if args.unsafe_allow_overwrite || args.unsafe_allow_blocks_overwrite {
+            WritePolicy::AllowOverwrite
+        } else {
+            WritePolicy::NoClobber
+        },
+        receipts_write_policy: if args.unsafe_allow_overwrite
+            || args.unsafe_allow_receipts_overwrite
+        {
+            WritePolicy::AllowOverwrite
+        } else {
+            WritePolicy::NoClobber
+        },
+        traces_write_policy: if args.unsafe_allow_overwrite || args.unsafe_allow_traces_overwrite {
+            WritePolicy::AllowOverwrite
+        } else {
+            WritePolicy::NoClobber
+        },
     };
 
     if !args.unsafe_disable_normal_archiving {
