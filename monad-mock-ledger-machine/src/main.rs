@@ -1,91 +1,84 @@
+use monad_chain_config::{revision::ChainRevision, ChainConfig, MonadChainConfig, MONAD_DEVNET_CHAIN_ID};
 use monad_mock_ledger_machine::MonadMockLedgerMachine;
+use monad_mock_ledger_machine::BlockType;
+use alloy_consensus::Transaction;
+use std::collections::VecDeque;
+use std::time::Instant;
 
-use monad_chain_config::{MonadChainConfig, MONAD_DEVNET_CHAIN_ID};
+mod block_generator;
+use block_generator::BlockGenerator;
 
-use alloy_consensus::SignableTransaction;
-use alloy_consensus::TxEip1559;
-use alloy_consensus::TxEnvelope;
-use alloy_primitives::Address;
-use alloy_primitives::FixedBytes;
-use alloy_primitives::TxKind;
-use alloy_primitives::U256;
-use alloy_signer::SignerSync;
-use alloy_signer_local::PrivateKeySigner;
-
-mod faucet;
-
-fn get_dummy_tx_eip1559(sender: [u8; 32], nonce: u64) -> TxEnvelope {
-    let tx = TxEip1559 {
-        chain_id: MONAD_DEVNET_CHAIN_ID,
-        nonce,
-        gas_limit: 30000,
-        max_priority_fee_per_gas: 20,
-        max_fee_per_gas: 100_000_000_000,
-        to: TxKind::Call(Address::repeat_byte(0u8)),
-        value: U256::from(0),
-        access_list: Default::default(),
-        input: vec![0; 10].into(),
-    };
-    let tx_sender = FixedBytes(sender);
-    let tx_signer = PrivateKeySigner::from_bytes(&tx_sender).unwrap();
-    let tx_signature = tx_signer.sign_hash_sync(&tx.signature_hash()).unwrap();
-    tx.into_signed(tx_signature).into()
+fn take_gas_sum(blocks: &VecDeque<BlockType>, n: u64) -> u64 {
+    assert!(blocks.len() >= n.try_into().unwrap());
+    let mut total = 0u64;
+    for i in 0..n {
+        total +=
+            blocks[0].body()
+            .execution_body
+            .transactions
+            .iter()
+            .map(|t| t.gas_limit())
+            .sum::<u64>();
+    }
+    total
 }
 
 fn main() {
+    // TODO init monad runloop
+    // TODO init ocaml runloop
+
+    // TODO pass runloop instances to machine
+
     let chain_config = MonadChainConfig::new(MONAD_DEVNET_CHAIN_ID, None).unwrap();
     let ledger_path = "/tmp/ledger".into();
     let proposer_private_key = [1u8; 32];
-
-    // Build the mock ledger state machine:
     let mut machine = MonadMockLedgerMachine::new(chain_config, ledger_path, proposer_private_key);
 
-    let mut faucet = faucet::Faucet::new();
+    let mut generator = BlockGenerator::new(0, 5);
 
-    let user1 = [1u8; 32];
-    let user2 = [2u8; 32];
-    let user3 = [3u8; 32];
+    let mut delta = 0u64;
 
-    // Propose block 1 (funding 3 test accounts from a faucet):
-    machine.propose(
-        /* txs: */ vec![faucet.fund(user1), faucet.fund(user2), faucet.fund(user3)],
-        /* base_fee: */ 100_000_000_000,
-        /* base_fee_trend: */ 0,
-        /* base_fee_moment: */ 0,
-        /* beneficiary: */ [0u8; 20],
-    );
+    // TODO loop:
+    {
+        let propose_num = 1 + (generator.next_u64() % 1);
+        delta += propose_num;
+        let finalize_num = 1 + (generator.next_u64() % delta);
+        delta -= finalize_num;
+        let gas_limit = chain_config
+            .get_chain_revision(machine.get_round())
+            .chain_params()
+            .proposal_gas_limit;
+        let blocks = generator.gen_blocks(propose_num, gas_limit);
+        for b in blocks.into_iter() {
+            machine.propose(
+                b.txs,
+                b.base_fee,
+                b.base_fee_trend,
+                b.base_fee_moment,
+                b.beneficiary,
+            );
+        }
 
-    // Propose block 2 (with two transactions from the same sender):
-    machine.propose(
-        /* txs: */
-        vec![
-            get_dummy_tx_eip1559(user1, 0),
-            get_dummy_tx_eip1559(user1, 1),
-        ],
-        /* base_fee: */ 100_000_000_000,
-        /* base_fee_trend: */ 0,
-        /* base_fee_moment: */ 0,
-        /* beneficiary: */ [0u8; 20],
-    );
+        let total_gas = take_gas_sum(machine.unfinalized_blocks(), finalize_num);
 
-    // Finalize block 1:
-    machine.finalize();
+        for _ in 0..finalize_num {
+            machine.finalize();
+        }
+        let start_instant = Instant::now();
 
-    // Propose block 3 (with three transactions from different senders):
-    let tx0 = get_dummy_tx_eip1559([1u8; 32], 2);
-    let tx1 = get_dummy_tx_eip1559([2u8; 32], 0);
-    let tx2 = get_dummy_tx_eip1559([3u8; 32], 0);
-    machine.propose(
-        /* txs: */ vec![tx0, tx1, tx2],
-        /* base_fee: */ 100_000_000_000,
-        /* base_fee_trend: */ 0,
-        /* base_fee_moment: */ 0,
-        /* beneficiary: */ [0u8; 20],
-    );
+        // TODO call monad runloop
 
-    // Finalize block 2:
-    machine.finalize();
+        let time = start_instant.elapsed();
 
-    // Finalize block 3:
-    machine.finalize();
+        // TODO assert instead of print:
+        println!(
+            "Total {} gas in {} blocks took {} ns",
+            total_gas,
+            finalize_num,
+            time.as_nanos());
+
+        // TODO call ocaml runloop
+
+        // TODO compare state roots
+    }
 }

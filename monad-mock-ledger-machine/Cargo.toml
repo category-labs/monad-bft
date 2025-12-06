@@ -30,3 +30,6 @@ alloy-signer = { workspace = true }
 alloy-signer-local = { workspace = true }
 
 itertools = { workspace = true }
+
+rand = { workspace = true }
+rand_chacha = { workspace = true }

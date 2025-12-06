@@ -55,15 +55,15 @@ use monad_eth_types::EthBlockBody;
 use monad_executor_glue::LedgerCommand;
 use monad_ledger::MonadBlockFileLedger;
 
-type SignatureType = SecpSignature;
+pub type SignatureType = SecpSignature;
 
-type SignatureCollectionType = BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>;
+pub type SignatureCollectionType = BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>;
+
+pub type BlockType = ConsensusFullBlock<SignatureType, SignatureCollectionType, EthExecutionProtocol>;
 
 type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
 
 type LedgerType = MonadBlockFileLedger<SignatureType, SignatureCollectionType>;
-
-type BlockType = ConsensusFullBlock<SignatureType, SignatureCollectionType, EthExecutionProtocol>;
 
 type BlockPolicyType =
     EthBlockPolicy<SignatureType, SignatureCollectionType, MonadChainConfig, MonadChainRevision>;
@@ -115,6 +115,14 @@ impl MonadMockLedgerMachine {
             unfinalized_blocks: VecDeque::default(),
             qc: QuorumCertificate::genesis_qc(),
         }
+    }
+
+    pub fn unfinalized_blocks(&self) -> &VecDeque<BlockType> {
+        &self.unfinalized_blocks
+    }
+
+    pub fn get_round(&self) -> Round {
+        self.round
     }
 
     pub fn inc_round(&mut self, n: u64) {
