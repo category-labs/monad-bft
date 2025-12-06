@@ -26,7 +26,7 @@ use alloy_rpc_types::{
     TransactionReceipt,
 };
 use futures::{stream, Stream, StreamExt, TryStreamExt};
-use itertools::{Either, Itertools};
+use itertools::Either;
 use monad_archive::{
     model::BlockDataReader,
     prelude::{ArchiveReader, Context, ContextCompat, IndexReader, TxEnvelopeWithSender},
@@ -565,6 +565,7 @@ impl<T: Triedb> ChainState<T> {
     pub async fn get_logs(
         &self,
         filter: Filter,
+        max_response_size: u32,
         max_block_range: u64,
         use_eth_get_logs_index: bool,
         dry_run_get_logs_index: bool,
@@ -640,6 +641,7 @@ impl<T: Triedb> ChainState<T> {
         if from_block > to_block {
             return Err(FilterError::InvalidBlockRange.into());
         }
+
         if to_block - from_block > max_block_range {
             return Err(FilterError::RangeTooLarge.into());
         }
@@ -653,6 +655,8 @@ impl<T: Triedb> ChainState<T> {
         //  * at least one topic filter set is non‑empty (i.e. it contains a value to match on).
         let has_filters = !filter.address.is_empty() || filter.topics.iter().any(|t| !t.is_empty());
 
+        let filtered_params = FilteredParams::new(Some(filter.clone()));
+
         if use_eth_get_logs_index
             && self.archive_reader.is_some()
             && to_block_outside_cache
@@ -660,14 +664,33 @@ impl<T: Triedb> ChainState<T> {
         {
             let archive_reader = self.archive_reader.as_ref().unwrap();
             trace!("Using eth_getLogs index");
-            match get_logs_with_index(archive_reader, from_block, to_block, &filter).await {
-                Ok(logs) => {
-                    return Ok(logs.into_iter().map(MonadLog).collect());
-                }
-                Err(e) => {
+            match try_create_logs_stream_using_index(
+                archive_reader,
+                from_block,
+                to_block,
+                &filter,
+                &filtered_params,
+            )
+            .await
+            {
+                Ok(logs) => match try_collect_logs_stream_with_heuristic_response_limit(
+                    max_response_size,
+                    from_block,
+                    to_block,
+                    logs,
+                )
+                .await?
+                {
+                    Ok(logs) => return Ok(logs),
+                    Err(err) => {
+                        debug!(?err, "Error getting logs from log stream with index. Falling back to unindexed method.");
+                    }
+                },
+                Err(err) => {
                     debug!(
-                    "Error getting logs with index. Falling back to unindexed method. Error: {e:?}"
-                );
+                        ?err,
+                        "Error creating log stream with index. Falling back to unindexed method."
+                    );
                 }
             }
         }
@@ -679,8 +702,6 @@ impl<T: Triedb> ChainState<T> {
             FilteredParams::matches_address(bloom, &address_filter)
                 && FilteredParams::matches_topics(bloom, &topics_filter)
         };
-
-        let filtered_params = FilteredParams::new(Some(filter.clone()));
 
         let stream_with_triedb = stream::iter(from_block..=to_block)
             .map(|block_num| {
@@ -743,18 +764,28 @@ impl<T: Triedb> ChainState<T> {
             })
             .buffered(100);
 
-        let data = stream_with_archive.try_collect::<Vec<_>>().await?;
-
-        let logs = data
-            .into_iter()
-            .map(|(header, transactions, receipts)| {
-                block_receipts(transactions, receipts, &header.header, header.hash)
+        let logs_stream = stream_with_archive.map(|result| {
+            result.and_then(|(header, transactions, receipts)| {
+                block_receipts(transactions, receipts, &header.header, header.hash).map(
+                    |receipts| {
+                        (
+                            header.header.number,
+                            receipts.into_iter().flat_map(|receipt| {
+                                transaction_receipt_to_logs_iter(receipt, &filtered_params)
+                            }),
+                        )
+                    },
+                )
             })
-            .flatten_ok()
-            .map_ok(|receipt| transaction_receipt_to_logs_iter(receipt, &filtered_params))
-            .flatten_ok()
-            .map_ok(MonadLog)
-            .collect::<Result<Vec<_>, _>>()?;
+        });
+
+        let logs = try_collect_logs_stream_with_heuristic_response_limit(
+            max_response_size,
+            from_block,
+            to_block,
+            logs_stream,
+        )
+        .await??;
 
         if dry_run_get_logs_index {
             if let Some(archive_reader) = self.archive_reader.clone() {
@@ -767,6 +798,7 @@ impl<T: Triedb> ChainState<T> {
                         from_block,
                         to_block,
                         filter,
+                        filtered_params,
                         non_indexed,
                     )
                     .await
@@ -779,6 +811,83 @@ impl<T: Triedb> ChainState<T> {
 
         Ok(logs)
     }
+}
+
+async fn try_collect_logs_stream_with_heuristic_response_limit<E>(
+    max_response_size: u32,
+    from_block: u64,
+    to_block: u64,
+    stream: impl Stream<Item = Result<(u64, impl IntoIterator<Item = Log>), E>>,
+) -> JsonRpcResult<Result<Vec<MonadLog>, E>> {
+    let mut stream = std::pin::pin!(stream);
+
+    const EXTRAPOLATION_CHECK_MIN_RESPONSE_SIZE: u64 = 4 * 1024 * 1024;
+    const EXTRAPOLATION_CHECK_MIN_BLOCKS: u64 = 100;
+
+    let num_blocks_total = to_block + 1 - from_block;
+
+    let mut num_blocks_processed = 0u64;
+    let mut heuristic_response_size = 0u64;
+
+    let mut response_logs = Vec::<MonadLog>::default();
+
+    while let Some(result) = stream.next().await {
+        match result {
+            Err(err) => return Ok(Err(err)),
+            Ok((block_number, logs)) => {
+                if block_number != from_block.saturating_add(num_blocks_processed) {
+                    error!(
+                        ?from_block,
+                        ?num_blocks_processed,
+                        ?block_number,
+                        "logs stream block numbers inconsistent"
+                    );
+                    return Err(JsonRpcError::internal_error(format!("Logs out of order")));
+                }
+
+                num_blocks_processed += 1;
+
+                if num_blocks_processed > num_blocks_total {
+                    error!(
+                        ?from_block,
+                        ?num_blocks_processed,
+                        ?block_number,
+                        ?num_blocks_total,
+                        "logs stream block number exceeded range"
+                    );
+                    return Err(JsonRpcError::internal_error(format!("Logs out of range")));
+                }
+
+                response_logs.extend(logs.into_iter().map(|log| {
+                    heuristic_response_size += compute_heuristic_log_len(&log) as u64;
+                    MonadLog(log)
+                }));
+
+                if heuristic_response_size > max_response_size as u64 {
+                    return Err(JsonRpcError::max_size_exceeded());
+                }
+
+                if heuristic_response_size >= EXTRAPOLATION_CHECK_MIN_RESPONSE_SIZE
+                    && num_blocks_processed >= EXTRAPOLATION_CHECK_MIN_BLOCKS
+                {
+                    let extrapolated_heuristic_size = heuristic_response_size
+                        .saturating_mul(num_blocks_total)
+                        .saturating_div(num_blocks_processed);
+
+                    let extrapolation_max_response_size = (max_response_size as u64 * 2)
+                        - (max_response_size as u64)
+                            .saturating_mul(num_blocks_processed)
+                            .saturating_div(num_blocks_total);
+
+                    if extrapolated_heuristic_size > extrapolation_max_response_size {
+                        return Err(JsonRpcError::max_size_exceeded());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(Ok(response_logs))
 }
 
 fn transaction_receipt_to_logs_iter<'a>(
@@ -847,12 +956,25 @@ async fn check_dry_run_get_logs_index(
     from_block: u64,
     to_block: u64,
     filter: Filter,
+    filtered_params: FilteredParams,
     non_indexed: HashSet<Log>,
 ) -> monad_archive::prelude::Result<()> {
-    let indexed = get_logs_with_index(&archive_reader, from_block, to_block, &filter)
+    let indexed = HashSet::from_iter(
+        try_create_logs_stream_using_index(
+            &archive_reader,
+            from_block,
+            to_block,
+            &filter,
+            &filtered_params,
+        )
         .await
-        .map(HashSet::from_iter)
-        .wrap_err("Error getting logs with index")?;
+        .wrap_err("Error getting logs with index")?
+        .try_collect::<Vec<_>>()
+        .await
+        .wrap_err("Error getting logs with index")?
+        .into_iter()
+        .flat_map(|(_, logs)| logs.into_iter()),
+    );
 
     let group_by = |mut map: HashMap<_, _>, log: &Log| {
         let Some(block_number) = log.block_number else {
@@ -894,9 +1016,8 @@ async fn get_receipts_stream_using_index<'a>(
     from_block: u64,
     to_block: u64,
     filter: &'a Filter,
-) -> Result<
-    impl Stream<Item = monad_archive::prelude::Result<TransactionReceipt>> + 'a,
-    monad_archive::prelude::Report,
+) -> monad_archive::prelude::Result<
+    impl Stream<Item = monad_archive::prelude::Result<(u64, Vec<TransactionReceipt>)>> + 'a,
 > {
     let log_index = reader
         .log_index
@@ -916,43 +1037,87 @@ async fn get_receipts_stream_using_index<'a>(
         );
     }
 
-    // Note: we can limit returned (and queried!) data by using `query_logs_index_streamed`
-    // and take_while we're under the response size limit
-    Ok(log_index
+    let mut stream = log_index
         .query_logs(from_block, to_block, filter.address.iter(), &filter.topics)
         .await?
         .map_ok(|tx_data| {
-            parse_tx_receipt(
-                tx_data.header_subset.base_fee_per_gas,
-                Some(tx_data.header_subset.block_timestamp),
-                tx_data.header_subset.block_hash,
-                tx_data.tx,
-                tx_data.header_subset.gas_used,
-                tx_data.receipt,
+            (
                 tx_data.header_subset.block_number,
-                tx_data.header_subset.tx_index,
+                parse_tx_receipt(
+                    tx_data.header_subset.base_fee_per_gas,
+                    Some(tx_data.header_subset.block_timestamp),
+                    tx_data.header_subset.block_hash,
+                    tx_data.tx,
+                    tx_data.header_subset.gas_used,
+                    tx_data.receipt,
+                    tx_data.header_subset.block_number,
+                    tx_data.header_subset.tx_index,
+                ),
             )
-        }))
+        });
+
+    Ok(async_stream::stream! {
+        let mut block_number = None;
+        let mut block_receipts = Vec::new();
+
+        while let Some(result) = stream.next().await {
+            match result {
+                Err(err) => {
+                    yield Err(err);
+
+                    block_number = None;
+                    break;
+                }
+                Ok((next_block_number, receipt)) => match block_number {
+                    None => {
+                        block_number = Some(next_block_number);
+                        block_receipts.push(receipt);
+                    }
+                    Some(current_block_number) if current_block_number == next_block_number => {
+                        block_receipts.push(receipt);
+                    }
+                    Some(current_block_number) => {
+                        assert!(current_block_number < next_block_number);
+                        assert!(!block_receipts.is_empty());
+
+                        yield Ok((current_block_number, std::mem::take(&mut block_receipts)));
+
+                        block_number = Some(next_block_number);
+                        block_receipts.push(receipt);
+                    }
+                }
+            }
+        }
+
+        if let Some(block_number) = block_number {
+            assert!(!block_receipts.is_empty());
+
+            yield Ok((block_number, block_receipts));
+        }
+    })
 }
 
-async fn get_logs_with_index(
-    reader: &ArchiveReader,
+async fn try_create_logs_stream_using_index<'a>(
+    reader: &'a ArchiveReader,
     from_block: u64,
     to_block: u64,
-    filter: &Filter,
-) -> monad_archive::prelude::Result<Vec<Log>> {
-    let filtered_params = FilteredParams::new(Some(filter.clone()));
-
-    get_receipts_stream_using_index(reader, from_block, to_block, filter)
-        .await?
-        .map_ok(|receipt| {
-            futures::stream::iter(
-                transaction_receipt_to_logs_iter(receipt, &filtered_params).map(Result::Ok),
-            )
-        })
-        .try_flatten()
-        .try_collect::<Vec<_>>()
-        .await
+    filter: &'a Filter,
+    filtered_params: &'a FilteredParams,
+) -> monad_archive::prelude::Result<
+    impl Stream<Item = monad_archive::prelude::Result<(u64, impl Iterator<Item = Log> + 'a)>> + 'a,
+> {
+    Ok(
+        get_receipts_stream_using_index(reader, from_block, to_block, filter)
+            .await?
+            .map_ok(move |(block_number, receipts)| {
+                (
+                    block_number,
+                    receipts.into_iter().flat_map(move |receipt| {
+                        transaction_receipt_to_logs_iter(receipt, filtered_params)
+                    }),
+                )
+            }),
+    )
 }
 
 fn parse_block_content(
@@ -1120,18 +1285,93 @@ async fn get_receipt_from_triedb<T: Triedb>(
     }
 }
 
+const HEURISTIC_SMALLEST_LOG_RESPONSE: &str = r#"{"address":"0x0000000000000000000000000000000000000000","blockHash":,"blockNumber":,"data":"0x","logIndex":,"removed":,"topics":[],"transactionHash":,"transactionIndex":}"#;
+
+fn compute_heuristic_fixed_bytes_len<const N: usize>(value: Option<FixedBytes<N>>) -> usize {
+    value
+        .map(|_| {
+            // enclosing double quotes
+            2
+                // 0x
+                + 2
+                // bytes hex encoded
+               + 2 * N
+        })
+        .unwrap_or(
+            // null
+            4,
+        )
+}
+fn compute_heuristic_int_len(value: Option<u64>) -> usize {
+    value
+        .map(|index| {
+            let bits = (64 - index.leading_zeros()) as usize;
+
+            // enclosing double quotes
+            2
+                // 0x
+                + 2
+                // value hex encoded
+                + ((bits + 3) / 4).max(1)
+        })
+        .unwrap_or(
+            // null
+            4,
+        )
+}
+
+fn compute_heuristic_bool_len(value: bool) -> usize {
+    if value {
+        4
+    } else {
+        5
+    }
+}
+
+fn compute_heuristic_log_len(log: &Log) -> usize {
+    HEURISTIC_SMALLEST_LOG_RESPONSE.len()
+        + compute_heuristic_fixed_bytes_len(log.block_hash)
+        + compute_heuristic_int_len(log.block_number)
+        + log
+            .block_timestamp
+            .map(|t| "\"blockTimestamp\":,".len() + compute_heuristic_int_len(Some(t)))
+            .unwrap_or_default()
+        + 2 * log.inner.data.data.len()
+        + compute_heuristic_int_len(log.log_index)
+        + compute_heuristic_bool_len(log.removed)
+        + (
+            // topic data
+            log.inner.data.topics().len()
+            * (
+                // enclosing double quotes
+                2
+                // 0x
+                + 2
+                // 32 bytes hex encoded -> 64 bytes
+                + 64
+            )
+            // topic data comma seperators
+            + log.inner.data.topics().len().saturating_sub(1)
+        )
+        + compute_heuristic_fixed_bytes_len(log.transaction_hash)
+        + compute_heuristic_int_len(log.transaction_index)
+}
+
 #[cfg(test)]
 mod tests {
     use alloy_eips::BlockNumberOrTag;
+    use alloy_primitives::{Address, LogData};
     use alloy_rpc_types::{Filter, FilterBlockOption};
+    use arbitrary::Unstructured;
     use monad_archive::{
         prelude::{ArchiveReader, BlockDataArchive, IndexReaderImpl, TxIndexArchiver},
         test_utils::{mock_block, mock_rx, mock_tx, MemoryStorage},
     };
     use monad_triedb_utils::mock_triedb::MockTriedb;
+    use proptest::{prelude::Strategy, proptest};
 
     use crate::{
-        chainstate::ChainState,
+        chainstate::{compute_heuristic_log_len, ChainState},
         eth_json_types::{BlockTagOrHash, BlockTags, FixedData, Quantity},
     };
 
@@ -1254,7 +1494,7 @@ mod tests {
             ..Default::default()
         };
         let logs = chain_state
-            .get_logs(filter, 1, false, false, 1)
+            .get_logs(filter, u32::MAX, 1, false, false, 1)
             .await
             .unwrap();
         assert!(!logs.is_empty());
@@ -1264,9 +1504,54 @@ mod tests {
             ..Default::default()
         };
         let logs = chain_state
-            .get_logs(filter, 1, false, false, 1)
+            .get_logs(filter, u32::MAX, 1, false, false, 1)
             .await
             .unwrap();
         assert!(!logs.is_empty());
+    }
+
+    #[test]
+    fn test_heuristic_log_len_empty() {
+        let log = alloy_rpc_types::Log {
+            inner: alloy_primitives::Log {
+                address: Address::default(),
+                data: LogData::empty(),
+            },
+            ..Default::default()
+        };
+
+        let heuristic_log_len = compute_heuristic_log_len(&log);
+
+        let serialized_log = serde_json::to_string(&log).unwrap();
+
+        assert_eq!(
+            heuristic_log_len,
+            serialized_log.len(),
+            "Heuristic log len does not match! Serialized log: {serialized_log:?}"
+        );
+    }
+
+    fn arbitrary_log() -> impl Strategy<Value = alloy_rpc_types::Log> {
+        proptest::collection::vec(proptest::prelude::any::<u8>(), 0..256).prop_filter_map(
+            "invalid arbitrary",
+            |bytes| {
+                let mut u = Unstructured::new(&bytes);
+                u.arbitrary().ok()
+            },
+        )
+    }
+
+    proptest! {
+        #[test]
+        fn proptest_heuristic_log_len(log in arbitrary_log()) {
+            let heuristic_log_len = compute_heuristic_log_len(&log);
+
+            let serialized_log = serde_json::to_string(&log).unwrap();
+
+            assert_eq!(
+                heuristic_log_len, serialized_log.len(),
+                "Heuristic log len does not match! Serialized log: {serialized_log:?}"
+            );
+        }
     }
 }

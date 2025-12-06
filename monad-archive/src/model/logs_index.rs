@@ -193,20 +193,17 @@ impl LogsIndexArchiver {
 
         // Decode kv document and potentially resolve references to produce a TxIndexData
         Ok(cursor
-            .then(|doc| {
-                let reader = self.index_reader.clone();
-                let collection = self.collection.clone();
-                async move {
-                    let doc = doc.wrap_err("Failed to get logs index")?;
-                    let (_id, bytes) = doc
-                        .resolve(&collection)
-                        .await
-                        .wrap_err("Failed to resolve logs index")?;
-                    reader
-                        .resolve_from_bytes(&bytes)
-                        .await
-                        .wrap_err("Failed to decode TxIndexedData when querying logs")
-                }
+            .then(move |doc| async move {
+                let doc = doc.wrap_err("Failed to get logs index")?;
+                let (_id, bytes) = doc
+                    .resolve(&self.collection)
+                    .await
+                    .wrap_err("Failed to resolve logs index")?;
+
+                self.index_reader
+                    .resolve_from_bytes(&bytes)
+                    .await
+                    .wrap_err("Failed to decode TxIndexedData when querying logs")
             })
             .boxed())
     }
