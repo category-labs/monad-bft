@@ -309,32 +309,6 @@ where
 // Keyed by starting round
 type GroupQueue<ST> = BTreeMap<Round, Group<ST>>;
 
-// Groups in a GroupQueue should be sorted by start round, earliest round first
-impl<ST> Ord for Group<ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
-    fn cmp(&self, other: &Self) -> Ordering {
-        // Compare fields other than round_span.start as well, to make the
-        // ordering more consistent and predictable
-        other
-            .round_span
-            .start
-            .cmp(&self.round_span.start)
-            .then_with(|| other.round_span.end.cmp(&self.round_span.end))
-            .then_with(|| other.validator_id.cmp(&self.validator_id))
-    }
-}
-
-impl<ST> PartialOrd for Group<ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
 impl<ST> fmt::Debug for Group<ST>
 where
     ST: CertificateSignatureRecoverable,
