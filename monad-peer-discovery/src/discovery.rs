@@ -29,6 +29,7 @@ use monad_node_config::{NodeBootstrapConfig, NodeBootstrapPeerConfig};
 use monad_types::{Epoch, NodeId, Round};
 use rand::{RngCore, seq::IteratorRandom};
 use rand_chacha::ChaCha8Rng;
+use serde_json::{Value, json};
 use tracing::{debug, info, trace, warn};
 
 use crate::{
@@ -1589,6 +1590,72 @@ where
 
     fn metrics(&self) -> &ExecutorMetrics {
         &self.metrics
+    }
+
+    fn dump_state(&self
+    ) -> serde_json::Map<String, serde_json::Value> {
+        let mut jsn_map = serde_json::Map::new();
+        let mut participation_map = serde_json::Map::new();
+        for (node_id, info) in self.participation_info.iter() {
+            participation_map.insert(
+                format!("{:?}", node_id),
+                json!({
+                    "status": match info.status {
+                    SecondaryRaptorcastConnectionStatus::Connected => "Connected",
+                    SecondaryRaptorcastConnectionStatus::Pending => "Pending",
+                    SecondaryRaptorcastConnectionStatus::None => "None",
+                    },
+                    "num_retries": info.num_retries,
+                    "last_active": info.last_active.0,
+                }),
+            );
+        }
+        jsn_map.insert(
+            "participation_info".to_string(),
+            Value::Object(participation_map),
+        );
+        jsn_map
+        /*
+        for (node_id, info) in self.participation_info.iter() {
+            participation_map.insert(
+                format!("{:?}", node_id),
+                json!({
+                    "status": match info.status {
+                    SecondaryRaptorcastConnectionStatus::Connected => "Connected",
+                    SecondaryRaptorcastConnectionStatus::Pending => "Pending",
+                    SecondaryRaptorcastConnectionStatus::None => "None",
+                    },
+                    "num_retries": info.num_retries,
+                    "last_active": info.last_active.0,
+                }),
+            );
+        }
+        jsn_map.insert(
+            "participation_info".to_string(),
+            Value::Object(participation_map),
+        );
+
+        jsn_map.insert(
+            "participation_info".to_string(),
+            Value::Array(
+                self.participation_info
+                    .iter()
+                    .map(|(node_id, info)| {
+                        json!({
+                            "node_id": format!("{:?}", node_id),
+                            "status": match info.status {
+                                SecondaryRaptorcastConnectionStatus::Connected => "Connected",
+                                SecondaryRaptorcastConnectionStatus::Pending => "Pending",
+                                SecondaryRaptorcastConnectionStatus::None => "None",
+                            },
+                            "num_retries": info.num_retries,
+                            "last_active": info.last_active.0,
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+        );
+        */
     }
 
     fn get_pending_addr_by_id(

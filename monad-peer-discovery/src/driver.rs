@@ -319,6 +319,11 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
     pub fn metrics(&self) -> &ExecutorMetrics {
         self.pd.metrics()
     }
+
+    pub fn dump_state(&self
+    ) -> serde_json::Map<String, serde_json::Value> {
+        self.pd.dump_state()
+    }
 }
 
 impl<PD> Stream for PeerDiscoveryDriver<PD>

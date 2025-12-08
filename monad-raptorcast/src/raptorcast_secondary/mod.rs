@@ -14,11 +14,12 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, VecDeque},
     marker::PhantomData,
     pin::{pin, Pin},
     sync::{Arc, Mutex},
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
+    time::Duration,
 };
 
 mod client;
@@ -27,6 +28,7 @@ mod publisher;
 
 use alloy_rlp::{Decodable, Encodable};
 use client::Client;
+use fixed::traits::LossyInto;
 use futures::{Future, Stream};
 use group_message::FullNodesGroupMessage;
 use monad_crypto::certificate_signature::{
@@ -39,6 +41,7 @@ use monad_types::{Epoch, NodeId};
 use publisher::Publisher;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
+use serde_json::json;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, error, trace, warn};
 
@@ -47,7 +50,7 @@ use crate::{
     message::OutboundRouterMessage,
     udp::GroupId,
     util::{FullNodes, Group},
-    RaptorCastEvent,
+    PeerManagerResponse, RaptorCastEvent,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -98,6 +101,10 @@ where
 
     channel_from_primary: UnboundedReceiver<FullNodesGroupMessage<ST>>,
     channel_to_primary_outbound: UnboundedSender<SecondaryOutboundMessage<ST>>,
+
+    pending_events: VecDeque<RaptorCastEvent<M::Event, ST>>,
+    waker: Option<Waker>,
+
     #[expect(unused)]
     metrics: ExecutorMetrics,
     _phantom: PhantomData<(OM, SE, M)>,
@@ -146,6 +153,8 @@ where
             peer_discovery_driver,
             channel_from_primary,
             channel_to_primary_outbound,
+            pending_events: Default::default(),
+            waker: None,
             metrics: Default::default(),
             _phantom: PhantomData,
         }
@@ -225,6 +234,31 @@ where
             return FullNodesGroupMessage::ConfirmGroup(filled_confirm_msg);
         }
         group_msg
+    }
+
+    pub fn dump_state(&self
+    ) -> serde_json::Map<String, serde_json::Value> {
+        let mut jsn_map = serde_json::Map::new();
+
+        jsn_map.insert("version".to_string(), json!(6));
+        jsn_map.insert("curr_epoch".to_string(), json!(self.curr_epoch.0));
+        jsn_map.insert("pending_events_len".to_string(), json!(self.pending_events.len()));
+        jsn_map.insert("channel_from_primary_len".to_string(), json!(self.channel_from_primary.len()));
+
+        match &self.role {
+            Role::Client(client) => {
+                jsn_map.insert("role".to_string(), json!("Client"));
+                let role_map = client.dump_state();
+                jsn_map.insert("Client".to_string(), json!(role_map));
+            }
+            Role::Publisher(publisher) => {
+                jsn_map.insert("role".to_string(), json!("Publisher"));
+                let role_map = publisher.dump_state();
+                jsn_map.insert("Publisher".to_string(), json!(role_map));
+            }
+        }
+
+        jsn_map
     }
 }
 
@@ -379,6 +413,18 @@ where
                         error!(?err, "failed to send message to primary");
                     }
                 }
+
+                Self::Command::DumpStateRaptorcast => {
+                    let jsn_map = self.dump_state();
+                    let jsn = serde_json::Value::Object(jsn_map);
+                    self.pending_events
+                        .push_back(RaptorCastEvent::PeerManagerResponse(
+                            PeerManagerResponse::DumpStateRaptorcast(jsn),
+                        ));
+                    if let Some(waker) = self.waker.take() {
+                        waker.wake();
+                    }
+                }
             }
         }
     }
@@ -406,6 +452,16 @@ where
     // we don't need to handle any receive here and this is just to satisfy traits
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
+
+        if let Some(waker) = this.waker.as_mut() {
+            waker.clone_from(cx.waker());
+        } else {
+            this.waker = Some(cx.waker().clone());
+        }
+
+        if let Some(event) = this.pending_events.pop_front() {
+            return Poll::Ready(Some(event.into()));
+        }
 
         let inbound_grp_msg = match pin!(this.channel_from_primary.recv()).poll(cx) {
             Poll::Ready(Some(inbound_grp_msg)) => inbound_grp_msg,

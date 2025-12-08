@@ -25,6 +25,7 @@ use monad_executor::ExecutorMetrics;
 use monad_types::{NodeId, Round, RoundSpan};
 use rand::seq::SliceRandom;
 use rand_chacha::ChaCha8Rng;
+use serde_json::json;
 use tracing::{debug, error, info, trace, warn};
 
 use super::{
@@ -136,6 +137,23 @@ where
             self.validator_node_id,
             round_span,
         )
+    }
+
+    pub fn dump_state(&self
+    ) -> serde_json::Map<String, serde_json::Value> {
+        let mut jsn_map = serde_json::Map::new();
+
+        jsn_map.insert("curr_round".to_string(), json!(self.curr_round));
+        jsn_map.insert("validator_node_id".to_string(), json!(self.validator_node_id));
+        jsn_map.insert("group_schedule_len".to_string(), json!(self.group_schedule.len()));
+        jsn_map.insert("always_ask_full_nodes_len".to_string(), json!(self.always_ask_full_nodes.list.len()));
+        jsn_map.insert("peer_disc_full_nodes_len".to_string(), json!(self.peer_disc_full_nodes.list.len()));
+        jsn_map.insert("curr_group_size_excl_self".to_string(), json!(self.curr_group.size_excl_self()));
+        // group_schedule: BTreeMap<Round, GroupAsPublisher<ST>>
+        // always_ask_full_nodes: FullNodesST<ST>,                // priority ones, coming from config
+        // peer_disc_full_nodes: FullNodesST<ST>,                 // public ones, via peer discovery
+        // curr_group: Group<ST>,
+        jsn_map
     }
 
     // While we don't have a real timer, we can call this instead of

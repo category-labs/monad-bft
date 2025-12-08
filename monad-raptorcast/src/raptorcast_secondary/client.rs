@@ -21,6 +21,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::ExecutorMetrics;
 use monad_types::{NodeId, Round, RoundSpan, GENESIS_ROUND};
+use serde_json::json;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, error, warn};
 
@@ -102,6 +103,18 @@ where
             last_round_heartbeat,
             metrics: ExecutorMetrics::default(),
         }
+    }
+
+    pub fn dump_state(&self
+    ) -> serde_json::Map<String, serde_json::Value> {
+        let mut jsn_map = serde_json::Map::new();
+
+        jsn_map.insert("curr_round".to_string(), json!(self.curr_round.0));
+        jsn_map.insert("confirmed_groups_len".to_string(), json!(self.confirmed_groups.len()));
+        jsn_map.insert("last_round_heartbeat_elapsed".to_string(), json!(self.last_round_heartbeat.elapsed()));
+        // confirmed_groups: IntervalMap<Round, GroupAsClient<ST>>,
+        // pending_confirms: BTreeMap<Round, BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, PrepareGroup<ST>>>,
+        jsn_map
     }
 
     // Called from UpdateCurrentRound

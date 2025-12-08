@@ -810,6 +810,8 @@ pub trait PeerDiscoveryAlgo {
 
     fn metrics(&self) -> &ExecutorMetrics;
 
+    fn dump_state(&self) -> serde_json::Map<String, serde_json::Value>;
+
     fn get_pending_addr_by_id(
         &self,
         id: &NodeId<CertificateSignaturePubKey<Self::SignatureType>>,

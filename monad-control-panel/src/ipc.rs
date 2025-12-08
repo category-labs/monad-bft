@@ -25,8 +25,8 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
-    ClearMetrics, ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers,
-    MonadEvent, ReadCommand, ReloadConfig, WriteCommand,
+    ClearMetrics, ControlPanelCommand, ControlPanelEvent, DumpStateRaptorcast, GetFullNodes,
+    GetMetrics, GetPeers, MonadEvent, ReadCommand, ReloadConfig, WriteCommand,
 };
 use monad_types::ExecutionProtocol;
 use monad_validator::signature_collection::SignatureCollection;
@@ -188,6 +188,21 @@ where
                     ReadCommand::GetFullNodes(get_full_nodes) => match get_full_nodes {
                         GetFullNodes::Request => {
                             let event = ControlPanelEvent::GetFullNodes(GetFullNodes::Request);
+                            let Ok(_) = event_channel
+                                .send(MonadEvent::ControlPanelEvent(event.clone()))
+                                .await
+                            else {
+                                error!("failed to forward request {:?} to executor, closing connection", &event);
+                                break;
+                            };
+                        }
+                        m => error!("unhandled message {:?}", m),
+                    },
+                    ReadCommand::DumpStateRaptorcast(evt) => match evt {
+                        DumpStateRaptorcast::Request => {
+                            let event = ControlPanelEvent::DumpStateRaptorcast(
+                                DumpStateRaptorcast::Request,
+                            );
                             let Ok(_) = event_channel
                                 .send(MonadEvent::ControlPanelEvent(event.clone()))
                                 .await

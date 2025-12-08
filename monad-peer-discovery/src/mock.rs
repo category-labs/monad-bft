@@ -259,6 +259,11 @@ where
         &self.metrics
     }
 
+    fn dump_state(&self
+    ) -> serde_json::Map<String, serde_json::Value> {
+        serde_json::Map::new()
+    }
+
     fn get_pending_addr_by_id(
         &self,
         _id: &NodeId<CertificateSignaturePubKey<ST>>,

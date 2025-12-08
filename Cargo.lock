@@ -5533,6 +5533,7 @@ dependencies = [
  "monad-types",
  "monad-validator",
  "serde",
+ "serde_json",
  "serde_with",
 ]
 
@@ -5769,6 +5770,7 @@ dependencies = [
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "rstest",
+ "serde_json",
  "test-case",
  "tokio-util",
  "toml",
@@ -5861,6 +5863,7 @@ dependencies = [
  "rand_distr",
  "rstest",
  "serde",
+ "serde_json",
  "serial_test",
  "thiserror 1.0.69",
  "tikv-jemallocator",
@@ -5885,6 +5888,7 @@ dependencies = [
  "monad-peer-discovery",
  "monad-raptorcast",
  "monad-types",
+ "serde_json",
  "tokio",
  "tracing",
 ]

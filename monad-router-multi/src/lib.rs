@@ -14,11 +14,11 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     marker::PhantomData,
     pin::Pin,
     sync::{Arc, Mutex},
-    task::Poll,
+    task::{Poll, Waker},
     time::Duration,
 };
 
@@ -46,9 +46,10 @@ use monad_raptorcast::{
         SecondaryRaptorCastModeConfig,
     },
     util::Group,
-    RaptorCast, RaptorCastEvent, AUTHENTICATED_RAPTORCAST_SOCKET, RAPTORCAST_SOCKET,
+    RaptorCast, RaptorCastEvent, AUTHENTICATED_RAPTORCAST_SOCKET, RAPTORCAST_SOCKET, PeerManagerResponse,
 };
 use monad_types::{Epoch, NodeId};
+use serde_json::Value;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 pub use tracing::{debug, error, info, warn, Level};
 
@@ -71,6 +72,9 @@ where
     epoch_validators: BTreeMap<Epoch, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
 
     shared_pdd: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
+
+    pending_events: VecDeque<RaptorCastEvent<M::Event, ST>>,
+    waker: Option<Waker>,
 
     phantom: PhantomData<(OM, SE)>,
 }
@@ -169,6 +173,8 @@ where
             epoch_validators,
             self_node_id,
             shared_pdd,
+            pending_events: Default::default(),
+            waker: None,
             phantom: PhantomData,
         }
     }
@@ -421,6 +427,28 @@ where
                     validator_cmds.push(cmd);
                     fullnodes_cmds.push(cmd_cpy);
                 }
+                RouterCommand::DumpStateRaptorcast => {
+
+                    let mut jsn_map = serde_json::Map::new();
+                    jsn_map.insert("rc_primary".to_string(), Value::Object(self.rc_primary.dump_state()));
+
+                    if let Some(rc_secondary) = &self.rc_secondary {
+                        jsn_map.insert("rc_secondary".to_string(), Value::Object(rc_secondary.dump_state()));
+                    }
+
+                    let pdd_map = self.shared_pdd
+                                .lock()
+                                .unwrap()
+                                .dump_state();
+                    jsn_map.insert("peer_discovery_driver".to_string(), Value::Object(pdd_map));
+
+                    let jsn = serde_json::Value::Object(jsn_map);
+
+                    self.pending_events
+                        .push_back(RaptorCastEvent::PeerManagerResponse(
+                            PeerManagerResponse::DumpStateRaptorcast(jsn),
+                        ));
+                }
             }
         }
         self.rc_primary.exec(validator_cmds);
@@ -462,6 +490,16 @@ where
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         let pinned_this = self.as_mut().get_mut();
+
+        if let Some(waker) = pinned_this.waker.as_mut() {
+            waker.clone_from(cx.waker());
+        } else {
+            pinned_this.waker = Some(cx.waker().clone());
+        }
+
+        if let Some(event) = pinned_this.pending_events.pop_front() {
+            return Poll::Ready(Some(event.into()));
+        }
 
         // Primary RC instance polls for inbound TCP, UDP raptorcast
         // and FullNodesGroupMessage intended for the secondary RC instance.
