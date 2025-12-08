@@ -421,6 +421,11 @@ where
                     validator_cmds.push(cmd);
                     fullnodes_cmds.push(cmd_cpy);
                 }
+                RouterCommand::DumpStateRaptorcast => {
+                    let cmd_copy = RouterCommand::DumpStateRaptorcast {};
+                    fullnodes_cmds.push(cmd);
+                    validator_cmds.push(cmd_copy);
+                }
             }
         }
         self.rc_primary.exec(validator_cmds);

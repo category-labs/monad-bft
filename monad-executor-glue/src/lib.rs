@@ -51,6 +51,7 @@ use monad_types::{
 };
 use monad_validator::signature_collection::SignatureCollection;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use serde_with::serde_as;
 
 const STATESYNC_NETWORK_MESSAGE_NAME: &str = "StateSyncNetworkMessage";
@@ -91,6 +92,7 @@ pub enum RouterCommand<ST: CertificateSignatureRecoverable, OM> {
         dedicated_full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
         prioritized_full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
     },
+    DumpStateRaptorcast,
 }
 
 impl<ST: CertificateSignatureRecoverable, OM> Debug for RouterCommand<ST, OM> {
@@ -150,6 +152,7 @@ impl<ST: CertificateSignatureRecoverable, OM> Debug for RouterCommand<ST, OM> {
                 .field("dedicated_full_nodes", dedicated_full_nodes)
                 .field("prioritized_full_nodes", prioritized_full_nodes)
                 .finish(),
+            Self::DumpStateRaptorcast => write!(f, "DumpStateRaptorcast"),
         }
     }
 }
@@ -363,6 +366,41 @@ impl<ST: CertificateSignatureRecoverable> Decodable for GetPeers<ST> {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum DumpStateRaptorcast {
+    Request,
+    Response(serde_json::Value),
+}
+
+impl Encodable for DumpStateRaptorcast {
+    fn encode(&self, out: &mut dyn BufMut) {
+        match self {
+            Self::Request => {
+                let enc: [&dyn Encodable; 1] = [&1u8];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            // encoding for control panel events only for debugging
+            Self::Response(_) => {
+                let enc: [&dyn Encodable; 1] = [&2u8];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+        }
+    }
+}
+
+impl Decodable for DumpStateRaptorcast {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+        match u8::decode(&mut payload)? {
+            1 => Ok(Self::Request),
+            2 => Ok(Self::Response(Default::default())),
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown DumpStateRaptorcast",
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum GetFullNodes<PT: PubKey> {
     Request,
     #[serde(bound = "PT: PubKey")]
@@ -405,6 +443,7 @@ pub enum ReadCommand<ST: CertificateSignatureRecoverable + Clone> {
     GetPeers(GetPeers<ST>),
     #[serde(bound = "ST: CertificateSignatureRecoverable")]
     GetFullNodes(GetFullNodes<CertificateSignaturePubKey<ST>>),
+    DumpStateRaptorcast(DumpStateRaptorcast),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1884,6 +1923,7 @@ where
     GetPeers(GetPeers<ST>),
     GetFullNodes(GetFullNodes<CertificateSignaturePubKey<ST>>),
     ReloadConfig(ReloadConfig),
+    DumpStateRaptorcast(DumpStateRaptorcast),
 }
 
 impl<ST> Encodable for ControlPanelEvent<ST>
@@ -1916,6 +1956,10 @@ where
                 let enc: [&dyn Encodable; 2] = [&8u8, &cfg];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
+            Self::DumpStateRaptorcast(jsn) => {
+                let enc: [&dyn Encodable; 2] = [&9u8, &jsn];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
         }
     }
 }
@@ -1933,6 +1977,9 @@ where
             6 => Ok(Self::GetPeers(GetPeers::decode(&mut payload)?)),
             7 => Ok(Self::GetFullNodes(GetFullNodes::decode(&mut payload)?)),
             8 => Ok(Self::ReloadConfig(ReloadConfig::decode(&mut payload)?)),
+            9 => Ok(Self::DumpStateRaptorcast(DumpStateRaptorcast::decode(
+                &mut payload,
+            )?)),
             _ => Err(alloy_rlp::Error::Custom(
                 "failed to decode unknown ControlPanelEvent",
             )),

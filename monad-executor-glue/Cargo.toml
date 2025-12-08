@@ -25,6 +25,7 @@ chrono = { workspace = true, features = ["serde"] }
 futures = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_with = { workspace = true, features = ["hex"] }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

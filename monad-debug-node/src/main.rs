@@ -20,8 +20,8 @@ use futures::{SinkExt, StreamExt};
 use itertools::Itertools;
 use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
 use monad_executor_glue::{
-    ClearMetrics, ControlPanelCommand, GetFullNodes, GetMetrics, GetPeers, ReadCommand,
-    WriteCommand,
+    ClearMetrics, ControlPanelCommand, DumpStateRaptorcast, GetFullNodes, GetMetrics, GetPeers,
+    ReadCommand, WriteCommand,
 };
 use monad_node_config::{
     FullNodeConfig, FullNodeIdentityConfig, NodeBootstrapConfig, NodeBootstrapPeerConfig,
@@ -70,6 +70,8 @@ enum Commands {
     GetFullNodes,
     /// Reload node config
     ReloadConfig,
+    /// Dumps the state of raptorcast primary and secondary instances
+    DumpStateRaptorcast,
 }
 
 struct Read {
@@ -191,6 +193,25 @@ fn main() -> Result<(), Error> {
                 )
             }
         }
+
+        Commands::DumpStateRaptorcast => {
+            rt.block_on(write.send(Command::Read(ReadCommand::DumpStateRaptorcast(
+                DumpStateRaptorcast::Request,
+            ))))?;
+            let response = rt.block_on(read.next::<SignatureType>())?;
+            if let ControlPanelCommand::Read(ReadCommand::DumpStateRaptorcast(
+                DumpStateRaptorcast::Response(jsn),
+            )) = response
+            {
+                println!("{}", jsn.to_string());
+            } else {
+                println!(
+                    "unexpected response{}",
+                    serde_json::to_string(&response).unwrap()
+                )
+            }
+        }
+
         Commands::GetFullNodes => {
             rt.block_on(write.send(Command::Read(ReadCommand::GetFullNodes(
                 GetFullNodes::Request,
