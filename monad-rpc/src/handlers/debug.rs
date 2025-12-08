@@ -292,10 +292,11 @@ pub struct MonadCallFrameLog {
     topics: Vec<FixedData<32>>,
     data: UnformattedData,
     position: Quantity,
+    index: Quantity,
 }
 
-impl From<CallFrameLog> for MonadCallFrameLog {
-    fn from(value: CallFrameLog) -> Self {
+impl MonadCallFrameLog {
+    fn from_call_frame_log(value: CallFrameLog, index: usize) -> Self {
         Self {
             address: value.log.address.into(),
             topics: value
@@ -306,6 +307,7 @@ impl From<CallFrameLog> for MonadCallFrameLog {
                 .collect(),
             data: value.log.data.data.into(),
             position: Quantity(value.position.to()),
+            index: Quantity(index as u64),
         }
     }
 }
@@ -341,7 +343,7 @@ pub struct MonadCallFrame {
 
 impl From<CallFrame> for MonadCallFrame {
     fn from(value: CallFrame) -> Self {
-        // the “value” argument is not included for STATICALL
+        // the "value" argument is not included for STATICALL
         let frame_value = if matches!(value.typ, CallKind::StaticCall) {
             None
         } else {
@@ -387,8 +389,11 @@ impl From<CallFrame> for MonadCallFrame {
             calls: Vec::new(),
             logs: value
                 .logs
-                .map(|logs| logs.into_iter().map(Into::into).collect())
-                .unwrap_or_default(),
+                .unwrap_or_default()
+                .into_iter()
+                .enumerate()
+                .map(|(i, log)| MonadCallFrameLog::from_call_frame_log(log, i))
+                .collect(),
         }
     }
 }
@@ -736,6 +741,7 @@ async fn include_code_output<T: Triedb>(
     Ok(())
 }
 
+/// Build a call tree from a flat list of call frames.
 async fn build_call_tree(
     nodes: Vec<CallFrame>,
 ) -> JsonRpcResult<Option<Rc<RefCell<MonadCallFrame>>>> {
@@ -746,6 +752,8 @@ async fn build_call_tree(
     };
 
     let root = Rc::new(RefCell::new(MonadCallFrame::from(root)));
+
+    // First, build the tree structure from the flat frame list.
     let mut stack = vec![Rc::clone(&root)];
 
     for value in nodes {
@@ -773,7 +781,51 @@ async fn build_call_tree(
         stack.push(new_node);
     }
 
+    // Then, assign sequential log indices via iterative depth-first traversal.
+    assign_log_indices(&root);
+
     Ok(Some(root))
+}
+
+/// Depth-first traversal visit order for log index assignment.
+/// Logs are split around child calls: the first log is emitted before any child call,
+/// and remaining logs are emitted after all children return.
+enum Visit {
+    /// Pre-order visit: assign index to first log before descending into children
+    Pre,
+    /// Post-order visit: assign indices to remaining logs after children complete
+    Post,
+}
+
+/// Assigns sequential log indices to all logs in the call tree via depth-first traversal.
+fn assign_log_indices(root: &Rc<RefCell<MonadCallFrame>>) {
+    let mut stack = vec![(Rc::clone(root), Visit::Pre)];
+    let mut counter = 0usize;
+
+    while let Some((node, visit)) = stack.pop() {
+        let mut frame = node.borrow_mut();
+
+        match visit {
+            Visit::Pre => {
+                if !frame.logs.is_empty() {
+                    frame.logs[0].index = Quantity(counter as u64);
+                    counter += 1;
+                }
+                let children: Vec<_> = frame.calls.to_vec();
+                drop(frame);
+                stack.push((node, Visit::Post));
+                for child in children.into_iter().rev() {
+                    stack.push((child, Visit::Pre));
+                }
+            }
+            Visit::Post => {
+                for log in frame.logs.iter_mut().skip(1) {
+                    log.index = Quantity(counter as u64);
+                    counter += 1;
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -787,6 +839,36 @@ mod tests {
 
     use super::*;
     use crate::hex;
+
+    fn make_frame(depth: u64, num_logs: usize) -> CallFrame {
+        let logs = if num_logs > 0 {
+            Some(
+                (0..num_logs)
+                    .map(|i| CallFrameLog {
+                        log: Log::new_unchecked(Address::ZERO, vec![], Bytes::new()),
+                        position: U64::from(i as u64 * 10),
+                    })
+                    .collect(),
+            )
+        } else {
+            Some(vec![])
+        };
+
+        CallFrame {
+            typ: CallKind::Call,
+            flags: U64::ZERO,
+            from: Address::ZERO,
+            to: Some(Address::ZERO),
+            value: U256::ZERO,
+            gas: U64::from(100000u64),
+            gas_used: U64::from(21000u64),
+            input: Bytes::new(),
+            output: Bytes::new(),
+            status: U8::ZERO,
+            depth: U64::from(depth),
+            logs,
+        }
+    }
 
     #[tokio::test]
     async fn test_build_call_tree() {
@@ -1147,5 +1229,143 @@ mod tests {
         assert_eq!(result.receipts.len(), 1);
         let expected_receipt = "0x02f9010801825208b9010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000c0";
         assert_eq!(result.receipts[0], expected_receipt);
+    }
+
+    #[tokio::test]
+    async fn test_global_log_index_across_nested_calls() {
+        // Test interleaved log indexing based on execution order
+        // Frame order: [root(d1, 2 logs), child1(d2, 3 logs), grandchild(d3, 1 log), child2(d2, 2 logs)]
+        //
+        // Execution order:
+        // 1. Root emits first log (index 0)
+        // 2. Root calls Child1
+        // 3. Child1 emits first log (index 1)
+        // 4. Child1 calls Grandchild
+        // 5. Grandchild emits log (index 2)
+        // 6. Grandchild returns
+        // 7. Child1 emits remaining logs (index 3, 4)
+        // 8. Child1 returns
+        // 9. Root calls Child2
+        // 10. Child2 emits all logs (index 5, 6)
+        // 11. Child2 returns
+        // 12. Root emits remaining log (index 7)
+        let frames = vec![
+            make_frame(1, 2),
+            make_frame(2, 3),
+            make_frame(3, 1),
+            make_frame(2, 2),
+        ];
+
+        let result = build_call_tree(frames).await.unwrap();
+        assert!(result.is_some());
+
+        let root = result.unwrap();
+        let root_borrowed = root.borrow();
+
+        // Root frame log indexes will be 0 (before children) and 7 (after all children)
+        assert_eq!(root_borrowed.logs.len(), 2);
+        assert_eq!(root_borrowed.logs[0].index.0, 0);
+        assert_eq!(root_borrowed.logs[1].index.0, 7);
+
+        // First child log indexes will be 1 (after root) and 4 (remaining logs after grandchild)
+        assert_eq!(root_borrowed.calls.len(), 2);
+        let first_child = root_borrowed.calls[0].borrow();
+        assert_eq!(first_child.logs.len(), 3);
+        assert_eq!(first_child.logs[0].index.0, 1);
+        assert_eq!(first_child.logs[1].index.0, 3);
+        assert_eq!(first_child.logs[2].index.0, 4);
+
+        // Grandchild log index will be 2 (after first child)
+        assert_eq!(first_child.calls.len(), 1);
+        let grandchild = first_child.calls[0].borrow();
+        assert_eq!(grandchild.logs.len(), 1);
+        assert_eq!(grandchild.logs[0].index.0, 2);
+
+        // Second child log indexes will be 5 (after first child) and 6 (after grandchild)
+        let second_child = root_borrowed.calls[1].borrow();
+        assert_eq!(second_child.logs.len(), 2);
+        assert_eq!(second_child.logs[0].index.0, 5);
+        assert_eq!(second_child.logs[1].index.0, 6);
+    }
+
+    #[tokio::test]
+    async fn test_contract_a_scenario() {
+        // Test the user's contract scenario:
+        // contract A { emit A0(); new B().b(); new C().c(); emit A1(); }
+        // contract B { new D().d(); }
+        // contract C { emit C0(); }
+        // contract D {}
+        //
+        // Expected log order: A0, C0, A1
+
+        let frames = vec![
+            make_frame(1, 2), // A.a: 2 logs (A0, A1)
+            make_frame(2, 0), // B_CREATE: no logs
+            make_frame(2, 0), // B.b: no logs
+            make_frame(3, 0), // D_CREATE: no logs
+            make_frame(3, 0), // D.d: no logs
+            make_frame(2, 0), // C_CREATE: no logs
+            make_frame(2, 1), // C.c: 1 log (C0)
+        ];
+
+        let result = build_call_tree(frames).await.unwrap();
+        assert!(result.is_some());
+
+        let root = result.unwrap();
+        let root_borrowed = root.borrow();
+
+        // A.a should have: A0 = index 0, A1 = index 2 (after C0)
+        assert_eq!(root_borrowed.logs.len(), 2);
+        assert_eq!(root_borrowed.logs[0].index.0, 0); // A0
+        assert_eq!(root_borrowed.logs[1].index.0, 2); // A1 (after C0)
+
+        // C.c should have: C0 = index 1
+        let mut found_c0 = false;
+        for child in root_borrowed.calls.iter() {
+            let child_borrowed = child.borrow();
+            if !child_borrowed.logs.is_empty() {
+                assert_eq!(child_borrowed.logs[0].index.0, 1); // C0
+                found_c0 = true;
+            }
+        }
+        assert!(found_c0, "Should have found C0 log");
+    }
+
+    #[tokio::test]
+    async fn test_log_index_single_frame() {
+        // Test that a single frame correctly indexes its logs from build_call_tree
+        fn make_log(position: u64) -> CallFrameLog {
+            CallFrameLog {
+                log: Log::new_unchecked(Address::ZERO, vec![], Bytes::new()),
+                position: U64::from(position),
+            }
+        }
+
+        let frame = CallFrame {
+            typ: CallKind::Call,
+            flags: U64::ZERO,
+            from: Address::ZERO,
+            to: Some(Address::ZERO),
+            value: U256::ZERO,
+            gas: U64::from(100000u64),
+            gas_used: U64::from(21000u64),
+            input: Bytes::new(),
+            output: Bytes::new(),
+            status: U8::ZERO,
+            depth: U64::from(1u64),
+            logs: Some(vec![make_log(100), make_log(200), make_log(300)]),
+        };
+
+        let result = build_call_tree(vec![frame]).await.unwrap();
+        assert!(result.is_some());
+
+        let root = result.unwrap();
+        let root_borrowed = root.borrow();
+
+        // Single frame with no children should have all logs assigned sequentially
+        assert_eq!(root_borrowed.logs.len(), 3);
+        assert_eq!(root_borrowed.logs[0].index.0, 0);
+        assert_eq!(root_borrowed.logs[1].index.0, 1);
+        assert_eq!(root_borrowed.logs[2].index.0, 2);
     }
 }
