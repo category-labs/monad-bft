@@ -48,12 +48,11 @@ use tracing::{debug, debug_span, error, info, trace_span, warn};
 
 pub use self::{
     client::EthTxPoolExecutorClient,
-    ipc::{TxPoolServer, EthTxPoolIpcConfig, EthTxPoolIpcServer},
+    ipc::{EthTxPoolIpcConfig, EthTxPoolIpcServer, TxPoolServer},
 };
 use self::{
-    client::ForwardedTxs, forward::EthTxPoolForwardingManager,
-    metrics::EthTxPoolExecutorMetrics, preload::EthTxPoolPreloadManager,
-    reset::EthTxPoolResetTrigger,
+    client::ForwardedTxs, forward::EthTxPoolForwardingManager, metrics::EthTxPoolExecutorMetrics,
+    preload::EthTxPoolPreloadManager, reset::EthTxPoolResetTrigger,
 };
 
 mod client;
@@ -100,7 +99,6 @@ where
     SBT: StateBackend<ST, SCT> + Send + 'static,
     CCT: ChainConfig<CRT> + Send + 'static,
     CRT: ChainRevision + Send + 'static,
-    PST: TxPoolServer + Send + 'static,
     Self: Unpin,
 {
     pub fn start(
