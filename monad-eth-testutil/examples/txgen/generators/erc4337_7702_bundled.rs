@@ -27,7 +27,8 @@ pub struct ERC4337_7702BundledGenerator {
     pub bundler_account: Option<SimpleAccount>, // Initialized from first funded account
     pub ops_per_bundle: usize,
     pub tx_per_sender: usize,
-    pub paymaster_address: Option<Address>,
+    pub paymaster_address: Address,
+    pub use_paymaster: bool,
     pub transfer_amount: U256,   // Amount to transfer in each UserOp
     pub recipient_keys: KeyPool, // For deterministic recipients
 }
@@ -38,7 +39,8 @@ impl ERC4337_7702BundledGenerator {
         simple7702account: Address,
         ops_per_bundle: usize,
         tx_per_sender: usize,
-        paymaster_address: Option<Address>,
+        paymaster_address: Address,
+        use_paymaster: bool,
         recipient_keys: KeyPool,
     ) -> Self {
         Self {
@@ -50,6 +52,7 @@ impl ERC4337_7702BundledGenerator {
             ops_per_bundle,
             tx_per_sender,
             paymaster_address,
+            use_paymaster,
             transfer_amount: U256::from(100_000_000_000_000_000_000u128), // 100 MON
             recipient_keys,
         }
@@ -77,8 +80,10 @@ impl ERC4337_7702BundledGenerator {
         let call_gas = 50_000u128;
         let pre_verification_gas = 21_000u128;
 
-        // no paymaster in the current iteration
-        let paymaster_and_data = Bytes::new();
+        let paymaster_and_data: Bytes = match self.use_paymaster {
+            true => self.encode_paymaster_and_data(),
+            false => Bytes::new(),
+        };
 
         let mut user_op = self.entrypoint.create_user_operation(
             sender,
@@ -113,6 +118,19 @@ impl ERC4337_7702BundledGenerator {
             acct.nonce,
             ctx.chain_id,
         )
+    }
+
+    fn encode_paymaster_and_data(&self) -> Bytes {
+        let mut data = Vec::with_capacity(52);
+        // paymaster address (20 bytes)
+        data.extend_from_slice(self.paymaster_address.as_slice());
+        // verificationGasLimit (16 bytes)
+        data.extend_from_slice(&100_000u128.to_be_bytes());
+        // postOpGasLimit (16 bytes)
+        data.extend_from_slice(&50_000u128.to_be_bytes());
+        // paymasterData (empty)
+
+        Bytes::from(data)
     }
 }
 
