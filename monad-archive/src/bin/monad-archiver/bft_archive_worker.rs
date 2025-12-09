@@ -123,11 +123,21 @@ async fn archive_bft_blocks(
         return Ok(());
     }
 
+    info!(num_local = local.len(), "Local BFT files found");
+    info!(known_in_s3 = known_in_s3.len(), "Known in S3");
+
     // 2) GC: drop known keys that no longer exist locally (memory hygiene only).
     known_in_s3.retain(|k| local.contains_key(k));
 
+    info!(num_known_in_s3 = known_in_s3.len(), "Known in S3 after GC");
+
     // Remove keys that are already known to be in S3
     local.retain(|k, _| !known_in_s3.contains(k));
+
+    info!(
+        num_local_to_upload = local.len(),
+        "Local BFT files to upload after removing known in S3"
+    );
 
     // 3) Process files concurrently using streams
     stream::iter(local.into_iter())
