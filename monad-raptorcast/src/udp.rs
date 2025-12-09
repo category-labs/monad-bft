@@ -26,6 +26,7 @@ use monad_crypto::{
     signing_domain,
 };
 use monad_dataplane::udp::{segment_size_for_mtu, ETHERNET_SEGMENT_SIZE};
+use monad_executor::ExecutorMetricsChain;
 use monad_merkle::{MerkleHash, MerkleProof};
 use monad_types::{Epoch, NodeId, Round};
 use tracing::warn;
@@ -48,6 +49,11 @@ use crate::{
 const _: () = assert!(
     MAX_MERKLE_TREE_DEPTH <= 0xF,
     "merkle tree depth must be <= 4 bits"
+);
+
+const _: () = assert!(
+    MIN_SEGMENT_LENGTH == segment_size_for_mtu(1280) as usize,
+    "MIN_SEGMENT_LENGTH should be the segment size for the IPv6 minimum MTU of 1280 bytes"
 );
 
 pub const SIGNATURE_CACHE_SIZE: NonZero<usize> = NonZero::new(10_000).unwrap();
@@ -86,11 +92,6 @@ pub const MAX_MERKLE_TREE_DEPTH: u8 = 9;
 /// merkle tree depth.
 pub const MIN_SEGMENT_LENGTH: usize =
     PacketLayout::calc_segment_len(MIN_CHUNK_LENGTH, MAX_MERKLE_TREE_DEPTH);
-
-const _: () = assert!(
-    MIN_SEGMENT_LENGTH == segment_size_for_mtu(1280) as usize,
-    "MIN_SEGMENT_LENGTH should be the segment size for the IPv6 minimum MTU of 1280 bytes"
-);
 
 /// The max segment length should not exceed the standard MTU for
 /// Ethernet to avoid fragmentation when routed across the internet.
@@ -143,6 +144,10 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
 
     pub fn metrics(&self) -> &UdpStateMetrics {
         &self.metrics
+    }
+
+    pub fn decoder_metrics(&self) -> ExecutorMetricsChain<'_> {
+        self.decoder_cache.metrics()
     }
 
     /// Given a RecvUdpMsg, emits all decoded messages while rebroadcasting as necessary

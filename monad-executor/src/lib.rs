@@ -26,7 +26,7 @@ pub trait Executor {
     type Command;
 
     fn exec(&mut self, commands: Vec<Self::Command>);
-    fn metrics(&self) -> ExecutorMetricsChain;
+    fn metrics(&self) -> ExecutorMetricsChain<'_>;
 
     fn boxed<'a>(self) -> BoxExecutor<'a, Self::Command>
     where
@@ -43,7 +43,7 @@ impl<E: Executor + ?Sized> Executor for Box<E> {
         (**self).exec(commands)
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
+    fn metrics(&self) -> ExecutorMetricsChain<'_> {
         (**self).metrics()
     }
 }
@@ -59,7 +59,7 @@ where
         Pin::get_mut(Pin::as_mut(self)).exec(commands)
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
+    fn metrics(&self) -> ExecutorMetricsChain<'_> {
         Pin::get_ref(Pin::as_ref(self)).metrics()
     }
 }
