@@ -104,7 +104,7 @@ pub async fn index_worker(
 
 async fn index_blocks(
     block_data_reader: &(impl BlockDataReader + Send),
-    fallback_block_data_source: &Option<(impl BlockDataReader + Send)>,
+    fallback_block_data_source: &Option<impl BlockDataReader + Send>,
     indexer: &TxIndexArchiver,
     log_index: Option<&LogsIndexArchiver>,
     block_range: RangeInclusive<u64>,
@@ -161,7 +161,7 @@ async fn index_blocks(
 
 async fn handle_block(
     block_data_reader: &(impl BlockDataReader + Send),
-    fallback_block_data_source: &Option<(impl BlockDataReader + Send)>,
+    fallback_block_data_source: &Option<impl BlockDataReader + Send>,
     tx_index_archiver: &TxIndexArchiver,
     log_index: Option<&LogsIndexArchiver>,
     block_num: u64,

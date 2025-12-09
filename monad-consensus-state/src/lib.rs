@@ -3245,7 +3245,7 @@ mod test {
         assert_eq!(p1_votes.vote, p3_votes.vote);
         assert_eq!(p1_votes.vote, p4_votes.vote);
         assert_ne!(p1_votes.vote, p2_votes.vote);
-        let votes = vec![p1_votes, p2_votes, p3_votes, p4_votes];
+        let votes = [p1_votes, p2_votes, p3_votes, p4_votes];
         // We Collected 4 votes, 3 of which are valid, 1 of which is not caused by byzantine leader.
         // First 3 (including a false vote) submitted would not cause a qc to form
         // but the last vote would cause a qc to form locally at second_state, thus causing

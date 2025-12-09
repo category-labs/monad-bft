@@ -35,7 +35,7 @@ impl<PT: PubKey> LeaderElection for SimpleRoundRobin<PT> {
         round: Round,
         validators: &BTreeMap<NodeId<Self::NodeIdPubKey>, Stake>,
     ) -> NodeId<PT> {
-        let validators: Vec<_> = validators.iter().map(|(node_id, _)| node_id).collect();
+        let validators: Vec<_> = validators.keys().collect();
         *validators[round.0 as usize % validators.len()]
     }
 }

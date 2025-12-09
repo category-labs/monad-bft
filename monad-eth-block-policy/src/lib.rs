@@ -2942,7 +2942,7 @@ mod test {
 
         let tx = make_test_tx(50000, txn_value, 0, S1);
         let tx = make_validated_tx(tx);
-        let txs = vec![tx.clone()];
+        let txs = [tx.clone()];
         let signer = tx.recover_signer().unwrap();
         let min_balance = compute_txn_max_gas_cost(&tx, BASE_FEE);
 
@@ -3013,7 +3013,7 @@ mod test {
 
         let tx = make_test_tx(50000, txn_value, 0, S1);
         let tx = make_validated_tx(tx);
-        let txs = vec![tx.clone()];
+        let txs = [tx.clone()];
         let signer = tx.recover_signer().unwrap();
         let min_balance = compute_txn_max_gas_cost(&tx, BASE_FEE);
 
@@ -3084,7 +3084,7 @@ mod test {
 
         let tx = make_test_tx(50000, txn_value, 0, S1);
         let tx = make_validated_tx(tx);
-        let txs = vec![tx.clone()];
+        let txs = [tx.clone()];
         let min_balance = compute_txn_max_gas_cost(&tx, BASE_FEE);
 
         let address = Address(FixedBytes([0x11; 20]));
@@ -3129,7 +3129,7 @@ mod test {
 
         let tx = make_test_tx(50000, txn_value, 0, S1);
         let tx = make_validated_tx(tx);
-        let txs = vec![tx.clone()];
+        let txs = [tx.clone()];
         let signer = tx.recover_signer().unwrap();
         let min_balance = compute_txn_max_value(&tx, BASE_FEE);
 
@@ -3205,7 +3205,7 @@ mod test {
         let tx2 = make_validated_tx(tx2);
         let signer = tx1.recover_signer().unwrap();
 
-        let txs = vec![tx1.clone(), tx2.clone()];
+        let txs = [tx1.clone(), tx2.clone()];
         let min_balance =
             compute_txn_max_value(&tx1, BASE_FEE) + compute_txn_max_gas_cost(&tx2, BASE_FEE);
 

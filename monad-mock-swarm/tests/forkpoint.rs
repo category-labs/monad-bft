@@ -452,8 +452,8 @@ fn forkpoint_restart_one(
 
         let network_current_epoch = swarm
             .states()
-            .iter()
-            .map(|(_id, node)| {
+            .values()
+            .map(|node| {
                 node.state
                     .epoch_manager()
                     .get_epoch(
@@ -734,8 +734,8 @@ fn forkpoint_restart_below_all(
 
         let network_round = swarm
             .states()
-            .iter()
-            .map(|(_id, node)| {
+            .values()
+            .map(|node| {
                 node.state
                     .consensus()
                     .expect("consensus is live")
@@ -765,8 +765,8 @@ fn forkpoint_restart_below_all(
 
         let network_round_after_failure = swarm
             .states()
-            .iter()
-            .map(|(_id, node)| {
+            .values()
+            .map(|node| {
                 node.state
                     .consensus()
                     .expect("consensus is live")
@@ -841,8 +841,8 @@ fn forkpoint_restart_below_all(
         {}
         let min_ledger_len = swarm
             .states()
-            .iter()
-            .map(|(_id, node)| {
+            .values()
+            .map(|node| {
                 node.executor
                     .ledger()
                     .get_finalized_blocks()
@@ -856,8 +856,8 @@ fn forkpoint_restart_below_all(
 
         let max_ledger_len = swarm
             .states()
-            .iter()
-            .map(|(_id, node)| {
+            .values()
+            .map(|node| {
                 node.executor
                     .ledger()
                     .get_finalized_blocks()

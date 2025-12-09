@@ -44,8 +44,8 @@ pub struct ArchiveWorkerOpts {
 /// Main worker that archives block data from the execution database to durable storage.
 /// Continuously polls for new blocks and archives their data.
 pub async fn archive_worker(
-    block_data_source: (impl BlockDataReader + Sync),
-    fallback_source: Option<(impl BlockDataReader + Sync)>,
+    block_data_source: impl BlockDataReader + Sync,
+    fallback_source: Option<impl BlockDataReader + Sync>,
     archive_writer: BlockDataArchive,
     opts: ArchiveWorkerOpts,
     metrics: Metrics,

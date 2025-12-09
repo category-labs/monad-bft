@@ -167,68 +167,74 @@ fn setup_keys_and_swarm_builder(
         })
         .collect::<BTreeMap<_, _>>();
 
-    (keys.clone(), PeerDiscSwarmBuilder {
-        builders: keys
-            .iter()
-            .enumerate()
-            .map(|(i, key)| {
-                let self_id = NodeId::new(key.pubkey());
-                let secondary_raptorcast_enabled = config.roles.get(&i).cloned().unwrap_or(false);
-                let bootstrap_peers = config
-                    .bootstrap_peers
-                    .get(&i)
-                    .unwrap_or(&BTreeSet::new())
-                    .iter()
-                    .map(|&id| {
-                        let peer_key = &keys[id];
-                        (
-                            NodeId::new(peer_key.pubkey()),
-                            generate_name_record(peer_key),
+    (
+        keys.clone(),
+        PeerDiscSwarmBuilder {
+            builders: keys
+                .iter()
+                .enumerate()
+                .map(|(i, key)| {
+                    let self_id = NodeId::new(key.pubkey());
+                    let secondary_raptorcast_enabled =
+                        config.roles.get(&i).cloned().unwrap_or(false);
+                    let bootstrap_peers = config
+                        .bootstrap_peers
+                        .get(&i)
+                        .unwrap_or(&BTreeSet::new())
+                        .iter()
+                        .map(|&id| {
+                            let peer_key = &keys[id];
+                            (
+                                NodeId::new(peer_key.pubkey()),
+                                generate_name_record(peer_key),
+                            )
+                        })
+                        .collect::<BTreeMap<_, _>>();
+                    let pinned_full_nodes = config
+                        .pinned_full_nodes
+                        .get(&i)
+                        .cloned()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|id| NodeId::new(keys[id].pubkey()))
+                        .collect::<BTreeSet<_>>();
+                    NodeBuilder {
+                        id: NodeId::new(key.pubkey()),
+                        addr: generate_name_record(key).udp_address(),
+                        algo_builder: PeerDiscoveryBuilder {
+                            self_id,
+                            self_record: generate_name_record(key),
+                            current_round: config.current_round,
+                            current_epoch: config.current_epoch,
+                            epoch_validators: epoch_validators.clone(),
+                            pinned_full_nodes,
+                            prioritized_full_nodes: BTreeSet::new(),
+                            bootstrap_peers,
+                            refresh_period: config.refresh_period,
+                            request_timeout: config.request_timeout,
+                            unresponsive_prune_threshold: config.unresponsive_prune_threshold,
+                            last_participation_prune_threshold: config
+                                .last_participation_prune_threshold,
+                            min_num_peers: config.min_num_peers,
+                            max_num_peers: config.max_num_peers,
+                            max_group_size: config.max_group_size,
+                            enable_publisher: secondary_raptorcast_enabled,
+                            enable_client: secondary_raptorcast_enabled,
+                            rng: ChaCha8Rng::seed_from_u64(123456), // fixed seed for reproducibility
+                            persisted_peers_path: Default::default(),
+                        },
+                        router_scheduler: NoSerRouterConfig::new(
+                            all_peers.keys().cloned().collect(),
                         )
-                    })
-                    .collect::<BTreeMap<_, _>>();
-                let pinned_full_nodes = config
-                    .pinned_full_nodes
-                    .get(&i)
-                    .cloned()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|id| NodeId::new(keys[id].pubkey()))
-                    .collect::<BTreeSet<_>>();
-                NodeBuilder {
-                    id: NodeId::new(key.pubkey()),
-                    addr: generate_name_record(key).udp_address(),
-                    algo_builder: PeerDiscoveryBuilder {
-                        self_id,
-                        self_record: generate_name_record(key),
-                        current_round: config.current_round,
-                        current_epoch: config.current_epoch,
-                        epoch_validators: epoch_validators.clone(),
-                        pinned_full_nodes,
-                        prioritized_full_nodes: BTreeSet::new(),
-                        bootstrap_peers,
-                        refresh_period: config.refresh_period,
-                        request_timeout: config.request_timeout,
-                        unresponsive_prune_threshold: config.unresponsive_prune_threshold,
-                        last_participation_prune_threshold: config
-                            .last_participation_prune_threshold,
-                        min_num_peers: config.min_num_peers,
-                        max_num_peers: config.max_num_peers,
-                        max_group_size: config.max_group_size,
-                        enable_publisher: secondary_raptorcast_enabled,
-                        enable_client: secondary_raptorcast_enabled,
-                        rng: ChaCha8Rng::seed_from_u64(123456), // fixed seed for reproducibility
-                        persisted_peers_path: Default::default(),
-                    },
-                    router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
                         .build(),
-                    seed: 123456,
-                    outbound_pipeline: config.outbound_pipeline.clone(),
-                }
-            })
-            .collect(),
-        seed: 7,
-    })
+                        seed: 123456,
+                        outbound_pipeline: config.outbound_pipeline.clone(),
+                    }
+                })
+                .collect(),
+            seed: 7,
+        },
+    )
 }
 
 #[traced_test]

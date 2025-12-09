@@ -493,7 +493,7 @@ mod test {
 
         for i in 3..30 {
             // messages that is not part of the specified round result in default
-            for msg in vec![
+            for msg in [
                 fake_proposal_message(&keys[0], Round(i)),
                 fake_vote_message(&keys[0], Round(i)),
             ] {
@@ -543,7 +543,7 @@ mod test {
         }
 
         // on round 1, message sent to correct pid split into 2 new messages
-        for msg in vec![
+        for msg in [
             fake_proposal_message(&keys[0], Round(1)),
             fake_vote_message(&keys[0], Round(1)),
         ] {
@@ -581,7 +581,7 @@ mod test {
         }
 
         // on round 2, message sent to correct pid split into 2 new messages (later 2 dups)
-        for msg in vec![
+        for msg in [
             fake_proposal_message(&keys[0], Round(2)),
             fake_vote_message(&keys[0], Round(2)),
         ] {
@@ -622,7 +622,7 @@ mod test {
         let wrong_id: ID<_> = ID::new(NodeId::new(keys[1].pubkey()));
 
         for r in 0..30 {
-            for msg in vec![
+            for msg in [
                 fake_proposal_message(&keys[1], Round(r)),
                 fake_vote_message(&keys[1], Round(r)),
             ] {
@@ -642,7 +642,7 @@ mod test {
         }
 
         // throwing it block sync message should get rejected
-        for msg in vec![
+        for msg in [
             fake_request_block_sync(),
             fake_block_sync(),
             fake_request_block_sync(),
@@ -662,7 +662,7 @@ mod test {
 
         // however if we enable block_sync then it should be broadcasted
         t = TwinsTransformer::new(pid_to_dups, filter, vec![], false);
-        for msg in vec![
+        for msg in [
             fake_request_block_sync(),
             fake_block_sync(),
             fake_request_block_sync(),

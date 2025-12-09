@@ -53,8 +53,8 @@ jobs:
         with:
           submodules: recursive
           token: ${{ steps.generate_token.outputs.token }}
-      - run: rustup toolchain install nightly-2024-12-10 --profile minimal --component rustfmt
-      - run: rustup toolchain install 1.85.0-x86_64-unknown-linux-gnu --profile minimal --component clippy
+      - run: rustup toolchain install nightly-2025-12-09 --profile minimal --component rustfmt
+      - run: rustup toolchain install 1.91.1-x86_64-unknown-linux-gnu --profile minimal --component clippy
       - name: Install cargo-binstall
         uses: cargo-bins/cargo-binstall@v1.15.7
       - name: Install cargo-shear
@@ -64,7 +64,7 @@ jobs:
       - name: Lint unused dependencies
         run: cargo shear
       - name: Format
-        run: cargo +nightly-2024-12-10 fmt --all --check
+        run: cargo +nightly-2025-12-09 fmt --all --check
       - uses: Swatinem/rust-cache@v2
       - name: Lint
         run: cargo clippy --all-targets --all-features --

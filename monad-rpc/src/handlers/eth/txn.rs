@@ -501,7 +501,7 @@ mod tests {
         chainstate::ChainState, eth_json_types::UnformattedData, txpool::EthTxPoolBridgeClient,
     };
 
-    fn serialize_tx(tx: (impl Encodable + Encodable2718)) -> UnformattedData {
+    fn serialize_tx(tx: impl Encodable + Encodable2718) -> UnformattedData {
         let mut rlp_encoded_tx = Vec::new();
         tx.encode_2718(&mut rlp_encoded_tx);
         UnformattedData(rlp_encoded_tx)

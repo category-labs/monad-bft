@@ -271,7 +271,7 @@ impl<S: SwarmRelation> MockSwarmVerifier<S> {
 
             let blocks_proposed: Vec<_> = ledger
                 .values()
-                .filter(|b| (b.get_author() == peer_id))
+                .filter(|b| b.get_author() == peer_id)
                 .collect();
             // number of blocks authored in the ledger <= number of rounds as leader
             // NOTE: '<=' is used since blocks can be rejected
