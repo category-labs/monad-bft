@@ -56,19 +56,7 @@ pub struct NodeState {
     pub router_identity: KeyPair,
     pub bls12_381_identity: BlsKeyPair,
 
-    pub forkpoint_path: PathBuf,
-    pub validators_path: PathBuf,
-    pub wal_path: PathBuf,
-    pub ledger_path: PathBuf,
-    pub mempool_ipc_path: PathBuf,
-    pub control_panel_ipc_path: PathBuf,
-    pub statesync_ipc_path: PathBuf,
-    pub statesync_sq_thread_cpu: Option<u32>,
-    pub triedb_path: PathBuf,
-    pub persisted_peers_path: PathBuf,
-
     pub otel_endpoint_interval: Option<(String, Duration)>,
-    pub pprof: String,
     pub reload_handle: Box<dyn TracingReload>,
     // should be kept as long as node is alive, tracing listener is stopped when handle is dropped
     #[allow(unused)]
@@ -77,55 +65,57 @@ pub struct NodeState {
 
 impl NodeState {
     pub fn setup(cmd: &mut clap::Command) -> Result<Self, NodeSetupError> {
-        let Cli {
-            bls_identity,
-            secp_identity,
-            node_config: node_config_path,
-            forkpoint_config: forkpoint_config_path,
-            validators_path: validators_config_path,
-            devnet_chain_config_override: maybe_devnet_chain_config_override_path,
-            wal_path,
-            ledger_path,
-            mempool_ipc_path,
-            triedb_path,
-            control_panel_ipc_path,
-            statesync_ipc_path,
-            statesync_sq_thread_cpu,
-            keystore_password,
-            otel_endpoint,
-            record_metrics_interval_seconds,
-            pprof,
-            manytrace_socket,
-            persisted_peers_path,
-        } = Cli::from_arg_matches_mut(&mut cmd.get_matches_mut())?;
+        let cli = Cli::from_arg_matches_mut(&mut cmd.get_matches_mut())?;
+        let node_config_path = cli.node_config.to_owned();
+        let mut node_config: MonadNodeConfig =
+            toml::from_str(&std::fs::read_to_string(&node_config_path)?)?;
+        cli.apply_to_config(&mut node_config);
+
+        let bls_identity = node_config
+            .bls_identity
+            .as_ref()
+            .expect("bls_identity not set");
+        let secp_identity = node_config
+            .secp_identity
+            .as_ref()
+            .expect("secp_identity not set");
+        let forkpoint_config_path = node_config
+            .forkpoint_config
+            .as_ref()
+            .expect("forkpoint_config not set");
+        let validators_config_path = node_config
+            .validators_path
+            .as_ref()
+            .expect("validators_path not set");
+        let maybe_devnet_chain_config_override_path = &node_config.devnet_chain_config_override;
+        let wal_path = node_config.wal_path.expect("wal_path not set");
+        let keystore_password = node_config.keystore_password.take();
+        let manytrace_socket = node_config.manytrace_socket.clone();
 
         let (reload_handle, agent) = NodeState::setup_tracing(manytrace_socket)?;
 
         let keystore_password = keystore_password.as_deref().unwrap_or("");
 
-        let secp_key = load_secp256k1_keypair(&secp_identity, keystore_password)?;
+        let secp_key = load_secp256k1_keypair(secp_identity, keystore_password)?;
         let secp_pubkey = secp_key.pubkey();
         info!(
             "Loaded secp256k1 key from {:?}, pubkey=0x{}",
-            &secp_identity,
+            secp_identity,
             hex::encode(secp_pubkey.bytes_compressed())
         );
         // FIXME this is somewhat jank.. is there a better way?
-        let router_key = load_secp256k1_keypair(&secp_identity, keystore_password)?;
+        let router_key = load_secp256k1_keypair(secp_identity, keystore_password)?;
         info!(
             "Loaded router key from {:?}, pubkey=0x{}",
-            &secp_identity,
+            secp_identity,
             hex::encode(router_key.pubkey().bytes_compressed())
         );
-        let bls_key = load_bls12_381_keypair(&bls_identity, keystore_password)?;
+        let bls_key = load_bls12_381_keypair(bls_identity, keystore_password)?;
         info!(
             "Loaded bls12_381 key from {:?}, pubkey=0x{}",
-            &bls_identity,
+            bls_identity,
             hex::encode(bls_key.pubkey().compress())
         );
-
-        let node_config: MonadNodeConfig =
-            toml::from_str(&std::fs::read_to_string(&node_config_path)?)?;
 
         if !matches!(
             forkpoint_config_path.extension().and_then(OsStr::to_str),
@@ -138,15 +128,15 @@ impl NodeState {
         }
 
         let (forkpoint_config, validators_config) = get_latest_configs(
-            &forkpoint_config_path,
-            &validators_config_path,
+            forkpoint_config_path,
+            validators_config_path,
             Round(node_config.statesync_threshold as u64),
         )?;
 
         let devnet_chain_config_override =
             if let Some(devnet_override_path) = maybe_devnet_chain_config_override_path {
                 Some(toml::from_str(&std::fs::read_to_string(
-                    &devnet_override_path,
+                    devnet_override_path,
                 )?)?)
             } else {
                 None
@@ -154,7 +144,7 @@ impl NodeState {
         let chain_config =
             MonadChainConfig::new(node_config.chain_id, devnet_chain_config_override)?;
 
-        let wal_path = wal_path.with_file_name(format!(
+        node_config.wal_path = Some(wal_path.with_file_name(format!(
             "{}_{}",
             wal_path
                 .file_name()
@@ -166,12 +156,15 @@ impl NodeState {
                 .elapsed()
                 .expect("time went backwards")
                 .as_millis()
-        ));
+        )));
 
-        let otel_endpoint_interval = match (otel_endpoint, record_metrics_interval_seconds) {
+        let otel_endpoint_interval = match (
+            node_config.otel_endpoint.as_ref(),
+            node_config.record_metrics_interval_seconds.as_ref(),
+        ) {
             (Some(otel_endpoint), Some(record_metrics_interval_seconds)) => Some((
-                otel_endpoint,
-                Duration::from_secs(record_metrics_interval_seconds),
+                otel_endpoint.to_owned(),
+                Duration::from_secs(*record_metrics_interval_seconds),
             )),
             (None, None) => None,
             _ => panic!("cli accepted otel_endpoint without record_metrics_interval_seconds"),
@@ -188,21 +181,9 @@ impl NodeState {
             router_identity: router_key,
             bls12_381_identity: bls_key,
 
-            forkpoint_path: forkpoint_config_path,
-            validators_path: validators_config_path,
-            wal_path,
-            ledger_path,
-            triedb_path,
-            mempool_ipc_path,
-            control_panel_ipc_path,
-            statesync_ipc_path,
-            statesync_sq_thread_cpu,
-
             otel_endpoint_interval,
-            pprof,
             reload_handle,
             manytrace_agent: agent,
-            persisted_peers_path,
         })
     }
 
