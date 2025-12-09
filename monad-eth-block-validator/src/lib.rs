@@ -286,6 +286,19 @@ where
             ));
         }
 
+        if execution_chain_params.tfm_enabled {
+            if let Some(consensus_header_base_fee) = header.base_fee {
+                if consensus_header_base_fee != *base_fee_per_gas {
+                    return Err(HeaderError::InvalidBaseFee {
+                        consensus_header_base_fee,
+                        eth_header_base_fee: *base_fee_per_gas,
+                    });
+                }
+            } else {
+                return Err(HeaderError::EmptyHeaderBaseFee);
+            }
+        }
+
         // Monad does not use request hashes yet
         // It is set to zero hash for prague compatibility
         let expected_requests_hash = execution_chain_params.prague_enabled.then_some([0_u8; 32]);
@@ -1363,6 +1376,88 @@ mod test {
         (4..=5u8, 0..=8u64).prop_flat_map(|(signer, starting_nonce)| {
             block_with_eip7702_txs_strategy(FixedBytes([signer; 32]), starting_nonce)
         })
+    }
+
+    #[test]
+    fn test_invalid_block_header_base_fee_mismatch() {
+        let nop_keypair = NopKeyPair::from_bytes(&mut [0_u8; 32]).unwrap();
+
+        // payload with empty transactions
+        let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
+            execution_body: EthBlockBody {
+                transactions: Vec::new(),
+                ommers: Vec::new(),
+                withdrawals: Vec::new(),
+            },
+        });
+
+        let chain_config = MockChainConfig::DEFAULT;
+        let chain_params = chain_config.get_chain_revision(Round(1)).chain_params();
+        let execution_chain_params = chain_config
+            .get_execution_chain_revision(1)
+            .execution_chain_params();
+
+        // header where consensus base_fee differs from eth header base_fee_per_gas
+        let consensus_base_fee: u64 = 100;
+        let eth_header_base_fee: u64 = 200;
+
+        let round_signature = RoundSignature::new(Round(1), &nop_keypair);
+        let seq_num = GENESIS_SEQ_NUM + SeqNum(1);
+        let timestamp_ns: u128 = 1_000_000_000;
+
+        let header: ConsensusBlockHeader<
+            NopSignature,
+            MockSignatures<NopSignature>,
+            EthExecutionProtocol,
+        > = ConsensusBlockHeader::new(
+            NodeId::new(nop_keypair.pubkey()),
+            Epoch(1),
+            Round(1),
+            Vec::new(),
+            ProposedEthHeader {
+                ommers_hash: *EMPTY_OMMER_ROOT_HASH,
+                transactions_root: *calculate_transaction_root::<TxEnvelope>(&[]),
+                withdrawals_root: *EMPTY_WITHDRAWALS,
+                difficulty: 0,
+                number: seq_num.0,
+                gas_limit: chain_params.proposal_gas_limit,
+                timestamp: (timestamp_ns / 1_000_000_000) as u64,
+                extra_data: [0_u8; 32],
+                mix_hash: round_signature.get_hash().0,
+                nonce: [0_u8; 8],
+                base_fee_per_gas: eth_header_base_fee,
+                blob_gas_used: 0,
+                excess_blob_gas: 0,
+                parent_beacon_block_root: [0_u8; 32],
+                requests_hash: Some([0_u8; 32]),
+                ..ProposedEthHeader::default()
+            },
+            payload.get_id(),
+            QuorumCertificate::genesis_qc(),
+            seq_num,
+            timestamp_ns,
+            round_signature,
+            Some(consensus_base_fee),
+            Some(BASE_FEE_TREND),
+            Some(BASE_FEE_MOMENT),
+        );
+
+        let result =
+            EthBlockValidator::<NopSignature, MockSignatures<NopSignature>>::validate_block_header(
+                &header,
+                &payload,
+                None,
+                chain_params,
+                execution_chain_params,
+            );
+
+        assert!(matches!(
+            result,
+            Err(HeaderError::InvalidBaseFee {
+                consensus_header_base_fee: 100,
+                eth_header_base_fee: 200,
+            })
+        ));
     }
 
     proptest! {

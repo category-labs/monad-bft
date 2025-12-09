@@ -57,6 +57,11 @@ pub enum HeaderError {
         expected: B256,
         actual: B256,
     },
+    InvalidBaseFee {
+        consensus_header_base_fee: u64,
+        eth_header_base_fee: u64,
+    },
+    EmptyHeaderBaseFee,
     NonEmptyHeaderNonce(B64),
     NonEmptyExtraData(B256),
     NonZeroBlockGasUsed(u64),
