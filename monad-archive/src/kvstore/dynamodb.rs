@@ -68,7 +68,7 @@ impl KVStore for DynamoDBArchive {
         &self,
         kvs: impl IntoIterator<Item = (String, Vec<u8>)>,
         _policy: WritePolicy,
-    ) -> Result<()> {
+    ) -> Result<PutResult> {
         // Note: WritePolicy is ignored for DynamoDB - always overwrites
         let requests = kvs
             .into_iter()
@@ -105,7 +105,7 @@ impl KVStore for DynamoDBArchive {
             });
 
         try_join_all(batch_writes).await?;
-        Ok(())
+        Ok(PutResult::Written)
     }
 
     async fn put(

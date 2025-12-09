@@ -274,6 +274,7 @@ impl TxIndexArchiver {
         self.index_store
             .bulk_put(requests, WritePolicy::NoClobber)
             .await
+            .map(|_| ())
             .wrap_err("Error indexing block")
     }
 }

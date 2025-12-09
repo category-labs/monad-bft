@@ -795,6 +795,9 @@ mod tests {
             false,
             false,
             LatestKind::UploadedAsyncBackfill,
+            WritePolicy::AllowOverwrite,
+            WritePolicy::AllowOverwrite,
+            WritePolicy::AllowOverwrite,
         )
         .await;
 

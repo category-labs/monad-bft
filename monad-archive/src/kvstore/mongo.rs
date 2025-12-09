@@ -17,6 +17,7 @@ use bytes::Bytes;
 use eyre::{Context, Result};
 use mongodb::{
     bson::{doc, Binary},
+    error::{ErrorKind, WriteFailure},
     options::{ClientOptions, CollectionOptions, WriteConcern},
     Client, Collection,
 };
@@ -24,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use tracing::trace;
 
 use crate::{
-    kvstore::{KVStoreType, MetricsResultExt, PutResult, WritePolicy},
+    kvstore::{kvstore_put_metrics, KVStoreType, MetricsResultExt, PutResult, WritePolicy},
     prelude::*,
 };
 
@@ -97,6 +98,20 @@ impl KeyValueDocument {
 
 fn chunk_id(id: &str, chunk_idx: u32) -> String {
     format!("{}_chunk_{}", id, chunk_idx)
+}
+
+/// MongoDB duplicate key error code
+const DUPLICATE_KEY_ERROR_CODE: i32 = 11000;
+
+/// Check if a MongoDB error is a duplicate key error (code 11000).
+/// This occurs when attempting to insert a document with an _id that already exists.
+fn is_duplicate_key_error(error: &mongodb::error::Error) -> bool {
+    match error.kind.as_ref() {
+        ErrorKind::Write(WriteFailure::WriteError(write_error)) => {
+            write_error.code == DUPLICATE_KEY_ERROR_CODE
+        }
+        _ => false,
+    }
 }
 
 pub async fn new_client(connection_string: &str) -> Result<Client> {
@@ -240,14 +255,33 @@ impl KVStore for MongoDbStorage {
         &self,
         key: impl AsRef<str>,
         data: Vec<u8>,
-        _policy: WritePolicy,
+        policy: WritePolicy,
     ) -> Result<PutResult> {
-        // Note: WritePolicy is ignored for MongoDB - always overwrites
+        let key_str = key.as_ref();
         let start = Instant::now();
+
         let doc = if data.len() > CHUNK_SIZE {
+            // For chunked data with NoClobber, check if main document exists first.
+            // This avoids writing orphaned chunks if the key already exists.
+            if policy == WritePolicy::NoClobber
+                && self
+                    .collection
+                    .find_one(doc! { "_id": key_str })
+                    .await
+                    .wrap_err("MongoDB existence check failed")
+                    .write_put_metrics_on_err(start.elapsed(), KVStoreType::Mongo, &self.metrics)?
+                    .is_some()
+            {
+                warn!(
+                    key = key_str,
+                    "MongoDB put skipped: key already exists (NoClobber policy)"
+                );
+                return Ok(PutResult::Skipped);
+            }
+
             for (chunk_num, chunk) in data.chunks(CHUNK_SIZE).enumerate() {
-                let doc = KeyValueDocument {
-                    _id: chunk_id(key.as_ref(), chunk_num as u32),
+                let chunk_doc = KeyValueDocument {
+                    _id: chunk_id(key_str, chunk_num as u32),
                     value: Some(Binary {
                         subtype: mongodb::bson::spec::BinarySubtype::Generic,
                         bytes: chunk.to_vec(),
@@ -256,7 +290,7 @@ impl KVStore for MongoDbStorage {
                 };
                 // TODO: parallelize
                 self.collection
-                    .replace_one(doc! { "_id": doc._id.clone() }, doc)
+                    .replace_one(doc! { "_id": chunk_doc._id.clone() }, chunk_doc)
                     .upsert(true)
                     .await
                     .wrap_err_with(|| {
@@ -266,13 +300,13 @@ impl KVStore for MongoDbStorage {
             }
 
             KeyValueDocument {
-                _id: key.as_ref().to_string(),
+                _id: key_str.to_string(),
                 value: None,
                 chunks: Some(data.len().div_ceil(CHUNK_SIZE) as u32),
             }
         } else {
             KeyValueDocument {
-                _id: key.as_ref().to_string(),
+                _id: key_str.to_string(),
                 value: Some(Binary {
                     subtype: mongodb::bson::spec::BinarySubtype::Generic,
                     bytes: data,
@@ -281,14 +315,53 @@ impl KVStore for MongoDbStorage {
             }
         };
 
-        self.collection
-            .replace_one(doc! { "_id": key.as_ref() }, doc)
-            .upsert(true)
-            .await
-            .wrap_err("MongoDB put operation failed")
-            .write_put_metrics(start.elapsed(), KVStoreType::Mongo, &self.metrics)?;
-
-        Ok(PutResult::Written)
+        match policy {
+            WritePolicy::NoClobber => {
+                // Use insert_one which fails atomically if document exists
+                match self.collection.insert_one(&doc).await {
+                    Ok(_) => {
+                        kvstore_put_metrics(
+                            start.elapsed(),
+                            true,
+                            KVStoreType::Mongo,
+                            &self.metrics,
+                        );
+                        Ok(PutResult::Written)
+                    }
+                    Err(e) if is_duplicate_key_error(&e) => {
+                        kvstore_put_metrics(
+                            start.elapsed(),
+                            true,
+                            KVStoreType::Mongo,
+                            &self.metrics,
+                        );
+                        warn!(
+                            key = key_str,
+                            "MongoDB put skipped: key already exists (NoClobber policy)"
+                        );
+                        Ok(PutResult::Skipped)
+                    }
+                    Err(e) => {
+                        kvstore_put_metrics(
+                            start.elapsed(),
+                            false,
+                            KVStoreType::Mongo,
+                            &self.metrics,
+                        );
+                        Err(e).wrap_err("MongoDB put operation failed")
+                    }
+                }
+            }
+            WritePolicy::AllowOverwrite => {
+                self.collection
+                    .replace_one(doc! { "_id": key_str }, doc)
+                    .upsert(true)
+                    .await
+                    .wrap_err("MongoDB put operation failed")
+                    .write_put_metrics(start.elapsed(), KVStoreType::Mongo, &self.metrics)?;
+                Ok(PutResult::Written)
+            }
+        }
     }
 
     async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>> {
@@ -496,5 +569,90 @@ pub mod mongo_tests {
         let results = storage.scan_prefix("prefix2_").await.unwrap();
         assert_eq!(results.len(), 1);
         assert!(results.contains(&"prefix2_a".to_string()));
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_noclobber_skips_existing_key() {
+        let (_container, storage) = setup().await.unwrap();
+
+        let key = "noclobber_test_key";
+        let original_data = b"original_value".to_vec();
+        let new_data = b"new_value".to_vec();
+
+        // First write should succeed
+        let result = storage
+            .put(key, original_data.clone(), WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        assert_eq!(result, PutResult::Written);
+
+        // Second write with NoClobber should be skipped
+        let result = storage
+            .put(key, new_data, WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        assert_eq!(result, PutResult::Skipped);
+
+        // Original data should be preserved
+        let stored = storage.get(key).await.unwrap().unwrap();
+        assert_eq!(stored.as_ref(), original_data.as_slice());
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_allow_overwrite_overwrites_existing_key() {
+        let (_container, storage) = setup().await.unwrap();
+
+        let key = "overwrite_test_key";
+        let original_data = b"original_value".to_vec();
+        let new_data = b"new_value".to_vec();
+
+        // First write
+        let result = storage
+            .put(key, original_data, WritePolicy::AllowOverwrite)
+            .await
+            .unwrap();
+        assert_eq!(result, PutResult::Written);
+
+        // Second write with AllowOverwrite should succeed and overwrite
+        let result = storage
+            .put(key, new_data.clone(), WritePolicy::AllowOverwrite)
+            .await
+            .unwrap();
+        assert_eq!(result, PutResult::Written);
+
+        // New data should be stored
+        let stored = storage.get(key).await.unwrap().unwrap();
+        assert_eq!(stored.as_ref(), new_data.as_slice());
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_noclobber_skips_existing_large_value() {
+        let (_container, storage) = setup().await.unwrap();
+
+        let key = "noclobber_large_test_key";
+        // Create data larger than CHUNK_SIZE to test chunked path
+        let original_data = vec![0xAAu8; CHUNK_SIZE + 1000];
+        let new_data = vec![0xBBu8; CHUNK_SIZE + 1000];
+
+        // First write should succeed
+        let result = storage
+            .put(key, original_data.clone(), WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        assert_eq!(result, PutResult::Written);
+
+        // Second write with NoClobber should be skipped
+        let result = storage
+            .put(key, new_data, WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        assert_eq!(result, PutResult::Skipped);
+
+        // Original data should be preserved
+        let stored = storage.get(key).await.unwrap().unwrap();
+        assert_eq!(stored.as_ref(), original_data.as_slice());
     }
 }

@@ -21,7 +21,6 @@ use clap::Parser;
 use monad_archive::{kvstore::WritePolicy, prelude::*};
 use monad_compress::{brotli::BrotliCompression, CompressionAlgo};
 use tracing::Level;
-use tracing_subscriber::EnvFilter;
 
 mod cli;
 
@@ -78,10 +77,7 @@ async fn process_block(
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
+    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     let args = cli::Cli::parse();
     info!(?args, "Cli Arguments: ");

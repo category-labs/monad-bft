@@ -319,7 +319,7 @@ async fn process_single_file(
         .await
         .wrap_err("Failed to read local file")?;
     store
-        .put(&key, bytes, WritePolicy::AllowOverwrite)
+        .put(&key, bytes, WritePolicy::NoClobber)
         .await
         .wrap_err("Failed to upload file to archive store")?;
     metrics.inc_counter(MetricNames::GENERIC_ARCHIVE_FILES_UPLOADED);
@@ -454,7 +454,7 @@ mod tests {
         // Pre-upload a file
         let key = "some-data/item.bin";
         store
-            .put(key, b"remote".to_vec(), WritePolicy::AllowOverwrite)
+            .put(key, b"remote".to_vec(), WritePolicy::NoClobber)
             .await
             .unwrap();
 

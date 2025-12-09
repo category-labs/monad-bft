@@ -126,13 +126,18 @@ pub trait KVStore: KVReader {
         &self,
         kvs: impl IntoIterator<Item = (String, Vec<u8>)>,
         policy: WritePolicy,
-    ) -> Result<()> {
-        futures::stream::iter(kvs)
+    ) -> Result<PutResult> {
+        let results: Vec<PutResult> = futures::stream::iter(kvs)
             .map(|(k, v)| self.put(k, v, policy))
             .buffer_unordered(10)
-            .count()
-            .await;
-        Ok(())
+            .try_collect()
+            .await?;
+        // Return Skipped if any put was skipped
+        if results.iter().any(|r| matches!(r, PutResult::Skipped)) {
+            Ok(PutResult::Skipped)
+        } else {
+            Ok(PutResult::Written)
+        }
     }
     async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>>;
     async fn delete(&self, key: impl AsRef<str>) -> Result<()>;
