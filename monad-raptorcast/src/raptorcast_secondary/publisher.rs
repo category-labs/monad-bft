@@ -479,16 +479,27 @@ where
         // group is starting soon
         {
             debug!(
-                ?self.full_nodes_accepted.list,
+                accepted = ?self.full_nodes_accepted.list,
                 "RaptorCastSecondary Publisher confirm group formed",
             );
             self.next_invite_tp = TimePoint::MAX; // lock the group
+
+            // the first max_group_size peers are confirmed into the group
+            let confirmed_peers = self
+                .full_nodes_accepted
+                .list
+                .iter()
+                .take(cfg.max_group_size)
+                .cloned()
+                .collect();
             let confirm_data = ConfirmGroup {
                 prepare: prep_grp_data,
-                peers: self.full_nodes_accepted.list.clone(),
+                peers: confirmed_peers,
                 name_records: Default::default(), // to be filled by next layer
             };
-            // ConfirmGroup is sent to all accepted peers
+            // ConfirmGroup is sent to all accepted peers: those that have
+            // accepted but not included in the confirmed list should release
+            // the scheduled rounds for other invites
             let grp_msg = FullNodesGroupMessage::ConfirmGroup(confirm_data);
             return Some((grp_msg, self.full_nodes_accepted.clone()));
         }
