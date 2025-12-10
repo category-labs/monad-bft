@@ -16,7 +16,7 @@
 use std::{collections::VecDeque, ffi::OsStr, fs::Metadata, path::Path, time::SystemTime};
 
 use futures::stream;
-use monad_archive::prelude::*;
+use monad_archive::{kvstore::WritePolicy, prelude::*};
 
 // Number of concurrent uploads
 const UPLOAD_CONCURRENCY: usize = 10;
@@ -319,7 +319,7 @@ async fn process_single_file(
         .await
         .wrap_err("Failed to read local file")?;
     store
-        .put(&key, bytes)
+        .put(&key, bytes, WritePolicy::NoClobber)
         .await
         .wrap_err("Failed to upload file to archive store")?;
     metrics.inc_counter(MetricNames::GENERIC_ARCHIVE_FILES_UPLOADED);
@@ -453,7 +453,10 @@ mod tests {
 
         // Pre-upload a file
         let key = "some-data/item.bin";
-        store.put(key, b"remote".to_vec()).await.unwrap();
+        store
+            .put(key, b"remote".to_vec(), WritePolicy::NoClobber)
+            .await
+            .unwrap();
 
         // Create local file with same name
         fs::write(dir_path.join("item.bin"), b"local")

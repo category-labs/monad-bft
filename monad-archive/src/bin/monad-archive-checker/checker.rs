@@ -836,7 +836,7 @@ pub mod tests {
     use alloy_primitives::{Address, Bytes, FixedBytes, Log, LogData, U8};
     use alloy_rlp::Encodable;
     use monad_archive::{
-        kvstore::memory::MemoryStorage,
+        kvstore::{memory::MemoryStorage, WritePolicy},
         test_utils::{mock_block, mock_rx, mock_tx},
     };
 
@@ -1320,13 +1320,16 @@ pub mod tests {
             let (block1, receipts1, traces1) = blocks.remove(&block_num).unwrap();
 
             if let Some(archiver) = model.block_data_readers.get("replica1") {
-                archiver.archive_block(block1.clone()).await.unwrap();
                 archiver
-                    .archive_receipts(receipts1.clone(), block_num)
+                    .archive_block(block1.clone(), WritePolicy::NoClobber)
                     .await
                     .unwrap();
                 archiver
-                    .archive_traces(traces1.clone(), block_num)
+                    .archive_receipts(receipts1.clone(), block_num, WritePolicy::NoClobber)
+                    .await
+                    .unwrap();
+                archiver
+                    .archive_traces(traces1.clone(), block_num, WritePolicy::NoClobber)
                     .await
                     .unwrap();
                 archiver
@@ -1336,13 +1339,16 @@ pub mod tests {
             }
 
             if let Some(archiver) = model.block_data_readers.get("replica2") {
-                archiver.archive_block(block1.clone()).await.unwrap();
                 archiver
-                    .archive_receipts(receipts1.clone(), block_num)
+                    .archive_block(block1.clone(), WritePolicy::NoClobber)
                     .await
                     .unwrap();
                 archiver
-                    .archive_traces(traces1.clone(), block_num)
+                    .archive_receipts(receipts1.clone(), block_num, WritePolicy::NoClobber)
+                    .await
+                    .unwrap();
+                archiver
+                    .archive_traces(traces1.clone(), block_num, WritePolicy::NoClobber)
                     .await
                     .unwrap();
                 archiver
@@ -1362,12 +1368,18 @@ pub mod tests {
                 };
 
                 if let Some(archiver) = model.block_data_readers.get("replica3") {
-                    archiver.archive_block(block3).await.unwrap();
                     archiver
-                        .archive_receipts(receipts3, block_num)
+                        .archive_block(block3, WritePolicy::NoClobber)
                         .await
                         .unwrap();
-                    archiver.archive_traces(traces3, block_num).await.unwrap();
+                    archiver
+                        .archive_receipts(receipts3, block_num, WritePolicy::NoClobber)
+                        .await
+                        .unwrap();
+                    archiver
+                        .archive_traces(traces3, block_num, WritePolicy::NoClobber)
+                        .await
+                        .unwrap();
                     archiver
                         .update_latest(block_num, LatestKind::Uploaded)
                         .await
@@ -1463,12 +1475,18 @@ pub mod tests {
                     .await
                     .unwrap();
 
-                archiver.archive_block(block).await.unwrap();
                 archiver
-                    .archive_receipts(receipts, block_num)
+                    .archive_block(block, WritePolicy::NoClobber)
                     .await
                     .unwrap();
-                archiver.archive_traces(traces, block_num).await.unwrap();
+                archiver
+                    .archive_receipts(receipts, block_num, WritePolicy::NoClobber)
+                    .await
+                    .unwrap();
+                archiver
+                    .archive_traces(traces, block_num, WritePolicy::NoClobber)
+                    .await
+                    .unwrap();
             }
             archiver
                 .update_latest(end_block, LatestKind::Uploaded)
@@ -1527,7 +1545,11 @@ pub mod tests {
             let encoded_block = encode_block(block).unwrap();
 
             // 4) Put the block directly into the block table
-            archiver.store.put(&block_key, encoded_block).await.unwrap();
+            archiver
+                .store
+                .put(&block_key, encoded_block, WritePolicy::AllowOverwrite)
+                .await
+                .unwrap();
         };
 
         // Process the batch
@@ -1603,13 +1625,16 @@ pub mod tests {
 
             for replica_name in ["replica1", "replica2"] {
                 if let Some(archiver) = model.block_data_readers.get(replica_name) {
-                    archiver.archive_block(block1.clone()).await.unwrap();
                     archiver
-                        .archive_receipts(receipts1.clone(), block_num)
+                        .archive_block(block1.clone(), WritePolicy::NoClobber)
                         .await
                         .unwrap();
                     archiver
-                        .archive_traces(traces1.clone(), block_num)
+                        .archive_receipts(receipts1.clone(), block_num, WritePolicy::NoClobber)
+                        .await
+                        .unwrap();
+                    archiver
+                        .archive_traces(traces1.clone(), block_num, WritePolicy::NoClobber)
                         .await
                         .unwrap();
                     archiver
@@ -1628,12 +1653,18 @@ pub mod tests {
                 };
                 parent_hash3 = Some(block3.header.hash_slow());
 
-                archiver.archive_block(block3).await.unwrap();
                 archiver
-                    .archive_receipts(receipts3, block_num)
+                    .archive_block(block3, WritePolicy::NoClobber)
                     .await
                     .unwrap();
-                archiver.archive_traces(traces3, block_num).await.unwrap();
+                archiver
+                    .archive_receipts(receipts3, block_num, WritePolicy::NoClobber)
+                    .await
+                    .unwrap();
+                archiver
+                    .archive_traces(traces3, block_num, WritePolicy::NoClobber)
+                    .await
+                    .unwrap();
                 archiver
                     .update_latest(block_num, LatestKind::Uploaded)
                     .await

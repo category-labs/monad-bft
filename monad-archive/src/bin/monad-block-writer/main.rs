@@ -18,10 +18,9 @@ use std::vec::IntoIter;
 use alloy_consensus::Block as AlloyBlock;
 use alloy_rlp::Encodable;
 use clap::Parser;
-use monad_archive::prelude::*;
+use monad_archive::{kvstore::WritePolicy, prelude::*};
 use monad_compress::{brotli::BrotliCompression, CompressionAlgo};
 use tracing::Level;
-use tracing_subscriber::EnvFilter;
 
 mod cli;
 
@@ -64,7 +63,7 @@ async fn process_block(
     };
 
     let key = current_block.to_string();
-    fs.put(&key, compressed_block)
+    fs.put(&key, compressed_block, WritePolicy::AllowOverwrite)
         .await
         .wrap_err_with(|| format!("Failed to write block {current_block} to file"))?;
 
@@ -78,10 +77,7 @@ async fn process_block(
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
+    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     let args = cli::Cli::parse();
     info!(?args, "Cli Arguments: ");
@@ -191,16 +187,21 @@ async fn get_latest_block(fs: &FsStorage) -> Result<u64> {
                 .wrap_err("Failed to parse latest block")
         }
         None => {
-            fs.put("latest", b"0".to_vec()).await?;
+            fs.put("latest", b"0".to_vec(), WritePolicy::AllowOverwrite)
+                .await?;
             Ok(0)
         }
     }
 }
 
 async fn set_latest_block(fs: &FsStorage, block: u64) -> Result<()> {
-    fs.put("latest", block.to_string().as_bytes().to_vec())
-        .await
-        .wrap_err("Failed to set latest block")?;
+    fs.put(
+        "latest",
+        block.to_string().as_bytes().to_vec(),
+        WritePolicy::AllowOverwrite,
+    )
+    .await
+    .wrap_err("Failed to set latest block")?;
     Ok(())
 }
 
@@ -316,7 +317,10 @@ impl<T, A: Iterator<Item = T>, B: Iterator<Item = T>> Iterator for TwoIters<A, B
 mod tests {
     use alloy_consensus::Block as AlloyBlock;
     use alloy_rlp::Decodable;
-    use monad_archive::test_utils::{mock_block, mock_rx, mock_tx, MemoryStorage};
+    use monad_archive::{
+        kvstore::WritePolicy,
+        test_utils::{mock_block, mock_rx, mock_tx, MemoryStorage},
+    };
     use monad_compress::util::BoundedWriter;
 
     use super::*;
@@ -326,7 +330,10 @@ mod tests {
         let archive = BlockDataArchive::new(store);
 
         for block in blocks {
-            archive.archive_block(block.clone()).await.unwrap();
+            archive
+                .archive_block(block.clone(), WritePolicy::NoClobber)
+                .await
+                .unwrap();
 
             let receipts: Vec<ReceiptWithLogIndex> = block
                 .body
@@ -336,7 +343,7 @@ mod tests {
                 .map(|(i, _)| mock_rx(10, (i + 1) as u128 * 21000))
                 .collect();
             archive
-                .archive_receipts(receipts, block.header.number)
+                .archive_receipts(receipts, block.header.number, WritePolicy::NoClobber)
                 .await
                 .unwrap();
 
@@ -347,7 +354,7 @@ mod tests {
                 .map(|_| vec![1, 2, 3])
                 .collect();
             archive
-                .archive_traces(traces, block.header.number)
+                .archive_traces(traces, block.header.number, WritePolicy::NoClobber)
                 .await
                 .unwrap();
         }

@@ -26,7 +26,7 @@ use futures::future::try_join_all;
 use tokio::sync::Semaphore;
 use tracing::error;
 
-use super::{KVStoreType, MetricsResultExt};
+use super::{KVStoreType, MetricsResultExt, PutResult, WritePolicy};
 use crate::prelude::*;
 
 #[derive(Clone)]
@@ -64,7 +64,12 @@ impl KVStore for DynamoDBArchive {
         &self.table
     }
 
-    async fn bulk_put(&self, kvs: impl IntoIterator<Item = (String, Vec<u8>)>) -> Result<()> {
+    async fn bulk_put(
+        &self,
+        kvs: impl IntoIterator<Item = (String, Vec<u8>)>,
+        _policy: WritePolicy,
+    ) -> Result<PutResult> {
+        // Note: WritePolicy is ignored for DynamoDB - always overwrites
         let requests = kvs
             .into_iter()
             .filter_map(|(key, data)| {
@@ -100,10 +105,16 @@ impl KVStore for DynamoDBArchive {
             });
 
         try_join_all(batch_writes).await?;
-        Ok(())
+        Ok(PutResult::Written)
     }
 
-    async fn put(&self, key: impl AsRef<str>, data: Vec<u8>) -> Result<()> {
+    async fn put(
+        &self,
+        key: impl AsRef<str>,
+        data: Vec<u8>,
+        _policy: WritePolicy,
+    ) -> Result<PutResult> {
+        // Note: WritePolicy is ignored for DynamoDB - always overwrites
         let put_request = PutRequest::builder()
             .item(key.as_ref(), AttributeValue::B(data.into()))
             .build()
@@ -115,7 +126,8 @@ impl KVStore for DynamoDBArchive {
             start.elapsed(),
             KVStoreType::AwsDynamoDB,
             &self.metrics,
-        )
+        )?;
+        Ok(PutResult::Written)
     }
 
     async fn delete(&self, _key: impl AsRef<str>) -> Result<()> {

@@ -289,7 +289,7 @@ impl IndexDataStorageRepr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::*;
+    use crate::{kvstore::WritePolicy, test_utils::*};
 
     fn create_test_data() -> (InlineV0, Block, BlockReceipts) {
         let tx = mock_tx(123);
@@ -345,9 +345,16 @@ mod tests {
         let archive = BlockDataArchive::new(KVStoreErased::from(store.clone()));
 
         // Store the block and receipts
-        archive.archive_block(block.clone()).await.unwrap();
         archive
-            .archive_receipts(receipts.clone(), block.header.number)
+            .archive_block(block.clone(), WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        archive
+            .archive_receipts(
+                receipts.clone(),
+                block.header.number,
+                WritePolicy::NoClobber,
+            )
             .await
             .unwrap();
 

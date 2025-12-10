@@ -20,7 +20,7 @@ use std::{
 
 use eyre::Result;
 use futures::{join, StreamExt, TryStreamExt};
-use monad_archive::prelude::*;
+use monad_archive::{kvstore::WritePolicy, prelude::*};
 use tokio::time::sleep;
 use tracing::{error, info, warn};
 
@@ -39,6 +39,12 @@ pub struct ArchiveWorkerOpts {
     pub traces_only: bool,
     /// If set, archiver will perform an asynchronous backfill of the archive
     pub async_backfill: bool,
+    /// WritePolicy for blocks archiving
+    pub blocks_write_policy: WritePolicy,
+    /// WritePolicy for receipts archiving
+    pub receipts_write_policy: WritePolicy,
+    /// WritePolicy for traces archiving
+    pub traces_write_policy: WritePolicy,
 }
 
 /// Main worker that archives block data from the execution database to durable storage.
@@ -58,6 +64,9 @@ pub async fn archive_worker(
         require_traces,
         traces_only,
         async_backfill,
+        blocks_write_policy,
+        receipts_write_policy,
+        traces_write_policy,
     } = opts;
     let latest_kind = if async_backfill {
         LatestKind::UploadedAsyncBackfill
@@ -122,6 +131,9 @@ pub async fn archive_worker(
             require_traces,
             traces_only,
             latest_kind,
+            blocks_write_policy,
+            receipts_write_policy,
+            traces_write_policy,
         )
         .await;
 
@@ -144,6 +156,9 @@ async fn archive_blocks(
     require_traces: bool,
     traces_only: bool,
     latest_kind: LatestKind,
+    blocks_write_policy: WritePolicy,
+    receipts_write_policy: WritePolicy,
+    traces_write_policy: WritePolicy,
 ) -> u64 {
     let start = Instant::now();
 
@@ -157,6 +172,9 @@ async fn archive_blocks(
                 require_traces,
                 traces_only,
                 metrics,
+                blocks_write_policy,
+                receipts_write_policy,
+                traces_write_policy,
             )
             .await
             {
@@ -203,6 +221,9 @@ async fn archive_block(
     require_traces: bool,
     traces_only: bool,
     metrics: &Metrics,
+    blocks_write_policy: WritePolicy,
+    receipts_write_policy: WritePolicy,
+    traces_write_policy: WritePolicy,
 ) -> Result<()> {
     let mut num_txs = None;
 
@@ -226,7 +247,7 @@ async fn archive_block(
                 }
             };
             num_txs = Some(block.body.transactions.len());
-            archiver.archive_block(block).await
+            archiver.archive_block(block, blocks_write_policy).await
         },
         async {
             if traces_only {
@@ -247,7 +268,9 @@ async fn archive_block(
                     fallback.get_block_receipts(block_num).await?
                 }
             };
-            archiver.archive_receipts(receipts, block_num).await
+            archiver
+                .archive_receipts(receipts, block_num, receipts_write_policy)
+                .await
         },
         async {
             let traces = match reader.get_block_traces(block_num).await {
@@ -265,7 +288,9 @@ async fn archive_block(
                     fallback.get_block_traces(block_num).await?
                 }
             };
-            archiver.archive_traces(traces, block_num).await
+            archiver
+                .archive_traces(traces, block_num, traces_write_policy)
+                .await
         },
     );
 
@@ -353,13 +378,16 @@ mod tests {
                 max_block_num = block_num;
             }
 
-            archive.archive_block(block.clone()).await.unwrap();
             archive
-                .archive_receipts(receipts.clone(), block_num)
+                .archive_block(block.clone(), WritePolicy::NoClobber)
                 .await
                 .unwrap();
             archive
-                .archive_traces(traces.clone(), block_num)
+                .archive_receipts(receipts.clone(), block_num, WritePolicy::NoClobber)
+                .await
+                .unwrap();
+            archive
+                .archive_traces(traces.clone(), block_num, WritePolicy::NoClobber)
                 .await
                 .unwrap();
         }
@@ -382,9 +410,12 @@ mod tests {
                 max_block_num = block_num;
             }
 
-            archive.archive_block(block.clone()).await.unwrap();
             archive
-                .archive_receipts(receipts.clone(), block_num)
+                .archive_block(block.clone(), WritePolicy::NoClobber)
+                .await
+                .unwrap();
+            archive
+                .archive_receipts(receipts.clone(), block_num, WritePolicy::NoClobber)
                 .await
                 .unwrap();
         }
@@ -429,6 +460,9 @@ mod tests {
             false,
             false,
             &metrics::Metrics::none(),
+            WritePolicy::NoClobber,
+            WritePolicy::NoClobber,
+            WritePolicy::NoClobber,
         )
         .await;
         assert!(res.is_ok());
@@ -462,6 +496,9 @@ mod tests {
             false,
             false,
             &metrics::Metrics::none(),
+            WritePolicy::NoClobber,
+            WritePolicy::NoClobber,
+            WritePolicy::NoClobber,
         )
         .await;
         assert!(res.is_ok());
@@ -505,6 +542,9 @@ mod tests {
             false,
             false,
             LatestKind::Uploaded,
+            WritePolicy::NoClobber,
+            WritePolicy::NoClobber,
+            WritePolicy::NoClobber,
         )
         .await;
 
@@ -552,6 +592,9 @@ mod tests {
             false,
             false,
             LatestKind::Uploaded,
+            WritePolicy::NoClobber,
+            WritePolicy::NoClobber,
+            WritePolicy::NoClobber,
         )
         .await;
 
@@ -581,6 +624,9 @@ mod tests {
             false,
             false,
             &metrics::Metrics::none(),
+            WritePolicy::NoClobber,
+            WritePolicy::NoClobber,
+            WritePolicy::NoClobber,
         )
         .await;
 
@@ -615,6 +661,9 @@ mod tests {
             true,
             false,
             &metrics::Metrics::none(),
+            WritePolicy::NoClobber,
+            WritePolicy::NoClobber,
+            WritePolicy::NoClobber,
         )
         .await;
 
@@ -651,6 +700,9 @@ mod tests {
             false,
             true,
             &metrics::Metrics::none(),
+            WritePolicy::NoClobber,
+            WritePolicy::NoClobber,
+            WritePolicy::NoClobber,
         )
         .await;
         assert!(res.is_ok());
@@ -683,6 +735,9 @@ mod tests {
             false,
             true,
             LatestKind::Uploaded,
+            WritePolicy::NoClobber,
+            WritePolicy::NoClobber,
+            WritePolicy::NoClobber,
         )
         .await;
 
@@ -740,6 +795,9 @@ mod tests {
             false,
             false,
             LatestKind::UploadedAsyncBackfill,
+            WritePolicy::AllowOverwrite,
+            WritePolicy::AllowOverwrite,
+            WritePolicy::AllowOverwrite,
         )
         .await;
 
