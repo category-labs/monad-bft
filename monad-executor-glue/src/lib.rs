@@ -1101,10 +1101,9 @@ where
         timestamp_ns: u128,
         round_signature: RoundSignature<SCT::SignatureType>,
         // base fee fields used to populate consensus block header
-        // they are set to None pre tfm activation
-        base_fee: Option<u64>,
-        base_fee_trend: Option<u64>,
-        base_fee_moment: Option<u64>,
+        base_fee: u64,
+        base_fee_trend: u64,
+        base_fee_moment: u64,
         delayed_execution_results: Vec<EPT::FinalizedHeader>,
         proposed_execution_inputs: ProposedExecutionInputs<EPT>,
         last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
@@ -1163,33 +1162,6 @@ where
                     }
                 };
 
-                let base_fee_buf: Vec<&dyn Encodable> = match base_fee {
-                    None => {
-                        vec![&1u8]
-                    }
-                    Some(bf) => {
-                        vec![&2u8, bf]
-                    }
-                };
-
-                let base_fee_trend_buf: Vec<&dyn Encodable> = match base_fee_trend {
-                    None => {
-                        vec![&1u8]
-                    }
-                    Some(bft) => {
-                        vec![&2u8, bft]
-                    }
-                };
-
-                let base_fee_moment_buf: Vec<&dyn Encodable> = match base_fee_moment {
-                    None => {
-                        vec![&1u8]
-                    }
-                    Some(bfm) => {
-                        vec![&2u8, bfm]
-                    }
-                };
-
                 let enc: [&dyn Encodable; 14] = [
                     &1u8,
                     epoch,
@@ -1198,9 +1170,9 @@ where
                     high_qc,
                     timestamp_ns,
                     round_signature,
-                    &base_fee_buf,
-                    &base_fee_trend_buf,
-                    &base_fee_moment_buf,
+                    base_fee,
+                    base_fee_trend,
+                    base_fee_moment,
                     delayed_execution_results,
                     proposed_execution_inputs,
                     &tc_buf,
@@ -1236,36 +1208,9 @@ where
                 let high_qc = QuorumCertificate::<SCT>::decode(&mut payload)?;
                 let timestamp_ns = u128::decode(&mut payload)?;
                 let round_signature = RoundSignature::<SCT::SignatureType>::decode(&mut payload)?;
-                let mut base_fee_payload = Header::decode_bytes(&mut payload, true)?;
-                let base_fee = match u8::decode(&mut base_fee_payload)? {
-                    1 => None,
-                    2 => Some(u64::decode(&mut base_fee_payload)?),
-                    _ => {
-                        return Err(alloy_rlp::Error::Custom(
-                            "failed to decode unknown base_fee in mempool event",
-                        ))
-                    }
-                };
-                let mut base_fee_trend_payload = Header::decode_bytes(&mut payload, true)?;
-                let base_fee_trend = match u8::decode(&mut base_fee_trend_payload)? {
-                    1 => None,
-                    2 => Some(u64::decode(&mut base_fee_trend_payload)?),
-                    _ => {
-                        return Err(alloy_rlp::Error::Custom(
-                            "failed to decode unknown base_fee_trend in mempool event",
-                        ))
-                    }
-                };
-                let mut base_fee_moment_payload = Header::decode_bytes(&mut payload, true)?;
-                let base_fee_moment = match u8::decode(&mut base_fee_moment_payload)? {
-                    1 => None,
-                    2 => Some(u64::decode(&mut base_fee_moment_payload)?),
-                    _ => {
-                        return Err(alloy_rlp::Error::Custom(
-                            "failed to decode unknown base_fee_moment in mempool event",
-                        ))
-                    }
-                };
+                let base_fee = u64::decode(&mut payload)?;
+                let base_fee_trend = u64::decode(&mut payload)?;
+                let base_fee_moment = u64::decode(&mut payload)?;
 
                 let delayed_execution_results = Vec::<EPT::FinalizedHeader>::decode(&mut payload)?;
                 let proposed_execution_inputs =
@@ -1353,10 +1298,7 @@ where
                 .field("timestamp_ns", timestamp_ns)
                 .field("round_signature", round_signature)
                 .field("base_fee", &base_fee)
-                .field(
-                    "base_fee_trend",
-                    &base_fee_trend.map(|trend| trend.cast_signed()),
-                )
+                .field("base_fee_trend", &base_fee_trend.cast_signed())
                 .field("base_fee_moment", &base_fee_moment)
                 .field("delayed_execution_results", delayed_execution_results)
                 .field("proposed_execution_inputs", proposed_execution_inputs)
