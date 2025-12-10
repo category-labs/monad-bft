@@ -395,9 +395,9 @@ pub fn generate_consensus_test_block(
         seq_num,
         0,
         signature,
-        Some(monad_tfm::base_fee::MIN_BASE_FEE),
-        Some(monad_tfm::base_fee::GENESIS_BASE_FEE_TREND),
-        Some(monad_tfm::base_fee::GENESIS_BASE_FEE_MOMENT),
+        monad_tfm::base_fee::MIN_BASE_FEE,
+        monad_tfm::base_fee::GENESIS_BASE_FEE_TREND,
+        monad_tfm::base_fee::GENESIS_BASE_FEE_MOMENT,
     );
 
     let (txn_fees, nonce_usages) = compute_expected_txn_fees_and_nonce_usages(&txs);

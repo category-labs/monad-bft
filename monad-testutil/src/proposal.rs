@@ -162,9 +162,9 @@ where
         let (parent_base_fee, parent_base_fee_trend, parent_base_fee_moment) =
             if let Some(parent_block) = &parent_header {
                 (
-                    parent_block.base_fee.unwrap(),
-                    parent_block.base_fee_trend.unwrap(),
-                    parent_block.base_fee_moment.unwrap(),
+                    parent_block.base_fee,
+                    parent_block.base_fee_trend,
+                    parent_block.base_fee_moment,
                 )
             } else {
                 (
@@ -194,9 +194,9 @@ where
             seq_num,
             self.timestamp,
             round_signature,
-            Some(base_fee),
-            Some(base_fee_trend),
-            Some(base_fee_moment),
+            base_fee,
+            base_fee_trend,
+            base_fee_moment,
         );
 
         let validator_cert_pubkeys = val_epoch_map
