@@ -261,7 +261,7 @@ namespace detail
     struct GetNodeReceiver
     {
         using ResultType =
-            monad::async::result<std::shared_ptr<monad::mpt::CacheNode>>;
+            monad::async::result<std::shared_ptr<monad::mpt::Node>>;
 
         monad::mpt::detail::TraverseSender traverse_sender;
         TraverseReceiver traverse_receiver;
@@ -287,9 +287,7 @@ namespace detail
                     0);
             }
             else {
-                traverse_sender.traverse_root =
-                    monad::mpt::copy_node<monad::mpt::Node>(
-                        res.assume_value().get());
+                traverse_sender.traverse_root = res.assume_value();
                 (new auto(monad::async::connect(
                      std::move(traverse_sender), std::move(traverse_receiver))))
                     ->initiate();
