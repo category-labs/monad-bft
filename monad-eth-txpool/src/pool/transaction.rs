@@ -15,7 +15,7 @@
 
 use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
 use alloy_eips::eip7702::Authorization;
-use alloy_primitives::{Address, TxHash};
+use alloy_primitives::{Address, TxHash, U256};
 use alloy_rlp::Encodable;
 use monad_chain_config::{execution_revision::ExecutionChainParams, revision::ChainParams};
 use monad_consensus_types::block::ConsensusBlockHeader;
@@ -26,7 +26,7 @@ use monad_eth_block_policy::{
     compute_txn_max_gas_cost, compute_txn_max_value,
     validation::{static_validate_transaction, StaticValidationError},
 };
-use monad_eth_txpool_types::EthTxPoolDropReason;
+use monad_eth_txpool_types::{EthTxPoolDropReason, DEFAULT_TX_PRIORITY};
 use monad_eth_types::EthExecutionProtocol;
 use monad_system_calls::{validator::SystemTransactionValidator, SYSTEM_SENDER_ETH_ADDRESS};
 use monad_tfm::base_fee::{MIN_BASE_FEE, PRE_TFM_BASE_FEE};
@@ -41,9 +41,24 @@ pub const fn max_eip2718_encoded_length(execution_params: &ExecutionChainParams)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PoolTransactionKind {
+    Owned { priority: U256, extra_data: Vec<u8> },
+    Forwarded,
+}
+
+impl PoolTransactionKind {
+    pub fn owned_default() -> Self {
+        Self::Owned {
+            priority: DEFAULT_TX_PRIORITY,
+            extra_data: vec![],
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValidEthTransaction {
     tx: Recovered<TxEnvelope>,
-    owned: bool,
+    kind: PoolTransactionKind,
     forward_last_seqnum: SeqNum,
     forward_retries: usize,
     max_value: Balance,
@@ -64,7 +79,7 @@ impl ValidEthTransaction {
         chain_params: &ChainParams,
         execution_params: &ExecutionChainParams,
         tx: Recovered<TxEnvelope>,
-        owned: bool,
+        kind: PoolTransactionKind,
     ) -> Result<Self, (Recovered<TxEnvelope>, EthTxPoolDropReason)>
     where
         ST: CertificateSignatureRecoverable,
@@ -153,7 +168,7 @@ impl ValidEthTransaction {
 
         Ok(Self {
             tx,
-            owned,
+            kind,
             forward_last_seqnum: last_commit.seq_num,
             forward_retries: 0,
             max_value,
@@ -232,8 +247,28 @@ impl ValidEthTransaction {
         self.tx
     }
 
-    pub(crate) fn is_owned(&self) -> bool {
-        self.owned
+    pub fn priority(&self) -> U256 {
+        match self.kind {
+            PoolTransactionKind::Owned { priority, .. } => priority,
+            PoolTransactionKind::Forwarded => DEFAULT_TX_PRIORITY,
+        }
+    }
+
+    pub fn is_owned(&self) -> bool {
+        match self.kind {
+            PoolTransactionKind::Owned { .. } => true,
+            PoolTransactionKind::Forwarded => false,
+        }
+    }
+
+    pub fn is_owned_and_forwardable(&self) -> bool {
+        match &self.kind {
+            PoolTransactionKind::Owned {
+                priority,
+                extra_data: _,
+            } => priority <= &DEFAULT_TX_PRIORITY,
+            PoolTransactionKind::Forwarded => false,
+        }
     }
 
     pub fn has_higher_priority(&self, other: &Self, _base_fee: u64) -> bool {
@@ -253,8 +288,9 @@ impl ValidEthTransaction {
         //     to forward the transaction, then there is little cost to the network in allowing
         //     transactions with small fee bumps.
 
-        self.tx.max_fee_per_gas() > other.tx.max_fee_per_gas()
-            && self.tx.max_priority_fee_per_gas() >= other.tx.max_priority_fee_per_gas()
+        self.priority() > other.priority()
+            || (self.tx.max_fee_per_gas() > other.tx.max_fee_per_gas()
+                && self.tx.max_priority_fee_per_gas() >= other.tx.max_priority_fee_per_gas())
     }
 
     pub fn iter_valid_recovered_authorizations(
@@ -268,7 +304,7 @@ impl ValidEthTransaction {
         last_commit_seq_num: SeqNum,
         last_commit_base_fee: u64,
     ) -> Option<&TxEnvelope> {
-        if !self.owned {
+        if !self.is_owned_and_forwardable() {
             return None;
         }
 

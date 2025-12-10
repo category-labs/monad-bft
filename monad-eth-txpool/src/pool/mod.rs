@@ -46,7 +46,7 @@ use monad_validator::signature_collection::SignatureCollection;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing::{debug, error, info, warn};
 
-pub use self::transaction::max_eip2718_encoded_length;
+pub use self::transaction::{max_eip2718_encoded_length, PoolTransactionKind};
 use self::{
     sequencer::ProposalSequencer,
     tracked::{TrackedTxLimitsConfig, TrackedTxMap},
@@ -137,34 +137,40 @@ where
         block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
         state_backend: &SBT,
         chain_config: &CCT,
-        txs: Vec<Recovered<TxEnvelope>>,
-        owned: bool,
+        txs: Vec<(Recovered<TxEnvelope>, PoolTransactionKind)>,
         mut on_insert: impl FnMut(&ValidEthTransaction),
     ) {
         if !self.do_local_insert {
-            event_tracker.drop_all(txs.into_iter(), EthTxPoolDropReason::PoolNotReady);
+            event_tracker.drop_all(
+                txs.into_iter().map(|(tx, _)| tx),
+                EthTxPoolDropReason::PoolNotReady,
+            );
             return;
         }
 
         let Some(last_commit) = self.last_commit.as_ref() else {
-            event_tracker.drop_all(txs.into_iter(), EthTxPoolDropReason::PoolNotReady);
+            event_tracker.drop_all(
+                txs.into_iter().map(|(tx, _)| tx),
+                EthTxPoolDropReason::PoolNotReady,
+            );
             return;
         };
 
         let chain_params = self.chain_revision.chain_params();
         let execution_params = self.execution_revision.execution_chain_params();
 
-        let (txs, invalid_txs): (Vec<_>, Vec<_>) = txs.into_par_iter().partition_map(|tx| {
-            Either::from(ValidEthTransaction::validate(
-                last_commit,
-                self.chain_id,
-                chain_params,
-                execution_params,
-                tx,
-                owned,
-            ))
-            .flip()
-        });
+        let (txs, invalid_txs): (Vec<_>, Vec<_>) =
+            txs.into_par_iter().partition_map(|(tx, kind)| {
+                Either::from(ValidEthTransaction::validate(
+                    last_commit,
+                    self.chain_id,
+                    chain_params,
+                    execution_params,
+                    tx,
+                    kind,
+                ))
+                .flip()
+            });
 
         for (tx, drop_reason) in invalid_txs {
             event_tracker.drop(*tx.tx_hash(), drop_reason);

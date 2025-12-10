@@ -5417,6 +5417,7 @@ name = "monad-eth-txpool-ipc"
 version = "0.1.0"
 dependencies = [
  "alloy-consensus",
+ "alloy-primitives",
  "alloy-rlp",
  "bincode",
  "futures",
@@ -5431,7 +5432,9 @@ dependencies = [
 name = "monad-eth-txpool-types"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus",
  "alloy-primitives",
+ "alloy-rlp",
  "monad-eth-block-policy",
  "serde",
 ]
