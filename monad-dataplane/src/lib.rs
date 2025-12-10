@@ -54,6 +54,7 @@ pub struct DataplaneBuilder {
     tcp_config: TcpConfig,
     ban_duration: Duration,
     udp_sockets: Vec<UdpSocketConfig>,
+    udp_multishot: bool,
 }
 
 impl DataplaneBuilder {
@@ -73,6 +74,7 @@ impl DataplaneBuilder {
             },
             ban_duration: Duration::from_secs(5 * 60), // 5 minutes
             udp_sockets: vec![],
+            udp_multishot: true,
         }
     }
 
@@ -104,6 +106,11 @@ impl DataplaneBuilder {
         self
     }
 
+    pub fn with_udp_multishot(mut self, enabled: bool) -> Self {
+        self.udp_multishot = enabled;
+        self
+    }
+
     pub fn build(self) -> Dataplane {
         let DataplaneBuilder {
             local_addr,
@@ -113,6 +120,7 @@ impl DataplaneBuilder {
             tcp_config,
             ban_duration,
             udp_sockets,
+            udp_multishot,
         } = self;
 
         let mut seen_labels = std::collections::HashSet::new();
@@ -183,6 +191,7 @@ impl DataplaneBuilder {
                                 udp_egress_rx,
                                 up_bandwidth_mbps,
                                 udp_buffer_size,
+                                udp_multishot,
                             );
 
                             ready_clone.store(true, Ordering::Release);
