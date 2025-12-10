@@ -306,9 +306,9 @@ mod tests {
             SeqNum(1),
             0,
             RoundSignature::new(Round(10), &key),
-            Some(BASE_FEE),
-            Some(BASE_FEE_TREND),
-            Some(BASE_FEE_MOMENT),
+            BASE_FEE,
+            BASE_FEE_TREND,
+            BASE_FEE_MOMENT,
         );
         let tip = ConsensusTip::new(&key, header, None);
 
