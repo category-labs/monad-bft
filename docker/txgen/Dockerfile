@@ -68,7 +68,8 @@ RUN apt-get install -y \
 ARG CARGO_ROOT="/root/.cargo"
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
 ENV PATH="${CARGO_ROOT}/bin:$PATH"
-RUN rustup toolchain install 1.91.1-x86_64-unknown-linux-gnu
+COPY ./rust-toolchain.toml .
+RUN cargo
 
 WORKDIR /usr/src/monad-bft
 
