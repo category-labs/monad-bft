@@ -108,8 +108,6 @@ jobs:
       - name: Format
         run: cargo +nightly-2025-12-09 fmt --all --check
 
-      - uses: Swatinem/rust-cache@v2
-
       - name: Lint
         run: |
           cargo clippy --all-targets --all-features -- \
