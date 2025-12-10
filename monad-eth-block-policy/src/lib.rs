@@ -181,9 +181,9 @@ struct CommittedBlock {
     timestamp_ns: u128,
     fees: BlockTxnFeeStates,
 
-    base_fee: Option<u64>,
-    base_fee_trend: Option<u64>,
-    base_fee_moment: Option<u64>,
+    base_fee: u64,
+    base_fee_trend: u64,
+    base_fee_moment: u64,
     block_gas_usage: u64,
 }
 
@@ -256,9 +256,7 @@ where
                 let validator = EthBlockPolicyBlockValidator::new(
                     block.seq_num,
                     execution_delay,
-                    block
-                        .base_fee
-                        .unwrap_or(monad_tfm::base_fee::PRE_TFM_BASE_FEE),
+                    block.base_fee,
                     &chain_config.get_chain_revision(block.round),
                 )?;
                 trace!(
@@ -886,9 +884,7 @@ where
                                     let validator = EthBlockPolicyBlockValidator::new(
                                         extending_block.get_seq_num(),
                                         self.execution_delay,
-                                        extending_block
-                                            .get_base_fee()
-                                            .unwrap_or(monad_tfm::base_fee::PRE_TFM_BASE_FEE),
+                                        extending_block.get_base_fee(),
                                         &chain_config
                                             .get_chain_revision(extending_block.get_block_round()),
                                     )?;
@@ -918,13 +914,7 @@ where
     {
         // parent block is last block in extending_blocks or last_committed
         // block if there's no extending branch
-        let (
-            parent_block_round,
-            maybe_parent_base_fee,
-            maybe_parent_trend,
-            maybe_parent_moment,
-            parent_gas_usage,
-        ) = if let Some(parent_block) = extending_blocks.last() {
+        if let Some(parent_block) = extending_blocks.last() {
             let parent_gas_usage = parent_block
                 .as_ref()
                 .validated_txns
@@ -944,9 +934,9 @@ where
                 // genesis block
                 (
                     GENESIS_ROUND,
-                    Some(monad_tfm::base_fee::GENESIS_BASE_FEE),
-                    Some(monad_tfm::base_fee::GENESIS_BASE_FEE_TREND),
-                    Some(monad_tfm::base_fee::GENESIS_BASE_FEE_MOMENT),
+                    monad_tfm::base_fee::GENESIS_BASE_FEE,
+                    monad_tfm::base_fee::GENESIS_BASE_FEE_TREND,
+                    monad_tfm::base_fee::GENESIS_BASE_FEE_MOMENT,
                     0,
                 )
             } else {
@@ -963,32 +953,7 @@ where
                     parent_block.block_gas_usage,
                 )
             }
-        };
-
-        // if parent block doesn't have base_fee fields, it must be pre-tfm
-        // block and we return genesis values
-        let (parent_base_fee, parent_trend, parent_moment) = match (
-            maybe_parent_base_fee,
-            maybe_parent_trend,
-            maybe_parent_moment,
-        ) {
-            (Some(parent_base_fee), Some(parent_trend), Some(parent_moment)) => {
-                (parent_base_fee, parent_trend, parent_moment)
-            }
-            _ => (
-                monad_tfm::base_fee::GENESIS_BASE_FEE,
-                monad_tfm::base_fee::GENESIS_BASE_FEE_TREND,
-                monad_tfm::base_fee::GENESIS_BASE_FEE_MOMENT,
-            ),
-        };
-
-        (
-            parent_block_round,
-            parent_base_fee,
-            parent_trend,
-            parent_moment,
-            parent_gas_usage,
-        )
+        }
     }
 
     /// compute the base fee according to tfm rules
@@ -996,11 +961,7 @@ where
     /// return value: (base_fee, base_fee_trend, base_fee_moment)
     ///
     /// base_fee unit: MON-wei
-    pub fn compute_base_fee<B>(
-        &self,
-        extending_blocks: &[B],
-        chain_config: &CCT,
-    ) -> Option<(u64, u64, u64)>
+    pub fn compute_base_fee<B>(&self, extending_blocks: &[B], chain_config: &CCT) -> (u64, u64, u64)
     where
         B: AsRef<EthValidatedBlock<ST, SCT>>,
     {
@@ -1011,13 +972,13 @@ where
             .chain_params()
             .proposal_gas_limit;
 
-        Some(monad_tfm::base_fee::compute_base_fee(
+        monad_tfm::base_fee::compute_base_fee(
             parent_block_gas_limit,
             parent_gas_usage,
             parent_base_fee,
             parent_trend,
             parent_moment,
-        ))
+        )
     }
 
     pub fn get_execution_delay(&self) -> SeqNum {
@@ -1239,14 +1200,8 @@ where
         }
 
         // verify base_fee fields
-        let maybe_tfm_base_fees = self.compute_base_fee(&extending_blocks, chain_config);
-
-        let (base_fee, base_fee_trend, base_fee_moment) = match maybe_tfm_base_fees {
-            Some((base_fee, base_fee_trend, base_fee_moment)) => {
-                (Some(base_fee), Some(base_fee_trend), Some(base_fee_moment))
-            }
-            None => (None, None, None),
-        };
+        let (base_fee, base_fee_trend, base_fee_moment) =
+            self.compute_base_fee(&extending_blocks, chain_config);
 
         if base_fee != block.header().base_fee
             || base_fee_trend != block.header().base_fee_trend
@@ -1283,9 +1238,7 @@ where
         let validator = EthBlockPolicyBlockValidator::new(
             block.get_seq_num(),
             self.execution_delay,
-            block
-                .get_base_fee()
-                .unwrap_or(monad_tfm::base_fee::PRE_TFM_BASE_FEE),
+            block.get_base_fee(),
             &chain_config.get_chain_revision(block.get_block_round()),
         )?;
 
@@ -2611,9 +2564,9 @@ mod test {
                     ),
                 ]),
             },
-            base_fee: Some(BASE_FEE),
-            base_fee_trend: Some(BASE_FEE_TREND),
-            base_fee_moment: Some(BASE_FEE_MOMENT),
+            base_fee: BASE_FEE,
+            base_fee_trend: BASE_FEE_TREND,
+            base_fee_moment: BASE_FEE_MOMENT,
             block_gas_usage: 0, // not used in this test
         };
 
@@ -2653,9 +2606,9 @@ mod test {
                     ),
                 ]),
             },
-            base_fee: Some(BASE_FEE),
-            base_fee_trend: Some(BASE_FEE_TREND),
-            base_fee_moment: Some(BASE_FEE_MOMENT),
+            base_fee: BASE_FEE,
+            base_fee_trend: BASE_FEE_TREND,
+            base_fee_moment: BASE_FEE_MOMENT,
             block_gas_usage: 0, // not used in this test
         };
 
@@ -2695,9 +2648,9 @@ mod test {
                     ),
                 ]),
             },
-            base_fee: Some(BASE_FEE),
-            base_fee_trend: Some(BASE_FEE_TREND),
-            base_fee_moment: Some(BASE_FEE_MOMENT),
+            base_fee: BASE_FEE,
+            base_fee_trend: BASE_FEE_TREND,
+            base_fee_moment: BASE_FEE_MOMENT,
             block_gas_usage: 0, // not used in this test
         };
 
